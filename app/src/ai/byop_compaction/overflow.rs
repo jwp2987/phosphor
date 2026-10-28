@@ -1,7 +1,8 @@
 //! Overflow determination — ported from opencode `packages/opencode/src/session/overflow.ts`
 //! (below), with two divergences for small windows (#1090): the reserve on a combined window
-//! is capped at a quarter of it ([`ModelLimit::output_reserve`]), and [`overflow_verdict`]
-//! refuses to compact a conversation a summary could not shrink.
+//! never exceeds half of it, and an unknown `max_output` reserves a quarter
+//! (`config::model_limit_from_parts`); and [`overflow_verdict`] refuses to compact a
+//! conversation a summary could not shrink, short of the window itself.
 //!
 //! ```ts
 //! const COMPACTION_BUFFER = 20_000
@@ -71,20 +72,6 @@ impl TokenCounts {
     }
 }
 
-/// The largest share of a window held back for the model's reply when nothing smaller is
-/// configured (#1090): a quarter.
-///
-/// opencode reserves `max_output` in full, and an unknown `max_output` here defaults to
-/// [`COMPACTION_BUFFER`] (20k, `model_limit_from_parts`). On a window of 20k or less that
-/// left `usable == 0`, so every reply of a local 8k-16k model "overflowed" and was compacted,
-/// then given up on. A quarter keeps three quarters of a small window for the prompt and
-/// still leaves room for a real reply: 1k tokens (~750 words) at 4k, 2k at 8k, 4k at 16k,
-/// 8k at 32k. From an 80k window up the 20k default is the smaller of the two, so large
-/// models keep opencode's numbers. The same reserve covers the summarize request's own
-/// output: an overflow is declared while the summarize request (the prompt minus the kept
-/// tail plus the ~300-token template) still has the reserve left for the summary.
-pub const MAX_OUTPUT_RESERVE_DIVISOR: usize = 4;
-
 /// The most a summary is expected to take, for judging whether compacting can get a
 /// conversation back under the threshold ([`overflow_verdict`]). The template has nine terse
 /// sections; real summaries measured 100-500 tokens (round-17 logs: 344-1822 bytes), so 2k
@@ -100,12 +87,11 @@ pub fn expected_summary_tokens(model: ModelLimit) -> usize {
 
 impl ModelLimit {
     /// Tokens kept free for the reply on a combined window (no separate input limit):
-    /// `max_output`, but never more than a quarter of the window, so a positive window
-    /// always leaves a positive usable budget. A known `max_output` smaller than that is
-    /// used as is: it is exactly what the provider can emit.
+    /// `max_output`, as `config::model_limit_from_parts` resolved it (a quarter of the window
+    /// when unknown, a known value at most half), and never more than half the window here
+    /// either, so a positive window always leaves a positive usable budget.
     pub fn output_reserve(&self) -> usize {
-        self.max_output
-            .min(self.context / MAX_OUTPUT_RESERVE_DIVISOR)
+        self.max_output.min(self.context / 2)
     }
 }
 
@@ -114,7 +100,8 @@ impl ModelLimit {
 /// - Separate input limit: opencode's `input - (cfg.reserved ?? min(COMPACTION_BUFFER,
 ///   max_output))`, with the reserve capped at half the input limit so it can't reach 0.
 /// - Combined window (every BYOP model): `context - ModelLimit::output_reserve` (#1090);
-///   opencode's `context - max_output` hit 0 for windows of 20k or less.
+///   opencode's `context - max_output`, with the 20k default for an unknown max_output, hit 0
+///   for windows of 20k or less.
 pub fn usable(cfg: &CompactionConfig, model: ModelLimit) -> usize {
     if model.context == 0 {
         return 0;
@@ -148,46 +135,59 @@ pub enum OverflowVerdict {
     Under,
     /// Over the threshold, and summarizing the history can bring it back under.
     Over,
+    /// Over the threshold and at (or past) the window itself, although a summary is not
+    /// expected to get it back under the threshold: compact anyway, as the last resort before
+    /// the provider rejects or truncates the next request. Typical on a window barely larger
+    /// than the fixed prompt (8k with ~6k of system prompt and tools); the controller tells
+    /// the user once per conversation.
+    OverAtWindow,
     /// Over the threshold, but the history a summary could replace is too small for that:
     /// the usage is the fixed part of every request (system prompt, tool definitions, the
-    /// environment), which compaction does not touch. Compacting would only replace a short
-    /// conversation with a summary of about the same size, and then fail the turn (#1090).
+    /// environment) plus the tail a compaction keeps verbatim, which compaction does not
+    /// touch. Compacting would only replace a short conversation with a summary of about the
+    /// same size, and then fail the turn (#1090). The request still fits the window.
     OverButCompactionCannotHelp,
 }
 
 impl OverflowVerdict {
     /// Whether the auto trigger treats the turn as overflowing (`FinishedStream::Turn`'s
-    /// `overflowing`). Only [`Self::Over`] does: a turn compaction can't help is left alone,
-    /// and after an automatic compaction it counts as having come in under the threshold.
+    /// `overflowing`): [`Self::Over`] and the last resort [`Self::OverAtWindow`]. A turn
+    /// compaction can't help is left alone, and after an automatic compaction it counts as
+    /// having come in under the threshold.
     pub fn compacts(self) -> bool {
-        self == Self::Over
+        matches!(self, Self::Over | Self::OverAtWindow)
     }
 }
 
 /// [`is_overflow`], plus whether compacting can help.
 ///
-/// `history_tokens`: estimated size of the history a summary would replace (every message the
-/// next request still sends verbatim; [`super::commit::compactable_history_tokens`]). After a
-/// compaction the request carries `count - history_tokens` of fixed overhead plus the
-/// summary; when that is still at or over the threshold, compacting can't help.
+/// `summarizable_tokens`: estimated size of what a summary would replace — the head the
+/// summarize request would send, minus what earlier compactions already hide
+/// ([`super::commit::summarizable_history_tokens`]). Only called once the usage is over the
+/// threshold (it walks the whole history). After a compaction the request carries the rest
+/// (fixed overhead and the kept tail) plus the summary; when that is still at or over the
+/// threshold, compacting can't help — unless the usage already reached the window
+/// ([`OverflowVerdict::OverAtWindow`]): the verdict never blocks the last resort.
 pub fn overflow_verdict(
     cfg: &CompactionConfig,
     tokens: TokenCounts,
     model: ModelLimit,
-    history_tokens: usize,
+    summarizable_tokens: impl FnOnce() -> usize,
 ) -> OverflowVerdict {
     if !is_overflow(cfg, tokens, model) {
         return OverflowVerdict::Under;
     }
     let count = tokens.count();
     let summary = expected_summary_tokens(model);
-    let replaced = history_tokens.min(count);
+    let replaced = summarizable_tokens().min(count);
     // A summary no smaller than what it replaces frees nothing ("never compact a tiny
     // conversation"); otherwise it must get the request back under the threshold.
-    if replaced <= summary || count - replaced + summary >= usable(cfg, model) {
-        OverflowVerdict::OverButCompactionCannotHelp
-    } else {
+    if replaced > summary && count - replaced + summary < usable(cfg, model) {
         OverflowVerdict::Over
+    } else if count >= model.context {
+        OverflowVerdict::OverAtWindow
+    } else {
+        OverflowVerdict::OverButCompactionCannotHelp
     }
 }
 

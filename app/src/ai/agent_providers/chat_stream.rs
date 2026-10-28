@@ -2056,7 +2056,17 @@ fn accepted_history_repair_log_message(
 pub(crate) fn build_chat_request_for_test(
     params: &RequestParams,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
-    build_chat_request(
+    build_chat_request_for_test_with_limit(params, byop_compaction::overflow::ModelLimit::FALLBACK)
+}
+
+/// [`build_chat_request_for_test`] for a model with `model_limit` (the configured window, as
+/// `generate_byop_output` passes it), which sizes a summarize request's kept tail.
+#[cfg(test)]
+pub(crate) fn build_chat_request_for_test_with_limit(
+    params: &RequestParams,
+    model_limit: byop_compaction::overflow::ModelLimit,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request_for_model(
         params,
         false,
         AgentProviderApiType::OpenAi,
@@ -2065,6 +2075,7 @@ pub(crate) fn build_chat_request_for_test(
             pdf: false,
             audio: false,
         },
+        model_limit,
     )
 }
 
@@ -6595,6 +6606,13 @@ pub async fn generate_byop_output(
         other_provider_hint,
     } = input;
 
+    // A configured max_output over half the window is held to half, for the `max_tokens` sent
+    // below exactly as for the compaction threshold, so a prompt under the threshold plus the
+    // requested output always fits the window (#1090).
+    let max_output_tokens = byop_compaction::config::clamp_max_output_tokens(
+        context_window.unwrap_or(0),
+        max_output_tokens,
+    );
     let force_echo_reasoning = super::reasoning::model_requires_reasoning_echo(api_type, &model_id);
     // Streaming extraction is only activated for models known to wrap reasoning in <think>
     // tags (e.g. MiniMax M3). Other models keep the original Chunk output behavior, to

@@ -11,7 +11,7 @@ use crate::ai::agent::conversation::AIConversation;
 
 use super::algorithm::{prune_decisions, select, MessageRef};
 use super::config::CompactionConfig;
-use super::message_view::{build_tool_name_lookup, project};
+use super::message_view::{WarpMessageView, build_tool_name_lookup, project};
 use super::overflow::ModelLimit;
 use super::state::CompletedCompaction;
 
@@ -171,22 +171,62 @@ pub fn commit_summarization_for_stream(
     true
 }
 
-/// Estimated tokens of the history a summary could replace: every message of `conversation`
-/// the next request still sends verbatim, i.e. not hidden behind an earlier compaction. The
-/// earlier summary itself is left out: a new summary carries it forward
-/// (`<previous-summary>`), so it does not shrink. Feeds [`super::overflow_verdict`] (#1090).
-pub fn compactable_history_tokens(conversation: &AIConversation) -> usize {
-    let all_msgs = conversation.all_linearized_messages();
+/// Estimated tokens a summary of `conversation` would replace now: the head
+/// [`select`] would hand the summarize request — computed exactly as `build_chat_request`
+/// does (same message order and the request model's `model_limit`), so the kept tail is not
+/// counted — minus the messages an earlier compaction already hides (they are not in the
+/// usage). The earlier summary itself is not counted either: a new summary carries it
+/// forward (`<previous-summary>`), so it does not shrink. Feeds
+/// [`super::overflow_verdict`] (#1090).
+pub fn summarizable_history_tokens(
+    conversation: &AIConversation,
+    model_limit: ModelLimit,
+) -> usize {
+    let all_msgs = dedup_copied_user_queries(conversation.all_linearized_messages());
+    let state = &conversation.compaction_state;
+    let tool_names = build_tool_name_lookup(all_msgs.iter().copied());
+    // Not `project`: that re-sorts by timestamp, and the request selects over this DFS order.
+    let views: Vec<WarpMessageView<'_>> = all_msgs
+        .iter()
+        .copied()
+        .map(|msg| WarpMessageView {
+            msg,
+            state,
+            tool_names: &tool_names,
+        })
+        .collect();
+    // The request's own config (`build_chat_request` uses the default too).
+    let head_end = select(&views, &CompactionConfig::default(), model_limit, |slice| {
+        slice.iter().map(MessageRef::estimate_size).sum()
+    })
+    .head_end;
     let ids: std::collections::HashSet<&str> = all_msgs.iter().map(|m| m.id.as_str()).collect();
-    let hidden = conversation
-        .compaction_state
-        .hidden_message_ids_where(|id| ids.contains(id));
-    all_msgs
+    let hidden = state.hidden_message_ids_where(|id| ids.contains(id));
+    all_msgs[..head_end]
         .iter()
         .copied()
         .filter(|m| !hidden.contains(&m.id))
         .map(super::message_view::estimate_message)
         .sum()
+}
+
+/// Drops a `UserQuery` already seen with the same `(request_id, query)` — the copy a
+/// subagent task carries of its parent's query — as `chat_stream::collect_linearized_task_
+/// messages` does for the request, so the estimate does not count it twice.
+fn dedup_copied_user_queries<'a>(messages: Vec<&'a api::Message>) -> Vec<&'a api::Message> {
+    let mut seen: std::collections::HashSet<(&'a str, &'a str)> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if let Some(api::message::Message::UserQuery(u)) = &msg.message {
+            if !msg.request_id.is_empty()
+                && !seen.insert((msg.request_id.as_str(), u.query.as_str()))
+            {
+                continue;
+            }
+        }
+        out.push(msg);
+    }
+    out
 }
 
 /// The message the summary is shown in place of (`CompletedCompaction::user_msg_id`): the

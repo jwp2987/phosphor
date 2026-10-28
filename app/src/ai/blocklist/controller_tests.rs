@@ -1845,7 +1845,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                 timestamped_message(
                     "a0",
                     api::message::Message::AgentOutput(api::message::AgentOutput {
-                        // Over the summarize request's 8_000-token preserve budget, so the
+                        // Over the summarize request's 6_000-token preserve budget, so the
                         // older turn is summarized and the tool-loop turn is kept.
                         text: "the build works like this. ".repeat(2_000),
                     }),
@@ -1932,13 +1932,17 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                                                     "q1",
                                                     api::message::Message::UserQuery(
                                                         api::message::UserQuery {
-                                                            // ~6_000 estimated tokens of
+                                                            // ~4_800 estimated tokens of
                                                             // pasted context: history a
-                                                            // summary can replace (#1090).
+                                                            // summary can replace (#1090),
+                                                            // and with the calls and results
+                                                            // still within the 6_000-token
+                                                            // kept-tail budget, so a lone
+                                                            // turn is summarized whole.
                                                             query: format!(
                                                                 "read both files{}",
                                                                 " with this pasted context in mind"
-                                                                    .repeat(720)
+                                                                    .repeat(580)
                                                             ),
                                                             ..Default::default()
                                                         },
@@ -1966,8 +1970,8 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
         controller.update(&mut app, |controller, ctx| {
             // 1. The step finishes over the threshold asking for tool calls: 26_000 of
             //    32_000, where the default reserve (a quarter of the window, #1090) puts the
-            //    threshold at 24_000, and the ~6_000-token instruction is history a summary
-            //    can replace (26_000 - 6_000 + a 2_000 summary is back under 24_000).
+            //    threshold at 24_000, and the ~4_900-token turn is what a summary would
+            //    replace (26_000 - 4_900 + a 2_000 summary is back under 24_000).
             controller.handle_response_stream_finished(
                 &step_stream,
                 stream_done(26_000),
@@ -2065,10 +2069,14 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                 2,
                 "no other (orphan or cancellation) results"
             );
-            // The summarize request is built from that history: its recorded head covers
-            // the calls and their results.
-            crate::ai::agent_providers::chat_stream::build_chat_request_for_test(&summary_params)
-                .expect("the summarize request builds");
+            // The summarize request is built from that history, with the configured model's
+            // limits as `generate_byop_output` passes them (a 6_000-token kept tail on this
+            // 32_000 window): its recorded head covers the calls and their results.
+            crate::ai::agent_providers::chat_stream::build_chat_request_for_test_with_limit(
+                &summary_params,
+                CompactionConfig::model_limit(ctx),
+            )
+            .expect("the summarize request builds");
             let head = crate::ai::agent_providers::chat_stream::take_last_summarization_head(
                 conversation_id,
             )

@@ -147,12 +147,15 @@ impl CompactionConfig {
 ///   `usable` and `is_overflow` to 0/false (`overflow.rs:71`, `overflow.rs:89`), so auto
 ///   compaction would never fire at all. Compacting on the old conservative guess beats
 ///   never compacting and letting the provider reject the turn.
-/// - `max_output_tokens == 0` → [`COMPACTION_BUFFER`]. With no separate input limit, `usable`
-///   takes the `context - max_output` branch (`overflow.rs:80`), which ignores `cfg.reserved`
-///   entirely — so a literal 0 leaves no headroom and the trigger only fires once the prompt
-///   already fills the whole window, too late to fit a response. 20k matches the cap opencode
-///   puts on `reserved`; `ModelLimit::output_reserve` caps it at a quarter of the window, so
-///   a small window is not left with nothing (#1090).
+/// - `max_output_tokens == 0` → [`COMPACTION_BUFFER`], capped at a quarter of the window
+///   ([`UNKNOWN_OUTPUT_RESERVE_DIVISOR`]). With no separate input limit, `usable` takes the
+///   `context - max_output` branch, which ignores `cfg.reserved` entirely — so a literal 0
+///   leaves no headroom and the trigger only fires once the prompt already fills the whole
+///   window, too late to fit a response. 20k matches the cap opencode puts on `reserved`; the
+///   quarter keeps a small window from being left with nothing (#1090: every window of 20k or
+///   less had `usable == 0`).
+/// - a known `max_output_tokens` → as configured, through [`clamp_max_output_tokens`], which
+///   only touches a value over half the window (a misconfiguration).
 ///
 /// `input` stays 0 because `AgentProviderModel` has no separate input limit to report; that
 /// selects the `context - max_output` branch, which is the correct reading of a single
@@ -161,13 +164,40 @@ pub fn model_limit_from_parts(context_window: u32, max_output_tokens: u32) -> Mo
     if context_window == 0 {
         return ModelLimit::FALLBACK;
     }
+    let context = context_window as usize;
     ModelLimit {
-        context: context_window as usize,
+        context,
         input: 0,
         max_output: if max_output_tokens == 0 {
-            COMPACTION_BUFFER
+            COMPACTION_BUFFER.min(context / UNKNOWN_OUTPUT_RESERVE_DIVISOR)
         } else {
-            max_output_tokens as usize
+            clamp_max_output_tokens(context_window, max_output_tokens) as usize
         },
     }
+}
+
+/// The share of the window reserved for the reply when the model's `max_output_tokens` is
+/// unknown: a quarter (#1090). It keeps three quarters of a small window for the prompt and
+/// still leaves room for a real reply: 1k tokens (~750 words) at 4k, 2k at 8k, 4k at 16k, 8k
+/// at 32k. From an 80k window up the 20k default is the smaller, so large models keep
+/// opencode's numbers. Nothing is sent as `max_tokens` in this case.
+pub const UNKNOWN_OUTPUT_RESERVE_DIVISOR: usize = 4;
+
+/// The `max_output_tokens` a model is held to, for the compaction reserve *and* the
+/// `max_tokens` its requests send (`chat_stream::generate_byop_output`), so the two always
+/// agree: the configured value, but never more than half the window (#1090).
+///
+/// The overflow threshold is `window - max_output`, and a request is accepted only while
+/// `prompt + max_tokens <= window` (Anthropic and vLLM reject it otherwise). A configured value
+/// up to half the window is used exactly, which covers every catalog entry seen (Claude
+/// 200k/64k, o3 200k/100k, DeepSeek 128k/64k). A larger one — up to the window itself, which
+/// a hand-written config or a server default can produce — would leave the prompt almost
+/// nothing (every reply compacts, then gives up), so it is clamped to half: prompt up to
+/// half the window plus a `max_tokens` of half still fits. `0` (unspecified) is returned as
+/// is, as is any value when the window is unknown.
+pub fn clamp_max_output_tokens(context_window: u32, max_output_tokens: u32) -> u32 {
+    if context_window == 0 || max_output_tokens == 0 {
+        return max_output_tokens;
+    }
+    max_output_tokens.min(context_window / 2)
 }

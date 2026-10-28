@@ -582,6 +582,9 @@ pub struct BlocklistAIController {
     /// touched through [`Self::update_compaction_turn_state`]; idle entries are removed.
     compaction_turn_state:
         HashMap<AIConversationId, crate::ai::byop_compaction::TurnCompactionState>,
+    /// Conversations already told that the model's window is too small for compaction to
+    /// help (`OverflowVerdict::OverAtWindow`, #1090): the notice is shown once each.
+    window_too_small_notified: HashSet<AIConversationId>,
     /// Auto-resumes spent this turn on rejected `read_skill` names (reset when the user sends
     /// a new query), capped at [`MAX_SKILL_RESOLUTION_RESUMES_PER_TURN`]. A rejected name is
     /// a synthetic result that would otherwise auto-resume with a fresh budget every time, so
@@ -960,6 +963,7 @@ impl BlocklistAIController {
             pending_auto_resume_handles: HashMap::new(),
             pending_passive_follow_ups: HashSet::new(),
             compaction_turn_state: HashMap::new(),
+            window_too_small_notified: HashSet::new(),
             skill_resolution_resumes_this_turn: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
@@ -978,6 +982,37 @@ impl BlocklistAIController {
 
     /// Applies `f` to `conversation_id`'s auto-compaction bookkeeping, dropping the entry
     /// once it holds nothing.
+    /// Tells the user, once per conversation, that `conversation_id` filled its model's
+    /// context window and a summary can free little of it (#1090): most of every request is
+    /// the agent's fixed prompt and tools. Without it, a window barely larger than that prompt
+    /// fails quietly — a local server truncates the request (the system prompt first).
+    fn notify_window_too_small_once(
+        &mut self,
+        conversation_id: AIConversationId,
+        window: usize,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.window_too_small_notified.insert(conversation_id) {
+            return;
+        }
+        let Some(window_id) = warpui::windowing::WindowManager::as_ref(ctx).active_window() else {
+            return;
+        };
+        let text = format!(
+            "This conversation filled the model's {window}-token context window, and compacting \
+             it frees little: most of each request is the agent's own instructions and tools. \
+             Replies may be cut off. Use a larger context window for this model (for Ollama, \
+             num_ctx) or a larger model."
+        );
+        crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                crate::view_components::DismissibleToast::default(text),
+                window_id,
+                ctx,
+            );
+        });
+    }
+
     fn update_compaction_turn_state<R>(
         &mut self,
         conversation_id: AIConversationId,
@@ -4692,26 +4727,40 @@ impl BlocklistAIController {
                             };
                             // #1090: on a small window most of the count is the fixed part of
                             // every request (system prompt, tools); summarizing a short history
-                            // can't get under the threshold, so that is not an overflow.
-                            let history_tokens = BlocklistAIHistoryModel::as_ref(ctx)
-                                .conversation(&conversation_id)
-                                .map_or(0, crate::ai::byop_compaction::compactable_history_tokens);
+                            // can't get under the threshold, so that is not an overflow. The
+                            // history is only walked once the usage is over the threshold.
                             let usable = crate::ai::byop_compaction::usable(&cfg, model_limit);
+                            let mut summarizable_tokens = 0;
                             let verdict = crate::ai::byop_compaction::overflow_verdict(
                                 &cfg,
                                 counts,
                                 model_limit,
-                                history_tokens,
+                                || {
+                                    summarizable_tokens = BlocklistAIHistoryModel::as_ref(ctx)
+                                        .conversation(&conversation_id)
+                                        .map_or(0, |conversation| {
+                                            crate::ai::byop_compaction::summarizable_history_tokens(
+                                                conversation,
+                                                model_limit,
+                                            )
+                                        });
+                                    summarizable_tokens
+                                },
                             );
+                            let window = model_limit.context;
                             match verdict {
                                 crate::ai::byop_compaction::OverflowVerdict::Under => {}
                                 crate::ai::byop_compaction::OverflowVerdict::Over => log::info!(
-                                    "[byop-compaction] auto overflow detected: tokens={aggregate_token_count} usable={usable} window={} history~{history_tokens} requested_tool_calls={requested_tool_calls}",
-                                    model_limit.context
+                                    "[byop-compaction] auto overflow detected: tokens={aggregate_token_count} usable={usable} window={window} summarizable~{summarizable_tokens} requested_tool_calls={requested_tool_calls}"
                                 ),
+                                crate::ai::byop_compaction::OverflowVerdict::OverAtWindow => {
+                                    log::info!(
+                                        "[byop-compaction] auto overflow at the window: tokens={aggregate_token_count} usable={usable} window={window} summarizable~{summarizable_tokens} requested_tool_calls={requested_tool_calls} (compacting as the last resort)"
+                                    );
+                                    self.notify_window_too_small_once(conversation_id, window, ctx);
+                                }
                                 crate::ai::byop_compaction::OverflowVerdict::OverButCompactionCannotHelp => log::info!(
-                                    "[byop-compaction] over the threshold but not compacting: tokens={aggregate_token_count} usable={usable} window={} history~{history_tokens} (a summary would not free enough)",
-                                    model_limit.context
+                                    "[byop-compaction] over the threshold but not compacting: tokens={aggregate_token_count} usable={usable} window={window} summarizable~{summarizable_tokens} (a summary would not free enough)"
                                 ),
                             }
                             Some(verdict.compacts())

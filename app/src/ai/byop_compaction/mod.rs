@@ -18,7 +18,7 @@ pub mod prompt;
 pub mod state;
 pub mod token;
 
-pub use commit::compactable_history_tokens;
+pub use commit::summarizable_history_tokens;
 pub use config::CompactionConfig;
 pub use overflow::{OverflowVerdict, is_overflow, overflow_verdict, turn_has_tool_calls, usable};
 

@@ -126,7 +126,37 @@ pub(super) fn estimate_message(msg: &api::Message) -> usize {
         })
         .unwrap_or(0);
     // Same algorithm as opencode: chars / 4 round.
-    estimate(&" ".repeat(chars))
+    estimate(&" ".repeat(chars)) + estimate_attachments(msg)
+}
+
+/// Estimated tokens of a fixed image: a 1568 px screenshot costs roughly 1.5k tokens
+/// (`chat_stream`'s screenshot budget), the size providers downscale images to.
+pub(super) const IMAGE_ATTACHMENT_TOKENS: usize = 1_600;
+
+/// Tokens of the attachments a `UserQuery` carries (`UserQuery.context.images`: images, PDFs
+/// and audio, persisted by `make_user_query_message`). `build_chat_request` re-sends every
+/// one of them on every later request, so they count toward what a summary replaces (#1090:
+/// counting only the query text let an attachment-heavy conversation look too small to
+/// compact). An image is a fixed [`IMAGE_ATTACHMENT_TOKENS`]; anything else is counted by
+/// size, a token per [`CHARS_PER_TOKEN`](super::consts::CHARS_PER_TOKEN) bytes, as text is.
+fn estimate_attachments(msg: &api::Message) -> usize {
+    let Some(api::message::Message::UserQuery(u)) = &msg.message else {
+        return 0;
+    };
+    u.context.as_ref().map_or(0, |context| {
+        context
+            .images
+            .iter()
+            .filter(|b| !b.data.is_empty())
+            .map(|b| {
+                if b.mime_type.starts_with("image/") {
+                    IMAGE_ATTACHMENT_TOKENS
+                } else {
+                    b.data.len() / super::consts::CHARS_PER_TOKEN
+                }
+            })
+            .sum()
+    })
 }
 
 impl<'a> MessageRef for WarpMessageView<'a> {
