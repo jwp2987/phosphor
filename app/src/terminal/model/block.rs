@@ -2120,6 +2120,11 @@ impl Block {
         self.bootstrap_stage
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_bootstrap_stage_for_test(&mut self, stage: BootstrapStage) {
+        self.bootstrap_stage = stage;
+    }
+
     /// A bootstrap block only counts as "visible" once it actually renders something, so the
     /// event is emitted by the block list when the block's height first becomes non-zero — not
     /// when the shell merely starts the block.

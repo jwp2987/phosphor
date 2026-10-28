@@ -17443,3 +17443,155 @@ fn test_static_subshell_commands_resolve_to_the_shell_type_without_the_sh_probe(
         );
     }
 }
+
+/// #1089: a long-running command the typeahead hand-off does not own (here one the queued-command
+/// panel wrote: no `on_command_written`, so the hand-off is still editor-owned), in a session
+/// whose shell reports its line, after the bootstrap precmd. `customize` adds the condition
+/// under test, then one key is typed on the terminal. Returns the hand-off state, whether the
+/// editor must insert literally, and the counted (hand-off) and uncounted pty writes.
+fn type_into_a_command_the_handoff_does_not_own(
+    app: &mut App,
+    customize: impl FnOnce(&mut TerminalModel),
+) -> (HandoffState, bool, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    use crate::terminal::model::bootstrap::BootstrapStage;
+    use crate::terminal::model::early_output::TypeaheadMode;
+
+    let terminal = add_window_with_terminal(app, None);
+    let counted: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let uncounted: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let (counted, uncounted) = (counted.clone(), uncounted.clone());
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::WriteHandoffUserBytesToPty { bytes } => {
+                    counted.borrow_mut().push(bytes.to_vec())
+                }
+                Event::WriteBytesToPty { bytes } => uncounted.borrow_mut().push(bytes.to_vec()),
+                _ => {}
+            });
+        });
+    }
+    let state = terminal.update(app, |view, ctx| {
+        register_local_session_for_ssh_test(view, ctx);
+        {
+            let mut model = view.model.lock();
+            model.simulate_long_running_block("sleep 0.3", "");
+            model
+                .block_list_mut()
+                .early_output_mut()
+                .set_typeahead_mode_for_test(TypeaheadMode::ShellReported);
+            model
+                .block_list_mut()
+                .active_block_mut()
+                .set_bootstrap_stage_for_test(BootstrapStage::PostBootstrapPrecmd);
+            assert_eq!(
+                model.typeahead_handoff().state(),
+                &HandoffState::EditorOwned,
+                "precondition: a command the hand-off does not own"
+            );
+            customize(&mut *model);
+        }
+        view.typed_characters_on_terminal("x", ctx);
+        let model = view.model.lock();
+        let handoff = model.typeahead_handoff();
+        (handoff.state().clone(), handoff.editor_text_precedes_report())
+    });
+    let counted = counted.borrow().clone();
+    let uncounted = uncounted.borrow().clone();
+    (state.0, state.1, counted, uncounted)
+}
+
+/// #1089: the wiring. A key typed into such a command is taken over by the hand-off: written as
+/// a counted hand-off write, with the hand-off owning the shell's line, so the report request
+/// is written behind it and the editor inserts literally until the report.
+#[test]
+fn typeahead_handoff_adopts_keys_typed_into_a_command_it_does_not_own() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let (state, literal, counted, uncounted) =
+            type_into_a_command_the_handoff_does_not_own(&mut app, |_| {});
+        assert!(literal, "the editor cannot see the line the report will put in front");
+        assert_eq!(
+            state,
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                enters_written: 1,
+                precmds_seen: 0,
+            }
+        );
+        assert_eq!(counted, vec![b"x".to_vec()]);
+        assert!(uncounted.is_empty(), "{uncounted:?}");
+    })
+}
+
+/// #1089: the exclusions keep the legacy routing. An agent-requested command (its typeahead is
+/// deliberately not inserted), a shared-session viewer (no local pty controller counts its
+/// writes), a full-screen program (it reads the tty raw) and a block from before the bootstrap
+/// precmd (startup, or a remote bootstrap tail, which #1085's connect gate protects) are not
+/// adopted. Where the shell's line editor can still get the key (the agent command, the early
+/// block), the editor inserts literally until a report requested behind it is in, so a legacy
+/// report cannot turn `echo "a b` + ` c" > x` into `echo "a b c" > x"`.
+#[test]
+fn typeahead_handoff_does_not_adopt_keys_for_excluded_commands() {
+    use crate::terminal::model::bootstrap::BootstrapStage;
+    use crate::terminal::shared_session::SharedSessionStatus;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let cases: Vec<(&str, bool, Box<dyn FnOnce(&mut TerminalModel)>)> = vec![
+            (
+                "agent-requested command",
+                true,
+                Box::new(|model: &mut TerminalModel| {
+                    model
+                        .block_list_mut()
+                        .active_block_mut()
+                        .set_agent_interaction_mode(AgentInteractionMetadata::new(
+                            None,
+                            AIConversationId::new(),
+                            None,
+                            None,
+                            false,
+                            false,
+                        ));
+                }),
+            ),
+            (
+                "shared-session viewer",
+                false,
+                Box::new(|model: &mut TerminalModel| {
+                    model.set_shared_session_status(SharedSessionStatus::FinishedViewer);
+                }),
+            ),
+            (
+                "full-screen program",
+                false,
+                Box::new(|model: &mut TerminalModel| {
+                    model.set_mode(ansi::Mode::SwapScreen {
+                        save_cursor_and_clear_screen: true,
+                    });
+                    assert!(model.is_alt_screen_active());
+                }),
+            ),
+            (
+                "before the bootstrap precmd",
+                true,
+                Box::new(|model: &mut TerminalModel| {
+                    model
+                        .block_list_mut()
+                        .active_block_mut()
+                        .set_bootstrap_stage_for_test(BootstrapStage::Bootstrapped);
+                }),
+            ),
+        ];
+        for (name, expect_literal, customize) in cases {
+            let (state, literal, counted, _) =
+                type_into_a_command_the_handoff_does_not_own(&mut app, customize);
+            assert_eq!(state, HandoffState::EditorOwned, "{name}: must not be adopted");
+            assert_eq!(literal, expect_literal, "{name}: literal insertion");
+            assert!(counted.is_empty(), "{name}: no counted write: {counted:?}");
+        }
+    })
+}

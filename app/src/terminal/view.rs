@@ -10807,6 +10807,12 @@ impl TerminalView {
                         terminal_model
                             .typeahead_handoff_mut()
                             .adopt_untracked_typeahead();
+                    } else if shell_reports_keys_left_in_its_line(&terminal_model) {
+                        // Not adopted (an agent command, a block before the bootstrap precmd):
+                        // the editor inserts literally until a report covers these keys.
+                        terminal_model
+                            .typeahead_handoff_mut()
+                            .note_untracked_line_bytes();
                     }
                     terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
                 }
@@ -32867,12 +32873,19 @@ fn subshell_bootstrap_key_forwarded(
 /// local pty controller counts their writes) and shells that cannot report their line.
 fn keys_reach_a_command_the_handoff_does_not_own(model: &TerminalModel) -> bool {
     let active_block = model.block_list().active_block();
-    model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported
-        && !model.shared_session_status().is_viewer()
+    shell_reports_keys_left_in_its_line(model)
         && active_block.bootstrap_stage().is_done()
         && active_block.started()
         && !active_block.finished()
         && active_block.agent_interaction_metadata().is_none()
+}
+
+/// Whether keys written to the pty now, if the shell's line editor gets them, come back in a
+/// report this terminal requests itself (#1089): the shell reports its line and this is not a
+/// shared-session viewer, which has no local pty controller.
+fn shell_reports_keys_left_in_its_line(model: &TerminalModel) -> bool {
+    model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported
+        && !model.shared_session_status().is_viewer()
 }
 
 /// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of

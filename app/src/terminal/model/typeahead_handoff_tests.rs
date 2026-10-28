@@ -1093,8 +1093,10 @@ fn keys_for_a_command_the_handoff_does_not_own_are_adopted() {
 }
 
 /// #1089: the legacy request goes out whenever the line editor is active, so it can be in the
-/// tty ahead of keys the user types afterwards (the remote bootstrap tail of #1085). Those keys
-/// are adopted: the legacy report that answers the early request does not end ownership
+/// tty ahead of keys the user types afterwards: a legacy request at a prompt, then a queued
+/// command drained right behind it, and keys typed into that command. (The remote bootstrap tail
+/// of #1085 is not adopted -- its block is from before the bootstrap precmd -- and #1085's
+/// connect gate drops keys there.) Those keys are adopted: the legacy report that answers the early request does not end ownership
 /// (it is stashed), and a new request written behind them collects the rest of the line --
 /// nothing stays in the shell's line to prefix the next command (`)exit`).
 #[test]
@@ -1155,4 +1157,51 @@ fn adoption_never_disturbs_a_handoff_that_is_already_engaged() {
     let mut awaiting = awaiting_report();
     assert!(!awaiting.adopt_untracked_typeahead());
     assert_eq!(awaiting.state(), &HandoffState::AwaitingReport);
+}
+
+/// #1089: user bytes the hand-off did not adopt (an agent command, a block from before the
+/// bootstrap precmd) may be in the shell's line, and the legacy report puts them in front of the
+/// editor's text. Until a report requested behind them is in, the editor inserts literally; a
+/// report for a request written before them does not count, and a command's kill prefix ends
+/// the line.
+#[test]
+fn untracked_line_bytes_keep_the_editor_literal_until_a_covering_report() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    assert_eq!(handoff.on_user_bytes(b"echo \"a b"), UserBytesRoute::Write);
+    assert!(handoff.editor_text_precedes_report());
+    // The report of the earlier request: the bytes are behind it in the tty.
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    assert!(handoff.editor_text_precedes_report());
+    // The next prompt's legacy request goes out behind them; its report brings them back.
+    handoff.on_legacy_request_written();
+    assert!(handoff.editor_text_precedes_report());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    assert!(!handoff.editor_text_precedes_report());
+
+    // A command's kill prefix ends the line as well.
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_untracked_line_bytes();
+    handoff.on_uncounted_command_written();
+    assert!(!handoff.editor_text_precedes_report());
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_untracked_line_bytes();
+    handoff.on_command_written();
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert!(!handoff.editor_text_precedes_report());
+
+    // Keys typed behind an outstanding hand-off request are not covered by its report.
+    let mut handoff = awaiting_report();
+    handoff.note_untracked_line_bytes();
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert!(handoff.editor_text_precedes_report());
+
+    // Noting is a no-op while the pty owns input: those keys are counted already.
+    let mut handoff = after_submit();
+    handoff.note_untracked_line_bytes();
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert!(!handoff.editor_text_precedes_report());
 }
