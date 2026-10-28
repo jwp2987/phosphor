@@ -5,6 +5,21 @@ param()
 # user's history (#942). Anchored to this session's own path, never a pattern.
 $global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath", ". '$PSCommandPath'", ". `"$PSCommandPath`"") } else { @() }
 
+# Runs a command too long to type into PSReadLine (#1106). The app writes the command to a temp file
+# and types `. (Warp-Run-LongCommand '<path>')` instead. This is deliberately NOT a script file that
+# is dot-sourced: a script block made from a string is not subject to the execution policy, which is
+# Restricted on a stock Windows install. It lives outside Warp-Module and is global so the script
+# block is not bound to the module's session state, and because `. (...)` runs in the caller's
+# scope, variables, `cd` and `exit` behave exactly as for a typed command ($PSScriptRoot is empty,
+# as when typing). The file is read (ReadAllText honours the BOM) and deleted at once, so nothing
+# stays on disk. Error positions refer to the command text, not to a file. The launcher line is
+# kept out of history (see the AddToHistoryHandler), so a long command is not on the Up arrow.
+function global:Warp-Run-LongCommand([string]$Path) {
+    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    try { [System.IO.File]::Delete($Path) } catch { }
+    [scriptblock]::Create($text)
+}
+
 # Wrap things in a module to avoid cluttering the global scope. We assign it to '$null' to suppress
 # the console output from creating the module.
 # NOTE: If you do need a function to be global and also have access to variables in this scope, add
@@ -244,7 +259,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
     function Warp-Preexec([string]$command) {
         # Phosphor (#935): title a multi-line command with its first line and an ellipsis.
-        $HOST.UI.RawUI.WindowTitle = ($command -replace "(?s)\r?\n.*", [string][char]0x2026)
+        # Clamped: Windows PowerShell 5.1's console host throws above ~1023 characters, and a throw
+        # here would keep PSConsoleHostReadLine from returning the line (#1106).
+        try {
+            $title = ($command -replace "(?s)\r?\n.*", [string][char]0x2026)
+            if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
+            $HOST.UI.RawUI.WindowTitle = $title
+        } catch { }
         $preexecMsg = @{
             hook = 'Preexec'
             value = @{
@@ -418,7 +439,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # file. The subshell bootstrap's first line installs a handler with the same filter
             # before either is typed; this one keeps them out once it has replaced that handler.
             $trimmed = $line.TrimStart()
-            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$' -or $trimmed -match '^\.\s+''[^\r\n]*[\\/]\.phosphor-cmd-[A-Za-z0-9]{6}\.ps1''\s*$') {
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$' -or $trimmed.StartsWith('. (Warp-Run-LongCommand ', [System.StringComparison]::Ordinal)) {
                 return $false
             }
             # Keep honouring the handler the user had before the subshell bootstrap replaced it.
@@ -1039,12 +1060,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $function:global:PSConsoleHostReadLine = {
             $line = & $script:oldPSConsoleHostReadLine
 
-            # A command too long to type into PSReadLine (#1106) arrives as a line that dot-sources
-            # a temp file; report the command itself, not the launcher.
+            # A command too long to type into PSReadLine (#1106) arrives as a launcher line that
+            # names a temp file; report the command itself, not the launcher. The path is
+            # single-quoted with every quote character doubled; undo exactly that.
             $reported = "$line"
-            if ($reported -match '^\.\s+''([^\r\n]*[\\/]\.phosphor-cmd-[A-Za-z0-9]{6}\.ps1)''\s*$') {
+            if ($reported -match "^\.\s+\(Warp-Run-LongCommand\s+'(.*)'\)\s*$") {
                 try {
-                    $reported = [System.IO.File]::ReadAllText(($Matches[1] -replace "''''", "''"), [System.Text.Encoding]::UTF8)
+                    $longPath = $Matches[1] -replace "(['\u2018\u2019\u201a\u201b])\1", '$1'
+                    $reported = [System.IO.File]::ReadAllText($longPath, [System.Text.Encoding]::UTF8)
                 } catch {
                     $reported = "$line"
                 }

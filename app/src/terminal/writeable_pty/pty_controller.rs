@@ -11,17 +11,19 @@ use crate::terminal::input::CommandExecutionSource;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::lifecycle::StartCommandOutcome;
+#[cfg(not(target_family = "wasm"))]
+use crate::terminal::model::session::BootstrapSessionType;
 use crate::terminal::model::session::{
-    BootstrapSessionType, ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
+    ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
 use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
-use crate::terminal::writeable_pty::long_command_file;
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
+#[cfg(not(target_family = "wasm"))]
+use crate::terminal::writeable_pty::long_command_file;
 use crate::terminal::{
     bootstrap,
     line_editor_status::{LineEditorStatus, LineEditorStatusEvent},

@@ -8,10 +8,13 @@ fn short_commands_are_typed() {
 
 #[test]
 fn launcher_line_doubles_every_quote_powershell_accepts() {
-    assert_eq!(launcher_line(r"C:\a b\x.ps1"), r". 'C:\a b\x.ps1'");
+    assert_eq!(
+        launcher_line(r"C:\a b\x.ps1"),
+        r". (Warp-Run-LongCommand 'C:\a b\x.ps1')"
+    );
     assert_eq!(
         launcher_line("C:\\it's\\\u{2019}x.ps1"),
-        ". 'C:\\it''s\\\u{2019}\u{2019}x.ps1'"
+        ". (Warp-Run-LongCommand 'C:\\it''s\\\u{2019}\u{2019}x.ps1')"
     );
 }
 

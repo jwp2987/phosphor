@@ -5,10 +5,14 @@
 //! negative row, the key handler throws, the command is never submitted, and at ~1 MB it falls
 //! into an "Oops, something went wrong" crash loop. Windows PowerShell has no bracketed paste, so
 //! the command is typed key by key whatever the app does. A command past [`MAX_TYPED_BYTES`] is
-//! therefore written to a temp `.ps1` and the shell is sent a short line that dot-sources it
-//! (same scope as a typed command). The bootstrap's history filter and preexec hook know the
-//! file name ([`FILE_PREFIX`]) and keep the launcher line out of history and report the real
-//! command text.
+//! therefore written to a temp file and the shell is sent a short launcher line,
+//! `. (Warp-Run-LongCommand '<path>')`, defined in `bootstrap/pwsh.ps1`. The function reads and
+//! deletes the file and returns a script block that the dot runs in the typed line's own scope.
+//! It is not a dot-sourced `.ps1`: that would be refused under the Restricted execution policy of
+//! a stock Windows install (the app starts PowerShell without `-ExecutionPolicy`), whereas a
+//! script block made from a string is not subject to it. The bootstrap keeps the launcher out of
+//! history (so a long command is not on the Up arrow) and reports the real command to preexec.
+//! The file is also removed when [`TempPath`] drops, as a fallback if it was never read.
 
 use std::io::Write;
 
@@ -27,20 +31,21 @@ pub(super) fn needs_file(command: &str) -> bool {
     command.len() > MAX_TYPED_BYTES
 }
 
-/// The line that dot-sources `path`. Single-quoted, every quote PowerShell accepts doubled.
+/// The launcher line for `path`. Single-quoted, every quote character PowerShell accepts doubled
+/// (the bootstrap undoes exactly this).
 pub(super) fn launcher_line(path: &str) -> String {
-    let mut line = String::from(". '");
+    let mut line = String::from(". (Warp-Run-LongCommand '");
     for c in path.chars() {
         line.push(c);
         if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
             line.push(c);
         }
     }
-    line.push('\'');
+    line.push_str("')");
     line
 }
 
-/// Writes `command` to a temp `.ps1` (UTF-8 with a BOM, which Windows PowerShell 5.1 needs to
+/// Writes `command` to a temp file (UTF-8 with a BOM, which Windows PowerShell 5.1 needs to
 /// read it as UTF-8) and returns it with the launcher line. `None` on any failure, in which case
 /// the caller types the command as before.
 pub(super) fn write_command_file(command: &str) -> Option<(TempPath, String)> {
