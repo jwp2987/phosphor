@@ -1472,7 +1472,7 @@ esac
 
         # Ends the Phosphor-owned master at "$1".
         function warp_ssh_stop_master() {
-            warp_ssh_mux_command exit "$1"
+            warp_ssh_mux_command exit "$1" || :
             return 0
         }
 
