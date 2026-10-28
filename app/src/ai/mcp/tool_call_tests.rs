@@ -19,19 +19,20 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use futures::future::{BoxFuture, Shared, pending, ready};
+use futures::future::{BoxFuture, Ready, Shared, pending, ready};
 use futures::{FutureExt, StreamExt};
 use rmcp::model::{CallToolRequestParams, ClientInfo, ErrorData};
 use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::{ServiceError, ServiceExt};
+use rmcp::{Peer, RoleClient, ServiceError, ServiceExt};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::{
-    DEFAULT_TOOL_CALL_TIMEOUT, MAX_TOOL_CALL_TIMEOUT, McpClientHandler, call_tool_with_deadline,
-    call_tool_with_deadline_inner, tool_call_timeout,
+    DEFAULT_TOOL_CALL_TIMEOUT, MAX_TOOL_CALL_TIMEOUT, MIN_TOTAL_TOOL_CALL_TIMEOUT,
+    McpClientHandler, ToolCallLimits, call_tool_with_deadline, call_tool_with_deadline_inner,
+    tool_call_timeout, total_tool_call_timeout,
 };
 
 #[derive(Clone, Copy)]
@@ -53,10 +54,27 @@ enum Reply {
     OtherTokenProgress,
     /// An SSE response that stays open and sends nothing.
     SilentSse,
+    /// An SSE response that sends a progress notification for the call every
+    /// [`PROGRESS_INTERVAL`] and never the result.
+    ProgressForever,
+    /// The response to `tools/call` breaks off mid-stream, dropping the connection.
+    DropOnCall,
 }
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-const PROGRESS_EVENTS: usize = 15;
+const PROGRESS_EVENTS: usize = 50;
+
+/// The limits for an idle timeout, with the production total.
+fn limits(idle: Duration) -> ToolCallLimits {
+    ToolCallLimits::for_idle_timeout(idle)
+}
+
+/// A `connect` that always hands out `peer`.
+fn connected(
+    peer: Peer<RoleClient>,
+) -> impl FnMut() -> Ready<Result<Peer<RoleClient>, ServiceError>> + Send + 'static {
+    move || ready(Ok(peer.clone()))
+}
 
 /// A deadline the test expires by hand: every idle period the call starts waits on the
 /// same signal.
@@ -233,6 +251,20 @@ async fn handle_post(
                     sse_events((0..).map(|n| progress_event(json!("not-this-call"), n)))
                 }
                 Reply::SilentSse => sse_events(std::iter::empty()),
+                Reply::ProgressForever => {
+                    let token = request["params"]["_meta"]["progressToken"].clone();
+                    sse_events((0..).map(move |n| progress_event(token.clone(), n)))
+                }
+                Reply::DropOnCall => (
+                    [("content-type", "text/event-stream")],
+                    Body::from_stream(futures::stream::once(async {
+                        Err::<String, _>(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "test drops the connection",
+                        ))
+                    })),
+                )
+                    .into_response(),
             }
         }
         _ => StatusCode::BAD_REQUEST.into_response(),
@@ -245,9 +277,10 @@ async fn deadline_includes_connecting_without_dispatch() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("test"),
-        pending(),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        pending,
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
         || ready(()),
+        pending,
         || ready(()),
     )
     .await;
@@ -262,11 +295,14 @@ async fn connection_error_is_preserved() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("test"),
-        ready(Err(ServiceError::McpError(ErrorData::internal_error(
-            "test connection error",
-            None,
-        )))),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        || {
+            ready(Err(ServiceError::McpError(ErrorData::internal_error(
+                "test connection error",
+                None,
+            ))))
+        },
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
+        pending,
         pending,
         || ready(()),
     )
@@ -299,8 +335,9 @@ async fn successful_and_error_results_complete_without_retry() {
                 Uuid::nil(),
                 Uuid::nil(),
                 CallToolRequestParams::new("test"),
-                ready(Ok(service.peer().clone())),
-                DEFAULT_TOOL_CALL_TIMEOUT,
+                connected(service.peer().clone()),
+                limits(DEFAULT_TOOL_CALL_TIMEOUT),
+                pending,
                 pending,
                 || ready(()),
             ),
@@ -341,9 +378,10 @@ async fn unanswered_call_returns_outcome_unknown_at_deadline() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("test"),
-        ready(Ok(service.peer().clone())),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        connected(service.peer().clone()),
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
         deadline,
+        pending,
         pending,
     ));
     server.state.request_seen.notified().await;
@@ -375,9 +413,10 @@ async fn ended_sse_without_result_is_bounded_by_the_deadline() {
             Uuid::nil(),
             Uuid::nil(),
             CallToolRequestParams::new("test"),
-            ready(Ok(service.peer().clone())),
-            DEFAULT_TOOL_CALL_TIMEOUT,
+            connected(service.peer().clone()),
+            limits(DEFAULT_TOOL_CALL_TIMEOUT),
             deadline,
+            pending,
             || ready(()),
         ));
         server.state.request_seen.notified().await;
@@ -406,9 +445,10 @@ async fn timed_out_request_does_not_close_the_connection_or_replay_the_tool() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("test"),
-        ready(Ok(peer.clone())),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        connected(peer.clone()),
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
         deadline,
+        pending,
         pending,
     ));
     server.state.request_seen.notified().await;
@@ -416,8 +456,9 @@ async fn timed_out_request_does_not_close_the_connection_or_replay_the_tool() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("succeed"),
-        ready(Ok(peer)),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        connected(peer),
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
+        pending,
         pending,
         pending,
     );
@@ -454,9 +495,10 @@ async fn stalled_send_cannot_block_deadline_or_cancellation() {
         Uuid::nil(),
         Uuid::nil(),
         CallToolRequestParams::new("test"),
-        ready(Ok(peer)),
-        DEFAULT_TOOL_CALL_TIMEOUT,
+        connected(peer),
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
         deadline,
+        pending,
         || ready(()),
     ));
     server.state.request_seen.notified().await;
@@ -487,24 +529,25 @@ async fn connect_with_progress_routing(
         .unwrap()
 }
 
-/// Progress for the call restarts the idle timeout: the server answers after ~1.6 s,
-/// four times the 400 ms limit, and the call still succeeds.
+/// Progress for the call restarts the idle timeout: the server answers after ~5 s, more
+/// than three times the 1.5 s limit, and the call still succeeds.
 #[tokio::test]
 async fn progress_notifications_reset_the_idle_timeout() {
     let installation_id = Uuid::new_v4();
     let server = start_server(Reply::ProgressThenResult).await;
     let service = connect_with_progress_routing(&server, installation_id).await;
-    let timeout = Duration::from_millis(400);
+    let timeout = Duration::from_millis(1500);
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         call_tool_with_deadline_inner(
             Uuid::nil(),
             installation_id,
             CallToolRequestParams::new("test"),
-            ready(Ok(service.peer().clone())),
-            timeout,
+            connected(service.peer().clone()),
+            limits(timeout),
             move || tokio::time::sleep(timeout),
+            pending,
             || ready(()),
         ),
     )
@@ -532,9 +575,10 @@ async fn silent_server_times_out_after_the_idle_timeout() {
             Uuid::nil(),
             installation_id,
             CallToolRequestParams::new("test"),
-            ready(Ok(service.peer().clone())),
-            timeout,
+            connected(service.peer().clone()),
+            limits(timeout),
             move || tokio::time::sleep(timeout),
+            pending,
             pending,
         ),
     )
@@ -542,6 +586,7 @@ async fn silent_server_times_out_after_the_idle_timeout() {
     .expect("a silent server must not leave the tool call pending");
     let message = result.unwrap_err().to_string();
     assert!(message.contains("outcome is unknown"), "{message}");
+    assert!(message.contains("asked to cancel"), "{message}");
     assert!(message.contains("tool_timeout_secs"), "{message}");
     assert!(started.elapsed() >= timeout);
     assert_eq!(server.state.calls.load(Ordering::SeqCst), 1);
@@ -563,9 +608,10 @@ async fn progress_for_another_token_does_not_reset_the_idle_timeout() {
             Uuid::nil(),
             installation_id,
             CallToolRequestParams::new("test"),
-            ready(Ok(service.peer().clone())),
-            timeout,
+            connected(service.peer().clone()),
+            limits(timeout),
             move || tokio::time::sleep(timeout),
+            pending,
             || ready(()),
         ),
     )
@@ -590,8 +636,8 @@ async fn call_tool_with_deadline_uses_the_given_timeout() {
             Uuid::nil(),
             Uuid::nil(),
             CallToolRequestParams::new("test"),
-            Duration::from_secs(1),
-            pending(),
+            ToolCallLimits::for_idle_timeout(Duration::from_secs(1)),
+            pending,
         ),
     )
     .await
@@ -683,4 +729,228 @@ fn tool_timeout_secs_round_trips_through_a_templatable_server() {
     let servers = MCPServer::from_user_json(template_json).unwrap();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].name, "srv");
+}
+
+#[test]
+fn total_limit_is_ten_idle_periods_and_at_least_an_hour() {
+    let hour = Duration::from_secs(60 * 60);
+    assert_eq!(MIN_TOTAL_TOOL_CALL_TIMEOUT, hour);
+    assert_eq!(total_tool_call_timeout(DEFAULT_TOOL_CALL_TIMEOUT), hour);
+    assert_eq!(total_tool_call_timeout(Duration::from_secs(1)), hour);
+    assert_eq!(total_tool_call_timeout(2 * hour), 20 * hour);
+    assert_eq!(
+        total_tool_call_timeout(MAX_TOOL_CALL_TIMEOUT),
+        MAX_TOOL_CALL_TIMEOUT * 10
+    );
+    assert_eq!(
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
+        ToolCallLimits {
+            idle: DEFAULT_TOOL_CALL_TIMEOUT,
+            total: hour,
+        }
+    );
+}
+
+/// Progress keeps resetting the idle timer, but not the total limit: a server that
+/// reports progress forever and never answers still ends the call.
+#[tokio::test]
+async fn progress_forever_hits_the_total_limit() {
+    let installation_id = Uuid::new_v4();
+    let server = start_server(Reply::ProgressForever).await;
+    let service = connect_with_progress_routing(&server, installation_id).await;
+    let idle = Duration::from_millis(300);
+    let total = Duration::from_millis(1200);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        call_tool_with_deadline_inner(
+            Uuid::nil(),
+            installation_id,
+            CallToolRequestParams::new("test"),
+            connected(service.peer().clone()),
+            ToolCallLimits { idle, total },
+            move || tokio::time::sleep(idle),
+            move || tokio::time::sleep(total),
+            pending,
+        ),
+    )
+    .await
+    .expect("the total limit must end a call that only reports progress");
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("reporting progress"), "{message}");
+    assert!(message.contains("1 seconds"), "{message}");
+    assert!(message.contains("asked to cancel"), "{message}");
+    assert!(message.contains("outcome is unknown"), "{message}");
+    // The idle limit alone would have ended the call after 300 ms.
+    assert!(started.elapsed() >= total, "{:?}", started.elapsed());
+    assert_eq!(server.state.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(server.state.cancellations.load(Ordering::SeqCst), 1);
+    service.cancellation_token().cancel();
+}
+
+/// A slow connect does not eat into the dispatched call's idle period: the idle timer is
+/// re-armed when the request is queued.
+#[tokio::test]
+async fn slow_connect_does_not_shorten_the_idle_period() {
+    let server = start_server(Reply::WrongId).await;
+    let service =
+        ().serve(StreamableHttpClientTransport::from_uri(server.uri.clone()))
+            .await
+            .unwrap();
+    let peer = service.peer().clone();
+    let idle = Duration::from_millis(400);
+    let connect_delay = Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        call_tool_with_deadline_inner(
+            Uuid::nil(),
+            Uuid::nil(),
+            CallToolRequestParams::new("test"),
+            move || {
+                let peer = peer.clone();
+                async move {
+                    tokio::time::sleep(connect_delay).await;
+                    Ok(peer)
+                }
+            },
+            limits(idle),
+            move || tokio::time::sleep(idle),
+            pending,
+            || ready(()),
+        ),
+    )
+    .await
+    .unwrap();
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("outcome is unknown"), "{message}");
+    assert!(
+        started.elapsed() >= connect_delay + idle,
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(server.state.calls.load(Ordering::SeqCst), 1);
+    service.cancel().await.unwrap();
+}
+
+/// A peer whose connection has already shut down: sending on it fails before the request
+/// is queued.
+async fn closed_peer(server: &TestServer) -> Peer<RoleClient> {
+    let service =
+        ().serve(StreamableHttpClientTransport::from_uri(server.uri.clone()))
+            .await
+            .unwrap();
+    let peer = service.peer().clone();
+    service.cancel().await.unwrap();
+    assert!(peer.is_transport_closed());
+    peer
+}
+
+/// A `TransportClosed` from the send step means the request never entered the
+/// connection, so the call reconnects and sends it once more.
+#[tokio::test]
+async fn send_step_transport_closed_reconnects_and_sends_once_more() {
+    let server = start_server(Reply::Success).await;
+    let dead = closed_peer(&server).await;
+    let live = ().serve(StreamableHttpClientTransport::from_uri(server.uri.clone())).await.unwrap();
+    let connects = Arc::new(AtomicUsize::new(0));
+    let mut peers = vec![live.peer().clone(), dead];
+    let connect = {
+        let connects = connects.clone();
+        move || {
+            connects.fetch_add(1, Ordering::SeqCst);
+            ready(Ok(peers.pop().expect("at most two connects")))
+        }
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        call_tool_with_deadline_inner(
+            Uuid::nil(),
+            Uuid::nil(),
+            CallToolRequestParams::new("test"),
+            connect,
+            limits(DEFAULT_TOOL_CALL_TIMEOUT),
+            pending,
+            pending,
+            || ready(()),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap().is_error, Some(false));
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+    assert_eq!(server.state.calls.load(Ordering::SeqCst), 1);
+    live.cancel().await.unwrap();
+}
+
+/// The send-step retry happens once: a second `TransportClosed` fails the call.
+#[tokio::test]
+async fn send_step_transport_closed_is_retried_only_once() {
+    let server = start_server(Reply::Success).await;
+    let dead = closed_peer(&server).await;
+    let connects = Arc::new(AtomicUsize::new(0));
+    let connect = {
+        let connects = connects.clone();
+        move || {
+            connects.fetch_add(1, Ordering::SeqCst);
+            ready(Ok(dead.clone()))
+        }
+    };
+    let result = call_tool_with_deadline_inner(
+        Uuid::nil(),
+        Uuid::nil(),
+        CallToolRequestParams::new("test"),
+        connect,
+        limits(DEFAULT_TOOL_CALL_TIMEOUT),
+        pending,
+        pending,
+        || ready(()),
+    )
+    .await;
+    assert!(matches!(result, Err(ServiceError::TransportClosed)));
+    assert_eq!(connects.load(Ordering::SeqCst), 2);
+    assert_eq!(server.state.calls.load(Ordering::SeqCst), 0);
+}
+
+/// A connection that breaks off after `tools/call` was sent is never replayed: the
+/// server sees one call, there is one connect, and the model is told the outcome is
+/// unknown, whether rmcp reports the lost connection or the idle limit ends the wait.
+#[tokio::test]
+async fn dropped_connection_after_dispatch_is_not_replayed() {
+    let server = start_server(Reply::DropOnCall).await;
+    let service =
+        ().serve(StreamableHttpClientTransport::from_uri(server.uri.clone()))
+            .await
+            .unwrap();
+    let peer = service.peer().clone();
+    let connects = Arc::new(AtomicUsize::new(0));
+    let connect = {
+        let connects = connects.clone();
+        move || {
+            connects.fetch_add(1, Ordering::SeqCst);
+            ready(Ok(peer.clone()))
+        }
+    };
+    let idle = Duration::from_millis(500);
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        call_tool_with_deadline_inner(
+            Uuid::nil(),
+            Uuid::nil(),
+            CallToolRequestParams::new("test"),
+            connect,
+            limits(idle),
+            move || tokio::time::sleep(idle),
+            pending,
+            || ready(()),
+        ),
+    )
+    .await
+    .expect("a dropped connection must not leave the tool call pending");
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("outcome is unknown"), "{message}");
+    assert!(message.contains("Do not retry"), "{message}");
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    assert_eq!(server.state.calls.load(Ordering::SeqCst), 1);
+    service.cancellation_token().cancel();
 }

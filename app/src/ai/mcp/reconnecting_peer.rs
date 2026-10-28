@@ -7,13 +7,13 @@ use uuid::Uuid;
 use warpui::ModelSpawner;
 
 use super::TemplatableMCPServerManager;
-use super::tool_call::call_tool_with_deadline;
+use super::tool_call::{ToolCallLimits, call_tool_with_deadline};
 
 /// A wrapper around an MCP server connection that transparently handles reconnection.
 ///
-/// Reconnects before dispatching requests. Only resource reads are retried after a
-/// transport failure; a tool may have executed even when its response was lost, so tool
-/// calls are dispatched once, under a deadline (#1064).
+/// Reconnects before dispatching requests. Resource reads are retried after a transport
+/// failure; tool calls only when the request never reached the connection, since a tool
+/// may have executed even when its response was lost (#1064).
 #[derive(Clone)]
 pub struct ReconnectingPeer {
     installation_uuid: Uuid,
@@ -125,20 +125,21 @@ impl ReconnectingPeer {
 
     /// Calls a tool on the MCP server.
     ///
-    /// Fails once the call goes the server's tool-call timeout without a result or a
-    /// progress notification (connecting included), and is never replayed after a
-    /// `TransportClosed` error.
+    /// Bounded by the server's tool-call limits (see [`ToolCallLimits`]). Reconnects and
+    /// sends once more only when the request could not be queued on the connection;
+    /// once queued it is never replayed, even after a `TransportClosed` error.
     pub async fn call_tool(
         &self,
         params: rmcp::model::CallToolRequestParams,
         operation_id: Uuid,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ServiceError> {
+        let this = self;
         call_tool_with_deadline(
             operation_id,
             self.installation_uuid,
             params,
-            self.tool_call_timeout,
-            async { self.get_connected_peer().await.map_err(Into::into) },
+            ToolCallLimits::for_idle_timeout(self.tool_call_timeout),
+            move || async move { this.get_connected_peer().await.map_err(Into::into) },
         )
         .await
     }
