@@ -157,9 +157,10 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
     /// The toast will only go away when the toast is manually dismissed.
     pub fn add_persistent_toast(
         &mut self,
-        toast: DismissibleToast<A>,
+        mut toast: DismissibleToast<A>,
         ctx: &mut ViewContext<Self>,
     ) {
+        toast.persistent = true;
         if let Some(object_id) = &toast.object_id {
             self.dismiss_older_toasts(object_id, ctx);
         }
@@ -416,6 +417,9 @@ pub struct DismissibleToast<A: Action + Clone> {
     /// same ID, as it's likely the older ones are now out-of-date.
     object_id: Option<String>,
     action_button: Option<ViewHandle<ActionButton>>,
+    /// Set by the stack for toasts with no timeout. Such a toast only goes away when the user
+    /// closes it, so its close button is always drawn rather than only on hover (#1110).
+    persistent: bool,
     /// Optional callback invoked when the toast body is clicked.
     pub(crate) on_body_click: Option<OnBodyClickCallback<A>>,
 }
@@ -435,8 +439,15 @@ impl<A: Action + Clone> DismissibleToast<A> {
             close_button_hover_state: Default::default(),
             object_id: Default::default(),
             action_button: Default::default(),
+            persistent: false,
             on_body_click: None,
         }
+    }
+
+    /// True when the close button must be drawn: hovered, touch device, or a persistent toast
+    /// that has no timeout to fall back on (#1110).
+    fn shows_close_button(&self, hovered: bool, is_mobile: bool) -> bool {
+        hovered || is_mobile || self.persistent
     }
 
     pub fn default(main_text: String) -> Self {
@@ -626,7 +637,7 @@ impl<A: Action + Clone> DismissibleToast<A> {
             let mut stack = Stack::new()
                 .with_child(SavePosition::new(toast_element, &self.position_id(uuid)).finish());
 
-            if mouse_state.is_hovered() || is_mobile {
+            if self.shows_close_button(mouse_state.is_hovered(), is_mobile) {
                 stack.add_positioned_overlay_child(
                     self.render_close_button(ui_builder, uuid, appearance),
                     OffsetPositioning::offset_from_save_position_element(

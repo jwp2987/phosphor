@@ -212,3 +212,23 @@ fn manual_dismiss_and_clear_paths_unchanged() {
         });
     });
 }
+
+/// #1110: a persistent toast has no timeout, so its close button must not depend on hover.
+#[test]
+fn persistent_toast_always_shows_close_button() {
+    App::test((), |mut app| async move {
+        let stack = stack_handle(&mut app);
+        stack.update(&mut app, |stack, ctx| {
+            stack.add_persistent_toast(toast("persistent"), ctx);
+            stack.add_ephemeral_toast(toast("ephemeral"), ctx);
+        });
+
+        stack.read(&app, |stack, _| {
+            let persistent = &stack.toasts[0].dismissible_toast;
+            let ephemeral = &stack.toasts[1].dismissible_toast;
+            assert!(persistent.shows_close_button(false, false));
+            assert!(!ephemeral.shows_close_button(false, false));
+            assert!(ephemeral.shows_close_button(true, false));
+        });
+    });
+}
