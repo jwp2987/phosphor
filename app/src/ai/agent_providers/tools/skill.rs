@@ -97,21 +97,35 @@ fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
 /// The turn's list is already built for the session's host, so this is a second guard, not
 /// the primary one: it keeps a remote-host skill from binding in a local session (or for a
 /// different host) and vice versa. A bundled id carries no host — the executor resolves it
-/// against `path_origin`'s own catalog. Local paths stay resolvable when the host identity is
-/// unknown (`Unavailable`, a legacy SSH session), because that is exactly what such a session
-/// lists: the client's own skills.
+/// against `path_origin`'s own catalog. Path skills bind only for a live, known host: when
+/// the host identity is unknown (`Unavailable`) nothing path-based can be read, because the
+/// conversion that follows cannot place the path anywhere.
 pub fn is_listed_for_origin(skill: &SkillDescriptor, path_origin: &SkillPathOrigin) -> bool {
     match (&skill.reference, path_origin) {
         (SkillReference::BundledSkillId(_), _) => true,
-        (SkillReference::Path(LocalOrRemotePath::Local(_)), SkillPathOrigin::Remote { .. }) => {
-            false
-        }
-        (SkillReference::Path(LocalOrRemotePath::Local(_)), _) => true,
+        (SkillReference::Path(LocalOrRemotePath::Local(_)), SkillPathOrigin::Local) => true,
+        // `Remote`: a client-local skill is not on this host. `Unavailable` (a session whose
+        // host identity is unknown, e.g. legacy SSH): `location_for_path` cannot place any
+        // path there (`PathOriginUnavailable`), so a bound local path would only fail later
+        // in `convert_read_skill`. `RestoredDisplayOnly` is for rendering history, never for
+        // execution.
+        (SkillReference::Path(LocalOrRemotePath::Local(_)), _) => false,
         (
             SkillReference::Path(LocalOrRemotePath::Remote(path)),
             SkillPathOrigin::Remote { host_id },
         ) => path.host_id == *host_id,
         (SkillReference::Path(LocalOrRemotePath::Remote(_)), _) => false,
+    }
+}
+
+/// The `skill_path` a listed skill is shown with — in `<available_skills>` and in a rejected
+/// call's `available_skills` — and that [`resolve_reference`] accepts in place of its name:
+/// the SKILL.md path for a file skill, `@warp-skill:<id>` for a bundled one. Showing it for
+/// bundled skills too is what lets the model pick one that shares its name with a file skill.
+pub fn listed_skill_path(reference: &SkillReference) -> String {
+    match reference {
+        SkillReference::Path(path) => path.display_path(),
+        SkillReference::BundledSkillId(id) => format!("@warp-skill:{id}"),
     }
 }
 
@@ -130,11 +144,7 @@ pub fn resolve_reference(
     let requested = read_skill.name.trim();
     let mut candidates = skills.iter().filter(|skill| {
         is_listed_for_origin(skill, path_origin)
-            && (skill.name == requested
-                || match &skill.reference {
-                    SkillReference::Path(path) => path.display_path() == requested,
-                    SkillReference::BundledSkillId(id) => format!("@warp-skill:{id}") == requested,
-                })
+            && (skill.name == requested || listed_skill_path(&skill.reference) == requested)
     });
     let selected = candidates
         .next()

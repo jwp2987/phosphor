@@ -578,6 +578,12 @@ pub struct BlocklistAIController {
     /// the user sends a new query). Caps auto-compaction at one per turn so a summary that
     /// is still over the limit can't loop compact -> continue -> compact.
     auto_compacted_this_turn: HashSet<AIConversationId>,
+    /// Auto-resumes spent this turn on rejected `read_skill` names (reset when the user sends
+    /// a new query), capped at [`MAX_SKILL_RESOLUTION_RESUMES_PER_TURN`]. A rejected name is
+    /// a synthetic result that would otherwise auto-resume with a fresh budget every time, so
+    /// a model -- or tool output steering it -- that keeps naming a skill the turn does not
+    /// list would loop on the user's API key (#1068).
+    skill_resolution_resumes_this_turn: HashMap<AIConversationId, u8>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -941,6 +947,7 @@ impl BlocklistAIController {
             pending_auto_resume_handles: HashMap::new(),
             pending_passive_follow_ups: HashSet::new(),
             auto_compacted_this_turn: HashSet::new(),
+            skill_resolution_resumes_this_turn: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
@@ -1017,6 +1024,8 @@ impl BlocklistAIController {
         // it gets a fresh one-auto-compaction allowance.
         if !matches!(entrypoint_type, EntrypointType::AgentInitiated) {
             self.auto_compacted_this_turn.remove(&conversation_id);
+            self.skill_resolution_resumes_this_turn
+                .remove(&conversation_id);
         }
 
         // Drain any queued passive suggestion results for this conversation
@@ -4348,17 +4357,40 @@ impl BlocklistAIController {
                     // unboundedly. Nothing is lost: the resumed request carries the same
                     // conversation, including the synthetic error tool_result the model
                     // needs to see.
+                    // A rejected `read_skill` name is charged against a per-turn allowance
+                    // (#1068); everything else resumes as before.
+                    let has_skill_resolution_failure = conversation.all_tasks().any(|task| {
+                        task.messages().any(|msg| {
+                            newly_added_message_ids.contains(&MessageId::new(msg.id.clone()))
+                                && is_skill_resolution_failure(&msg.server_message_data)
+                        })
+                    });
                     if needs_byop_local_resume && !has_pending_resume {
-                        log::info!(
-                            "[byop] detected synthetic local tool_result (invalid_arguments \
-                             or _byop_intercepted) without queued action → schedule auto-resume. \
-                             conversation_id={conversation_id:?}"
-                        );
-                        self.schedule_auto_resume_after_error(
-                            conversation_id,
-                            PendingResume::immediate(RecoveryBudget::fresh()),
-                            ctx,
-                        );
+                        let allowed = !has_skill_resolution_failure
+                            || charge_skill_resolution_resume(
+                                self.skill_resolution_resumes_this_turn
+                                    .entry(conversation_id)
+                                    .or_default(),
+                            );
+                        if allowed {
+                            log::info!(
+                                "[byop] detected synthetic local tool_result (invalid_arguments \
+                                 or _byop_intercepted) without queued action → schedule \
+                                 auto-resume. conversation_id={conversation_id:?}"
+                            );
+                            self.schedule_auto_resume_after_error(
+                                conversation_id,
+                                PendingResume::immediate(RecoveryBudget::fresh()),
+                                ctx,
+                            );
+                        } else {
+                            log::warn!(
+                                "[byop] read_skill named an unlisted skill again; the per-turn \
+                                 auto-resume allowance ({MAX_SKILL_RESOLUTION_RESUMES_PER_TURN}) \
+                                 is spent, so the turn ends here. \
+                                 conversation_id={conversation_id:?}"
+                            );
+                        }
                     }
                 }
 
@@ -4941,6 +4973,33 @@ fn get_running_command(terminal_model: &TerminalModel) -> Option<RunningCommand>
 /// yields an empty string under TUIs like nvim, leaving the
 /// `<attached_running_command>` block empty, and the model complains it "can't see
 /// command_id").
+/// How many times one turn may auto-resume on a rejected `read_skill` name. Two lets the model
+/// recover from a typo and then from picking the wrong one of two same-named skills; past that,
+/// the turn ends with the rejection visible instead of looping (#1068).
+const MAX_SKILL_RESOLUTION_RESUMES_PER_TURN: u8 = 2;
+
+/// Whether a synthetic tool result is `chat_stream`'s rejection of a `read_skill` name that
+/// bound to no listed skill: the `invalid_arguments` payload with a skill-resolution `reason`
+/// (`tools::skill::SkillResolutionError::code`).
+fn is_skill_resolution_failure(server_message_data: &str) -> bool {
+    [
+        r#""reason":"skill_unavailable""#,
+        r#""reason":"ambiguous_skill_name""#,
+    ]
+    .iter()
+    .any(|marker| server_message_data.contains(marker))
+}
+
+/// Charges one skill-resolution auto-resume against this turn's allowance. Returns whether the
+/// resume may go ahead; once the allowance is spent it stays spent until the turn is reset.
+fn charge_skill_resolution_resume(spent: &mut u8) -> bool {
+    if *spent >= MAX_SKILL_RESOLUTION_RESUMES_PER_TURN {
+        return false;
+    }
+    *spent += 1;
+    true
+}
+
 fn byop_get_running_command_for_lrc(terminal_model: &TerminalModel) -> Option<RunningCommand> {
     let active_block = terminal_model.block_list().active_block();
     if !active_block.is_active_and_long_running() {
