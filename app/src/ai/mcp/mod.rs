@@ -182,6 +182,8 @@ pub mod http_client;
 pub mod reconnecting_peer;
 #[cfg(not(target_family = "wasm"))]
 pub mod sse_transport;
+#[cfg(not(target_family = "wasm"))]
+pub mod tool_call;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(target_family = "wasm", expect(dead_code))]
