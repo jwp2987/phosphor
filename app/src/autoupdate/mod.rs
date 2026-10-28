@@ -1,6 +1,6 @@
 mod changelog;
 mod channel_versions;
-pub(crate) mod github;
+pub(crate) mod gitlab;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]
@@ -48,8 +48,8 @@ use self::channel_versions::fetch_channel_versions;
 /// to `NoUpdateAvailable`, which renders as "you are up to date". That is the
 /// right call for a laptop that slept mid-request. It is the wrong call for
 /// [`verify_oss_asset_sha256`], whose failures are permanent for a given
-/// release: a release published without a `digest` field, or one whose bytes do
-/// not match the digest, will fail identically on every future poll. Without
+/// release: a release published without a `SHA256SUMS` asset, or one whose bytes
+/// do not match the digest, will fail identically on every future poll. Without
 /// this marker that is an update channel that has silently stopped working.
 #[derive(Debug)]
 pub(crate) struct UpdateBlocked;
@@ -77,25 +77,32 @@ pub(crate) fn is_update_blocked(error: &anyhow::Error) -> bool {
 /// completes. Returns the verified lowercase-hex digest so a caller can re-check
 /// the same file later without re-consulting the release metadata.
 ///
-/// What this buys us, stated honestly: the digest arrives in the same
-/// `api.github.com` response that supplied `browser_download_url`, so it is only
-/// as trustworthy as that single TLS connection. It catches a truncated or
-/// corrupted download, and a CDN edge that serves different bytes than the API
-/// described. It is **not** supply-chain integrity -- nothing signs the artifact
-/// with a key held outside GitHub, so anyone able to forge the API response
-/// forges the digest along with it. Real integrity would need a detached
-/// signature verified against a key baked into this binary; the OSS path
-/// deliberately skips `verify_code_signature` because these builds carry no
-/// Apple Developer ID signature to check.
+/// Where the expected digest comes from: GitLab release links carry no digest,
+/// so the release pipeline publishes a `SHA256SUMS` asset (built by
+/// `.gitlab-ci.yml`'s `release-publish` job from the manifests each build job
+/// computed over the exact bytes it uploaded), and `gitlab::fetch_latest_release`
+/// fetches it alongside the release metadata. See [`gitlab::CHECKSUMS_ASSET`].
 ///
-/// Every exit other than "the bytes matched" is an error. This function
-/// previously returned `Ok(())` when there was no cached release, no asset by
-/// that name, or no `digest` field -- three ways for the only check standing
-/// between an unsigned download and executing it to be switched off by whatever
-/// the check was aimed at. If a release genuinely ships without a digest the
-/// update now refuses rather than proceeding blind; the fix is to republish the
-/// asset (GitHub has populated `digest` for uploads since late 2024), not to
-/// install unverified bytes.
+/// What this buys us, stated honestly: `SHA256SUMS` arrives from the same
+/// gitlab.com project, over TLS, as the installer it describes, so it is only
+/// as trustworthy as that host. It catches a truncated or corrupted download, a
+/// package-registry file that differs from what the build job hashed, and a
+/// redirect that serves different bytes than the release describes. It is
+/// **not** supply-chain integrity -- nothing signs the artifact with a key held
+/// outside GitLab, so anyone able to publish a release (or forge gitlab.com's
+/// responses) publishes a matching `SHA256SUMS` along with it. Real integrity
+/// would need a detached signature verified against a key baked into this
+/// binary; the OSS path deliberately skips `verify_code_signature` because these
+/// builds carry no Apple Developer ID signature to check.
+///
+/// Every exit other than "the bytes matched" is an error: no cached release, no
+/// asset by that name in the release, no `SHA256SUMS` asset, an unusable one,
+/// or no line in it for this asset. (A previous version returned `Ok(())` for
+/// three of those -- three ways for the only check standing between an unsigned
+/// download and executing it to be switched off by whatever the check was aimed
+/// at.) Releases published before #1056 (v0.1.15 and older) have no
+/// `SHA256SUMS`, so an update to one of them is refused rather than installed
+/// blind; the fix is to publish the asset, not to install unverified bytes.
 ///
 /// That refusal is an availability trade, and it is not silent: every error
 /// here carries the [`UpdateBlocked`] marker, so `on_download_update_complete`
@@ -111,22 +118,23 @@ pub(crate) fn verify_oss_asset_sha256(
     path: &std::path::Path,
     asset_name: &str,
 ) -> anyhow::Result<String> {
-    let release = github::cached_release().ok_or_else(|| {
-        blocked(format!("Refusing to install {asset_name}: no cached GitHub release metadata to verify its SHA-256 against"))
+    verify_asset_sha256_against(path, gitlab::cached_release().as_ref(), asset_name)
+}
+
+/// [`verify_oss_asset_sha256`] against an explicit release rather than the
+/// process-wide cache, so the decision can be tested without racing other tests
+/// over that global.
+fn verify_asset_sha256_against(
+    path: &std::path::Path,
+    release: Option<&gitlab::GitlabRelease>,
+    asset_name: &str,
+) -> anyhow::Result<String> {
+    let release = release.ok_or_else(|| {
+        blocked(format!("Refusing to install {asset_name}: no cached GitLab release metadata to verify its SHA-256 against"))
     })?;
-    let asset = release.find_asset(asset_name).ok_or_else(|| {
-        blocked(format!(
-            "Refusing to install {asset_name}: release {} lists no asset by that name, so its expected SHA-256 is unknown",
-            release.tag_name
-        ))
-    })?;
-    let expected = asset.sha256_hex().ok_or_else(|| {
-        blocked(format!(
-            "Refusing to install {asset_name}: release {} publishes no usable sha256 digest for it (digest={:?}). Autoupdate will keep failing for this release until the asset is republished; download it manually in the meantime.",
-            release.tag_name,
-            asset.digest
-        ))
-    })?;
+    let expected = release
+        .expected_sha256(asset_name)
+        .map_err(|reason| blocked(format!("Refusing to install {asset_name}: {reason}")))?;
 
     let actual = sha256_file(path)?;
     if actual == expected {
@@ -451,7 +459,7 @@ impl AutoupdateState {
         // openWarp note: `ChannelState::app_version()` returns the injected
         // `GIT_RELEASE_TAG` value as-is, **keeping** the `v` prefix (e.g.
         // `v2026.05.10.preview`); whereas `VersionInfo.version` on the OSS branch
-        // is supplied by `github::GithubRelease::version()`, which has already
+        // is supplied by `gitlab::GitlabRelease::version()`, which has already
         // stripped the `v` via `trim_start_matches('v')` (e.g.
         // `2026.05.10.preview`). A direct string-equality comparison would always
         // be false, causing "already up to date" to be misjudged as "found a new
@@ -1057,11 +1065,11 @@ async fn fetch_version(
     update_id: &str,
     http_client: Arc<http_client::Client>,
 ) -> Result<VersionInfo> {
-    // openWarp uses GitHub Releases (jwp2987/phosphor), completely bypassing
-    // official Zap's channel_versions / GCS. Return early to avoid the
-    // subsequent fetch_channel_versions inevitably failing.
+    // The OSS build uses this project's GitLab Releases (see `gitlab`),
+    // completely bypassing official Zap's channel_versions / GCS. Return early
+    // to avoid the subsequent fetch_channel_versions inevitably failing.
     if matches!(channel, Channel::Oss) {
-        let release = github::fetch_latest_release(http_client.as_ref()).await?;
+        let release = gitlab::fetch_latest_release(http_client.as_ref()).await?;
         return Ok(VersionInfo::new(release.version().to_string()));
     }
 

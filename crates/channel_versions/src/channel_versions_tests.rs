@@ -177,7 +177,7 @@ fn test_beta_is_not_downgraded_to_the_semver_release() {
     let installed: ParsedVersion = "v2026.08.14.1-beta"
         .try_into()
         .expect("installed beta tag must parse, or the guard is inert");
-    // `github::GithubRelease::version()` has already trimmed the `v`.
+    // `gitlab::GitlabRelease::version()` has already trimmed the `v`.
     let offered: ParsedVersion = "0.1.1"
         .try_into()
         .expect("the latest-release version must parse");
@@ -189,7 +189,7 @@ fn test_beta_is_not_downgraded_to_the_semver_release() {
 
 #[test]
 fn test_v_prefix_is_optional_and_does_not_change_ordering() {
-    // `ChannelState::app_version()` keeps the `v`; `GithubRelease::version()`
+    // `ChannelState::app_version()` keeps the `v`; `GitlabRelease::version()`
     // trims it. Both sides must land on the same ParsedVersion.
     let prefixed: ParsedVersion = "v0.1.1".try_into().unwrap();
     let bare: ParsedVersion = "0.1.1".try_into().unwrap();

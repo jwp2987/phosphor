@@ -27,7 +27,7 @@ use warpui::{
 };
 
 // Parked, not deleted: this holds the "update status" row (check-for-update /
-// downloading / ready-to-install / GitHub-fallback) so it doesn't rot silently
+// downloading / ready-to-install / release-page fallback) so it doesn't rot silently
 // in the middle of this file while `SHOW_AUTOUPDATE_UI` is `false`. See its
 // module doc for why it's unused and what to check before flipping the flag.
 mod autoupdate_ui;
@@ -38,7 +38,7 @@ pub enum AboutPageAction {
     /// The user clicked the "Check for updates" button: proactively triggers a check
     /// (equivalent to RequestType::ManualCheck).
     CheckForUpdate,
-    /// The user clicked the "Download from GitHub" link: opens the release page in the
+    /// The user clicked the "Download from GitLab" link: opens the release page in the
     /// system's default browser.
     /// Only used on the error-fallback path (e.g. download failed / no available asset).
     OpenReleasePage(String),
@@ -63,8 +63,9 @@ pub struct AboutPageView {
 /// shown on the About page. Hidden for this fork.
 ///
 /// The reason recorded here used to be "the upstream release URLs point at
-/// Warp/Zap". That was wrong: `app/src/autoupdate/github.rs` polls the GitHub
-/// Releases API for `jwp2987/phosphor`, this fork's own repo. The real reason is a
+/// Warp/Zap". That was wrong: the updater polls this fork's own releases (the
+/// GitLab Releases API for `winters-phosphor/phosphor`, `app/src/autoupdate/gitlab.rs`,
+/// since #1056; GitHub's `jwp2987/phosphor` before the move). The real reason is a
 /// deliberate decision (#630): **this fork ships no autoupdate on any platform.**
 /// None of the three bundlers passes the `autoupdate` cargo feature, and that
 /// feature is the only thing that sets `FeatureFlag::Autoupdate` (it is
@@ -252,7 +253,7 @@ impl SettingsWidget for AboutPageWidget {
             .with_child(version_row.finish());
 
         // Update status area: shows whether a new version is currently available, and provides
-        // a "Check for updates" or "Download from GitHub" link.
+        // a "Check for updates" or "Download from GitLab" link.
         // Only rendered in an execution mode that can enter the autoupdate flow (shares its
         // condition with the "Automatic updates" toggle below).
         if SHOW_AUTOUPDATE_UI && AppExecutionMode::as_ref(app).can_autoupdate() {

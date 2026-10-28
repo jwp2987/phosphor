@@ -608,7 +608,7 @@ fn test_should_update() {
             }
 
             // Under openWarp (Channel::Oss), `ChannelState::app_version()`
-            // keeps the `v` prefix, while `github::GithubRelease::version()`
+            // keeps the `v` prefix, while `gitlab::GitlabRelease::version()`
             // has already trimmed the `v`. When the two differ only by the
             // `v` prefix, this should be recognized as `UpdateReady::No`,
             // otherwise the about page would forever claim "found a new version".
@@ -637,6 +637,82 @@ fn test_should_update() {
             assert!(
                 matches!(result, UpdateReady::CanDownload { .. }),
                 "different versions should be recognized as CanDownload, actual: {result:?}"
+            );
+        });
+    });
+}
+
+/// The version strings the GitLab feed actually produces: `v0.1.N` tags, which
+/// `gitlab::GitlabRelease::version()` hands over without the `v`, against an
+/// installed `GIT_RELEASE_TAG` that keeps it.
+#[test]
+fn test_should_update_with_gitlab_release_tags() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|ctx| AppExecutionMode::new(ExecutionMode::App, false, ctx));
+        let autoupdate_state = initialize_app(&mut app);
+
+        let offered: gitlab::GitlabRelease = serde_json::from_str(
+            r#"{"tag_name": "v0.1.15", "name": "Phosphor v0.1.15", "upcoming_release": false, "assets": {"links": []}}"#,
+        )
+        .expect("a minimal GitLab release parses");
+        assert_eq!(offered.version(), "0.1.15");
+
+        app.update_model(&autoupdate_state, |autoupdate, _| {
+            // An older semver build is offered the newer release.
+            ChannelState::set_app_version(Some("v0.1.14"));
+            let result = autoupdate.should_update(
+                make_version_info(offered.version(), false),
+                "gitlab_newer".to_string(),
+            );
+            assert!(
+                matches!(result, UpdateReady::CanDownload { .. }),
+                "v0.1.14 must be offered v0.1.15, actual: {result:?}"
+            );
+
+            // Same release: up to date despite the `v` only on one side.
+            ChannelState::set_app_version(Some("v0.1.15"));
+            let result = autoupdate.should_update(
+                make_version_info(offered.version(), false),
+                "gitlab_same".to_string(),
+            );
+            assert!(
+                matches!(result, UpdateReady::No),
+                "v0.1.15 is already v0.1.15, actual: {result:?}"
+            );
+
+            // Numeric, not lexical: 0.1.9 < 0.1.15.
+            ChannelState::set_app_version(Some("v0.1.9"));
+            let result = autoupdate.should_update(
+                make_version_info(offered.version(), false),
+                "gitlab_numeric".to_string(),
+            );
+            assert!(
+                matches!(result, UpdateReady::CanDownload { .. }),
+                "v0.1.9 must be offered v0.1.15, actual: {result:?}"
+            );
+
+            // A newer local build is never walked back.
+            ChannelState::set_app_version(Some("v0.1.16"));
+            let result = autoupdate.should_update(
+                make_version_info(offered.version(), false),
+                "gitlab_older".to_string(),
+            );
+            assert!(
+                matches!(result, UpdateReady::No),
+                "v0.1.16 must not be downgraded to v0.1.15, actual: {result:?}"
+            );
+
+            // A legacy dated build ranks above every `v0.1.x` (see
+            // `channel_versions::parse_release_tag`), so the downgrade guard
+            // holds it where it is rather than treating v0.1.15 as newer.
+            ChannelState::set_app_version(Some("v2026.08.14.1-beta"));
+            let result = autoupdate.should_update(
+                make_version_info(offered.version(), false),
+                "gitlab_legacy".to_string(),
+            );
+            assert!(
+                matches!(result, UpdateReady::No),
+                "a legacy dated build must not be moved by a numeric comparison, actual: {result:?}"
             );
         });
     });

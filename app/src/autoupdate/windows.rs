@@ -15,7 +15,7 @@ use warp_core::channel::{Channel, ChannelState};
 use warpui::AppContext;
 
 use super::{
-    github, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
+    gitlab, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
 };
 use crate::util::windows::install_dir;
 
@@ -77,29 +77,13 @@ pub(super) async fn download_update_and_cleanup(
 
     let channel = ChannelState::channel();
     let installer_file_name = installer_file_name()?;
-    // openWarp: fetch the real download URL from the cached GitHub Release
-    // (asset names are PhosphorSetup.exe / PhosphorSetup-arm64.exe, see
-    // installer_file_name()). Other channels use the official base url.
+    // The OSS build downloads from this project's GitLab release (the cached
+    // one from the version check, so the bytes and the SHA256SUMS they are
+    // verified against come from the same release); the asset name is the one
+    // `.gitlab-ci.yml`'s `release-windows-x86_64` publishes, see
+    // installer_file_name(). Other channels use the official base url.
     let url = if matches!(channel, Channel::Oss) {
-        if let Some(release) = github::cached_release() {
-            if let Some(found) = release.find_asset(&installer_file_name) {
-                found.browser_download_url.clone()
-            } else {
-                log::warn!(
-                    "Phosphor: cached release tag {} has no asset named {installer_file_name}, falling back to the tag URL",
-                    release.tag_name
-                );
-                format!(
-                    "https://github.com/jwp2987/phosphor/releases/download/v{}/{installer_file_name}",
-                    version_info.version
-                )
-            }
-        } else {
-            format!(
-                "https://github.com/jwp2987/phosphor/releases/download/v{}/{installer_file_name}",
-                version_info.version
-            )
-        }
+        gitlab::oss_asset_download_url(&version_info.version, &installer_file_name)
     } else {
         format!(
             "{}/{}",
@@ -209,8 +193,8 @@ pub(super) async fn download_update_and_cleanup(
         });
     }
 
-    // openWarp: verify the SHA-256 from the GitHub Release metadata, guarding
-    // against a CDN man-in-the-middle / corruption. On verification failure,
+    // openWarp: verify the SHA-256 the GitLab release's SHA256SUMS publishes,
+    // guarding against a corrupted or substituted download. On verification failure,
     // return Err directly; the installer temp file gets cleaned up afterward
     // when TempPath drops. It's deliberately not placed into INSTALLER_PATH
     // here (otherwise a subsequent relaunch() could mistakenly use it).
@@ -389,7 +373,7 @@ pub(super) fn check_and_report_update_errors(ctx: &mut AppContext) {
     }
 
     // Rename the log file to avoid duplicate reports on subsequent launches.
-    // We keep the file around so the user can still view it or attach it to a GitHub issue.
+    // We keep the file around so the user can still view it or attach it to an issue.
     let reported_path = log_path.with_extension("log.reported");
     if let Err(e) = fs::rename(&log_path, &reported_path) {
         log::warn!("Failed to rename autoupdate log file after reporting: {e:#}");
@@ -502,7 +486,11 @@ pub(super) fn relaunch() -> Result<()> {
 }
 
 fn installer_file_name() -> Result<String> {
-    let app_name_prefix = app_name_prefix(ChannelState::channel());
+    let channel = ChannelState::channel();
+    if matches!(channel, Channel::Oss) {
+        return oss_installer_asset_name(std::env::consts::ARCH);
+    }
+    let app_name_prefix = app_name_prefix(channel);
 
     // For example, on arm64 this is WarpSetup-arm64.exe and on x64 this is
     // WarpSetup.exe.
@@ -517,6 +505,22 @@ fn installer_file_name() -> Result<String> {
     }
 }
 
+/// The OSS installer's release asset name for `arch` (a
+/// `std::env::consts::ARCH` value). The release pipeline renames Inno Setup's
+/// output to `Phosphor-windows-<arch>-Setup.exe` before uploading it
+/// (`.gitlab-ci.yml`, `release-windows-x86_64`), so this is not the
+/// `<prefix>Setup.exe` shape the official channels use. Only x86_64 is
+/// published; any other architecture has nothing to download, and saying so
+/// here is clearer than a 404 or a missing-digest refusal later.
+fn oss_installer_asset_name(arch: &str) -> Result<String> {
+    match arch {
+        "x86_64" => Ok("Phosphor-windows-x86_64-Setup.exe".to_string()),
+        other => Err(anyhow!(
+            "Phosphor publishes no Windows installer for the {other} architecture"
+        )),
+    }
+}
+
 fn app_name_prefix(channel: Channel) -> &'static str {
     match channel {
         Channel::Stable => "Zap",
@@ -525,8 +529,8 @@ fn app_name_prefix(channel: Channel) -> &'static str {
         Channel::Integration => "integration",
         Channel::Dev => "WarpDev",
         // Aligned with script/windows/bundle.ps1's OSS branch
-        // INSTALLER_NAME=Phosphor+Setup, so the GitHub Release asset name
-        // PhosphorSetup.exe is generated correctly by installer_file_name().
+        // INSTALLER_NAME=Phosphor+Setup. Not used for the release asset name,
+        // which the pipeline renames (see oss_installer_asset_name).
         Channel::Oss => "Phosphor",
     }
 }

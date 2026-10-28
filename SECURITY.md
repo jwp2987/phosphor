@@ -4,9 +4,9 @@ We take security seriously at Phosphor and appreciate the efforts of security re
 
 ## Reporting a Vulnerability
 
-If you believe you've found a security vulnerability, please follow responsible disclosure practices and **do not** open a public GitHub issue, as this could expose the vulnerability before a fix is available.
+If you believe you've found a security vulnerability, please follow responsible disclosure practices and **do not** open a public issue, as this could expose the vulnerability before a fix is available.
 
-Instead, please open a private [GitHub Security Advisory](https://github.com/jwp2987/phosphor/security/advisories/new).
+Instead, please open a **confidential issue** on [GitLab](https://gitlab.com/winters-phosphor/phosphor/-/issues/new): tick **"This issue is confidential"** before submitting, so only you and the project maintainers can see it.
 
 We will acknowledge your report promptly and work with you to understand and resolve the issue as quickly as possible.
 

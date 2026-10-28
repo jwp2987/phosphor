@@ -74,35 +74,16 @@ mod appimage {
         const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
         let channel = ChannelState::channel();
-        // openWarp: fetch the real download URL from the cached GitHub Release,
-        // bypassing the empty releases_base_url. Official channels still go
-        // through release_assets_directory_url.
+        // The OSS build downloads from this project's GitLab release (the
+        // cached one from the version check, so the bytes and the SHA256SUMS
+        // they are verified against come from the same release), bypassing the
+        // empty releases_base_url. Official channels still go through
+        // release_assets_directory_url.
         let url = if matches!(channel, warp_core::channel::Channel::Oss) {
-            // OSS Linux AppImage's default asset name is "Phosphor-x86_64.AppImage"
-            // (derived from the .desktop file's Name= field by linuxdeploy).
-            // The known release asset name is fixed in GitHub Actions.
-            let asset = "Phosphor-x86_64.AppImage";
-            if let Some(release) = crate::autoupdate::github::cached_release() {
-                if let Some(found) = release.find_asset(asset) {
-                    found.browser_download_url.clone()
-                } else {
-                    log::warn!(
-                        "Phosphor: cached release tag {} has no asset named {asset}, falling back to the tag URL",
-                        release.tag_name
-                    );
-                    format!(
-                        "https://github.com/{}/releases/download/v{}/{asset}",
-                        repo_name(channel),
-                        version_info.version
-                    )
-                }
-            } else {
-                format!(
-                    "https://github.com/{}/releases/download/v{}/{asset}",
-                    repo_name(channel),
-                    version_info.version
-                )
-            }
+            crate::autoupdate::gitlab::oss_asset_download_url(
+                &version_info.version,
+                OSS_APPIMAGE_ASSET,
+            )
         } else {
             let Some(appimage_name) = option_env!("APPIMAGE_NAME") else {
                 bail!("APPIMAGE_NAME environment variable was not set at compile time!");
@@ -189,7 +170,7 @@ mod appimage {
         if matches!(channel, warp_core::channel::Channel::Oss) {
             let temp_path = new_appimage.path().to_path_buf();
             if let Err(e) =
-                crate::autoupdate::verify_oss_asset_sha256(&temp_path, "Phosphor-x86_64.AppImage")
+                crate::autoupdate::verify_oss_asset_sha256(&temp_path, OSS_APPIMAGE_ASSET)
             {
                 // The temp file is cleaned up automatically when NamedTempFile
                 // drops; only the error needs to be returned here.
@@ -302,8 +283,8 @@ impl UpdateMethod {
         if let Ok(package_manager) = PackageManager::detect() {
             // Log the upgrade command the user should run, to make it easy to
             // find from the logs when troubleshooting. The UI still falls back
-            // to the GitHub release page (the user can download the .deb/.rpm and
-            // apt install / dnf install it themselves).
+            // to the GitLab release page (the user can download the .deb and
+            // apt install it themselves).
             package_manager.log_upgrade_hint();
             return Self::PackageManager(package_manager);
         }
@@ -463,12 +444,12 @@ impl PackageManager {
     /// Writes "the upgrade command the user should run" to the log. OSS users
     /// can find the precise instructions in the logs under
     /// ~/.local/share/phosphor/; the UI still falls back to "go download from
-    /// GitHub" without distinguishing by package manager.
+    /// the GitLab release page" without distinguishing by package manager.
     fn log_upgrade_hint(&self) {
         let hint = match self {
             Self::Apt { package_name } => {
                 format!(
-                    "Please run: download the .deb from the GitHub Release, then `sudo apt install ./{package_name}_*.deb`,\
+                    "Please run: download the .deb from the GitLab release, then `sudo apt install ./{package_name}_*.deb`,\
                      or add the release as an apt source and run `sudo apt update && sudo apt install {package_name}`"
                 )
             }
@@ -488,7 +469,7 @@ impl PackageManager {
                 format!(
                     "It looks like you installed {package_name} from the AUR. Please upgrade using an AUR helper,\
                      e.g.: `paru -Syu {package_name}` or `yay -Syu {package_name}`.\
-                     Do not run pacman -U manually — the GitHub Release doesn't ship a .pkg.tar.zst asset."
+                     Do not run pacman -U manually — the GitLab release doesn't ship a .pkg.tar.zst asset."
                 )
             }
         };
@@ -509,31 +490,12 @@ impl std::fmt::Display for PackageManager {
     }
 }
 
-/// The GitHub `owner/repo` slug that publishes this channel's release assets.
-///
-/// Warp derives a *package-repository* name per channel (`warpdotdev`,
-/// `warpdotdev-dev`, ...) identifying its self-hosted apt/dnf/pacman
-/// repositories on releases.warp.dev. This fork has no self-hosted package
-/// repositories — that cloud release infrastructure was amputated — so rather
-/// than a package-repo name this returns the GitHub repository that actually
-/// serves the fork's release assets. Deriving the repo from the channel (rather
-/// than hardcoding the slug inline) mirrors Warp's per-channel design and keeps
-/// the two AppImage download-URL fallbacks above in sync from a single source.
-///
-/// The fork ships every channel it publishes — in practice the open-source
-/// `Oss` build — from one GitHub repository, so all channels resolve to the
-/// same slug today; the exhaustive `match` leaves room to point a future
-/// channel at its own repository without touching the call sites.
-fn repo_name(channel: Channel) -> &'static str {
-    match channel {
-        Channel::Stable
-        | Channel::Preview
-        | Channel::Dev
-        | Channel::Local
-        | Channel::Integration
-        | Channel::Oss => "jwp2987/phosphor",
-    }
-}
+/// The OSS AppImage's release asset name. linuxdeploy derives it from the
+/// .desktop file's `Name=` field, and `.gitlab-ci.yml`'s `release-linux-x86_64`
+/// publishes it under that name. (The repository it is published from is not
+/// chosen here: `gitlab::oss_asset_download_url` takes it from
+/// `crate::util::links`, like every other project link.)
+const OSS_APPIMAGE_ASSET: &str = "Phosphor-x86_64.AppImage";
 
 #[cfg(test)]
 #[path = "linux_tests.rs"]

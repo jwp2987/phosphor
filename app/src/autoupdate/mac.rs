@@ -31,7 +31,7 @@ use crate::{
 };
 
 use super::{
-    github, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
+    gitlab, release_assets_directory_url, DownloadProgress, DownloadReady, ProgressCallback,
 };
 
 // Relative path to the directory containing old executables from before an autoupdate.
@@ -150,7 +150,7 @@ where
 /// execute another is not a property worth keeping.
 ///
 /// Keeping the digest as well as the path means the re-check below does not
-/// depend on `github::cached_release()` still being populated at install time.
+/// depend on `gitlab::cached_release()` still being populated at install time.
 static VERIFIED_OSS_DMG: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
 pub(super) fn relaunch() -> Result<()> {
@@ -747,11 +747,12 @@ async fn oss_download_dmg(
     // anyway. The dmg itself is the thing the user is meant to "open".
     //
     // What replaces it is weaker, and worth naming precisely: the SHA-256 comes
-    // from the same api.github.com response that gave us the download URL, so it
-    // proves the bytes on disk are the bytes GitHub's API described. That covers
-    // a truncated download or a CDN edge serving something else. It is not
-    // supply-chain integrity -- nothing here is signed by a key this binary
-    // holds, so a forged API response carries a matching forged digest.
+    // from the release's SHA256SUMS asset, fetched from the same gitlab.com
+    // project as the dmg, so it proves the bytes on disk are the bytes the
+    // release pipeline hashed and published. That covers a truncated download
+    // or a redirect serving something else. It is not supply-chain integrity --
+    // nothing here is signed by a key this binary holds, so whoever can publish
+    // (or forge) the release can publish a matching SHA256SUMS too.
     let asset_name = dmg_name(channel);
     let digest = match super::verify_oss_asset_sha256(&dmg_path_buf, &asset_name) {
         Ok(digest) => digest,
@@ -1169,24 +1170,12 @@ async fn mount_dmg(dmg_dir: &Path, update_id: &str) -> Result<PathBuf> {
 fn update_url(channel: Channel, version: &str) -> String {
     let asset = dmg_name(channel);
     if matches!(channel, Channel::Oss) {
-        // OSS uses GitHub Releases: prefer the real browser_download_url from
-        // fetch_latest_release's cache (in case the repo gets redirected / the
-        // asset gets renamed). When the cache is empty, assemble a standard
-        // `releases/download/<tag>/<asset>` fallback URL, with the tag built
-        // directly from VersionInfo.version plus a `v` prefix (VersionInfo has
+        // OSS uses this project's GitLab releases. The cached release's tag
+        // is used when it is this version, so the dmg and the SHA256SUMS it is
+        // verified against come from the same release; otherwise the tag is
+        // rebuilt from VersionInfo.version plus a `v` prefix (VersionInfo has
         // already trimmed the `v`).
-        if let Some(release) = github::cached_release() {
-            if let Some(found) = release.find_asset(&asset) {
-                return found.browser_download_url.clone();
-            }
-            log::warn!(
-                "Phosphor: cached release tag {} has no asset named {asset}, falling back to the tag URL",
-                release.tag_name
-            );
-        }
-        return format!(
-            "https://github.com/jwp2987/phosphor/releases/download/v{version}/{asset}"
-        );
+        return gitlab::oss_asset_download_url(version, &asset);
     }
     format!(
         "{}/{}",
@@ -1210,9 +1199,10 @@ fn dmg_name(channel: Channel) -> String {
         .output()
         .is_ok_and(|output| output.stdout.starts_with(b"arm64"));
 
-    // openWarp GitHub Release asset names are fixed as `Phosphor-arm64.dmg` /
+    // openWarp release asset names are fixed as `Phosphor-arm64.dmg` /
     // `Phosphor-intel.dmg` (from script/macos/bundle's WARP_APP_NAME +
-    // --dmg-name-suffix), which doesn't match `app_name_prefix("phosphor-oss")`.
+    // --dmg-name-suffix; the GitLab pipeline currently publishes only the
+    // arm64 one, so an Intel Mac's update is refused at the digest check), which doesn't match `app_name_prefix("phosphor-oss")`.
     // This is hardcoded only for OSS and doesn't affect official channels'
     // universal naming.
     if matches!(channel, Channel::Oss) {

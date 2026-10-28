@@ -47,7 +47,7 @@ lazy_static! {
     //                                   attached with `.` or with `-`.
     // The `v` is optional because the two sides of every comparison disagree
     // about it: `ChannelState::app_version()` keeps the prefix, while
-    // `github::GithubRelease::version()` trims it.
+    // `gitlab::GitlabRelease::version()` trims it.
     //
     // The label must begin with a letter. A purely numeric suffix cannot be
     // told apart from one more numeric component, and because the numeric group

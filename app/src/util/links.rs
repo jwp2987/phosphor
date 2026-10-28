@@ -7,9 +7,8 @@ mod tests;
 /// The GitLab project this fork is published from. Every user-visible link
 /// that points at the project — the issue tracker, the feedback form, the user
 /// manual — is derived from these two constants, so they cannot drift apart.
-/// `autoupdate::github` (dormant: the `autoupdate` feature is off in shipped
-/// builds, see `script/check_no_autoupdate`) still builds a GitHub Releases-API
-/// URL from the same pair and would need porting before that feature returned.
+/// So does the release feed in `autoupdate::gitlab` (dormant: the `autoupdate`
+/// feature is off in shipped builds, see `script/check_no_autoupdate`).
 pub const REPO_OWNER: &str = "winters-phosphor";
 pub const REPO_NAME: &str = "phosphor";
 
