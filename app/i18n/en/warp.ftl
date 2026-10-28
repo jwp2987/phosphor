@@ -271,6 +271,7 @@ ssh-remote-choice-install-extension-desc = Install Phosphor's extension to enabl
 ssh-remote-choice-continue-without-installing = Continue without installing
 ssh-remote-choice-continue-without-installing-desc = You'll still get a Phosphorized experience just without the agent features.
 ssh-remote-choice-manage-warpify-settings = Manage Phosphorize settings
+ssh-remote-choice-choose-first-hint = Choose an option first (↑/↓ and Enter, or click). Typed keys are ignored until you do.
 ai-document-show-version-history = Show version history
 ai-document-update-agent = Update Agent
 ai-document-save-and-sync-tooltip = Save this plan to your Library

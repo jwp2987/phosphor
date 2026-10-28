@@ -247,6 +247,7 @@ ssh-remote-choice-install-extension-desc = 安装 Phosphor 的扩展以在此会
 ssh-remote-choice-continue-without-installing = 不安装并继续
 ssh-remote-choice-continue-without-installing-desc = 你仍可获得 Phosphor 化体验，但不包含智能体功能。
 ssh-remote-choice-manage-warpify-settings = 管理 Phosphorize 设置
+ssh-remote-choice-choose-first-hint = 请先选择一个选项（↑/↓ 和 Enter，或点击）。在此之前输入的按键将被忽略。
 ai-document-show-version-history = 显示版本历史
 ai-document-update-agent = 更新智能体
 ai-document-save-and-sync-tooltip = 将此计划保存到你的库
