@@ -1780,3 +1780,113 @@ fn only_an_opened_or_stashed_summary_spends_the_allowance() {
     assert!(!O::Blocked.summary_will_run());
     assert!(!O::Refused.summary_will_run());
 }
+
+// -- refute round 7: summary chains, legacy anchors, skill anchors -----------------------
+
+fn completed(
+    user_msg_id: &str,
+    assistant_msg_id: &str,
+    head: &[&str],
+    tail_start_id: Option<&str>,
+) -> super::state::CompletedCompaction {
+    super::state::CompletedCompaction {
+        user_msg_id: user_msg_id.to_string(),
+        assistant_msg_id: assistant_msg_id.to_string(),
+        head_message_ids: head.iter().map(|id| id.to_string()).collect(),
+        tail_start_id: tail_start_id.map(str::to_string),
+        summary_text: Some(format!("summary-{assistant_msg_id}")),
+        auto: true,
+        overflow: true,
+    }
+}
+
+/// Two auto compactions with the continue message between them: the second head covers the
+/// first summary and its anchor, and the second summary was built from the first, so only the
+/// latest is shown. Before, every summary of a long loop stacked up in front of the tail.
+#[test]
+fn only_the_latest_summary_of_a_chain_is_shown() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed(
+        "cont1",
+        "s2",
+        &["u1", "a1", "q2", "c1", "t1", "s1", "cont1"],
+        Some("q3"),
+    ));
+    assert_eq!(
+        state.summary_insertions(),
+        vec![("cont1".to_string(), "summary-s2".to_string())]
+    );
+}
+
+/// A summary not covered by a later head is still shown (two independent compactions).
+#[test]
+fn an_unsuperseded_earlier_summary_is_still_shown() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+    assert_eq!(state.summary_insertions().len(), 2);
+}
+
+/// A compaction persisted by a released build (before #1078) anchored at the kept tail's user
+/// message. After restore it must not hide that message; its summary is shown before the
+/// tail start instead.
+#[test]
+fn a_legacy_tail_anchor_stays_visible_and_the_summary_goes_before_the_tail() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("q2", "s1", &["u1", "a1"], Some("q2")));
+    let hidden = state.hidden_message_ids();
+    assert!(
+        !hidden.contains("q2"),
+        "the legacy anchor is the kept instruction"
+    );
+    assert!(hidden.contains("u1") && hidden.contains("a1") && hidden.contains("s1"));
+    assert_eq!(
+        state.summary_insertions(),
+        vec![("q2".to_string(), "summary-s1".to_string())]
+    );
+
+    let json = serde_json::to_string(&state).unwrap();
+    let restored: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.hidden_message_ids(), hidden);
+}
+
+/// The anchor may be a skill invocation: the head's last user turn is an `InvokeSkill`, which
+/// is replayed to the model as the user's turn (#777).
+#[test]
+fn the_anchor_can_be_a_skill_invocation_in_the_head() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut big = agent_output("a1", "root", "r1", 2);
+    if let Some(api::message::Message::AgentOutput(output)) = big.message.as_mut() {
+        output.text = "x".repeat(4_000);
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        big,
+        invoke_skill("k1", "root", "r2", 3),
+        agent_output("a2", "root", "r2", 4),
+        user_query("q3", "root", "r3", 5),
+        agent_output("s1", "root", "r4", 6),
+    ]);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(200),
+        ..Default::default()
+    };
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let completed = conversation.compaction_state.completed().last().unwrap();
+    assert_eq!(completed.head_message_ids, ["u1", "a1", "k1", "a2"]);
+    assert_eq!(completed.user_msg_id, "k1");
+    assert!(
+        !conversation
+            .compaction_state
+            .hidden_message_ids()
+            .contains("q3")
+    );
+}

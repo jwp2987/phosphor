@@ -22,9 +22,9 @@ use super::state::CompletedCompaction;
 /// `InvokeSkill` — a conversation started with `/skill` has no `UserQuery` at all) *inside the
 /// summarized head*; see `summary_anchor` (#1078).
 ///
-/// Takes the last AgentOutput anywhere in the conversation. The controller uses
-/// [`commit_summarization_for_stream`] instead, which only accepts the summary stream's own
-/// output.
+/// Takes the last AgentOutput anywhere in the conversation. Test-only: the controller uses
+/// [`commit_summarization_for_stream`], which only accepts the summary stream's own output.
+#[cfg(test)]
 pub fn commit_summarization(
     conversation: &mut AIConversation,
     overflow: bool,
@@ -33,7 +33,7 @@ pub fn commit_summarization(
     commit_summarization_for_stream(conversation, overflow, cfg, |_| true)
 }
 
-/// [`commit_summarization`] restricted to the AgentOutput messages `is_summary_stream_message`
+/// `commit_summarization` restricted to the AgentOutput messages `is_summary_stream_message`
 /// accepts (the summarize stream's own new messages).
 ///
 /// Without the restriction, a summarize stream that produced no text (an empty response, or

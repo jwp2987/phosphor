@@ -210,11 +210,13 @@ impl TurnCompactionState {
     }
 
     /// Whether this turn's one auto-compaction allowance is spent.
+    #[cfg(test)]
     pub fn auto_compacted(&self) -> bool {
         self.auto_compacted
     }
 
     /// Whether the next ready tool results go out with an automatic summary.
+    #[cfg(test)]
     pub fn compaction_deferred_to_tool_results(&self) -> bool {
         self.compact_after_tool_results
     }

@@ -1620,14 +1620,14 @@ fn build_serializer_readiness_projection(
             }
         }
 
+        if summary_inserts.contains_key(&msg.id) {
+            builder.push_user_boundary(msg.task_id.clone(), format!("summary_user:{}", msg.id));
+            builder.push_assistant_boundary(
+                msg.task_id.clone(),
+                format!("summary_assistant:{}", msg.id),
+            );
+        }
         if hidden_msg_ids.contains(&msg.id) {
-            if summary_inserts.contains_key(&msg.id) {
-                builder.push_user_boundary(msg.task_id.clone(), format!("summary_user:{}", msg.id));
-                builder.push_assistant_boundary(
-                    msg.task_id.clone(),
-                    format!("summary_assistant:{}", msg.id),
-                );
-            }
             continue;
         }
 
@@ -2210,17 +2210,11 @@ fn build_chat_request(
 
     let summary_inserts: std::collections::HashMap<String, String> =
         if let Some(state) = params.compaction_state.as_ref() {
-            // user_msg_id → summary_text; when this user_msg_id is encountered (it would
-            // otherwise be hidden), replace it with the synthetic summary pair
-            state
-                .completed()
-                .iter()
-                .filter_map(|c| {
-                    c.summary_text
-                        .as_ref()
-                        .map(|s| (c.user_msg_id.clone(), s.clone()))
-                })
-                .collect()
+            // message id → summary_text: the synthetic summary pair is emitted right before
+            // that message (the anchor, itself hidden; or a legacy compaction's tail start).
+            // Only the latest summary of a chain (#1059 refute round 7); see
+            // `CompactionState::summary_insertions`.
+            state.summary_insertions().into_iter().collect()
         } else {
             std::collections::HashMap::new()
         };
@@ -2364,14 +2358,14 @@ fn build_chat_request(
                 continue;
             }
         }
+        if let Some(summary_text) = summary_inserts.get(&msg.id) {
+            flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
+            messages.push(ChatMessage::user(
+                "Conversation history was compacted. Below is the structured summary of all prior turns.".to_string(),
+            ));
+            messages.push(ChatMessage::assistant(summary_text.clone()));
+        }
         if hidden_msg_ids.contains(&msg.id) {
-            if let Some(summary_text) = summary_inserts.get(&msg.id) {
-                flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
-                messages.push(ChatMessage::user(
-                    "Conversation history was compacted. Below is the structured summary of all prior turns.".to_string(),
-                ));
-                messages.push(ChatMessage::assistant(summary_text.clone()));
-            }
             continue;
         }
         let Some(inner) = &msg.message else {
@@ -4537,6 +4531,16 @@ fn serialize_outgoing_tool_call(
 /// payload.
 fn request_plan_mode(params: &RequestParams) -> bool {
     params.plan_mode || is_plan_mode_turn(&params.input)
+}
+
+/// Whether the content→tool-call extraction fallback runs on a finished stream: Ollama only,
+/// and only when the stream produced no native tool calls. Deliberately not gated on the
+/// summarize turn (see the call site).
+fn content_tool_extraction_applies(
+    api_type: AgentProviderApiType,
+    has_native_tool_calls: bool,
+) -> bool {
+    !has_native_tool_calls && api_type == AgentProviderApiType::Ollama
 }
 
 /// Whether this request is a BYOP compaction summary (`/compact` or the automatic trigger).
@@ -7550,7 +7554,12 @@ pub async fn generate_byop_output(
         // the history filtering at :1412 — if a cloud provider's (OpenAI/Anthropic/...)
         // body text just happens to look like tool JSON (e.g. the model is explaining a
         // JSON example), it shouldn't be mistakenly executed as a real ToolCall.
-        if tool_bufs.is_empty() && api_type == AgentProviderApiType::Ollama && !is_summarize_turn {
+        //
+        // It runs on a summarize turn too: Ollama is never sent `tool_choice: none`, and a
+        // tool call written as JSON text must still be recognized as one, so that
+        // `tool_calls_to_dispatch` drops it and notes the drop (the commit then refuses the
+        // text instead of committing a JSON blob as the summary).
+        if content_tool_extraction_applies(api_type, !tool_bufs.is_empty()) {
             let extract_sources: [&str; 2] = [
                 streamed_assistant_text.as_str(),
                 captured_assistant_text.as_deref().unwrap_or(""),
@@ -16929,6 +16938,182 @@ mod summarize_turn_tool_gate_tests {
             !request_body.contains("tool_choice"),
             "a generic OpenAI-compatible endpoint is sent no tool_choice"
         );
+    }
+
+    fn message(id: &str, message: api::message::Message) -> api::Message {
+        api::Message {
+            id: id.to_owned(),
+            task_id: "task-1".to_owned(),
+            request_id: "req".to_owned(),
+            message: Some(message),
+            ..Default::default()
+        }
+    }
+
+    fn user(id: &str, text: &str) -> api::Message {
+        message(
+            id,
+            api::message::Message::UserQuery(api::message::UserQuery {
+                query: text.to_owned(),
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn agent(id: &str, text: &str) -> api::Message {
+        message(
+            id,
+            api::message::Message::AgentOutput(api::message::AgentOutput {
+                text: text.to_owned(),
+            }),
+        )
+    }
+
+    fn compaction(
+        user_msg_id: &str,
+        assistant_msg_id: &str,
+        head: &[&str],
+        tail_start_id: &str,
+    ) -> byop_compaction::state::CompletedCompaction {
+        byop_compaction::state::CompletedCompaction {
+            user_msg_id: user_msg_id.to_owned(),
+            assistant_msg_id: assistant_msg_id.to_owned(),
+            head_message_ids: head.iter().map(|id| id.to_string()).collect(),
+            tail_start_id: Some(tail_start_id.to_owned()),
+            summary_text: Some(format!("SUMMARY-OF-{assistant_msg_id}")),
+            auto: true,
+            overflow: true,
+        }
+    }
+
+    /// The texts of the request's messages, in order.
+    fn request_texts(
+        messages: Vec<api::Message>,
+        state: byop_compaction::state::CompactionState,
+    ) -> Vec<String> {
+        let mut params = RequestParams::new_for_test(
+            vec![resume()],
+            vec![api::Task {
+                id: "task-1".to_owned(),
+                messages,
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+        );
+        params.compaction_state = Some(state);
+        build_chat_request_for_test(&params)
+            .expect("the request builds")
+            .messages
+            .iter()
+            .map(|m| m.content.first_text().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// #1059 refute round 7: two automatic compactions with the continue message between
+    /// them. The second summary was built from the first, and the second head covers the
+    /// first summary and its anchor, so the request shows the summary preamble exactly once
+    /// — the latest — instead of stacking one per compaction.
+    #[test]
+    fn repeated_compactions_show_only_the_latest_summary() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            agent("s1", "SUMMARY-OF-s1"),
+            user("cont1", "Continue if you have next steps"),
+            agent("a2", "second answer"),
+            agent("s2", "SUMMARY-OF-s2"),
+            user("cont2", "Continue again"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("u1", "s1", &["u1", "a1"], "cont1"));
+        state.push_completed(compaction(
+            "cont1",
+            "s2",
+            &["u1", "a1", "s1", "cont1", "a2"],
+            "cont2",
+        ));
+        let texts = request_texts(messages, state);
+        let preambles = texts
+            .iter()
+            .filter(|text| text.contains("Conversation history was compacted"))
+            .count();
+        assert_eq!(preambles, 1, "one summary preamble: {texts:?}");
+        assert!(texts.iter().any(|text| text.contains("SUMMARY-OF-s2")));
+        assert!(!texts.iter().any(|text| text.contains("SUMMARY-OF-s1")));
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s2"))
+            .unwrap();
+        let tail_at = texts
+            .iter()
+            .position(|t| t.contains("Continue again"))
+            .unwrap();
+        assert!(
+            summary_at < tail_at,
+            "the summary comes before the kept tail"
+        );
+    }
+
+    /// #1059 refute round 7: a compaction persisted before #1078 anchored at the kept tail's
+    /// user message. After restore that instruction is still sent, after the summary.
+    #[test]
+    fn a_legacy_tail_anchor_keeps_the_instruction_after_the_summary() {
+        let messages = vec![
+            user("u1", "first question"),
+            agent("a1", "first answer"),
+            user("q2", "the current instruction"),
+            agent("s1", "SUMMARY-OF-s1"),
+        ];
+        let mut state = byop_compaction::state::CompactionState::default();
+        state.push_completed(compaction("q2", "s1", &["u1", "a1"], "q2"));
+        let texts = request_texts(messages, state);
+        let summary_at = texts
+            .iter()
+            .position(|t| t.contains("SUMMARY-OF-s1"))
+            .expect("the summary is shown");
+        let instruction_at = texts
+            .iter()
+            .position(|t| t.contains("the current instruction"))
+            .expect("the kept instruction is not hidden");
+        assert!(summary_at < instruction_at);
+        assert!(
+            !texts.iter().any(|t| t.contains("first answer")),
+            "the head is hidden"
+        );
+    }
+
+    /// #1059 refute round 7: Ollama is never sent `tool_choice: none`, so on a summarize turn
+    /// the content→tool extraction still runs, and a tool call written as JSON text is dropped
+    /// and noted like a native one (the commit then refuses the text).
+    #[test]
+    fn a_text_tool_call_on_an_ollama_summarize_turn_is_dropped_and_noted() {
+        assert!(content_tool_extraction_applies(
+            AgentProviderApiType::Ollama,
+            false
+        ));
+        assert!(!content_tool_extraction_applies(
+            AgentProviderApiType::Ollama,
+            true
+        ));
+        assert!(!content_tool_extraction_applies(
+            AgentProviderApiType::OpenAi,
+            false
+        ));
+
+        let text = "```json\n{\"name\":\"echo\",\"arguments\":{\"message\":\"hello\"}}\n```";
+        let extracted = super::super::content_tool_calls::extract_tool_calls_from_assistant_text(
+            text,
+            &["run_shell_command".to_owned()],
+        );
+        assert_eq!(extracted.len(), 1, "precondition: the text is a tool call");
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(tool_calls_to_dispatch(&params, extracted).is_empty());
+        assert!(take_summary_stream_dropped_tool_calls(conversation_id));
     }
 
     #[test]

@@ -78,7 +78,10 @@ pub trait MessageRef {
 /// with "the" call of that id: providers reuse ids across steps (Kimi's `functions.<name>:0`),
 /// and pairing a late result with the first call of the conversation would make every cut in
 /// between unsafe, so every compaction would summarize everything. A call that never got a
-/// result, and a result with no unanswered call before it, constrain nothing.
+/// result, and a result with no unanswered call before it, constrain nothing. (Safe on the
+/// deferred tool-loop path: the BYOP preflight records every result of the step before the
+/// summary request is built, so a call left unanswered there has no result that could later
+/// land in the tail as an orphan.)
 pub fn tool_pair_safe_cuts<M: MessageRef>(messages: &[M]) -> Vec<bool> {
     use std::collections::HashMap;
 

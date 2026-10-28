@@ -68,6 +68,14 @@ pub struct CompletedCompaction {
     pub overflow: bool,
 }
 
+impl CompletedCompaction {
+    /// Whether the anchor (`user_msg_id`) is one of the summarized messages. False only for
+    /// compactions persisted before #1078, which anchored at the kept tail's user message.
+    fn anchor_is_summarized(&self) -> bool {
+        self.head_message_ids.is_empty() || self.head_message_ids.contains(&self.user_msg_id)
+    }
+}
+
 /// A sidecar table persisted alongside `AIConversation`.
 ///
 /// Default value = empty table = uncompacted state, completely non-invasive.
@@ -160,14 +168,57 @@ impl CompactionState {
     /// and does **not** include the summary itself — the summary text is inserted
     /// as a synthesized message overriding the compaction trigger's user_msg_id
     /// position during request projection.
+    ///
+    /// `user_msg_id` is hidden only when it is part of what was summarized (in
+    /// `head_message_ids`, or the head is empty). Compactions persisted before #1078 anchored
+    /// at the latest user message, which sat in the kept tail; hiding it dropped the user's
+    /// instruction for that turn, so for those the anchor stays visible and the summary is
+    /// shown before the tail instead (see [`Self::summary_insertions`]).
     pub fn hidden_message_ids(&self) -> HashSet<String> {
         let mut out = HashSet::new();
         for c in &self.completed {
             out.extend(c.head_message_ids.iter().cloned());
-            out.insert(c.user_msg_id.clone());
+            if c.anchor_is_summarized() {
+                out.insert(c.user_msg_id.clone());
+            }
             out.insert(c.assistant_msg_id.clone());
         }
         out
+    }
+
+    /// Where each summary is shown in a request: `(message id, summary text)` — the summary
+    /// pair goes right before that message (which is itself hidden when it is the anchor).
+    ///
+    /// Only the latest summary of a chain is shown. Each automatic summary is followed by the
+    /// continue message, and the next compaction's head covers the earlier summary and its
+    /// anchor; that summary was built from the earlier one (`previous_summary`), so showing
+    /// both would stack every summary of a long loop in front of the tail. A compaction is
+    /// superseded when a later one's head contains its anchor or its summary message.
+    ///
+    /// A legacy compaction whose anchor is not in its own head (see
+    /// [`Self::hidden_message_ids`]) is shown before its `tail_start_id` instead.
+    pub fn summary_insertions(&self) -> Vec<(String, String)> {
+        self.completed
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| {
+                !self.completed[i + 1..].iter().any(|later| {
+                    later.head_message_ids.contains(&c.user_msg_id)
+                        || later.head_message_ids.contains(&c.assistant_msg_id)
+                })
+            })
+            .filter_map(|(_, c)| {
+                let text = c.summary_text.clone()?;
+                let at = if c.anchor_is_summarized() {
+                    c.user_msg_id.clone()
+                } else {
+                    c.tail_start_id
+                        .clone()
+                        .unwrap_or_else(|| c.user_msg_id.clone())
+                };
+                Some((at, text))
+            })
+            .collect()
     }
 
     /// Debug / test entry point: checks whether a marker exists.
