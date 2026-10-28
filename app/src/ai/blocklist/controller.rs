@@ -2037,15 +2037,28 @@ impl BlocklistAIController {
                 );
             }
         }
-        // The allowance is spent only by a summary that really went out, or that the BYOP
-        // readiness pass stashed to send once pending results land
-        // (`flush_pending_byop_request_after_finished_action` resends it, summary input
-        // included). Any other refusal sent nothing, so nothing was compacted.
-        if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults
-            && match &sent {
-                Ok(_) => true,
-                Err(e) => e.downcast_ref::<PendingByopToolResultsError>().is_some(),
+        // The allowance is spent only by a summary that really went out (a response stream is
+        // registered for it), or that the BYOP readiness pass stashed to send once pending
+        // results land (`flush_pending_byop_request_after_finished_action` resends it, summary
+        // input included). Anything else compacted nothing: a refusal, and also a request the
+        // readiness pass blocked, which `complete_byop_blocked_request` renders as an error
+        // and still reports as `Ok` without opening a stream.
+        let send_outcome = match &sent {
+            Ok(_)
+                if self
+                    .in_flight_response_streams
+                    .has_active_stream_for_conversation(conversation_id, ctx) =>
+            {
+                crate::ai::byop_compaction::RequestSendOutcome::Opened
             }
+            Ok(_) => crate::ai::byop_compaction::RequestSendOutcome::Blocked,
+            Err(e) if e.downcast_ref::<PendingByopToolResultsError>().is_some() => {
+                crate::ai::byop_compaction::RequestSendOutcome::Stashed
+            }
+            Err(_) => crate::ai::byop_compaction::RequestSendOutcome::Refused,
+        };
+        if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults
+            && send_outcome.summary_will_run()
         {
             self.update_compaction_turn_state(conversation_id, |state| {
                 state.on_deferred_summary_sent()

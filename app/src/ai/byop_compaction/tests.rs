@@ -1640,3 +1640,73 @@ fn tool_free_turn_still_compacts_directly() {
     assert!(!p.compact_after_tool_results);
     assert!(state.auto_compacted());
 }
+
+// -- refute round 3: a summarize stream that answered with a tool call ------------------
+
+/// Narration streamed before a (dropped) tool call is this stream's own AgentOutput, but not a
+/// summary: nothing is committed, the recorded head is dropped, and the note is consumed.
+#[test]
+fn commit_refuses_narration_from_a_stream_that_dropped_a_tool_call() {
+    use super::commit::commit_summarization_for_stream;
+    use crate::ai::agent_providers::chat_stream::{
+        note_summary_stream_dropped_tool_calls, take_summary_stream_dropped_tool_calls,
+    };
+
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        tool_call("t1", "root", "r1", 2),
+        agent_output("s1", "root", "r2", 3),
+    ]);
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    let cfg = CompactionConfig::default();
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+    assert!(
+        !take_summary_stream_dropped_tool_calls(conversation.id()),
+        "the note is consumed by the commit"
+    );
+    // The next summarize stream of the conversation, with a real summary, commits again.
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+}
+
+/// Text that trims to nothing is not a summary either.
+#[test]
+fn commit_refuses_a_blank_summary() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut blank = agent_output("s1", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(output)) = blank.message.as_mut() {
+        output.text = "  \n\t ".to_string();
+    }
+    let mut conversation =
+        conversation_with_messages(vec![user_query("u1", "root", "r1", 1), blank]);
+    let cfg = CompactionConfig::default();
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+}
+
+/// Only a summary that will actually run may spend the allowance: a request the readiness
+/// pass blocked (rendered as an error, reported as `Ok`, no stream) or refused does not.
+#[test]
+fn only_an_opened_or_stashed_summary_spends_the_allowance() {
+    use super::RequestSendOutcome as O;
+    assert!(O::Opened.summary_will_run());
+    assert!(O::Stashed.summary_will_run());
+    assert!(!O::Blocked.summary_will_run());
+    assert!(!O::Refused.summary_will_run());
+}

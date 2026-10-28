@@ -1718,6 +1718,29 @@ fn stream_done(prompt_tokens: u32) -> warp_multi_agent_api::response_event::Stre
 /// never awaits after sending).
 #[test]
 fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::Summary);
+}
+
+/// #1059 refute round 3: a summarize stream that streams a sentence of narration and then a
+/// tool call (providers whose genai adapter ignores `tool_choice`). The call is dropped, and
+/// the narration is this stream's own AgentOutput — but it is not a summary, so nothing is
+/// committed: the head (the step's calls and results included) stays visible. The deferred
+/// summary still resumes the task: exactly one continue request.
+#[test]
+fn narration_before_a_dropped_tool_call_is_not_committed_as_the_summary() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::NarrationThenToolCall);
+}
+
+/// What the summarize stream answers in [`drive_tool_loop_through_the_byop_path`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SummaryStreamOutcome {
+    /// A real summary.
+    Summary,
+    /// "Let me check" followed by a tool call, which the stream drops.
+    NarrationThenToolCall,
+}
+
+fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
     use crate::ai::agent_providers::{AgentProviderSecrets, llm_id, lookup_byop};
     use crate::ai::byop_compaction::CompactionConfig;
     use crate::ai::llms::LLMPreferences;
@@ -2011,7 +2034,19 @@ fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
             crate::ai::agent_providers::chat_stream::build_chat_request_for_test(&summary_params)
                 .expect("the summarize request builds");
 
-            // 3. The summary stream answers with its summary text and finishes.
+            // 3. The summary stream answers and finishes.
+            let summary_text = match outcome {
+                SummaryStreamOutcome::Summary => "## Goal\n- read both files",
+                SummaryStreamOutcome::NarrationThenToolCall => "Let me check the next file.",
+            };
+            if outcome == SummaryStreamOutcome::NarrationThenToolCall {
+                // What `generate_byop_output` does with the call at the end of the stream.
+                let dispatched = crate::ai::agent_providers::chat_stream::tool_calls_to_dispatch_for_test(
+                    &summary_params,
+                    vec!["call-3"],
+                );
+                assert_eq!(dispatched, 0, "a summarize stream dispatches no tool call");
+            }
             let summary_stream_id = summary_stream.as_ref(ctx).id().clone();
             BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
                 history
@@ -2039,7 +2074,7 @@ fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
                                         "s1",
                                         api::message::Message::AgentOutput(
                                             api::message::AgentOutput {
-                                                text: "## Goal\n- read both files".to_owned(),
+                                                text: summary_text.to_owned(),
                                             },
                                         ),
                                         4,
@@ -2070,16 +2105,33 @@ fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
                 .compaction_state
                 .completed()
                 .last()
-                .cloned()
-                .expect("the summary committed");
-            assert_eq!(completed.assistant_msg_id, "s1", "the stream's own text");
-            assert!(completed.auto);
-            for id in ["c1", "c2"]
-                .iter()
-                .map(|id| id.to_string())
-                .chain(result_message_ids.iter().cloned())
-            {
-                assert!(completed.head_message_ids.contains(&id), "{id} is compacted");
+                .cloned();
+            match outcome {
+                SummaryStreamOutcome::Summary => {
+                    let completed = completed.expect("the summary committed");
+                    assert_eq!(completed.assistant_msg_id, "s1", "the stream's own text");
+                    assert!(completed.auto);
+                    for id in ["c1", "c2"]
+                        .iter()
+                        .map(|id| id.to_string())
+                        .chain(result_message_ids.iter().cloned())
+                    {
+                        assert!(completed.head_message_ids.contains(&id), "{id} is compacted");
+                    }
+                }
+                SummaryStreamOutcome::NarrationThenToolCall => {
+                    assert!(
+                        completed.is_none(),
+                        "narration before a dropped tool call is not a summary"
+                    );
+                    assert!(
+                        crate::ai::agent_providers::chat_stream::take_last_summarization_head(
+                            conversation_id
+                        )
+                        .is_none(),
+                        "the uncommitted summary's recorded head is dropped"
+                    );
+                }
             }
 
             let continue_text = crate::ai::byop_compaction::prompt::build_continue_message(false);

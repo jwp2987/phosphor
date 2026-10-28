@@ -48,6 +48,11 @@ pub fn commit_summarization_for_stream(
     cfg: &CompactionConfig,
     is_summary_stream_message: impl Fn(&str) -> bool,
 ) -> bool {
+    // Consumed unconditionally: the note is about this stream only.
+    let dropped_tool_calls =
+        crate::ai::agent_providers::chat_stream::take_summary_stream_dropped_tool_calls(
+            conversation.id(),
+        );
     // Uses the conversation's existing linearized messages accessor — already merged in timestamp order across all tasks
     let mut all_msgs: Vec<&api::Message> = conversation.all_linearized_messages();
     all_msgs.sort_by_key(|m| {
@@ -67,12 +72,23 @@ pub fn commit_summarization_for_stream(
         }
     });
 
-    let Some((assistant_id, summary_text)) = last_agent_output else {
+    // Not a summary, so nothing to commit (and the recorded head, which belongs to this
+    // request, is dropped so a later summarization can't pick it up):
+    // - no AgentOutput from this stream at all;
+    // - text that trims to nothing;
+    // - text from a stream that answered with a tool call (dropped on a summarize turn): it is
+    //   the narration that preceded the call ("Let me check the next file..."). Providers
+    //   whose adapter ignores `tool_choice: none` produce exactly this, and committing it
+    //   would hide the head — the latest tool results included — behind one sentence.
+    // No length threshold beyond that: a genuine summary of a short history can be short,
+    // and on the automatic tool-loop path a refused commit costs only an uncompacted
+    // continue (the deferred summary resumes either way), while a wrong commit loses context.
+    let summary =
+        last_agent_output.filter(|(_, text)| !dropped_tool_calls && !text.trim().is_empty());
+    let Some((assistant_id, summary_text)) = summary else {
         log::warn!(
-            "[byop-compaction] commit: the summarize stream produced no AgentOutput — nothing to commit"
+            "[byop-compaction] commit: the summarize stream produced no summary (dropped_tool_calls={dropped_tool_calls}) — nothing to commit"
         );
-        // The recorded head belongs to this request; drop it so a later summarization
-        // can't pick it up.
         let _ = crate::ai::agent_providers::chat_stream::take_last_summarization_head(
             conversation.id(),
         );

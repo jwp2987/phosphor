@@ -154,6 +154,27 @@ pub enum ToolResultsRequest {
     SummarizeWithResults,
 }
 
+/// What `send_request_input` did with a request, as far as a deferred summary cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestSendOutcome {
+    /// A response stream was opened for it.
+    Opened,
+    /// The BYOP readiness pass stashed it until pending tool results land; it is resent then.
+    Stashed,
+    /// The readiness pass blocked it: rendered as an error, no stream (reported as `Ok`).
+    Blocked,
+    /// Refused before anything was sent (closed pane, request already in flight, ...).
+    Refused,
+}
+
+impl RequestSendOutcome {
+    /// Whether a summary sent this way will actually run — the only case in which it may
+    /// spend the turn's allowance ([`TurnCompactionState::on_deferred_summary_sent`]).
+    pub fn summary_will_run(self) -> bool {
+        matches!(self, Self::Opened | Self::Stashed)
+    }
+}
+
 /// The auto-compaction bookkeeping the controller keeps per conversation between streams,
 /// driven only through these methods so the whole sequence is testable without a provider.
 ///
