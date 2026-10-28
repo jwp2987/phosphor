@@ -56,7 +56,8 @@ use warp_multi_agent_api as api;
 use genai::adapter::AdapterKind;
 use genai::chat::{
     Binary, BinarySource, CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole,
-    ChatStreamEvent, ContentPart, MessageContent, Tool as GenaiTool, ToolCall, ToolResponse,
+    ChatStreamEvent, ContentPart, MessageContent, Tool as GenaiTool, ToolCall, ToolChoice,
+    ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget, WebConfig};
@@ -2015,6 +2016,25 @@ fn accepted_history_repair_log_message(
     )
 }
 
+/// Test-only: builds the chat request for `params` the way an OpenAI-shaped BYOP stream does,
+/// so a controller test can check what a request would send (and, for a summarize request,
+/// record its summarization head) without opening a network stream.
+#[cfg(test)]
+pub(crate) fn build_chat_request_for_test(
+    params: &RequestParams,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request(
+        params,
+        false,
+        AgentProviderApiType::OpenAi,
+        attachment_caps::AttachmentCaps {
+            images: false,
+            pdf: false,
+            audio: false,
+        },
+    )
+}
+
 /// Translates RequestParams into a genai `ChatRequest` (including system + messages +
 /// tools).
 ///
@@ -2795,10 +2815,7 @@ fn build_chat_request(
     //
     // Skipped on a Summarize turn: the compaction prompt must be the last message, or the
     // summary-format instructions get diluted.
-    let is_summarize_turn = params
-        .input
-        .iter()
-        .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }));
+    let is_summarize_turn = is_summarize_request(params);
     // Defensive sanitize: make sure messages doesn't end on an assistant message.
     // Anthropic / some gateways don't accept a request that ends on assistant (prefill is
     // only supported by certain models), and warp's `AIAgentInput::ResumeConversation`
@@ -4485,6 +4502,42 @@ fn serialize_outgoing_tool_call(
 /// payload.
 fn request_plan_mode(params: &RequestParams) -> bool {
     params.plan_mode || is_plan_mode_turn(&params.input)
+}
+
+/// Whether this request is a BYOP compaction summary (`/compact` or the automatic trigger).
+fn is_summarize_request(params: &RequestParams) -> bool {
+    params
+        .input
+        .iter()
+        .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }))
+}
+
+/// A summarize turn must answer with the summary text, never with a tool call (#1059: the
+/// automatic summary of a tool loop is sent right after fresh tool results, the moment a
+/// model is most inclined to call the next tool). The tools stay declared, because the
+/// history the summarizer reads holds tool calls and results that some providers only accept
+/// alongside tool definitions; `tool_choice: none` forbids calling them.
+fn chat_options_for_request(opts: ChatOptions, params: &RequestParams) -> ChatOptions {
+    if is_summarize_request(params) {
+        opts.with_tool_choice(ToolChoice::None)
+    } else {
+        opts
+    }
+}
+
+/// The client-side half of [`chat_options_for_request`], for providers that ignore
+/// `tool_choice`: tool calls on a summarize stream are dropped — no card, no action, no
+/// history entry — so a summary can never queue work after its continue message, and the
+/// stream's text (if any) is all the commit sees.
+fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    if !calls.is_empty() && is_summarize_request(params) {
+        log::warn!(
+            "[byop-compaction] dropped {} tool call(s) on a summarize stream: a summary never runs tools",
+            calls.len()
+        );
+        return Vec::new();
+    }
+    calls
 }
 
 /// Whether this request's *payload* carries the `UserQueryMode::Plan` marker from `/plan`.
@@ -6398,18 +6451,21 @@ pub async fn generate_byop_output(
         .as_ref()
         .map(|t| t.as_str().to_string())
         .unwrap_or_default();
-    let chat_opts = build_chat_options(
-        api_type,
-        &base_url,
-        &model_id,
-        reasoning_effort,
-        extra_headers,
-        if conversation_id.is_empty() {
-            None
-        } else {
-            Some(conversation_id.as_str())
-        },
-        max_output_tokens,
+    let chat_opts = chat_options_for_request(
+        build_chat_options(
+            api_type,
+            &base_url,
+            &model_id,
+            reasoning_effort,
+            extra_headers,
+            if conversation_id.is_empty() {
+                None
+            } else {
+                Some(conversation_id.as_str())
+            },
+            max_output_tokens,
+        ),
+        &params,
     );
     // Vertex is the one api_type whose credential is not the thing sent on the wire: the bearer
     // is a short-lived OAuth2 token minted by `gcloud` and cached in-process under this exact
@@ -6427,6 +6483,8 @@ pub async fn generate_byop_output(
     // Needed at the dispatch site below, not just when building the tools array: see the
     // Plan Mode gate before `parse_incoming_tool_call`.
     let plan_mode = request_plan_mode(&params);
+    // A summarize stream shows and dispatches no tool calls: see `tool_calls_to_dispatch`.
+    let is_summarize_turn = is_summarize_request(&params);
 
     // WARNING: critical to BYOP persistence: under warp's own path, the following
     // ClientActions are all server-side emits that make the client write "non-model-
@@ -7215,6 +7273,8 @@ pub async fn generate_byop_output(
                             &tool_names_for_extract,
                             &call.fn_name,
                         )
+                        // A summarize stream's tool calls are dropped at dispatch: no card.
+                        && !is_summarize_turn
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
                             // Placeholder already emitted → throttled incremental refresh.
@@ -7373,7 +7433,7 @@ pub async fn generate_byop_output(
         // the history filtering at :1412 — if a cloud provider's (OpenAI/Anthropic/...)
         // body text just happens to look like tool JSON (e.g. the model is explaining a
         // JSON example), it shouldn't be mistakenly executed as a real ToolCall.
-        if tool_bufs.is_empty() && api_type == AgentProviderApiType::Ollama {
+        if tool_bufs.is_empty() && api_type == AgentProviderApiType::Ollama && !is_summarize_turn {
             let extract_sources: [&str; 2] = [
                 streamed_assistant_text.as_str(),
                 captured_assistant_text.as_deref().unwrap_or(""),
@@ -7512,6 +7572,7 @@ pub async fn generate_byop_output(
         }
         unordered_tool_calls.sort_by(|a, b| a.call_id.cmp(&b.call_id));
         ordered_tool_calls.extend(unordered_tool_calls);
+        let ordered_tool_calls = tool_calls_to_dispatch(&params, ordered_tool_calls);
         for call in ordered_tool_calls {
             // Diagnostics: dumps the raw tool_call payload the model actually sent
             // (call_id / fn_name / the fn_arguments JSON verbatim + a type annotation),
@@ -16462,5 +16523,76 @@ mod read_skill_binding_tests {
         });
         let (_, args) = serialize_outgoing_tool_call(&legacy, None, "");
         assert_eq!(args, json!({ "name": "deploy" }));
+    }
+}
+
+/// #1059 (refute round 1): a summarize turn answers with the summary text, never with a tool
+/// call. The automatic summary of a tool loop is sent right after fresh tool results, the
+/// moment a model is most inclined to call the next tool; a tool call there produced no
+/// summary (or queued work after the continue message).
+#[cfg(test)]
+mod summarize_turn_tool_gate_tests {
+    use super::*;
+
+    fn params(input: Vec<AIAgentInput>) -> RequestParams {
+        RequestParams::new_for_test(input, vec![])
+    }
+
+    fn summarize(overflow: bool) -> AIAgentInput {
+        AIAgentInput::SummarizeConversation {
+            prompt: None,
+            overflow,
+        }
+    }
+
+    fn resume() -> AIAgentInput {
+        AIAgentInput::ResumeConversation {
+            context: std::sync::Arc::from(Vec::<crate::ai::agent::AIAgentContext>::new()),
+        }
+    }
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall {
+            call_id: id.to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            fn_arguments: serde_json::json!({ "command": "ls" }),
+            thought_signatures: None,
+        }
+    }
+
+    #[test]
+    fn summarize_requests_forbid_tool_calls() {
+        for overflow in [false, true] {
+            let opts = chat_options_for_request(
+                ChatOptions::default(),
+                &params(vec![summarize(overflow)]),
+            );
+            assert_eq!(
+                opts.tool_choice,
+                Some(ToolChoice::None),
+                "overflow={overflow}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_requests_keep_the_default_tool_choice() {
+        let opts = chat_options_for_request(ChatOptions::default(), &params(vec![resume()]));
+        assert_eq!(opts.tool_choice, None);
+    }
+
+    #[test]
+    fn tool_calls_on_a_summarize_stream_are_dropped() {
+        let dispatched =
+            tool_calls_to_dispatch(&params(vec![summarize(true)]), vec![call("a"), call("b")]);
+        assert!(dispatched.is_empty());
+    }
+
+    #[test]
+    fn tool_calls_on_other_streams_are_dispatched() {
+        let dispatched =
+            tool_calls_to_dispatch(&params(vec![resume()]), vec![call("a"), call("b")]);
+        let ids: Vec<&str> = dispatched.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
     }
 }

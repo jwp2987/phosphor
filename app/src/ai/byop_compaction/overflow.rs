@@ -100,9 +100,10 @@ pub fn is_overflow(cfg: &CompactionConfig, tokens: TokenCounts, model: ModelLimi
 /// Auto compaction must not run in that state. The controller learns of a finished stream
 /// *before* it queues that stream's tool calls, so a summarize request sent at that moment
 /// cancels the loop: the calls never run (the readiness pass answers them with a synthesized
-/// cancellation result), the summary is generated, and then nothing continues the task. The
-/// next stream that ends without tool calls re-checks the usage, which by then is at least as
-/// large, so deferring loses the compaction only if the loop never stops.
+/// cancellation result), the summary is generated, and then nothing continues the task.
+/// Instead the compaction waits for that step's tool results and travels with them
+/// (`TurnCompactionState::on_tool_results_ready`, #1059), so a loop that never pauses is
+/// still compacted.
 pub fn turn_has_tool_calls<'a>(
     messages: impl IntoIterator<Item = &'a api::Message>,
     is_new: impl Fn(&str) -> bool,

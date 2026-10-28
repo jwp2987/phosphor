@@ -56,6 +56,12 @@ impl PendingResponseStreams {
             .collect()
     }
 
+    /// Test-only: every registered stream, to inspect what a request was sent with.
+    #[cfg(test)]
+    pub fn streams_for_test(&self) -> impl Iterator<Item = &ModelHandle<ResponseStream>> {
+        self.streams.values()
+    }
+
     pub fn register_new_stream(
         &mut self,
         stream_id: ResponseStreamId,

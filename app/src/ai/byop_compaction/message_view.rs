@@ -29,7 +29,18 @@ use super::state::CompactionState;
 /// 2. Let prune decisions skip protected tools (like `skill`)
 pub type ToolNameLookup = HashMap<String, String>;
 
+/// The key `tool_pair_safe_cuts` pairs a call and its result by: the call id within its task.
+fn tool_pair_key(task_id: &str, tool_call_id: &str) -> String {
+    format!("{task_id}\u{0}{tool_call_id}")
+}
+
 /// Given a set of tasks, extracts every ToolCall's `(tool_call_id, tool_name)` pair.
+///
+/// Providers reuse call ids across steps (Kimi's `functions.<name>:0`), so one id can name
+/// several calls of different tools. The lookup is keyed by id alone, so a reused id resolves
+/// to a protected name (a non-empty one, see `tool_name_for`) if any of its calls was a
+/// protected tool: wrongly protecting an output only keeps it unpruned, while wrongly
+/// pruning a skill's output loses it.
 pub fn build_tool_name_lookup<'a, I>(messages: I) -> ToolNameLookup
 where
     I: IntoIterator<Item = &'a api::Message>,
@@ -39,7 +50,10 @@ where
         if let Some(api::message::Message::ToolCall(tc)) = &msg.message {
             // Directly uses the enum variant name of protobuf tool_call.tool
             let name = tool_name_for(tc).unwrap_or_default();
-            out.insert(tc.tool_call_id.clone(), name);
+            let entry = out.entry(tc.tool_call_id.clone()).or_default();
+            if entry.is_empty() {
+                *entry = name;
+            }
         }
     }
     out
@@ -186,6 +200,28 @@ impl<'a> MessageRef for WarpMessageView<'a> {
             completed: tcr.result.is_some() || !self.msg.server_message_data.is_empty(),
             already_compacted,
         }]
+    }
+
+    /// Keyed by `(task_id, tool_call_id)` (see `tool_pair_key`): the readiness pass pairs a
+    /// call with its result within a task, and two tasks may use the same call id.
+    fn tool_call_ids(&self) -> Vec<String> {
+        match &self.msg.message {
+            Some(api::message::Message::ToolCall(tool_call)) => {
+                vec![tool_pair_key(&self.msg.task_id, &tool_call.tool_call_id)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Same key as [`Self::tool_call_ids`]. Also cheaper than the default (no output-size
+    /// estimate per message; `tool_pair_safe_cuts` asks for every message).
+    fn tool_result_call_ids(&self) -> Vec<String> {
+        match &self.msg.message {
+            Some(api::message::Message::ToolCallResult(tcr)) => {
+                vec![tool_pair_key(&self.msg.task_id, &tcr.tool_call_id)]
+            }
+            _ => Vec::new(),
+        }
     }
 }
 
