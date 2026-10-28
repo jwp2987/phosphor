@@ -243,6 +243,16 @@ pub struct TypeaheadHandoff {
     /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
     /// activity, i.e. before the app could know the shell was at its prompt (#933).
     young_line: bool,
+    /// User bytes were written to the pty while the editor owned input and nothing adopted them
+    /// (an agent-requested command, a block from before the bootstrap precmd), so the shell's line
+    /// may hold text the next legacy report puts in front of the editor's (#1089).
+    untracked_line_bytes: bool,
+    /// Requests written whose reports have not arrived yet. Reports come back in the order the
+    /// requests were written (the tty is FIFO).
+    requests_outstanding: u32,
+    /// How many more reports must arrive before one answers a request written after the
+    /// untracked bytes; `None` while no such request was written.
+    untracked_cover_after_reports: Option<u32>,
     /// Whether the Enter deferred behind the report ends such a line.
     deferred_young: bool,
 }
@@ -297,7 +307,65 @@ impl TypeaheadHandoff {
     /// context of what it is given (#949). The editor must insert typed symbols literally: an
     /// auto-inserted closer would pair with an opener that is in the report, not the editor.
     pub fn editor_text_precedes_report(&self) -> bool {
-        !matches!(self.state, HandoffState::EditorOwned)
+        // #1089: also while user bytes the hand-off did not adopt may be in the shell's line,
+        // until a report requested behind them is in: the legacy report puts them in front of
+        // the editor's text just the same (`echo "a b` + ` c" > x` became `echo "a b c" > x"`).
+        !matches!(self.state, HandoffState::EditorOwned) || self.untracked_line_bytes
+    }
+
+    /// User bytes that reach the shell's line are about to be written while the editor owns
+    /// input and the hand-off did not adopt them (#1089; see
+    /// [`Self::adopt_untracked_typeahead`] for the keys it does adopt). Only meaningful for a
+    /// shell that reports its line; a no-op unless the editor owns input. A request already
+    /// outstanding does not cover them: they are behind it in the tty.
+    pub fn note_untracked_line_bytes(&mut self) {
+        if matches!(
+            self.state,
+            HandoffState::EditorOwned | HandoffState::AwaitingReport
+        ) {
+            self.untracked_line_bytes = true;
+            self.untracked_cover_after_reports = None;
+        }
+    }
+
+    /// `PtyController` wrote a legacy request (the editor owns input). Its report covers every
+    /// user byte written before it.
+    pub fn on_legacy_request_written(&mut self) {
+        self.on_request_written();
+    }
+
+    /// A request (legacy or the hand-off's own) is written: its report, once every report ahead
+    /// of it is in, covers the untracked bytes written before it.
+    fn on_request_written(&mut self) {
+        self.requests_outstanding = self.requests_outstanding.saturating_add(1);
+        if self.untracked_line_bytes && self.untracked_cover_after_reports.is_none() {
+            self.untracked_cover_after_reports = Some(self.requests_outstanding);
+        }
+    }
+
+    /// A report arrived: once it is the one that answers a request written after the untracked
+    /// bytes, they are back in the editor.
+    fn on_report_received(&mut self) {
+        self.requests_outstanding = self.requests_outstanding.saturating_sub(1);
+        if let Some(remaining) = self.untracked_cover_after_reports.as_mut() {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                self.forget_untracked_line_bytes();
+            }
+        }
+    }
+
+    /// Whether a request written after the untracked bytes is outstanding, for tests.
+    #[cfg(test)]
+    pub(crate) fn untracked_bytes_requested(&self) -> bool {
+        self.untracked_cover_after_reports.is_some()
+    }
+
+    /// The shell's line no longer holds untracked user bytes: they were reported, or a command's
+    /// kill prefix ended the line. Outstanding requests are still in the tty and stay counted.
+    fn forget_untracked_line_bytes(&mut self) {
+        self.untracked_line_bytes = false;
+        self.untracked_cover_after_reports = None;
     }
 
     /// Whether `PtyController` must hold its queued writes: the shell's line may hold user bytes
@@ -364,6 +432,7 @@ impl TypeaheadHandoff {
     /// A command from the input editor was accepted and written (or queued) to the pty. Returns
     /// the keys held since a deferred Enter, which must be written right after the command.
     pub fn on_command_written(&mut self) -> Vec<u8> {
+        self.forget_untracked_line_bytes();
         // An Enter held behind the request follows the command as typeahead (#933).
         let pending_hold = self.young_hold.take();
         self.young_line = false;
@@ -397,6 +466,7 @@ impl TypeaheadHandoff {
     /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
     /// Enter end whatever line it lands on.
     pub fn on_uncounted_command_written(&mut self) {
+        self.forget_untracked_line_bytes();
         // Its kill prefix ends the line a held Enter belongs to.
         self.young_hold = None;
         self.young_line = false;
@@ -457,6 +527,35 @@ impl TypeaheadHandoff {
         false
     }
 
+    /// The user is about to write keys to a running command the hand-off does not own (one the
+    /// queued-command panel or an env-var collection wrote, or any command started while the
+    /// editor owned input) (#1089). Whatever the command leaves unread is in the shell's line at
+    /// the next prompt, so the hand-off takes it over exactly as it does a command submitted from
+    /// the editor: the keys are counted, the request is written only behind every one of them,
+    /// and the editor inserts what they typed literally until the report is in.
+    ///
+    /// Left to the legacy path, those keys were never counted. The legacy request could already
+    /// be in the tty ahead of them (it goes out whenever the line editor is active), so the
+    /// shell's report missed them and they stayed in its line, to prefix the next line run there
+    /// (`)exit`) or be killed by the next command's kill prefix. Keys the editor took meanwhile
+    /// were auto-paired, and the late report was placed in front of them with the cursor moved to
+    /// the end: `$(uname -n)` became `$()uname -n)`.
+    ///
+    /// The command's own Enter is counted as unanswered, so its prompt (not an earlier one) is
+    /// the one that hands input back. Returns whether ownership changed; it only does from
+    /// [`HandoffState::EditorOwned`].
+    pub fn adopt_untracked_typeahead(&mut self) -> bool {
+        if self.state != HandoffState::EditorOwned {
+            return false;
+        }
+        self.state = HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 1,
+            precmds_seen: 0,
+        };
+        true
+    }
+
     /// Hands input back to the editor without a request when nothing the user typed can be in
     /// the shell's line. Called on the main thread once a prompt was seen, after the editor has
     /// been reinitialized for the new block. Returns whether the editor took over.
@@ -514,6 +613,8 @@ impl TypeaheadHandoff {
                     ActiveDecision::Committed
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
                     self.state = HandoffState::AwaitingReport;
+                    // Its report covers every untracked byte written before it too (#1089).
+                    self.on_request_written();
                     ActiveDecision::SendRequest
                 } else {
                     ActiveDecision::Wait {
@@ -723,6 +824,17 @@ impl TypeaheadHandoff {
                 held.extend_from_slice(bytes);
                 UserBytesRoute::Held
             }
+            // In `AwaitingReport` such a write is a key typed into a command drained behind the
+            // outstanding request (a queued command written right after it): the tty holds the
+            // request ahead of the key, so the report cannot miss anything typed before it, and
+            // the key reaches that command, or the shell's line at that command's prompt, after
+            // the report. It is not adopted from here: the editor may already hold keys typed
+            // after the request, and a second report would land in front of them, out of typed
+            // order. The report hands input to the editor (`on_report`), and from then on keys
+            // typed into the running command are adopted (#1089). The keys of that window (the
+            // report's latency) stay where they went and come back with the next prompt's legacy
+            // report; until that report the editor inserts literally (the view notes them with
+            // `note_untracked_line_bytes`).
             HandoffState::EditorOwned | HandoffState::AwaitingReport => UserBytesRoute::Write,
         }
     }
@@ -773,6 +885,8 @@ impl TypeaheadHandoff {
 
     /// The shell reported its line buffer.
     pub fn on_report(&mut self) -> ReportDisposition {
+        // #1089: a report for a request written before untracked bytes does not cover them.
+        self.on_report_received();
         match self.owner() {
             Owner::Editor => ReportDisposition::InsertLegacy,
             Owner::AwaitingReport => {

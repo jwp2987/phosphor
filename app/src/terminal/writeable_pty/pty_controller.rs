@@ -452,6 +452,11 @@ impl<T: EventLoopSender> PtyController<T> {
             ActiveDecision::Legacy if !is_retry => {
                 self.handoff_request_waiting = false;
                 if let Some(bytes) = input_reporting_seq {
+                    // #1089: its report covers user bytes the hand-off did not adopt.
+                    self.terminal_model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .on_legacy_request_written();
                     self.pending_writes.push_front(PtyWrite::Bytes {
                         bytes: Cow::Owned(bytes.to_vec()),
                     });

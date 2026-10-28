@@ -104,6 +104,11 @@ impl EarlyOutput {
         self.mode
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_typeahead_mode_for_test(&mut self, mode: TypeaheadMode) {
+        self.mode = mode;
+    }
+
     /// Returns a reference to the current typeahead.
     pub fn typeahead(&self) -> &str {
         &self.typeahead

@@ -7942,11 +7942,42 @@ impl Input {
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.editor.update(ctx, |view, ctx| {
-            view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
-            view.move_to_buffer_end(ctx);
-        });
+        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         self.note_typeahead_inserted(typeahead, ctx);
+    }
+
+    /// Puts the shell's typeahead report at the front of the buffer, replacing the
+    /// `num_typeahead_chars_inserted` characters an earlier report put there, with the cursor
+    /// where the user's last keystroke left it (#1089). The report holds what was typed before
+    /// anything the editor received, so it goes in front of that text as one buffer edit: it is
+    /// never typed, so auto-pairing, auto-indent and abbreviations never see it. A cursor in the
+    /// user's own text keeps its place in that text (it moves right by the growth of the front);
+    /// one the user moved into earlier typeahead stays put; a selection or several cursors are
+    /// left to the buffer's anchors. Moving the cursor to the end instead put whatever the user
+    /// typed next behind the closer the editor had auto-inserted (`$()uname -n)`).
+    fn replace_typeahead_prefix(
+        &mut self,
+        num_typeahead_chars_inserted: CharOffset,
+        typeahead: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.editor.update(ctx, |view, ctx| {
+            let cursor_before = view
+                .is_single_cursor_only(&*ctx)
+                .then(|| view.start_byte_index_of_first_selection(&*ctx).as_usize());
+            let replaced_bytes = typeahead_prefix_byte_len(
+                &view.buffer_text(ctx),
+                num_typeahead_chars_inserted.as_usize(),
+            );
+            view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
+            if let Some(cursor) = cursor_before
+                && let Some(cursor_after) =
+                    cursor_after_typeahead_prefix(cursor, replaced_bytes, typeahead.len())
+            {
+                let cursor_after = ByteOffset::from(cursor_after);
+                view.select_ranges_by_byte_offset([cursor_after..cursor_after], ctx);
+            }
+        });
     }
 
     /// Tells input-type detection the buffer now starts with shell typeahead (#886): typed at the
@@ -7957,8 +7988,8 @@ impl Input {
             .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
     }
 
-    /// Like [`Self::insert_typeahead_text`], but a cursor the user moved into their own text
-    /// stays where it was relative to that text instead of jumping to the end.
+    /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for: it also
+    /// tracks how far the insertion moved the text behind a deferred Enter.
     pub fn insert_handoff_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
@@ -7966,13 +7997,7 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         let len_before = self.buffer_text(ctx).chars().count();
-        self.editor.update(ctx, |view, ctx| {
-            let cursor_at_end = view.single_cursor_at_buffer_end(false, ctx);
-            view.replace_first_n_characters(num_typeahead_chars_inserted, typeahead, ctx);
-            if cursor_at_end {
-                view.move_to_buffer_end(ctx);
-            }
-        });
+        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         if self.handoff_enter_mark.is_some() {
             let len_after = self.buffer_text(ctx).chars().count();
             if let Some(mark) = self.handoff_enter_mark.as_mut() {
@@ -15981,6 +16006,27 @@ impl View for Input {
             self.render_classic_input(app)
         }
     }
+}
+
+/// Byte length of the first `chars` characters of `buffer` (all of it if shorter): the typeahead
+/// an earlier report put at the front of the editor (#1089).
+pub(crate) fn typeahead_prefix_byte_len(buffer: &str, chars: usize) -> usize {
+    buffer
+        .char_indices()
+        .nth(chars)
+        .map_or(buffer.len(), |(index, _)| index)
+}
+
+/// Where a single cursor at byte `cursor` belongs after the first `replaced_bytes` bytes of the
+/// buffer were replaced by `inserted_bytes` bytes of typeahead (#1089). A cursor in the user's own
+/// text (at or past the replaced front) keeps its place in that text; `None` for one inside the
+/// replaced typeahead, which the edit leaves where the user put it.
+pub(crate) fn cursor_after_typeahead_prefix(
+    cursor: usize,
+    replaced_bytes: usize,
+    inserted_bytes: usize,
+) -> Option<usize> {
+    (cursor >= replaced_bytes).then(|| cursor - replaced_bytes + inserted_bytes)
 }
 
 /// Where a completion's replacement range should end. The editor auto-pairs quotes, so

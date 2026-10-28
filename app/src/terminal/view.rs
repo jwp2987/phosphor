@@ -490,6 +490,7 @@ use crate::terminal::model::selection::{SelectAction, SelectionDirection};
 use crate::terminal::model::session::{
     BootstrapSessionType, SessionType, Sessions, SessionsEvent,
 };
+use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
@@ -10924,6 +10925,23 @@ impl TerminalView {
                         .typeahead_handoff_mut()
                         .on_user_bytes_to_full_screen_program(&bytes)
                 } else {
+                    // #1089: keys for a running command the hand-off does not own are typeahead
+                    // the shell may report at its next prompt; the hand-off takes them over
+                    // (see `TypeaheadHandoff::adopt_untracked_typeahead`).
+                    // Keys that are not adopted (an agent command, a block before the bootstrap
+                    // precmd, or a command drained behind an outstanding request, which only an
+                    // editor-owned hand-off adopts) keep the editor literal until a report
+                    // requested behind them is in. Noting is a no-op once the pty owns input.
+                    if keys_reach_a_command_the_handoff_does_not_own(&terminal_model) {
+                        let handoff = terminal_model.typeahead_handoff_mut();
+                        if !handoff.adopt_untracked_typeahead() {
+                            handoff.note_untracked_line_bytes();
+                        }
+                    } else if shell_reports_keys_left_in_its_line(&terminal_model) {
+                        terminal_model
+                            .typeahead_handoff_mut()
+                            .note_untracked_line_bytes();
+                    }
                     terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
                 }
             } else {
@@ -32996,6 +33014,30 @@ fn subshell_bootstrap_key_forwarded(
 ) -> bool {
     (pending && abort_key)
         || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
+}
+
+/// Whether user keys about to be written to the pty reach a running command whose leftover input
+/// the shell will report, while the typeahead hand-off does not own that command (#1089): it
+/// owns only commands submitted from the input editor, so keys for anything else (a queued
+/// command, an env-var collection, a command running when the editor took input over) were
+/// written uncounted, and the legacy report could miss them. Agent-requested commands keep the
+/// legacy path (their typeahead is deliberately not inserted), as do shared-session viewers (no
+/// local pty controller counts their writes) and shells that cannot report their line.
+fn keys_reach_a_command_the_handoff_does_not_own(model: &TerminalModel) -> bool {
+    let active_block = model.block_list().active_block();
+    shell_reports_keys_left_in_its_line(model)
+        && active_block.bootstrap_stage().is_done()
+        && active_block.started()
+        && !active_block.finished()
+        && active_block.agent_interaction_metadata().is_none()
+}
+
+/// Whether keys written to the pty now, if the shell's line editor gets them, come back in a
+/// report this terminal requests itself (#1089): the shell reports its line and this is not a
+/// shared-session viewer, which has no local pty controller.
+fn shell_reports_keys_left_in_its_line(model: &TerminalModel) -> bool {
+    model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported
+        && !model.shared_session_status().is_viewer()
 }
 
 /// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of
