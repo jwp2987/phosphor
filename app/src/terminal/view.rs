@@ -9790,6 +9790,9 @@ impl TerminalView {
             self.note_ssh_interrupt_held(ctx);
             return;
         }
+        // #1111: an EOT written while an ssh connect is armed must never make the app ignore the
+        // remote's hooks (that left an unmanaged remote shell behind).
+        let ssh_connecting = self.ssh_connect_gate.is_some();
         let arc = self.model.clone();
         let mut model = arc.lock();
 
@@ -9810,7 +9813,9 @@ impl TerminalView {
             // still send the InitShell message to the terminal. In order to
             // prevent it from being processed, we keep state and clear it on
             // the next precmd (i.e. when the command completes).
-            model.ignore_bootstrapping_messages();
+            if !ssh_connecting {
+                model.ignore_bootstrapping_messages();
+            }
 
             // Drop the model before writing bytes to the pty, otherwise we
             // get a deadlock.  This model locking is a bit of a mess.
@@ -10381,7 +10386,9 @@ impl TerminalView {
         if pending || !self.refresh_ssh_connect_gate() {
             return false;
         }
-        hook_seen || self.ssh_connect_gate_drops_keys()
+        // Also the silent stretch AFTER a prompt was answered (`output_seen` is sticky, so the
+        // gate no longer drops keys): only a prompt that is waiting for an answer takes Ctrl-D.
+        hook_seen || self.ssh_connect_gate_drops_keys() || !self.active_output_awaits_an_answer()
     }
 
     /// #1001: a Ctrl-C while an ssh command is still connecting (gate armed, no remote session

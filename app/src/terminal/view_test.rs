@@ -17525,6 +17525,43 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
     })
 }
 
+/// #1111: after a password prompt was answered and before the ssh hook, the connect is silent
+/// again; Ctrl-D there is held too (the gate's `output_seen` stays set, so the key drop alone
+/// would let it through).
+#[test]
+fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.model.lock().process_bytes("Password: ");
+            view.keydown_on_terminal("\r", ctx);
+            assert!(
+                view.ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|g| g.output_seen)
+            );
+            view.model.lock().process_bytes("\r\n");
+            view.keydown_on_terminal("\u{4}", ctx);
+            view.ctrl_d(ctx);
+        });
+        assert!(
+            !pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
+            "{:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,
