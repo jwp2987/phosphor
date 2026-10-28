@@ -4583,6 +4583,27 @@ fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
 /// instead of the redirect. A tool absent from the list cannot produce either.
 const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
 
+/// The only tools offered on a CLI-subagent turn (`RequestParams::lrc_is_cli_subagent_turn`: the
+/// user's LRC tag-in turn, or a later turn of that subagent's task). Mirrors upstream's
+/// `get_supported_cli_agent_tools`: the actions the CLI subagent view can show and confirm
+/// (`blocklist/block/cli.rs`, the blocked-action match). MCP tools are not offered on these
+/// turns either. BYOP's `file_glob` is upstream's `FileGlobV2`; `read_files` stays subject to
+/// `NO_FILE_ROUTE_BLOCKED_TOOLS`.
+///
+/// Why this is a security boundary and not just tidiness (#1070): the CLI subagent view is the
+/// only confirmation UI while a tagged-in program owns the screen. Any other action blocked on
+/// confirmation there has no card (the match falls through to `None`), yet the view's
+/// Enter/Allow still accepts it, so the user would approve an action they were never shown.
+/// Ported from mehmetbaykar/zap `e503fdcb7` + `c401597cb`.
+const CLI_AGENT_TOOLS: &[&str] = &[
+    "write_to_long_running_shell_command",
+    "read_shell_command_output",
+    "grep",
+    "file_glob",
+    "transfer_shell_command_control_to_user",
+    "read_files",
+];
+
 /// Withdrawn-from-the-tools-array tools that are not covered by a more specific dispatch
 /// gate (computer use, Plan Mode). #979: in an unmanaged shell (a command is running, so
 /// `run_shell_command` is stripped from the list) the model called `run_shell_command`
@@ -4598,6 +4619,14 @@ fn tool_withdrawn_reason(params: &RequestParams, tool_name: &str) -> Option<&'st
              available. Interact with the running command using \
              `write_to_long_running_shell_command` / `read_shell_command_output`, or ask the \
              user.",
+        );
+    }
+    if params.lrc_is_cli_subagent_turn && !CLI_AGENT_TOOLS.contains(&tool_name) {
+        return Some(
+            "You were tagged in to a running command, so only the tools that the running \
+             command's agent view can show and confirm are available: \
+             `write_to_long_running_shell_command`, `read_shell_command_output`, `grep`, \
+             `file_glob`, `read_files` and `transfer_shell_command_control_to_user`.",
         );
     }
     if params.session_context.is_remote_without_file_tools()
@@ -4643,6 +4672,7 @@ fn is_computer_use_tool(name: &str) -> bool {
 /// dynamically off the actually-available list instead of hardcoding an allow/block list.
 pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     let is_lrc = params.lrc_command_id.is_some();
+    let is_cli_subagent_turn = params.lrc_is_cli_subagent_turn;
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
     // `get_relevant_files` is answered by either mechanism, so it stays available when
@@ -4662,6 +4692,9 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
+            if is_cli_subagent_turn && !CLI_AGENT_TOOLS.contains(&t.name) {
+                return false;
+            }
             if is_lrc && t.name == "run_shell_command" {
                 return false;
             }
@@ -4697,7 +4730,11 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
         })
         .map(|t| t.name.to_owned())
         .collect();
-    if let Some(ctx) = params.mcp_context.as_ref() {
+    if let Some(ctx) = params
+        .mcp_context
+        .as_ref()
+        .filter(|_| !is_cli_subagent_turn)
+    {
         for (name, _description, _parameters) in tools::mcp::build_mcp_tool_defs(ctx) {
             names.push(name);
         }
@@ -4725,9 +4762,13 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     // cleanest hard constraint is to remove that tool directly from the tools list, so the
     // model can only pick among PTY-operation-class tools.
     //
-    // Other tools are kept (read_files/grep/ask_user_question etc.), allowing the model to
-    // do necessary information gathering and ask clarifying questions.
+    // On a CLI-subagent turn (the user tagged the agent in, or a later turn of that
+    // subagent's task) only `CLI_AGENT_TOOLS` are kept and MCP tools are dropped: its actions
+    // are confirmed through the CLI subagent view, which can only show those tools (#1070).
+    // Other LRC turns (the agent that started or monitors the command) keep their tools,
+    // minus `run_shell_command`.
     let is_lrc = params.lrc_command_id.is_some();
+    let is_cli_subagent_turn = params.lrc_is_cli_subagent_turn;
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
     // The two codebase-context mechanisms have separate gates, so they get separate
@@ -4764,6 +4805,9 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     let mut out: Vec<GenaiTool> = tools::REGISTRY
         .iter()
         .filter(|t| {
+            if is_cli_subagent_turn && !CLI_AGENT_TOOLS.contains(&t.name) {
+                return false;
+            }
             if is_lrc && t.name == "run_shell_command" {
                 return false;
             }
@@ -4839,7 +4883,11 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
         })
         .collect();
 
-    if let Some(ctx) = params.mcp_context.as_ref() {
+    if let Some(ctx) = params
+        .mcp_context
+        .as_ref()
+        .filter(|_| !is_cli_subagent_turn)
+    {
         for (name, description, parameters) in tools::mcp::build_mcp_tool_defs(ctx) {
             out.push(
                 GenaiTool::new(name)
@@ -4848,9 +4896,15 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             );
         }
     }
-    if is_lrc {
+    if is_cli_subagent_turn {
         log::info!(
-            "[byop] LRC tag-in: tools array filtered (removed run_shell_command), \
+            "[byop] CLI subagent turn: tools array filtered to CLI-agent tools, \
+             total tools={}",
+            out.len()
+        );
+    } else if is_lrc {
+        log::info!(
+            "[byop] LRC turn: tools array filtered (removed run_shell_command), \
              total tools={}",
             out.len()
         );
@@ -14148,6 +14202,130 @@ mod plan_mode_round_trip_tests {
             !available_tool_names(&params).iter().any(|n| n == SHELL),
             "the dispatch gate and the advertised list must agree"
         );
+    }
+
+    fn mcp_context_with_one_tool() -> crate::ai::agent::MCPContext {
+        let schema = serde_json::json!({ "type": "object", "properties": {} })
+            .as_object()
+            .expect("an object literal")
+            .clone();
+        crate::ai::agent::MCPContext {
+            #[allow(deprecated)]
+            resources: vec![],
+            #[allow(deprecated)]
+            tools: vec![],
+            servers: vec![crate::ai::agent::MCPServer {
+                id: "id-a".to_owned(),
+                name: "server-a".to_owned(),
+                description: String::new(),
+                resources: vec![],
+                tools: vec![rmcp::model::Tool::new("alpha", "A desc", Arc::new(schema))],
+            }],
+        }
+    }
+
+    fn mcp_tool_names(params: &RequestParams) -> Vec<String> {
+        tools::mcp::build_mcp_tool_defs(params.mcp_context.as_ref().expect("mcp context"))
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect()
+    }
+
+    fn advertised(params: &RequestParams) -> Vec<String> {
+        build_tools_array(params, false)
+            .iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect()
+    }
+
+    /// #1070 (port of mehmetbaykar/zap `e503fdcb7` + `c401597cb`): a CLI-subagent turn -- the
+    /// user tagged the agent in to a running command -- is offered only the tools the CLI
+    /// subagent view can show and confirm, and no MCP tools. Any other action would be
+    /// blocked on a confirmation that view draws no card for, yet its Enter/Allow would still
+    /// accept it: an approval of an action the user was never shown.
+    #[test]
+    fn cli_subagent_turn_offers_only_cli_agent_tools() {
+        let mut params = tool_result_round_trip(false);
+        params.web_search_enabled = true;
+        params.mcp_context = Some(mcp_context_with_one_tool());
+        let mcp_names = mcp_tool_names(&params);
+        assert!(!mcp_names.is_empty(), "fixture precondition: one MCP tool");
+        for name in ["apply_file_diffs", tools::webfetch::TOOL_NAME]
+            .into_iter()
+            .chain(mcp_names.iter().map(String::as_str))
+        {
+            assert!(
+                available_tool_names(&params).iter().any(|n| n == name),
+                "fixture precondition: {name} is offered on an ordinary turn"
+            );
+        }
+
+        params.lrc_command_id = Some("block-1".to_owned());
+        params.lrc_should_spawn_subagent = true;
+        params.lrc_is_cli_subagent_turn = true;
+        let mut expected: Vec<String> = CLI_AGENT_TOOLS.iter().map(|n| n.to_string()).collect();
+        expected.sort();
+        let mut offered = available_tool_names(&params);
+        offered.sort();
+        assert_eq!(
+            offered, expected,
+            "available_tool_names on a CLI-subagent turn"
+        );
+        let mut sent = advertised(&params);
+        sent.sort();
+        assert_eq!(sent, expected, "build_tools_array on a CLI-subagent turn");
+    }
+
+    /// #1070: the dispatch gate agrees with the withdrawal, so a tool the model calls anyway
+    /// (stale definitions, replayed history) is answered with an error instead of becoming an
+    /// action the CLI subagent view cannot show.
+    #[test]
+    fn cli_subagent_turn_refuses_other_tools_at_dispatch() {
+        let mut params = tool_result_round_trip(false);
+        params.mcp_context = Some(mcp_context_with_one_tool());
+        let mcp_names = mcp_tool_names(&params);
+        params.lrc_command_id = Some("block-1".to_owned());
+        params.lrc_is_cli_subagent_turn = true;
+        for refused in ["apply_file_diffs", "ask_user_question", SHELL]
+            .into_iter()
+            .chain(mcp_names.iter().map(String::as_str))
+        {
+            assert!(
+                tool_withdrawn_reason(&params, refused).is_some(),
+                "{refused} must be refused on a CLI-subagent turn"
+            );
+            assert!(tool_call_refused_at_dispatch(&params, false, refused));
+        }
+        for allowed in CLI_AGENT_TOOLS.iter().copied() {
+            assert!(
+                tool_withdrawn_reason(&params, allowed).is_none(),
+                "{allowed} must stay callable on a CLI-subagent turn"
+            );
+        }
+    }
+
+    /// #1070 (`c401597cb`): the agent that started or monitors a long-running command is not a
+    /// CLI-subagent turn. Its actions render in its own AI block, so it keeps its tools, minus
+    /// `run_shell_command`.
+    #[test]
+    fn monitoring_agent_lrc_turn_keeps_its_tools_except_run_shell_command() {
+        let mut params = tool_result_round_trip(false);
+        params.mcp_context = Some(mcp_context_with_one_tool());
+        let mcp_names = mcp_tool_names(&params);
+        params.lrc_command_id = Some("block-1".to_owned());
+        assert!(!params.lrc_is_cli_subagent_turn);
+        let offered = available_tool_names(&params);
+        let sent = advertised(&params);
+        for name in ["apply_file_diffs"]
+            .into_iter()
+            .chain(mcp_names.iter().map(String::as_str))
+        {
+            assert!(offered.iter().any(|n| n == name), "{name} withheld");
+            assert!(sent.iter().any(|n| n == name), "{name} not sent");
+            assert!(tool_withdrawn_reason(&params, name).is_none());
+        }
+        assert!(!offered.iter().any(|n| n == SHELL));
+        assert!(!sent.iter().any(|n| n == SHELL));
     }
 
     /// #979 (refuter 1): the streaming loop skips its placeholder card for exactly the calls

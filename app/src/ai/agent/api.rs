@@ -238,6 +238,12 @@ pub struct RequestParams {
     /// upgrade an optimistic CLI subtask. Only needed on the first turn right after the
     /// user tags in; subsequent turns with an existing CLI subagent just reuse the task and must not spawn again.
     pub lrc_should_spawn_subagent: bool,
+    /// Zap BYOP-only: whether this turn belongs to the CLI subagent driving the LRC (the
+    /// user's tag-in turn, or a later turn of that subagent's task) rather than to the agent
+    /// that started or monitors the command. Only these turns are limited to the CLI-agent tool
+    /// set, like upstream's `supported_cli_agent_tools`: their actions are confirmed through
+    /// the CLI subagent view, which can only show those tools (#1070).
+    pub lrc_is_cli_subagent_turn: bool,
     /// Zap BYOP-only: the task this turn's response should be written to. For a normal
     /// conversation this is the root task; for subsequent CLI subagent turns it's the corresponding subtask.
     pub byop_target_task_id: Option<String>,
@@ -411,6 +417,7 @@ impl RequestParams {
             compaction_state: None,
             byop_repair_state: Default::default(),
             lrc_should_spawn_subagent: false,
+            lrc_is_cli_subagent_turn: false,
         }
     }
 
@@ -658,6 +665,7 @@ impl RequestParams {
             lrc_command_id: None,
             lrc_running_command: None,
             lrc_should_spawn_subagent: false,
+            lrc_is_cli_subagent_turn: false,
             byop_target_task_id,
             // BYOP-only: backfilled by the controller before dispatching to BYOP exec
             // (setter-style, to avoid threading it through ConversationRequestData / non-BYOP paths).

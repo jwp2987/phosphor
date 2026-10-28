@@ -851,8 +851,8 @@ mod accept_without_own_ui_tests {
 
     /// A blocked `ask_user_question` is confirmed by its answer, which only the question UI
     /// collects. Every plain accept (the AI block's Enter, the CLI subagent views' accept and
-    /// ctrl-o, the tag-in override) is gated on this predicate; if it said `true` here they
-    /// would all run the question with an empty answer channel and hang the turn. The number
+    /// ctrl-o) is gated on this predicate; if it said `true` here they would all run the
+    /// question with an empty answer channel and hang the turn. The number
     /// of questions is irrelevant: a BYOP model can emit an empty list, and that must not
     /// open a hole.
     #[test]

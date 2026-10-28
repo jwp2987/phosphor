@@ -206,49 +206,6 @@ enum StartedAction {
     Async { phase: RunningActionPhase },
 }
 
-/// What one step of the tag-in auto-accept batch did with its action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoAcceptOutcome {
-    /// The action started (sync or async).
-    Started,
-    /// The action did not start and is still pending: it is blocked (an action the tag-in
-    /// override may not stand in for, such as `AskUserQuestion`), or another action is still
-    /// running (the override is out-of-band and runs one action at a time).
-    LeftPending,
-    /// The action did not start because it is no longer pending: an earlier step's drain
-    /// (`try_to_execute_available_actions`, after a sync action) already dequeued it.
-    AlreadyTaken,
-}
-
-/// Runs the tag-in auto-accept over `action_ids` in order, stopping at the first action that
-/// is left pending. Returns how many actions were attempted.
-///
-/// Stop at a pending one: the ordinary drain never runs past a blocked front action, and this
-/// path must not either. If an `ask_user_question` blocks, running the actions queued after it
-/// would act before the user has answered, and a still-running one would make
-/// `start_pending_action_by_id` refuse the answer's own `execute_action` (out-of-band, one at a
-/// time) while the answer sat unread on the executor's channel. Actions left here are picked
-/// up by the ordinary drain once the blocking or running action finishes.
-///
-/// Do NOT stop at one that was already taken. A sync action's drain runs as
-/// `ActionInitiator::Agent`, so it can dequeue and run the next action and then leave a later
-/// one blocked on a confirmation only the override could give. Stopping at the taken action
-/// would strand that later one in the alt screen, where the CLI subagent view renders no
-/// Accept for most action types; continuing reaches it and auto-accepts it.
-fn run_auto_accept_batch<Id>(
-    action_ids: &[Id],
-    mut auto_accept: impl FnMut(&Id) -> AutoAcceptOutcome,
-) -> usize {
-    let mut attempted = 0;
-    for action_id in action_ids {
-        attempted += 1;
-        if auto_accept(action_id) == AutoAcceptOutcome::LeftPending {
-            break;
-        }
-    }
-    attempted
-}
-
 /// Whether a user-initiated accept of `action` must be refused (issue #847). This applies to a
 /// `RequestCommandOutput` whose approval-card preview elides part of the command (a long run,
 /// blank-line padding, too many lines), unless that exact text was reviewed in full. Every
@@ -968,7 +925,9 @@ impl BlocklistAIActionModel {
     /// on any action, computer use included. Callers are the confirmation UIs in `block.rs`
     /// and `inline_action/ask_user_question_view.rs`.
     ///
-    /// A caller that is *not* a click does not belong here — see `auto_accept_action`.
+    /// A caller that is *not* a click does not belong here. The fork once had one: the LRC
+    /// tag-in auto-accept, which ran the agent's first round as a forged Accept and so
+    /// overrode an `Always ask` profile (#617, then removed entirely in #1070).
     pub fn execute_action(
         &mut self,
         action_id: &AIAgentActionId,
@@ -981,38 +940,6 @@ impl BlocklistAIActionModel {
         {
             self.try_to_execute_available_actions(conversation_id, ctx);
         }
-    }
-
-    /// The LRC alt-screen tag-in override: run a queued action as though its confirmation had
-    /// been accepted, because the Accept button is not rendered and cannot be.
-    ///
-    /// Split out from `execute_action` deliberately. It used to *be* `execute_action`, which
-    /// meant the override arrived at the executor indistinguishable from a real click and
-    /// inherited a click's authority over every action type. `ActionInitiator::AutoAcceptedTagIn`
-    /// carries the same deadlock-breaking power for ordinary actions and none of it for
-    /// computer use — see `ActionInitiator::can_stand_in_for_confirmation`.
-    ///
-    /// Returns whether the action started. `false` means it was left pending: it is blocked
-    /// (an action the override may not stand in for, such as `AskUserQuestion`), or another
-    /// action is still running, or an earlier drain already took it.
-    fn auto_accept_action(
-        &mut self,
-        action_id: &AIAgentActionId,
-        conversation_id: AIConversationId,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        let Some(started) = self.start_pending_action_by_id(
-            action_id,
-            conversation_id,
-            ActionInitiator::AutoAcceptedTagIn,
-            ctx,
-        ) else {
-            return false;
-        };
-        if matches!(started, StartedAction::Sync) {
-            self.try_to_execute_available_actions(conversation_id, ctx);
-        }
-        true
     }
 
     /// Gets the active conversation ID for this terminal view.
@@ -1094,11 +1021,7 @@ impl BlocklistAIActionModel {
     ) -> Option<StartedAction> {
         if initiator.is_out_of_band() && self.running_actions.contains_key(&conversation_id) {
             // User-driven approvals still execute one action at a time so that interactive
-            // confirmations do not overlap in the UI. `is_out_of_band` rather than "is the
-            // user" on purpose: the tag-in override dequeues out of order too, and this
-            // one-at-a-time serialisation is exactly what it used to get from the old
-            // `is_user_initiated=true`. Narrowing it here would be an unrelated behaviour
-            // change riding along with a security fix.
+            // confirmations do not overlap in the UI.
             return None;
         }
 
@@ -1271,53 +1194,6 @@ impl BlocklistAIActionModel {
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.queue_actions_with_options(actions, conversation_id, false, ctx);
-    }
-
-    /// Same as `queue_actions`, but adds an `auto_accept` parameter.
-    ///
-    /// When `auto_accept=true`, after preprocessing finishes
-    /// (`handle_preprocess_actions_results`) and each action is pushed into
-    /// pending_actions, **`auto_accept_action` is called immediately for each one**
-    /// (running it as `ActionInitiator::AutoAcceptedTagIn`, which stands in for the
-    /// `NeedsConfirmation` prompt), instead of the default
-    /// `try_to_execute_available_actions` (`ActionInitiator::Agent`).
-    ///
-    /// Use case: the LRC tag-in scenario on the Zap BYOP path — the user proactively
-    /// hands control to the agent via SetInputModeAgent, but in full alt-screen mode
-    /// the RequestedCommand Accept button isn't visible. Once the controller detects
-    /// the LRC state, this method sidesteps the manual-confirmation deadlock.
-    ///
-    /// **`auto_accept=true` overrides the execution profile.** Standing in for the
-    /// confirmation short-circuits `needs_confirmation`, so a profile set to `Always ask`
-    /// has its `can_auto_execute=false` computed and then discarded. That is only
-    /// defensible in the deadlock case above — where there is no Accept button to answer
-    /// — and the caller is responsible for establishing it. The sole caller gates on
-    /// `ResponseStream::is_lrc_tag_in_without_confirmation_ui`, which requires the alt
-    /// screen to actually be held.
-    ///
-    /// It previously gated on the tag-in alone. The deadlock only exists in alt
-    /// screen, but the override applied to every tag-in, so ordinary sessions with a
-    /// visible Accept button auto-ran whatever the model chose first — #617.
-    ///
-    /// **The override stops at computer use.** It used to reach the executor as a forged
-    /// `is_user_initiated=true`, indistinguishable from a real click, which meant it also
-    /// discarded `UseComputerExecutor::should_autoexecute` — i.e. it silently defeated the
-    /// computer-use approval gate, on a path that grants control of the real mouse and
-    /// keyboard. `ActionInitiator::AutoAcceptedTagIn` keeps the profile override for
-    /// ordinary actions and withholds it for `UseComputer`/`RequestComputerUse`; see
-    /// `ActionInitiator::can_stand_in_for_confirmation` for why both are excluded.
-    ///
-    /// Note this is a no-op EXCEPT when it overrides a denial: when
-    /// `can_auto_execute` is true the default path executes the action anyway. So any
-    /// widening of the gate buys nothing and costs exactly the profile's authority.
-    pub(super) fn queue_actions_with_options(
-        &mut self,
-        actions: Vec<AIAgentAction>,
-        conversation_id: AIConversationId,
-        auto_accept: bool,
-        ctx: &mut ModelContext<Self>,
-    ) {
         self.action_order.insert(
             conversation_id,
             actions
@@ -1341,13 +1217,7 @@ impl BlocklistAIActionModel {
             .insert_preprocess_action_batch(action_ids);
 
         ctx.spawn(join_all(preprocess_future), move |me, _, ctx| {
-            me.handle_preprocess_actions_results(
-                conversation_id,
-                preprocess_id,
-                actions,
-                auto_accept,
-                ctx,
-            );
+            me.handle_preprocess_actions_results(conversation_id, preprocess_id, actions, ctx);
         });
     }
 
@@ -1383,7 +1253,6 @@ impl BlocklistAIActionModel {
         conversation_id: AIConversationId,
         preprocess_id: PreprocessId,
         actions: Vec<AIAgentAction>,
-        auto_accept: bool,
         ctx: &mut ModelContext<Self>,
     ) {
         let actions_to_enqueue = self
@@ -1392,7 +1261,6 @@ impl BlocklistAIActionModel {
             .or_default()
             .handle_preprocess_actions_result(preprocess_id, actions);
 
-        let mut auto_accept_ids: Vec<AIAgentActionId> = Vec::new();
         for action in actions_to_enqueue {
             let action_id = action.id.clone();
             // Some actions may already have results. This can happen in session sharing when
@@ -1425,41 +1293,9 @@ impl BlocklistAIActionModel {
                 .entry(conversation_id)
                 .or_default()
                 .push_back(action);
-            ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id.clone()));
-            if auto_accept {
-                auto_accept_ids.push(action_id);
-            }
+            ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id));
         }
-        if auto_accept && !auto_accept_ids.is_empty() {
-            // Zap: LRC tag-in auto-authorization path. Bypasses the default
-            // try_to_execute_available_actions (ActionInitiator::Agent) and dequeues each
-            // just-pushed action directly, standing in for an Accept the user cannot click.
-            //
-            // NOT `execute_action`: that is the real-click entry point and grants
-            // ActionInitiator::User, i.e. authority over every action type. This path grants
-            // ActionInitiator::AutoAcceptedTagIn, which breaks the alt-screen deadlock and
-            // leaves the computer-use approval gate standing.
-            log::info!(
-                "[byop-diag] queue_actions_with_options(auto_accept=true): \
-                 invoking auto_accept_action for {} action(s)",
-                auto_accept_ids.len()
-            );
-            run_auto_accept_batch(&auto_accept_ids, |action_id| {
-                if self.auto_accept_action(action_id, conversation_id, ctx) {
-                    AutoAcceptOutcome::Started
-                } else if self
-                    .pending_actions
-                    .get(&conversation_id)
-                    .is_some_and(|queue| queue.iter().any(|action| &action.id == action_id))
-                {
-                    AutoAcceptOutcome::LeftPending
-                } else {
-                    AutoAcceptOutcome::AlreadyTaken
-                }
-            });
-        } else {
-            self.try_to_execute_available_actions(conversation_id, ctx);
-        }
+        self.try_to_execute_available_actions(conversation_id, ctx);
     }
 
     /// Apply a finished action result to the conversation.
