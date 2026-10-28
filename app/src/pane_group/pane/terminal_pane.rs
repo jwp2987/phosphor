@@ -41,6 +41,8 @@ use warp_cli::agent::Harness;
 
 use warp_core::execution_mode::AppExecutionMode;
 
+use crate::terminal::ShellLaunchData;
+
 use super::{
     DetachType, PaneConfiguration, PaneContent, PaneId, PaneStackEvent, PaneView, ShareableLink,
     ShareableLinkError, TerminalPaneId,
@@ -63,6 +65,24 @@ pub struct TerminalPane {
     /// by the `PaneStack`, since the terminal manager is the associated data for
     /// the backing pane view.
     view: ViewHandle<TerminalPaneView>,
+
+    /// The persisted state this pane was restored from, if it was restored
+    /// from a session snapshot (#1096). Until the restored shell reports a
+    /// session (bootstraps), the live view knows neither its working
+    /// directory nor its shell, so [`PaneContent::snapshot`] re-writes these
+    /// persisted values instead of overwriting them with "unknown" -- a quit
+    /// within a couple of seconds of launch would otherwise permanently reset
+    /// every not-yet-loaded restored tab to a default `~` session.
+    restored_state: Option<RestoredTerminalState>,
+}
+
+/// The parts of a [`TerminalPaneSnapshot`] that only the shell can report
+/// back, kept from the snapshot a pane was restored from. See
+/// [`TerminalPane::restored_state`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(in crate::pane_group) struct RestoredTerminalState {
+    pub cwd: Option<String>,
+    pub shell_launch_data: Option<ShellLaunchData>,
 }
 
 fn resolve_runtime_skills(
@@ -119,7 +139,14 @@ impl TerminalPane {
             uuid,
             pane_configuration,
             view,
+            restored_state: None,
         }
+    }
+
+    /// Records the persisted state this pane was restored from, so a snapshot
+    /// taken before its shell bootstraps preserves it (#1096).
+    pub(in crate::pane_group) fn set_restored_state(&mut self, state: RestoredTerminalState) {
+        self.restored_state = Some(state);
     }
 
     /// The [`PaneView<TerminalView>`] for this pane.
@@ -519,12 +546,24 @@ impl PaneContent for TerminalPane {
                         .active_conversation_id()
                 });
 
+            // #1096: a restored pane whose shell has not reported a session
+            // yet has no live cwd or shell; keep the persisted ones rather
+            // than overwrite them with `None` (which restores as a default
+            // `~` session). Once the shell has bootstrapped, the live values
+            // win -- including `None` for a session that went remote.
+            let (cwd, shell_launch_data) = match &self.restored_state {
+                Some(restored) if view.active_session_is_local(app).is_none() => {
+                    (restored.cwd.clone(), restored.shell_launch_data.clone())
+                }
+                _ => (view.pwd_if_local(app), view.shell_launch_data_if_local(app)),
+            };
+
             LeafContents::Terminal(TerminalPaneSnapshot {
                 uuid: self.uuid.clone(),
-                cwd: view.pwd_if_local(app),
+                cwd,
                 is_active,
                 is_read_only: view.model.lock().is_read_only(),
-                shell_launch_data: view.shell_launch_data_if_local(app),
+                shell_launch_data,
                 input_config: Some(current_input_config),
                 llm_model_override,
                 active_profile_id,

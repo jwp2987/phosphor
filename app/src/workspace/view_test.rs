@@ -7691,3 +7691,142 @@ fn restored_orphan_queue_goes_to_the_active_tab_not_the_first() {
         assert_eq!(input_of_tab(&app, 2), "");
     });
 }
+
+/// #1096: quitting within a couple of seconds of launch persisted every restored
+/// terminal pane whose shell had not bootstrapped yet as a default `~` session --
+/// `TerminalPane::snapshot` read the cwd and shell from the live view, which knows
+/// neither until the shell reports a session -- so the next launch lost them for
+/// good. Restores several tabs, snapshots them before any shell can bootstrap (the
+/// whole test runs inside one update, so no PTY output is processed), restores
+/// those snapshots again and checks the persisted cwd survives both round trips.
+/// Then checks the persisted value stops winning once the shell has reported a
+/// session: a bootstrapped remote session snapshots `None`, exactly as before.
+#[test]
+fn test_restored_terminal_panes_keep_persisted_cwd_until_their_shell_bootstraps() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let dirs: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
+        let cwds: Vec<String> = dirs
+            .iter()
+            .map(|dir| dir.path().to_string_lossy().into_owned())
+            .collect();
+
+        workspace.update(&mut app, |workspace, ctx| {
+            fn restored_layout(uuid: Vec<u8>, cwd: Option<String>) -> PanesLayout {
+                PanesLayout::Snapshot(Box::new(PaneNodeSnapshot::Leaf(LeafSnapshot {
+                    is_focused: true,
+                    custom_vertical_tabs_title: None,
+                    contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                        uuid,
+                        cwd,
+                        shell_launch_data: None,
+                        is_active: true,
+                        is_read_only: false,
+                        input_config: None,
+                        llm_model_override: None,
+                        active_profile_id: None,
+                        conversation_ids_to_restore: vec![],
+                        active_conversation_id: None,
+                    }),
+                })))
+            }
+
+            fn terminal_snapshot(
+                workspace: &Workspace,
+                tab_index: usize,
+                ctx: &AppContext,
+            ) -> TerminalPaneSnapshot {
+                match workspace.tabs[tab_index]
+                    .pane_group
+                    .as_ref(ctx)
+                    .snapshot(ctx)
+                {
+                    PaneNodeSnapshot::Leaf(LeafSnapshot {
+                        contents: LeafContents::Terminal(snapshot),
+                        ..
+                    }) => snapshot,
+                    other => panic!("expected a single terminal leaf, got {other:?}"),
+                }
+            }
+
+            let no_blocks = || Arc::new(HashMap::<PaneUuid, Vec<SerializedBlockListItem>>::new());
+
+            // First launch: restore N tabs from the persisted state.
+            let first_tab = workspace.tabs.len();
+            for cwd in &cwds {
+                workspace.add_tab_with_pane_layout(
+                    restored_layout(uuid::Uuid::new_v4().as_bytes().to_vec(), Some(cwd.clone())),
+                    no_blocks(),
+                    None,
+                    ctx,
+                );
+            }
+
+            // Quit before any of them initialises: what gets written back.
+            let saved: Vec<TerminalPaneSnapshot> = (0..cwds.len())
+                .map(|i| terminal_snapshot(workspace, first_tab + i, ctx))
+                .collect();
+            for (snapshot, cwd) in saved.iter().zip(&cwds) {
+                assert_eq!(
+                    snapshot.cwd.as_deref(),
+                    Some(cwd.as_str()),
+                    "a restored pane snapshotted before its shell bootstraps must keep its \
+                     persisted cwd, not be saved as a default `~` session"
+                );
+            }
+
+            // Second launch from what the first one saved, quit early again.
+            let second_tab = workspace.tabs.len();
+            for snapshot in &saved {
+                workspace.add_tab_with_pane_layout(
+                    restored_layout(snapshot.uuid.clone(), snapshot.cwd.clone()),
+                    no_blocks(),
+                    None,
+                    ctx,
+                );
+            }
+            for (i, cwd) in cwds.iter().enumerate() {
+                assert_eq!(
+                    terminal_snapshot(workspace, second_tab + i, ctx)
+                        .cwd
+                        .as_deref(),
+                    Some(cwd.as_str()),
+                    "the persisted cwd must survive repeated early quits"
+                );
+            }
+
+            // Once the shell reports a session the live value wins: a pane whose
+            // shell bootstrapped into a remote session snapshots no local cwd.
+            let view = workspace.tabs[second_tab]
+                .pane_group
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .expect("restored tab has a terminal view");
+            view.update(ctx, |view, ctx| {
+                view.sessions_model().update(ctx, |sessions, _| {
+                    sessions.register_session_for_test(
+                        crate::terminal::model::session::SessionInfo::new_for_test()
+                            .with_id(7)
+                            .with_hostname("box".to_owned())
+                            .with_ssh_socket_path(std::path::PathBuf::from(
+                                "/tmp/phosphor-1096-test-socket",
+                            )),
+                    );
+                });
+                view.set_active_block_metadata_for_test(
+                    crate::terminal::model::block::BlockMetadata::new(
+                        Some(crate::terminal::model::session::SessionId::from(7)),
+                        Some("/srv/app".to_owned()),
+                    ),
+                );
+            });
+            assert_eq!(
+                terminal_snapshot(workspace, second_tab, ctx).cwd,
+                None,
+                "after the shell bootstraps, the live (remote) session decides the snapshot"
+            );
+        });
+    });
+}

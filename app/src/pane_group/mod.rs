@@ -1613,6 +1613,13 @@ impl PaneGroup {
                         }
                     });
 
+                // #1096: what the shell reports back once it bootstraps. A snapshot
+                // taken before then re-writes these instead of `None`.
+                let restored_state = pane::terminal_pane::RestoredTerminalState {
+                    cwd: terminal_snapshot.cwd.clone(),
+                    shell_launch_data: terminal_snapshot.shell_launch_data.clone(),
+                };
+
                 let startup_directory = terminal_snapshot
                     .cwd
                     .map(PathBuf::from)
@@ -1678,13 +1685,14 @@ impl PaneGroup {
 
                 let terminal_view_id = terminal_view.id();
 
-                let pane_data = TerminalPane::new(
+                let mut pane_data = TerminalPane::new(
                     uuid.0,
                     terminal_manager,
                     terminal_view,
                     model_event_sender,
                     ctx,
                 );
+                pane_data.set_restored_state(restored_state);
 
                 let terminal_pane_id = pane_data.terminal_pane_id();
                 let pane_id = terminal_pane_id.into();
