@@ -309,7 +309,17 @@ tokio-util.workspace = true
 # AWS SDK (loading credentials for BYO LLM)
 aws-config = { version = "1.8.12", features = ["credentials-login"] }
 aws-credential-types = "1"
-aws-sdk-sts = "1"
+# default-features = false drops the `rustls` feature, which maps to
+# aws-smithy-runtime/tls-rustls -> aws-smithy-http-client/legacy-rustls-ring:
+# the legacy hyper 0.14 / h2 0.3 / rustls 0.21 / rustls-webpki 0.101 client,
+# all carrying RustSec advisories (refs #1076). `default-https-client` is the
+# hyper 1 / rustls 0.23 (aws-lc) client aws-config already uses. The other
+# defaults (sigv4a, rt-tokio) are kept as they were.
+aws-sdk-sts = { version = "1", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+    "sigv4a",
+] }
 aws-types = "1"
 
 # `transport-sse-client-reqwest` no longer exists: rmcp deleted the SSE client
