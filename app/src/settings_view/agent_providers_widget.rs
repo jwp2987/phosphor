@@ -47,6 +47,7 @@ use crate::editor::{
 };
 use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
 use strum::IntoEnumIterator;
+use warp_util::redacted_secret::RedactedSecret;
 
 use super::ai_page::{
     AISettingsPageAction, AISettingsPageView, ModelCapabilityKind, ModelEditFields,
@@ -372,16 +373,16 @@ impl ProviderDraftEditors {
     fn collect_fields(&self, app: &AppContext) -> ProviderEditFields {
         let name = self.name_editor.as_ref(app).buffer_text(app);
         let base_url = self.base_url_editor.as_ref(app).buffer_text(app);
-        let api_key = self.api_key_editor.as_ref(app).buffer_text(app);
+        let api_key = RedactedSecret::new(self.api_key_editor.as_ref(app).buffer_text(app));
         let vertex_project = self.vertex_project_editor.as_ref(app).buffer_text(app);
         let vertex_location = self.vertex_location_editor.as_ref(app).buffer_text(app);
-        let headers: Vec<(String, String)> = self
+        let headers: Vec<(String, RedactedSecret)> = self
             .header_editors
             .iter()
             .map(|(k, v)| {
                 (
                     k.as_ref(app).buffer_text(app),
-                    v.as_ref(app).buffer_text(app),
+                    RedactedSecret::new(v.as_ref(app).buffer_text(app)),
                 )
             })
             .collect();

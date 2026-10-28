@@ -53,6 +53,7 @@ use strum::IntoEnumIterator;
 use warp_core::context_flag::ContextFlag;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::theme::color::internal_colors;
+use warp_util::redacted_secret::RedactedSecret;
 use warpui::elements::{
     Border, ChildView, ConstrainedBox, CornerRadius, CrossAxisAlignment, Dismiss, Empty, Expanded,
     Fill, Hoverable, HyperlinkLens, MainAxisAlignment, MainAxisSize, MouseStateHandle, Radius, Shrinkable,
@@ -2450,7 +2451,11 @@ impl AISettingsPageView {
                 // Vertex-only fields; harmless (kept empty) for other provider types.
                 p.vertex_project = fields.vertex_project.trim().to_owned();
                 p.vertex_location = fields.vertex_location.trim().to_owned();
-                p.extra_headers = fields.headers.clone();
+                p.extra_headers = fields
+                    .headers
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.expose().to_owned()))
+                    .collect();
                 // Updates by model_index, skipping out-of-range indices (the form and settings
                 // may briefly disagree mid-rebuild).
                 for model_fields in &fields.models {
@@ -2489,7 +2494,7 @@ impl AISettingsPageView {
         crate::ai::agent_providers::AgentProviderSecrets::handle(ctx).update(
             ctx,
             |secrets, ctx| {
-                secrets.set(&fields.provider_id, fields.api_key.clone(), ctx);
+                secrets.set(&fields.provider_id, fields.api_key.expose().to_owned(), ctx);
             },
         );
         if let Some(message) = validation_error {
@@ -2519,6 +2524,77 @@ fn trimmed_model_id_and_name(id: &str, name: &str) -> (String, String) {
         name.to_owned()
     };
     (id, name)
+}
+
+/// #1065: warpui logs every dispatched typed action as `{action:?}` at Info
+/// (`warpui_core::core::app::dispatch_typed_action`), and that log ends up in user-shareable log
+/// bundles, so no provider secret may survive an action's `Debug` output.
+#[cfg(test)]
+mod provider_secret_log_redaction_tests {
+    use super::*;
+
+    const API_KEY: &str = "sk-live-do-not-log-1065";
+    const HEADER_NAME: &str = "x-portkey-api-key";
+    const HEADER_VALUE: &str = "pk-header-do-not-log-1065";
+
+    fn fields() -> ProviderEditFields {
+        ProviderEditFields {
+            provider_id: "provider-1".to_owned(),
+            name: "Portkey".to_owned(),
+            base_url: "https://api.example.com/v1".to_owned(),
+            api_key: RedactedSecret::new(API_KEY),
+            vertex_project: String::new(),
+            vertex_location: String::new(),
+            headers: vec![(HEADER_NAME.to_owned(), RedactedSecret::new(HEADER_VALUE))],
+            models: vec![],
+        }
+    }
+
+    /// The exact string `dispatch_typed_action` writes for an action.
+    fn logged_line(action: &AISettingsPageAction) -> String {
+        format!("dispatching typed action: AISettingsPageAction::{action:?}")
+    }
+
+    #[test]
+    fn secret_bearing_actions_log_no_secret() {
+        let actions = [
+            AISettingsPageAction::SaveAgentProviderEdits(fields()),
+            AISettingsPageAction::SaveAgentProviderEditsThen(
+                fields(),
+                Box::new(AISettingsPageAction::SaveAgentProviderEdits(fields())),
+            ),
+            AISettingsPageAction::UpdateAgentProviderApiKey {
+                provider_id: "provider-1".to_owned(),
+                api_key: RedactedSecret::new(API_KEY),
+            },
+            AISettingsPageAction::UpdateAgentProviderHeader {
+                provider_id: "provider-1".to_owned(),
+                header_index: 0,
+                key: HEADER_NAME.to_owned(),
+                value: RedactedSecret::new(HEADER_VALUE),
+            },
+        ];
+        for action in &actions {
+            for line in [logged_line(action), format!("{action:#?}")] {
+                assert!(!line.contains(API_KEY), "API key leaked into the log: {line}");
+                assert!(
+                    !line.contains(HEADER_VALUE),
+                    "header value leaked into the log: {line}"
+                );
+                assert!(line.contains("[REDACTED]"), "{line}");
+                // Redaction is targeted: the non-secret fields stay useful for debugging.
+                assert!(line.contains("provider-1"), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn save_still_carries_the_real_values() {
+        let fields = fields();
+        assert_eq!(fields.api_key.expose(), API_KEY);
+        assert_eq!(fields.headers[0].0, HEADER_NAME);
+        assert_eq!(fields.headers[0].1.expose(), HEADER_VALUE);
+    }
 }
 
 #[cfg(test)]
@@ -2594,16 +2670,21 @@ pub enum PerAgentDimension {
 /// `vertex_project`) with no compiler error. Grouping them into a struct passed by value means
 /// there is exactly one field order to get right, and every call site names its fields instead
 /// of relying on position.
+///
+/// The API key and the header values are [`RedactedSecret`]s: this struct rides inside
+/// `AISettingsPageAction`, which warpui logs as `{action:?}` on every dispatch (#1065). Header
+/// values count as secrets because the header is how most gateways take their key
+/// (`x-portkey-api-key`, `Authorization`, ...); header names stay visible.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderEditFields {
     pub provider_id: String,
     pub name: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: RedactedSecret,
     /// Vertex AI only (empty for other types): GCP project id + location.
     pub vertex_project: String,
     pub vertex_location: String,
-    pub headers: Vec<(String, String)>,
+    pub headers: Vec<(String, RedactedSecret)>,
     /// Only carries the editable part; reasoning / tool_call / image / pdf / audio are
     /// maintained by separate chip actions and don't go through here.
     pub models: Vec<ModelEditFields>,
@@ -2735,9 +2816,11 @@ pub enum AISettingsPageAction {
         provider_id: String,
         api_type: crate::settings::AgentProviderApiType,
     },
+    /// Secret-bearing variants wrap the secret in [`RedactedSecret`] -- warpui logs every
+    /// dispatched action as `{action:?}` (#1065). Any new variant carrying a key must too.
     UpdateAgentProviderApiKey {
         provider_id: String,
-        api_key: String,
+        api_key: RedactedSecret,
     },
     /// Saves all editable fields on a provider card in one shot (name / base_url / api_key /
     /// extra_headers / models). Replaces the original "push field-by-field on blur/Enter" UX --
@@ -2788,7 +2871,7 @@ pub enum AISettingsPageAction {
         provider_id: String,
         header_index: usize,
         key: String,
-        value: String,
+        value: RedactedSecret,
     },
     FetchAgentProviderModels {
         provider_id: String,
@@ -3736,7 +3819,7 @@ impl TypedActionView for AISettingsPageView {
                 crate::ai::agent_providers::AgentProviderSecrets::handle(ctx).update(
                     ctx,
                     |secrets, ctx| {
-                        secrets.set(provider_id, api_key.clone(), ctx);
+                        secrets.set(provider_id, api_key.expose().to_owned(), ctx);
                     },
                 );
                 ctx.notify();
@@ -4082,7 +4165,7 @@ impl TypedActionView for AISettingsPageView {
                     let mut providers = settings.agent_providers.value().clone();
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         if let Some(h) = p.extra_headers.get_mut(*header_index) {
-                            *h = (key.clone(), value.clone());
+                            *h = (key.clone(), value.expose().to_owned());
                         }
                     }
                     report_settings_write_error!(
