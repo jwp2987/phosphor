@@ -1617,55 +1617,59 @@ fn setup_database_or_quarantine(db_path: &Path) -> Result<SqliteConnection> {
     result
 }
 
-/// Total time startup keeps retrying an open that fails on a transient lock or
+/// Wall-clock cap, attempts included, on retrying an open that fails with a
 /// sharing violation (#1109): antivirus, a backup or indexer, or an exiting
-/// instance on Windows holds the file for a few seconds at most. This runs on
-/// the prewarm thread, so a healthy launch never pays it; only a launch that
-/// would otherwise lose its whole session's persistence waits.
-const TRANSIENT_OPEN_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+/// instance on Windows holds the file briefly. Equal to `MIGRATION_LOCK_BUDGET`
+/// so a launch that loses persistence waits no longer than a locked one (#902).
+/// This runs on the prewarm thread; a healthy launch never pays it.
+const TRANSIENT_OPEN_RETRY_BUDGET: std::time::Duration = MIGRATION_LOCK_BUDGET;
 
-/// Whether `message` (lowercased) is a failure a retry can fix: a lock or a
-/// sharing violation, or a `CANTOPEN` on a file that exists (Windows error 32
-/// surfaces as "unable to open database file"). A missing file never counts.
+/// Whether `message` (lowercased) is a failure a short retry can fix: a
+/// `CANTOPEN` on a file that exists (Windows error 32 surfaces as "unable to
+/// open database file") or a disk I/O error. Lock/busy errors are deliberately
+/// excluded: setup already waits on them under its own shared deadline, and
+/// retrying would multiply that wait. A missing file never counts.
 fn open_error_is_transient(db_path: &Path, message: &str) -> bool {
-    const LOCKED: &[&str] = &["database is locked", "database table is locked", "busy"];
-    if LOCKED.iter().any(|needle| message.contains(needle)) {
+    if message.contains("disk i/o error") {
         return true;
     }
     message.contains("unable to open database file") && db_path.symlink_metadata().is_ok()
 }
 
 /// Runs `open`, retrying with a doubling backoff (50 ms, capped at 1 s) while
-/// it fails transiently, until `budget` of sleeping is spent. Never touches the
-/// file, so nothing is quarantined on these errors.
+/// it fails transiently, until `elapsed()` (wall-clock since the first
+/// attempt, so attempt time counts) reaches `budget`. Never touches the file,
+/// so nothing is quarantined on these errors.
 fn open_with_transient_retry<T>(
     db_path: &Path,
     budget: std::time::Duration,
+    elapsed: impl Fn() -> std::time::Duration,
     mut open: impl FnMut() -> Result<T>,
     mut sleep: impl FnMut(std::time::Duration),
 ) -> Result<T> {
-    let mut waited = std::time::Duration::ZERO;
     let mut delay = std::time::Duration::from_millis(50);
     loop {
         let err = match open() {
             Ok(value) => return Ok(value),
             Err(err) => err,
         };
-        if waited >= budget || !open_error_is_transient(db_path, &underlying_error_message(&err)) {
+        let spent = elapsed();
+        if spent >= budget || !open_error_is_transient(db_path, &underlying_error_message(&err)) {
             return Err(err);
         }
-        let step = delay.min(budget - waited);
+        let step = delay.min(budget - spent);
         log::warn!("SQLite open failed transiently ({err:#}); retrying in {step:?}");
         sleep(step);
-        waited += step;
         delay = (delay * 2).min(std::time::Duration::from_secs(1));
     }
 }
 
 fn setup_database_or_quarantine_inner(db_path: &Path) -> Result<SqliteConnection> {
+    let started = Instant::now();
     let err = match open_with_transient_retry(
         db_path,
         TRANSIENT_OPEN_RETRY_BUDGET,
+        || started.elapsed(),
         || setup_database(db_path),
         std::thread::sleep,
     ) {

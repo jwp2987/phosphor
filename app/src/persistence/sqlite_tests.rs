@@ -3234,11 +3234,12 @@ fn transient_open_failure_is_retried_until_it_succeeds() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
     std::fs::write(&database_path, b"x").expect("write");
+    let clock = std::cell::Cell::new(std::time::Duration::ZERO);
     let mut failures_left = 3;
-    let mut slept = Vec::new();
     let result = super::open_with_transient_retry(
         &database_path,
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(3),
+        || clock.get(),
         || {
             if failures_left > 0 {
                 failures_left -= 1;
@@ -3247,34 +3248,39 @@ fn transient_open_failure_is_retried_until_it_succeeds() {
                 Ok(7)
             }
         },
-        |d| slept.push(d),
+        |d| clock.set(clock.get() + d),
     );
     assert_eq!(result.expect("should succeed after retries"), 7);
-    assert_eq!(slept.len(), 3);
 }
 
-/// The retry is bounded by the budget.
+/// The retry is bounded in wall-clock time, attempt cost included.
 #[test]
-fn transient_open_retry_is_bounded() {
+fn transient_open_retry_is_bounded_including_attempt_time() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
     std::fs::write(&database_path, b"x").expect("write");
-    let budget = std::time::Duration::from_secs(5);
-    let mut total = std::time::Duration::ZERO;
+    let budget = std::time::Duration::from_secs(3);
+    let clock = std::cell::Cell::new(std::time::Duration::ZERO);
     let result: anyhow::Result<()> = super::open_with_transient_retry(
         &database_path,
         budget,
-        || Err(anyhow::anyhow!("database is locked")),
-        |d| total += d,
+        || clock.get(),
+        || {
+            // Each failed attempt itself costs 500 ms.
+            clock.set(clock.get() + std::time::Duration::from_millis(500));
+            Err(anyhow::anyhow!("unable to open database file"))
+        },
+        |d| clock.set(clock.get() + d),
     );
     assert!(result.is_err());
-    assert_eq!(total, budget);
+    assert!(clock.get() >= budget);
+    assert!(clock.get() < budget + std::time::Duration::from_millis(600));
 }
 
-/// Corruption and a missing file are not transient: no retry, so no delay
-/// before the existing quarantine / fresh-database paths.
+/// Corruption, a missing file and lock/busy errors (which setup already waits
+/// on under its own deadline) are not retried here.
 #[test]
-fn corrupt_or_missing_database_is_not_retried() {
+fn corrupt_missing_or_locked_database_is_not_retried() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let present = tempdir.path().join("warp.sqlite");
     std::fs::write(&present, b"x").expect("write");
@@ -3282,12 +3288,15 @@ fn corrupt_or_missing_database_is_not_retried() {
     for (path, message) in [
         (&present, "database disk image is malformed"),
         (&present, "file is not a database"),
+        (&present, "database is locked"),
+        (&present, "database is busy"),
         (&missing, "unable to open database file"),
     ] {
         let mut attempts = 0;
         let result: anyhow::Result<()> = super::open_with_transient_retry(
             path,
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(3),
+            || std::time::Duration::ZERO,
             || {
                 attempts += 1;
                 Err(anyhow::anyhow!(message.to_string()))
@@ -3297,4 +3306,27 @@ fn corrupt_or_missing_database_is_not_retried() {
         assert!(result.is_err());
         assert_eq!(attempts, 1);
     }
+}
+
+/// The old one-shot retry for a flaky disk is kept.
+#[test]
+fn disk_io_error_is_retried() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    let mut attempts = 0;
+    let result = super::open_with_transient_retry(
+        &path,
+        std::time::Duration::from_secs(3),
+        || std::time::Duration::ZERO,
+        || {
+            attempts += 1;
+            if attempts < 2 {
+                Err(anyhow::anyhow!("disk I/O error"))
+            } else {
+                Ok(())
+            }
+        },
+        |_| {},
+    );
+    assert!(result.is_ok());
 }
