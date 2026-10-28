@@ -1,5 +1,5 @@
 //! The "update status" row (check-for-update / downloading / ready-to-install
-//! / GitHub-fallback link) for the About page.
+//! / release-page fallback link) for the About page.
 //!
 //! **Parked, not wired up.** [`super::SHOW_AUTOUPDATE_UI`] is `false` for this
 //! fork — there is no release channel to check against yet — so
@@ -10,12 +10,11 @@
 //! "reimplement this from scratch".
 //!
 //! Before flipping the flag back on, re-verify:
-//! - The GitHub-fallback URL below, which currently points at this repo
-//!   (`jwp2987/phosphor`) as a placeholder — confirm it's still the right
-//!   releases page once real release automation exists.
-//! - That `crate::autoupdate` / `github::cached_release` are still wired to a
-//!   real release feed for this fork (they were last exercised against
-//!   Warp's own channel infrastructure).
+//! - The fallback URL below: the cached release's GitLab page
+//!   (`gitlab::release_page_url`), else `links::latest_release_url`.
+//! - That `crate::autoupdate::gitlab` still reads the feed the release
+//!   pipeline publishes -- the GitLab Releases API and the `SHA256SUMS` asset
+//!   (#1056). The port has unit tests but has never run end to end.
 //!
 //! This code has no dedicated test coverage beyond [`format_bytes`] /
 //! [`format_download_progress`] below (see `autoupdate_ui_tests.rs`) — the
@@ -23,7 +22,7 @@
 //! [`super::AboutPageWidget`].
 
 use crate::appearance::Appearance;
-use crate::autoupdate::{self, github, AutoupdateStage};
+use crate::autoupdate::{self, gitlab, AutoupdateStage};
 use warpui::elements::{
     Container, CrossAxisAlignment, Element, Flex, MainAxisAlignment, ParentElement,
 };
@@ -34,7 +33,7 @@ use super::{AboutPageAction, AboutPageWidget};
 
 impl AboutPageWidget {
     /// Renders the "update status" row: status text + action link (check for updates /
-    /// progress display / install now / GitHub fallback).
+    /// progress display / install now / release-page fallback).
     pub(super) fn render_update_status(
         &self,
         appearance: &Appearance,
@@ -47,7 +46,7 @@ impl AboutPageWidget {
         // - CheckingForUpdate: checking... (no action)
         // - DownloadingUpdate: downloading X% (X MB / Y MB) (no action)
         // - UpdateReady / UpdatedPendingRestart: ready to install + "Install now" button
-        // - UnableTo*: automatic install failed + "Download from GitHub" fallback link
+        // - UnableTo*: automatic install failed + "Download from GitLab" fallback link
         let stage = autoupdate::get_update_state(app);
         let progress = autoupdate::AutoupdateState::as_ref(app).download_progress().cloned();
 
@@ -105,10 +104,10 @@ impl AboutPageWidget {
                     "settings-about-update-available",
                     version = new_version.version.as_str()
                 );
-                // Placeholder fallback: see the module doc for why this needs
-                // re-checking before SHOW_AUTOUPDATE_UI is ever flipped back on.
-                let url = github::cached_release()
-                    .map(|r| r.html_url)
+                // See the module doc for what to re-check before
+                // SHOW_AUTOUPDATE_UI is ever flipped back on.
+                let url = gitlab::cached_release()
+                    .map(|r| gitlab::release_page_url(&r.tag_name))
                     .unwrap_or_else(crate::util::links::latest_release_url);
                 (text, UpdateAction::OpenReleasePage(url))
             }
@@ -253,7 +252,7 @@ fn format_download_progress(p: &autoupdate::DownloadProgress) -> String {
     }
 }
 
-/// The action to show in the update status area: none / check for updates / open GitHub
+/// The action to show in the update status area: none / check for updates / open the GitLab
 /// release / install now.
 enum UpdateAction {
     None,

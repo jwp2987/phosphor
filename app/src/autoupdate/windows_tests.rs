@@ -1,4 +1,6 @@
-use super::{parse_forcekill_exit_code, parse_minidump_cleanup_exit_code};
+use super::{
+    oss_installer_asset_name, parse_forcekill_exit_code, parse_minidump_cleanup_exit_code,
+};
 
 fn log(line: &str) -> Vec<u8> {
     line.to_ascii_lowercase().into_bytes()
@@ -69,4 +71,24 @@ fn parses_unsigned_minidump_cleanup_exit_code() {
 fn returns_none_for_empty_log() {
     assert_eq!(parse_forcekill_exit_code(b""), None);
     assert_eq!(parse_minidump_cleanup_exit_code(b""), None);
+}
+
+#[test]
+fn oss_installer_asset_name_matches_the_published_release_asset() {
+    // `.gitlab-ci.yml`'s release-windows-x86_64 uploads the installer under
+    // this name; the old `PhosphorSetup.exe` was never published on GitLab.
+    assert_eq!(
+        oss_installer_asset_name("x86_64").unwrap(),
+        "Phosphor-windows-x86_64-Setup.exe"
+    );
+    assert_eq!(
+        crate::autoupdate::gitlab::asset_download_url_for(
+            None,
+            "0.1.15",
+            &oss_installer_asset_name("x86_64").unwrap()
+        ),
+        "https://gitlab.com/winters-phosphor/phosphor/-/releases/v0.1.15/downloads/Phosphor-windows-x86_64-Setup.exe"
+    );
+    // No arm64 installer is published.
+    assert!(oss_installer_asset_name("aarch64").is_err());
 }

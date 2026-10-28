@@ -21,7 +21,7 @@
 # the test binary is compiled with the test profile's features, so it reports on
 # its own build, never on what the bundlers ask for. Nothing in the type system
 # connects `FEATURES="...,autoupdate"` to the flag, so the whole thing compiles and
-# every test stays green while a release bundle quietly starts polling GitHub.
+# every test stays green while a release bundle quietly starts polling the release feed.
 #
 # That is the same defect class script/check_channel_command_names guards, one
 # string over.
