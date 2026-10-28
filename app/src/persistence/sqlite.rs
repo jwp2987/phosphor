@@ -1633,7 +1633,15 @@ fn open_error_is_transient(db_path: &Path, message: &str) -> bool {
     if message.contains("disk i/o error") {
         return true;
     }
-    message.contains("unable to open database file") && db_path.symlink_metadata().is_ok()
+    // A connection the OS layer opened read-only because the file was briefly
+    // held (see `probe_writable`).
+    if message.contains("readonly database") {
+        return true;
+    }
+    // libsqlite3-sys renders SQLITE_CANTOPEN as "Unable to open the database
+    // file" (older text: "unable to open database file").
+    let cant_open = message.contains("unable to open") && message.contains("database file");
+    cant_open && db_path.symlink_metadata().is_ok()
 }
 
 /// Runs `open`, retrying with a doubling backoff (50 ms, capped at 1 s) while
@@ -1704,7 +1712,18 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
         full: ("Connecting to SQLite database at {db_url}")
     );
     run_migrations_single_writer(&mut conn, deadline)?;
+    probe_writable(&mut conn)?;
     Ok(conn)
+}
+
+/// Fails with SQLite's "attempt to write a readonly database" when the
+/// connection is read-only. Under a 1-3 s sharing violation on Windows the OS
+/// layer can fall back to a read-only open that "succeeds", after which every
+/// write of the session fails (#1118). `BEGIN IMMEDIATE` takes the write lock
+/// without changing any data, so it is a cheap, harmless probe.
+fn probe_writable(conn: &mut SqliteConnection) -> Result<()> {
+    conn.batch_execute("BEGIN IMMEDIATE; COMMIT;")?;
+    Ok(())
 }
 
 /// The total time one database setup may spend waiting for a lock another process or thread

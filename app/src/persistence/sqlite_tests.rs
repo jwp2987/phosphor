@@ -3330,3 +3330,36 @@ fn disk_io_error_is_retried() {
     );
     assert!(result.is_ok());
 }
+
+/// #1118: the real CANTOPEN text, as logged on Windows, must be recognised.
+#[test]
+fn real_cantopen_message_is_transient() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    std::fs::write(&path, b"x").expect("write");
+    let message = "Unable to open the database file".to_lowercase();
+    assert!(super::open_error_is_transient(&path, &message));
+    assert!(super::open_error_is_transient(
+        &path,
+        "attempt to write a readonly database"
+    ));
+    let missing = tempdir.path().join("nope").join("warp.sqlite");
+    assert!(!super::open_error_is_transient(&missing, &message));
+}
+
+/// #1118: a connection that is read-only is rejected by the writable probe.
+#[test]
+fn read_only_connection_fails_the_writable_probe() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&path).expect("database should initialize"));
+    use diesel::Connection as _;
+    let mut rw = diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
+    super::probe_writable(&mut rw).expect("read-write connection is writable");
+    let mut ro = super::establish_connection(path.to_str().unwrap(), true).expect("open ro");
+    let err = super::probe_writable(&mut ro).expect_err("read-only must fail");
+    assert!(super::open_error_is_transient(
+        &path,
+        &err.root_cause().to_string().to_lowercase()
+    ));
+}
