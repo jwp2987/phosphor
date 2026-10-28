@@ -33187,6 +33187,9 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
 /// a recognized `nu` invocation. `None` for every other command, which the `sh` probe resolves
 /// at runtime.
 fn shell_type_for_recognized_static_subshell_command(command: &str) -> Option<ShellType> {
+    // Detection strips a leading `VAR=x` / `env ...` prefix (#1098), so the static shell type
+    // must too: `FOO=1 pwsh` would otherwise get the `sh` probe written into PowerShell.
+    let command = crate::terminal::warpify::strip_env_prefix(command.trim());
     shell_type_for_recognized_powershell_subshell_command(command).or_else(|| {
         NU_SUBSHELL_COMMAND_REGEX
             .is_match(command.trim())

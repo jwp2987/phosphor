@@ -17813,6 +17813,10 @@ fn test_static_subshell_commands_resolve_to_the_shell_type_without_the_sh_probe(
         ("  nu  ", Some(ShellType::Nu)),
         ("/opt/homebrew/bin/nu --login", Some(ShellType::Nu)),
         ("nushell -n", Some(ShellType::Nu)),
+        // An environment prefix does not change the shell (#1098).
+        ("FOO=1 pwsh", Some(ShellType::PowerShell)),
+        ("env -i FOO=1 nu", Some(ShellType::Nu)),
+        ("FOO=1 bash", None),
         // These need the probe (or are not subshells at all).
         ("bash", None),
         ("fish", None),

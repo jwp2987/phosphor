@@ -546,6 +546,10 @@ impl SingletonEntity for WarpifySettings {}
 /// logic.
 impl WarpifySettings {
     fn is_built_in_subshell_match(command: &str) -> bool {
+        // `VAR=x zsh` and `env [-i] VAR=x zsh` start the same shell as `zsh`; the built-in
+        // patterns are anchored on the command word, so match them against the command with
+        // its environment prefix removed (#1098).
+        let command = super::strip_env_prefix(command);
         for command_regex in SUBSHELL_COMMAND_REGEXES.iter() {
             if command_regex.is_match(command) {
                 return true;
