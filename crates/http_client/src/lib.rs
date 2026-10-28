@@ -17,35 +17,21 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use warp_core::{
     channel::{Channel, ChannelState},
-    execution_mode,
-    operating_system_info::OperatingSystemInfo,
     report_error,
 };
 
 pub mod proxy;
 pub use proxy::{ProxyConfig, ProxyMode, current_proxy_config, set_global_proxy_config};
 
-pub mod headers {
-    /// Custom Zap header indicating the version of the Zap app.
-    pub const CLIENT_RELEASE_VERSION_HEADER_KEY: &str = "X-Zap-Client-Version";
-
-    /// Custom Zap header indicating the OS category the request was sent from.
-    pub(crate) const WARP_OS_CATEGORY: &str = "X-Zap-OS-Category";
-    /// Custom Zap header indicating the OS name the request was sent from. On Linux this is the
-    /// name of the distribution. On all other platforms it should be equivalent to
-    /// `WARP_OS_CATEGORY`.
-    pub(crate) const WARP_OS_NAME: &str = "X-Zap-OS-Name";
-    /// Custom Zap header indicating the version of the operating system. On Linux this is the
-    /// version of the distribution, not the Linux kernel version.
-    pub(crate) const WARP_OS_VERSION: &str = "X-Zap-OS-Version";
-
-    /// Custom Zap header indicating the linux kernel version. This is only sent from Linux.
-    pub(crate) const WARP_OS_LINUX_KERNEL_VERSION: &str = "X-Zap-OS-Linux-Kernel-Version";
-
-    /// Custom Zap header indicating the client role. We don't use the User-Agent header
-    /// because it can't be set from WASM.
-    pub(crate) const WARP_CLIENT_ID: &str = "X-Zap-Client-ID";
-}
+// No client-identifying headers are attached to outbound requests (#1062).
+//
+// The Warp/Zap ancestry stamped `X-Zap-Client-ID`, `X-Zap-Client-Version` and the
+// `X-Zap-OS-*` family (category, distro name, distro version, Linux kernel version) onto every
+// request, for Warp's own server to read. Phosphor has no first-party server, so every request
+// goes to a third party -- BYOP providers, models.dev, release checks, downloads, OAuth and MCP
+// endpoints -- and those headers were only an install fingerprint handed to all of them. They
+// are deliberately gone. A `User-Agent` was never set here; callers that need one set it
+// themselves.
 
 /// The environment variable containing extra HTTP headers to attach to requests.
 /// Only read when the channel is `Channel::Integration`. The value is a newline-separated
@@ -178,96 +164,38 @@ impl Client {
         self.after_response_received = Some(hook_fn);
     }
 
-    fn builder(
-        &self,
-        wrapped: reqwest::RequestBuilder,
-        include_warp_headers: bool,
-    ) -> RequestBuilder<'_> {
-        let mut builder = RequestBuilder {
+    fn builder(&self, wrapped: reqwest::RequestBuilder) -> RequestBuilder<'_> {
+        Self::add_integration_extra_headers(RequestBuilder {
             wrapped,
             client: self,
             serialized_payload: None,
             prevent_sleep_reason: None,
-        };
-
-        if include_warp_headers {
-            builder = Self::add_warp_http_headers(builder);
-        }
-
-        builder
-    }
-
-    pub fn get<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
-        self.builder(
-            self.wrapped.get(url.clone()),
-            Self::include_warp_http_headers(url),
-        )
-    }
-
-    pub fn post<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
-        self.builder(
-            self.wrapped.post(url.clone()),
-            Self::include_warp_http_headers(url),
-        )
-    }
-
-    pub fn patch<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
-        self.builder(
-            self.wrapped.patch(url.clone()),
-            Self::include_warp_http_headers(url),
-        )
-    }
-
-    pub fn put<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
-        self.builder(
-            self.wrapped.put(url.clone()),
-            Self::include_warp_http_headers(url),
-        )
-    }
-
-    pub fn delete<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
-        self.builder(
-            self.wrapped.delete(url.clone()),
-            Self::include_warp_http_headers(url),
-        )
-    }
-
-    /// Determines whether a request should carry Zap-specific headers. Only same-origin requests carry the custom header.
-    #[cfg(target_family = "wasm")]
-    fn include_warp_http_headers<U: IntoUrl + Clone>(url: U) -> bool {
-        url.into_url().is_ok_and(|url| {
-            url.host_str().is_some_and(|dest_host| {
-                let window_hostname = gloo::utils::window()
-                    .location()
-                    .hostname()
-                    .expect("Can't get window hostname");
-
-                // If the request is going to the current host, the destination host should
-                // exactly match the window host.
-                // reqwest host_str() see https://docs.rs/reqwest/latest/reqwest/struct.Url.html#method.domain;
-                // gloo hostname() see https://developer.mozilla.org/en-US/docs/Web/API/Location/hostname.
-                window_hostname == dest_host
-            })
         })
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    fn include_warp_http_headers<U: IntoUrl + Clone>(_url: U) -> bool {
-        true
+    pub fn get<U: IntoUrl>(&self, url: U) -> RequestBuilder<'_> {
+        self.builder(self.wrapped.get(url))
     }
 
-    fn add_warp_http_headers(mut builder: RequestBuilder) -> RequestBuilder {
-        // Include the client ID header.
-        if let Some(client_id) = execution_mode::current_client_id() {
-            builder = builder.header(headers::WARP_CLIENT_ID, client_id);
-        }
+    pub fn post<U: IntoUrl>(&self, url: U) -> RequestBuilder<'_> {
+        self.builder(self.wrapped.post(url))
+    }
 
-        // If there's an app version, include it as an HTTP request header.
-        if let Some(app_version) = ChannelState::app_version() {
-            builder = builder.header(headers::CLIENT_RELEASE_VERSION_HEADER_KEY, app_version);
-        }
+    pub fn patch<U: IntoUrl>(&self, url: U) -> RequestBuilder<'_> {
+        self.builder(self.wrapped.patch(url))
+    }
 
-        // On integration builds, attach any extra headers from the environment.
+    pub fn put<U: IntoUrl>(&self, url: U) -> RequestBuilder<'_> {
+        self.builder(self.wrapped.put(url))
+    }
+
+    pub fn delete<U: IntoUrl>(&self, url: U) -> RequestBuilder<'_> {
+        self.builder(self.wrapped.delete(url))
+    }
+
+    /// On integration builds, attach any extra headers from the environment. This is test
+    /// plumbing (never read outside `Channel::Integration`), not a client identifier.
+    fn add_integration_extra_headers(mut builder: RequestBuilder) -> RequestBuilder {
         if ChannelState::channel() == Channel::Integration
             && let Ok(raw) = std::env::var(EXTRA_HTTP_HEADERS_ENV_VAR)
         {
@@ -293,38 +221,6 @@ impl Client {
                         );
                     }
                 }
-            }
-        }
-
-        // Headers indicating the details of the client's operating system, if available here at runtime.
-        if let Ok(os_system_info) = OperatingSystemInfo::get() {
-            // Operating system category.
-            let category = os_system_info.category().to_string();
-            if let Ok(category) = HeaderValue::from_str(&category) {
-                builder = builder.header(headers::WARP_OS_CATEGORY, category);
-            }
-
-            // Operating system name.
-            builder = builder.header(
-                headers::WARP_OS_NAME,
-                HeaderValue::from_static(os_system_info.name()),
-            );
-
-            // Operating system version.
-            if let Some(version) = os_system_info
-                .version()
-                .and_then(|version| HeaderValue::from_str(version).ok())
-            {
-                builder = builder.header(headers::WARP_OS_VERSION, version);
-            }
-
-            // Linux kernel version.
-            if let Some(linux_kernel_version) = os_system_info
-                .linux_kernel_version()
-                .and_then(|kernel_version| HeaderValue::from_str(kernel_version).ok())
-            {
-                builder =
-                    builder.header(headers::WARP_OS_LINUX_KERNEL_VERSION, linux_kernel_version);
             }
         }
 
@@ -669,17 +565,12 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Client {
 
     fn call(&'c self, request: oauth2::HttpRequest) -> Self::Future {
         Box::pin(async move {
-            let include_warp_headers = Self::include_warp_http_headers(request.uri().to_string());
             let builder = reqwest::RequestBuilder::from_parts(
                 self.wrapped.clone(),
                 request.try_into().map_err(Box::new)?,
             );
 
-            let response = self
-                .builder(builder, include_warp_headers)
-                .send()
-                .await
-                .map_err(Box::new)?;
+            let response = self.builder(builder).send().await.map_err(Box::new)?;
 
             let mut builder = ::http::Response::builder().status(response.status());
 
@@ -699,3 +590,7 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Client {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;
