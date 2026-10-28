@@ -42,9 +42,13 @@ define_settings_group!(GeneralSettings, settings: [
         toml_path: "general.persist_conversations",
         description: "Whether to persist agent conversations to the local database so they appear in /conversations history. Independent of session restore.",
     },
+    // Opt-in (#1073), unlike Warp: the app must not add itself to the OS
+    // startup items without being asked. Installs that were registered under
+    // the old default and never set this explicitly are unregistered on the
+    // next launch by `login_item::maybe_register_app_as_login_item`.
     add_app_as_login_item: LoginItem {
         type: bool,
-        default: true,
+        default: false,
         supported_platforms: SupportedPlatforms::OR(
             Box::new(SupportedPlatforms::MAC),
             Box::new(SupportedPlatforms::WINDOWS),
@@ -52,7 +56,7 @@ define_settings_group!(GeneralSettings, settings: [
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "general.login_item",
-        description: "Whether to launch the app automatically when you log in.",
+        description: "Whether to launch the app automatically when you log in. Off by default.",
     },
     // Records whether the app has been added as a login item.
     // If it has, we don't try to add it again unless the user explicitly
