@@ -2275,6 +2275,9 @@ pub struct TerminalViewRenderContext {
     /// The pending command-approval card whose focus should hand printable keys to the agent
     /// input (#1028).
     pub approval_card_view_id: Option<EntityId>,
+    /// AI blocks and their settled action cards: printable keys typed while one of them holds
+    /// focus are routed as if the terminal held it (#1095).
+    pub settled_ai_focus_view_ids: Vec<EntityId>,
     /// The SSH-extension "Choose your experience" card, if one is showing: printable keys typed
     /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
     /// card's "choose an option first" hint instead of dropping them silently (#1087).
@@ -7771,6 +7774,12 @@ impl TerminalView {
                 self.redetermine_focus_after_action_event(ctx);
                 // The command is done; stop reclaiming so a later click into a block sticks.
                 self.end_focus_reclaim();
+                // #1095: an action that finishes (or errors, or times out) with focus still on
+                // its card hands focus back.
+                self.reclaim_focus_from_settled_ai_target(
+                    |_, block, card, _| block.action_card_view_id(action_id) == Some(card),
+                    ctx,
+                );
                 // Refresh git line changes when files are potentially updated by an action
                 let action_result = action_model
                     .as_ref(ctx)
@@ -9488,6 +9497,91 @@ impl TerminalView {
             .pending_command_card_view_id(app)
     }
 
+    /// The views whose focus is focus nowhere for printable keys (#1095): every AI block itself
+    /// (it binds only Enter) and each block's settled command / MCP cards (no longer awaiting a
+    /// decision, not in edit mode). Keys typed while one of them holds focus are routed as if
+    /// the terminal held it, instead of being dropped. The pending approval card is not here:
+    /// it has its own route (#1028).
+    fn settled_ai_focus_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
+        let mut ids = Vec::new();
+        for metadata in self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+        {
+            ids.push(metadata.ai_block_handle.id());
+            ids.extend(
+                metadata
+                    .ai_block_handle
+                    .as_ref(app)
+                    .settled_action_card_view_ids(app),
+            );
+        }
+        ids
+    }
+
+    /// Whether the window's focus is exactly on one of [`Self::settled_ai_focus_view_ids`].
+    fn typed_on_settled_ai_target(&self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(focused) = ctx.focused_view_id(ctx.window_id()) else {
+            return false;
+        };
+        self.settled_ai_focus_view_ids(ctx).contains(&focused)
+    }
+
+    /// Whether the window's focus is exactly on an AI block (the block itself, not a child of
+    /// it) that has an action awaiting the user's confirmation. Printable keys typed there are
+    /// for the agent input, as on the pending approval card (#1028, #1095).
+    fn typed_on_ai_block_awaiting_confirmation(&self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(focused) = ctx.focused_view_id(ctx.window_id()) else {
+            return false;
+        };
+        self.rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                metadata.ai_block_handle.id() == focused
+                    && metadata
+                        .ai_block_handle
+                        .as_ref(ctx)
+                        .is_blocked_on_user_confirmation(ctx)
+            })
+    }
+
+    /// Takes focus back to the input when an action or a turn ends with focus still on a card
+    /// that has settled, or on an AI block that is not waiting for the user's confirmation
+    /// (#1095). After an approved MCP call timed out and the agent replied, focus was still on
+    /// the finished card: what the user typed was dropped and Enter went to the card.
+    ///
+    /// Only the cards `is_target_card` picks (given the block's view id, the block and the card's
+    /// view id) are considered -- the finished action's own card, or the finished turn's cards --
+    /// so a click into some other, older card (to select its text) is left alone. An AI block (or
+    /// its pending card) awaiting confirmation keeps focus, so its Enter still approves.
+    fn reclaim_focus_from_settled_ai_target(
+        &mut self,
+        is_target_card: impl Fn(EntityId, &AIBlock, EntityId, &AppContext) -> bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(focused) = ctx.focused_view_id(ctx.window_id()) else {
+            return;
+        };
+        let is_settled = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                let block = metadata.ai_block_handle.as_ref(ctx);
+                if metadata.ai_block_handle.id() == focused {
+                    !block.is_blocked_on_user_confirmation(ctx)
+                } else {
+                    block.settled_action_card_view_ids(ctx).contains(&focused)
+                        && is_target_card(metadata.ai_block_handle.id(), block, focused, ctx)
+                }
+            });
+        if is_settled {
+            self.redetermine_terminal_focus_for_user_takeover(ctx);
+        }
+    }
+
     /// Returns `true` if focus is inside any AI block (e.g. the user is arrowing
     /// through a code diff's hunks).
     /// Upstream `edf83549f5` (#12107); see `focus_ai_block_if_self_focused`.
@@ -10452,13 +10546,23 @@ impl TerminalView {
         // #1028: while the pending approval card holds focus, printable keys are for the agent
         // input (a follow-up), never the running command underneath, even when the pty would take
         // them.
-        let typed_on_approval_card = self.typed_on_approval_card(ctx);
+        // #1095: so is an AI block that holds focus itself while one of its actions awaits
+        // confirmation (its Enter approves).
+        let typed_on_approval_card =
+            self.typed_on_approval_card(ctx) || self.typed_on_ai_block_awaiting_confirmation(ctx);
+        // #1095: focus left on a settled action card or an AI block takes no printable keys;
+        // route them as if the terminal held focus, and let focus follow them.
+        let typed_on_settled_ai_target =
+            !typed_on_approval_card && self.typed_on_settled_ai_target(ctx);
         let written_to_pty =
             !typed_on_approval_card && self.should_write_typed_chars_to_pty(ctx) && {
                 self.highlighted_link.invalidate();
                 self.report_possible_typeahead(characters);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
             };
+        if written_to_pty && typed_on_settled_ai_target {
+            self.focus_terminal(ctx);
+        }
         // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
         // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
         let refused_with_hidden_input = !written_to_pty
@@ -10491,7 +10595,7 @@ impl TerminalView {
             // #1028: keys typed while the approval card holds focus move focus to the input
             // with them, so a following Enter submits the follow-up instead of reaching the
             // card's Enter -> Run binding.
-            if typed_on_approval_card {
+            if typed_on_approval_card || typed_on_settled_ai_target {
                 self.focus_input_box(ctx);
             }
             self.input
@@ -23861,6 +23965,12 @@ impl TerminalView {
                 }
                 self.end_focus_reclaim();
                 self.redetermine_terminal_focus(ctx);
+                // #1095: the turn is over; focus left on one of its cards goes back to the input.
+                let finished_block_id = block.id();
+                self.reclaim_focus_from_settled_ai_target(
+                    |candidate_block_id, _, _, _| candidate_block_id == finished_block_id,
+                    ctx,
+                );
                 ctx.notify();
             }
             AIBlockEvent::OpenCodeWithDiff { view } => {
@@ -26953,6 +27063,7 @@ impl TerminalView {
                 .expect("terminal should upgrade")
                 .is_focused(app),
             approval_card_view_id: self.approval_card_view_id(app),
+            settled_ai_focus_view_ids: self.settled_ai_focus_view_ids(app),
             ssh_choice_card_view_id: self
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),

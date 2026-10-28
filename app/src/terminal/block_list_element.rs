@@ -718,6 +718,8 @@ pub struct BlockListElement {
     is_terminal_focused: bool,
     /// See `TerminalViewRenderContext::approval_card_view_id` (#1028).
     approval_card_view_id: Option<EntityId>,
+    /// See `TerminalViewRenderContext::settled_ai_focus_view_ids` (#1095).
+    settled_ai_focus_view_ids: Vec<EntityId>,
     /// See `TerminalViewRenderContext::ssh_choice_card_view_id` (#1087).
     ssh_choice_card_view_id: Option<EntityId>,
     is_terminal_selecting: bool,
@@ -1083,6 +1085,7 @@ impl BlockListElement {
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
             approval_card_view_id: terminal_view_render_context.approval_card_view_id,
+            settled_ai_focus_view_ids: terminal_view_render_context.settled_ai_focus_view_ids,
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
@@ -1504,7 +1507,17 @@ impl BlockListElement {
         let on_ssh_choice_card = self
             .ssh_choice_card_view_id
             .is_some_and(|card| ctx.live_focus_of(card) == Some(true));
-        if (self.terminal_focused_now(ctx) || on_approval_card || on_ssh_choice_card)
+        // #1095: focus left on an AI block or a settled (finished, running, queued) action card
+        // is focus nowhere for printable keys; the terminal view routes them as if it held
+        // focus, instead of the element dropping them.
+        let on_settled_ai_target = self
+            .settled_ai_focus_view_ids
+            .iter()
+            .any(|view| ctx.live_focus_is_exactly(*view) == Some(true));
+        if (self.terminal_focused_now(ctx)
+            || on_approval_card
+            || on_ssh_choice_card
+            || on_settled_ai_target)
             && !chars.is_empty()
         {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));

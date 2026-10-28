@@ -276,8 +276,15 @@ fn non_denylisted_result_is_not_labelled_here() {
 // input (a sibling view, not a descendant of the card) is enough on its own to keep Enter from
 // reaching Accept.
 mod enter_context_predicate_tests {
-    use super::super::REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT;
+    use std::sync::Arc;
+
+    use super::super::{
+        REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT, REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT,
+        accepts_user_decision,
+    };
     use super::*;
+    use crate::ai::agent::task::TaskId;
+    use crate::ai::agent::{AIAgentActionId, AIAgentActionResult, AIAgentActionResultType};
 
     #[test]
     fn matches_when_the_card_itself_is_on_the_responder_chain() {
@@ -286,8 +293,45 @@ mod enter_context_predicate_tests {
         context
             .set
             .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        context
+            .set
+            .insert(REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT);
 
         assert!(enter_accepts_requested_command_context().eval(&context));
+    }
+
+    /// #1095: a finished MCP card is still rejectable (MCP calls keep Reject in every state,
+    /// #850) but has nothing to accept. Enter on it dispatched Accept because the Enter binding
+    /// was gated on the Rejectable flag.
+    #[test]
+    fn does_not_match_a_card_that_is_rejectable_but_not_awaiting_accept() {
+        let mut context = Context::default();
+        context.set.insert(RequestedCommandView::ui_name());
+        context
+            .set
+            .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+
+        assert!(!enter_accepts_requested_command_context().eval(&context));
+    }
+
+    /// #1095: only an action blocked on the user's confirmation can be accepted.
+    #[test]
+    fn only_a_blocked_action_accepts_a_user_decision() {
+        assert!(accepts_user_decision(Some(&AIActionStatus::Blocked)));
+        let finished = AIActionStatus::Finished(Arc::new(AIAgentActionResult {
+            id: AIAgentActionId::from("action".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result: AIAgentActionResultType::InitProject,
+        }));
+        for status in [
+            AIActionStatus::Queued,
+            AIActionStatus::Preprocessing,
+            AIActionStatus::RunningAsync,
+            finished,
+        ] {
+            assert!(!accepts_user_decision(Some(&status)), "{status:?}");
+        }
+        assert!(!accepts_user_decision(None));
     }
 
     /// #871: once the decision is made (the command is running or finished) the card is no
@@ -321,6 +365,9 @@ mod enter_context_predicate_tests {
         context
             .set
             .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        context
+            .set
+            .insert(REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT);
         context.set.insert(EDIT_MODE_OPEN_KEYMAP_CONTEXT);
 
         assert!(!enter_accepts_requested_command_context().eval(&context));
