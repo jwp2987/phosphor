@@ -626,6 +626,61 @@ fn bash_warp_title_shows_first_line_and_ellipsis_for_multiline_commands() {
     }
 }
 
+/// #1094: with a PROMPT_COMMAND already set before bash-preexec installs (systemd's
+/// `__systemd_osc_context_precmdline`, a distro's or the user's), `__bp_install` left its no-op
+/// `:` token as the last PROMPT_COMMAND line. `__bp_in_prompt_command` then matched every command
+/// whose first simple command is `:`, so `while :; do seq 1 100000; done` never got a Preexec: no
+/// running title, and the loop's whole output landed in the block's command grid and became the
+/// tab title after Ctrl-C. Runs the real bash-preexec install of `bash.sh`; skipped, visibly,
+/// when bash is missing.
+#[cfg(unix)]
+#[test]
+fn bash_preexec_install_leaves_no_colon_token_in_prompt_command() {
+    use std::process::Command;
+
+    let bash = include_str!("../../assets/bundled/bootstrap/bash.sh");
+    let start = bash
+        .find(" function define_bashpreexec_functions() {\n")
+        .expect("bash.sh lost `define_bashpreexec_functions`");
+    let end = start
+        + bash[start..]
+            .find("\n }\n")
+            .expect("define_bashpreexec_functions has no end")
+        + 4;
+    let function = &bash[start..end];
+    let script = format!(
+        "__warp_run_relaxed() {{ \"$@\"; }}\n{function}\ndefine_bashpreexec_functions\n\
+         PROMPT_COMMAND=$1\n__bp_install_after_session_init\n__bp_install\n\
+         if __bp_in_prompt_command ':'; then echo COLON; else echo CLEAN; fi\n\
+         printf '%s|' \"${{PROMPT_COMMAND[@]}}\"\n"
+    );
+    for existing in ["", "__systemd_osc_context_precmdline", "a; b", "x\ny"] {
+        let output = match Command::new("bash")
+            .args(["--noprofile", "--norc", "-c", &script, "bash", existing])
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("skipping: bash is not installed ({err})");
+                return;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.starts_with("CLEAN\n"),
+            "existing PROMPT_COMMAND {existing:?}: `:` is still a prompt command: {stdout:?} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The user's own commands are kept, between our two hooks.
+        assert!(
+            stdout.contains("__bp_precmd_invoke_cmd")
+                && stdout.contains("__bp_interactive_mode")
+                && stdout.contains(existing),
+            "existing PROMPT_COMMAND {existing:?} was not kept: {stdout:?}"
+        );
+    }
+}
+
 /// #934: a native command that inherits the terminal's stdin makes .NET reconfigure the tty
 /// around the child, which drops the Enter the user typed ahead while the prompt ran (two lines
 /// then run as one). Every native command the PowerShell bootstrap runs must get a redirected

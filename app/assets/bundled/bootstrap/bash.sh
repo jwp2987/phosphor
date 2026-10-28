@@ -420,6 +420,15 @@
          existing_prompt_command="${existing_prompt_command//$__bp_install_string/:}" # no-op
          existing_prompt_command="${existing_prompt_command//$'\n':$'\n'/$'\n'}" # remove known-token only
          existing_prompt_command="${existing_prompt_command//$'\n':;/$'\n'}" # remove known-token only
+ #### Phosphor (#1094): __bp_install_after_session_init appends the install string LAST, so
+ #### with any PROMPT_COMMAND already set (a distro's, e.g. systemd's
+ #### __systemd_osc_context_precmdline, or the user's) the no-op token is the final line and
+ #### neither pattern above removes it. The `:` it left in PROMPT_COMMAND made
+ #### __bp_in_prompt_command match every command whose first simple command is `:` --
+ #### `while :; do ...; done` -- so preexec never ran: no Preexec hook, no title, and the
+ #### loop's whole output landed in the block's command grid (and became the tab title).
+         existing_prompt_command="${existing_prompt_command%$'\n':}" # known-token at the end
+         existing_prompt_command="${existing_prompt_command#:$'\n'}" # or at the start
          __bp_sanitize_string existing_prompt_command "$existing_prompt_command"
          if [[ "${existing_prompt_command:-:}" == ":" ]]; then
              existing_prompt_command=
