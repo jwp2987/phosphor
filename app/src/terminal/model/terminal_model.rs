@@ -1615,6 +1615,11 @@ impl TerminalModel {
         self.event_proxy.are_any_events_pending()
     }
 
+    #[cfg(any(test, feature = "integration_tests"))]
+    pub fn is_ignoring_bootstrapping_messages(&self) -> bool {
+        self.ignore_bootstrapping_messages
+    }
+
     pub fn ignore_bootstrapping_messages(&mut self) {
         self.ignore_bootstrapping_messages = true;
     }

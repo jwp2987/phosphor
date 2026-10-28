@@ -10174,7 +10174,12 @@ impl TerminalView {
         // #1113: keep the line being dropped (edited as the user edits it) so it can be shown,
         // never run, once it is over. Not for the setup dialog, which owns its own keys.
         if !dialog_up && (gate_drops || self.ssh_drop_line_through_enter) {
-            if self.ssh_held_typing.key(characters) == SshHeldKey::DiscardedLine {
+            self.discard_ssh_held_if_output_changed(ctx);
+            let discarded = self.ssh_held_typing.key(characters) == SshHeldKey::DiscardedLine;
+            if self.ssh_held_typing != SshHeldTyping::default() {
+                self.ssh_held_typing.output_mark = Some(self.ssh_output_mark());
+            }
+            if discarded {
                 self.show_ssh_typing_toast(
                     "A line with pasted or special keys typed while the SSH session connected was discarded",
                     ctx,
@@ -10224,6 +10229,7 @@ impl TerminalView {
     /// #1113: shows the line dropped during an ssh connect in the input editor, UNEXECUTED, in
     /// front of whatever the editor holds. Waits while a running command hides the editor.
     fn flush_ssh_held_typing(&mut self, ctx: &mut ViewContext<Self>) {
+        self.discard_ssh_held_if_output_changed(ctx);
         if self.ssh_held_typing.text.is_empty() || self.ssh_held_typing.tainted {
             self.ssh_held_typing = SshHeldTyping::default();
             return;
@@ -10243,6 +10249,35 @@ impl TerminalView {
             },
             ctx,
         );
+    }
+
+    /// The ssh block's output so far, as (block, visible length): a change means new output.
+    fn ssh_output_mark(&self) -> (BlockId, usize) {
+        let model = self.model.lock();
+        let len = model
+            .block_list()
+            .active_block()
+            .output_grid()
+            .contents_to_string(false, None)
+            .len();
+        (model.active_block_id().clone(), len)
+    }
+
+    /// #1113: held text is only ever shown if NO output arrived after it was typed: a banner, a
+    /// prompt or anything else may mean it was typed into a password prompt. Any change of the
+    /// output since the last held key discards it, with a notice that does not echo it.
+    fn discard_ssh_held_if_output_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some((block, len)) = self.ssh_held_typing.output_mark.clone() else {
+            return;
+        };
+        let (now_block, now_len) = self.ssh_output_mark();
+        if now_block == block && now_len != len {
+            self.ssh_held_typing = SshHeldTyping::default();
+            self.show_ssh_typing_toast(
+                "Text typed while the SSH session connected was discarded because output appeared",
+                ctx,
+            );
+        }
     }
 
     /// Drops the held text with a notice (a prompt arrived: it may be a password).
@@ -10485,12 +10520,7 @@ impl TerminalView {
         if visible {
             gate.output_seen = true;
         }
-        let drops = gate.drops_keys(alt_screen);
-        if visible {
-            // #1113: text typed before any output existed may be a password: never kept.
-            self.ssh_held_typing = SshHeldTyping::default();
-        }
-        drops
+        gate.drops_keys(alt_screen)
     }
 
     /// Where the remote (ssh) shell's bootstrap stands (#1001): `None` when no ssh-style session
@@ -14061,12 +14091,8 @@ impl TerminalView {
             {
                 gate.first_prompt_seen = true;
             }
-            // #1113: visible output (a prompt, a banner) ends the blind window: what was typed
-            // before it may be a password and is never shown later. Checked before the gate can
-            // release in this very refresh.
-            if self.ssh_held_typing != SshHeldTyping::default() {
-                self.ssh_connect_gate_drops_keys();
-            }
+            // Before the gate can release in this very refresh.
+            self.discard_ssh_held_if_output_changed(ctx);
             self.refresh_ssh_connect_gate();
         }
         // #1113: the dropped line is shown once the connect is over and the editor is back (a
@@ -33309,6 +33335,8 @@ struct SshHeldTyping {
     tainted: bool,
     /// An earlier complete line was replaced by a later one (it was not run).
     superseded: bool,
+    /// The ssh block's output when the last key was recorded (#1113).
+    output_mark: Option<(BlockId, usize)>,
 }
 
 impl SshHeldTyping {
