@@ -1035,38 +1035,146 @@ fn bootstrap_and_builtin_pwsh_commands_are_module_qualified() {
 
 mod real_shells {
     use super::*;
-    use std::process::Command;
+    use std::io::Read as _;
+    use std::process::{Command, ExitStatus, Stdio};
+    use std::sync::{Arc, Mutex, OnceLock, mpsc};
+    use std::time::{Duration, Instant};
 
+    /// How long one shell invocation may run before it is killed and reported as a TIMEOUT.
+    /// Generous because a cold pwsh (the host plus the child the wrapper starts) can take many
+    /// seconds on a loaded box; still short enough that nextest's own kill (60 s by default,
+    /// see `.config/nextest.toml`) does not swallow the report of a test's first hang.
+    const HANG_GUARD: Duration = Duration::from_secs(45);
+    /// After the shell exits, how long a descendant that inherited the output pipes may keep
+    /// them open before the output read so far is taken as final.
+    const PIPE_GRACE: Duration = Duration::from_secs(10);
+
+    /// The path of `shell`'s binary, looked up once per test process (each lookup of pwsh is a
+    /// full .NET start of its own).
     fn program(shell: ShellType) -> Option<String> {
-        let name = match shell {
-            ShellType::Bash => "bash",
-            ShellType::Zsh => "zsh",
-            ShellType::Fish => "fish",
-            ShellType::PowerShell => "pwsh",
-            ShellType::Nu => "nu",
+        static FOUND: [OnceLock<Option<String>>; 5] = [const { OnceLock::new() }; 5];
+        let (slot, name) = match shell {
+            ShellType::Bash => (0, "bash"),
+            ShellType::Zsh => (1, "zsh"),
+            ShellType::Fish => (2, "fish"),
+            ShellType::PowerShell => (3, "pwsh"),
+            ShellType::Nu => (4, "nu"),
         };
-        let mut candidates = vec![name.to_owned()];
-        if let Ok(home) = std::env::var("HOME") {
-            candidates.push(format!("{home}/.local/bin/{name}"));
-        }
-        candidates.into_iter().find(|c| {
-            Command::new(c)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o| o.status.success())
-        })
+        FOUND[slot]
+            .get_or_init(|| {
+                let mut candidates = vec![name.to_owned()];
+                if let Ok(home) = std::env::var("HOME") {
+                    candidates.push(format!("{home}/.local/bin/{name}"));
+                }
+                candidates.into_iter().find(|c| {
+                    Command::new(c)
+                        .arg("--version")
+                        .output()
+                        .is_ok_and(|o| o.status.success())
+                })
+            })
+            .clone()
     }
 
-    /// Runs `script` in a fresh non-interactive `shell` (no rc files); `None` if it is not installed.
+    /// Everything one real-shell run produced, so that a failing assertion can say *how* the
+    /// shell ended (exit code, signal, or killed by the hang guard) and what it wrote where.
+    pub struct Ran {
+        pub stdout: String,
+        pub stderr: String,
+        /// `None` only if the child could not be reaped after a kill.
+        pub status: Option<ExitStatus>,
+        pub elapsed: Duration,
+        /// Killed by [`HANG_GUARD`]: the output is partial and must not count as a result.
+        pub timed_out: bool,
+        /// A descendant still held stdout/stderr open [`PIPE_GRACE`] after the shell ended.
+        pub pipes_held_open: bool,
+    }
+
+    impl Ran {
+        /// stdout followed by stderr: what the assertions search.
+        pub fn out(&self) -> String {
+            format!("{}{}", self.stdout, self.stderr)
+        }
+
+        pub fn code(&self) -> Option<i32> {
+            self.status.and_then(|status| status.code())
+        }
+    }
+
+    impl std::fmt::Display for Ran {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.timed_out {
+                write!(
+                    f,
+                    "TIMEOUT: killed by the {HANG_GUARD:?} hang guard after {:.1?}",
+                    self.elapsed
+                )?;
+            } else {
+                match self.status {
+                    Some(status) => write!(f, "{status} after {:.1?}", self.elapsed)?,
+                    None => write!(f, "no exit status after {:.1?}", self.elapsed)?,
+                }
+            }
+            if self.pipes_held_open {
+                write!(
+                    f,
+                    " (a descendant still held the output pipes open {PIPE_GRACE:?} later)"
+                )?;
+            }
+            write!(
+                f,
+                "\n--- stdout ({} bytes) ---\n{}\n--- stderr ({} bytes) ---\n{}",
+                self.stdout.len(),
+                self.stdout,
+                self.stderr.len(),
+                self.stderr
+            )
+        }
+    }
+
+    /// Reads `pipe` to EOF on its own thread, so a chatty child can never block on a full pipe
+    /// while we wait for it. What has been read so far stays readable even if EOF never comes
+    /// (a descendant that inherited the pipe outlives the shell).
+    fn drain(
+        mut pipe: impl std::io::Read + Send + 'static,
+    ) -> (Arc<Mutex<Vec<u8>>>, mpsc::Receiver<()>) {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let (done, finished) = mpsc::channel();
+        let sink = Arc::clone(&bytes);
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => sink
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            let _ = done.send(());
+        });
+        (bytes, finished)
+    }
+
+    /// Runs `script` in a fresh non-interactive `shell` (no rc files) and reports everything about
+    /// how it went; `None` only if the shell is not installed. A shell that is installed but
+    /// cannot be started or waited on is a panic, never a silent skip.
     ///
-    /// The 30 s hang guard lives here rather than in an external `timeout`: on Windows that name
+    /// The hang guard lives here rather than in an external `timeout`: on Windows that name
     /// resolves to `TIMEOUT.EXE` (a sleep command), so pwsh never ran and every pwsh case failed
     /// with "Default option is not allowed more than '1' time(s)".
-    pub fn run(shell: ShellType, script: &str) -> Option<(String, Option<i32>)> {
-        use std::io::Read as _;
-        use std::process::Stdio;
-        use std::time::{Duration, Instant};
-
+    ///
+    /// For pwsh, `cache_dir` (when given) becomes `XDG_CACHE_HOME`, so concurrent pwsh processes
+    /// do not share one `~/.cache/powershell` (startup JIT profile, module analysis cache); the
+    /// update check and telemetry, background work that touches the same directory, are off.
+    pub fn run_detailed(
+        shell: ShellType,
+        script: &str,
+        cache_dir: Option<&std::path::Path>,
+    ) -> Option<Ran> {
         let prog = program(shell)?;
         let mut cmd = Command::new(&prog);
         match shell {
@@ -1082,41 +1190,66 @@ mod real_shells {
             ]),
             ShellType::Nu => cmd.args(["--no-config-file", "-c", script]),
         };
+        if shell == ShellType::PowerShell {
+            cmd.env("POWERSHELL_TELEMETRY_OPTOUT", "1")
+                .env("POWERSHELL_UPDATECHECK", "Off");
+            if let Some(dir) = cache_dir {
+                cmd.env("XDG_CACHE_HOME", dir);
+            }
+        }
+        let started = Instant::now();
         let mut child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .ok()?;
-        // Drain both pipes on their own threads so a chatty child can never block on a full pipe
-        // while we wait for it.
-        let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = pipe.read_to_end(&mut bytes);
-                bytes
-            })
-        };
-        let stdout = drain(Box::new(child.stdout.take()?));
-        let stderr = drain(Box::new(child.stderr.take()?));
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.try_wait().ok()? {
-                break Some(status);
+            .unwrap_or_else(|e| panic!("{prog} is installed but could not be started: {e}"));
+        let (stdout, stdout_done) = drain(child.stdout.take().expect("stdout is piped"));
+        let (stderr, stderr_done) = drain(child.stderr.take().expect("stderr is piped"));
+        let deadline = started + HANG_GUARD;
+        let (status, timed_out) = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break (Some(status), false),
+                Ok(None) => {}
+                Err(e) => panic!("waiting for {prog}: {e}"),
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
-                let _ = child.wait();
-                break None;
+                break (child.wait().ok(), true);
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&stdout.join().unwrap_or_default()),
-            String::from_utf8_lossy(&stderr.join().unwrap_or_default())
-        );
-        Some((text, status.and_then(|status| status.code())))
+        let elapsed = started.elapsed();
+        // Exit is not EOF: wait for both readers to see EOF (a disconnected sender means the
+        // reader is gone, which is EOF too), so no output still in flight is lost.
+        let grace_ends = Instant::now() + PIPE_GRACE;
+        let mut pipes_held_open = false;
+        for finished in [&stdout_done, &stderr_done] {
+            let left = grace_ends.saturating_duration_since(Instant::now());
+            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(left) {
+                pipes_held_open = true;
+            }
+        }
+        let text = |bytes: &Arc<Mutex<Vec<u8>>>| {
+            String::from_utf8_lossy(&bytes.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+        };
+        Some(Ran {
+            stdout: text(&stdout),
+            stderr: text(&stderr),
+            status,
+            elapsed,
+            timed_out,
+            pipes_held_open,
+        })
+    }
+
+    /// [`run_detailed`] for the many assertions that only need the output (stdout then stderr)
+    /// and the exit code; `None` if the shell is not installed. A run killed by the hang guard
+    /// panics with a TIMEOUT report instead of passing its partial output off as a result.
+    pub fn run(shell: ShellType, script: &str) -> Option<(String, Option<i32>)> {
+        let ran = run_detailed(shell, script, None)?;
+        assert!(!ran.timed_out, "{shell:?} {ran}\n--- script ---\n{script}");
+        Some((ran.out(), ran.code()))
     }
 
     fn alive_probe(shell: ShellType) -> &'static str {
@@ -1199,21 +1332,33 @@ mod real_shells {
         if program(ShellType::PowerShell).is_none() {
             return;
         }
-        // pwsh starts slowly: run the forms in parallel.
+        // pwsh starts slowly, so the forms run on a few workers pulling from one queue. Every
+        // form is two live pwsh processes (the host and the child the wrapper starts), so
+        // `WORKERS` bounds the .NET runtimes this test has alive at once; nextest reserves CPUs
+        // for them (`threads-required` in `.config/nextest.toml`, #1050). Each worker has its
+        // own pwsh cache directory, so no two concurrent pwsh share one.
+        const WORKERS: usize = 4;
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let next = &next;
         let failures: Vec<String> = std::thread::scope(|scope| {
-            let handles: Vec<_> = PWSH_ENDS_HOST
-                .chunks(8)
-                .map(|chunk| {
+            let handles: Vec<_> = (0..WORKERS)
+                .map(|_| {
                     scope.spawn(move || {
+                        let cache = tempfile::tempdir().expect("a pwsh cache directory");
                         let mut failures = Vec::new();
-                        for command in chunk {
-                            let (out, _) = run(
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(command) = PWSH_ENDS_HOST.get(i) else {
+                                break;
+                            };
+                            let ran = run_detailed(
                                 ShellType::PowerShell,
                                 &wrapped_then_probe(ShellType::PowerShell, command),
+                                Some(cache.path()),
                             )
-                            .unwrap();
-                            if !out.contains("ALIVE") {
-                                failures.push(format!("{command:?}: {out}"));
+                            .expect("pwsh was found above");
+                            if ran.timed_out || !ran.out().contains("ALIVE") {
+                                failures.push(format!("{command:?}: {ran}"));
                             }
                         }
                         failures
@@ -1225,7 +1370,13 @@ mod real_shells {
                 .flat_map(|h| h.join().unwrap())
                 .collect()
         });
-        assert!(failures.is_empty(), "{failures:#?}");
+        assert!(
+            failures.is_empty(),
+            "{} of {} forms did not leave pwsh ALIVE:\n\n{}",
+            failures.len(),
+            PWSH_ENDS_HOST.len(),
+            failures.join("\n\n")
+        );
     }
 
     #[test]

@@ -28,6 +28,17 @@ retries = 2
 filter = 'test(test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end)'
 threads-required = "num-cpus"
 
+[[profile.default.overrides]]
+# #1050: runs every form of the pwsh attack list in a real pwsh, on 4 workers that
+# each keep two .NET runtimes alive (the host and the child the wrapper starts).
+# Under full-suite load it once came back with no output at all, so it reserves
+# the CPUs it really uses rather than competing with 12 other tests for them, and
+# it gets a longer budget than the 60 s default so nextest's kill never preempts
+# the harness's own TIMEOUT report. The ALIVE assertion is unchanged.
+filter = 'test(real_shells::pwsh_survives_every_form_of_the_attack_list)'
+threads-required = 8
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 [profile.ci]
 # Print out output for failing tests as soon as they fail, and also at the end
 # of the run (for easy scrollability).
