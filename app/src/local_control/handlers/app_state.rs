@@ -527,8 +527,10 @@ fn pane_split(
     let pane_group = active_target_pane_group(action_kind, target, ctx)?;
     focus_explicit_pane_target(action_kind, target, &pane_group, ctx)?;
     let panes_before = pane_group.read(ctx, |pane_group, _| pane_group.visible_pane_ids());
+    // Not `PaneGroupAction::Add`: a user's split of an SSH pane may replay its `ssh` command
+    // (#1069), and a scripted split must never run a command.
     pane_group.update(ctx, |pane_group, ctx| {
-        pane_group.handle_action(&PaneGroupAction::Add(direction), ctx);
+        pane_group.add_split_pane_for_local_control(direction, ctx);
     });
     let created = pane_group
         .read(ctx, |pane_group, _| pane_group.visible_pane_ids())

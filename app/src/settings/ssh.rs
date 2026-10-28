@@ -42,16 +42,17 @@ define_settings_group!(SshSettings,
         },
         // #1069: a default split of an SSH pane replays its `ssh` command in the new pane
         // (`pane_group::ssh_split`). Ported by content from TranscriptionFactory/warp
-        // `96ad4fe1e`; the pin has no such setting.
+        // `96ad4fe1e`; the pin has no such setting. Opt-in (TF defaults it on): a split that
+        // starts an ssh connection by itself is a behaviour change nobody asked for.
         split_inherits_ssh: SplitInheritsSshSetting {
             type: bool,
-            default: true,
+            default: false,
             supported_platforms: SupportedPlatforms::ALL,
             sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
             private: false,
             storage_key: "SplitInheritsSsh",
             toml_path: "warpify.ssh.split_inherits_ssh",
-            description: "Whether splitting a pane whose active session is an SSH session opens the new pane on the same host (it runs the same ssh command, then changes to the same remote directory).",
+            description: "Whether splitting a pane whose active session is an SSH session opens the new pane on the same host (it runs the same ssh command, then changes to the same remote directory). Off by default.",
         },
     ]
 );

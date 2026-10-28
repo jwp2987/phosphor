@@ -315,6 +315,7 @@ pub fn add_tui_history_test_models(
         wsl_name: None,
         spawning_session_id: None,
         legacy_ssh_spawning_command: None,
+        ssh_spawning_local_pwd: None,
     };
     let session = Arc::new(Session::new(
         session_info,

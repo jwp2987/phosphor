@@ -162,10 +162,11 @@ attach to a live ControlMaster you already run for that host — resolved with
 `ssh -G` and probed with `ssh -O check` — instead of creating a Phosphor-owned
 one. **Takes effect in new tabs only.**
 
-`warpify.ssh.split_inherits_ssh` (default `true`): splitting a pane whose active
-session is an SSH session opens the new pane on the same host. The new pane's
-local shell re-runs the `ssh ...` command you typed, through the wrapper as
-usual. That gives the pane its own Phosphor-owned connection, so it may ask you
+`warpify.ssh.split_inherits_ssh` (default `false`, opt-in): splitting a pane
+whose active session is an SSH session opens the new pane on the same host. The
+new pane starts the same kind of local shell as the original, in the local
+directory where you typed the `ssh`. It re-runs the `ssh ...` command you typed
+there, through the wrapper as usual. That gives the pane its own Phosphor-owned connection, so it may ask you
 to authenticate again. Once the remote session is ready, the pane `cd`s to the
 original pane's remote directory. Press Ctrl-C at the prompt (or `exit`) and you
 are in a local shell. The split stays local when any of these holds:
@@ -173,7 +174,10 @@ are in a local shell. The split stays local when any of these holds:
   anything with `;`, `|`, `&`, `$`, backticks, redirections or `!`);
 - it was a nested hop from inside a remote session;
 - the remote is a Windows OpenSSH server (plain session);
-- you split with an explicitly chosen shell.
+- you split with an explicitly chosen shell;
+- the split comes from the local-control scripting API (`pane.split`);
+- that local directory is gone, and the command depends on it (a glob, a
+  relative `-i`/`-F`/`-E` path, or a relative file or command in `-o`).
 
 #### 3. The tmux wrapper (`ssh_tmux_wrapper`)
 
@@ -298,7 +302,7 @@ dead — until issue #632.
 | `warpify.ssh.enable_ssh_warpification` | Master switch for Phosphorizing SSH sessions | `true` | Settings → Phosphorize → SSH → *Phosphorize SSH Sessions* |
 | `warpify.ssh.use_ssh_tmux_wrapper` | Use the tmux control-mode wrapper instead of the ControlMaster wrapper. macOS/Linux only. New tabs only | `false` | same page → *Use Tmux Phosphorization* |
 | `warpify.ssh.reuse_existing_control_master` | Attach to your own live ControlMaster instead of creating one. Legacy wrapper only; new tabs only | `false` | same page → *Reuse existing SSH ControlMaster* |
-| `warpify.ssh.split_inherits_ssh` | Splitting an SSH pane opens the new pane on the same host and remote directory | `true` | same page → *Splits from SSH sessions open on the same host* |
+| `warpify.ssh.split_inherits_ssh` | Opt-in: splitting an SSH pane opens the new pane on the same host and remote directory | `false` | same page → *Splits from SSH sessions open on the same host* |
 | `warpify.ssh.ssh_extension_install_mode` | `always_ask` / `always_install` / `never_install` | `always_ask` | same page → *Install SSH extension* |
 | `warpify.ssh.enable_legacy_ssh_wrapper` | **Deprecated.** Setting it `false` runs a one-time migration that disables `enable_ssh_warpification` | `true` | do not use |
 | `terminal.input.honor_ps1` | Use your shell's PS1 instead of the Phosphor input box | `false` | Settings → Appearance → Input → *Input type* |

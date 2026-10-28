@@ -3690,6 +3690,17 @@ impl ansi::Handler for TerminalModel {
                 .pending_legacy_ssh_session
                 .is_some()
                 .then(|| self.block_list().active_block().command_to_string());
+            // ...and, for either kind of ssh session, the local directory it was typed in, so a
+            // split replays it there.
+            let is_ssh_session = self.pending_legacy_ssh_session.is_some()
+                || subshell_info
+                    .as_ref()
+                    .is_some_and(|info| info.ssh_connection_info.is_some());
+            let ssh_spawning_local_pwd = if is_ssh_session {
+                self.block_list().active_block().pwd().cloned()
+            } else {
+                None
+            };
 
             let mut pending_session_info = SessionInfo::create_pending(
                 shell_type,
@@ -3704,6 +3715,7 @@ impl ansi::Handler for TerminalModel {
                 self.block_list().active_block().session_id(),
             );
             pending_session_info.legacy_ssh_spawning_command = legacy_ssh_spawning_command;
+            pending_session_info.ssh_spawning_local_pwd = ssh_spawning_local_pwd;
             self.pending_session_info = Some(pending_session_info.clone());
             // A newer shell supersedes whatever was abandoned earlier.
             self.abandoned_subshell_session = None;

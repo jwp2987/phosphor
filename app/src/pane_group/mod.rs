@@ -3802,14 +3802,14 @@ impl PaneGroup {
         new_pane_id
     }
 
-    /// The ssh command a pane split from `base_pane_id` should run to land on the same remote
-    /// host, if `warpify.ssh.split_inherits_ssh` is on and the pane's active session qualifies
-    /// (#1069; see [`ssh_split`]).
-    fn inherited_ssh_command(
+    /// How a split from `base_pane_id` lands on the same remote host, if
+    /// `warpify.ssh.split_inherits_ssh` is on and the pane's active session qualifies (#1069;
+    /// see [`ssh_split`]). `None` means a plain local split.
+    fn ssh_split_plan(
         &self,
         base_pane_id: TerminalPaneId,
         ctx: &AppContext,
-    ) -> Option<String> {
+    ) -> Option<ssh_split::SshSplitPlan> {
         if !*SshSettings::as_ref(ctx).split_inherits_ssh.value() {
             return None;
         }
@@ -3817,26 +3817,58 @@ impl PaneGroup {
         let view = view.as_ref(ctx);
         let sessions = view.sessions_model().as_ref(ctx);
         let session = sessions.get(view.active_block_session_id()?)?;
-        let spawning_session_type = session
+        let spawning_session = session
             .spawning_session_id()
-            .and_then(|id| sessions.get(id))
+            .and_then(|id| sessions.get(id));
+        let spawning_session_type = spawning_session
+            .as_ref()
             .map(|spawning| spawning.session_type());
         let ssh_spawning_command = ssh_split::resolve_ssh_spawning_command(
             session.subshell_info().as_ref(),
             session.legacy_ssh_spawning_command(),
         );
-        ssh_split::inherited_ssh_command(
+        let command = ssh_split::inherited_ssh_command(
             &session.session_type(),
             ssh_spawning_command,
             spawning_session_type.as_ref(),
-        )
+        )?;
+        // The local directory the ssh was typed in, as a native path of this machine.
+        let local_cwd = match (spawning_session.as_ref(), session.ssh_spawning_local_pwd()) {
+            (Some(spawning), Some(pwd)) => {
+                let typed = spawning.convert_directory_to_typed_path_buf(pwd.to_owned());
+                spawning
+                    .maybe_convert_to_native_path(&typed.to_path())
+                    .ok()
+                    .filter(|path| path.is_dir())
+            }
+            _ => None,
+        };
+        if local_cwd.is_none() && ssh_split::is_cwd_sensitive(&command) {
+            return None;
+        }
+        // The base pane's own local shell kind, so the replay has the same quoting dialect and
+        // the same ssh wrapper (and, on Windows, the same WSL / MSYS2 / PowerShell host).
+        let shell = view.model.lock().shell_launch_state().available_shell();
+        let remote_cd = match (view.active_session_remote_host(ctx), view.pwd()) {
+            (Some(remote_host), Some(path)) => {
+                Some(ssh_split::PendingRemoteCd { remote_host, path })
+            }
+            _ => None,
+        };
+        Some(ssh_split::SshSplitPlan {
+            command,
+            local_cwd,
+            shell,
+            remote_cd,
+        })
     }
 
     /// Adds a terminal pane for a user-initiated default split (#1069). If the base pane is a
     /// terminal pane whose active session is an SSH session, the new pane replays that ssh
-    /// command and then restores the remote working directory; otherwise this is
-    /// `add_session`. Only the base pane's OWN session is considered: a split from a notebook or
-    /// other non-terminal pane stays local even when a remote terminal is the active session.
+    /// command (see [`Self::ssh_split_plan`]) and then restores the remote working directory;
+    /// otherwise this is `add_session`. Only the base pane's OWN session is considered: a split
+    /// from a notebook or other non-terminal pane stays local even when a remote terminal is the
+    /// active session.
     fn add_split_session(
         &mut self,
         direction: Direction,
@@ -3845,13 +3877,13 @@ impl PaneGroup {
         chosen_shell: Option<AvailableShell>,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        let inherited = match base_pane_id.as_terminal_pane_id() {
+        let plan = match base_pane_id.as_terminal_pane_id() {
             Some(base_terminal_pane_id) => self
-                .inherited_ssh_command(base_terminal_pane_id, ctx)
-                .map(|command| (base_terminal_pane_id, command)),
+                .ssh_split_plan(base_terminal_pane_id, ctx)
+                .map(|plan| (base_terminal_pane_id, plan)),
             None => None,
         };
-        let Some((base_terminal_pane_id, ssh_command)) = inherited else {
+        let Some((base_terminal_pane_id, plan)) = plan else {
             return self.add_session(
                 direction,
                 Some(base_pane_id),
@@ -3861,37 +3893,41 @@ impl PaneGroup {
                 ctx,
             );
         };
-        let mut remote_cd = None;
-        if let Some(base_view) = self.terminal_view_from_pane_id(base_terminal_pane_id, ctx) {
-            let base_view = base_view.as_ref(ctx);
-            if let (Some(remote_host), Some(path)) =
-                (base_view.active_session_remote_host(ctx), base_view.pwd())
-            {
-                remote_cd = Some(ssh_split::PendingRemoteCd { remote_host, path });
-            }
-        }
+        let ssh_split::SshSplitPlan {
+            command,
+            local_cwd,
+            shell,
+            remote_cd,
+        } = plan;
         // The new pane is about to become a remote shell, not a fresh local one: the default
         // session mode is applied once the remote session has bootstrapped instead.
-        let new_pane_id = self.add_session_with_default_session_mode_behavior(
-            direction,
-            Some(base_pane_id),
-            Some(base_terminal_pane_id),
-            chosen_shell,
-            None, /* conversation_restoration */
-            DefaultSessionModeBehavior::Ignore,
-            ctx,
-        );
+        let new_pane_id = match local_cwd {
+            Some(local_cwd) => self.add_session_in_directory(
+                direction,
+                Some(base_pane_id),
+                shell,
+                Some(local_cwd),
+                None, /* conversation_restoration */
+                DefaultSessionModeBehavior::Ignore,
+                ctx,
+            ),
+            // Only reached for a command that does not depend on the directory.
+            None => self.add_session_with_default_session_mode_behavior(
+                direction,
+                Some(base_pane_id),
+                Some(base_terminal_pane_id),
+                shell,
+                None, /* conversation_restoration */
+                DefaultSessionModeBehavior::Ignore,
+                ctx,
+            ),
+        };
         if let Some(terminal_view) = self.terminal_view_from_pane_id(new_pane_id, ctx) {
             let enter_agent_view =
                 AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent;
             terminal_view.update(ctx, |view, ctx| {
-                if let Some(pending) = remote_cd {
-                    view.set_cd_after_ssh_bootstrap(pending);
-                }
-                if enter_agent_view {
-                    view.set_enter_agent_view_after_ssh_bootstrap();
-                }
-                view.execute_command_or_set_pending(&ssh_command, ctx);
+                view.arm_ssh_split_follow_up(remote_cd, enter_agent_view);
+                view.execute_command_or_set_pending(&command, ctx);
             });
         }
         new_pane_id
@@ -3916,6 +3952,25 @@ impl PaneGroup {
             self.add_split_session(direction, base_pane_id, base_session_id, None, ctx);
         ctx.emit(Event::AppStateChanged);
         new_pane_id
+    }
+
+    /// The local shell of the active session, for a split that should start the same kind.
+    fn active_session_available_shell(&self, ctx: &AppContext) -> Option<AvailableShell> {
+        self.active_session_terminal_model(ctx)
+            .and_then(|model| model.lock().shell_launch_state().available_shell())
+    }
+
+    /// Splits the focused pane for the local-control scripting API (`pane.split`). Never
+    /// inherits an SSH session (#1069): that would make a scripted split run a command (the
+    /// replayed `ssh`, including any `ProxyCommand` / `LocalCommand` it configures), and the
+    /// local-control catalog deliberately has no command-execution action.
+    pub fn add_split_pane_for_local_control(
+        &mut self,
+        direction: Direction,
+        ctx: &mut ViewContext<Self>,
+    ) -> TerminalPaneId {
+        let chosen_shell = self.active_session_available_shell(ctx);
+        self.add_terminal_pane(direction, chosen_shell, ctx)
     }
 
     /// Used when splitting panes. Always a local shell: also used for internal helper panes
@@ -7238,14 +7293,7 @@ impl TypedActionView for PaneGroup {
         use PaneGroupAction::*;
         match action {
             Add(direction) => {
-                let chosen_shell = {
-                    match self.active_session_terminal_model(ctx) { Some(model) => {
-                        let model = model.lock();
-                        model.shell_launch_state().available_shell()
-                    } _ => {
-                        None
-                    }}
-                };
+                let chosen_shell = self.active_session_available_shell(ctx);
                 // #1069: a default split of an SSH pane opens on the same host.
                 self.add_split_session(
                     *direction,

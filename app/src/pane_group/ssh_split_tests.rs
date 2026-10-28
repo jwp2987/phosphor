@@ -215,3 +215,121 @@ fn remote_cd_skips_host_mismatch_dirty_input_and_empty_path() {
         None
     );
 }
+
+#[test]
+fn cwd_independent_commands_are_not_sensitive() {
+    for command in [
+        "ssh host",
+        "ssh -p 2222 -J jump me@host",
+        "ssh -i ~/.ssh/id_work host",
+        "ssh -i /home/me/.ssh/id host",
+        "ssh -i%d/.ssh/id host",
+        "ssh -F ~/.ssh/alt_config host",
+        "ssh -o IdentityFile=~/.ssh/id host",
+        "ssh -o 'IdentityFile /abs/key' host",
+        "ssh -oControlPath=none host",
+        "ssh -o IdentityAgent=SSH_AUTH_SOCK host",
+        "ssh -o ServerAliveInterval=30 host",
+        "ssh -o ProxyJump=jump host",
+        "ssh -4Ap2222 host",
+        "ssh -L 8080:localhost:80 host",
+        "ssh -i 'C:\\Users\\me\\.ssh\\id' host",
+    ] {
+        assert!(!is_cwd_sensitive(command), "{command}");
+    }
+}
+
+#[test]
+fn cwd_dependent_commands_are_sensitive() {
+    for command in [
+        "ssh -i ./key host",
+        "ssh -i key.pem host",
+        "ssh -i*.pem host",
+        "ssh -i 'keys/*' host",
+        "ssh h?st",
+        "ssh -F config host",
+        "ssh -E ssh.log host",
+        "ssh -Ai./key host",
+        "ssh -o IdentityFile=./key host",
+        "ssh -o 'identityfile key' host",
+        "ssh -oUserKnownHostsFile=known host",
+        "ssh -o 'ProxyCommand=/usr/bin/nc %h %p' host",
+        "ssh -o LocalCommand=/bin/true host",
+        "ssh -i",
+    ] {
+        assert!(is_cwd_sensitive(command), "{command}");
+    }
+}
+
+fn session(id: u64) -> SessionId {
+    SessionId::from(id)
+}
+
+#[test]
+fn follow_up_cds_once_on_the_same_host_and_session() {
+    let mut follow_up = SplitFollowUp::default();
+    follow_up.arm(Some(pending("/srv/app")), true);
+
+    assert!(follow_up.on_ssh_session_bootstrapped(session(7), "me@box", ShellType::Bash));
+    assert!(follow_up.has_ready_cd());
+    // Only for the session it was prepared for, while the input is untouched.
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(7)), true),
+        Some("cd '/srv/app'".to_string())
+    );
+    // One-shot: nothing on any later bootstrap.
+    assert!(!follow_up.has_ready_cd());
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(7)), true),
+        None
+    );
+    assert!(!follow_up.on_ssh_session_bootstrapped(session(8), "me@box", ShellType::Bash));
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(8)), true),
+        None
+    );
+}
+
+#[test]
+fn follow_up_skips_other_hosts_sessions_and_typed_input() {
+    let mut follow_up = SplitFollowUp::default();
+    follow_up.arm(Some(pending("/srv")), false);
+    assert!(!follow_up.on_ssh_session_bootstrapped(session(1), "me@other", ShellType::Bash));
+    assert!(!follow_up.has_ready_cd());
+
+    follow_up.arm(Some(pending("/srv")), false);
+    follow_up.on_ssh_session_bootstrapped(session(1), "me@box", ShellType::Bash);
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(2)), true),
+        None,
+        "a different active session never gets the cd"
+    );
+
+    follow_up.arm(Some(pending("/srv")), false);
+    follow_up.on_ssh_session_bootstrapped(session(1), "me@box", ShellType::Bash);
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(1)), false),
+        None,
+        "typed input is never overwritten"
+    );
+    // ...and the dropped cd does not come back.
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(1)), true),
+        None
+    );
+}
+
+#[test]
+fn follow_up_never_outlives_a_failed_replay() {
+    let mut follow_up = SplitFollowUp::default();
+    follow_up.arm(Some(pending("/srv/app")), true);
+    // The replayed ssh block completes (auth failed, Ctrl-C, exit) before any ssh bootstrap.
+    follow_up.on_user_block_completed();
+    // A later, unrelated ssh to the same host in this pane inherits nothing.
+    assert!(!follow_up.on_ssh_session_bootstrapped(session(3), "me@box", ShellType::Bash));
+    assert!(!follow_up.has_ready_cd());
+    assert_eq!(
+        follow_up.take_cd_for_bootstrap_precmd(Some(session(3)), true),
+        None
+    );
+}
