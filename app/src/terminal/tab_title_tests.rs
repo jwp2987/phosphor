@@ -1,4 +1,4 @@
-use super::single_line_title;
+use super::{multiline_command_title, single_line_title};
 
 #[test]
 fn single_line_text_is_unchanged() {
@@ -75,4 +75,23 @@ fn long_first_line_is_kept_whole_for_the_renderer_to_clip() {
         single_line_title(&format!("{long}\necho next")),
         format!("{long}\u{2026}")
     );
+}
+
+/// #1093: the running title of a multi-line command is its first line and an ellipsis; a
+/// single-line command has none, so the shell's own title stays in charge of it.
+#[test]
+fn multiline_command_title_is_first_line_and_ellipsis() {
+    assert_eq!(
+        multiline_command_title("sleep 5\necho fishN-L").as_deref(),
+        Some("sleep 5\u{2026}")
+    );
+    assert_eq!(
+        multiline_command_title("\n  sleep 5  \r\n\necho two\n").as_deref(),
+        Some("sleep 5\u{2026}")
+    );
+    assert_eq!(multiline_command_title("ls -la"), None);
+    assert_eq!(multiline_command_title("ls -la\n"), None);
+    assert_eq!(multiline_command_title("ls -la\r\n  \n"), None);
+    assert_eq!(multiline_command_title(""), None);
+    assert_eq!(multiline_command_title("\n \n"), None);
 }

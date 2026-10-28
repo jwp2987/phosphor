@@ -3304,3 +3304,115 @@ fn rc_output_ending_in_a_space_before_a_stalled_setup_echo_keeps_the_echo_hidden
     );
     assert!(terminal.is_setup_echo_mid_line());
 }
+
+/// A model with a grid tall enough that a multi-line echo stays visible, reporting its title
+/// events on the returned channel.
+fn model_with_title_events() -> (TerminalModel, async_channel::Receiver<Event>) {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut size = block_size();
+    size.size = crate::terminal::SizeInfo::new_without_font_metrics(40, 120);
+    let model = TerminalModel::new_for_test(
+        size,
+        crate::terminal::color::List::from(&crate::terminal::color::Colors::default()),
+        event_proxy,
+        std::sync::Arc::new(warpui::r#async::executor::Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    (model, event_rx)
+}
+
+fn last_title_event(event_rx: &async_channel::Receiver<Event>) -> Option<String> {
+    let mut title = None;
+    while let Ok(event) = event_rx.try_recv() {
+        if let Event::Title(t) = event {
+            title = Some(t);
+        }
+    }
+    title
+}
+
+/// #1093: while a multi-line command runs, the tab title is its first line and an ellipsis --
+/// whatever the shell's own title hook sends (bash: the first line only, zsh: the command word,
+/// fish: the lines joined with spaces), before or after the Preexec -- and the shell's title is
+/// back once the block finished.
+#[test]
+fn running_multiline_command_titles_the_tab_with_its_first_line_and_ellipsis() {
+    for shell_title_before_preexec in [None, Some("sleep")] {
+        let (mut model, event_rx) = model_with_title_events();
+        model.set_title(Some("~".to_owned()));
+        model.block_list_mut().active_block_mut().start();
+        model.process_bytes("sleep 5\r\necho fishN-L\r\n");
+        if let Some(title) = shell_title_before_preexec {
+            model.set_title(Some(title.to_owned()));
+        }
+        model.preexec(PreexecValue {
+            command: "sleep 5".to_owned(),
+            session_id: None,
+        });
+        assert_eq!(model.terminal_title().as_deref(), Some("sleep 5\u{2026}"));
+        assert_eq!(
+            last_title_event(&event_rx).as_deref(),
+            Some("sleep 5\u{2026}")
+        );
+
+        for shell_title in ["sleep 5", "sleep", "sleep 5 echo fishN-L ~"] {
+            model.set_title(Some(shell_title.to_owned()));
+            assert_eq!(model.terminal_title().as_deref(), Some("sleep 5\u{2026}"));
+            assert_eq!(
+                last_title_event(&event_rx).as_deref(),
+                Some("sleep 5\u{2026}"),
+                "shell title {shell_title:?}"
+            );
+        }
+
+        model.finish_block();
+        assert_eq!(
+            model.terminal_title().as_deref(),
+            Some("sleep 5 echo fishN-L ~")
+        );
+        assert_eq!(
+            last_title_event(&event_rx).as_deref(),
+            Some("sleep 5 echo fishN-L ~")
+        );
+        model.set_title(Some("~".to_owned()));
+        assert_eq!(model.terminal_title().as_deref(), Some("~"));
+    }
+}
+
+/// #1093: a single-line command keeps the shell's own running title (zsh's command word).
+#[test]
+fn running_single_line_command_keeps_the_shell_title() {
+    let (mut model, event_rx) = model_with_title_events();
+    model.block_list_mut().active_block_mut().start();
+    model.simulate_cmd("sleep 5\r\n");
+    model.set_title(Some("sleep".to_owned()));
+    assert_eq!(model.terminal_title().as_deref(), Some("sleep"));
+    assert_eq!(last_title_event(&event_rx).as_deref(), Some("sleep"));
+}
+
+/// #1093: a custom (renamed) tab title still wins over a multi-line command's running title.
+#[test]
+fn running_multiline_command_title_does_not_replace_a_custom_title() {
+    let (mut model, event_rx) = model_with_title_events();
+    model.set_custom_title(Some("mine".to_owned()));
+    model.block_list_mut().active_block_mut().start();
+    model.process_bytes("sleep 5\r\necho two\r\n");
+    model.preexec(PreexecValue {
+        command: "sleep 5".to_owned(),
+        session_id: None,
+    });
+    model.set_title(Some("sleep 5".to_owned()));
+    assert_eq!(last_title_event(&event_rx).as_deref(), Some("mine"));
+    model.set_custom_title(None);
+    assert_eq!(
+        last_title_event(&event_rx).as_deref(),
+        Some("sleep 5\u{2026}")
+    );
+}
