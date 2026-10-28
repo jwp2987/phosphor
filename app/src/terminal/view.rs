@@ -2824,6 +2824,9 @@ pub struct TerminalView {
     /// shown in the input editor, unexecuted, once the line has ended and the editor is back, so
     /// no typed key vanishes and none can run on the wrong host.
     ssh_held_typing: SshHeldTyping,
+    /// The remote shell's first prompt was seen in this connect: the only point where held text
+    /// may be shown (#1113). A failed or prompt-less end of the ssh block discards it instead.
+    ssh_remote_prompt_seen: bool,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
@@ -4556,6 +4559,7 @@ impl TerminalView {
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
             ssh_held_typing: SshHeldTyping::default(),
+            ssh_remote_prompt_seen: false,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
             view_id: ctx.view_id(),
@@ -10234,19 +10238,39 @@ impl TerminalView {
             self.ssh_held_typing = SshHeldTyping::default();
             return;
         }
+        // Only after the remote shell's first prompt. A failed connect, or an ssh block that
+        // ended without one, means the text was typed for a session that never came up.
+        if !self.ssh_remote_prompt_seen {
+            self.drop_ssh_held_typing_with_notice(ctx);
+            return;
+        }
         if self.is_long_running() {
             return;
         }
+        // Never concatenated with anything: only into an EMPTY editor.
+        if !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+            self.drop_ssh_held_typing_with_notice(ctx);
+            return;
+        }
         let held = std::mem::take(&mut self.ssh_held_typing);
-        let whole = format!("{}{}", held.text, self.input.as_ref(ctx).buffer_text(ctx));
-        self.input
-            .update(ctx, |input, ctx| input.replace_buffer_content(&whole, ctx));
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&held.text, ctx)
+        });
         self.show_ssh_typing_toast(
             if held.superseded {
                 "Earlier lines typed while the SSH session connected were not run; the last one is in the input, press Enter to run it"
             } else {
                 "Text typed while the SSH session connected is in the input; press Enter to run it"
             },
+            ctx,
+        );
+    }
+
+    /// Discards the held text; the notice does not echo it.
+    fn drop_ssh_held_typing_with_notice(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ssh_held_typing = SshHeldTyping::default();
+        self.show_ssh_typing_toast(
+            "Text typed while the SSH session connected was discarded, not run",
             ctx,
         );
     }
@@ -10312,6 +10336,7 @@ impl TerminalView {
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
         self.ssh_drop_line_through_enter = false;
         self.ssh_held_typing = SshHeldTyping::default();
+        self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
@@ -14090,6 +14115,7 @@ impl TerminalView {
                 && gate.bootstrap_done_at.is_some()
             {
                 gate.first_prompt_seen = true;
+                self.ssh_remote_prompt_seen = true;
             }
             // Before the gate can release in this very refresh.
             self.discard_ssh_held_if_output_changed(ctx);
@@ -25322,21 +25348,20 @@ impl TerminalView {
                 {
                     self.ssh_drop_line_through_enter = false;
                     self.ssh_setup_drop_notified = false;
-                    // #1113: not executed, and not lost: the dropped head and the tail stay
-                    // together in the editor for the user to look at.
-                    let tail = self.input.as_ref(ctx).buffer_text(ctx);
-                    let held = std::mem::take(&mut self.ssh_held_typing);
-                    let head = if held.tainted { "" } else { held.text.as_str() };
-                    if head.is_empty() && tail.is_empty() {
-                        return;
+                    // #1113: the vetoed line is discarded (the editor is cleared, as before), with
+                    // a notice; held text is never concatenated with what the editor holds.
+                    let had_text = self.ssh_held_typing != SshHeldTyping::default()
+                        || !self.input.as_ref(ctx).buffer_text(ctx).is_empty();
+                    self.ssh_held_typing = SshHeldTyping::default();
+                    self.input.update(ctx, |input, ctx| {
+                        input.clear_buffer_and_reset_undo_stack(ctx)
+                    });
+                    if had_text {
+                        self.show_ssh_typing_toast(
+                            "Text typed while the SSH session connected was discarded, not run",
+                            ctx,
+                        );
                     }
-                    let whole = format!("{head}{tail}");
-                    self.input
-                        .update(ctx, |input, ctx| input.replace_buffer_content(&whole, ctx));
-                    self.show_ssh_typing_toast(
-                        "Text typed while the SSH session connected was not run; press Enter again to run it",
-                        ctx,
-                    );
                     return;
                 }
                 self.note_command_submitted_for_ssh_gate(&event.command);

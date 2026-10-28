@@ -17029,8 +17029,10 @@ fn ssh_line_typed_across_gate_release_is_dropped_whole() {
             view.typed_characters_on_terminal("ERTY && x", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             view.keydown_on_terminal("\r", ctx);
-            // #1113: the whole line is shown, not run, once its Enter arrives.
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
+            // #1113: no remote prompt ever came (the gate was just released): the line is
+            // discarded with a notice, never shown, never run.
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
             assert!(!view.ssh_drop_line_through_enter, "Enter ends the drop");
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
@@ -17425,6 +17427,7 @@ fn ssh_line_typed_during_connect_is_kept_in_the_editor_not_run() {
             view.keydown_on_terminal("\r", ctx);
             view.typed_characters_on_terminal("ls -l", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.ssh_remote_prompt_seen = true;
             release_ssh_gate_for_test(view);
             // The unfinished second line is still being dropped: the flush waits for its Enter.
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
@@ -17451,8 +17454,12 @@ fn ssh_complete_line_typed_during_connect_is_shown_after_release() {
             view.typed_characters_on_terminal("echo hi", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            release_ssh_gate_for_test(view);
+            // The remote session came up and its first prompt arrives: the gate hands over.
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.saw_pending = true;
+            gate.bootstrap_done_at = Some(Instant::now());
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(view.ssh_connect_gate.is_none());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
             assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
         });
@@ -17658,21 +17665,41 @@ fn ssh_held_typing_follows_edits_and_discards_unreproducible_lines() {
     );
 }
 
-/// #1113: the flush goes in FRONT of what the editor already holds, never in the middle of it.
+/// #1113: held text is never concatenated with what the editor holds: with a non-empty editor,
+/// or without a remote prompt having been seen, it is discarded.
 #[test]
-fn ssh_held_line_is_put_in_front_of_existing_editor_text() {
+fn ssh_held_line_is_never_glued_to_existing_editor_text() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
+            view.ssh_remote_prompt_seen = true;
             view.input
                 .update(ctx, |input, ctx| input.replace_buffer_content("world", ctx));
             view.ssh_held_typing.key(Some("hello "));
             view.ssh_held_typing.key(Some("\r"));
             view.flush_ssh_held_typing(ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "hello world");
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world");
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            // Empty editor + prompt seen: shown. No prompt seen: discarded.
+            view.input.update(ctx, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx)
+            });
+            view.ssh_held_typing.key(Some("hello"));
+            view.ssh_held_typing.key(Some("\r"));
+            view.flush_ssh_held_typing(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "hello");
+            view.input.update(ctx, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx)
+            });
+            view.ssh_remote_prompt_seen = false;
+            view.ssh_held_typing.key(Some("hello"));
+            view.ssh_held_typing.key(Some("\r"));
+            view.flush_ssh_held_typing(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
         });
     })
 }
