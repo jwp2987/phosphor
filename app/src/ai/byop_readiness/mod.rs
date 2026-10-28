@@ -12,6 +12,22 @@ pub const BLOCKED_BYOP_REQUEST_MESSAGE: &str =
     "Can't continue this conversation: an earlier tool result is missing or corrupted in this conversation's history, so Phosphor can't safely send the request to your provider. Start a new conversation or fork from an earlier point to continue.";
 pub const PENDING_BYOP_TOOL_RESULTS_MESSAGE: &str =
     "Waiting for a running tool to finish before sending your next request.";
+/// Shown when a BYOP preflight commit is refused because the conversation belongs to a shared
+/// session this client is only viewing, so it has no local copy to commit tool results to.
+pub const BYOP_PREFLIGHT_SHARED_SESSION_MESSAGE: &str = "Can't send this request from a shared session you're viewing: tool results for this conversation can't be saved on this machine.";
+/// Shown when a BYOP preflight commit is refused because persistence is expected but local
+/// conversation storage is unavailable (no SQLite writer, or its channel refused the write).
+/// Persistence turned off by the user never reaches this: those commits stay in memory (#1066).
+pub const BYOP_PREFLIGHT_STORAGE_UNAVAILABLE_MESSAGE: &str = "Phosphor couldn't save the BYOP conversation state needed to send this request: local conversation storage is unavailable. Check that there is enough disk space, then try again.";
+
+/// The blocked-request text for a BYOP preflight persistence failure.
+pub fn byop_preflight_persistence_blocked_message(is_viewing_shared_session: bool) -> &'static str {
+    if is_viewing_shared_session {
+        BYOP_PREFLIGHT_SHARED_SESSION_MESSAGE
+    } else {
+        BYOP_PREFLIGHT_STORAGE_UNAVAILABLE_MESSAGE
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReadinessTriggerLayer {

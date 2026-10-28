@@ -1946,8 +1946,10 @@ impl BlocklistAIController {
         ) {
             // A pending-tool-results error stashes the request for a later flush. Anything else
             // means the drained action results never reached the model, so don't drop it
-            // silently (#1066).
-            if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
+            // silently (#1066). A closed pane refusing the send is expected, as in the siblings.
+            if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                log::debug!("{e}");
+            } else if e.downcast_ref::<PendingByopToolResultsError>().is_none() {
                 log::error!(
                     "Failed to send follow-up with action results for conversation \
                      {conversation_id:?}: {e:#}"
@@ -3596,14 +3598,19 @@ impl BlocklistAIController {
                         .as_deref()
                         .unwrap_or("unknown")
                 );
+                let is_viewing_shared_session = history_model
+                    .as_ref(ctx)
+                    .conversation(&conversation_data.id)
+                    .is_some_and(|conversation| conversation.is_viewing_shared_session());
                 return self.complete_byop_blocked_request(
                     request_input,
                     conversation_data.id,
                     request_params.model.clone(),
                     is_queued_prompt,
-                    "Phosphor couldn't save the BYOP conversation state needed to send this \
-                     request. Check that there is enough disk space, then try again."
-                        .to_owned(),
+                    crate::ai::byop_readiness::byop_preflight_persistence_blocked_message(
+                        is_viewing_shared_session,
+                    )
+                    .to_owned(),
                     ctx,
                 );
             }
