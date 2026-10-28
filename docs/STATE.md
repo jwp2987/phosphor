@@ -9,7 +9,7 @@ Pin: `4111d08f932e0eda34fe57e62ee32df7d0f398d9` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: **never** — no green `script/precheck` has been recorded
+Last fully green `script/precheck`: `1eb8bdaf608882668c3b0d605936771e271a5347` (2026-10-27 07:13) — **91 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,9 +27,9 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 13544 |
-| Shared | 8699 |
-| Absent from fork | 2956 |
+| Fork tests | 13778 |
+| Shared | 8698 |
+| Absent from fork | 2957 |
 
 Counted the same way on both sides: `#[test]` items, **plus** the
 `crates/integration` tests wired up by `register_test!` (332 at the pin,
@@ -40,18 +40,18 @@ collapsed the macro-generated tests to a single placeholder name — so every
 percentage published before that date was computed over a short count on both
 sides.
 
-Of the absent, **2042 are adjudicated** in the ledger and 914 are not.
+Of the absent, **2042 are adjudicated** in the ledger and 915 are not.
 
-> **Do not quote that 914 as a work queue.** Of them, **809 are
+> **Do not quote that 915 as a work queue.** Of them, **806 are
 > defined in files this fork deleted wholesale** — the dropped cloud layer, whose
 > verdict was decided once at subsystem level in `DECLINED.md`. They are missing a
 > per-test ledger row, not a decision. A further **1** carry an
 > explicit `test:` marker in `DECLINED.md` — also decided, also row-less — and are
 > excluded here. The remainder where "should we port this?" is still genuinely
-> open is **104**.
+> open is **108**.
 
 Cloud accounts for 1207 of those; the unadjudicated remainder is
-*projected* at the same ratio (~373 non-cloud), so the figures below
+*projected* at the same ratio (~374 non-cloud), so the figures below
 carry that estimate.
 
 The ledger has 2529 rows in total; the 487 beyond the
@@ -60,7 +60,7 @@ them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~87.8% of the pin's non-cloud tests exist here** (8699 of ~9907)
+- **~87.7% of the pin's non-cloud tests exist here** (8698 of ~9907)
 - **~96.3% are present or deliberately resolved** (adding 719 declined, 62 divergent, 65 covered-elsewhere)
 
 ## Ledger
