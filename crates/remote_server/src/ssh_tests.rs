@@ -41,3 +41,64 @@ fn missing_control_socket_is_not_an_error() {
     // Must not panic when a graceful master already unlinked it.
     remove_stale_control_socket(&dir.path().join("absent"));
 }
+
+/// #1083: every `ssh -O` Phosphor issues carries the guards that make a fallback login
+/// impossible, ignores the user's config, and names only the placeholder destination.
+#[test]
+fn mux_control_args_can_never_fall_back_to_a_login() {
+    let socket = Path::new("/home/u/.ssh/123");
+    for op in ["exit", "check", "stop"] {
+        let args = mux_control_args(op, socket);
+        let joined = args.join(" ");
+        // No user or system config (ControlMaster yes / ProxyJump / Host * cannot apply).
+        assert_eq!(&args[..2], ["-F", "/dev/null"], "{joined}");
+        for option in [
+            "ControlMaster=no",
+            "ControlPath=/home/u/.ssh/123",
+            "ProxyCommand=false",
+            "BatchMode=yes",
+            "ConnectTimeout=5",
+            "ClearAllForwardings=yes",
+        ] {
+            let at = args
+                .iter()
+                .position(|a| a == option)
+                .unwrap_or_else(|| panic!("{op}: missing {option}: {joined}"));
+            assert_eq!(
+                args[at - 1],
+                "-o",
+                "{op}: {option} must be an -o value: {joined}"
+            );
+        }
+        assert!(args.iter().any(|a| a == "-n"), "{joined}");
+        let o = args.iter().position(|a| a == "-O").unwrap();
+        assert_eq!(args[o + 1], op);
+        // The destination is last and is the fixed placeholder; nothing after it (a remote
+        // command), and no other destination anywhere.
+        assert_eq!(args.last().unwrap(), MUX_CONTROL_DESTINATION);
+        assert!(!args.iter().any(|a| a.contains('@')), "{joined}");
+        // Exactly one ProxyCommand and it is first-wins on the command line (no -J allowed).
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.starts_with("ProxyCommand="))
+                .count(),
+            1
+        );
+        assert!(!args.iter().any(|a| a == "-J"), "{joined}");
+    }
+}
+
+/// #1083: `stop_control_master` actually runs the guarded command (not a hand-rolled one).
+#[test]
+fn stop_control_master_uses_the_guarded_args() {
+    let source = include_str!("ssh.rs");
+    let body = &source[source.find("async fn stop_control_master_inner").unwrap()..];
+    let body = &body[..body.find("match result").unwrap()];
+    assert!(
+        body.contains("mux_control_args(\"exit\", socket_path)")
+            && body.contains("Stdio::null()")
+            && body.contains(".env(\"SHELL\", \"/bin/sh\")"),
+        "{body}"
+    );
+    assert!(!body.contains("ssh_args("), "{body}");
+}

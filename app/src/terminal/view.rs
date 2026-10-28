@@ -15238,13 +15238,17 @@ impl TerminalView {
                 // that child via `kill_on_drop`, which closes the
                 // multiplexed channel on the ControlMaster so the foreground
                 // ssh can exit cleanly instead of hanging.
+                // #1083: the ControlMaster itself is NOT stopped from here: the ssh wrapper
+                // stops it once its session client returns (one owner). A second, concurrent
+                // `-O exit` from this hook raced the wrapper's and could hit a master that was
+                // already shutting down.
                 #[cfg(not(target_family = "wasm"))]
                 if FeatureFlag::SshRemoteServer.is_enabled() {
                     use crate::remote_server::manager::RemoteServerManager;
                     RemoteServerManager::handle(ctx).update(
                         ctx,
                         |mgr: &mut RemoteServerManager, ctx| {
-                            mgr.deregister_session(*session_id, ctx);
+                            mgr.deregister_session_after_shell_exit(*session_id, ctx);
                         },
                     );
                 }

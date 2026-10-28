@@ -317,6 +317,26 @@ pub enum RemoteSessionState {
     Disconnected,
 }
 
+/// Whether deregistering a session also stops its Phosphor-owned ControlMaster (#1083).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MasterTeardown {
+    /// Send `ssh -O exit` (pane discarded: the wrapper that owns it is gone).
+    Stop,
+    /// Leave it to the ssh wrapper, which stops it when its session client returns.
+    LeaveToWrapper,
+}
+
+impl MasterTeardown {
+    /// The owned ControlMaster socket to send `ssh -O exit` to, if any.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn path_to_stop(self, control_path: Option<PathBuf>) -> Option<PathBuf> {
+        match self {
+            MasterTeardown::Stop => control_path,
+            MasterTeardown::LeaveToWrapper => None,
+        }
+    }
+}
+
 /// Events emitted by [`RemoteServerManager`].
 #[derive(Clone, Debug)]
 pub enum RemoteServerManagerEvent {
@@ -1290,14 +1310,14 @@ impl RemoteServerManager {
     }
 
     /// Removes a session from the manager and tears down its connection.
-    /// Assumes the caller has already observed that the user's shell
-    /// has exited (in practice this is only invoked from the
-    /// `ExitShell` teardown path). Under that assumption we also force
-    /// the local SSH `ControlMaster` to exit immediately via
-    /// `ssh -O exit`, which is required because the master is the
-    /// user's interactive ssh process and, without the explicit
-    /// `-O exit`, it hangs waiting for remote-side cleanup of
-    /// multiplexed channels (see [`crate::ssh::stop_control_master`]).
+    /// Assumes the caller is done with the user's shell (in practice this is
+    /// invoked when the pane is discarded; the `ExitShell` hook uses
+    /// [`Self::deregister_session_after_shell_exit`], #1083). Under that
+    /// assumption we also force the local SSH `ControlMaster` to exit
+    /// immediately via a guarded `ssh -O exit`: the wrapper that would
+    /// otherwise stop it is gone with the pane, and the master would wait
+    /// for remote-side cleanup of multiplexed channels
+    /// (see [`crate::ssh::stop_control_master`]).
     /// Mechanically:
     /// 1. Remove the session entry. Dropping the `RemoteSessionState`
     ///    drops the transport's owned `Child`, which SIGKILLs the
@@ -1322,6 +1342,32 @@ impl RemoteServerManager {
     ///   outright. Unlike `SessionDisconnected`, this one never fires for
     ///   spontaneous drops -- only for explicit teardown.
     pub fn deregister_session(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
+        self.deregister_session_inner(session_id, MasterTeardown::Stop, ctx);
+    }
+
+    /// [`Self::deregister_session`] for the `ExitShell` hook: the same teardown, but it does
+    /// NOT send `ssh -O exit` to the session's ControlMaster.
+    ///
+    /// #1083: when the remote shell exits normally, the ssh wrapper's session client returns
+    /// right after and the wrapper itself sends `-O exit` (it owns the master it started).
+    /// Sending one from here too made two `-O exit`s race, and the loser hit a master that was
+    /// already shutting down -- the case in which OpenSSH falls back to a full login. One owner
+    /// per path: the wrapper in the normal exit path, the app ([`Self::deregister_session`])
+    /// only when the pane is discarded and the wrapper cannot run.
+    pub fn deregister_session_after_shell_exit(
+        &mut self,
+        session_id: SessionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.deregister_session_inner(session_id, MasterTeardown::LeaveToWrapper, ctx);
+    }
+
+    fn deregister_session_inner(
+        &mut self,
+        session_id: SessionId,
+        master_teardown: MasterTeardown,
+        ctx: &mut ModelContext<Self>,
+    ) {
         self.last_navigated_path.remove(&session_id);
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
@@ -1385,8 +1431,10 @@ impl RemoteServerManager {
         // Force the local SSH ControlMaster to exit after teardown.
         // Spawned detached because the ssh subcommand may take a moment
         // to complete and we don't want to block the main thread on it.
+        #[cfg(target_family = "wasm")]
+        let _ = master_teardown;
         #[cfg(not(target_family = "wasm"))]
-        if let Some(control_path) = control_path {
+        if let Some(control_path) = master_teardown.path_to_stop(control_path) {
             ctx.background_executor()
                 .spawn(async move {
                     crate::ssh::stop_control_master(&control_path).await;
