@@ -1946,6 +1946,13 @@ pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
 }
 
+/// Whether the ssh command that announced a remote shell still owns the pty (#1111).
+fn ssh_block_still_running(model: &TerminalModel) -> bool {
+    // `is_executing`, not "long running": the latter needs 50 ms and a quick InitShell would
+    // wrongly look like a finished ssh.
+    !model.is_read_only() && model.block_list().active_block().is_executing()
+}
+
 #[cfg(test)]
 #[path = "pty_controller_command_bytes_tests.rs"]
 mod command_bytes_tests;
@@ -1955,10 +1962,3 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "pty_controller_tests.rs"]
 mod tests;
-
-/// Whether the ssh command that announced a remote shell still owns the pty (#1111).
-fn ssh_block_still_running(model: &TerminalModel) -> bool {
-    // `is_executing`, not "long running": the latter needs 50 ms and a quick InitShell would
-    // wrongly look like a finished ssh.
-    !model.is_read_only() && model.block_list().active_block().is_executing()
-}

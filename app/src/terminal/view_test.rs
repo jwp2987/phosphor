@@ -17517,6 +17517,9 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\u{4}", ctx);
+            // The EOT that passes while the gate is armed must not make the app ignore the
+            // remote's hooks (that left an unmanaged remote shell behind).
+            assert!(!view.model.lock().is_ignoring_bootstrapping_messages());
         });
         assert!(
             pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
@@ -17583,6 +17586,40 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
             assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1113: a newline-terminated banner, THEN a blind password + Enter, THEN the "Password: "
+/// prompt. The banner alone must not make the password safe: any output after the text was
+/// recorded discards it, so it is never shown, even once the gate releases.
+#[test]
+fn ssh_blind_password_after_a_banner_is_never_shown() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            // Typing starts while the connect is still silent...
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert_eq!(view.ssh_held_typing.text, "hunter2");
+            // ...a banner arrives (the first output), the user keeps going blind.
+            view.model.lock().process_bytes("Authorized users only\r\n");
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            view.model.lock().process_bytes("Password: ");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            release_ssh_gate_for_test(view);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.flush_ssh_held_typing(ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
     })
