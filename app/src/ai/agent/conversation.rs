@@ -1967,7 +1967,7 @@ impl AIConversation {
         if message_count == 0 {
             return Ok(0);
         }
-        self.ensure_can_persist_byop_preflight_state(ctx)?;
+        let should_persist = self.byop_preflight_state_should_persist(ctx)?;
 
         let message_ids = messages
             .iter()
@@ -1976,6 +1976,9 @@ impl AIConversation {
         self.task_store
             .modify_task(&task_id, |task| task.append_source_messages(messages))
             .ok_or(UpdateConversationError::TaskNotFound)??;
+        if !should_persist {
+            return Ok(message_count);
+        }
         if let Err(e) = self.send_updated_conversation_state_for_byop_preflight(ctx) {
             match self.task_store.modify_task(&task_id, |task| {
                 task.remove_source_messages_by_ids(&message_ids)
@@ -3696,10 +3699,21 @@ impl AIConversation {
         }
     }
 
-    fn ensure_can_persist_byop_preflight_state(
+    /// Whether BYOP preflight commits must also be written to SQLite.
+    ///
+    /// Returns `Ok(false)` when this conversation is never persisted by design: conversation
+    /// persistence is turned off, or the execution mode cannot save sessions (the headless
+    /// `phosphor-cli agent run`). These are the same two cases
+    /// [`Self::write_updated_conversation_state_with_retention`] skips. The in-memory history is
+    /// then the only copy, so no restart can reopen a missing-result gap and committing in memory
+    /// is enough. Refusing here instead stalled every follow-up after a tool call (#1066).
+    ///
+    /// Returns an error when persistence is expected but unavailable (a shared session, or no
+    /// SQLite sender), so dispatch stays blocked rather than continuing on in-memory-only results.
+    fn byop_preflight_state_should_persist(
         &self,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
-    ) -> Result<(), UpdateConversationError> {
+    ) -> Result<bool, UpdateConversationError> {
         if self.is_viewing_shared_session {
             return Err(
                 UpdateConversationError::ByopPreflightPersistenceUnavailable(
@@ -3707,19 +3721,10 @@ impl AIConversation {
                 ),
             );
         }
-        if !*GeneralSettings::as_ref(ctx).persist_conversations {
-            return Err(
-                UpdateConversationError::ByopPreflightPersistenceUnavailable(
-                    "conversation persistence is disabled".to_owned(),
-                ),
-            );
-        }
-        if !AppExecutionMode::as_ref(ctx).can_save_session() {
-            return Err(
-                UpdateConversationError::ByopPreflightPersistenceUnavailable(
-                    "current execution mode cannot save sessions".to_owned(),
-                ),
-            );
+        if !*GeneralSettings::as_ref(ctx).persist_conversations
+            || !AppExecutionMode::as_ref(ctx).can_save_session()
+        {
+            return Ok(false);
         }
         if GlobalResourceHandlesProvider::as_ref(ctx)
             .get()
@@ -3732,7 +3737,7 @@ impl AIConversation {
                 ),
             );
         }
-        Ok(())
+        Ok(true)
     }
 
     fn send_updated_conversation_state_for_byop_preflight(
@@ -3740,7 +3745,7 @@ impl AIConversation {
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) -> Result<(), UpdateConversationError> {
         // The caller (`append_byop_preflight_messages_to_task`) has already called
-        // `ensure_can_persist_byop_preflight_state` before writing, so we don't re-check
+        // `byop_preflight_state_should_persist` before writing, so we don't re-check
         // whether the sender exists here; we only care about try_send's own Full/Closed
         // errors, reusing the existing ByopPreflightPersistenceSend.
         let sqlite_sender = GlobalResourceHandlesProvider::as_ref(ctx)
