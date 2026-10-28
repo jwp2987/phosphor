@@ -56,6 +56,8 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # libbz2-rs-sys (zip 9 -> bzip2 0.6): the BSD-style bzip2 1.0.6 licence (#1076).
+    "bzip2-1.0.6",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
     "ISC",
