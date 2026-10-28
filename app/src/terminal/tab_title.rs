@@ -38,6 +38,25 @@ pub fn single_line_title(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// Returns the running title of a command that spans more than one non-blank line: its first
+/// line and [`MULTILINE_TITLE_ELLIPSIS`], or `None` for a single-line command.
+///
+/// Phosphor (#1093): a shell's own title for a running command cannot carry this. bash runs a
+/// pasted block line by line and reports only the first line to its preexec hook, zsh's hook
+/// titles with the command word, and fish's `fish_title` joins the lines with spaces. The block's
+/// command text is the one source that has every line, so the app derives the title from it.
+pub fn multiline_command_title(command: &str) -> Option<String> {
+    let mut lines = command
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next()?;
+    lines
+        .next()
+        .is_some()
+        .then(|| format!("{first}{MULTILINE_TITLE_ELLIPSIS}"))
+}
+
 #[cfg(test)]
 #[path = "tab_title_tests.rs"]
 mod tests;

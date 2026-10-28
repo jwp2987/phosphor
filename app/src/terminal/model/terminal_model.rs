@@ -519,6 +519,10 @@ pub struct TerminalModel {
     title: Option<String>,
     /// Custom title of the window, set manually by the user.
     custom_title: Option<String>,
+    /// Phosphor (#1093): the title of the block running a multi-line command, its first line
+    /// and an ellipsis, shown in place of `title` while that block executes. See
+    /// [`Self::active_running_command_title`].
+    running_command_title: Option<(BlockId, String)>,
 
     /// Default colors to render characters.
     colors: color::List,
@@ -1241,6 +1245,7 @@ impl TerminalModel {
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
+            running_command_title: None,
             colors,
             override_colors: color::OverrideList::empty(),
             event_proxy,
@@ -2533,20 +2538,42 @@ impl TerminalModel {
         self.custom_title.clone_from(&custom_title);
         // If the custom title set by the user is None, we "reset" to whatever the title was set by
         // the shell / Zap itself.
-        self.send_title_event(match custom_title {
+        let title = match custom_title {
             Some(_) => custom_title,
-            None => self.title.clone(),
-        });
+            None => self.shown_title(),
+        };
+        self.send_title_event(title);
     }
 
     pub fn custom_title(&self) -> Option<String> {
         self.custom_title.clone()
     }
 
-    /// Returns the terminal's natural title (set by ANSI escape sequences).
+    /// Returns the terminal's natural title (set by ANSI escape sequences), or, while a
+    /// multi-line command runs, its first line and an ellipsis (#1093).
     /// This does not include any custom title override.
     pub fn terminal_title(&self) -> Option<String> {
-        self.title.clone()
+        self.shown_title()
+    }
+
+    /// Phosphor (#1093): the running title of the active block when it executes a command that
+    /// spans more than one line. No shell's own title can say that (bash reports only the first
+    /// line to its preexec hook, zsh's hook titles with the command word, fish's `fish_title`
+    /// joins the lines with spaces), while the block's command text has every line and is what
+    /// the finished title is made from (#1052), so the two agree. It takes precedence over any
+    /// OSC title for as long as the block executes, a program's own title included.
+    fn active_running_command_title(&self) -> Option<&str> {
+        let (block_id, title) = self.running_command_title.as_ref()?;
+        let active_block = self.block_list.active_block();
+        (active_block.id() == block_id && active_block.state() == BlockState::Executing)
+            .then_some(title.as_str())
+    }
+
+    /// The title the tab shows when no custom title is set.
+    fn shown_title(&self) -> Option<String> {
+        self.active_running_command_title()
+            .map(str::to_owned)
+            .or_else(|| self.title.clone())
     }
 
     /// Reports user input on the terminal as potential typeahead.
@@ -2881,6 +2908,16 @@ impl TerminalModel {
                 },
             });
         }
+
+        // Phosphor (#1093): the multi-line command's running title ends with its block; the
+        // tab goes back to the shell's own title until the shell's next one arrives.
+        if self.running_command_title.is_some() && self.active_running_command_title().is_none() {
+            self.running_command_title = None;
+            if self.custom_title.is_none() {
+                let title = self.shown_title();
+                self.send_title_event(title);
+            }
+        }
     }
 
     /// Applies prompt metadata through the normal once-per-block path.
@@ -3001,6 +3038,22 @@ impl TerminalModel {
         }
         self.reply_ledger.lock().on_command_start();
         self.block_list.apply_preexec_to_active(data);
+        // Phosphor (#1093): a multi-line command titles the tab with its first line and an
+        // ellipsis while it runs, whatever the shell's own title hook sent (or sends next).
+        let active_block = self.block_list.active_block();
+        self.running_command_title = None;
+        if active_block.state() == BlockState::Executing
+            && !active_block.is_in_band_command_block()
+            && let Some(title) = crate::terminal::tab_title::multiline_command_title(
+                &active_block.command_to_string(),
+            )
+        {
+            self.running_command_title = Some((active_block.id().clone(), title));
+        }
+        if self.running_command_title.is_some() && self.custom_title.is_none() {
+            let title = self.shown_title();
+            self.send_title_event(title);
+        }
         self.emit_handler_event(HandlerEvent::Preexec);
     }
 }
@@ -3094,7 +3147,8 @@ impl ansi::Handler for TerminalModel {
 
         // Only send this event if there was no custom title set.
         if self.custom_title.is_none() {
-            self.send_title_event(filtered_title);
+            let title = self.shown_title();
+            self.send_title_event(title);
         }
     }
 
