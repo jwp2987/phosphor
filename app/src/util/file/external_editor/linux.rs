@@ -6,7 +6,6 @@ use std::{
 };
 
 use command::blocking::Command;
-use freedesktop_desktop_entry::DesktopEntry;
 use warp_util::path::LineAndColumnArg;
 use warpui::AppContext;
 
@@ -99,7 +98,7 @@ fn tokenize_exec(exec: &str) -> Result<Vec<String>, DesktopExecError> {
     Ok(tokens)
 }
 
-/// A data struct to hold relevant info pulled from a [freedesktop_desktop_entry::DesktopEntry].
+/// A data struct to hold relevant info pulled from a .desktop file (see [`parse_desktop_entry_group`]).
 /// Mostly here to get around the lack of an owned version of DesktopEntry.
 struct EditorMetadata {
     /// Path to the .desktop file.
@@ -118,6 +117,69 @@ struct EditorMetadata {
     icon: Option<String>,
 }
 
+/// The `[Desktop Entry]` group of a .desktop file: key -> (default value,
+/// values by locale).
+#[derive(Default)]
+struct DesktopEntryGroup<'a>(HashMap<&'a str, (Option<&'a str>, HashMap<&'a str, &'a str>)>);
+
+impl<'a> DesktopEntryGroup<'a> {
+    fn value(&self, key: &str) -> Option<&'a str> {
+        self.0.get(key).and_then(|(default, _)| *default)
+    }
+
+    /// The value for `locale`, falling back to the unlocalized one.
+    fn localized_value(&self, key: &str, locale: &str) -> Option<&'a str> {
+        let (default, by_locale) = self.0.get(key)?;
+        by_locale.get(locale).copied().or(*default)
+    }
+}
+
+/// Reads the `[Desktop Entry]` group, leniently.
+///
+/// This used to be `freedesktop_desktop_entry::DesktopEntry::decode` (0.5).
+/// 0.8's decoder (refs #1076) is strict where 0.5 was not, and any one of
+/// these rejects the WHOLE file, so the editor silently disappears from the
+/// list: an indented line (0.5 trimmed each line), a non-comment line without
+/// `=`, a backslash escape outside `\s \n \t \r \\` (common in real Exec
+/// lines, e.g. `\"`), or a `Key[locale]=` with no unlocalized `Key=`. 0.8 also
+/// unescapes values, which would change what `tokenize_exec` sees. We read
+/// three keys, so parse them the way 0.5 did: trimmed lines, `#` comments,
+/// `[Group]` headers, `key=value` split on the first `=`, values verbatim
+/// (later duplicates win), anything else ignored. Unlike 0.5, whitespace
+/// around the key and before the value is ignored, as the spec says.
+fn parse_desktop_entry_group(input: &str) -> DesktopEntryGroup<'_> {
+    let mut group = DesktopEntryGroup::default();
+    let mut in_desktop_entry = false;
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            // A header without `]` is ignored and leaves the current group
+            // active, as 0.5 did.
+            if let Some(end) = header.rfind(']') {
+                in_desktop_entry = &header[..end] == "Desktop Entry";
+            }
+            continue;
+        }
+        if !in_desktop_entry {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim_start());
+        match key.strip_suffix(']').and_then(|key| key.split_once('[')) {
+            Some((key, locale)) => {
+                group.0.entry(key).or_default().1.insert(locale, value);
+            }
+            None => group.0.entry(key).or_default().0 = Some(value),
+        }
+    }
+    group
+}
+
 impl EditorMetadata {
     /// Builds a new metadata from a given desktop file path
     ///
@@ -126,23 +188,21 @@ impl EditorMetadata {
     ///
     /// # errors
     /// - [`DesktopExecError::IoError`] if reading the file fails
-    /// - [`DesktopExecError::DecodeError`] if parsing the desktop entry fails
     /// - [`DesktopExecError::NoExec`] if the desktop entry does not have an Exec field
     fn try_new(desktop_file_path: PathBuf) -> Result<Self, DesktopExecError> {
         let input = std::fs::read_to_string(&desktop_file_path)?;
 
-        // No locale filter: we only read the default and `en` values below.
-        let entry = DesktopEntry::from_str(&desktop_file_path, &input, None::<&[&str]>)?;
+        let entry = parse_desktop_entry_group(&input);
 
-        let Some(exec) = entry.exec() else {
+        let Some(exec) = entry.value("Exec") else {
             return Err(DesktopExecError::NoExec);
         };
 
         // Doing all the calculations here to get owned versions of data fields,
         // so we can drop entry
         let exec = exec.to_string();
-        let localized_name = entry.name(&["en"]).map(|x| x.into_owned());
-        let icon = entry.icon().map(str::to_string);
+        let localized_name = entry.localized_value("Name", "en").map(str::to_string);
+        let icon = entry.value("Icon").map(str::to_string);
 
         Ok(Self {
             desktop_file_path,
@@ -695,9 +755,6 @@ impl Editor {
 enum DesktopExecError {
     #[error("i/o error {0}")]
     IoError(#[from] std::io::Error),
-
-    #[error("decode error {0}")]
-    DecodeError(#[from] freedesktop_desktop_entry::DecodeError),
 
     #[error("Attempted to create command for desktop entry with no exec field")]
     NoExec,

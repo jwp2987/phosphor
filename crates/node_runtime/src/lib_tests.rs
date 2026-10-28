@@ -8,8 +8,9 @@ use zip::write::SimpleFileOptions;
 
 use super::*;
 
-/// Builds an in-memory zip: a normal file, a `..` escape, an absolute path, a
-/// symlink pointing outside the destination, and a setuid regular file.
+/// Builds an in-memory zip: a normal file, a `..` escape, rooted names (Unix
+/// absolute, backslash-rooted, UNC, drive-qualified), a symlink pointing
+/// outside the destination, and a setuid regular file.
 fn hostile_zip() -> Vec<u8> {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default();
@@ -20,8 +21,16 @@ fn hostile_zip() -> Vec<u8> {
     writer.start_file("../escape.txt", options).unwrap();
     writer.write_all(b"escape").unwrap();
 
-    writer.start_file("/abs.txt", options).unwrap();
-    writer.write_all(b"abs").unwrap();
+    for rooted in [
+        "/abs.txt",
+        "\\backslash-abs.txt",
+        "\\\\server\\share\\unc.txt",
+        "C:\\drive.txt",
+        "C:drive-relative.txt",
+    ] {
+        writer.start_file(rooted, options).unwrap();
+        writer.write_all(b"rooted").unwrap();
+    }
 
     writer
         .add_symlink("pkg/link", "../../outside", options)
@@ -46,6 +55,8 @@ fn extract_zip_confines_entries_and_skips_symlinks() {
     assert_eq!(std::fs::read(dest.join("pkg/ok.txt")).unwrap(), b"ok");
     assert!(!root.path().join("escape.txt").exists());
     assert!(!dest.join("escape.txt").exists());
+    // Rooted names are not extracted at all -- not even re-rooted inside dest,
+    // which is what zip 9's enclosed_name alone would do.
     assert!(!dest.join("abs.txt").exists());
     assert!(!root.path().join("outside").exists());
     // The symlink entry is neither created as a link nor written as a file.
@@ -53,6 +64,46 @@ fn extract_zip_confines_entries_and_skips_symlinks() {
     // cannot mark an entry as a symlink, so there it is an ordinary file.
     #[cfg(unix)]
     assert!(std::fs::symlink_metadata(dest.join("pkg/link")).is_err());
+
+    // Nothing else was written anywhere under root.
+    #[allow(unused_mut)]
+    let mut expected = vec![dest.join("pkg/ok.txt"), dest.join("pkg/suid")];
+    #[cfg(not(unix))]
+    expected.push(dest.join("pkg/link"));
+    expected.sort();
+    assert_eq!(files_under(root.path()), expected);
+}
+
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+            files.extend(files_under(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn absolute_zip_entry_names_are_detected() {
+    for rooted in [
+        "/x",
+        "\\x",
+        "\\\\server\\share\\x",
+        "//server/share/x",
+        "C:\\x",
+        "c:/x",
+        "C:x",
+    ] {
+        assert!(is_absolute_zip_entry_name(rooted), "{rooted:?}");
+    }
+    for relative in ["x", "pkg/x", "./x", "../x", "ab:c"] {
+        assert!(!is_absolute_zip_entry_name(relative), "{relative:?}");
+    }
 }
 
 #[cfg(unix)]

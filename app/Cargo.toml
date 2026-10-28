@@ -403,7 +403,9 @@ minidumper = { version = "0.8.3", optional = true }
 # setlocale(LC_ALL, "") process-wide from whatever thread resolves editors
 # (gettext-rs 0.7, RUSTSEC-2026-0244: unsynchronised env access). We only
 # read the `en`/default Name, so translation buys nothing; dropping the
-# feature also removes the gettext-rs / gettext-sys C build.
+# feature also removes the gettext-rs / gettext-sys C build. Only Iter /
+# default_paths are used: 0.8's strict decoder rejected real-world files, so
+# external_editor/linux.rs parses the three keys it needs itself.
 freedesktop-desktop-entry = { version = "0.8.4", default-features = false }
 x11rb.workspace = true
 zbus.workspace = true
