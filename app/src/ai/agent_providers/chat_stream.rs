@@ -4752,9 +4752,14 @@ fn tool_call_refused_at_dispatch(
 /// naming a withheld tool cannot loop on the user's API key.
 fn dispatch_refusal_payload(refusal: DispatchRefusal, tool_name: &str, args_str: &str) -> Value {
     match refusal {
+        // `tool` / `received_args` / `executed` were missing from this one payload, so its
+        // "tool not available this turn" card could not name the tool (#1067 follow-up).
         DispatchRefusal::ComputerUseDisabled => serde_json::json!({
             "status": "error",
             "error": "computer_use_disabled",
+            "tool": tool_name,
+            "received_args": args_str,
+            "executed": false,
             "message": "Computer use is not available in this session — it is off by \
                         feature flag, profile permission, or platform support. Do not \
                         retry; solve the task another way.",
@@ -14543,10 +14548,27 @@ mod plan_mode_round_trip_tests {
         assert!(!refused(&params, false, SHELL));
 
         // With a connected remote server the file tools have a route and stay callable.
+        // `read_skill` additionally needs a listed skill that binds on this host (#1068,
+        // `turn_offers_read_skill`); the round-trip fixture lists none, so list a bundled one,
+        // which binds on every origin. Without it `read_skill` is correctly not offered, and
+        // refusing it says nothing about the file route this block is about.
         params.session_context =
             crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
+        set_turn_context(
+            &mut params,
+            vec![AIAgentContext::Skills {
+                skills: vec![SkillDescriptor {
+                    reference: ai::skills::SkillReference::BundledSkillId("find-skills".into()),
+                    name: "find-skills".to_owned(),
+                    description: "Finds skills.".to_owned(),
+                    scope: SkillScope::Bundled,
+                    provider: ai::skills::SkillProvider::Zap,
+                    icon_override: None,
+                }],
+            }],
+        );
         for ok in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
-            assert!(!refused(&params, false, ok));
+            assert!(!refused(&params, false, ok), "{ok} has a route here");
         }
     }
 
@@ -16212,14 +16234,39 @@ mod byop_diag_privacy_tests {
         found
     }
 
+    /// The production half of this file: everything before the first `#[cfg(test)]` that
+    /// introduces a `mod` (further attribute lines such as `#[path = ...]` may sit between).
+    ///
+    /// It used to cut at the first `#[cfg(test)]` of any kind. A test-only helper *function*
+    /// placed early in the file (#1059 added `build_chat_request_for_test` near the top) then
+    /// hid almost every production log site, and the guard found 6 sites instead of ~80. A
+    /// `#[cfg(test)]` item that is not a module is scanned along with production code, which
+    /// can only make the guard stricter.
+    fn production_region(source: &str) -> &str {
+        const MARKER: &str = "#[cfg(test)]";
+        let mut from = 0usize;
+        while let Some(at) = source[from..].find(MARKER) {
+            let start = from + at;
+            let after = &source[start + MARKER.len()..];
+            let introduces_mod = after
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .find(|line| !line.starts_with("#["))
+                .is_some_and(|line| line.starts_with("mod ") || line.starts_with("pub mod "));
+            if introduces_mod {
+                return &source[..start];
+            }
+            from = start + MARKER.len();
+        }
+        source
+    }
+
     /// Every `log::` call site in the production half of this file.
     fn log_macro_argument_lists(source: &str) -> Vec<(usize, String)> {
-        // Everything from the first `#[cfg(test)]` onwards is test code — including this
+        // Everything from the first test module onwards is test code — including this
         // module, whose own examples would otherwise be scanned as if they were call sites.
-        let production = match source.find("#[cfg(test)]") {
-            Some(at) => &source[..at],
-            None => source,
-        };
+        let production = production_region(source);
         let mut sites = Vec::new();
         for macro_call in [
             "log::info!(",
@@ -16275,6 +16322,22 @@ mod byop_diag_privacy_tests {
              {REDACTORS:?}, or log a measurement instead:\n{}",
             violations.join("\n")
         );
+    }
+
+    /// The scanned region must survive a test-only helper function placed before production
+    /// code: only a test *module* ends it. Assembled at run time so this file never holds the
+    /// marker sequence the real scan looks for outside a test module.
+    #[test]
+    fn a_test_only_helper_does_not_end_the_production_region() {
+        let marker = format!("#[{}]", "cfg(test)");
+        let synthetic = format!(
+            "fn a() {{ log::info!(\"one\"); }}\n{marker}\nfn helper_for_test() {{}}\n\
+             fn b() {{ log::warn!(\"two\"); }}\n{marker}\n#[path = \"x.rs\"]\nmod tests {{\n\
+             fn c() {{ log::error!(\"three\"); }}\n}}\n"
+        );
+        let sites = log_macro_argument_lists(&synthetic);
+        let texts: Vec<&str> = sites.iter().map(|(_, args)| args.as_str()).collect();
+        assert_eq!(texts, vec!["\"one\"", "\"two\""], "{synthetic}");
     }
 
     #[test]
