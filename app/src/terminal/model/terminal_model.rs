@@ -3078,8 +3078,17 @@ impl ansi::Handler for TerminalModel {
             return;
         }
 
-        // Filter out null bytes from the title string.
-        let filtered_title = title.map(|t| t.replace('\0', ""));
+        // Filter out null bytes from the title string. Phosphor (#1052): a title is shown on
+        // one line, so one carrying line breaks keeps its first line and an ellipsis instead
+        // of having its lines glued together by the layout.
+        let filtered_title = title.map(|t| {
+            let t = t.replace('\0', "");
+            if t.contains(['\n', '\r']) {
+                crate::terminal::tab_title::single_line_title(&t).into_owned()
+            } else {
+                t
+            }
+        });
 
         self.title.clone_from(&filtered_title);
 

@@ -40,6 +40,7 @@ use crate::tab::{
 };
 use crate::terminal::TerminalView;
 use crate::terminal::session_settings::SessionSettings;
+use crate::terminal::tab_title::single_line_title;
 use crate::themes::theme::Fill as ThemeFill;
 use crate::ui_components::buttons::combo_inner_button;
 use crate::ui_components::icons::Icon as UiIcon;
@@ -4404,11 +4405,21 @@ fn terminal_primary_line_data(
     terminal_title_font: TerminalPrimaryLineFont,
     last_completed_command: Option<String>,
 ) -> TerminalPrimaryLineData {
+    // Phosphor (#1052): the primary line is laid out as one line, which drops line breaks and
+    // glues the lines together; every source collapses to its first line and an ellipsis.
+    let single_line = |text: String| -> String {
+        if text.contains(['\n', '\r']) {
+            single_line_title(&text).into_owned()
+        } else {
+            text
+        }
+    };
+    let terminal_title = single_line_title(terminal_title);
     let trimmed_title = terminal_title.trim();
     let trimmed_working_directory = working_directory.trim();
     if let Some(cli_agent_title) = cli_agent_title {
         return TerminalPrimaryLineData::StatusText {
-            text: cli_agent_title,
+            text: single_line(cli_agent_title),
         };
     }
 
@@ -4421,7 +4432,7 @@ fn terminal_primary_line_data(
 
     if let Some(conversation_title) = conversation_display_title {
         return TerminalPrimaryLineData::StatusText {
-            text: conversation_title,
+            text: single_line(conversation_title),
         };
     }
     if !trimmed_title.is_empty() && trimmed_title != trimmed_working_directory {
@@ -4433,7 +4444,7 @@ fn terminal_primary_line_data(
 
     if let Some(last_completed_command) = last_completed_command {
         return TerminalPrimaryLineData::Text {
-            text: last_completed_command,
+            text: single_line(last_completed_command),
             font: TerminalPrimaryLineFont::Monospace,
         };
     }

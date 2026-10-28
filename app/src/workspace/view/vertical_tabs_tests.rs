@@ -773,6 +773,101 @@ fn terminal_primary_line_uses_last_completed_command_when_shell_title_matches_wo
     assert_eq!(line.text(), "cargo nextest run");
 }
 
+/// #1052: a finished multi-line command titles the sidebar row with its first line and an
+/// ellipsis — the same form the shell gives its running title — not "echo PL1echo PL2echo PL3".
+#[test]
+fn terminal_primary_line_shows_first_line_and_ellipsis_for_multiline_last_command() {
+    let line = terminal_primary_line_data(
+        false,
+        None,
+        None,
+        "~/warp",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        Some("echo PL1\necho PL2\necho PL3".to_string()),
+    );
+
+    assert_eq!(line.text(), "echo PL1\u{2026}");
+}
+
+/// #1052: the running title (from the shell) and the finished title (from the block) agree.
+#[test]
+fn terminal_primary_line_running_and_finished_multiline_titles_agree() {
+    let running = terminal_primary_line_data(
+        true,
+        None,
+        None,
+        "echo PL1\u{2026}",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        None,
+    );
+    let finished = terminal_primary_line_data(
+        false,
+        None,
+        None,
+        "~/warp",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        Some("echo PL1\r\necho PL2\r\necho PL3\r\n".to_string()),
+    );
+
+    assert_eq!(running.text(), finished.text());
+}
+
+/// #1052: a title carrying a line break from any source never renders with its lines glued.
+#[test]
+fn terminal_primary_line_collapses_multiline_titles_from_every_source() {
+    let terminal_title = terminal_primary_line_data(
+        false,
+        None,
+        None,
+        "first\nsecond",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        None,
+    );
+    assert_eq!(terminal_title.text(), "first\u{2026}");
+
+    let conversation = terminal_primary_line_data(
+        false,
+        Some("Fix the build\nthen run tests".to_string()),
+        None,
+        "~/warp",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        None,
+    );
+    assert_eq!(conversation.text(), "Fix the build\u{2026}");
+
+    let cli_agent = terminal_primary_line_data(
+        false,
+        None,
+        Some("Summarize\nthe failures".to_string()),
+        "~/warp",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        None,
+    );
+    assert_eq!(cli_agent.text(), "Summarize\u{2026}");
+}
+
+/// #1052: a single-line command with a trailing newline keeps its text, with no ellipsis.
+#[test]
+fn terminal_primary_line_keeps_single_line_last_command_without_ellipsis() {
+    let line = terminal_primary_line_data(
+        false,
+        None,
+        None,
+        "~/warp",
+        "~/warp",
+        TerminalPrimaryLineFont::Monospace,
+        Some("cargo nextest run\n".to_string()),
+    );
+
+    assert_eq!(line.text(), "cargo nextest run");
+}
+
 #[test]
 fn terminal_primary_line_falls_back_to_new_session() {
     // The "New session" fallback is now a localized `t!()` string; initialize

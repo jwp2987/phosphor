@@ -1,6 +1,7 @@
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::{git_line_changes_from_chips, ContextChipKind};
 use crate::terminal::TerminalView;
+use crate::terminal::tab_title::single_line_title;
 use warpui::AppContext;
 
 impl TerminalView {
@@ -57,11 +58,14 @@ impl TerminalView {
                 && !block.is_static()
                 && (block.bootstrap_stage().is_done() || block.is_restored())
             {
+                // Phosphor (#1052): a multi-line command titles the tab with its first line
+                // and an ellipsis, as its running title did; the layout would glue the lines.
                 let cmd = block.command_to_string();
-                if cmd.trim().is_empty() {
+                let title = single_line_title(&cmd);
+                if title.trim().is_empty() {
                     None
                 } else {
-                    Some(cmd)
+                    Some(title.into_owned())
                 }
             } else {
                 None
