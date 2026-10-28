@@ -16843,6 +16843,9 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 "the first remote prompt releases the gate"
             );
             // ...but the rest of the line whose head was dropped stays dropped through its Enter.
+            // A command is running in the foreground again (fixed setup for the assertions
+            // below: the editor is hidden, so the line must wait, not be shown or written).
+            view.model.lock().simulate_long_running_block("sleep 5", "");
             view.typed_characters_on_terminal("ho TY$((20+1))-$(uname -n)", ctx);
             view.keydown_on_terminal("\r", ctx);
             // #1113: the dropped line is kept, whole and unexecuted, in the editor (when it is
@@ -17585,6 +17588,12 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
+            // The ssh command is running, so its output lands in the block's output grid.
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert_eq!(view.ssh_held_typing.text, "hunter2");
