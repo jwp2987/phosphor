@@ -14112,6 +14112,7 @@ mod byop_unreachable_provider_hint_tests {
 #[cfg(test)]
 mod plan_mode_round_trip_tests {
     use super::*;
+    use crate::ai::agent::RejectedToolCallKind;
     use crate::ai::agent::task::TaskId;
     use crate::ai::agent::{
         AIAgentActionId, AIAgentActionResult, AIAgentActionResultType, RequestCommandOutputResult,
@@ -15028,6 +15029,97 @@ mod plan_mode_round_trip_tests {
             "{}",
             results[0].server_message_data
         );
+
+        // #1067 follow-up: the refused-only turn must leave a visible card (it used to leave
+        // nothing on screen) and must not schedule a follow-up request.
+        let cards: Vec<(Option<String>, RejectedToolCallKind)> = messages
+            .iter()
+            .cloned()
+            .filter_map(|m| match convert_for_display(m) {
+                crate::ai::agent::api::MaybeAIAgentOutputMessage::Message(out) => {
+                    match out.message {
+                        crate::ai::agent::AIAgentOutputMessageType::RejectedToolCall {
+                            tool,
+                            kind,
+                            ..
+                        } => Some((tool, kind)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            cards,
+            vec![(
+                Some("websearch".to_owned()),
+                RejectedToolCallKind::NotOffered
+            )],
+            "exactly one visible 'tool not available this turn' card"
+        );
+        assert!(
+            !messages.iter().any(|m| {
+                matches!(m.message, Some(api::message::Message::ToolCallResult(_)))
+                    && crate::ai::blocklist::controller::byop_synthetic_result_needs_resume(
+                        &m.server_message_data,
+                    )
+            }),
+            "a refused call must not schedule an auto-resume"
+        );
+    }
+
+    /// Converts one stream message the way the controller does before rendering it.
+    fn convert_for_display(
+        message: api::Message,
+    ) -> crate::ai::agent::api::MaybeAIAgentOutputMessage {
+        use crate::ai::agent::api::{ConversionParams, ConvertAPIMessageToClientOutputMessage};
+        let task_id = TaskId::new("task-1".to_owned());
+        message
+            .to_client_output_message(ConversionParams {
+                task_id: &task_id,
+                current_todo_list: None,
+                active_code_review: None,
+                skill_path_origin: &ai::skills::SkillPathOrigin::Local,
+            })
+            .expect("conversion should succeed")
+    }
+
+    /// #1067 follow-up: every dispatch refusal, as actually built by
+    /// `dispatch_refusal_payload` and carried by a real ToolCallResult message, renders as a
+    /// visible `NotOffered` card and does not auto-resume.
+    #[test]
+    fn every_dispatch_refusal_renders_a_card_and_does_not_resume() {
+        for refusal in [
+            DispatchRefusal::PlanMode,
+            DispatchRefusal::ComputerUseDisabled,
+            DispatchRefusal::Withdrawn("A command is already running in this terminal."),
+            DispatchRefusal::NotOffered,
+        ] {
+            let payload = dispatch_refusal_payload(refusal, "some_tool", "{}");
+            let content = serde_json::to_string(&payload).expect("payload serializes");
+            assert!(
+                !crate::ai::blocklist::controller::byop_synthetic_result_needs_resume(&content),
+                "{refusal:?} must not auto-resume"
+            );
+            let message =
+                make_tool_call_result_message("task-1", "req-1", "call-1".to_owned(), content);
+            let crate::ai::agent::api::MaybeAIAgentOutputMessage::Message(out) =
+                convert_for_display(message)
+            else {
+                panic!("{refusal:?} left nothing on screen");
+            };
+            let (tool, detail, kind) = match out.message {
+                crate::ai::agent::AIAgentOutputMessageType::RejectedToolCall {
+                    tool,
+                    detail,
+                    kind,
+                } => (tool, detail, kind),
+                other => panic!("{refusal:?} did not become a rejected-call card: {other:?}"),
+            };
+            assert_eq!(kind, RejectedToolCallKind::NotOffered, "{refusal:?}");
+            assert_eq!(tool.as_deref(), Some("some_tool"), "{refusal:?}");
+            assert!(!detail.is_empty(), "{refusal:?}");
+        }
     }
 
     /// #1067, skills: the skills listing is dropped from the system-prompt context exactly

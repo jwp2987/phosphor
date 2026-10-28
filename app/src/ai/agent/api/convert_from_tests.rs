@@ -395,3 +395,75 @@ fn non_json_server_message_data_does_not_panic_and_stays_invisible() {
         MaybeAIAgentOutputMessage::NoClientRepresentation
     ));
 }
+
+/// #1067: the BYOP dispatch gate's refusals used to map to `NoClientRepresentation`, and the
+/// controller does not auto-resume on them, so a turn whose only call was refused ended with
+/// nothing on screen. Each must now arrive as a visible `NotOffered` rejected-call card that
+/// names the tool and the reason.
+#[test]
+fn dispatch_gate_refusals_become_visible_not_offered_cards() {
+    let task_id = TaskId::new("task".to_string());
+    for (code, tool, message, reason) in [
+        (
+            "tool_not_offered",
+            "websearch",
+            "NOTHING RAN. `websearch` is not available in this turn (it is turned off in the \
+             user's settings or not available in this session). Use only the tools listed for \
+             this turn, or ask the user.",
+            "is not available in this turn",
+        ),
+        (
+            "plan_mode_blocked",
+            "run_shell_command",
+            "Plan Mode is active (the user prefixed this turn with `/plan`), so this \
+             write/execution-class tool is unavailable and NOTHING RAN.",
+            "Plan Mode is active",
+        ),
+        (
+            "computer_use_disabled",
+            "use_computer",
+            "Computer use is not available in this session.",
+            "Computer use is not available",
+        ),
+    ] {
+        let payload = serde_json::json!({
+            "status": "error",
+            "error": code,
+            "tool": tool,
+            "received_args": "{}",
+            "executed": false,
+            "message": message,
+        })
+        .to_string();
+        let converted = tool_call_result_message(&payload)
+            .to_client_output_message(ConversionParams {
+                task_id: &task_id,
+                current_todo_list: None,
+                active_code_review: None,
+                skill_path_origin: &SkillPathOrigin::Local,
+            })
+            .expect("conversion should succeed");
+
+        let (got_tool, detail, kind) = extract_rejected_tool_call(converted);
+        assert_eq!(kind, RejectedToolCallKind::NotOffered, "{code}");
+        assert_eq!(got_tool.as_deref(), Some(tool), "{code}");
+        assert!(detail.contains(reason), "{code}: {detail}");
+        assert!(
+            !detail.starts_with("NOTHING RAN."),
+            "{code}: the card's own note says nothing ran: {detail}"
+        );
+
+        let rendered =
+            crate::ai::agent::rejected_tool_call_text(got_tool.as_deref(), &detail, kind);
+        assert!(
+            rendered.starts_with(&format!("Tool not available this turn: {tool}")),
+            "{code}: {rendered}"
+        );
+        assert!(rendered.contains(reason), "{code}: {rendered}");
+        // No resume follows these, so the card must not promise a retry.
+        assert!(
+            !rendered.contains("Asking the model to retry"),
+            "{code}: {rendered}"
+        );
+    }
+}

@@ -4331,12 +4331,7 @@ impl BlocklistAIController {
                                         message::ToolCallResult { result: None, .. },
                                     )),
                                 )
-                                && (msg
-                                    .server_message_data
-                                    .contains(r#""error":"invalid_arguments""#)
-                                    || msg
-                                        .server_message_data
-                                        .contains(r#""_byop_intercepted":true"#))
+                                && byop_synthetic_result_needs_resume(&msg.server_message_data)
                         })
                     });
                     // Defer to the stream's own `pending_resume` when it has one (checked
@@ -5000,6 +4995,19 @@ fn cancellation_switches_input_to_shell(
 ) -> bool {
     !was_passive_request
         && matches!(reason.conversation_outcome(), CancellationOutcome::Cancelled)
+}
+
+/// Whether a BYOP synthetic `ToolCallResult` (one that never entered the action queue) makes
+/// the controller resend the conversation so the model can react to it: an `invalid_arguments`
+/// rejection, or a `_byop_intercepted` local result (todowrite / web / codebase tools).
+///
+/// The dispatch gate's refusals (`tool_not_offered`, `plan_mode_blocked`,
+/// `computer_use_disabled`; see `chat_stream::dispatch_refusal_payload`) deliberately do NOT
+/// resume: a model that keeps naming a withheld tool would otherwise loop on the user's API
+/// key. They render a visible "tool not available this turn" card instead (#1067).
+pub(crate) fn byop_synthetic_result_needs_resume(server_message_data: &str) -> bool {
+    server_message_data.contains(r#""error":"invalid_arguments""#)
+        || server_message_data.contains(r#""_byop_intercepted":true"#)
 }
 
 #[cfg(test)]
