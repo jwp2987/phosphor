@@ -14639,7 +14639,7 @@ mod plan_mode_round_trip_tests {
         params
     }
 
-    fn mcp_context_with_one_tool() -> crate::ai::agent::MCPContext {
+    fn mcp_context_with_lookup_tool() -> crate::ai::agent::MCPContext {
         let schema = serde_json::json!({
             "type": "object",
             "properties": { "q": { "type": "string" } }
@@ -14697,7 +14697,7 @@ mod plan_mode_round_trip_tests {
         out.push(("plan mode", p));
 
         let mut p = all_tools_on();
-        p.mcp_context = Some(mcp_context_with_one_tool());
+        p.mcp_context = Some(mcp_context_with_lookup_tool());
         out.push(("MCP server, no resources", p));
 
         // Everything off at once: the defaults of `RequestParams::new_for_test`.
@@ -14790,7 +14790,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn mcp_tools_are_gated_by_the_offered_names() {
         let mut params = all_tools_on();
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(mcp_context_with_lookup_tool());
         let offered = available_tool_names(&params);
         let mcp_name = tools::mcp::build_mcp_tool_defs(
             params.mcp_context.as_ref().expect("mcp context set above"),
