@@ -1,15 +1,47 @@
+# Enforced by the `advisories` CI job (`cargo deny check advisories`, refs #1076).
+#
+# Every vulnerability advisory is an error unless its id is listed in `ignore`
+# below, so the job fails on any NEW advisory that lands in the RustSec DB for a
+# crate in our graph. Unsound and unmaintained advisories are errors too
+# (`unsound = "all"` widens cargo-deny's default of direct deps only), so
+# accepting one is always an explicit, reasoned line here -- never a default.
+#
+# Rules for this list:
+# - An entry needs a reason that says WHY it is acceptable (reachability), and
+#   what would let us drop it. "Transitive" alone is not a reason.
+# - When the blocker goes away, delete the entry. cargo-deny warns about
+#   ignores that no longer match anything (`unused-ignored-advisory`).
+# - The full scan behind this list is in GitLab #1076.
 [advisories]
-git-fetch-with-cli = true
+unmaintained = "all"
+unsound = "all"
+yanked = "warn"
+unused-ignored-advisory = "warn"
 ignore = [
+    # ---- vulnerabilities -------------------------------------------------
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing variability. Only via p256/elliptic-curve 0.13 for local ECDSA: aws-sigv4 sigv4a (not used by STS or Bedrock, which sign with SigV4 HMAC), aws-config credentials-login, and tink-hybrid (warp_managed_secrets). No remotely timed private-key operation. The fix needs aws-sigv4 >= 1.6 / p256 0.14, and aws-sigv4 1.6 + aws-config 1.13 declare MSRV 1.94.1 against our 1.92.0 toolchain. Drop with the toolchain bump." },
+    { id = "RUSTSEC-2026-0367", reason = "zip < 9 SUID bits on ZipArchive::extract. Only zip 7.2 via candle-core 0.9 (input_classifier, onnx_candle) remains; our own crates are on zip 9. candle only opens npz/pth weight archives with ZipArchive::by_name and never calls extract; the model is bundled in-repo. candle 0.11 still pins zip 8. Drop when candle moves to zip >= 9." },
+    { id = "RUSTSEC-2026-0368", reason = "zip < 9 symlink targets outside the destination on ZipArchive::extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
+    { id = "RUSTSEC-2026-0369", reason = "zip < 9 permissions applied through symlinks on extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
+
+    # ---- unmaintained ----------------------------------------------------
     { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained, but considered to be complete." },
     { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained; we should try to find an alternative." },
     { id = "RUSTSEC-2024-0425", reason = "get-size is unmaintained; we should try to find an alternative." },
     { id = "RUSTSEC-2024-0427", reason = "get-size-derive is an unmaintained dependency of get-size." },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a unmaintained dependency of get-size-derive." },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is an unmaintained proc-macro dependency of attribute-derive-macro and serial_test_derive (build time only)." },
     { id = "RUSTSEC-2024-0384", reason = "instant is unmaintained; we should migrate to web-time." },
-    { id = "RUSTSEC-2020-0077", reason = "memmap is unmaintained; we should migrate to memmap2." },
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained. It WAS a dependency of metal, and this entry used to say the fix was moving to the objc2 family of crates -- that migration has now landed and metal is gone from Cargo.lock. paste survives via a different path: the vendored lib/rust-genai (directly and through macro_rules_attribute), plus app itself. The remedy is therefore no longer an objc2 migration; it is dropping paste from genai/app, which is unrelated work."},
-    { id = "RUSTSEC-2023-0081", reason = "safemem is unmaintained; this is a dependency of plist." },
+    { id = "RUSTSEC-2020-0077", reason = "memmap is unmaintained; we should migrate to memmap2 (pulled by warp-workflows)." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained. It WAS a dependency of metal, and this entry used to say the fix was moving to the objc2 family of crates -- that migration has now landed and metal is gone from Cargo.lock. paste survives via a different path: the vendored lib/rust-genai (directly and through macro_rules_attribute), plus app itself and gemm/pulp/tokenizers. The remedy is therefore no longer an objc2 migration; it is dropping paste from genai/app, which is unrelated work. Compile-time macro only." },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml is unmaintained; pulled by i18n-config (i18n-embed). Parses our own bundled i18n config at build time." },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; proc-macro dependency of i18n-embed-fl (build time only)." },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained; text shaping in cosmic-text 0.12 and usvg. Replacing it means moving the text stack (cosmic-text upgrade / harfrust)." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained; font parsing in cosmic-text, fontdb, rustybuzz and usvg. Same remedy as rustybuzz (text-stack upgrade)." },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained; via serde_yaml 0.9 (itself deprecated). Remedy is a serde_yaml replacement across ai/languages/markdown_parser/warp_core/warp_editor." },
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix is unmaintained; via indicatif 0.17 <- tokenizers 0.21 (progress bars, not used by our inference path)." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained as a standalone crate (merged into zbus 6 as zbus::wire). Via zbus 5; drop with the zbus 6 migration (zbus, ashpd, notify-rust, secret-service all have to move together)." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained as a standalone crate (merged into zbus 6). Same as RUSTSEC-2026-0370." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained as a standalone crate (merged into zbus 6). Same as RUSTSEC-2026-0370." },
 ]
 
 [licenses]
