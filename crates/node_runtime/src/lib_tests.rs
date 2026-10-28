@@ -47,9 +47,12 @@ fn extract_zip_confines_entries_and_skips_symlinks() {
     assert!(!root.path().join("escape.txt").exists());
     assert!(!dest.join("escape.txt").exists());
     assert!(!dest.join("abs.txt").exists());
-    // The symlink entry is neither created as a link nor written as a file.
-    assert!(std::fs::symlink_metadata(dest.join("pkg/link")).is_err());
     assert!(!root.path().join("outside").exists());
+    // The symlink entry is neither created as a link nor written as a file.
+    // Unix only: zips written on Windows record System::Dos, whose attributes
+    // cannot mark an entry as a symlink, so there it is an ordinary file.
+    #[cfg(unix)]
+    assert!(std::fs::symlink_metadata(dest.join("pkg/link")).is_err());
 }
 
 #[cfg(unix)]
@@ -72,6 +75,7 @@ fn extract_zip_never_applies_setuid_bits() {
     assert_eq!(mode & 0o7000, 0, "setuid/setgid/sticky leaked: {mode:o}");
 }
 
+#[cfg(unix)]
 #[test]
 fn extract_zip_filter_ignores_symlink_named_like_binary() {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
