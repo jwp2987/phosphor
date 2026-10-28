@@ -777,3 +777,176 @@ fn auto_compaction_is_limited_to_one_per_turn() {
     // Second overflow in the same turn: fail rather than loop.
     assert_eq!(d(true, true), D::GiveUp);
 }
+
+// -- stream-finished policy (#959) ---------------------------------------
+//
+// `plan_after_stream_finished` is the whole auto-compaction decision the controller's
+// `handle_response_stream_finished` acts on. It is tested here as a pure function because
+// that handler needs a live provider stream (token usage, task messages, exchanges) to drive.
+
+fn turn(requested_tool_calls: bool, overflowing: Option<bool>) -> super::FinishedStream {
+    super::FinishedStream::Turn {
+        requested_tool_calls,
+        overflowing,
+    }
+}
+
+/// A turn that ends asking for tool calls never starts a summary, however full the context:
+/// its calls are queued only after the finish handler returns, and a summary sent first
+/// cancelled them and halted the task (the original #959 defect).
+#[test]
+fn tool_call_turn_over_threshold_defers_compaction() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    for already in [false, true] {
+        let p = plan(turn(true, Some(true)), already);
+        assert_eq!(p.decision, D::None, "already_compacted={already}");
+        assert!(!p.resume_with_continue_message);
+        assert!(!p.restore_turn_allowance);
+    }
+}
+
+/// The next tool-free turn end of that task picks the deferred compaction up.
+#[test]
+fn tool_free_turn_over_threshold_compacts() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    let p = plan(turn(false, Some(true)), false);
+    assert_eq!(p.decision, D::Compact);
+    // The continue message is not sent from the turn itself; it follows the summary.
+    assert!(!p.resume_with_continue_message);
+}
+
+/// The automatic summary resumes the task with the continue message, so the turn does not
+/// end on the summary text (the round-16 symptom on 8d9678624).
+#[test]
+fn committed_auto_summary_resumes_the_task() {
+    use super::{AutoCompactionDecision as D, FinishedStream, plan_after_stream_finished as plan};
+    let p = plan(
+        FinishedStream::Summary {
+            auto: true,
+            committed: true,
+        },
+        true,
+    );
+    assert!(p.resume_with_continue_message);
+    // The summary stream never triggers another summary (recursion guard).
+    assert_eq!(p.decision, D::None);
+    // The continue request is built from the compacted history, so it carries on the task.
+    assert!(build_continue_message(false).starts_with("Continue if you have next steps"));
+}
+
+/// A summary that found nothing to commit has nothing to continue from.
+#[test]
+fn uncommitted_auto_summary_does_not_resume() {
+    use super::{FinishedStream, plan_after_stream_finished as plan};
+    let p = plan(
+        FinishedStream::Summary {
+            auto: true,
+            committed: false,
+        },
+        true,
+    );
+    assert!(!p.resume_with_continue_message);
+}
+
+/// Manual `/compact` (sent with overflow=false) only summarizes: no continue, no new turn.
+#[test]
+fn manual_compact_does_not_resume_or_recompact() {
+    use super::{AutoCompactionDecision as D, FinishedStream, plan_after_stream_finished as plan};
+    for already in [false, true] {
+        let p = plan(
+            FinishedStream::Summary {
+                auto: false,
+                committed: true,
+            },
+            already,
+        );
+        assert!(!p.resume_with_continue_message);
+        assert_eq!(p.decision, D::None);
+        assert!(!p.restore_turn_allowance);
+    }
+}
+
+/// End to end through the policy: a tool loop crosses the threshold, keeps running, the
+/// tool-free turn end compacts, the summary resumes the task, the resumed turn comes in under
+/// the threshold — and a later overflow in the same long task compacts again rather than
+/// failing with GiveUp, because the first compaction worked.
+#[test]
+fn long_task_sequence_compacts_resumes_and_can_compact_again() {
+    use super::{AutoCompactionDecision as D, FinishedStream, plan_after_stream_finished as plan};
+    let mut compacted_this_turn = false;
+    let step = |stream: FinishedStream, compacted: &mut bool| {
+        let p = plan(stream, *compacted);
+        if p.restore_turn_allowance {
+            *compacted = false;
+        }
+        if p.decision == D::Compact {
+            *compacted = true;
+        }
+        p
+    };
+
+    // Tool loop over the threshold: no summary, the calls run.
+    assert_eq!(
+        step(turn(true, Some(true)), &mut compacted_this_turn).decision,
+        D::None
+    );
+    // Tool-free turn end: compact.
+    assert_eq!(
+        step(turn(false, Some(true)), &mut compacted_this_turn).decision,
+        D::Compact
+    );
+    // The summary commits and resumes the task.
+    assert!(
+        step(
+            FinishedStream::Summary {
+                auto: true,
+                committed: true,
+            },
+            &mut compacted_this_turn,
+        )
+        .resume_with_continue_message
+    );
+    // The continued turn is under the threshold: the allowance comes back.
+    let p = step(turn(true, Some(false)), &mut compacted_this_turn);
+    assert!(p.restore_turn_allowance);
+    assert!(!compacted_this_turn);
+    // The task grows past the threshold again later: compact again, not GiveUp.
+    assert_eq!(
+        step(turn(false, Some(true)), &mut compacted_this_turn).decision,
+        D::Compact
+    );
+}
+
+/// A summary that is itself still over the threshold must not loop: the first turn after it
+/// reports overflow with the allowance spent, which fails the turn instead.
+#[test]
+fn still_over_after_compaction_gives_up() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    let p = plan(turn(false, Some(true)), true);
+    assert_eq!(p.decision, D::GiveUp);
+    assert!(!p.restore_turn_allowance);
+}
+
+/// No usage reported: nothing is decided and the allowance is not restored on a guess.
+#[test]
+fn unknown_usage_changes_nothing() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    for (tools, already) in [(false, false), (false, true), (true, true)] {
+        let p = plan(turn(tools, None), already);
+        assert_eq!(p.decision, D::None);
+        assert!(!p.restore_turn_allowance);
+        assert!(!p.resume_with_continue_message);
+    }
+}
+
+/// Under the threshold with no compaction this turn: nothing at all.
+#[test]
+fn under_threshold_turn_is_a_no_op() {
+    use super::{AutoCompactionDecision as D, plan_after_stream_finished as plan};
+    for tools in [false, true] {
+        let p = plan(turn(tools, Some(false)), false);
+        assert_eq!(p.decision, D::None);
+        assert!(!p.restore_turn_allowance);
+        assert!(!p.resume_with_continue_message);
+    }
+}
