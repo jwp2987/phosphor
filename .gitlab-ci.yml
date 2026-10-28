@@ -435,6 +435,20 @@ licenses:
     - cargo deny -L error check licenses sources
     - ./script/check_license_config_sync
 
+# RustSec gate (#1076): fails on any vulnerability, unsound or unmaintained
+# advisory for a crate in the graph that deny.toml's [advisories] ignore list
+# does not name with a reason. A sibling of `licenses`, not a step in it: the
+# advisory DB changes underneath us without a commit, and a new advisory must
+# not read as a licence failure (or hide one). Fetches the advisory DB from
+# GitHub, so it needs network on the runner.
+advisories:
+  extends: .box_job
+  timeout: 30m
+  script:
+    - ./script/install_cargo_binstall
+    - cargo binstall --force -y cargo-deny
+    - cargo deny -L error check advisories
+
 # warp + warp_tui lib tests, gated on CHANGE not on redness
 # (script/check_test_failures + known_test_failures.txt). BOTH crates in ONE
 # invocation, on purpose: a listed failure that did not run counts as "fixed" and
