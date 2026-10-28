@@ -4543,6 +4543,87 @@ fn content_tool_extraction_applies(
     !has_native_tool_calls && api_type == AgentProviderApiType::Ollama
 }
 
+/// The content→tool-call extraction for one reply text.
+///
+/// On a summarize turn the text only counts as a tool call when the tool-shaped JSON is
+/// essentially the whole reply ([`reply_is_only_tool_call_json`]). A real summary of a coding
+/// conversation routinely quotes such JSON (`{"name":"run_shell_command",...}` under "Key
+/// details"); treating that as a call would refuse the commit every time, so the loop would
+/// never compact. Other turns are unchanged.
+fn text_tool_calls_for_turn(
+    text: &str,
+    available_tool_names: &[String],
+    is_summarize_turn: bool,
+) -> Vec<ToolCall> {
+    let extracted = super::content_tool_calls::extract_tool_calls_from_assistant_text(
+        text,
+        available_tool_names,
+    );
+    if is_summarize_turn && !extracted.is_empty() && !reply_is_only_tool_call_json(text) {
+        log::info!(
+            "[byop-compaction] summarize reply quotes tool-shaped JSON inside other text: \
+             kept as summary text, not a tool call"
+        );
+        return Vec::new();
+    }
+    extracted
+}
+
+/// Prose a model may wrap around a bare tool call ("Sure, running it:") stays under this many
+/// characters; a summary, even a terse one, does not.
+const SUMMARIZE_TOOL_CALL_PROSE_LIMIT: usize = 40;
+
+/// Whether `text` is essentially nothing but JSON: with every fenced code block and every
+/// balanced top-level `{...}` removed, fewer than [`SUMMARIZE_TOOL_CALL_PROSE_LIMIT`]
+/// characters remain.
+fn reply_is_only_tool_call_json(text: &str) -> bool {
+    // Fenced blocks first (their content may hold braces in any shape).
+    let mut without_fences = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("```") {
+        without_fences.push_str(&rest[..open]);
+        let after_open = &rest[open + 3..];
+        match after_open.find("```") {
+            Some(close) => rest = &after_open[close + 3..],
+            // An unterminated fence runs to the end of the reply.
+            None => rest = "",
+        }
+    }
+    without_fences.push_str(rest);
+
+    // Then balanced top-level objects, skipping braces inside JSON strings.
+    let mut remainder = String::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in without_fences.chars() {
+        if depth == 0 {
+            if ch == '{' {
+                depth = 1;
+            } else {
+                remainder.push(ch);
+            }
+            continue;
+        }
+        if in_string {
+            match ch {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    remainder.trim().chars().count() < SUMMARIZE_TOOL_CALL_PROSE_LIMIT
+}
+
 /// Whether this request is a BYOP compaction summary (`/compact` or the automatic trigger).
 fn is_summarize_request(params: &RequestParams) -> bool {
     params
@@ -7567,10 +7648,8 @@ pub async fn generate_byop_output(
             let mut parsed_any_text = false;
             for text in extract_sources.into_iter().filter(|t| !t.is_empty()) {
                 parsed_any_text = true;
-                let extracted = super::content_tool_calls::extract_tool_calls_from_assistant_text(
-                    text,
-                    &tool_names_for_extract,
-                );
+                let extracted =
+                    text_tool_calls_for_turn(text, &tool_names_for_extract, is_summarize_turn);
                 if extracted.is_empty() {
                     continue;
                 }
@@ -12491,14 +12570,15 @@ mod serializer_readiness_tests {
     fn build_chat_request_body_honors_compaction_filtering_boundaries() {
         let hidden_user = make_user_query_message("task-1", "req-1", "hidden".to_owned(), &[]);
         let hidden_call = make_tool_call_message("task-1", "req-1", "hidden-call", shell_tool());
-        let summary_user = make_user_query_message("task-1", "req-2", "/compact".to_owned(), &[]);
+        // The real shape since #1078: the summarize request adds no user message, and the
+        // summary is anchored at the head's last user turn.
         let summary_assistant =
             make_agent_output_message("task-1", "req-2", "redacted summary".to_owned());
         let visible_user = make_user_query_message("task-1", "req-3", "visible".to_owned(), &[]);
 
         let mut compaction_state = CompactionState::default();
         compaction_state.push_completed(CompletedCompaction {
-            user_msg_id: summary_user.id.clone(),
+            user_msg_id: hidden_user.id.clone(),
             assistant_msg_id: summary_assistant.id.clone(),
             head_message_ids: vec![hidden_user.id.clone(), hidden_call.id.clone()],
             tail_start_id: Some(visible_user.id.clone()),
@@ -12511,7 +12591,6 @@ mod serializer_readiness_tests {
             vec![
                 hidden_user.clone(),
                 hidden_call.clone(),
-                summary_user.clone(),
                 summary_assistant.clone(),
                 visible_user.clone(),
             ],
@@ -12533,7 +12612,6 @@ mod serializer_readiness_tests {
             vec![
                 hidden_user,
                 hidden_call,
-                summary_user,
                 summary_assistant,
                 visible_user,
                 visible_call,
@@ -17114,6 +17192,84 @@ mod summarize_turn_tool_gate_tests {
             .expect("test params carry an id");
         assert!(tool_calls_to_dispatch(&params, extracted).is_empty());
         assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    const QUOTED_CALL: &str =
+        r#"{"name":"run_shell_command","arguments":{"command":"cargo test"}}"#;
+
+    fn markdown_summary_quoting_a_call() -> String {
+        format!(
+            "## Goal\n- make the test suite pass\n\n## Progress\n### Done\n- fixed the parser\n\n\
+             ## Key details\n- the agent ran:\n```json\n{QUOTED_CALL}\n```\n\n\
+             ## Next Steps\n- rerun the suite"
+        )
+    }
+
+    /// #1059 refute round 9: on an Ollama summarize turn a real Markdown summary that quotes a
+    /// tool call as JSON is the summary, not a call — otherwise the commit is refused every
+    /// time and the loop never compacts.
+    #[test]
+    fn a_summary_quoting_tool_json_is_not_a_tool_call() {
+        let tools = vec!["run_shell_command".to_owned()];
+        let summary = markdown_summary_quoting_a_call();
+        assert!(
+            !text_tool_calls_for_turn(&summary, &tools, false).is_empty(),
+            "precondition: outside a summarize turn the quoted JSON is extracted"
+        );
+        assert!(text_tool_calls_for_turn(&summary, &tools, true).is_empty());
+
+        // Nothing dispatched, nothing noted: the commit takes the text.
+        let params = params(vec![summarize(true)]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("test params carry an id");
+        assert!(
+            tool_calls_to_dispatch(&params, text_tool_calls_for_turn(&summary, &tools, true))
+                .is_empty()
+        );
+        assert!(!take_summary_stream_dropped_tool_calls(conversation_id));
+    }
+
+    /// A reply that is only the tool-call JSON (bare or fenced, with a few words around it)
+    /// is still a tool call on a summarize turn: dropped and noted.
+    #[test]
+    fn a_bare_tool_json_reply_is_still_a_tool_call_on_a_summarize_turn() {
+        let tools = vec!["run_shell_command".to_owned()];
+        for reply in [
+            QUOTED_CALL.to_owned(),
+            format!("```json\n{QUOTED_CALL}\n```"),
+            format!("Running it now:\n{QUOTED_CALL}"),
+        ] {
+            let calls = text_tool_calls_for_turn(&reply, &tools, true);
+            assert!(!calls.is_empty(), "{reply:?}");
+            let params = params(vec![summarize(true)]);
+            let conversation_id = params
+                .byop_conversation_id
+                .expect("test params carry an id");
+            assert!(tool_calls_to_dispatch(&params, calls).is_empty());
+            assert!(take_summary_stream_dropped_tool_calls(conversation_id));
+        }
+    }
+
+    #[test]
+    fn reply_is_only_tool_call_json_measures_the_prose_around_the_json() {
+        assert!(reply_is_only_tool_call_json(QUOTED_CALL));
+        assert!(reply_is_only_tool_call_json(&format!(
+            "```\n{QUOTED_CALL}\n```"
+        )));
+        assert!(reply_is_only_tool_call_json(&format!(
+            "Sure: {QUOTED_CALL}"
+        )));
+        // Braces inside JSON strings do not end the object early.
+        assert!(reply_is_only_tool_call_json(
+            r#"{"name":"run_shell_command","arguments":{"command":"echo '}' and more text after"}}"#
+        ));
+        assert!(!reply_is_only_tool_call_json(
+            &markdown_summary_quoting_a_call()
+        ));
+        assert!(!reply_is_only_tool_call_json(
+            "The build failed in the parser; next run the tests again."
+        ));
     }
 
     #[test]

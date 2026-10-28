@@ -1819,13 +1819,33 @@ fn only_the_latest_summary_of_a_chain_is_shown() {
     );
 }
 
-/// A summary not covered by a later head is still shown (two independent compactions).
+/// Summaries are cumulative (each summarize request carries the previous summary to update),
+/// so only the latest is shown — also when the later head happens to be shorter and does not
+/// cover the earlier summary, where a head-coverage rule still stacked both.
 #[test]
-fn an_unsuperseded_earlier_summary_is_still_shown() {
+fn only_the_latest_summary_is_shown_even_when_a_later_head_is_shorter() {
     let mut state = super::state::CompactionState::default();
     state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
     state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
-    assert_eq!(state.summary_insertions().len(), 2);
+    assert_eq!(
+        state.summary_insertions(),
+        vec![("q2".to_string(), "summary-s2".to_string())]
+    );
+}
+
+/// A later compaction without summary text supersedes nothing: the last summary that exists
+/// is shown.
+#[test]
+fn a_compaction_without_text_does_not_hide_the_previous_summary() {
+    let mut state = super::state::CompactionState::default();
+    state.push_completed(completed("u1", "s1", &["u1", "a1"], Some("q2")));
+    let mut textless = completed("q2", "s2", &["q2", "a2"], Some("q3"));
+    textless.summary_text = None;
+    state.push_completed(textless);
+    assert_eq!(
+        state.summary_insertions(),
+        vec![("u1".to_string(), "summary-s1".to_string())]
+    );
 }
 
 /// A compaction persisted by a released build (before #1078) anchored at the kept tail's user

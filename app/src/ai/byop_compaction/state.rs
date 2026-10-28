@@ -186,28 +186,25 @@ impl CompactionState {
         out
     }
 
-    /// Where each summary is shown in a request: `(message id, summary text)` — the summary
+    /// Where the summary is shown in a request: `(message id, summary text)` — the summary
     /// pair goes right before that message (which is itself hidden when it is the anchor).
     ///
-    /// Only the latest summary of a chain is shown. Each automatic summary is followed by the
-    /// continue message, and the next compaction's head covers the earlier summary and its
-    /// anchor; that summary was built from the earlier one (`previous_summary`), so showing
-    /// both would stack every summary of a long loop in front of the tail. A compaction is
-    /// superseded when a later one's head contains its anchor or its summary message.
+    /// Only the latest summary is shown, at most one. Summaries are cumulative: every
+    /// summarize request carries the last summary as `<previous-summary>`
+    /// ([`Self::previous_summary`]) and is told to update it, so the latest one already holds
+    /// what the earlier ones said. Showing every summary of a chain stacked them in front of
+    /// the tail (each auto summary is followed by the continue message, which becomes the
+    /// next anchor), and a rule based on head coverage still stacked them when a later head
+    /// happened to be shorter. Earlier summaries stay hidden with their heads. A compaction
+    /// without summary text supersedes nothing.
     ///
     /// A legacy compaction whose anchor is not in its own head (see
     /// [`Self::hidden_message_ids`]) is shown before its `tail_start_id` instead.
     pub fn summary_insertions(&self) -> Vec<(String, String)> {
         self.completed
             .iter()
-            .enumerate()
-            .filter(|(i, c)| {
-                !self.completed[i + 1..].iter().any(|later| {
-                    later.head_message_ids.contains(&c.user_msg_id)
-                        || later.head_message_ids.contains(&c.assistant_msg_id)
-                })
-            })
-            .filter_map(|(_, c)| {
+            .rev()
+            .find_map(|c| {
                 let text = c.summary_text.clone()?;
                 let at = if c.anchor_is_summarized() {
                     c.user_msg_id.clone()
@@ -218,6 +215,7 @@ impl CompactionState {
                 };
                 Some((at, text))
             })
+            .into_iter()
             .collect()
     }
 
