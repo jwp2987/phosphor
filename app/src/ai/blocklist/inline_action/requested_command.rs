@@ -194,6 +194,11 @@ const EDIT_MODE_OPEN_KEYMAP_CONTEXT: &str = "RequestedCommandViewEditModeOpen";
 /// Set on the card's keymap context while ctrl-c on it should still mean "Reject" -- i.e. while
 /// there is a decision pending on the action. See [`reject_disposition`] and issue #850.
 pub(crate) const REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT: &str = "RequestedActionRejectable";
+/// Set on the card's keymap context while its action awaits the user's Accept -- i.e. while it is
+/// `Blocked` (see [`accepts_user_decision`]). Enter -> Accept is gated on this, not on
+/// [`REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT`]: an MCP card stays rejectable in every state,
+/// so gating Enter on that let a finished MCP card take Enter and dispatch Accept (#1095).
+pub(crate) const REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT: &str = "RequestedActionAcceptable";
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 const MAX_EDITOR_HEIGHT: f32 = 500.0;
@@ -229,13 +234,21 @@ lazy_static! {
 /// in the test module. Issue #690 was, in part, about confirming Enter typed into the agent
 /// input can never reach this binding just because the card happens to be showing somewhere
 /// on screen.
-fn enter_accepts_requested_command_context() -> ContextPredicate {
-    // Also gated on a decision still being pending, like upstream's
+pub(crate) fn enter_accepts_requested_command_context() -> ContextPredicate {
+    // Also gated on the action awaiting the user's Accept, like upstream's
     // `REQUESTED_ACTION_BLOCKED_KEYMAP_CONTEXT`: Enter on a running or finished card must not
-    // dispatch Accept (it surfaced "ERROR NOT FOUND", #871).
+    // dispatch Accept (it surfaced "ERROR NOT FOUND", #871). Gated on the Acceptable flag, not the
+    // Rejectable one, which an MCP card keeps in every state (#1095).
     id!(RequestedCommandView::ui_name())
-        & id!(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT)
+        & id!(REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT)
         & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
+}
+
+/// Whether an action in `status` can be accepted by the user: only one that is `Blocked` on
+/// their confirmation. A queued action waits behind another; a running, finished, errored,
+/// timed-out or untracked one has nothing left to accept (#1095).
+pub(crate) fn accepts_user_decision(status: Option<&AIActionStatus>) -> bool {
+    status.is_some_and(AIActionStatus::is_blocked)
 }
 
 /// The context predicate gating the ctrl-c -> Reject keybinding: the card is on the responder
@@ -955,6 +968,15 @@ impl RequestedCommandView {
         self.editor = None;
     }
 
+    /// Whether this card's action is awaiting the user's Accept. See [`accepts_user_decision`].
+    fn awaits_user_accept(&self, app: &AppContext) -> bool {
+        let status = self
+            .action_model
+            .as_ref(app)
+            .get_action_status(&self.action_id);
+        accepts_user_decision(status.as_ref())
+    }
+
     /// The [`RejectDisposition`] for this card's action in its current status.
     fn reject_disposition(&self, app: &AppContext) -> RejectDisposition {
         let status = self
@@ -1116,6 +1138,15 @@ impl RequestedCommandView {
     /// Only then is the reviewed text recorded on the model, which refuses any user accept of
     /// an elided command without that record.
     pub(crate) fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // #1095: a card whose action is no longer awaiting confirmation (running, finished,
+        // errored, timed out) is never accepted again, whatever path the Accept came from.
+        if !self.awaits_user_accept(ctx) {
+            log::info!(
+                "Not accepting requested action {:?}: it is not awaiting confirmation",
+                self.action_id
+            );
+            return false;
+        }
         if !self.is_header_expanded {
             self.set_is_header_expanded(true, ctx);
             ctx.notify();
@@ -2840,7 +2871,14 @@ impl View for RequestedCommandView {
     fn keymap_context(&self, app: &AppContext) -> Context {
         let mut context = Self::default_keymap_context();
         if self.reject_disposition(app) == RejectDisposition::Reject {
-            context.set.insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+            context
+                .set
+                .insert(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT);
+        }
+        if self.awaits_user_accept(app) {
+            context
+                .set
+                .insert(REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT);
         }
 
         if self.is_editing {

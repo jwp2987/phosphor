@@ -3293,6 +3293,24 @@ impl AIBlock {
             .clone()
     }
 
+    /// Test-only: inserts an MCP tool call card for `action_id` (`tool_name` with `args`), as a
+    /// streamed MCP tool call would be, and returns it.
+    #[cfg(test)]
+    pub(crate) fn insert_requested_mcp_tool_for_test(
+        &mut self,
+        action_id: &AIAgentActionId,
+        tool_name: &str,
+        args: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<RequestedCommandView> {
+        self.handle_mcp_tool_stream_update(action_id, tool_name, args, None, ctx);
+        self.requested_mcp_tools
+            .get(action_id)
+            .expect("MCP tool call was just inserted")
+            .view
+            .clone()
+    }
+
     fn handle_requested_command_view_event(
         &mut self,
         action_id: &AIAgentActionId,
@@ -3471,10 +3489,16 @@ impl AIBlock {
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.execute_action(action_id, self.client_ids.conversation_id, ctx);
                 });
+                // #1095: as for a command card (#901), the MCP card kept focus after its Allow,
+                // so what the user typed next was dropped and a later Enter landed on the
+                // finished card. Hand focus back to the input.
+                ctx.emit(AIBlockEvent::RequestedCommandResolved);
                 ctx.notify();
             }
             RequestedCommandViewEvent::Rejected => {
                 self.cancel_action(action_id, ctx);
+                // #1095: likewise after Reject.
+                ctx.emit(AIBlockEvent::RequestedCommandResolved);
             }
             RequestedCommandViewEvent::TextSelected => {
                 // If there's an ongoing text selection, clear all other selections within the
@@ -4219,10 +4243,40 @@ impl AIBlock {
     ///
     /// Typed characters aimed at such a card have nowhere to go, and the card's Enter binding is
     /// Run; the terminal reroutes them to the agent input instead.
+    ///
+    /// Covers an MCP tool call's approval card as well as a shell command's (#1095).
     pub fn pending_command_card_view_id(&self, app: &AppContext) -> Option<EntityId> {
         let pending_id = self.action_model.as_ref(app).get_pending_action(app)?.id.clone();
-        let command = self.requested_commands.get(&pending_id)?;
+        let command = self
+            .requested_commands
+            .get(&pending_id)
+            .or_else(|| self.requested_mcp_tools.get(&pending_id))?;
         (!command.view.as_ref(app).is_editing()).then(|| command.view.id())
+    }
+
+    /// The view id of the command or MCP card for `action_id`, if this block shows one.
+    pub fn action_card_view_id(&self, action_id: &AIAgentActionId) -> Option<EntityId> {
+        self.requested_commands
+            .get(action_id)
+            .or_else(|| self.requested_mcp_tools.get(action_id))
+            .map(|card| card.view.id())
+    }
+
+    /// The view ids of this block's command and MCP cards that are no longer (or not yet)
+    /// awaiting a decision -- every card except [`Self::pending_command_card_view_id`] and any
+    /// card in edit mode. Such a card has no use for printable keys and takes no Enter, so focus
+    /// left on it is focus nowhere: the terminal routes keys typed there as if it held focus
+    /// itself, and takes focus back when the card's action or the turn ends (#1095).
+    pub fn settled_action_card_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
+        let pending = self.pending_command_card_view_id(app);
+        self.requested_commands
+            .values()
+            .chain(self.requested_mcp_tools.values())
+            .map(|card| &card.view)
+            .filter(|view| !view.as_ref(app).is_editing())
+            .map(|view| view.id())
+            .filter(|id| Some(*id) != pending)
+            .collect()
     }
 
     /// Returns the server output ID for this AI block, if available.
@@ -5718,9 +5772,9 @@ pub(super) fn attachment_names(inputs: &[AIAgentInput]) -> Vec<(AttachmentType, 
 
 #[derive(Clone, Debug)]
 pub enum AIBlockEvent {
-    /// The user approved or rejected a requested command card (#901). The card keeps focus
-    /// until it is replaced, so the terminal must take focus back from it, now and again
-    /// when the command's block settles, or what the user types next goes nowhere.
+    /// The user approved or rejected a requested command or MCP tool card (#901, #1095). The
+    /// card keeps focus until it is replaced, so the terminal must take focus back from it, now
+    /// and again when the command's block settles, or what the user types next goes nowhere.
     RequestedCommandResolved,
     /// Emitted when the AI block is "finished", meaning it will no longer receive any more output
     /// (either the output is complete or the request was cancelled) and it is no longer

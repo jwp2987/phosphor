@@ -7914,6 +7914,269 @@ fn clicking_the_approval_card_keeps_focus_on_the_card() {
     })
 }
 
+/// A real MCP tool call card (`RequestedCommandView` of type `McpTool`), wired into a real
+/// `AIBlock` in a real `TerminalView`, with the block's conversation the terminal's active one.
+/// Returns the card, its AI block, the action id and the conversation id. #1095.
+fn setup_mcp_tool_card(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> (
+    ViewHandle<crate::ai::blocklist::inline_action::requested_command::RequestedCommandView>,
+    ViewHandle<crate::ai::blocklist::AIBlock>,
+    AIAgentActionId,
+    AIConversationId,
+) {
+    let action_id = AIAgentActionId::from("mcp-call".to_owned());
+    let (card, ai_block, conversation_id) = terminal.update(app, |view, ctx| {
+        let (conversation_id, _task_id, _exchange_id, _stream_id) =
+            append_exchange_and_handle_event(view, agent_jump_user_query("call the tool"), ctx);
+        let ai_block = view.last_ai_block().expect("AI block should exist");
+        let card = ai_block.update(ctx, |block, ctx| {
+            block.insert_requested_mcp_tool_for_test(&action_id, "slow_tool", "{}", ctx)
+        });
+        (card, ai_block, conversation_id)
+    });
+    let terminal_view_id = terminal.read(app, |view, _| view.view_id);
+    BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+        history.set_active_conversation_id(conversation_id, terminal_view_id, ctx);
+    });
+    (card, ai_block, action_id, conversation_id)
+}
+
+/// Records a finished result for `action_id`, so the action model reports it `Finished` -- as
+/// an approved MCP call that ran into its deadline (#1064) is once its error result is in.
+fn finish_action_for_test(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    action_id: &AIAgentActionId,
+    conversation_id: AIConversationId,
+) {
+    let action_model = terminal.read(app, |view, _| view.ai_action_model.clone());
+    action_model.update(app, |action_model, _| {
+        action_model.push_finished_action_result_for_test(
+            conversation_id,
+            crate::ai::agent::AIAgentActionResult {
+                id: action_id.clone(),
+                task_id: TaskId::new("task".to_owned()),
+                result: crate::ai::agent::AIAgentActionResultType::InitProject,
+            },
+        );
+    });
+    action_model.read(app, |action_model, _| {
+        assert!(
+            action_model
+                .get_action_status(action_id)
+                .is_some_and(|status| status.is_done()),
+            "precondition: the action must be finished"
+        );
+    });
+}
+
+fn input_has_focus(app: &App, terminal: &ViewHandle<TerminalView>) -> bool {
+    terminal.read(app, |view, ctx| {
+        view.input().as_ref(ctx).editor().as_ref(ctx).is_focused()
+    })
+}
+
+/// #1095: Enter on a finished MCP card dispatched `RequestedCommandViewAction::Accept` (3/3 on
+/// the Mac). The card keeps ctrl-c Reject in every state (#850), and the Enter binding was gated
+/// on that same flag. Now the card's real keymap context no longer matches Enter -> Accept, and
+/// an Accept that still arrives (button, menu, the AI block's Enter) is refused.
+#[test]
+fn a_finished_mcp_card_takes_no_enter_and_is_never_accepted_again() {
+    App::test((), |mut app| async move {
+        use crate::ai::blocklist::inline_action::requested_command::{
+            REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT, RequestedCommandViewAction,
+            RequestedCommandViewEvent, enter_accepts_requested_command_context,
+        };
+        use warpui::TypedActionView as _;
+        use warpui::View as _;
+
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (card, _ai_block, action_id, conversation_id) =
+            setup_mcp_tool_card(&mut app, &terminal);
+        finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
+
+        card.read(&app, |card, ctx| {
+            let context = card.keymap_context(ctx);
+            assert!(
+                context
+                    .set
+                    .contains(REQUESTED_ACTION_REJECTABLE_KEYMAP_CONTEXT),
+                "precondition: an MCP card stays rejectable once finished"
+            );
+            assert!(
+                !enter_accepts_requested_command_context().eval(&context),
+                "Enter on a finished card must not be Accept"
+            );
+        });
+
+        let accepted = Rc::new(RefCell::new(0));
+        let counter = accepted.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&card, move |_, event, _| {
+                if matches!(event, RequestedCommandViewEvent::Accepted) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
+        card.update(&mut app, |card, ctx| {
+            card.handle_action(&RequestedCommandViewAction::Accept, ctx);
+            card.handle_action(&RequestedCommandViewAction::AcceptAndAutoExecute, ctx);
+            assert!(!card.try_accept(ctx));
+        });
+        assert_eq!(
+            *accepted.borrow(),
+            0,
+            "a finished card must never be re-accepted"
+        );
+    })
+}
+
+/// #1095: after Allow on an MCP card (a mouse click: the Accept, then the click's mouse-up over
+/// the block list), focus stayed on the card, so what the user typed next was dropped. The
+/// `Accepted` event is emitted directly: the card's own Accept needs a really blocked MCP call,
+/// and what is under test is what happens once the card has approved.
+#[test]
+fn approving_an_mcp_card_with_the_mouse_returns_focus_to_the_input() {
+    App::test((), |mut app| async move {
+        use crate::ai::blocklist::inline_action::requested_command::RequestedCommandViewEvent;
+
+        initialize_app_for_terminal_view(&mut app);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, _ai_block, _action_id, _conversation_id) =
+            setup_mcp_tool_card(&mut app, &terminal);
+
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        assert_eq!(app.focused_view_id(window_id), Some(card.id()));
+
+        card.update(&mut app, |_, ctx| {
+            ctx.emit(RequestedCommandViewEvent::Accepted)
+        });
+        // The mouse-up the Allow click ends with.
+        terminal.update(&mut app, |view, ctx| {
+            view.block_select(
+                &BlockSelectAction::MouseUp {
+                    block_index: BlockIndex::zero(),
+                    is_ctrl_down: false,
+                    is_cmd_down: false,
+                    is_shift_down: false,
+                },
+                true,
+                ctx,
+            );
+        });
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(card.id()),
+            "approving must take focus off the card"
+        );
+
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("x", ctx)
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+        assert!(input_has_focus(&app, &terminal));
+    })
+}
+
+/// #1095: keys typed while focus is still on a settled (here finished) card are not dropped:
+/// they reach the input and focus follows them there, so a following Enter submits the
+/// follow-up rather than landing on the card.
+#[test]
+fn typing_on_a_finished_card_reaches_the_input_and_focus_follows() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, _ai_block, action_id, conversation_id) =
+            setup_mcp_tool_card(&mut app, &terminal);
+        finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
+
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        assert_eq!(app.focused_view_id(window_id), Some(card.id()));
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                view.settled_ai_focus_view_ids(ctx).contains(&card.id()),
+                "precondition: the finished card is a settled card"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("hi", ctx)
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "hi");
+        });
+        assert_ne!(app.focused_view_id(window_id), Some(card.id()));
+        assert!(input_has_focus(&app, &terminal));
+    })
+}
+
+/// #1095: an approved MCP call that ends (here: its result arrives, as a timeout's error result
+/// does) while focus is on its card hands focus back to the input.
+#[test]
+fn an_action_finishing_with_focus_on_its_card_returns_focus_to_the_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, _ai_block, action_id, conversation_id) =
+            setup_mcp_tool_card(&mut app, &terminal);
+        finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
+
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        assert_eq!(app.focused_view_id(window_id), Some(card.id()));
+
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |_, ctx| {
+            ctx.emit(
+                crate::ai::blocklist::BlocklistAIActionEvent::FinishedAction {
+                    action_id: action_id.clone(),
+                    conversation_id,
+                    cancellation_reason: None,
+                },
+            );
+        });
+
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(card.id()),
+            "the finished action's card must not keep focus"
+        );
+        assert!(input_has_focus(&app, &terminal));
+    })
+}
+
+/// #1095: the turn ending with focus still on one of its settled cards (the Mac case: the
+/// approved MCP call timed out, the agent replied, focus was still on the card) returns focus
+/// to the input.
+#[test]
+fn the_turn_ending_with_focus_on_a_settled_card_returns_focus_to_the_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let (card, ai_block, action_id, conversation_id) = setup_mcp_tool_card(&mut app, &terminal);
+        finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
+
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        assert_eq!(app.focused_view_id(window_id), Some(card.id()));
+
+        ai_block.update(&mut app, |_, ctx| {
+            ctx.emit(crate::ai::blocklist::AIBlockEvent::Finished)
+        });
+
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(card.id()),
+            "a finished turn's card must not keep focus"
+        );
+        assert!(input_has_focus(&app, &terminal));
+    })
+}
+
 /// #850, end to end through the keymap: a real ctrl-c keystroke dispatched with focus on a
 /// running command's card (responder chain terminal -> AI block -> card, where approving with
 /// Enter leaves focus) is not claimed by the card's Reject binding and reaches the terminal's
