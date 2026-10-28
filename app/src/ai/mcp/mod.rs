@@ -549,10 +549,20 @@ impl MCPServer {
             if value.is_null() {
                 continue;
             }
+            // The JSON has had `${VAR}`s substituted, so the error names only the kind of
+            // value it got, never the value itself, which could be a secret.
             let secs = serde_json::from_value::<std::num::NonZeroU64>(value.clone()).map_err(
                 |_| {
+                    let got = match value {
+                        serde_json::Value::Number(_) => "a number that is not a whole number greater than 0",
+                        serde_json::Value::String(_) => "a string",
+                        serde_json::Value::Bool(_) => "a boolean",
+                        serde_json::Value::Array(_) => "an array",
+                        serde_json::Value::Object(_) => "an object",
+                        serde_json::Value::Null => "null",
+                    };
                     format!(
-                        "`{TOOL_TIMEOUT_SECS_KEY}` for MCP server '{name}' must be a whole number of seconds greater than 0, got {value}"
+                        "`{TOOL_TIMEOUT_SECS_KEY}` for MCP server '{name}' must be a whole number of seconds greater than 0, got {got}"
                     )
                 },
             )?;
