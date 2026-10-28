@@ -2069,10 +2069,13 @@ fn build_chat_request(
     } else {
         &[]
     };
+    // #1067: the skills block tells the model to call `read_skill`; on a turn that does not
+    // offer it (no file route) every such call is refused at dispatch, so don't list them.
+    let system_prompt_ctx = system_prompt_context(agent_ctx, &tool_names);
     let mut system_text = prompt_renderer::render_system_with_override(
         api_type,
         &params.model,
-        agent_ctx,
+        &system_prompt_ctx,
         prompt_tool_names,
         plan_mode,
         &params.user_rules,
@@ -4640,16 +4643,163 @@ fn tool_withdrawn_reason(params: &RequestParams, tool_name: &str) -> Option<&'st
     None
 }
 
-/// Whether a tool call must be answered with an error result at dispatch (Plan Mode,
-/// computer use off, or withdrawn from the tools array) instead of becoming an executable
-/// card. The streaming loop checks this BEFORE emitting its in-flight placeholder card:
-/// `parse_incoming_tool_call` resolves against the full REGISTRY, so without the check a
-/// refused call would already be on screen as an approvable card (#979) and the dispatch gate
-/// would add a second assistant tool_call for the same id.
-fn tool_call_refused_at_dispatch(params: &RequestParams, plan_mode: bool, tool_name: &str) -> bool {
-    plan_mode_blocks_tool(plan_mode, tool_name)
-        || (!params.computer_use_enabled && is_computer_use_tool(tool_name))
-        || tool_withdrawn_reason(params, tool_name).is_some()
+/// Why a tool call is answered with an error result at dispatch instead of running.
+///
+/// The first three keep the specific wording and error codes they had before the generic gate
+/// existed (#979); [`DispatchRefusal::NotOffered`] is the catch-all for every other tool the
+/// request did not offer (#1067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchRefusal {
+    /// `/plan` is active and the tool is write/execution-class (`PLAN_MODE_BLOCKED_TOOLS`).
+    PlanMode,
+    /// A computer-use tool while `RequestParams::computer_use_enabled` is false.
+    ComputerUseDisabled,
+    /// Withdrawn for a reason the model can act on (see [`tool_withdrawn_reason`]).
+    Withdrawn(&'static str),
+    /// Any other known tool (built-in or MCP) that is not in this request's offered list.
+    NotOffered,
+}
+
+impl DispatchRefusal {
+    /// The `error` field of the result payload; also what the dispatch log line names.
+    fn error_code(self) -> &'static str {
+        match self {
+            DispatchRefusal::PlanMode => "plan_mode_blocked",
+            DispatchRefusal::ComputerUseDisabled => "computer_use_disabled",
+            DispatchRefusal::Withdrawn(_) | DispatchRefusal::NotOffered => "tool_not_offered",
+        }
+    }
+}
+
+/// Whether `tool_name` names something that could execute: a REGISTRY tool or an MCP-shaped
+/// name. A name that is neither is left to `parse_incoming_tool_call`, whose `UnknownToolName`
+/// result carries a rename hint and whose arg-shape recovery only picks among offered tools,
+/// so it cannot run anything that was not offered.
+fn is_known_tool_name(tool_name: &str) -> bool {
+    tools::lookup(tool_name).is_some() || tools::mcp::is_mcp_function(tool_name)
+}
+
+/// The single dispatch gate: why a call must be refused this request, or `None` when it may
+/// run. `offered` is `available_tool_names(params)` for this request -- the exact list the
+/// tools array was built from -- so any tool the model was not offered is refused, whatever
+/// filter withheld it (web access, codebase context, `suggest_new_conversation`, an MCP
+/// `mcp_read_resource` with no resources, ...). #1067: before this, only the named categories
+/// below were refused and every other withheld tool ran (or reached its interceptor).
+///
+/// The streaming loop checks this BEFORE emitting its in-flight placeholder card:
+/// `parse_incoming_tool_call` resolves against the full REGISTRY / MCP context, so without the
+/// check a refused call would already be on screen as an approvable card (#979) and the
+/// dispatch gate would add a second assistant tool_call for the same id.
+fn dispatch_refusal(
+    params: &RequestParams,
+    plan_mode: bool,
+    offered: &[String],
+    tool_name: &str,
+) -> Option<DispatchRefusal> {
+    if plan_mode_blocks_tool(plan_mode, tool_name) {
+        return Some(DispatchRefusal::PlanMode);
+    }
+    if !params.computer_use_enabled && is_computer_use_tool(tool_name) {
+        return Some(DispatchRefusal::ComputerUseDisabled);
+    }
+    if let Some(reason) = tool_withdrawn_reason(params, tool_name) {
+        return Some(DispatchRefusal::Withdrawn(reason));
+    }
+    if is_known_tool_name(tool_name) && !offered.iter().any(|name| name == tool_name) {
+        return Some(DispatchRefusal::NotOffered);
+    }
+    None
+}
+
+/// Whether a tool call must be answered with an error result at dispatch instead of becoming
+/// an executable card. See [`dispatch_refusal`].
+fn tool_call_refused_at_dispatch(
+    params: &RequestParams,
+    plan_mode: bool,
+    offered: &[String],
+    tool_name: &str,
+) -> bool {
+    dispatch_refusal(params, plan_mode, offered, tool_name).is_some()
+}
+
+/// The error result for a refused call. Exactly the payloads the per-category gates emitted
+/// before they were folded into [`dispatch_refusal`]; `NotOffered` uses the `tool_not_offered`
+/// shape of the #979 withdrawal. None of them carries `invalid_arguments` or
+/// `_byop_intercepted`, so the controller does not auto-resume on them: a model that keeps
+/// naming a withheld tool cannot loop on the user's API key.
+fn dispatch_refusal_payload(refusal: DispatchRefusal, tool_name: &str, args_str: &str) -> Value {
+    match refusal {
+        DispatchRefusal::ComputerUseDisabled => serde_json::json!({
+            "status": "error",
+            "error": "computer_use_disabled",
+            "message": "Computer use is not available in this session — it is off by \
+                        feature flag, profile permission, or platform support. Do not \
+                        retry; solve the task another way.",
+        }),
+        // `executed: false` for the same reason as the parse-failure payloads: without it a
+        // model reads a structured reply as having run the tool.
+        DispatchRefusal::PlanMode => serde_json::json!({
+            "status": "error",
+            "error": "plan_mode_blocked",
+            "tool": tool_name,
+            "received_args": args_str,
+            "executed": false,
+            "message": "Plan Mode is active (the user prefixed this turn with \
+                        `/plan`), so this write/execution-class tool is unavailable \
+                        and NOTHING RAN — do not treat this as an empty or negative \
+                        result. Finish investigating with the read-only tools and \
+                        present a plan; the user runs it by re-sending without \
+                        `/plan`.",
+        }),
+        DispatchRefusal::Withdrawn(reason) => serde_json::json!({
+            "status": "error",
+            "error": "tool_not_offered",
+            "tool": tool_name,
+            "received_args": args_str,
+            "executed": false,
+            "message": format!("NOTHING RAN. {reason}"),
+        }),
+        DispatchRefusal::NotOffered => serde_json::json!({
+            "status": "error",
+            "error": "tool_not_offered",
+            "tool": tool_name,
+            "received_args": args_str,
+            "executed": false,
+            "message": format!(
+                "NOTHING RAN. `{tool_name}` is not available in this turn (it is turned off \
+                 in the user's settings or not available in this session). Use only the \
+                 tools listed for this turn, or ask the user."
+            ),
+        }),
+    }
+}
+
+/// The context the system prompt is rendered from: `agent_ctx` minus the skills listing when
+/// `read_skill` is not among the `offered` tools. The listing exists to be loaded with
+/// `read_skill`, and a call to a tool that is not offered is refused at dispatch (#1067), so
+/// listing them only invites refused calls. Ported from mehmetbaykar/zap 14fbea3cf, which
+/// gates `footer.j2` instead; here the template's `available_tools` is deliberately empty
+/// whenever the structured tools array is sent (see `build_chat_request`), so the filter
+/// has to happen on the context.
+fn system_prompt_context<'a>(
+    agent_ctx: &'a [AIAgentContext],
+    offered: &[String],
+) -> std::borrow::Cow<'a, [AIAgentContext]> {
+    let read_skill_offered = offered.iter().any(|n| n == tools::skill::READ_SKILL.name);
+    if read_skill_offered
+        || !agent_ctx
+            .iter()
+            .any(|c| matches!(c, AIAgentContext::Skills { .. }))
+    {
+        return std::borrow::Cow::Borrowed(agent_ctx);
+    }
+    std::borrow::Cow::Owned(
+        agent_ctx
+            .iter()
+            .filter(|c| !matches!(c, AIAgentContext::Skills { .. }))
+            .cloned()
+            .collect(),
+    )
 }
 
 /// Whether `name` is one of the two computer-use descriptors.
@@ -7022,9 +7172,15 @@ pub async fn generate_byop_output(
                         // partial name could bind some other listed skill into a placeholder
                         // that a rejected final call would then leave behind.
                         && call.fn_name != tools::skill::READ_SKILL.name
-                        // Refused at dispatch (#979): no placeholder card, the dispatch
-                        // gate emits the single carrier + error result for this call id.
-                        && !tool_call_refused_at_dispatch(&params, plan_mode, &call.fn_name)
+                        // Refused at dispatch (#979, #1067): no placeholder card, the
+                        // dispatch gate emits the single carrier + error result for this
+                        // call id.
+                        && !tool_call_refused_at_dispatch(
+                            &params,
+                            plan_mode,
+                            &tool_names_for_extract,
+                            &call.fn_name,
+                        )
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
                             // Placeholder already emitted → throttled incremental refresh.
@@ -7372,6 +7528,52 @@ pub async fn generate_byop_output(
                 );
             }
 
+            // The dispatch gate (#979, #1067), before every interceptor and before
+            // `parse_incoming_tool_call`: a call to a tool this request did not offer is
+            // answered with one carrier ToolCall + one error result and never runs.
+            //
+            // The tools-array filters only control what the model is *told* it can call.
+            // `parse_incoming_tool_call` resolves a name straight out of the full
+            // `tools::REGISTRY` / MCP context, and the local interceptors below (web,
+            // codebase, relevant files) match on the name alone, so a model that emits a
+            // withheld name anyway -- from stale tool definitions, by ignoring its list, by
+            // replaying a call from an earlier turn, or because injected content told it to
+            // -- would otherwise execute it. The specific categories (Plan Mode, computer
+            // use off, the running-command strip, no file route) keep their own error
+            // payloads; see `dispatch_refusal`.
+            if let Some(refusal) =
+                dispatch_refusal(&params, plan_mode, &tool_names_for_extract, &call.fn_name)
+            {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] tool call rejected at dispatch ({}): tool={} call_id={}",
+                    refusal.error_code(),
+                    tool_name_for_log(&call.fn_name),
+                    call.call_id
+                );
+                let error_payload = dispatch_refusal_payload(refusal, &call.fn_name, &args_str);
+                let error_content = serde_json::to_string(&error_payload)
+                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    error_content,
+                ));
+                continue;
+            }
+
             // Zap BYOP todowrite interception: doesn't map to the protobuf executor;
             // instead synthesizes a `Message::UpdateTodos` that writes
             // conversation.todo_lists directly, triggering the chip + popup UI (aligned
@@ -7656,146 +7858,8 @@ pub async fn generate_byop_output(
                 continue;
             }
 
-            // Zap BYOP computer-use gate, re-checked at the dispatch site.
-            //
-            // The tools-array gate only controls what the model is *told* it can call, and
-            // unlike the web / codebase tools these two DO map to protobuf executor variants:
-            // a replayed or hallucinated call that got past `parse_incoming_tool_call` would
-            // reach `computer_use::create_actor()` and drive the user's real mouse and
-            // keyboard with the feature switched off. Same reasoning as
-            // `dispatch_byop_codebase_tool`, with a much worse failure mode.
-            if !params.computer_use_enabled && is_computer_use_tool(&call.fn_name) {
-                let args_str = if call.fn_arguments.is_string() {
-                    call.fn_arguments.as_str().unwrap_or("").to_owned()
-                } else {
-                    call.fn_arguments.to_string()
-                };
-                log::warn!(
-                    "[byop] computer-use tool call rejected: tool={} call_id={} \
-                     computer_use_enabled=false",
-                    tool_name_for_log(&call.fn_name),
-                    call.call_id
-                );
-                let error_payload = serde_json::json!({
-                    "status": "error",
-                    "error": "computer_use_disabled",
-                    "message": "Computer use is not available in this session — it is off by \
-                                feature flag, profile permission, or platform support. Do not \
-                                retry; solve the task another way.",
-                });
-                let error_content = serde_json::to_string(&error_payload)
-                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
-                final_messages.push(make_tool_call_carrier_message(
-                    &current_task_id,
-                    &request_id,
-                    &call.call_id,
-                    &call.fn_name,
-                    &args_str,
-                ));
-                final_messages.push(make_tool_call_result_message(
-                    &current_task_id,
-                    &request_id,
-                    call.call_id.clone(),
-                    error_content,
-                ));
-                continue;
-            }
-
-            // Zap BYOP Plan Mode gate, re-checked at the dispatch site.
-            //
-            // Same reasoning as the computer-use gate above and `dispatch_byop_web_tool`:
-            // filtering `PLAN_MODE_BLOCKED_TOOLS` out of the advertised tools array only
-            // controls what the model is *told* it can call. `parse_incoming_tool_call`
-            // resolves a name straight out of the full `tools::REGISTRY` with no
-            // `advertised` check, so a model that emits `run_shell_command` or
-            // `apply_file_diffs` by name anyway — from stale/cached tool definitions, by
-            // ignoring its tool list, or by replaying a tool_call from earlier turns of this
-            // same conversation, which is where those names are most likely to come from —
-            // would execute normally, and `/plan` would be advisory rather than enforced.
-            // These names DO map to protobuf executor variants, so there is nothing further
-            // downstream to stop them.
-            if plan_mode_blocks_tool(plan_mode, &call.fn_name) {
-                let args_str = if call.fn_arguments.is_string() {
-                    call.fn_arguments.as_str().unwrap_or("").to_owned()
-                } else {
-                    call.fn_arguments.to_string()
-                };
-                log::warn!(
-                    "[byop] Plan Mode: tool call rejected at dispatch: tool={} call_id={}",
-                    tool_name_for_log(&call.fn_name),
-                    call.call_id
-                );
-                // `executed: false` for the same reason as the parse-failure payloads below:
-                // without it a model reads a structured reply as having run the tool.
-                let error_payload = serde_json::json!({
-                    "status": "error",
-                    "error": "plan_mode_blocked",
-                    "tool": call.fn_name,
-                    "received_args": &args_str,
-                    "executed": false,
-                    "message": "Plan Mode is active (the user prefixed this turn with \
-                                `/plan`), so this write/execution-class tool is unavailable \
-                                and NOTHING RAN — do not treat this as an empty or negative \
-                                result. Finish investigating with the read-only tools and \
-                                present a plan; the user runs it by re-sending without \
-                                `/plan`.",
-                });
-                let error_content = serde_json::to_string(&error_payload)
-                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
-                final_messages.push(make_tool_call_carrier_message(
-                    &current_task_id,
-                    &request_id,
-                    &call.call_id,
-                    &call.fn_name,
-                    &args_str,
-                ));
-                final_messages.push(make_tool_call_result_message(
-                    &current_task_id,
-                    &request_id,
-                    call.call_id.clone(),
-                    error_content,
-                ));
-                continue;
-            }
-
-            // #979: tool withdrawn from this request's tools array (running-command strip of
-            // `run_shell_command`, remote-without-file-route tools), re-checked at dispatch.
-            if let Some(reason) = tool_withdrawn_reason(&params, &call.fn_name) {
-                let args_str = if call.fn_arguments.is_string() {
-                    call.fn_arguments.as_str().unwrap_or("").to_owned()
-                } else {
-                    call.fn_arguments.to_string()
-                };
-                log::warn!(
-                    "[byop] tool call rejected at dispatch (not offered): tool={} call_id={}",
-                    tool_name_for_log(&call.fn_name),
-                    call.call_id
-                );
-                let error_payload = serde_json::json!({
-                    "status": "error",
-                    "error": "tool_not_offered",
-                    "tool": call.fn_name,
-                    "received_args": &args_str,
-                    "executed": false,
-                    "message": format!("NOTHING RAN. {reason}"),
-                });
-                let error_content = serde_json::to_string(&error_payload)
-                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
-                final_messages.push(make_tool_call_carrier_message(
-                    &current_task_id,
-                    &request_id,
-                    &call.call_id,
-                    &call.fn_name,
-                    &args_str,
-                ));
-                final_messages.push(make_tool_call_result_message(
-                    &current_task_id,
-                    &request_id,
-                    call.call_id.clone(),
-                    error_content,
-                ));
-                continue;
-            }
+            // The computer-use, Plan Mode and withdrawn-tool gates that used to sit here are
+            // now `dispatch_refusal`, checked at the top of this loop before any interceptor.
 
             match parse_turn_tool_call(
                 &call,
@@ -14286,6 +14350,7 @@ mod plan_mode_round_trip_tests {
         let mcp_names = mcp_tool_names(&params);
         params.lrc_command_id = Some("block-1".to_owned());
         params.lrc_is_cli_subagent_turn = true;
+        let offered = available_tool_names(&params);
         for refused in ["apply_file_diffs", "ask_user_question", SHELL]
             .into_iter()
             .chain(mcp_names.iter().map(String::as_str))
@@ -14294,7 +14359,7 @@ mod plan_mode_round_trip_tests {
                 tool_withdrawn_reason(&params, refused).is_some(),
                 "{refused} must be refused on a CLI-subagent turn"
             );
-            assert!(tool_call_refused_at_dispatch(&params, false, refused));
+            assert!(tool_call_refused_at_dispatch(&params, false, &offered, refused));
         }
         for allowed in CLI_AGENT_TOOLS.iter().copied() {
             assert!(
@@ -14335,23 +14400,28 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn placeholder_is_suppressed_for_every_dispatch_refusal_and_only_those() {
         let mut params = tool_result_round_trip(false);
+        // The offered list is what the dispatch site passes: `available_tool_names` of the
+        // request as it stands.
+        let refused = |p: &RequestParams, plan_mode: bool, name: &str| {
+            tool_call_refused_at_dispatch(p, plan_mode, &available_tool_names(p), name)
+        };
         params.computer_use_enabled = true;
-        assert!(!tool_call_refused_at_dispatch(&params, false, SHELL));
-        assert!(!tool_call_refused_at_dispatch(&params, false, "read_files"));
+        assert!(!refused(&params, false, SHELL));
+        assert!(!refused(&params, false, "read_files"));
 
         // Plan Mode.
-        assert!(tool_call_refused_at_dispatch(&params, true, SHELL));
-        assert!(!tool_call_refused_at_dispatch(&params, true, "read_files"));
+        assert!(refused(&params, true, SHELL));
+        assert!(!refused(&params, true, "read_files"));
 
         // Computer use off.
         params.computer_use_enabled = false;
-        assert!(tool_call_refused_at_dispatch(
+        assert!(refused(
             &params,
             false,
             tools::computer::USE_COMPUTER_TOOL_NAME
         ));
         params.computer_use_enabled = true;
-        assert!(!tool_call_refused_at_dispatch(
+        assert!(!refused(
             &params,
             false,
             tools::computer::USE_COMPUTER_TOOL_NAME
@@ -14359,8 +14429,8 @@ mod plan_mode_round_trip_tests {
 
         // Running command: run_shell_command only.
         params.lrc_command_id = Some("cmd-1".to_owned());
-        assert!(tool_call_refused_at_dispatch(&params, false, SHELL));
-        assert!(!tool_call_refused_at_dispatch(
+        assert!(refused(&params, false, SHELL));
+        assert!(!refused(
             &params,
             false,
             "write_to_long_running_shell_command"
@@ -14375,15 +14445,15 @@ mod plan_mode_round_trip_tests {
                 tool_withdrawn_reason(&params, blocked).is_some(),
                 "{blocked} must be refused without a file route"
             );
-            assert!(tool_call_refused_at_dispatch(&params, false, blocked));
+            assert!(refused(&params, false, blocked));
         }
-        assert!(!tool_call_refused_at_dispatch(&params, false, SHELL));
+        assert!(!refused(&params, false, SHELL));
 
         // With a connected remote server the file tools have a route and stay callable.
         params.session_context =
             crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
         for ok in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
-            assert!(!tool_call_refused_at_dispatch(&params, false, ok));
+            assert!(!refused(&params, false, ok));
         }
     }
 
@@ -14557,6 +14627,439 @@ mod plan_mode_round_trip_tests {
             })
             .count();
         assert_eq!(results, 1, "exactly one error result for the refused id");
+    }
+
+    /// A request with every optional tool switched on, so each configuration below withholds
+    /// tools for exactly one reason.
+    fn all_tools_on() -> RequestParams {
+        let mut params = tool_result_round_trip(false);
+        params.web_search_enabled = true;
+        params.codebase_context_enabled = true;
+        params.computer_use_enabled = true;
+        params
+    }
+
+    fn mcp_context_with_one_tool() -> crate::ai::agent::MCPContext {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "q": { "type": "string" } }
+        })
+        .as_object()
+        .expect("schema is an object")
+        .clone();
+        crate::ai::agent::MCPContext {
+            #[allow(deprecated)]
+            resources: vec![],
+            #[allow(deprecated)]
+            tools: vec![],
+            servers: vec![crate::ai::agent::MCPServer {
+                id: "srv-1".to_owned(),
+                name: "docs".to_owned(),
+                description: String::new(),
+                // No resources, so `mcp_read_resource` is NOT offered.
+                resources: vec![],
+                tools: vec![rmcp::model::Tool::new(
+                    "lookup",
+                    "Looks something up.",
+                    Arc::new(schema),
+                )],
+            }],
+        }
+    }
+
+    /// Every configuration that withholds tools, each labelled for the failure message.
+    fn withholding_configurations() -> Vec<(&'static str, RequestParams)> {
+        let mut out = vec![("everything on", all_tools_on())];
+
+        let mut p = all_tools_on();
+        p.web_search_enabled = false;
+        out.push(("web access off", p));
+
+        let mut p = all_tools_on();
+        p.codebase_context_enabled = false;
+        out.push(("codebase context off", p));
+
+        let mut p = all_tools_on();
+        p.computer_use_enabled = false;
+        out.push(("computer use off", p));
+
+        let mut p = all_tools_on();
+        p.lrc_command_id = Some("cmd-1".to_owned());
+        out.push(("command running", p));
+
+        let mut p = all_tools_on();
+        p.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        out.push(("remote, no file route", p));
+
+        let mut p = all_tools_on();
+        p.plan_mode = true;
+        out.push(("plan mode", p));
+
+        let mut p = all_tools_on();
+        p.mcp_context = Some(mcp_context_with_one_tool());
+        out.push(("MCP server, no resources", p));
+
+        // Everything off at once: the defaults of `RequestParams::new_for_test`.
+        out.push(("everything off", tool_result_round_trip(false)));
+        out
+    }
+
+    /// #1067, the table: for every configuration and every built-in tool kind, the dispatch
+    /// gate refuses the call exactly when the tool was not offered. Before #1067 only Plan
+    /// Mode, computer use, the running-command strip and the no-file-route tools were refused;
+    /// `webfetch` / `websearch` with web access off, `search_codebase` / `get_relevant_files`
+    /// with codebase context off and the never-offered `suggest_new_conversation` all ran.
+    #[test]
+    fn every_tool_not_offered_is_refused_and_every_offered_tool_runs() {
+        let mut withheld_somewhere: Vec<&str> = Vec::new();
+        for (label, params) in withholding_configurations() {
+            let offered = available_tool_names(&params);
+            let plan_mode = request_plan_mode(&params);
+            for tool in tools::REGISTRY.iter() {
+                let is_offered = offered.iter().any(|n| n == tool.name);
+                let refusal = dispatch_refusal(&params, plan_mode, &offered, tool.name);
+                assert_eq!(
+                    refusal.is_some(),
+                    !is_offered,
+                    "[{label}] {}: offered={is_offered} but refusal={refusal:?}",
+                    tool.name
+                );
+                if !is_offered {
+                    withheld_somewhere.push(tool.name);
+                }
+            }
+            // MCP tools are offered by name, dynamically.
+            for name in offered.iter().filter(|n| tools::mcp::is_mcp_function(n)) {
+                assert_eq!(
+                    dispatch_refusal(&params, plan_mode, &offered, name),
+                    None,
+                    "[{label}] offered MCP tool {name} must run"
+                );
+            }
+        }
+        // The table is not vacuous: each tool the old gate let through is withheld somewhere.
+        for name in [
+            tools::webfetch::TOOL_NAME,
+            tools::websearch::TOOL_NAME,
+            tools::codebase::TOOL_NAME,
+            tools::get_relevant_files::TOOL_NAME,
+            "suggest_new_conversation",
+            "read_skill",
+            SHELL,
+            tools::computer::USE_COMPUTER_TOOL_NAME,
+        ] {
+            assert!(
+                withheld_somewhere.contains(&name),
+                "{name} is never withheld by any configuration; the table misses a gate"
+            );
+        }
+    }
+
+    /// #1067, the generic gate's own verdicts on the tools the old gate missed.
+    #[test]
+    fn tools_the_named_gates_missed_are_now_refused_as_not_offered() {
+        let mut params = all_tools_on();
+        params.web_search_enabled = false;
+        params.codebase_context_enabled = false;
+        let offered = available_tool_names(&params);
+        for name in [
+            tools::webfetch::TOOL_NAME,
+            tools::websearch::TOOL_NAME,
+            tools::codebase::TOOL_NAME,
+            tools::get_relevant_files::TOOL_NAME,
+            "suggest_new_conversation",
+        ] {
+            assert_eq!(
+                dispatch_refusal(&params, false, &offered, name),
+                Some(DispatchRefusal::NotOffered),
+                "{name}"
+            );
+            assert!(tool_call_refused_at_dispatch(&params, false, &offered, name));
+        }
+        // A name that is no tool at all is left to `parse_incoming_tool_call`'s
+        // UnknownToolName result (rename hint, arg-shape recovery over offered tools only).
+        assert_eq!(dispatch_refusal(&params, false, &offered, "no_such_tool"), None);
+    }
+
+    /// #1067: MCP tools are named dynamically, so the gate must compare against the offered
+    /// MCP names rather than a static list. `mcp_read_resource` is offered only when some
+    /// server exposes resources, yet `parse_read_resource` still built a ReadMcpResource call
+    /// (empty server id) without one; and an MCP name from an earlier turn whose server is
+    /// gone must not resolve either.
+    #[test]
+    fn mcp_tools_are_gated_by_the_offered_names() {
+        let mut params = all_tools_on();
+        params.mcp_context = Some(mcp_context_with_one_tool());
+        let offered = available_tool_names(&params);
+        let mcp_name = tools::mcp::build_mcp_tool_defs(
+            params.mcp_context.as_ref().expect("mcp context set above"),
+        )
+        .remove(0)
+        .0;
+        assert!(offered.contains(&mcp_name), "fixture: {mcp_name} must be offered");
+        assert_eq!(dispatch_refusal(&params, false, &offered, &mcp_name), None);
+        assert_eq!(
+            dispatch_refusal(&params, false, &offered, "mcp_read_resource"),
+            Some(DispatchRefusal::NotOffered),
+            "no server exposes resources, so mcp_read_resource was not offered"
+        );
+
+        // The MCP server is gone this turn: its tool name is no longer offered.
+        params.mcp_context = None;
+        let offered = available_tool_names(&params);
+        assert_eq!(
+            dispatch_refusal(&params, false, &offered, &mcp_name),
+            Some(DispatchRefusal::NotOffered)
+        );
+    }
+
+    /// #1067: folding the four named gates into `dispatch_refusal` must not change what they
+    /// answer -- same category, same error code, same `executed` flag -- even though the
+    /// generic check alone would also refuse each of them.
+    #[test]
+    fn the_four_named_refusals_keep_their_payloads() {
+        let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+
+        // Plan Mode.
+        let params = all_tools_on();
+        let offered = available_tool_names(&params);
+        let r = dispatch_refusal(&params, true, &offered, SHELL);
+        assert_eq!(r, Some(DispatchRefusal::PlanMode));
+        let v = dispatch_refusal_payload(r.unwrap(), SHELL, "{}");
+        assert_eq!(field(&v, "error").as_deref(), Some("plan_mode_blocked"));
+        assert_eq!(v.get("executed"), Some(&Value::Bool(false)));
+        assert!(field(&v, "message").unwrap().contains("Plan Mode is active"));
+
+        // Computer use off.
+        let mut params = all_tools_on();
+        params.computer_use_enabled = false;
+        let offered = available_tool_names(&params);
+        let name = tools::computer::USE_COMPUTER_TOOL_NAME;
+        let r = dispatch_refusal(&params, false, &offered, name);
+        assert_eq!(r, Some(DispatchRefusal::ComputerUseDisabled));
+        let v = dispatch_refusal_payload(r.unwrap(), name, "{}");
+        assert_eq!(field(&v, "error").as_deref(), Some("computer_use_disabled"));
+        assert!(field(&v, "message").unwrap().contains("Computer use is not available"));
+
+        // Running command.
+        let mut params = all_tools_on();
+        params.lrc_command_id = Some("cmd-1".to_owned());
+        let offered = available_tool_names(&params);
+        let r = dispatch_refusal(&params, false, &offered, SHELL);
+        assert_eq!(
+            r,
+            Some(DispatchRefusal::Withdrawn(
+                tool_withdrawn_reason(&params, SHELL).unwrap()
+            ))
+        );
+        let v = dispatch_refusal_payload(r.unwrap(), SHELL, "{}");
+        assert_eq!(field(&v, "error").as_deref(), Some("tool_not_offered"));
+        assert!(field(&v, "message")
+            .unwrap()
+            .contains("A command is already running"));
+
+        // No file route.
+        let mut params = all_tools_on();
+        params.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        let offered = available_tool_names(&params);
+        let r = dispatch_refusal(&params, false, &offered, "read_files");
+        assert!(matches!(r, Some(DispatchRefusal::Withdrawn(_))), "{r:?}");
+        let v = dispatch_refusal_payload(r.unwrap(), "read_files", "{}");
+        assert!(field(&v, "message")
+            .unwrap()
+            .contains("cannot reach the remote host's filesystem"));
+
+        // Every payload names its own code, carries `executed: false` where it did before,
+        // and none of them would trigger the controller's auto-resume.
+        for refusal in [
+            DispatchRefusal::PlanMode,
+            DispatchRefusal::ComputerUseDisabled,
+            DispatchRefusal::Withdrawn("reason"),
+            DispatchRefusal::NotOffered,
+        ] {
+            let v = dispatch_refusal_payload(refusal, "x", "{}");
+            assert_eq!(field(&v, "error").as_deref(), Some(refusal.error_code()));
+            let s = v.to_string();
+            assert!(!s.contains(r#""error":"invalid_arguments""#), "{s}");
+            assert!(!s.contains("_byop_intercepted"), "{s}");
+        }
+        let v = dispatch_refusal_payload(DispatchRefusal::NotOffered, "websearch", "{}");
+        assert_eq!(v.get("executed"), Some(&Value::Bool(false)));
+        assert_eq!(field(&v, "tool").as_deref(), Some("websearch"));
+    }
+
+    /// #1067, through the real streaming path: `websearch` with web access off used to reach
+    /// its interceptor, which put a "Searching…" card on screen before refusing. Now the call
+    /// gets exactly one carrier ToolCall and one `tool_not_offered` result, and no web-status
+    /// card is emitted.
+    #[tokio::test]
+    async fn streaming_a_withheld_websearch_emits_no_card_and_one_refusal() {
+        use std::io::{Read, Write};
+
+        let chunk_call = serde_json::json!({
+            "id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [{
+                "index": 0, "id": "call_web", "type": "function",
+                "function": {"name": "websearch", "arguments": "{\"query\":\"hi\"}"}
+            }]}, "finish_reason": null}]
+        })
+        .to_string();
+        let chunk_done = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let body = format!("data: {chunk_call}\n\ndata: {chunk_done}\n\ndata: [DONE]\n\n");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + want {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                 connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.flush();
+        });
+
+        let params = tool_result_round_trip(false);
+        assert!(!params.web_search_enabled, "fixture: web access must be off");
+        let (_cancel_tx, cancellation_rx) = futures::channel::oneshot::channel::<()>();
+        let mut stream = generate_byop_output(ByopOutputInput {
+            params,
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "test-key".to_owned(),
+            model_id: "gpt-test".to_owned(),
+            api_type: AgentProviderApiType::OpenAi,
+            reasoning_effort: Default::default(),
+            extra_headers: vec![],
+            task_id: "task-1".to_owned(),
+            target_task_id: "task-1".to_owned(),
+            needs_create_task: false,
+            lrc_command_id: None,
+            lrc_should_spawn_subagent: false,
+            context_window: None,
+            max_output_tokens: 0,
+            cancellation_rx,
+            attachment_caps: attachment_caps::AttachmentCaps::default(),
+            other_provider_hint: None,
+        })
+        .await
+        .unwrap_or_else(|_| panic!("generate_byop_output should build the request"));
+
+        let mut messages: Vec<api::Message> = Vec::new();
+        let collect = async {
+            while let Some(event) = stream.next().await {
+                let Ok(event) = event else { continue };
+                let Some(api::response_event::Type::ClientActions(actions)) = event.r#type else {
+                    continue;
+                };
+                for action in actions.actions {
+                    match action.action {
+                        Some(api::client_action::Action::AddMessagesToTask(add)) => {
+                            messages.extend(add.messages)
+                        }
+                        Some(api::client_action::Action::UpdateTaskMessage(update)) => {
+                            messages.extend(update.message)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), collect)
+            .await
+            .expect("the mock stream should finish");
+
+        assert!(
+            !messages.iter().any(|m| matches!(
+                &m.message,
+                Some(api::message::Message::WebSearch(_))
+                    | Some(api::message::Message::WebFetch(_))
+            )),
+            "a withheld web tool must not put a web-status card on screen"
+        );
+        let calls = messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    &m.message,
+                    Some(api::message::Message::ToolCall(tc)) if tc.tool_call_id == "call_web"
+                )
+            })
+            .count();
+        assert_eq!(calls, 1, "exactly one (carrier) ToolCall for the refused id");
+        let results: Vec<&api::Message> = messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    &m.message,
+                    Some(api::message::Message::ToolCallResult(r)) if r.tool_call_id == "call_web"
+                )
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "exactly one error result for the refused id");
+        assert!(
+            results[0]
+                .server_message_data
+                .contains(r#""error":"tool_not_offered""#),
+            "{}",
+            results[0].server_message_data
+        );
+    }
+
+    /// #1067, skills: the skills listing is dropped from the system-prompt context exactly
+    /// when `read_skill` is not offered (no file route), and every other context survives.
+    #[test]
+    fn skills_are_listed_only_when_read_skill_is_offered() {
+        let ctx = vec![
+            AIAgentContext::SelectedText("keep me".to_owned()),
+            AIAgentContext::Skills { skills: vec![] },
+        ];
+
+        let local = all_tools_on();
+        let offered = available_tool_names(&local);
+        assert!(offered.iter().any(|n| n == "read_skill"), "fixture: offered locally");
+        assert_eq!(system_prompt_context(&ctx, &offered).as_ref(), ctx.as_slice());
+
+        let mut remote = all_tools_on();
+        remote.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        let offered = available_tool_names(&remote);
+        assert!(!offered.iter().any(|n| n == "read_skill"), "fixture: withdrawn remotely");
+        let filtered = system_prompt_context(&ctx, &offered);
+        assert!(
+            !filtered
+                .iter()
+                .any(|c| matches!(c, AIAgentContext::Skills { .. })),
+            "skills must not be listed when read_skill is not offered: {filtered:?}"
+        );
+        assert_eq!(
+            filtered.as_ref(),
+            &[AIAgentContext::SelectedText("keep me".to_owned())][..]
+        );
     }
 
     /// Consequence 3: the system prompt keeps its Plan Mode block, so the model is told why
