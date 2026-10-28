@@ -68,6 +68,15 @@ pub struct SshRemoteServerChoiceView {
     manage_settings_mouse_state: MouseStateHandle,
     /// Current checked state of the "Don't ask me this again" checkbox.
     do_not_ask_again: bool,
+    /// Set once the user types printable text while this card holds focus.
+    /// The input editor is hidden until a choice is made, so those keys used
+    /// to vanish without a trace (#1087); now they turn on a visible hint
+    /// telling the user to choose first. They are deliberately NOT buffered
+    /// for the session: Enter on this card selects the highlighted option,
+    /// so a typed command line would reach the session without its Enter,
+    /// seconds later (after the install or the legacy bootstrap), into an
+    /// input the user never saw it go into.
+    typed_before_choice: bool,
 }
 
 impl SshRemoteServerChoiceView {
@@ -100,7 +109,41 @@ impl SshRemoteServerChoiceView {
             do_not_ask_again_label_mouse_state: MouseStateHandle::default(),
             manage_settings_mouse_state: MouseStateHandle::default(),
             do_not_ask_again: false,
+            typed_before_choice: false,
         }
+    }
+
+    /// Records that the user typed while this card held focus, so the card
+    /// shows its "choose an option first" hint (#1087). The keys themselves
+    /// are not kept; see [`Self::typed_before_choice`].
+    pub fn note_typed_before_choice(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.typed_before_choice {
+            self.typed_before_choice = true;
+            ctx.notify();
+        }
+    }
+
+    /// Whether the "choose an option first" hint is showing (#1087).
+    pub fn typed_before_choice(&self) -> bool {
+        self.typed_before_choice
+    }
+
+    fn render_typed_before_choice_hint(&self, appearance: &Appearance) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        Container::new(
+            Text::new(
+                crate::t!("ssh-remote-choice-choose-first-hint"),
+                appearance.ui_font_family(),
+                appearance.monospace_font_size() - 2.,
+            )
+            .soft_wrap(true)
+            .with_color(theme.accent().into_solid())
+            .finish(),
+        )
+        .with_padding_left(INLINE_ACTION_HORIZONTAL_PADDING)
+        .with_padding_right(INLINE_ACTION_HORIZONTAL_PADDING)
+        .with_padding_bottom(8.)
+        .finish()
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -231,13 +274,15 @@ impl View for SshRemoteServerChoiceView {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
 
-        let content = Flex::column()
+        let mut content = Flex::column()
             .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(self.render_header(app))
-            .with_child(self.render_buttons())
-            .with_child(self.render_footer(appearance))
-            .finish();
+            .with_child(self.render_buttons());
+        if self.typed_before_choice {
+            content = content.with_child(self.render_typed_before_choice_hint(appearance));
+        }
+        let content = content.with_child(self.render_footer(appearance)).finish();
 
         let border_color = blended_colors::neutral_2(theme);
         let card = Container::new(content)

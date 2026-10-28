@@ -17564,3 +17564,53 @@ fn test_static_subshell_commands_resolve_to_the_shell_type_without_the_sh_probe(
         );
     }
 }
+
+/// #1087: keys typed while the SSH-extension "Choose your experience" card holds focus used to
+/// vanish silently (the input editor is hidden until a choice is made). They now turn on the
+/// card's "choose an option first" hint, and still go nowhere else: not into the hidden input,
+/// and the card stays up (typing never makes the choice).
+#[test]
+fn typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+        let session_id = SessionId::from(1087);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.show_ssh_remote_server_choice_block(session_id, ctx);
+        });
+        let card = terminal
+            .read(&app, |view, _| view.active_ssh_remote_server_choice_block())
+            .expect("precondition: the choice card is showing");
+        // Showing the card hands it focus (`redetermine_global_focus`); made explicit here so
+        // the test does not depend on the rest of that routine.
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        let focused = app.focused_view_id(window_id);
+        let buttons_id = card.read(&app, |card, _| card.buttons().id());
+        assert!(
+            focused == Some(card.id()) || focused == Some(buttons_id),
+            "precondition: the choice card holds focus, got {focused:?}"
+        );
+        assert!(!card.read(&app, |card, _| card.typed_before_choice()));
+
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("ls", ctx)
+        });
+
+        assert!(
+            card.read(&app, |card, _| card.typed_before_choice()),
+            "typing on the card must show the choose-first hint, not vanish silently"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input().as_ref(ctx).buffer_text(ctx),
+                "",
+                "keys typed on the card are not buffered into the hidden input"
+            );
+            assert!(
+                view.active_ssh_remote_server_choice_block().is_some(),
+                "typing never makes the choice"
+            );
+        });
+    })
+}

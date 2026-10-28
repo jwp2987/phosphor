@@ -587,6 +587,25 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         .replace("{sha256_macos_aarch64}", expected_sha256("macos", "aarch64"))
 }
 
+/// Headlines the client prefixes onto an install failure when the install script refused to
+/// install for an integrity reason (`install_remote_server.sh` exits 4, 5 and 6). Written by
+/// `app/src/remote_server/ssh_transport.rs::route_install_failure` and read back by the SSH
+/// failure banner (`app/src/terminal/view/ssh_remote_server_failed_banner.rs`), which picks its
+/// title from them -- the install result reaches the banner only as a `String`, so these shared
+/// constants are the contract between the two (#1086). Kept here rather than in either user
+/// because this crate is the one both can import on every target.
+///
+/// Exit 4: this client was built with no pinned digest (every local/dev build).
+pub const INSTALL_REFUSED_NO_PINNED_DIGEST: &str = "remote-server install refused: this build has no compiled-in checksum to \
+     verify the remote binary against (a local/dev build), so it will not \
+     install an unverified binary";
+/// Exit 5: the remote host has no SHA-256 tool, so the download could not be checked.
+pub const INSTALL_REFUSED_NO_DIGEST_TOOL: &str = "remote-server install refused: the remote host has no tool to compute a \
+     SHA-256 digest, so the download could not be verified";
+/// Exit 6: the downloaded bytes did not match the pinned digest.
+pub const INSTALL_REFUSED_DIGEST_MISMATCH: &str = "remote-server install refused: integrity check failed, \
+     so the SCP fallback (which installs unverified) was NOT attempted";
+
 /// SHA-256 of the published CLI tarball for one remote platform, embedded into this client
 /// at **build time** by the release workflow.
 ///

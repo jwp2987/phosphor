@@ -551,3 +551,88 @@ fn bundle_includes_secondary_logs_after_the_owner_logs() {
 
     assert_eq!(paths, vec![active, old_0, secondary]);
 }
+
+/// The numeric `<LOG>.secondary.<pid>` files in `dir`, sorted.
+fn secondary_pids(dir: &Path) -> Vec<u32> {
+    let prefix = format!("{LOG}.secondary.");
+    let mut pids: Vec<u32> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().to_str()?.strip_prefix(&prefix)?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    pids
+}
+
+/// Leaves `count` stale secondaries (pids 1..=count, oldest first) in `dir`,
+/// as earlier forwarded launches would have.
+fn stale_secondaries(dir: &Path, count: u32) {
+    let base = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for pid in 1..=count {
+        File::create(dir.join(format!("{LOG}.secondary.{pid}")))
+            .unwrap()
+            .set_modified(base + Duration::from_secs(u64::from(pid)))
+            .unwrap();
+    }
+}
+
+// #1088: the bound is enforced on the real path a forwarded launch takes, not
+// only by `prune_secondary_logs` called directly. Fewer than
+// `MAX_SECONDARY_LOGS` files (the 3 the report saw) are kept by design.
+#[test]
+fn forwarded_launch_keeps_at_most_the_bound_of_secondary_logs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let owner = owner_setup(tmp.path());
+    stale_secondaries(tmp.path(), 8);
+
+    let second = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+
+    assert!(!second.ownership.is_owner());
+    let pids = secondary_pids(tmp.path());
+    assert_eq!(pids.len(), MAX_SECONDARY_LOGS, "got {pids:?}");
+    assert!(pids.contains(&std::process::id()), "own log kept: {pids:?}");
+    // The newest of the stale ones fill the rest.
+    assert!(pids.contains(&8) && pids.contains(&5) && !pids.contains(&4));
+    drop(owner);
+}
+
+#[test]
+fn forwarded_launches_below_the_bound_keep_every_secondary_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let owner = owner_setup(tmp.path());
+    stale_secondaries(tmp.path(), 2);
+
+    let _second = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+
+    let mut expected = vec![1, 2, std::process::id()];
+    expected.sort_unstable();
+    assert_eq!(secondary_pids(tmp.path()), expected);
+    drop(owner);
+}
+
+#[test]
+fn owner_rotation_prunes_secondary_logs_and_a_non_owner_does_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    stale_secondaries(tmp.path(), 9);
+    let owner = owner_setup(tmp.path());
+    let second = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+    // The forwarded launch already pruned to the bound; refill past it.
+    stale_secondaries(tmp.path(), 9);
+
+    assert!(!rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &second.ownership
+    ));
+    assert_eq!(secondary_pids(tmp.path()).len(), 10);
+
+    assert!(rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &owner.ownership
+    ));
+    assert_eq!(secondary_pids(tmp.path()).len(), MAX_SECONDARY_LOGS);
+    drop(owner);
+}

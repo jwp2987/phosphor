@@ -2517,3 +2517,15 @@ fix a 3 MB paste of one word was shaped in full, costing ~330 bytes per glyph an
 transient heap (1050 MB vs 365 MB on v0.1.12). Words up to 128 KiB (the #864 30k-char case)
 keep every glyph. Text past the cap is still in the editor buffer (typing, undo, submit are
 unaffected); it just has no glyphs. Multi-line huge pastes are unchanged.
+
+## SSH-extension choice card: typing shows a hint, keys are not buffered (#1087) — IMPROVED
+
+While the "Choose your experience" card (`SshRemoteServerChoiceView`) holds focus the input
+editor is hidden and the card only binds arrows and Enter, so printable keys used to vanish
+without a trace. They now turn on a "choose an option first" hint on the card
+(`note_typed_before_choice`, routed by `TerminalView::typed_characters_on_terminal`). The keys
+are deliberately NOT buffered for the session: Enter on the card selects the highlighted option,
+so a typed command line would arrive without its Enter, seconds later (after the install or the
+legacy bootstrap), into an input the user never saw it go into. Reverse only together with a
+visible place for the buffered text.
+<!-- markers: keep:typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing -->

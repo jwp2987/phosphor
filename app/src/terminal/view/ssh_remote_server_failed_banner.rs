@@ -56,9 +56,45 @@ pub enum SshRemoteServerFailureKind {
     /// "Remote-session setup degrades silently", item 1: previously nothing
     /// at all distinguished this session from a fully phosphorized one.
     Legacy,
+    /// The install was refused because this build has no pinned SHA-256 for
+    /// the remote-server tarball (`install_remote_server.sh` exit 4 -- every
+    /// local/unofficial build). Fail-closed is correct here; what was wrong
+    /// was the banner, which reported it as `BinaryInstall` ("could not be
+    /// written or executed"), a claim nothing in this path ever tested
+    /// (#1086). The real reason was only in the red detail box.
+    UnverifiedBuild,
+    /// The install was refused because the download could not be verified
+    /// against the pinned SHA-256: the remote host has no digest tool
+    /// (exit 5), or the bytes did not match (exit 6). Like `UnverifiedBuild`
+    /// it is not a write/execute failure, so it must not say it is (#1086).
+    VerificationRefused,
 }
 
 impl SshRemoteServerFailureKind {
+    /// The banner kind for a failed install, from the install error text.
+    ///
+    /// The install result reaches the view only as a `String`, so the
+    /// integrity refusals are recognised by the headlines
+    /// `ssh_transport::route_install_failure` prefixes onto them -- shared
+    /// constants in `remote_server::setup`, so the two cannot drift apart
+    /// silently. Anything else stays `BinaryInstall` (#1086).
+    pub fn for_install_error(error: &str) -> Self {
+        use remote_server::setup::{
+            INSTALL_REFUSED_DIGEST_MISMATCH, INSTALL_REFUSED_NO_DIGEST_TOOL,
+            INSTALL_REFUSED_NO_PINNED_DIGEST,
+        };
+        let error = error.trim_start();
+        if error.starts_with(INSTALL_REFUSED_NO_PINNED_DIGEST) {
+            Self::UnverifiedBuild
+        } else if error.starts_with(INSTALL_REFUSED_NO_DIGEST_TOOL)
+            || error.starts_with(INSTALL_REFUSED_DIGEST_MISMATCH)
+        {
+            Self::VerificationRefused
+        } else {
+            Self::BinaryInstall
+        }
+    }
+
     fn title(self) -> String {
         match self {
             Self::BinaryCheck => "SSH extension couldn't be verified".to_string(),
@@ -66,6 +102,12 @@ impl SshRemoteServerFailureKind {
             Self::Launch => "SSH extension couldn't be started".to_string(),
             Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-title"),
             Self::Legacy => crate::t!("terminal-ssh-remote-server-legacy-title"),
+            Self::UnverifiedBuild => {
+                crate::t!("terminal-ssh-remote-server-unverified-build-title")
+            }
+            Self::VerificationRefused => {
+                crate::t!("terminal-ssh-remote-server-verification-refused-title")
+            }
         }
     }
 
@@ -82,6 +124,12 @@ impl SshRemoteServerFailureKind {
             }
             Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-description"),
             Self::Legacy => crate::t!("terminal-ssh-remote-server-legacy-description"),
+            Self::UnverifiedBuild => {
+                crate::t!("terminal-ssh-remote-server-unverified-build-description")
+            }
+            Self::VerificationRefused => {
+                crate::t!("terminal-ssh-remote-server-verification-refused-description")
+            }
         }
     }
 }

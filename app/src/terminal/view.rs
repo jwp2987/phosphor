@@ -2275,6 +2275,10 @@ pub struct TerminalViewRenderContext {
     /// The pending command-approval card whose focus should hand printable keys to the agent
     /// input (#1028).
     pub approval_card_view_id: Option<EntityId>,
+    /// The SSH-extension "Choose your experience" card, if one is showing: printable keys typed
+    /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
+    /// card's "choose an option first" hint instead of dropping them silently (#1087).
+    pub ssh_choice_card_view_id: Option<EntityId>,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -4713,7 +4717,7 @@ impl TerminalView {
                             RemoteServerSetupState::Failed { error } => {
                                 me.show_ssh_remote_server_failed_banner(
                                     *session_id,
-                                    SshRemoteServerFailureKind::BinaryInstall,
+                                    SshRemoteServerFailureKind::for_install_error(error),
                                     error,
                                     ctx,
                                 );
@@ -4832,7 +4836,7 @@ impl TerminalView {
                         if let Err(error) = result {
                             me.show_ssh_remote_server_failed_banner(
                                 *session_id,
-                                SshRemoteServerFailureKind::BinaryInstall,
+                                SshRemoteServerFailureKind::for_install_error(error),
                                 error,
                                 ctx,
                             );
@@ -9463,6 +9467,15 @@ impl TerminalView {
     }
 
     /// Whether the window's focus is exactly on the pending approval card (#1028).
+    /// The SSH-extension choice card, when it (or its buttons) holds keyboard focus (#1087).
+    fn ssh_choice_card_holding_keys(
+        &self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<ViewHandle<SshRemoteServerChoiceView>> {
+        self.active_ssh_remote_server_choice_block()
+            .filter(|card| card.is_self_or_child_focused(ctx))
+    }
+
     fn typed_on_approval_card(&self, ctx: &mut ViewContext<Self>) -> bool {
         self.approval_card_view_id(ctx)
             .is_some_and(|card| ctx.focused_view_id(ctx.window_id()) == Some(card))
@@ -10397,6 +10410,14 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1087: while the SSH-extension choice card holds focus the input editor is hidden and
+        // the card only takes arrows/Enter, so printable keys went nowhere, silently. They now
+        // show the card's "choose an option first" hint. They are not buffered for the session:
+        // see `SshRemoteServerChoiceView::typed_before_choice`.
+        if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
+            choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
+            return;
+        }
         if is_ssh_interrupt_key(characters) {
             // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
             // in the connect window before the remote session is announced (#983/#1001).
@@ -26932,6 +26953,9 @@ impl TerminalView {
                 .expect("terminal should upgrade")
                 .is_focused(app),
             approval_card_view_id: self.approval_card_view_id(app),
+            ssh_choice_card_view_id: self
+                .active_ssh_remote_server_choice_block()
+                .map(|card| card.id()),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),
