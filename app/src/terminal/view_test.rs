@@ -17704,6 +17704,56 @@ fn ssh_held_line_is_never_glued_to_existing_editor_text() {
     })
 }
 
+/// #1115: a line whose LETTERS fell in the gate window must never have its Enter delivered
+/// alone just after the release (an empty Enter at the remote prompt). Both routes of the Enter
+/// are covered: the terminal key path, and the editor's own submit once it has focus.
+#[test]
+fn ssh_enter_just_after_release_follows_its_dropped_letters() {
+    for editor_submit in [false, true] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                for key in ["e", "x", "i", "t"] {
+                    view.typed_characters_on_terminal(key, ctx);
+                }
+                assert!(view.ssh_drop_line_through_enter);
+                // The remote's first prompt releases the gate between the letters and the Enter.
+                let gate = view.ssh_connect_gate.as_mut().unwrap();
+                gate.saw_pending = true;
+                gate.bootstrap_done_at = Some(Instant::now());
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(view.ssh_connect_gate.is_none());
+                assert!(
+                    view.ssh_drop_line_through_enter,
+                    "the release keeps the line"
+                );
+                if editor_submit {
+                    submit_command(view, "", ctx);
+                } else {
+                    view.keydown_on_terminal("\r", ctx);
+                }
+                assert!(!view.ssh_drop_line_through_enter);
+            });
+            assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    }
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,
