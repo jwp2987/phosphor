@@ -348,12 +348,16 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
     });
 }
 
-/// When the BYOP `read_skill` tool is called with a name:
-/// `from_args` stuffs the name into `SkillReference::SkillPath(name)`, and on the
-/// executor side, after a cache miss, it's looked up by name and returned as a Sync
-/// Success.
+/// #1068: a bare skill NAME reaching the executor is never looked up in the
+/// `SkillManager`'s global name index, even when a skill of that name is indexed.
+///
+/// The executor used to fall back to `find_skill_by_name` here, which searched every
+/// SKILL.md the manager had indexed (other repositories included) and returned one —
+/// without approval — whether or not it had been listed to the model. BYOP now binds the
+/// name to a listed reference before an action exists (`tools::skill::resolve_reference`),
+/// so a bare name here can only be a stale or forged reference and must read nothing.
 #[test]
-fn test_read_skill_executor_resolves_by_name() {
+fn test_read_skill_executor_does_not_resolve_bare_name_from_index() {
     let temp_dir = TempDir::new().unwrap();
     let skill_path = create_test_skill_file(&temp_dir, "byop-named-skill", "Lookup by name");
 
@@ -368,7 +372,7 @@ fn test_read_skill_executor_resolves_by_name() {
         let active_session = build_local_active_session(&mut app);
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
-        // Simulates BYOP from_args: passing the name in as if it were a path.
+        // The old BYOP shape: the name carried in the path slot.
         let action = AIAgentAction {
             id: AIAgentActionId::from("name-lookup-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
@@ -389,20 +393,24 @@ fn test_read_skill_executor_resolves_by_name() {
             let result: AnyActionExecution = executor.execute(input, ctx).into();
             match result {
                 AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
-                    ReadSkillResult::Success { content },
+                    ReadSkillResult::Error(msg),
                 )) => {
-                    assert_eq!(content.file_name, skill_path.to_string_lossy().to_string());
+                    assert!(msg.starts_with("Skill not found"), "msg={msg}");
                 }
-                _ => panic!("Lookup by name should succeed via Sync Success"),
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Success { content },
+                )) => panic!(
+                    "a bare name must not resolve through the global index, but it read {}",
+                    content.file_name
+                ),
+                _ => panic!("a bare name should resolve to a Sync Error"),
             }
         });
     });
 }
 
-/// An unknown name (not in the SkillManager index), after exhausting every
-/// fallback: `name_candidate` matches but `find_skill_by_name` returns None, so it
-/// continues to the fs fallback — where the path shape is invalid (a plain name has
-/// no `/`), resulting directly in a Sync Error.
+/// An unknown name (not in the SkillManager index) reaches the fs fallback, where the
+/// path shape is invalid (a plain name has no `/`), resulting directly in a Sync Error.
 #[test]
 fn test_read_skill_executor_rejects_unknown_name() {
     App::test((), |mut app| async move {

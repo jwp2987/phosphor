@@ -8,12 +8,12 @@ use crate::ai::skills::{SkillManager, SkillTelemetryEvent};
 use crate::send_telemetry_from_ctx;
 use crate::terminal::model::session::active_session::ActiveSession;
 use ai::agent::action_result::AnyFileContent;
+#[cfg(feature = "local_fs")]
 use ai::skills::SkillReference;
 #[cfg(feature = "local_fs")]
 use ai::skills::parse_skill;
-use std::path::Path;
 #[cfg(feature = "local_fs")]
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 #[cfg(feature = "local_fs")]
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{ModelContext, ModelHandle, SingletonEntity};
@@ -99,28 +99,13 @@ impl ReadSkillExecutor {
             return success_execution(skill);
         }
 
-        // The BYOP `read_skill` tool's argument is the skill **name**, which
-        // `from_args` stuffs into the `SkillReference::SkillPath(name)` slot (to
-        // avoid changing the proto schema). On cache miss, look up the real SKILL.md
-        // path by name here, covering every skill the Skill manager can see (file
-        // skills + bundled skills).
-        if let SkillReference::Path(p) = skill_ref {
-            if let Some(candidate_name) = p.to_local_path().and_then(name_candidate) {
-                if let Some(skill) = manager.find_skill_by_name(candidate_name) {
-                    send_telemetry_from_ctx!(
-                        SkillTelemetryEvent::Read {
-                            reference: skill_ref.clone(),
-                            name: Some(skill.name.clone()),
-                            scope: Some(skill.scope),
-                            provider: Some(skill.provider),
-                            error: false,
-                        },
-                        ctx
-                    );
-                    return success_execution(skill);
-                }
-            }
-        }
+        // There is deliberately no lookup by bare skill name here (#1068). The BYOP
+        // `read_skill` tool binds the model's name to an exact reference from the skills listed
+        // for this turn (`agent_providers::tools::skill::resolve_reference`) before an action
+        // is ever created, so this executor only accepts exact references. It used to fall back
+        // to `SkillManager::find_skill_by_name`, which searched every SKILL.md the manager had
+        // indexed — other repositories included — and so let an unlisted, same-named skill be
+        // read into context without approval.
 
         // Cache miss fallback: for a `SkillReference::Path`-shaped reference, if the
         // path shape looks like a valid skill file
@@ -234,24 +219,6 @@ fn success_execution(
         None,
     );
     ActionExecution::Sync(ReadSkillResult::Success { content }.into())
-}
-
-/// Determines whether the value inside `SkillReference::Path` should be treated as a
-/// skill **name** lookup.
-///
-/// A real SKILL.md path contains a path separator (`/` or `\`) or is absolute, while
-/// a BYOP tool call's name (e.g. `"build-feature"`) is a plain string. Distinguishing
-/// the two avoids mistaking `/home/.../SKILL.md` for a name and missing the
-/// filesystem fallback.
-fn name_candidate(p: &Path) -> Option<&str> {
-    if p.is_absolute() {
-        return None;
-    }
-    let s = p.to_str()?;
-    if s.is_empty() || s.contains('/') || s.contains('\\') {
-        return None;
-    }
-    Some(s)
 }
 
 /// Lexically normalises `path`: `.` components are dropped and `..` pops the preceding

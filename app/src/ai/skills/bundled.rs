@@ -110,15 +110,6 @@ impl BundledSkills {
         self.local.skill(id)
     }
 
-    /// Iterates the local catalog's `(id, skill)` pairs, regardless of activation.
-    ///
-    /// Fork-original (not in the pin): backs `SkillManager::find_skill_by_name`'s
-    /// bundled-skill name fallback, which — like [`Self::active_skill`] without an
-    /// explicit remote origin — only ever resolves against the local catalog.
-    pub(crate) fn local_definitions(&self) -> impl Iterator<Item = (&str, &ParsedSkill)> {
-        self.local.iter()
-    }
-
     pub fn active_skill(
         &self,
         id: &str,
@@ -320,8 +311,10 @@ impl BundledSkill {
     }
 
     /// Iterates every bundled skill definition as `(id, skill)`, regardless of
-    /// activation. Used by name-based lookup fallbacks (the BYOP `read_skill` tool
-    /// can only see a skill's `<name>`, not its ID).
+    /// activation. Test-only: the by-name lookup it used to back was removed with the
+    /// BYOP `read_skill` name fallback (#1068) — `read_skill` now binds only to a skill
+    /// listed for the turn, and a bundled skill is listed only while it is active.
+    #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = (&str, &ParsedSkill)> {
         self.definitions
             .iter()
