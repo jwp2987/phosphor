@@ -398,7 +398,13 @@ crash-handler = { version = "0.6.3", optional = true }
 minidumper = { version = "0.8.3", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-freedesktop-desktop-entry = "0.5.0"
+# 0.8 + no `gettext` feature (refs #1076). With gettext on, Name lookup in a
+# .desktop file carrying X-Ubuntu-Gettext-Domain calls
+# setlocale(LC_ALL, "") process-wide from whatever thread resolves editors
+# (gettext-rs 0.7, RUSTSEC-2026-0244: unsynchronised env access). We only
+# read the `en`/default Name, so translation buys nothing; dropping the
+# feature also removes the gettext-rs / gettext-sys C build.
+freedesktop-desktop-entry = { version = "0.8.4", default-features = false }
 x11rb.workspace = true
 zbus.workspace = true
 
