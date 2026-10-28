@@ -4713,7 +4713,7 @@ impl TerminalView {
                             RemoteServerSetupState::Failed { error } => {
                                 me.show_ssh_remote_server_failed_banner(
                                     *session_id,
-                                    SshRemoteServerFailureKind::BinaryInstall,
+                                    SshRemoteServerFailureKind::for_install_error(error),
                                     error,
                                     ctx,
                                 );
@@ -4832,7 +4832,7 @@ impl TerminalView {
                         if let Err(error) = result {
                             me.show_ssh_remote_server_failed_banner(
                                 *session_id,
-                                SshRemoteServerFailureKind::BinaryInstall,
+                                SshRemoteServerFailureKind::for_install_error(error),
                                 error,
                                 ctx,
                             );

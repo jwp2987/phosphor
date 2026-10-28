@@ -333,23 +333,17 @@ fn route_install_failure(error: &InstallError) -> InstallFallbackRoute {
         InstallFailureKind::IntegrityFailed => {
             let headline = match error {
                 InstallError::ScriptFailed { exit_code: 4, .. } => {
-                    "remote-server install refused: this build has no compiled-in checksum to \
-                     verify the remote binary against (a local/dev build), so it will not \
-                     install an unverified binary"
+                    remote_server::setup::INSTALL_REFUSED_NO_PINNED_DIGEST
                 }
                 InstallError::ScriptFailed { exit_code: 5, .. } => {
-                    "remote-server install refused: the remote host has no tool to compute a \
-                     SHA-256 digest, so the download could not be verified"
+                    remote_server::setup::INSTALL_REFUSED_NO_DIGEST_TOOL
                 }
                 // Deliberately louder than the other two: this is exit 6, where
                 // bytes served for this release did NOT match the digest
                 // compiled into this client, which is what tampering looks
                 // like from here. Operators need to see that it was refused
                 // rather than quietly retried.
-                _ => {
-                    "remote-server install refused: integrity check failed, \
-                     so the SCP fallback (which installs unverified) was NOT attempted"
-                }
+                _ => remote_server::setup::INSTALL_REFUSED_DIGEST_MISMATCH,
             };
             InstallFallbackRoute::Fail(format!("{headline}: {error}"))
         }
