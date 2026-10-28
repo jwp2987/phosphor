@@ -329,8 +329,10 @@ pub async fn extract_gz(data: &[u8], dest_path: &Path) -> Result<()> {
 /// Returns Ok(()) on success, or an error if extraction fails or if a filter is provided but no files match.
 ///
 /// Safety against hostile archives (RUSTSEC-2026-0367/0368/0369 class, refs #1076): this
-/// does not use `ZipArchive::extract`. Entry paths go through `enclosed_name`, so absolute
-/// paths and `..` escapes are skipped; symlink entries are skipped rather than created; and
+/// does not use `ZipArchive::extract`. Entries with an absolute name (`/x`, `\x`, UNC,
+/// `C:`) are skipped outright -- zip 9's `enclosed_name` would instead strip the root and
+/// extract them inside `dest_dir` -- and the rest go through `enclosed_name`, so `..`
+/// escapes are skipped too; symlink entries are skipped rather than created; and
 /// no permission bits from the archive are ever applied, so setuid/setgid bits cannot leak
 /// onto extracted files.
 ///
@@ -361,7 +363,12 @@ where
                 }
             }
 
-            let outpath = match file.enclosed_name() {
+            let enclosed = if is_absolute_zip_entry_name(&file_name) {
+                None
+            } else {
+                file.enclosed_name()
+            };
+            let outpath = match enclosed {
                 Some(path) => dest_dir.join(path),
                 None => {
                     log::warn!("Skipping zip entry with unsafe path: {file_name:?}");
@@ -409,6 +416,16 @@ where
     }
 
     Ok(())
+}
+
+/// Whether a zip entry name is rooted: `/x`, `\x`, `\\server\share\x`, or carries a
+/// drive (`C:\x`, `C:x`). Checked on the raw name so the result does not depend on how
+/// `enclosed_name` sanitises such names (zip 9 strips the root and keeps the rest).
+#[cfg(feature = "local_fs")]
+fn is_absolute_zip_entry_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    name.starts_with(['/', '\\'])
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
 
 /// Finds a working Node.js binary, preferring our custom installation over system node.
