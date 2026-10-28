@@ -1366,8 +1366,7 @@ fn error_means_unusable_database(message: &str) -> bool {
 /// momentarily unopenable file) and therefore only counts as damage once the
 /// file itself is checked ([`transient_error_confirms_damage`]).
 fn error_may_be_transient_io(message: &str) -> bool {
-    const MAYBE: &[&str] = &["disk i/o error", "unable to open database file"];
-    MAYBE.iter().any(|needle| message.contains(needle))
+    message.contains("disk i/o error") || is_cant_open_text(message)
 }
 
 /// The lowercased message of the innermost error of `err`.
@@ -1624,6 +1623,12 @@ fn setup_database_or_quarantine(db_path: &Path) -> Result<SqliteConnection> {
 /// This runs on the prewarm thread; a healthy launch never pays it.
 const TRANSIENT_OPEN_RETRY_BUDGET: std::time::Duration = MIGRATION_LOCK_BUDGET;
 
+/// SQLITE_CANTOPEN text, any case or wording ("Unable to open the database file").
+fn is_cant_open_text(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("unable to open") && message.contains("database file")
+}
+
 /// Whether `message` (lowercased) is a failure a short retry can fix: a
 /// `CANTOPEN` on a file that exists (Windows error 32 surfaces as "unable to
 /// open database file") or a disk I/O error. Lock/busy errors are deliberately
@@ -1636,12 +1641,12 @@ fn open_error_is_transient(db_path: &Path, message: &str) -> bool {
     // A connection the OS layer opened read-only because the file was briefly
     // held (see `probe_writable`).
     if message.contains("readonly database") {
-        return true;
+        // A file that is read-only on purpose never becomes writable.
+        return !db_file_is_read_only(db_path);
     }
     // libsqlite3-sys renders SQLITE_CANTOPEN as "Unable to open the database
     // file" (older text: "unable to open database file").
-    let cant_open = message.contains("unable to open") && message.contains("database file");
-    cant_open && db_path.symlink_metadata().is_ok()
+    is_cant_open_text(message) && db_path.symlink_metadata().is_ok()
 }
 
 /// Runs `open`, retrying with a doubling backoff (50 ms, capped at 1 s) while
@@ -1712,7 +1717,7 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
         full: ("Connecting to SQLite database at {db_url}")
     );
     run_migrations_single_writer(&mut conn, deadline)?;
-    probe_writable(&mut conn)?;
+    probe_writable(&mut conn, database_path)?;
     Ok(conn)
 }
 
@@ -1721,9 +1726,28 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
 /// layer can fall back to a read-only open that "succeeds", after which every
 /// write of the session fails (#1118). `BEGIN IMMEDIATE` takes the write lock
 /// without changing any data, so it is a cheap, harmless probe.
-fn probe_writable(conn: &mut SqliteConnection) -> Result<()> {
-    conn.batch_execute("BEGIN IMMEDIATE; COMMIT;")?;
-    Ok(())
+fn probe_writable(conn: &mut SqliteConnection, db_path: &Path) -> Result<()> {
+    match conn.batch_execute("BEGIN IMMEDIATE; COMMIT;") {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let message = diesel_database_error_message(&err);
+            // Only SQLITE_READONLY on a file that should be writable fails the
+            // probe. A lock or busy error means another connection holds the
+            // write lock, so this one is evidently not read-only. A file that
+            // is read-only on purpose keeps the old behaviour: the session
+            // starts, restores state, and only its writes fail.
+            if message.contains("readonly database") && !db_file_is_read_only(db_path) {
+                Err(err.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Whether the database file itself (not just the connection) is read-only.
+fn db_file_is_read_only(db_path: &Path) -> bool {
+    std::fs::metadata(db_path).is_ok_and(|m| m.permissions().readonly())
 }
 
 /// The total time one database setup may spend waiting for a lock another process or thread

@@ -3355,11 +3355,51 @@ fn read_only_connection_fails_the_writable_probe() {
     drop(setup_database(&path).expect("database should initialize"));
     use diesel::Connection as _;
     let mut rw = diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
-    super::probe_writable(&mut rw).expect("read-write connection is writable");
+    super::probe_writable(&mut rw, &path).expect("read-write connection is writable");
     let mut ro = super::establish_connection(path.to_str().unwrap(), true).expect("open ro");
-    let err = super::probe_writable(&mut ro).expect_err("read-only must fail");
+    let err = super::probe_writable(&mut ro, &path).expect_err("read-only must fail");
     assert!(super::open_error_is_transient(
         &path,
         &err.root_cause().to_string().to_lowercase()
     ));
+}
+
+/// A lock held by another connection does not make the probe fail.
+#[test]
+fn writable_probe_tolerates_a_held_write_lock() {
+    use diesel::Connection as _;
+    use diesel::connection::SimpleConnection as _;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&path).expect("database should initialize"));
+    let mut holder =
+        diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
+    holder.batch_execute("BEGIN IMMEDIATE;").expect("hold lock");
+    let mut conn =
+        diesel::sqlite::SqliteConnection::establish(path.to_str().unwrap()).expect("open");
+    conn.batch_execute("PRAGMA busy_timeout = 50;")
+        .expect("timeout");
+    super::probe_writable(&mut conn, &path).expect("a held lock is not read-only");
+}
+
+/// A file that is read-only on purpose keeps the old behaviour: no failure,
+/// no retry.
+#[test]
+fn deliberately_read_only_file_is_not_failed_or_retried() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let path = tempdir.path().join("warp.sqlite");
+    drop(setup_database(&path).expect("database should initialize"));
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+    let mut ro = super::establish_connection(path.to_str().unwrap(), true).expect("open ro");
+    super::probe_writable(&mut ro, &path).expect("read-only file keeps old behaviour");
+    assert!(!super::open_error_is_transient(
+        &path,
+        "attempt to write a readonly database"
+    ));
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
 }
