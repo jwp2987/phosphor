@@ -17771,16 +17771,30 @@ fn ctrl_d_is_written_during_local_bootstrapping_without_an_ssh_connect() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            // A local program (an rc file's `read`) is blocked on stdin: a running block, the
+            // editor hidden, so Ctrl-D is the EOF that ends it. No ssh command was submitted.
+            view.model
+                .lock()
+                .simulate_long_running_block("python3 -c 'input()'", "");
             assert!(view.ssh_connect_gate.is_none());
             assert!(!view.ssh_connect_holds_eot());
             view.ctrl_d(ctx);
+        });
+        assert!(
+            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
+            "ctrl_d must write the EOT: {:?}",
+            pty_writes.borrow()
+        );
+        pty_writes.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
             view.keydown_on_terminal("\u{4}", ctx);
         });
         assert!(
             pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
-            "{:?}",
+            "keydown must write the EOT: {:?}",
             pty_writes.borrow()
         );
     })
