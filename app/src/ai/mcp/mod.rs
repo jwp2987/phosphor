@@ -182,6 +182,8 @@ pub mod http_client;
 pub mod reconnecting_peer;
 #[cfg(not(target_family = "wasm"))]
 pub mod sse_transport;
+#[cfg(not(target_family = "wasm"))]
+pub mod tool_call;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(target_family = "wasm", expect(dead_code))]
@@ -508,6 +510,55 @@ impl MCPServer {
             }
         }
         serde_json::from_value::<HashMap<String, JSONMCPServer>>(config)
+    }
+
+    /// Reads the per-server `tool_timeout_secs` override (#1064) from the same JSON shapes
+    /// [`Self::from_user_json`] accepts. `Ok(None)` when no server sets it (or sets it to
+    /// `null`); `Err` when a value is not a whole number of seconds greater than zero.
+    ///
+    /// The key is read from the raw JSON rather than [`JSONMCPServer`], so it survives
+    /// verbatim in a templatable server's stored template and the transport parsing is
+    /// unchanged. A templatable server's JSON holds a single server.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn tool_timeout_secs_from_user_json(
+        json: &str,
+    ) -> Result<Option<std::num::NonZeroU64>, String> {
+        use self::tool_call::TOOL_TIMEOUT_SECS_KEY;
+
+        let json = json.trim();
+        let json = if json.starts_with('{') {
+            json.to_owned()
+        } else {
+            format!("{{{json}}}")
+        };
+        let config: serde_json::Value =
+            serde_json::from_str(&json).map_err(|err| err.to_string())?;
+        // Same wrapper keys, in the same order, as `find_server_map`.
+        let servers = ["/mcp/servers", "/servers", "/mcpServers"]
+            .into_iter()
+            .filter_map(|pointer| config.pointer(pointer))
+            .find(|value| {
+                serde_json::from_value::<HashMap<String, JSONMCPServer>>((*value).clone()).is_ok()
+            })
+            .unwrap_or(&config);
+        let mut tool_timeout_secs = None;
+        for (name, server) in servers.as_object().into_iter().flatten() {
+            let Some(value) = server.get(TOOL_TIMEOUT_SECS_KEY) else {
+                continue;
+            };
+            if value.is_null() {
+                continue;
+            }
+            let secs = serde_json::from_value::<std::num::NonZeroU64>(value.clone()).map_err(
+                |_| {
+                    format!(
+                        "`{TOOL_TIMEOUT_SECS_KEY}` for MCP server '{name}' must be a whole number of seconds greater than 0, got {value}"
+                    )
+                },
+            )?;
+            tool_timeout_secs = Some(secs);
+        }
+        Ok(tool_timeout_secs)
     }
     pub fn from_user_json(json: &str) -> serde_json::Result<Vec<MCPServer>> {
         // Some docs don't show curly braces around the json object, so add them if necessary.

@@ -119,6 +119,7 @@ name → server map.
 | `url` | string | Endpoint for an HTTP/SSE server. Mutually exclusive with `command`. Also accepted under the alias `serverUrl`. |
 | `headers` | object of string → string | Static request headers for a `url` server. Default `{}`. |
 | `description` | string | Optional human description shown in the UI. |
+| `tool_timeout_secs` | positive integer | How long one tool call may go without a result or a progress notification from the server before it fails as timed out. Each progress notification for the call restarts the clock. Default `300` (5 minutes); values above `86400` (one day) are clamped to it. `0`, negatives, fractions and strings are rejected and the server does not start. |
 
 **Secrets.** Any `${VAR}` in the file is substituted from your environment when
 the server starts. If the variable is unset, the server is not started and the

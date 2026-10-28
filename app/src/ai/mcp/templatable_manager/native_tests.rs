@@ -350,6 +350,7 @@ mod app_exit {
             description: None,
             is_authenticated_transport: false,
             child,
+            tool_call_timeout: crate::ai::mcp::tool_call::DEFAULT_TOOL_CALL_TIMEOUT,
         };
         (info, crash)
     }

@@ -127,6 +127,10 @@ pub struct TemplatableMCPServerInfo {
     /// transport; always empty for HTTP/SSE servers.
     #[cfg(not(target_family = "wasm"))]
     child: Arc<crate::ai::mcp::app_exit::ChildProcessSlot>,
+    /// How long a tool call may go without a result or progress: the server's
+    /// `tool_timeout_secs`, or the default (#1064).
+    #[cfg(not(target_family = "wasm"))]
+    tool_call_timeout: std::time::Duration,
 }
 
 impl TemplatableMCPServerInfo {
@@ -265,8 +269,12 @@ impl TemplatableMCPServerManager {
                     .iter()
                     .any(|other_resource| resource.uri == other_resource.uri)
             })
-            .map(|(installation_uuid, _)| {
-                super::reconnecting_peer::ReconnectingPeer::new(*installation_uuid, spawner.clone())
+            .map(|(installation_uuid, server)| {
+                super::reconnecting_peer::ReconnectingPeer::new(
+                    *installation_uuid,
+                    spawner.clone(),
+                    server.tool_call_timeout,
+                )
             })
     }
 

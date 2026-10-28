@@ -1,21 +1,25 @@
 //! A peer wrapper that transparently handles reconnection when the underlying transport is closed.
 
 use std::future::Future;
+use std::time::Duration;
 
 use uuid::Uuid;
 use warpui::ModelSpawner;
 
 use super::TemplatableMCPServerManager;
+use super::tool_call::call_tool_with_deadline;
 
 /// A wrapper around an MCP server connection that transparently handles reconnection.
 ///
-/// When making requests (e.g., `call_tool` or `read_resource`), this type checks if the
-/// underlying transport is closed and automatically triggers reconnection before retrying
-/// the request.
+/// Reconnects before dispatching requests. Only resource reads are retried after a
+/// transport failure; a tool may have executed even when its response was lost, so tool
+/// calls are dispatched once, under a deadline (#1064).
 #[derive(Clone)]
 pub struct ReconnectingPeer {
     installation_uuid: Uuid,
     spawner: ModelSpawner<TemplatableMCPServerManager>,
+    /// The server's tool-call idle timeout (its `tool_timeout_secs`, or the default).
+    tool_call_timeout: Duration,
 }
 
 /// Error type for reconnecting peer operations.
@@ -44,10 +48,12 @@ impl ReconnectingPeer {
     pub fn new(
         installation_uuid: Uuid,
         spawner: ModelSpawner<TemplatableMCPServerManager>,
+        tool_call_timeout: Duration,
     ) -> Self {
         Self {
             installation_uuid,
             spawner,
+            tool_call_timeout,
         }
     }
 
@@ -118,12 +124,23 @@ impl ReconnectingPeer {
     }
 
     /// Calls a tool on the MCP server.
+    ///
+    /// Fails once the call goes the server's tool-call timeout without a result or a
+    /// progress notification (connecting included), and is never replayed after a
+    /// `TransportClosed` error.
     pub async fn call_tool(
         &self,
         params: rmcp::model::CallToolRequestParams,
+        operation_id: Uuid,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ServiceError> {
-        self.with_reconnect_retry(params, |peer, p| async move { peer.call_tool(p).await })
-            .await
+        call_tool_with_deadline(
+            operation_id,
+            self.installation_uuid,
+            params,
+            self.tool_call_timeout,
+            async { self.get_connected_peer().await.map_err(Into::into) },
+        )
+        .await
     }
 
     /// Reads a resource from the MCP server.
