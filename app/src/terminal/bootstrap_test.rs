@@ -219,6 +219,39 @@ fn test_init_subshell_script_for_shell_powershell_loads_asset_and_uses_pwsh_synt
     });
 }
 
+/// #1116: a subshell started by the user (`powershell` typed in a tab) has no process execution
+/// policy the app set, so under a stock Windows install (Restricted) the `. <tmp>.ps1` line that
+/// sources the bootstrap is refused and the bootstrap never finishes. The subshell script must
+/// lift the policy for the process exactly as `pwsh_init_shell.ps1` does, and `pwsh.ps1` restores
+/// it from the variable this saves.
+#[test]
+fn test_init_subshell_script_for_shell_powershell_lifts_restricted_execution_policy() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            let script = init_subshell_script_for_shell(
+                ShellType::PowerShell,
+                &crate::ASSETS,
+                &[],
+                SessionId::from(123456789u64),
+                ctx,
+            );
+            let lift = script
+                .find("Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned")
+                .expect("the subshell script must lift a Restricted policy for the process");
+            assert!(
+                script.contains("$global:_warp_PSProcessExecPolicy = "),
+                "the previous process policy must be saved for pwsh.ps1 to restore"
+            );
+            assert!(
+                lift < script.find("InitShell").expect("InitShell hook"),
+                "the policy must be lifted before the app sources the bootstrap file"
+            );
+        });
+    });
+}
+
 /// The generic `[ -z $WARP_BOOTSTRAPPED ] && eval '...'` guard `init_subshell_command` wraps
 /// every other shell's subshell script in is not valid PowerShell syntax (#800) -- PowerShell
 /// needs its own guard and must not be passed through `eval`.
