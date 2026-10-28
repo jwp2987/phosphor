@@ -49,6 +49,65 @@ pub trait MessageRef {
 
     /// All tool outputs within this message (used for prune); only assistant messages have these.
     fn tool_outputs(&self) -> Vec<ToolOutputRef<Self::CallId>>;
+
+    /// The tool calls this message opens. Used by `split_turn` so a cut never separates a
+    /// call from its result (#1061). Default: none.
+    fn tool_call_ids(&self) -> Vec<Self::CallId> {
+        Vec::new()
+    }
+
+    /// The tool calls this message answers. Default: the call ids of [`Self::tool_outputs`].
+    fn tool_result_call_ids(&self) -> Vec<Self::CallId> {
+        self.tool_outputs()
+            .into_iter()
+            .map(|output| output.call_id)
+            .collect()
+    }
+}
+
+/// For every index `i` of `messages`, whether a cut at `i` (head `..i`, tail `i..`) keeps each
+/// tool call together with all of its results: no call before `i` has a result at or after
+/// `i` (#1061).
+///
+/// In this fork a `ToolCall` and its `ToolCallResult` are separate messages, unlike opencode,
+/// where they are parts of one assistant message and a message-level cut cannot split them.
+/// A cut between them leaves the summarize request a call without its result, and after the
+/// commit hides the head, every later request an orphan result. A call with no result
+/// anywhere constrains nothing (there is no result to orphan).
+pub fn tool_pair_safe_cuts<M: MessageRef>(messages: &[M]) -> Vec<bool> {
+    use std::collections::HashMap;
+
+    let n = messages.len();
+    let mut first_call: HashMap<M::CallId, usize> = HashMap::new();
+    for (i, msg) in messages.iter().enumerate() {
+        for id in msg.tool_call_ids() {
+            first_call.entry(id).or_insert(i);
+        }
+    }
+    let mut last_result: HashMap<M::CallId, usize> = HashMap::new();
+    for (i, msg) in messages.iter().enumerate() {
+        for id in msg.tool_result_call_ids() {
+            last_result.insert(id, i);
+        }
+    }
+    // A pair (call at c, last result at r > c) makes every cut in c+1..=r unsafe. Difference
+    // array over cut positions 0..=n.
+    let mut delta = vec![0i64; n + 2];
+    for (id, call) in &first_call {
+        if let Some(&result) = last_result.get(id) {
+            if result > *call {
+                delta[call + 1] += 1;
+                delta[result + 1] -= 1;
+            }
+        }
+    }
+    let mut open = 0i64;
+    (0..n)
+        .map(|i| {
+            open += delta[i];
+            open == 0
+        })
+        .collect()
 }
 
 /// Corresponds to the `compaction.ts:76-80` type.
@@ -116,8 +175,15 @@ where
     if turn.end.saturating_sub(turn.start) <= 1 {
         return None;
     }
+    // Divergence from opencode (#1061): skip cut points that would separate a tool call from
+    // its result; see [`tool_pair_safe_cuts`].
+    let safe_cuts = tool_pair_safe_cuts(messages);
     let mut start = turn.start + 1;
     while start < turn.end {
+        if !safe_cuts[start] {
+            start += 1;
+            continue;
+        }
         let size = estimate(&messages[start..turn.end]);
         if size > budget {
             start += 1;

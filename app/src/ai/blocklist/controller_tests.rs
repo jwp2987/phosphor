@@ -753,3 +753,372 @@ fn suspended_controller_sends_no_request_until_lifted() {
         });
     });
 }
+
+// -- #1059: tool-loop auto-compaction -------------------------------------------------------
+//
+// These drive the controller from the point the agent loop sends a step's tool results
+// (`send_follow_up_for_conversation`, what the `FinishedAction` subscriber calls) with the
+// conversation's compaction state set as `handle_response_stream_finished` leaves it after a
+// tool-call step over the threshold. The state transitions themselves are covered in
+// `byop_compaction/tests.rs`; here it is what goes on the wire. No BYOP provider is configured
+// in this harness, so the BYOP preflight is skipped and the request keeps its
+// `ActionResult` inputs exactly as built (in production the preflight records them in
+// history before the request is built and strips them from the input).
+
+/// Sets up a controller with a fresh conversation, as `suspended_controller_sends_no_request_
+/// until_lifted` does (the request path needs the global resource handles).
+fn tool_loop_controller(
+    app: &mut App,
+) -> (
+    warpui::ModelHandle<super::BlocklistAIController>,
+    crate::ai::agent::conversation::AIConversationId,
+    TaskId,
+) {
+    initialize_app_for_terminal_view(app);
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(&*app, |view, _| view.id());
+    let controller = terminal.read(&*app, |view, _| view.ai_controller().clone());
+    let (conversation_id, root_task_id) =
+        BlocklistAIHistoryModel::handle(&*app).update(app, |history, ctx| {
+            let conversation_id =
+                history.start_new_conversation(terminal_view_id, false, false, ctx);
+            let root_task_id = history
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .get_root_task_id()
+                .clone();
+            (conversation_id, root_task_id)
+        });
+    (controller, conversation_id, root_task_id)
+}
+
+/// The state `handle_response_stream_finished` leaves after a tool-call step that ended over
+/// the threshold with the allowance unspent.
+fn defer_compaction_to_tool_results(
+    controller: &mut super::BlocklistAIController,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) {
+    let plan = controller.update_compaction_turn_state(conversation_id, |state| {
+        state.on_stream_finished(crate::ai::byop_compaction::FinishedStream::Turn {
+            requested_tool_calls: true,
+            overflowing: Some(true),
+        })
+    });
+    assert!(
+        plan.compact_after_tool_results,
+        "precondition: the step deferred its compaction"
+    );
+}
+
+fn command_result(id: &str, task_id: &TaskId) -> crate::ai::agent::AIAgentActionResult {
+    crate::ai::agent::AIAgentActionResult {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: task_id.clone(),
+        result: crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(
+            crate::ai::agent::RequestCommandOutputResult::Denylisted {
+                command: format!("echo {id}"),
+            },
+        ),
+    }
+}
+
+/// `summarization_overflow()` of every in-flight stream: `Some(true)` is an automatic summary,
+/// `None` an ordinary request.
+fn in_flight_summarization_flags(
+    controller: &super::BlocklistAIController,
+    app: &warpui::AppContext,
+) -> Vec<Option<bool>> {
+    controller
+        .in_flight_response_streams
+        .streams_for_test()
+        .map(|stream| stream.as_ref(app).summarization_overflow())
+        .collect()
+}
+
+/// The inputs of the exchange that a request carrying `SummarizeConversation` created, if any.
+fn summary_exchange_inputs(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    app: &warpui::AppContext,
+) -> Option<Vec<AIAgentInput>> {
+    BlocklistAIHistoryModel::as_ref(app)
+        .conversation(&conversation_id)?
+        .all_exchanges()
+        .into_iter()
+        .find(|exchange| {
+            exchange
+                .input
+                .iter()
+                .any(|input| matches!(input, AIAgentInput::SummarizeConversation { .. }))
+        })
+        .map(|exchange| exchange.input.clone())
+}
+
+fn action_result_ids(inputs: &[AIAgentInput]) -> Vec<String> {
+    let mut ids: Vec<String> = inputs
+        .iter()
+        .filter_map(|input| match input {
+            AIAgentInput::ActionResult { result, .. } => Some(result.id.to_string()),
+            _ => None,
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// #1059: the step's results (here two parallel calls) go out in ONE request together with
+/// the automatic summary, instead of as a plain follow-up that keeps growing. Every result is
+/// carried as the real `ActionResult` (none dropped, none replaced by a cancellation), and the
+/// exchange is marked as an automatic summary (`overflow: true`), which is what the #1060
+/// marker and the continue-after-commit logic key on.
+#[test]
+fn deferred_compaction_sends_the_tool_results_with_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-b", &root_task_id),
+                );
+            });
+
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+
+            assert_eq!(
+                in_flight_summarization_flags(controller, ctx),
+                vec![Some(true)],
+                "exactly one request, and it is the automatic summary"
+            );
+            let inputs = summary_exchange_inputs(conversation_id, ctx)
+                .expect("the summary request appended an exchange");
+            assert!(inputs.iter().any(|input| matches!(
+                input,
+                AIAgentInput::SummarizeConversation {
+                    prompt: None,
+                    overflow: true
+                }
+            )));
+            assert_eq!(
+                action_result_ids(&inputs),
+                vec!["call-a".to_owned(), "call-b".to_owned()],
+                "both parallel results travel with the summary"
+            );
+            let state = controller
+                .compaction_turn_state
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or_default();
+            assert!(state.auto_compacted(), "the turn's allowance is spent");
+            assert!(
+                !state.compaction_deferred_to_tool_results(),
+                "the deferral is consumed"
+            );
+        });
+    });
+}
+
+/// Without a deferral the results go out as the ordinary follow-up (positive control for the
+/// test above: the summary comes from the deferral, not from the setup).
+#[test]
+fn tool_results_without_a_deferral_go_as_a_plain_follow_up() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert_eq!(in_flight_summarization_flags(controller, ctx), vec![None]);
+            assert!(summary_exchange_inputs(conversation_id, ctx).is_none());
+        });
+    });
+}
+
+/// Stop / Ctrl-C while the step's tools run drops the deferral: the results that come in
+/// afterwards are not turned into a summary behind the user's back.
+#[test]
+fn stop_drops_a_deferred_tool_loop_compaction() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "nothing left to remember: no deferral, allowance unspent"
+            );
+
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("call-a", &root_task_id),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert_eq!(in_flight_summarization_flags(controller, ctx), vec![None]);
+        });
+    });
+}
+
+/// Results of a subagent task (not the conversation's root task) never carry the summary:
+/// the summary input belongs to the root task, and a request spanning two tasks would append
+/// one exchange per task. They go as a plain follow-up and the deferral is dropped.
+#[test]
+fn subagent_task_results_never_carry_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, _root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("subagent-call", &TaskId::new("subagent-task".to_owned())),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert!(
+                in_flight_summarization_flags(controller, ctx)
+                    .iter()
+                    .all(Option::is_none),
+                "no summary request for a subagent's results"
+            );
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "deferral dropped, allowance unspent"
+            );
+        });
+    });
+}
+
+/// The user rejects the step's only tool call: no follow-up is sent, and the deferral is
+/// dropped with it (otherwise it would summarize the next, unrelated follow-up).
+#[test]
+fn rejecting_the_only_tool_call_drops_the_deferred_compaction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.id());
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+        let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+        let action_model = controller.read(&app, |controller, _| controller.action_model.clone());
+
+        let action_id = AIAgentActionId::from("reject-me".to_owned());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: shell_command(),
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked()),
+                "precondition: the command is blocked on confirmation"
+            );
+        });
+
+        controller.update(&mut app, |controller, _| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+        });
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let dropped = controller.read(&app, |controller, _| {
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id)
+            });
+            if dropped {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+
+        controller.read(&app, |controller, ctx| {
+            assert!(
+                !controller
+                    .compaction_turn_state
+                    .contains_key(&conversation_id),
+                "the reject sent no follow-up, so the deferral must be gone"
+            );
+            assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+        });
+    });
+}

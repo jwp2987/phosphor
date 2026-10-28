@@ -574,10 +574,14 @@ pub struct BlocklistAIController {
     pending_auto_resume_handles: HashMap<AIConversationId, SpawnedFutureHandle>,
     /// Passive conversations explicitly requested to follow up after actions complete.
     pending_passive_follow_ups: HashSet<AIConversationId>,
-    /// Conversations that already had a BYOP auto-compaction in the current turn (reset when
-    /// the user sends a new query). Caps auto-compaction at one per turn so a summary that
-    /// is still over the limit can't loop compact -> continue -> compact.
-    auto_compacted_this_turn: HashSet<AIConversationId>,
+    /// Per-conversation BYOP auto-compaction bookkeeping: the one-per-turn allowance (reset
+    /// when the user sends a new query, or once a turn after a compaction comes in under the
+    /// threshold), which keeps a summary that is still over the limit from looping
+    /// compact -> continue -> compact; and the tool-loop deferral (#1059): a tool-call step
+    /// that ended over the threshold sends its results with an automatic summary. Only
+    /// touched through [`Self::update_compaction_turn_state`]; idle entries are removed.
+    compaction_turn_state:
+        HashMap<AIConversationId, crate::ai::byop_compaction::TurnCompactionState>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -719,6 +723,9 @@ impl BlocklistAIController {
                 me.action_model.update(ctx, |action_model, _| {
                     action_model.clear_finished_action_results(*conversation_id);
                 });
+                me.update_compaction_turn_state(*conversation_id, |state| {
+                    state.on_tool_results_abandoned()
+                });
                 let history_model = BlocklistAIHistoryModel::handle(ctx);
                 let is_in_progress = history_model
                     .as_ref(ctx)
@@ -792,6 +799,12 @@ impl BlocklistAIController {
                     .any(|result| result.result.should_trigger_request_upon_completion()))
                 || has_manual_follow_up;
             if !should_trigger_follow_up_request {
+                // No follow-up carries this step's results, so a tool-loop compaction
+                // deferred to them (#1059) has nothing to ride on; drop it rather than let it
+                // fire on some unrelated later follow-up.
+                me.update_compaction_turn_state(*conversation_id, |state| {
+                    state.on_tool_results_abandoned()
+                });
                 // We also check if there's an in-flight req, because it's possible that this
                 // subscription callback was queued in response to auto-cancelling pending actions
                 // in the process of constructing a request. In such cases, we don't want to update
@@ -940,7 +953,7 @@ impl BlocklistAIController {
             attachments_download_dir: None,
             pending_auto_resume_handles: HashMap::new(),
             pending_passive_follow_ups: HashSet::new(),
-            auto_compacted_this_turn: HashSet::new(),
+            compaction_turn_state: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
@@ -954,6 +967,25 @@ impl BlocklistAIController {
 
     pub fn is_suspended_for_close(&self) -> bool {
         self.suspended_for_close
+    }
+
+    /// Applies `f` to `conversation_id`'s auto-compaction bookkeeping, dropping the entry
+    /// once it holds nothing.
+    fn update_compaction_turn_state<R>(
+        &mut self,
+        conversation_id: AIConversationId,
+        f: impl FnOnce(&mut crate::ai::byop_compaction::TurnCompactionState) -> R,
+    ) -> R {
+        let state = self
+            .compaction_turn_state
+            .entry(conversation_id)
+            .or_default();
+        let result = f(state);
+        let idle = state.is_idle();
+        if idle {
+            self.compaction_turn_state.remove(&conversation_id);
+        }
+        result
     }
 
     /// Drops everything this controller holds that would otherwise go out with a later request
@@ -973,6 +1005,9 @@ impl BlocklistAIController {
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
         }
+        self.update_compaction_turn_state(conversation_id, |state| {
+            state.on_tool_results_abandoned()
+        });
         self.action_model.update(ctx, |action_model, _| {
             action_model.clear_finished_action_results(conversation_id);
         });
@@ -1014,9 +1049,10 @@ impl BlocklistAIController {
         };
 
         // A query that isn't the agent's own synthetic "continue" starts a new turn, so
-        // it gets a fresh one-auto-compaction allowance.
+        // it gets a fresh one-auto-compaction allowance (and drops a tool-loop deferral:
+        // the step it belonged to is superseded by this query).
         if !matches!(entrypoint_type, EntrypointType::AgentInitiated) {
-            self.auto_compacted_this_turn.remove(&conversation_id);
+            self.update_compaction_turn_state(conversation_id, |state| state.on_new_user_turn());
         }
 
         // Drain any queued passive suggestion results for this conversation
@@ -1919,6 +1955,25 @@ impl BlocklistAIController {
             return;
         }
 
+        // #1059: a tool-call step that ended over the threshold deferred its auto-compaction
+        // to this point. The results then travel with an automatic summary instead of as a
+        // plain follow-up: the BYOP preflight records them in history (the same commit a
+        // plain follow-up gets, `commit_byop_current_action_results`) before the summary
+        // request is built, so the summarizer sees every call with its real result and
+        // nothing is cancelled or synthesized; the committed summary then resumes the task
+        // with the continue message (`handle_response_stream_finished`).
+        let root_task_id = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .map(|conversation| conversation.get_root_task_id().clone());
+        let results_all_in_root_task = root_task_id.as_ref().is_some_and(|root_task_id| {
+            finished_results
+                .iter()
+                .all(|result| &result.task_id == root_task_id)
+        });
+        let results_request = self.update_compaction_turn_state(conversation_id, |state| {
+            state.on_tool_results_ready(results_all_in_root_task)
+        });
+
         let context = action_result_context(
             &finished_results,
             self.context_model.as_ref(ctx),
@@ -1926,7 +1981,7 @@ impl BlocklistAIController {
             Some(conversation_id),
             ctx,
         );
-        let request_input = RequestInput::for_actions_results(
+        let mut request_input = RequestInput::for_actions_results(
             finished_results,
             context,
             &self.active_session,
@@ -1935,6 +1990,22 @@ impl BlocklistAIController {
             self.terminal_view_id,
             ctx,
         );
+        if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults {
+            if let Some(root_task_id) = root_task_id {
+                log::info!(
+                    "[byop-compaction] tool loop over the threshold: sending this step's tool \
+                     results with the automatic summary (#1059)"
+                );
+                request_input
+                    .input_messages
+                    .entry(root_task_id)
+                    .or_default()
+                    .push(AIAgentInput::SummarizeConversation {
+                        prompt: None,
+                        overflow: true,
+                    });
+            }
+        }
 
         let _ = self.send_request_input(
             request_input,
@@ -1963,6 +2034,12 @@ impl BlocklistAIController {
         let Some(pending) = self.pending_byop_requests.remove(&conversation_id) else {
             return false;
         };
+        // The step's results go out with the stashed request, not as their own follow-up, so
+        // a tool-loop compaction deferred to them (#1059) is dropped; the stashed request's
+        // own turn end re-checks the usage.
+        self.update_compaction_turn_state(conversation_id, |state| {
+            state.on_tool_results_abandoned()
+        });
         let PendingByopRequest {
             mut request_input,
             query_metadata,
@@ -3778,6 +3855,13 @@ impl BlocklistAIController {
         self.pending_passive_suggestion_results
             .remove(&conversation_id);
 
+        // Stop / Ctrl-C / a superseding submission: the current step's results will not go
+        // out as the loop's follow-up, so a tool-loop compaction deferred to them (#1059) is
+        // dropped. Results already recorded stay in history; nothing is lost.
+        self.update_compaction_turn_state(conversation_id, |state| {
+            state.on_tool_results_abandoned()
+        });
+
         if !self
             .in_flight_response_streams
             .try_cancel_streams_for_conversation(conversation_id, reason, ctx)
@@ -4511,9 +4595,10 @@ impl BlocklistAIController {
                 //
                 // Never acted on while the turn that just ended asked for tool calls: they
                 // are queued only after this handler returns, and summarizing now cancels
-                // the loop (calls never run, task halts after the summary). The next
-                // tool-free turn end re-checks the usage. The policy itself is
-                // `byop_compaction::plan_after_stream_finished` (#959).
+                // the loop (calls never run, task halts after the summary). Instead the
+                // compaction is deferred to that step's tool results, which then go out with
+                // the automatic summary (`send_follow_up_for_conversation`, #1059). The
+                // policy itself is `byop_compaction::plan_after_stream_finished` (#959).
                 let finished_stream = match summarize_overflow {
                     Some(overflow) => crate::ai::byop_compaction::FinishedStream::Summary {
                         auto: overflow,
@@ -4558,26 +4643,23 @@ impl BlocklistAIController {
                         } else {
                             None
                         };
-                        if requested_tool_calls && overflowing == Some(true) {
-                            log::debug!(
-                                "[byop-compaction] auto overflow check deferred: the finished turn requested tool calls"
-                            );
-                        }
                         crate::ai::byop_compaction::FinishedStream::Turn {
                             requested_tool_calls,
                             overflowing,
                         }
                     }
                 };
-                let plan = crate::ai::byop_compaction::plan_after_stream_finished(
-                    finished_stream,
-                    self.auto_compacted_this_turn.contains(&conversation_id),
-                );
-                if plan.restore_turn_allowance {
-                    // The compaction brought the context back under the threshold; a later
-                    // overflow in this long task is new growth, so it may compact again
-                    // instead of failing the turn with GiveUp.
-                    self.auto_compacted_this_turn.remove(&conversation_id);
+                // Records the plan's consequences too: a restored allowance (the compaction
+                // brought the context back under the threshold, so a later overflow in this
+                // long task is new growth and may compact again instead of GiveUp), a spent
+                // one on Compact, and the tool-loop deferral (#1059).
+                let plan = self.update_compaction_turn_state(conversation_id, |state| {
+                    state.on_stream_finished(finished_stream)
+                });
+                if plan.compact_after_tool_results {
+                    log::info!(
+                        "[byop-compaction] auto overflow on a tool-call turn: compacting once its tool results are ready"
+                    );
                 }
                 if plan.decision != crate::ai::byop_compaction::AutoCompactionDecision::None {
                     log::info!(
@@ -4622,7 +4704,7 @@ impl BlocklistAIController {
                 if auto_compaction_decision
                     == crate::ai::byop_compaction::AutoCompactionDecision::Compact
                 {
-                    self.auto_compacted_this_turn.insert(conversation_id);
+                    // The allowance was spent by `on_stream_finished` above.
                     // Triggered via SlashCommandRequest::Summarize (same
                     // chain as /compact-and); overflow=true → chat_stream
                     // includes the overflow marker when it builds the

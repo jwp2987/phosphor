@@ -187,6 +187,24 @@ impl<'a> MessageRef for WarpMessageView<'a> {
             already_compacted,
         }]
     }
+
+    fn tool_call_ids(&self) -> Vec<String> {
+        match &self.msg.message {
+            Some(api::message::Message::ToolCall(tool_call)) => {
+                vec![tool_call.tool_call_id.clone()]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Cheaper than the default (no output-size estimate per call; `split_turn` asks for
+    /// every message).
+    fn tool_result_call_ids(&self) -> Vec<String> {
+        match &self.msg.message {
+            Some(api::message::Message::ToolCallResult(tcr)) => vec![tcr.tool_call_id.clone()],
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Projects a set of messages into a `Vec<WarpMessageView>`, sorted by timestamp
