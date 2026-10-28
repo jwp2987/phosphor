@@ -2208,16 +2208,18 @@ fn build_chat_request(
     });
     let _ = summarization_overflow; // Used by the follow-up wording branch inside the input loop; silencing dead-code for now
 
+    // The messages actually in this request: a compaction whose insertion point is not among
+    // them is neither shown nor allowed to hide its head (`CompactionState::is_shown`).
+    let present_msg_ids: std::collections::HashSet<&str> =
+        all_msgs.iter().map(|msg| msg.id.as_str()).collect();
     let summary_inserts: std::collections::HashMap<String, String> =
         if let Some(state) = params.compaction_state.as_ref() {
             // message id → summary_text: the synthetic summary pair is emitted right before
             // that message (the anchor, itself hidden; or a legacy compaction's tail start).
             // Only the latest summary of a chain (#1059 refute round 7); see
             // `CompactionState::summary_insertions`.
-            let present: std::collections::HashSet<&str> =
-                all_msgs.iter().map(|msg| msg.id.as_str()).collect();
             state
-                .summary_insertions(|id| present.contains(id))
+                .summary_insertions(|id| present_msg_ids.contains(id))
                 .into_iter()
                 .collect()
         } else {
@@ -2226,7 +2228,7 @@ fn build_chat_request(
     let hidden_msg_ids: std::collections::HashSet<String> = params
         .compaction_state
         .as_ref()
-        .map(|s| s.hidden_message_ids())
+        .map(|s| s.hidden_message_ids_where(|id| present_msg_ids.contains(id)))
         .unwrap_or_default();
     let compacted_tool_msg_ids: std::collections::HashSet<String> = params
         .compaction_state
@@ -4550,19 +4552,19 @@ fn content_tool_extraction_applies(
 
 /// The content→tool-call extraction for one reply text.
 ///
-/// On a summarize turn a reply that has the shape of a summary — at least two of the summary
-/// template's section headings ([`byop_compaction::prompt::looks_like_summary`]) — is never a
-/// tool call: real summaries of coding conversations routinely quote tool-call JSON, and
-/// treating that as a call would refuse the commit every time, so the loop would never
-/// compact. Any other summarize reply with an extracted call is a tool call (dropped and
-/// noted by `tool_calls_to_dispatch`): narration before a call is not a summary, however
-/// long it is. Other turns are unchanged.
+/// On a summarize turn, a reply with tool-shaped JSON is a tool call (dropped and noted by
+/// `tool_calls_to_dispatch`) unless it is a COMPLETE summary
+/// ([`byop_compaction::prompt::is_complete_summary`]: it reaches the template's last section).
+/// Real summaries of coding conversations routinely quote tool-call JSON, and treating a
+/// complete one as a call would refuse the commit every time, so the loop would never
+/// compact; anything short of complete — narration, a half-written summary followed by a
+/// call — is not committed. Other turns are unchanged.
 fn text_tool_calls_for_turn(
     text: &str,
     available_tool_names: &[String],
     is_summarize_turn: bool,
 ) -> Vec<ToolCall> {
-    if is_summarize_turn && byop_compaction::prompt::looks_like_summary(text) {
+    if is_summarize_turn && byop_compaction::prompt::is_complete_summary(text) {
         return Vec::new();
     }
     super::content_tool_calls::extract_tool_calls_from_assistant_text(text, available_tool_names)
@@ -4644,8 +4646,10 @@ fn accepts_tool_choice_none(
 /// stream's text (if any) is all the commit sees.
 ///
 /// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
-/// stream's text, if any, preceded a tool call and is not a summary. Nothing is committed and
-/// the task resumes uncompacted; retrying the summary is #1079.
+/// commit then accepts the stream's text only if it is a complete summary
+/// (`byop_compaction::prompt::is_complete_summary`); anything else — narration before the
+/// call, a half-written summary — is not committed and the task resumes uncompacted
+/// (retrying the summary is #1079).
 fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
     if !calls.is_empty() && is_summarize_request(params) {
         log::warn!(
@@ -17242,11 +17246,14 @@ mod summarize_turn_tool_gate_tests {
     const QUOTED_CALL: &str =
         r#"{"name":"run_shell_command","arguments":{"command":"cargo test"}}"#;
 
+    /// A complete summary (every template section) quoting a tool call under one of them.
     fn markdown_summary_quoting_a_call() -> String {
         format!(
-            "## Goal\n- make the test suite pass\n\n## Progress\n### Done\n- fixed the parser\n\n\
-             ## Key details\n- the agent ran:\n```json\n{QUOTED_CALL}\n```\n\n\
-             ## Next Steps\n- rerun the suite"
+            "## Goal\n- make the test suite pass\n\n## Constraints & Preferences\n- (none)\n\n\
+             ## Progress\n### Done\n- fixed the parser\n### In Progress\n- (none)\n\
+             ### Blocked\n- (none)\n\n## Key Decisions\n- (none)\n\n\
+             ## Next Steps\n- rerun the suite\n\n## Critical Context\n- the agent ran:\n\
+             ```json\n{QUOTED_CALL}\n```\n\n## Relevant Files\n- src/parser.rs: the fix"
         )
     }
 
@@ -17353,19 +17360,40 @@ mod summarize_turn_tool_gate_tests {
         assert_dropped_and_noted(QUOTED_CALL);
     }
 
-    /// Refute round 11 (d): a terse real summary (two template headings) quoting a call is the
-    /// summary.
+    /// Refute round 13: a summary that stops short of the template's last section and carries
+    /// a call — a half-written summary followed by a call to gather facts — is not committed
+    /// (it would hide the head behind a partial summary). It counts as a tool call.
     #[test]
-    fn a_terse_summary_with_two_headings_is_the_summary() {
-        assert_kept_as_summary(&format!(
+    fn a_partial_summary_with_a_call_is_a_tool_call() {
+        assert_dropped_and_noted(&format!(
             "## Goal\n- pass the tests\n## Next Steps\n- run {QUOTED_CALL}"
+        ));
+        assert_dropped_and_noted(&format!(
+            "## Goal\n- x\n## Progress\n### Done\n- reading\n{QUOTED_CALL}"
         ));
     }
 
-    /// The headings come from the template itself, and one heading is not enough.
+    /// Refute round 15: the last section alone is not enough — narration with a bold
+    /// "**Relevant Files**" label, or an echoed tail of the previous summary, followed by a
+    /// call is not a complete summary (it lacks the first section).
     #[test]
-    fn summary_shape_is_read_from_the_template_headings() {
-        let headings: Vec<&str> = byop_compaction::prompt::summary_section_headings().collect();
+    fn the_last_section_alone_is_not_a_complete_summary() {
+        assert_dropped_and_noted(&format!(
+            "Before summarizing I need one more file.\n**Relevant Files**\n- src/a.rs\n{QUOTED_CALL}"
+        ));
+        assert_dropped_and_noted(&format!(
+            "<previous-summary>\n## Relevant Files\n- src/a.rs\n</previous-summary>\n{QUOTED_CALL}"
+        ));
+        // A complete one (first and last sections) quoting a call is still the summary.
+        assert_kept_as_summary(&markdown_summary_quoting_a_call());
+    }
+
+    /// The headings come from the template itself; a summary is complete when it declares
+    /// the last one ("Relevant Files"), in any of the heading spellings real models use.
+    #[test]
+    fn a_complete_summary_reaches_the_templates_last_section() {
+        use byop_compaction::prompt::{is_complete_summary, summary_section_headings};
+        let headings: Vec<&str> = summary_section_headings().collect();
         for heading in [
             "## Goal",
             "## Progress",
@@ -17377,16 +17405,37 @@ mod summarize_turn_tool_gate_tests {
                 "{heading} missing from {headings:?}"
             );
         }
+        assert_eq!(headings.last(), Some(&"## Relevant Files"));
         assert!(!headings.iter().any(|h| h.starts_with("###")));
-        assert!(!byop_compaction::prompt::looks_like_summary(
-            "## Goal\n- only one"
-        ));
-        assert!(!byop_compaction::prompt::looks_like_summary(
-            "Here is the plan: ## Goal and ## Progress inline, not headings"
-        ));
-        assert!(byop_compaction::prompt::looks_like_summary(
-            "  ## Goal\n- a\n## Critical Context\n- b"
-        ));
+
+        for last in [
+            "## Relevant Files",
+            "# Relevant Files",
+            "#### Relevant Files",
+            "## relevant files",
+            "## Relevant Files:",
+            "## 9. Relevant Files",
+            "## 9) Relevant Files",
+            "**Relevant Files**",
+            "**Relevant Files:**",
+            "## **Relevant Files**",
+            "   ## Relevant Files   ",
+        ] {
+            assert!(
+                is_complete_summary(&format!("## Goal\n- a\n{last}\n- src/a.rs")),
+                "{last:?}"
+            );
+        }
+        for not_last in [
+            "## Goal\n- a\n## Progress\n- b",
+            "Relevant Files are listed below",
+            "## Relevant Files and more words",
+            "##### Relevant Files",
+            "##Relevant Files",
+            "the **Relevant Files** section",
+        ] {
+            assert!(!is_complete_summary(not_last), "{not_last:?}");
+        }
     }
 
     #[test]

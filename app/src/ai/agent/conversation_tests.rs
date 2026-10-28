@@ -1422,3 +1422,60 @@ fn restore_picks_among_empty_stubs_deterministically() {
         );
     }
 }
+
+/// #1059 refute round 15: a hollow restore (no task rows, e.g. a child persisted before its
+/// first server response) has no messages to check compactions against, so it must not prune
+/// them; a restore with tasks prunes the ones whose summary is gone.
+#[test]
+fn restore_prunes_stale_compactions_only_when_tasks_were_restored() {
+    use crate::ai::byop_compaction::state::{CompactionState, CompletedCompaction};
+
+    let mut state = CompactionState::default();
+    state.push_completed(CompletedCompaction {
+        user_msg_id: "u1".to_string(),
+        assistant_msg_id: "s1".to_string(),
+        head_message_ids: vec!["u1".to_string(), "a1".to_string()],
+        tail_start_id: Some("q2".to_string()),
+        summary_text: Some("summary-s1".to_string()),
+        auto: true,
+        overflow: true,
+    });
+    let data = || {
+        let mut data = empty_agent_conversation_data_for_test();
+        data.compaction_state_json = Some(serde_json::to_string(&state).unwrap());
+        data
+    };
+
+    let hollow = AIConversation::new_restored_synthesizing_on_empty(
+        AIConversationId::new(),
+        vec![],
+        Some(data()),
+    )
+    .expect("a hollow restore succeeds");
+    assert_eq!(
+        hollow.compaction_state.completed().len(),
+        1,
+        "a hollow restore keeps its compactions"
+    );
+
+    // With tasks that no longer hold the summary message `s1`, the compaction is stale.
+    let task = api::Task {
+        id: "root".to_string(),
+        messages: vec![api::Message {
+            id: "q2".to_string(),
+            task_id: "root".to_string(),
+            message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+                query: "second question".to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let restored = AIConversation::new_restored(AIConversationId::new(), vec![task], Some(data()))
+        .expect("the restore succeeds");
+    assert!(
+        restored.compaction_state.completed().is_empty(),
+        "a compaction whose summary is gone is pruned on restore"
+    );
+}

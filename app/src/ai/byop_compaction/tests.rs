@@ -1982,28 +1982,90 @@ fn a_restored_blank_summary_is_skipped_by_both_readers() {
     );
 }
 
-/// A stream that also produced a (dropped) tool call still commits text that has the
-/// summary's shape; text without it is refused.
+/// Refute round 13: when the stream also produced a (dropped) tool call, only a COMPLETE
+/// summary (it reaches the template's last section) is committed; a half-written one is
+/// refused, and the note is consumed either way.
 #[test]
-fn a_summary_shaped_reply_commits_despite_a_dropped_call() {
+fn with_a_dropped_call_only_a_complete_summary_commits() {
     use super::commit::commit_summarization_for_stream;
-    use crate::ai::agent_providers::chat_stream::note_summary_stream_dropped_tool_calls;
+    use super::prompt::SUMMARY_TEMPLATE;
+    use crate::ai::agent_providers::chat_stream::{
+        note_summary_stream_dropped_tool_calls, take_summary_stream_dropped_tool_calls,
+    };
 
-    let mut summary = agent_output("s1", "root", "r2", 3);
-    if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
-        output.text = "## Goal\n- pass the tests\n\n## Next Steps\n- rerun".to_string();
-    }
-    let mut conversation = conversation_with_messages(vec![
-        user_query("u1", "root", "r1", 1),
-        agent_output("a1", "root", "r1", 2),
-        summary,
-    ]);
-    note_summary_stream_dropped_tool_calls(conversation.id());
+    let conversation_with_summary = |text: &str| {
+        let mut summary = agent_output("s1", "root", "r2", 3);
+        if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
+            output.text = text.to_string();
+        }
+        conversation_with_messages(vec![
+            user_query("u1", "root", "r1", 1),
+            agent_output("a1", "root", "r1", 2),
+            summary,
+        ])
+    };
     let cfg = CompactionConfig::default();
+
+    // Half-written: refused.
+    let mut conversation =
+        conversation_with_summary("## Goal\n- x\n## Progress\n### Done\n- reading");
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+    assert!(!take_summary_stream_dropped_tool_calls(conversation.id()));
+
+    // The full template, filled in: committed.
+    let full = SUMMARY_TEMPLATE
+        .lines()
+        .filter(|line| line.starts_with('#'))
+        .map(|heading| format!("{heading}\n- filled in"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut conversation = conversation_with_summary(&full);
+    note_summary_stream_dropped_tool_calls(conversation.id());
     assert!(commit_summarization_for_stream(
         &mut conversation,
         true,
         &cfg,
         |id| id == "s1"
     ));
+
+    // Without any call, any non-blank text is the summary (unchanged).
+    let mut conversation = conversation_with_summary("## Goal\n- x");
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+}
+
+/// Refute round 15: `hidden_message_ids_where` skips exactly what `summary_insertions` skips:
+/// a compaction with a blank summary, and one whose insertion target is not in the request —
+/// their heads stay visible because nothing could stand in for them.
+#[test]
+fn hidden_message_ids_where_skips_unshowable_compactions() {
+    let mut state = super::state::CompactionState::default();
+    let mut blank = completed("u1", "s1", &["u1", "a1"], Some("q2"));
+    blank.summary_text = Some("   ".to_string());
+    state.push_completed(blank);
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+
+    // Everything present: only the blank one is skipped.
+    let hidden = state.hidden_message_ids_where(|_| true);
+    assert!(
+        !hidden.contains("u1") && !hidden.contains("a1"),
+        "{hidden:?}"
+    );
+    assert!(hidden.contains("q2") && hidden.contains("a2") && hidden.contains("s2"));
+
+    // The second one's insertion target (its anchor q2) is not in the request: skipped too.
+    let hidden = state.hidden_message_ids_where(|id| id != "q2");
+    assert!(hidden.is_empty(), "{hidden:?}");
+    assert!(state.summary_insertions(|id| id != "q2").is_empty());
 }
