@@ -581,6 +581,12 @@ fn invalid_arguments_rejected_tool_call(
     let kind = match payload.get("error").and_then(serde_json::Value::as_str) {
         Some("invalid_arguments") => RejectedToolCallKind::InvalidArguments,
         Some("unknown_tool") => RejectedToolCallKind::UnknownToolName,
+        // #1067: the BYOP dispatch gate's refusals (`chat_stream::dispatch_refusal_payload`).
+        // The controller deliberately does not auto-resume on these, so without a card a turn
+        // whose only call was refused ended with nothing on screen at all.
+        Some("tool_not_offered" | "plan_mode_blocked" | "computer_use_disabled") => {
+            RejectedToolCallKind::NotOffered
+        }
         _ => return None,
     };
     let tool = payload
@@ -588,11 +594,19 @@ fn invalid_arguments_rejected_tool_call(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
+    // The dispatch-gate refusals carry their reason in `message` (it is model-facing text, and
+    // the producer's other payloads use that key), led by a "NOTHING RAN." the card's own note
+    // already says in the user's register.
     let detail = payload
         .get("detail")
+        .or_else(|| payload.get("message"))
         .and_then(serde_json::Value::as_str)
+        .map(|s| s.strip_prefix("NOTHING RAN. ").unwrap_or(s).trim())
         .filter(|s| !s.is_empty())
-        .unwrap_or("its arguments did not match the tool's expected format")
+        .unwrap_or(match kind {
+            RejectedToolCallKind::NotOffered => "this tool was not offered for this request",
+            _ => "its arguments did not match the tool's expected format",
+        })
         .to_owned();
     Some((tool, detail, kind))
 }

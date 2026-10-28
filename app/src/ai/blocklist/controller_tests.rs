@@ -1203,3 +1203,34 @@ fn byop_follow_up_is_blocked_and_rendered_when_expected_persistence_is_unavailab
         );
     });
 }
+
+/// #1067: the dispatch gate's refusals must not auto-resume (a model that keeps naming a
+/// withheld tool would loop on the user's API key), while the two existing resume triggers
+/// still do.
+#[test]
+fn dispatch_refusals_do_not_auto_resume() {
+    for code in [
+        "tool_not_offered",
+        "plan_mode_blocked",
+        "computer_use_disabled",
+    ] {
+        let payload = serde_json::json!({
+            "status": "error",
+            "error": code,
+            "tool": "websearch",
+            "executed": false,
+        })
+        .to_string();
+        assert!(
+            !super::byop_synthetic_result_needs_resume(&payload),
+            "{code} must not schedule an auto-resume: {payload}"
+        );
+    }
+    let invalid = serde_json::json!({ "error": "invalid_arguments", "tool": "x" }).to_string();
+    assert!(super::byop_synthetic_result_needs_resume(&invalid));
+    let intercepted = serde_json::json!({ "status": "ok", "_byop_intercepted": true }).to_string();
+    assert!(super::byop_synthetic_result_needs_resume(&intercepted));
+    assert!(!super::byop_synthetic_result_needs_resume(
+        r#"{"status":"ok"}"#
+    ));
+}

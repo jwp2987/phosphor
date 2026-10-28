@@ -1875,9 +1875,9 @@ pub enum AIAgentOutputMessageType {
     EventsFromAgents {
         event_ids: Vec<String>,
     },
-    /// A tool call the model attempted that was rejected before dispatch — either because
-    /// the arguments failed to parse against the tool's JSON Schema, or because no tool by
-    /// that name exists (see `invalid_arguments_rejected_tool_call` in `convert_from.rs` for
+    /// A tool call the model attempted that was rejected before dispatch — because the
+    /// arguments failed to parse against the tool's JSON Schema, because no tool by that name
+    /// exists, or because the tool was not offered for this request (see `invalid_arguments_rejected_tool_call` in `convert_from.rs` for
     /// the producing side). `kind` says which; they need different user-facing advice.
     ///
     /// This is deliberately not represented as an `Action`: parsing failed before there was
@@ -1891,7 +1891,7 @@ pub enum AIAgentOutputMessageType {
         tool: Option<String>,
         /// Human-readable detail on why the call was rejected.
         detail: String,
-        /// Which of the two pre-dispatch failures this was.
+        /// Which pre-dispatch failure this was.
         kind: RejectedToolCallKind,
     },
 }
@@ -1909,6 +1909,13 @@ pub enum RejectedToolCallKind {
     InvalidArguments,
     /// `tools::lookup` found no tool by that name, so the arguments were never even examined.
     UnknownToolName,
+    /// The tool exists but was not offered for this request (Plan Mode, computer use off, a
+    /// running command, no file route, or turned off in settings), so the dispatch gate in
+    /// `chat_stream::dispatch_refusal` refused it before anything ran (#1067). Unlike the two
+    /// above, the controller does NOT auto-resume on it -- a model that keeps naming a
+    /// withheld tool must not loop on the user's API key -- so the turn ends here and this
+    /// card is the only trace of why.
+    NotOffered,
 }
 
 /// Shared user-facing sentence for a [`AIAgentOutputMessageType::RejectedToolCall`]. Used by
@@ -1933,7 +1940,17 @@ pub fn rejected_tool_call_text(
             "No tool by that name exists, so nothing ran. Asking the model to retry with one \
              of the tool names it was given."
         }
+        RejectedToolCallKind::NotOffered => {
+            "Nothing ran. The agent is not resumed automatically for this; if it has \
+             stopped, send a message to continue without this tool."
+        }
     };
+    if kind == RejectedToolCallKind::NotOffered {
+        return match tool {
+            Some(tool) => format!("Tool not available this turn: {tool}\n\n{detail}\n\n{note}"),
+            None => format!("Tool not available this turn\n\n{detail}\n\n{note}"),
+        };
+    }
     match tool {
         Some(tool) => format!("Tool call rejected: {tool}\n\n{detail}\n\n{note}"),
         None => format!("Tool call rejected\n\n{detail}\n\n{note}"),
