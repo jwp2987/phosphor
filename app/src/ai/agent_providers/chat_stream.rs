@@ -2056,7 +2056,17 @@ fn accepted_history_repair_log_message(
 pub(crate) fn build_chat_request_for_test(
     params: &RequestParams,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
-    build_chat_request(
+    build_chat_request_for_test_with_limit(params, byop_compaction::overflow::ModelLimit::FALLBACK)
+}
+
+/// [`build_chat_request_for_test`] for a model with `model_limit` (the configured window, as
+/// `generate_byop_output` passes it), which sizes a summarize request's kept tail.
+#[cfg(test)]
+pub(crate) fn build_chat_request_for_test_with_limit(
+    params: &RequestParams,
+    model_limit: byop_compaction::overflow::ModelLimit,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request_for_model(
         params,
         false,
         AgentProviderApiType::OpenAi,
@@ -2065,6 +2075,25 @@ pub(crate) fn build_chat_request_for_test(
             pdf: false,
             audio: false,
         },
+        model_limit,
+    )
+}
+
+/// Test-only: [`build_chat_request_for_model`] with
+/// [`byop_compaction::overflow::ModelLimit::FALLBACK`] as the model's limits.
+#[cfg(test)]
+fn build_chat_request(
+    params: &RequestParams,
+    force_echo_reasoning: bool,
+    api_type: AgentProviderApiType,
+    attachment_caps: attachment_caps::AttachmentCaps,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request_for_model(
+        params,
+        force_echo_reasoning,
+        api_type,
+        attachment_caps,
+        byop_compaction::overflow::ModelLimit::FALLBACK,
     )
 }
 
@@ -2075,11 +2104,16 @@ pub(crate) fn build_chat_request_for_test(
 /// When true, every assistant message is forced to carry reasoning_content (empty-string
 /// placeholder), fixing thinking-mode endpoints with tightened validation such as
 /// DeepSeek-v4-flash / Kimi.
-fn build_chat_request(
+///
+/// `model_limit`: the request's model's token limits. They size the tail a summarization
+/// request keeps back: `algorithm::select`'s preserve-recent budget scales with the model's
+/// usable window (#1090).
+fn build_chat_request_for_model(
     params: &RequestParams,
     force_echo_reasoning: bool,
     api_type: AgentProviderApiType,
     attachment_caps: attachment_caps::AttachmentCaps,
+    model_limit: byop_compaction::overflow::ModelLimit,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
@@ -2281,7 +2315,9 @@ fn build_chat_request(
             })
             .collect();
         let cfg = byop_compaction::CompactionConfig::default();
-        let model_limit = byop_compaction::overflow::ModelLimit::FALLBACK;
+        // The model's own limits, not always `ModelLimit::FALLBACK` (#1090): the fallback's
+        // 8k tail budget is most of a small window, so a compaction kept nearly everything
+        // and the conversation stayed over the threshold.
         let result = byop_compaction::algorithm::select(&views, &cfg, model_limit, |slice| {
             slice
                 .iter()
@@ -6573,6 +6609,13 @@ pub async fn generate_byop_output(
         other_provider_hint,
     } = input;
 
+    // A configured max_output over half the window is held to half, for the `max_tokens` sent
+    // below exactly as for the compaction threshold, so a prompt under the threshold plus the
+    // requested output always fits the window (#1090).
+    let max_output_tokens = byop_compaction::config::clamp_max_output_tokens(
+        context_window.unwrap_or(0),
+        max_output_tokens,
+    );
     let force_echo_reasoning = super::reasoning::model_requires_reasoning_echo(api_type, &model_id);
     // Streaming extraction is only activated for models known to wrap reasoning in <think>
     // tags (e.g. MiniMax M3). Other models keep the original Chunk output behavior, to
@@ -6591,11 +6634,15 @@ pub async fn generate_byop_output(
         } else {
             api_type
         };
-    let chat_req = build_chat_request(
+    let chat_req = build_chat_request_for_model(
         &params,
         force_echo_reasoning,
         shaping_api_type,
         attachment_caps,
+        byop_compaction::config::model_limit_from_parts(
+            context_window.unwrap_or(0),
+            max_output_tokens,
+        ),
     )?;
     let conversation_id = params
         .conversation_token

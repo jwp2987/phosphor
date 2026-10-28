@@ -300,6 +300,7 @@ ai-block-compaction-in-progress = Compacting conversation…
 ai-block-compaction-done-auto = Conversation compacted automatically
 ai-block-compaction-done-manual = Conversation compacted
 ai-block-compaction-interrupted = Conversation compaction stopped
+ai-block-compaction-window-too-small = { $model } filled its { $window }-token context window, mostly with the agent's own instructions and tools, so compacting this conversation would not help. Replies may be cut off. Give the model a larger context window (Ollama: num_ctx) or use a larger model.
 ai-block-resume-conversation = Resume conversation
 ai-block-continue-conversation = Continue conversation
 ai-block-show-full-output = Show full output ({ $lines } more lines)

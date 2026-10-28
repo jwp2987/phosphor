@@ -18,8 +18,9 @@ pub mod prompt;
 pub mod state;
 pub mod token;
 
+pub use commit::summarizable_history_tokens;
 pub use config::CompactionConfig;
-pub use overflow::{is_overflow, turn_has_tool_calls, usable};
+pub use overflow::{OverflowVerdict, is_overflow, overflow_verdict, turn_has_tool_calls, usable};
 
 /// What to do when a finished, tool-free turn is over the context threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

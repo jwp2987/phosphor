@@ -6,7 +6,9 @@ use super::algorithm::{prune_decisions, select, turns, MessageRef, Role, ToolOut
 use super::commit::commit_summarization;
 use super::config::{model_limit_from_parts, CompactionConfig};
 use super::consts::*;
-use super::overflow::{is_overflow, usable, ModelLimit, TokenCounts};
+use super::overflow::{
+    ModelLimit, OverflowVerdict, TokenCounts, is_overflow, overflow_verdict, usable,
+};
 use super::prompt::{build_continue_message, build_prompt, SUMMARY_TEMPLATE};
 use super::token::estimate;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
@@ -2068,4 +2070,511 @@ fn hidden_message_ids_where_skips_unshowable_compactions() {
     let hidden = state.hidden_message_ids_where(|id| id != "q2");
     assert!(hidden.is_empty(), "{hidden:?}");
     assert!(state.summary_insertions(|id| id != "q2").is_empty());
+}
+
+// -- small context windows (#1090) ------------------------------------------
+//
+// Round-17 Linux torture: an Ollama model with `context_window = 16384` and no
+// `max_output_tokens` compacted on every reply ("usable=0 decision=Compact"), then gave up
+// ("still over the model's context window after automatic compaction") without answering.
+// `usable` was `context - max_output` with an unknown max_output defaulting to 20_000, so
+// every window of 20k or less had nothing usable. The fixed part of every request (system
+// prompt + tool definitions) measured ~6_000 tokens in those logs.
+
+/// The windows the table runs over: FastFlowLM/Ollama defaults up to a large model.
+const TABLE_WINDOWS: [u32; 7] = [4_096, 8_192, 12_000, 16_384, 20_000, 32_768, 131_072];
+
+/// A well-formed `max_output_tokens`: unknown (0), or a known cap of up to a quarter.
+fn table_max_outputs(window: u32) -> [u32; 2] {
+    [0, 1_024.min(window / 4)]
+}
+
+fn tokens(total: usize) -> TokenCounts {
+    TokenCounts {
+        total,
+        ..Default::default()
+    }
+}
+
+/// What a summary of a long conversation replaces: everything but the fixed overhead and
+/// the tail `select` keeps verbatim.
+fn summarizable_of(history: usize, usable_n: usize) -> usize {
+    history - history.min(cfg_default().preserve_recent_budget(usable_n))
+}
+
+#[test]
+fn small_window_usable_is_positive_and_keeps_most_of_the_window() {
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        for max_output in table_max_outputs(window) {
+            let model = model_limit_from_parts(window, max_output);
+            let usable_n = usable(&cfg, model);
+            let context = window as usize;
+            let label = format!("window={window} max_output={max_output}");
+            assert!(usable_n > 0, "{label}: usable must be positive");
+            assert!(
+                usable_n >= context - context / 4,
+                "{label}: usable={usable_n} reserves more than a quarter of the window"
+            );
+            assert!(usable_n < context, "{label}: some room is reserved");
+        }
+    }
+}
+
+/// The issue's numbers: the reserve for an unknown max_output is a quarter of the window up
+/// to opencode's 20k cap, so windows of 80k and up are unchanged.
+#[test]
+fn unknown_max_output_reserves_a_quarter_up_to_the_20k_cap() {
+    let cfg = cfg_default();
+    for (window, expected) in [
+        (4_096, 3_072),
+        (8_192, 6_144),
+        (12_000, 9_000),
+        (16_384, 12_288),
+        (20_000, 15_000),
+        (32_768, 24_576),
+        (131_072, 111_072),
+        (1_000_000, 980_000),
+    ] {
+        assert_eq!(
+            usable(&cfg, model_limit_from_parts(window, 0)),
+            expected,
+            "window={window}"
+        );
+    }
+}
+
+/// A known `max_output_tokens` keeps exactly its reserve (refute of 505e30974: capping it at a
+/// quarter raised the threshold while the request still sent the full `max_tokens`, so
+/// prompt + max_tokens could exceed the window, which Anthropic and vLLM reject).
+#[test]
+fn a_known_max_output_keeps_its_full_reserve() {
+    let cfg = cfg_default();
+    for (window, max_output, expected) in [
+        (200_000, 64_000, 136_000),  // Claude
+        (200_000, 100_000, 100_000), // o3: exactly half
+        (128_000, 64_000, 64_000),   // DeepSeek
+        (16_384, 1_024, 15_360),
+        (16_384, 8_192, 8_192),
+    ] {
+        let model = model_limit_from_parts(window, max_output);
+        assert_eq!(
+            usable(&cfg, model),
+            expected,
+            "window={window} max_output={max_output}"
+        );
+        assert_eq!(
+            super::config::clamp_max_output_tokens(window, max_output),
+            max_output,
+            "window={window}: a max_output up to half the window is sent unchanged"
+        );
+    }
+}
+
+/// A `max_output_tokens` over half the window (up to the window itself) is a
+/// misconfiguration: the reserve and the `max_tokens` actually sent are both held to half,
+/// so a prompt at the threshold plus the requested output still fits the window.
+#[test]
+fn an_oversized_max_output_is_clamped_for_the_reserve_and_the_request() {
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        for max_output in [window / 2 + 1, window - 1, window, window * 2] {
+            let label = format!("window={window} max_output={max_output}");
+            let sent = super::config::clamp_max_output_tokens(window, max_output);
+            let model = model_limit_from_parts(window, max_output);
+            let usable_n = usable(&cfg, model);
+            assert_eq!(sent, window / 2, "{label}");
+            assert_eq!(
+                model.max_output, sent as usize,
+                "{label}: reserve == max_tokens sent"
+            );
+            assert!(usable_n > 0, "{label}");
+            assert!(
+                usable_n + sent as usize <= window as usize,
+                "{label}: a prompt at the threshold ({usable_n}) + max_tokens ({sent}) \
+                 exceeds the window"
+            );
+            // A long conversation does not go past the window without compacting.
+            for count in [window as usize, window as usize * 2] {
+                let verdict = overflow_verdict(&cfg, tokens(count), model, || count * 3 / 4);
+                assert!(verdict.compacts(), "{label} count={count}: {verdict:?}");
+            }
+        }
+    }
+    // Unknown stays unknown: nothing is sent.
+    assert_eq!(super::config::clamp_max_output_tokens(16_384, 0), 0);
+    assert_eq!(super::config::clamp_max_output_tokens(0, 64_000), 64_000);
+}
+
+/// The regressions themselves: an ordinary reply on the logged small windows is not an
+/// overflow (16384 at 37%, 12000 at 58.7%, 20000 at 63.8%).
+#[test]
+fn ordinary_replies_on_small_windows_do_not_overflow() {
+    let cfg = cfg_default();
+    for (window, count) in [
+        (16_384, 6_058),
+        (16_384, 6_429),
+        (12_000, 7_042),
+        (20_000, 12_766),
+    ] {
+        let model = model_limit_from_parts(window, 0);
+        assert!(
+            !is_overflow(&cfg, tokens(count), model),
+            "window={window} count={count} usable={}",
+            usable(&cfg, model)
+        );
+        assert_eq!(
+            overflow_verdict(&cfg, tokens(count), model, || 60),
+            OverflowVerdict::Under,
+            "window={window} count={count}"
+        );
+    }
+}
+
+/// The history is only walked once the usage is over the threshold.
+#[test]
+fn the_history_is_not_estimated_under_the_threshold() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(16_384, 0);
+    let verdict = overflow_verdict(&cfg, tokens(6_058), model, || {
+        panic!("estimated under the threshold")
+    });
+    assert_eq!(verdict, OverflowVerdict::Under);
+}
+
+/// Never compact a tiny conversation: a history no larger than a summary is not compacted,
+/// however full the window is — compacting would swap it for a summary of the same size and
+/// then give up, the #1090 symptom. Over the threshold it is `OverButCompactionCannotHelp`;
+/// at the window `AtWindowCannotHelp` (not compacted; the user is told once).
+#[test]
+fn a_short_conversation_is_never_compacted() {
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        for max_output in table_max_outputs(window).into_iter().chain([window - 1]) {
+            let model = model_limit_from_parts(window, max_output);
+            let summarizable = 150; // "reply with just the word ok" and its answer
+            for count in (summarizable..=window as usize * 2).step_by(97) {
+                let verdict = overflow_verdict(&cfg, tokens(count), model, || summarizable);
+                let label = format!("window={window} max_output={max_output} count={count}");
+                assert!(!verdict.compacts(), "{label}: {verdict:?}");
+                if super::overflow::at_window(count, model) {
+                    assert_eq!(verdict, OverflowVerdict::AtWindowCannotHelp, "{label}");
+                }
+            }
+        }
+    }
+}
+
+/// The last resort: at the window, a history a summary can shrink is compacted even when
+/// the result is not expected to get back under the threshold. "At the window" is 98% of
+/// it: providers rarely report more (Anthropic and vLLM reject; Ollama truncates to
+/// `num_ctx`).
+#[test]
+fn a_full_window_with_history_to_summarize_compacts_as_the_last_resort() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(8_192, 0); // usable 6_144, summary 1_024
+    let at = 8_192 - 8_192 / 50;
+    assert!(super::overflow::at_window(at, model));
+    assert!(!super::overflow::at_window(at - 1, model));
+    // 2_000 to summarize: 8_029 - 2_000 + 1_024 is not under 6_144, but the window is full.
+    assert_eq!(
+        overflow_verdict(&cfg, tokens(at), model, || 2_000),
+        OverflowVerdict::OverAtWindow
+    );
+    // Just below the margin the same request is left alone.
+    assert_eq!(
+        overflow_verdict(&cfg, tokens(at - 1), model, || 2_000),
+        OverflowVerdict::OverButCompactionCannotHelp
+    );
+    // Nothing worth summarizing: not compacted even at the window.
+    assert_eq!(
+        overflow_verdict(&cfg, tokens(at), model, || 1_024),
+        OverflowVerdict::AtWindowCannotHelp
+    );
+}
+
+/// Compaction only when genuinely near the limit, and then whenever a summary of what
+/// `select` would summarize (all but the kept tail) can bring the request back under it.
+#[test]
+fn compaction_only_when_genuinely_near_the_limit() {
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        for max_output in table_max_outputs(window) {
+            let model = model_limit_from_parts(window, max_output);
+            let usable_n = usable(&cfg, model);
+            let overhead = 6_000.min(usable_n / 4);
+            let label = format!("window={window} max_output={max_output} usable={usable_n}");
+            for count in [overhead + 1, usable_n / 2, usable_n - 1] {
+                let summarizable = summarizable_of(count - overhead, usable_n);
+                assert_eq!(
+                    overflow_verdict(&cfg, tokens(count), model, || summarizable),
+                    OverflowVerdict::Under,
+                    "{label} count={count}: under the threshold"
+                );
+            }
+            for count in [usable_n, usable_n + 1, window as usize, window as usize * 2] {
+                let summarizable = summarizable_of(count - overhead, usable_n);
+                assert_eq!(
+                    overflow_verdict(&cfg, tokens(count), model, || summarizable),
+                    OverflowVerdict::Over,
+                    "{label} count={count}: over the threshold with a long history"
+                );
+            }
+        }
+    }
+}
+
+/// A compaction that would leave the request over the threshold — the kept tail plus the
+/// overhead are most of it — is not done below the window (refute: assuming the whole
+/// history is replaced made a 12k window summarize every reply, then give up).
+#[test]
+fn the_kept_tail_counts_against_compaction() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(12_000, 0); // usable 9_000, tail budget 2_250
+    let (count, overhead) = (9_100, 6_000);
+    let history = count - overhead;
+    // Replacing all of it would get under (6_000 + 1_500 < 9_000)...
+    assert_eq!(
+        overflow_verdict(&cfg, tokens(count), model, || history),
+        OverflowVerdict::Over
+    );
+    // ...but the 2_250-token tail stays: what is left to summarize (850) is smaller than
+    // the 1_500-token summary.
+    let summarizable = summarizable_of(history, 9_000);
+    assert_eq!(
+        overflow_verdict(&cfg, tokens(count), model, || summarizable),
+        OverflowVerdict::OverButCompactionCannotHelp
+    );
+}
+
+/// The overflow is declared while the summarize request still fits the window with its own
+/// output: at the threshold, the summarize request is at most the turn's count (the kept
+/// tail is not sent, so usually less) plus the template, and the summary must fit after it.
+#[test]
+fn the_summarize_request_fits_the_window_at_the_threshold() {
+    let cfg = cfg_default();
+    let template_tokens = estimate(&build_prompt(None, &[]));
+    for window in TABLE_WINDOWS {
+        for max_output in table_max_outputs(window).into_iter().chain([window - 1]) {
+            let model = model_limit_from_parts(window, max_output);
+            let at_threshold = usable(&cfg, model);
+            let summary = super::overflow::expected_summary_tokens(model);
+            assert!(
+                at_threshold + template_tokens + summary <= window as usize,
+                "window={window} max_output={max_output}: {at_threshold} + template \
+                 {template_tokens} + summary {summary} exceeds the window"
+            );
+        }
+    }
+}
+
+/// The kept tail (`preserve_recent_budget`) is never larger than half the usable window, so
+/// a compacted conversation has room for the summary and the next reply.
+#[test]
+fn preserve_recent_budget_fits_small_windows() {
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        for max_output in table_max_outputs(window).into_iter().chain([window - 1]) {
+            let usable_n = usable(&cfg, model_limit_from_parts(window, max_output));
+            let budget = cfg.preserve_recent_budget(usable_n);
+            assert!(
+                budget <= usable_n / 2,
+                "window={window} max_output={max_output}: budget={budget} usable={usable_n}"
+            );
+        }
+    }
+    // A window too small for opencode's 2k floor.
+    assert_eq!(cfg.preserve_recent_budget(3_000), 1_500);
+}
+
+/// GiveUp only when compaction can't help: a turn after an automatic compaction is over the
+/// threshold only if a summary could still shrink it (the summary did not take, e.g. it was
+/// never committed). When what is left is the fixed overhead plus a short tail, the turn is
+/// not an overflow: no GiveUp, and the allowance comes back for later growth.
+#[test]
+fn give_up_only_when_compaction_cannot_help() {
+    use super::{AutoCompactionDecision as D, TurnCompactionState};
+    let cfg = cfg_default();
+    for window in TABLE_WINDOWS {
+        let model = model_limit_from_parts(window, 0);
+        let usable_n = usable(&cfg, model);
+        let count = usable_n + 1; // over the threshold, under the window
+        let over_with = |summarizable: usize| {
+            overflow_verdict(&cfg, tokens(count), model, || summarizable).compacts()
+        };
+
+        // A long conversation overflows and is compacted.
+        let mut state = TurnCompactionState::default();
+        let plan = state.on_stream_finished(turn(false, Some(over_with(usable_n * 3 / 4))));
+        assert_eq!(plan.decision, D::Compact, "window={window}");
+
+        // The summary committed: what is left is the overhead and a short tail. Even over the
+        // threshold that is not an overflow — no GiveUp — and the allowance is restored.
+        let mut after_commit = state;
+        let plan = after_commit.on_stream_finished(turn(false, Some(over_with(150))));
+        assert_eq!(plan.decision, D::None, "window={window}");
+        assert!(plan.restore_turn_allowance, "window={window}");
+
+        // The summary did not take (nothing committed): the long history is still there, a
+        // second compaction would loop, so the turn fails.
+        let mut no_commit = state;
+        let plan = no_commit.on_stream_finished(turn(false, Some(over_with(usable_n * 3 / 4))));
+        assert_eq!(plan.decision, D::GiveUp, "window={window}");
+    }
+}
+
+/// What a summary would replace leaves out what an earlier compaction hides.
+#[test]
+fn summarizable_history_excludes_the_compacted_head() {
+    use super::commit::summarizable_history_tokens;
+    let mut big = agent_output("a1", "root", "r1", 2);
+    if let Some(api::message::Message::AgentOutput(output)) = big.message.as_mut() {
+        output.text = "x".repeat(4_000);
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        big,
+        user_query("q2", "root", "r2", 3),
+        agent_output("s1", "root", "r3", 4),
+    ]);
+    let before = summarizable_history_tokens(&conversation, ModelLimit::FALLBACK);
+    assert!(before >= 1_000, "the 4_000-char answer counts: {before}");
+
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(200),
+        ..Default::default()
+    };
+    assert!(super::commit::commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let after = summarizable_history_tokens(&conversation, ModelLimit::FALLBACK);
+    assert!(
+        after < 100,
+        "only the kept q2 remains (the head and the summary are hidden): {after}"
+    );
+}
+
+fn agent_output_of_len(id: &str, request_id: &str, seconds: i64, chars: usize) -> api::Message {
+    let mut msg = agent_output(id, "root", request_id, seconds);
+    if let Some(api::message::Message::AgentOutput(output)) = msg.message.as_mut() {
+        output.text = "x".repeat(chars);
+    }
+    msg
+}
+
+/// The tail the summarize request keeps is not counted (it is sized with the request
+/// model's limits): on a 12k window (tail budget 2_250) a recent ~1k turn stays verbatim.
+#[test]
+fn summarizable_history_leaves_out_the_kept_tail() {
+    use super::commit::summarizable_history_tokens;
+    let conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        agent_output_of_len("a1", "r1", 2, 12_000), // 3_000 tokens
+        user_query("u2", "root", "r2", 3),
+        agent_output_of_len("a2", "r2", 4, 4_000), // 1_000 tokens: the kept tail
+    ]);
+    let summarizable =
+        summarizable_history_tokens(&conversation, model_limit_from_parts(12_000, 0));
+    assert!(
+        (3_000..3_100).contains(&summarizable),
+        "only the older turn is summarized: {summarizable}"
+    );
+}
+
+/// A subagent task's copy of its parent's query (same request id and text) is counted once,
+/// as the request sends it once.
+#[test]
+fn summarizable_history_counts_a_copied_user_query_once() {
+    use super::commit::summarizable_history_tokens;
+    let mut long_query = user_query("u1", "root", "r1", 1);
+    if let Some(api::message::Message::UserQuery(u)) = long_query.message.as_mut() {
+        u.query = "q".repeat(8_000);
+    }
+    let mut copy = long_query.clone();
+    copy.id = "u1-copy".to_owned();
+    let once = summarizable_history_tokens(
+        &conversation_with_messages(vec![long_query.clone()]),
+        ModelLimit::FALLBACK,
+    );
+    let with_copy = summarizable_history_tokens(
+        &conversation_with_messages(vec![long_query, copy]),
+        ModelLimit::FALLBACK,
+    );
+    assert_eq!(once, with_copy);
+}
+
+/// Attachments a query carries are re-sent with every request, so they count toward what a
+/// summary replaces, at a fixed cost each (refute: counting only the text left an
+/// attachment-heavy conversation looking too small to compact; counting a PDF by its bytes
+/// made a 500 KB one "125k tokens"). They are not part of `estimate_message`, which also
+/// sizes the kept tail.
+#[test]
+fn attachments_count_at_a_fixed_cost_outside_the_tail_estimate() {
+    use super::message_view::{ATTACHMENT_TOKENS, estimate_attachments, estimate_message};
+    let mut msg = user_query("u1", "root", "r1", 1);
+    let text_only = estimate_message(&msg);
+    assert_eq!(estimate_attachments(&msg), 0);
+    if let Some(api::message::Message::UserQuery(u)) = msg.message.as_mut() {
+        u.context = Some(api::InputContext {
+            images: vec![
+                api::input_context::Image {
+                    data: vec![1; 200_000],
+                    mime_type: "image/png".to_owned(),
+                },
+                api::input_context::Image {
+                    data: vec![1; 500_000],
+                    mime_type: "application/pdf".to_owned(),
+                },
+                api::input_context::Image {
+                    data: Vec::new(),
+                    mime_type: "image/png".to_owned(),
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    assert_eq!(
+        estimate_message(&msg),
+        text_only,
+        "the tail sizing ignores attachments"
+    );
+    assert_eq!(estimate_attachments(&msg), 2 * ATTACHMENT_TOKENS);
+}
+
+fn user_query_with_pdf(id: &str, request_id: &str, seconds: i64, bytes: usize) -> api::Message {
+    let mut msg = user_query(id, "root", request_id, seconds);
+    if let Some(api::message::Message::UserQuery(u)) = msg.message.as_mut() {
+        u.context = Some(api::InputContext {
+            images: vec![api::input_context::Image {
+                data: vec![1; bytes],
+                mime_type: "application/pdf".to_owned(),
+            }],
+            ..Default::default()
+        });
+    }
+    msg
+}
+
+/// The current turn with its PDF stays in the kept tail, so the model still has the PDF
+/// after a compaction; an older turn's attachment is summarized and counts.
+#[test]
+fn a_recent_turn_with_a_pdf_stays_in_the_tail() {
+    use super::commit::summarizable_history_tokens;
+    use super::message_view::ATTACHMENT_TOKENS;
+    let conversation = conversation_with_messages(vec![
+        user_query_with_pdf("u1", "r1", 1, 100_000),
+        agent_output_of_len("a1", "r1", 2, 40_000), // 10_000 tokens: over the 8_000 tail budget
+        user_query_with_pdf("u2", "r2", 3, 500_000),
+        agent_output("a2", "root", "r2", 4),
+    ]);
+    let summarizable = summarizable_history_tokens(&conversation, ModelLimit::FALLBACK);
+    let older_turn = 10_000 + ATTACHMENT_TOKENS;
+    assert!(
+        (older_turn..older_turn + 100).contains(&summarizable),
+        "only the older turn (and its PDF) is summarized; u2 and its PDF are kept: {summarizable}"
+    );
 }

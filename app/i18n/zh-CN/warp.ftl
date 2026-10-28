@@ -277,6 +277,7 @@ ai-block-compaction-in-progress = 正在压缩对话…
 ai-block-compaction-done-auto = 对话已自动压缩
 ai-block-compaction-done-manual = 对话已压缩
 ai-block-compaction-interrupted = 对话压缩已中止
+ai-block-compaction-window-too-small = { $model } 的 { $window } 令牌上下文窗口已满，其中大部分是智能体自身的指令和工具，压缩此对话无济于事。回复可能被截断。请为该模型设置更大的上下文窗口（Ollama：num_ctx）或使用更大的模型。
 ai-block-resume-conversation = 继续对话
 ai-block-continue-conversation = 继续对话
 ai-block-fork-conversation = Fork 对话
