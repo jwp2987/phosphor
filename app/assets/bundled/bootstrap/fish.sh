@@ -805,7 +805,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             if test -n "$user_control_path"
                 and test "$user_control_path" != "none"
                 and string match --quiet --regex '^[A-Za-z0-9._/~@:+,-]+$' -- "$user_control_path"
-                if command ssh -O check -o ControlPath="$user_control_path" $argv >/dev/null 2>&1
+                # #1083: guarded (warp_ssh_mux_command): an -O check can never become a login.
+                if warp_ssh_mux_command check "$user_control_path"
                     # A live master exists: multiplex through it and let the
                     # client know Warp does not own it.
                     set control_path "$user_control_path"
@@ -839,15 +840,34 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # so a forward is not requested twice.
         set -l warp_owns_master 0
         if test "$control_master_mode" = "yes"
+            # #1084: something is already at this pane's ControlPath. A DEAD socket (its master
+            # was SIGKILLed) would make the new master print "ControlSocket ... already exists,
+            # disabling multiplexing" and stay behind as a plain background connection for good,
+            # so it is removed first. A LIVE master there belongs to another ssh from this shell
+            # (e.g. a suspended one) and anything that is not a socket is not ours to delete: the
+            # path is busy, so this ssh runs unwrapped instead.
+            # ssh expands a leading ~ in ControlPath itself; the shell must do it for the tests.
+            # $HOME matches the app (shellexpand::tilde in shutdown_for_discard).
+            set -l warp_socket_file (string replace -r '^~' -- "$HOME" "$control_path")
+            if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                warp_ssh_mux_command check "$control_path"
+                set -l warp_check_rc $status
+                if test $warp_check_rc -eq 255; and test -S "$warp_socket_file"; and not test -L "$warp_socket_file"
+                    command rm -f -- "$warp_socket_file"
+                end
+                if test -e "$warp_socket_file"; or test -L "$warp_socket_file"
+                    command ssh $argv
+                    return
+                end
+            end
             command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
             set -l warp_master_rc $status
             if test $warp_master_rc -ne 0
                 # The connection failed (ssh already printed why) or was interrupted.
                 return $warp_master_rc
             end
-            # ssh expands a leading ~ in ControlPath itself; the shell must do it for the -S test.
-            # $HOME matches the app (shellexpand::tilde in shutdown_for_discard).
-            if test -S (string replace -r '^~' -- "$HOME" "$control_path")
+            # Own it only if a master really answers there: a file at the path is not proof.
+            if warp_ssh_mux_command check "$control_path"
                 set warp_owns_master 1
                 set control_master_mode no
             end
@@ -859,7 +879,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
                 if test $warp_owns_master -eq 1
-                    warp_ssh_stop_master "$control_path" $argv
+                    warp_ssh_stop_master "$control_path"
                 end
                 return $warp_plain_rc
             end
@@ -945,10 +965,11 @@ esac
         command ssh $warp_ipqos_args -o ControlMaster=$control_master_mode -o ControlPath="$control_path" \
         -t $argv $warp_remote_bootstrap
         set -l warp_session_rc $status
-        # The session is over: take the master down with it (the app's own pane-close /
-        # ExitShell cleanup does the same by socket path; both are idempotent).
+        # The session is over: take the master down with it. #1083: this is the ONLY `-O exit`
+        # in the normal exit path (the app's ExitShell hook no longer sends one; the app stops the
+        # master only when the pane is discarded and this code cannot run).
         if test $warp_owns_master -eq 1
-            warp_ssh_stop_master "$control_path" $argv
+            warp_ssh_stop_master "$control_path"
         end
         return $warp_session_rc
     end
@@ -981,12 +1002,39 @@ esac
         return 1
     end
 
-    # Ends the Phosphor-owned master at $argv[1] (the remaining args resolve the destination).
+    # Ends the Phosphor-owned master at $argv[1].
     function warp_ssh_stop_master
-        set -l control_path $argv[1]
-        set -e argv[1]
-        command ssh -O exit -o ControlPath="$control_path" $argv >/dev/null 2>&1
+        warp_ssh_mux_command exit $argv[1]
         return 0
+    end
+
+    # #1083: runs `ssh -O $argv[1]` (check / exit) against the master at ControlPath $argv[2] so that
+    # it can NEVER fall back to a real connection. OpenSSH falls through from a failed mux hello (a
+    # master that is shutting down) to a full login, which with the pane's PTY as stdin ran the
+    # user's later keystrokes on the remote. Guards: -F /dev/null (no user config, so no
+    # ControlMaster=yes / ProxyJump; the user's arguments are deliberately NOT passed, -O only needs
+    # the literal ControlPath), ControlMaster=no, ProxyCommand=false (any fallback "connects" to a
+    # local `false` run by /bin/sh: no DNS, no TCP), BatchMode=yes (no prompt), -n and stdin
+    # /dev/null (never the PTY), output discarded, and at most 5 s. Keep in step with mux_control_args in
+    # crates/remote_server/src/ssh.rs and the bash/zsh copies. Status: 0 = a live master answered,
+    # 255 = no master (missing / dead socket), anything else = unknown (timed out).
+    function warp_ssh_mux_command
+        command sh -c '
+            SHELL=/bin/sh ssh -F /dev/null -o ControlMaster=no -o ControlPath="$2" -o ProxyCommand=false -o BatchMode=yes -o ConnectTimeout=5 -o ClearAllForwardings=yes -n -q -O "$1" phosphor-mux-control </dev/null >/dev/null 2>&1 &
+            p=$!
+            (
+                trap "kill \$s; exit 0" TERM
+                sleep 5 &
+                s=$!
+                wait "$s"
+                kill "$p"
+            ) </dev/null >/dev/null 2>&1 &
+            k=$!
+            wait "$p"
+            r=$?
+            kill "$k" >/dev/null 2>&1
+            exit "$r"
+        ' warp-ssh-mux "$argv[1]" "$argv[2]" </dev/null >/dev/null 2>&1
     end
 
     function ssh

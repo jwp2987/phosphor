@@ -27,7 +27,61 @@ pub fn ssh_args(socket_path: &Path) -> Vec<String> {
     ]
 }
 
-/// Runs `ssh -O exit -o ControlPath=<socket_path>` to force the local
+/// The destination every guarded `ssh -O` command names. It is never contacted: see
+/// [`mux_control_args`].
+pub const MUX_CONTROL_DESTINATION: &str = "phosphor-mux-control";
+
+/// The full argument list (after the program name) for a control-master command
+/// (`ssh -O <op>`, e.g. `exit` or `check`) against the master at `socket_path`, built so that it
+/// can NEVER turn into a real connection or login (#1083).
+///
+/// Why this is needed: OpenSSH's `muxclient()` returns -1 instead of failing when the hello
+/// exchange with the master fails (a master that is shutting down accepts the connection and
+/// then closes it), or when `ControlMaster` resolves to `yes`/`ask`; `main()` then falls through
+/// to `ssh_connect()` -- a full login, even for `-O exit`. Spawned with the pane's PTY as stdin,
+/// that login ran every later keystroke on the remote, invisibly. Guards, each sufficient for its
+/// part:
+/// * `-F /dev/null`: no user or system config at all, so no `ControlMaster yes` (which skips the
+///   mux client entirely), no `ProxyJump`/`ProxyCommand`, no `Host *` surprises. The
+///   destination is a fixed placeholder and the user's own arguments are NOT passed: `-O` only
+///   needs `ControlPath` (a literal path), and a user `-J` would make ssh abort on the
+///   `ProxyCommand` below before it ever reached the master.
+/// * `ControlMaster=no`: the mux client is always tried, never skipped.
+/// * `ProxyCommand=false`: if the mux client still falls through, the "connection" is a local
+///   `false` that exits at once -- no DNS lookup (ssh skips resolution with a ProxyCommand), no
+///   TCP, nothing that speaks SSH. This is the guard that makes a fallback login impossible.
+/// * `BatchMode=yes`, `ConnectTimeout`, `-n`: belt and braces -- never a password / passphrase /
+///   host-key prompt, never a read from stdin.
+/// * `ClearAllForwardings=yes`, `-q`: no forwards, no chatter.
+///
+/// Callers must also give the child a null stdin (never the pane's PTY), set `SHELL=/bin/sh` (ssh
+/// runs the ProxyCommand through `$SHELL`, and a user's fish/pwsh config has no business there)
+/// and bound its runtime.
+pub fn mux_control_args(op: &str, socket_path: &Path) -> Vec<String> {
+    vec![
+        "-F".to_string(),
+        "/dev/null".to_string(),
+        "-o".to_string(),
+        "ControlMaster=no".to_string(),
+        "-o".to_string(),
+        format!("ControlPath={}", socket_path.display()),
+        "-o".to_string(),
+        "ProxyCommand=false".to_string(),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=5".to_string(),
+        "-o".to_string(),
+        "ClearAllForwardings=yes".to_string(),
+        "-n".to_string(),
+        "-q".to_string(),
+        "-O".to_string(),
+        op.to_string(),
+        MUX_CONTROL_DESTINATION.to_string(),
+    ]
+}
+
+/// Runs a guarded `ssh -O exit` ([`mux_control_args`]) to force the local
 /// SSH `ControlMaster` managing `socket_path` to exit immediately,
 /// without waiting for multiplexed channels to finish draining.
 ///
@@ -39,8 +93,11 @@ pub fn ssh_args(socket_path: &Path) -> Vec<String> {
 /// it. Sending `-O exit` ends it right away.
 ///
 /// **Only safe to call once the user's shell has already exited** --
-/// this tears down the interactive ssh outright. In practice it is
-/// invoked from the `ExitShell` teardown path on the client.
+/// this tears down the interactive ssh outright. #1083: in the normal exit path the ssh
+/// wrapper owns the `-O exit` (it runs it right after its session client returns), so the app
+/// calls this only when the wrapper cannot: a discarded pane (`shutdown_for_discard`,
+/// `discard_now`), never from the `ExitShell` hook. Even a concurrent call is harmless: the
+/// guarded command can only fail fast, never log in.
 ///
 /// Fire-and-forget. Errors are logged but not propagated: at teardown
 /// time there is nothing useful to do with them.
@@ -91,12 +148,12 @@ pub fn remove_stale_control_socket(socket_path: &Path) {
 }
 
 async fn stop_control_master_inner(socket_path: &Path) {
-    let args = ssh_args(socket_path);
     let result = async {
         Command::new("ssh")
-            .arg("-O")
-            .arg("exit")
-            .args(&args)
+            .args(mux_control_args("exit", socket_path))
+            // The ProxyCommand guard runs through $SHELL; keep it a plain POSIX shell.
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output()
             .await

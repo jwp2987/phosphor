@@ -350,3 +350,55 @@ fn handle_host_disconnected_fails_pending_host_requests_for_that_host_only() {
         drop(other_result_rx);
     });
 }
+
+// ---------------------------------------------------------------------------
+// #1083: one owner for `ssh -O exit`
+// ---------------------------------------------------------------------------
+
+/// The `ExitShell` path never stops the master (the ssh wrapper does, right after its session
+/// client returns); only a discarded pane does.
+#[test]
+fn only_a_discarded_pane_stops_the_master() {
+    let path = PathBuf::from("/home/u/.ssh/42");
+    assert_eq!(
+        MasterTeardown::Stop.path_to_stop(Some(path.clone())),
+        Some(path.clone())
+    );
+    assert_eq!(
+        MasterTeardown::LeaveToWrapper.path_to_stop(Some(path)),
+        None
+    );
+    assert_eq!(MasterTeardown::Stop.path_to_stop(None), None);
+}
+
+/// #1083 end to end on the manager: deregistering after `ExitShell` drops the session but does
+/// not run `ssh -O exit` (whose teardown would also remove the socket file), so the wrapper's
+/// own `-O exit` is the only one and cannot race a second one from the app.
+#[cfg(unix)]
+#[test]
+fn deregister_after_shell_exit_leaves_the_master_to_the_wrapper() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("42");
+        // A dead socket: a stop would fail fast and then remove it.
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        let session_id = SessionId::from(42u64);
+        manager.update(&mut app, |manager, ctx| {
+            manager.sessions.insert(
+                session_id,
+                RemoteSessionState::AwaitingExitStatus {
+                    control_path: Some(socket.clone()),
+                    host_id: HostId::new("h".to_string()),
+                },
+            );
+            manager.deregister_session_after_shell_exit(session_id, ctx);
+            assert!(!manager.sessions.contains_key(&session_id));
+        });
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(
+            socket.exists(),
+            "the ExitShell path must not stop (or clean up after) the wrapper's master"
+        );
+    });
+}

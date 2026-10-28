@@ -68,10 +68,10 @@ pub(crate) fn stop_sockets_blocking(program: &str, sockets: &[PathBuf], budget: 
     let deadline = Instant::now() + budget;
     let mut children = Vec::new();
     for socket in sockets.iter().filter(|socket| is_socket(socket)) {
+        // #1083: the guarded form, which can never fall back to a real login.
         match Command::new(program)
-            .arg("-O")
-            .arg("exit")
-            .args(remote_server::ssh::ssh_args(socket))
+            .args(remote_server::ssh::mux_control_args("exit", socket))
+            .env("SHELL", "/bin/sh")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -150,7 +150,9 @@ mod tests {
         let logged = std::fs::read_to_string(&log).unwrap();
         for socket in [&live_a, &live_b] {
             assert!(
-                logged.lines().any(|line| line.starts_with("-O exit")
+                logged.lines().any(|line| line.contains("-O exit")
+                    && line.contains("ProxyCommand=false")
+                    && line.starts_with("-F /dev/null")
                     && line.contains(&format!("ControlPath={}", socket.display()))),
                 "no ssh -O exit for {}: {logged}",
                 socket.display()
@@ -173,6 +175,26 @@ mod tests {
         stop_sockets_blocking(&ssh, &[live], Duration::from_millis(300));
         assert!(started.elapsed() < Duration::from_secs(5));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #1083: one owner for `-O exit` in the normal exit path. The `ExitShell` hook must not
+    /// stop the master (the wrapper does, right after its session client returns); a second
+    /// concurrent `-O exit` from the app is what hit a half-shut master.
+    #[test]
+    fn exit_shell_hook_leaves_the_master_to_the_wrapper() {
+        let view = include_str!("../view.rs");
+        let arm = &view[view
+            .find("ModelEvent::ExitShell { session_id } => {")
+            .expect("ExitShell arm moved")..];
+        let arm = &arm[..arm
+            .find("ModelEvent::SshInitShell")
+            .expect("next arm moved")];
+        assert!(
+            arm.contains("deregister_session_after_shell_exit(*session_id, ctx)"),
+            "{arm}"
+        );
+        assert!(!arm.contains("mgr.deregister_session("), "{arm}");
+        assert!(!arm.contains("stop_control_master"), "{arm}");
     }
 
     #[test]

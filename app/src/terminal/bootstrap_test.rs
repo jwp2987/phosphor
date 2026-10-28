@@ -1274,7 +1274,7 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
         let stub = dir.join("ssh");
         std::fs::write(
             &stub,
-            "#!/bin/sh\ncase \"$1\" in -G|-O) exit 1;; esac\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"$OUT\"\n",
+            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in -G|-O) exit 1;; esac; done\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s' \"$last\" > \"$OUT\"\n",
         )
         .unwrap();
         {
@@ -1338,9 +1338,16 @@ fn ssh_wrapper_job_text_is_short_and_remote_script_still_arrives() {
 /// session over the same master, and finally takes the master down. A stub `ssh` records every
 /// invocation and simulates the master start, the probe answer and failures.
 ///
-/// Every ssh the wrapper runs (master, probe, session, `-O exit`) must carry the user's own
+/// Every ssh the wrapper runs that CONNECTS (master, probe, session) must carry the user's own
 /// arguments (`-p 22 user@host` here): a helper ssh without them would not see the user's
-/// known_hosts / jump host / port (#1039).
+/// known_hosts / jump host / port (#1039). The control commands (`-O check` / `-O exit`) are the
+/// opposite (#1083): they must carry the guards that make a fallback login impossible and must
+/// NOT carry the user's arguments or config.
+///
+/// #1084: a dead socket left at the pane's ControlPath (SIGKILLed master) is removed before the
+/// master starts, so exactly one live master is created; a LIVE master already there (another ssh
+/// of this shell) is never touched and the ssh runs unwrapped. A failing `-O exit` is the last
+/// ssh call: nothing retries or falls back.
 #[test]
 #[cfg(unix)]
 fn ssh_wrapper_decides_after_connecting_over_one_master() {
@@ -1360,6 +1367,11 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         session: &'static str,
         status: i32,
         extra: &'static [&'static str],
+        /// What is already at the ControlPath: "" (nothing), "dead" (a socket nobody listens
+        /// on, as a SIGKILLed master leaves it) or "live" (a listening master).
+        pre: &'static str,
+        /// `ssh -O exit` fails (the master is already gone / shutting down).
+        exit_fails: bool,
     }
     let cases = [
         Case {
@@ -1369,6 +1381,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "plain",
             status: 0,
             extra: &[],
+            pre: "",
+            exit_fails: false,
         },
         Case {
             name: "windows-powershell",
@@ -1377,6 +1391,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "plain",
             status: 0,
             extra: &[],
+            pre: "",
+            exit_fails: false,
         },
         Case {
             name: "posix",
@@ -1385,6 +1401,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "managed",
             status: 0,
             extra: &[],
+            pre: "",
+            exit_fails: false,
         },
         Case {
             name: "inconclusive",
@@ -1393,6 +1411,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "managed",
             status: 0,
             extra: &[],
+            pre: "",
+            exit_fails: false,
         },
         Case {
             name: "windows-behind-jump",
@@ -1401,6 +1421,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "plain",
             status: 0,
             extra: &["-J", "jump"],
+            pre: "",
+            exit_fails: false,
         },
         Case {
             name: "posix-behind-jump",
@@ -1409,6 +1431,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "managed",
             status: 0,
             extra: &["-J", "jump"],
+            pre: "",
+            exit_fails: false,
         },
         // The connection failed: ssh's own error and status come back, nothing else runs.
         Case {
@@ -1418,6 +1442,8 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "none",
             status: 255,
             extra: &[],
+            pre: "",
+            exit_fails: false,
         },
         // Ctrl-C while the master authenticates: ssh dies with 130, nothing else may run (no
         // probe, no session) and no master is left to clean up.
@@ -1428,6 +1454,61 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             session: "none",
             status: 130,
             extra: &[],
+            pre: "",
+            exit_fails: false,
+        },
+        // #1084: a SIGKILLed master's dead socket is removed first, then ONE fresh master.
+        Case {
+            name: "dead-socket-at-start",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &[],
+            pre: "dead",
+            exit_fails: false,
+        },
+        Case {
+            name: "dead-socket-at-start-windows",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &["-J", "jump"],
+            pre: "dead",
+            exit_fails: false,
+        },
+        // #1084: a live master at the path is another ssh's: untouched, this ssh runs unwrapped.
+        Case {
+            name: "live-master-at-start",
+            master: "ok",
+            probe: "",
+            session: "unwrapped",
+            status: 0,
+            extra: &[],
+            pre: "live",
+            exit_fails: false,
+        },
+        // #1083: `-O exit` fails (master already shutting down): no second attempt, no login.
+        Case {
+            name: "exit-fails",
+            master: "ok",
+            probe: "warp-probe-%COMSPEC%-",
+            session: "managed",
+            status: 0,
+            extra: &[],
+            pre: "",
+            exit_fails: true,
+        },
+        Case {
+            name: "exit-fails-windows",
+            master: "ok",
+            probe: "warp-probe-C:\\Windows\\system32\\cmd.exe-$PSVersionTable",
+            session: "plain",
+            status: 0,
+            extra: &[],
+            pre: "",
+            exit_fails: true,
         },
     ];
 
@@ -1503,25 +1584,73 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             };
             // The stub records every invocation (arguments one per line after a `CALL` marker),
             // fails -G, and otherwise behaves like ssh would:
-            //   -O exit  -> removes the socket and records;
-            //   -N       -> master start: fail or bind the ControlPath socket;
+            //   -O check -> 0 when a master listens on the ControlPath, else 255;
+            //   -O exit  -> tells that master to exit (it unlinks its socket), or 255 ($EXIT_FAILS
+            //               or no master);
+            //   -N       -> master start: fail, or start a listening master at the ControlPath
+            //               that serves until told to exit. Like ssh, when the path is taken it
+            //               says "already exists, disabling multiplexing" (recorded as MUXFAIL)
+            //               and still succeeds -- the #1084 leak;
             //   probe    -> prints $PROBE;
             //   other    -> the session.
+            let mux = dir.join("mux.py");
+            std::fs::write(
+                &mux,
+                r#"import os, socket, sys
+op, path = sys.argv[1], sys.argv[2]
+if op in ("check", "exit"):
+    c = socket.socket(socket.AF_UNIX)
+    try:
+        c.connect(path)
+    except OSError:
+        sys.exit(255)
+    c.sendall(op.encode())
+    c.close()
+    sys.exit(0)
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.bind(path)
+except OSError:
+    with open(os.environ["OUT"], "a") as f:
+        f.write("MUXFAIL\n")
+    sys.exit(0)
+s.listen(8)
+if os.fork():
+    sys.exit(0)
+os.setsid()
+null = os.open(os.devnull, os.O_RDWR)
+for fd in (0, 1, 2):
+    os.dup2(null, fd)
+s.settimeout(30)
+try:
+    while True:
+        c, _ = s.accept()
+        if c.recv(16) == b"exit":
+            break
+except OSError:
+    pass
+os.unlink(path)
+"#,
+            )
+            .unwrap();
             let stub = dir.join("ssh");
             std::fs::write(
                 &stub,
                 r#"#!/bin/sh
 printf 'CALL\n' >> "$OUT"
 for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
+p=
+for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac;; esac; done
 case " $* " in
   *" -G "*) exit 1;;
-  *" -O exit "*) for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; rm -f "$p";; esac; done; exit 0;;
+  *" -O check "*) python3 "$MUX" check "$p"; exit $?;;
+  *" -O exit "*) test -n "$EXIT_FAILS" && exit 255; python3 "$MUX" exit "$p"; exit $?;;
   *" -N "*)
     case "$MASTER" in
       fail255) echo "ssh: connect to host failed" >&2; exit 255;;
       fail130) exit 130;;
     esac
-    for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac; python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p";; esac; done
+    python3 "$MUX" serve "$p"
     exit 0;;
   *" -T "*) printf '%s\n' "$PROBE"; exit 0;;
 esac
@@ -1529,6 +1658,16 @@ exit 0
 "#,
             )
             .unwrap();
+            // What is already at the pane's ControlPath before the wrapper runs.
+            let socket_file = socks.join("77");
+            let _live_master = match case.pre {
+                "dead" => {
+                    drop(std::os::unix::net::UnixListener::bind(&socket_file).unwrap());
+                    None
+                }
+                "live" => Some(std::os::unix::net::UnixListener::bind(&socket_file).unwrap()),
+                _ => None,
+            };
             {
                 use std::os::unix::fs::PermissionsExt as _;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1566,10 +1705,19 @@ exit 0
                 .env("OUT", &out_file)
                 .env("MASTER", case.master)
                 .env("PROBE", case.probe)
+                .env("MUX", &mux)
+                .env("EXIT_FAILS", if case.exit_fails { "1" } else { "" })
                 .stdin(std::process::Stdio::null())
                 .status()
                 .unwrap();
             let recorded = std::fs::read_to_string(&out_file).unwrap_or_default();
+            // Stop a stub master the wrapper did not (exit-fails cases), so none outlives the test.
+            if case.pre != "live" {
+                if let Ok(mut master) = std::os::unix::net::UnixStream::connect(&socket_file) {
+                    use std::io::Write as _;
+                    let _ = master.write_all(b"exit");
+                }
+            }
             assert_eq!(
                 status.code(),
                 Some(case.status),
@@ -1592,14 +1740,75 @@ exit 0
                 user_args.push('\n');
             }
             user_args.push_str("user@host\n");
-            // #1039: every helper ssh (master, probe, session, -O exit) carries the user's own
+            // #1083: a control command can never become a login: guarded, no user config, no
+            // user arguments, a placeholder destination, the ControlPath of the pane.
+            let is_control = |call: &&str| call.starts_with("-O\n") || call.contains("\n-O\n");
+            for call in all_calls.iter().filter(|call| is_control(*call)) {
+                for guard in [
+                    "-F\n/dev/null\n",
+                    "ControlMaster=no\n",
+                    "ProxyCommand=false\n",
+                    "BatchMode=yes\n",
+                    "\n-n\n",
+                ] {
+                    assert!(
+                        call.contains(guard),
+                        "{name}/{}: -O call without {guard:?}: {call:?}",
+                        case.name
+                    );
+                }
+                assert!(
+                    call.starts_with("-F\n/dev/null\n")
+                        && call.ends_with("phosphor-mux-control\n")
+                        && !call.contains("user@host")
+                        && !call.contains("jump"),
+                    "{name}/{}: -O call must not carry the user's arguments: {call:?}",
+                    case.name
+                );
+                assert!(
+                    call.contains(&format!("ControlPath={socket_dir_literal}/77\n")),
+                    "{name}/{}: {call:?}",
+                    case.name
+                );
+            }
+            // #1039: every connecting helper ssh (master, probe, session) carries the user's own
             // arguments, so their known_hosts / port / jump host apply to it.
-            for call in &all_calls {
+            for call in all_calls.iter().filter(|call| !is_control(*call)) {
                 assert!(
                     call.contains(&user_args),
                     "{name}/{}: an ssh call without the user's arguments: {call:?}",
                     case.name
                 );
+            }
+            // #1084: the master never hit an occupied path.
+            assert!(
+                !recorded.contains("MUXFAIL"),
+                "{name}/{}: the master was started over an existing socket: {recorded:?}",
+                case.name
+            );
+            let checks_before_master = calls
+                .iter()
+                .take_while(|call| !(call.contains("-N\n") && call.contains("-f\n")))
+                .filter(|call| call.contains("-O\ncheck\n"))
+                .count();
+            assert_eq!(
+                checks_before_master,
+                usize::from(!case.pre.is_empty()),
+                "{name}/{}: an occupied ControlPath is checked (once) before anything else: {recorded:?}",
+                case.name
+            );
+            if case.session == "unwrapped" {
+                // A live master of another ssh: not checked twice, not stopped, not replaced; this
+                // ssh is the user's plain command.
+                assert_eq!(calls.len(), 2, "{name}/{}: {recorded:?}", case.name);
+                assert_eq!(calls[1], user_args, "{name}/{}: {recorded:?}", case.name);
+                assert!(
+                    socket_file.exists(),
+                    "{name}/{}: live master removed",
+                    case.name
+                );
+                std::fs::remove_dir_all(&dir).ok();
+                continue;
             }
             let is_master = |call: &&str| call.contains("-N\n") && call.contains("-f\n");
             let masters = calls.iter().filter(|call| is_master(*call)).count();
@@ -1634,9 +1843,16 @@ exit 0
                     assert_eq!(probes, 1, "{name}/{}: one probe: {recorded:?}", case.name);
                     assert_eq!(
                         exits, 1,
-                        "{name}/{}: the master is taken down at the end: {recorded:?}",
+                        "{name}/{}: the master is taken down at the end, exactly once: {recorded:?}",
                         case.name
                     );
+                    if !case.exit_fails {
+                        assert!(
+                            !socket_file.exists(),
+                            "{name}/{}: the master is gone after the session: {recorded:?}",
+                            case.name
+                        );
+                    }
                     assert_eq!(sessions.len(), 1, "{name}/{}: {recorded:?}", case.name);
                     let session = sessions[0];
                     assert!(
