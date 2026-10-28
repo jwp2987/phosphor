@@ -1575,6 +1575,11 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             if let Some((file, launcher)) = long_command_file::write_command_file(&command) {
                 self.long_command_file = Some(file);
+                // The shell echoes and reports the launcher; the block header, tab title and
+                // suggestion context must show the command the user submitted (#1117).
+                self.terminal_model
+                    .lock()
+                    .set_command_display_override(launcher.clone(), command);
                 return launcher;
             }
         }

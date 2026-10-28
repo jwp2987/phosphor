@@ -1060,19 +1060,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $function:global:PSConsoleHostReadLine = {
             $line = & $script:oldPSConsoleHostReadLine
 
-            # A command too long to type into PSReadLine (#1106) arrives as a launcher line that
-            # names a temp file; report the command itself, not the launcher. The path is
-            # single-quoted with every quote character doubled; undo exactly that.
-            $reported = "$line"
-            if ($reported -match "^\.\s+\(Warp-Run-LongCommand\s+'(.*)'\)\s*$") {
-                try {
-                    $longPath = $Matches[1] -replace "(['\u2018\u2019\u201a\u201b])\1", '$1'
-                    $reported = [System.IO.File]::ReadAllText($longPath, [System.Text.Encoding]::UTF8)
-                } catch {
-                    $reported = "$line"
-                }
-            }
-            Warp-Preexec $reported
+            # A command too long to type into PSReadLine (#1106) arrives as the launcher line
+            # `. (Warp-Run-LongCommand '<path>')`. Preexec reports that line as is; the app
+            # recorded the real command against it (set_command_display_override) and shows that
+            # in the block header, tab title and history.
+            Warp-Preexec "$line"
 
             $line
         }
