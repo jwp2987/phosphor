@@ -1683,7 +1683,14 @@ fn setup_database_or_quarantine_inner(db_path: &Path) -> Result<SqliteConnection
         db_path,
         TRANSIENT_OPEN_RETRY_BUDGET,
         || started.elapsed(),
-        || setup_database(db_path),
+        || {
+            // The probe is a header write, so it runs only on this startup open
+            // (where the read-only fallback happens), not in `setup_database`,
+            // which reconstruct-after-logout and tests also call.
+            let mut conn = setup_database(db_path)?;
+            probe_writable(&mut conn, db_path)?;
+            Ok(conn)
+        },
         std::thread::sleep,
     ) {
         Ok(conn) => return Ok(conn),
@@ -1717,7 +1724,6 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
         full: ("Connecting to SQLite database at {db_url}")
     );
     run_migrations_single_writer(&mut conn, deadline)?;
-    probe_writable(&mut conn, database_path)?;
     Ok(conn)
 }
 
