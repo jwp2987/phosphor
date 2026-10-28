@@ -1364,20 +1364,25 @@ fn under_threshold_turn_is_a_no_op() {
 // stashed request) and `on_new_user_turn` (send_query).
 //
 // Scenario from the issue: context window 32_000, every step reports 20_000 prompt tokens
-// and asks for another tool call.
+// and asks for another tool call. Since #1090 (an unknown max_output reserves a quarter of
+// the window, not 20_000) the threshold on that window is 24_000, so the steps here stand for
+// 26_000, as in the controller's end-to-end test.
 
 fn summary_stream(auto: bool, committed: bool) -> super::FinishedStream {
     super::FinishedStream::Summary { auto, committed }
 }
 
-/// The issue's scenario really is over the threshold: 20_000 of a 32_000 window with the
-/// default reserve. (Guards the numbers the sequence tests below stand for.)
+/// The scenario's step really is over the threshold: 26_000 of a 32_000 window with the
+/// default reserve (threshold 24_000). The issue's own 20_000 was over only because an
+/// unknown max_output used to reserve 20_000 (#1090). (Guards the numbers the sequence tests
+/// below stand for.)
 #[test]
 fn issue_scenario_step_is_over_the_threshold() {
     let cfg = cfg_default();
     let model = model_limit_from_parts(32_000, 0);
+    assert_eq!(usable(&cfg, model), 24_000);
     let counts = TokenCounts {
-        total: 20_000,
+        total: 26_000,
         ..Default::default()
     };
     assert!(is_overflow(&cfg, counts, model));
@@ -2257,7 +2262,12 @@ fn a_short_conversation_is_never_compacted() {
                 let verdict = overflow_verdict(&cfg, tokens(count), model, || summarizable);
                 let label = format!("window={window} max_output={max_output} count={count}");
                 assert!(!verdict.compacts(), "{label}: {verdict:?}");
-                if super::overflow::at_window(count, model) {
+                // At the window *and* over the threshold. A small known max_output can put
+                // the threshold above 98% of the window (128k with 1_024: 130_048), and a
+                // count between the two is under the threshold: no overflow at all.
+                if super::overflow::at_window(count, model)
+                    && is_overflow(&cfg, tokens(count), model)
+                {
                     assert_eq!(verdict, OverflowVerdict::AtWindowCannotHelp, "{label}");
                 }
             }
