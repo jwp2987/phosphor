@@ -591,26 +591,13 @@ pub enum TargetDirError {
     NoManifestDirParent,
 }
 
-/// Retrieves the target directory.
-pub fn app_target_dir(profile: &str) -> Result<PathBuf, TargetDirError> {
-    // TODO(CORE-2805): Make sure this works in distribution.
-    // Ideally we would use `CARGO_TARGET_DIR` but this isn't always available.
-    // See https://github.com/rust-lang/cargo/issues/9661.
-    let manifest_dir = std::env!("CARGO_MANIFEST_DIR");
-    let manifest_dir = Path::new(&manifest_dir);
-    let Some(workspace_dir) = manifest_dir.parent().and_then(Path::parent) else {
-        return Err(TargetDirError::NoManifestDirParent);
-    };
-    Ok(Path::new(workspace_dir).join("target").join(profile))
-}
-
 /// Returns the directory cargo writes a package's final artifacts (e.g. the binary)
 /// to, derived from a build script's `OUT_DIR`.
 ///
 /// `OUT_DIR` is `<target-dir>[/<triple>]/<profile-dir>/build/<pkg>-<hash>/out`, so
-/// the artifact directory is its third ancestor. Unlike [`app_target_dir`], this
-/// honours `CARGO_TARGET_DIR` and `--target <triple>`, and maps every profile to
-/// the directory cargo actually uses (e.g. `dev` -> `debug`).
+/// the artifact directory is its third ancestor. Unlike a `<workspace>/target/<profile>`
+/// guess, this honours `CARGO_TARGET_DIR` and `--target <triple>`, and maps every
+/// profile to the directory cargo actually uses (e.g. `dev` -> `debug`).
 ///
 /// Returns `None` if `out_dir` does not have that shape, rather than guessing.
 pub fn artifact_dir_from_out_dir(out_dir: &Path) -> Option<PathBuf> {
