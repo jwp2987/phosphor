@@ -92,3 +92,105 @@ fn set_osc52_clipboard_access_action_reports_correct_telemetry() {
         }
     });
 }
+
+// --- Launch at login (#1081) -------------------------------------------------
+//
+// #1073 made `general.login_item` opt-in, but upstream had already removed the
+// Features-page switch (6557171da), so the only way to opt in was hand-editing
+// settings.toml. These pin the restored switch's pieces without building the
+// full `FeaturesPageView`, for the same reason as the OSC 52 tests above.
+
+/// The switch is shown exactly where the setting is supported (macOS and
+/// Windows), and the default stays off (AGENTS §5.10; DECLINED.md #1073).
+#[test]
+fn login_item_setting_is_off_by_default_and_only_supported_on_mac_and_windows() {
+    use ::settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    use crate::terminal::general_settings::{GeneralSettings, LoginItem};
+
+    assert!(!LoginItem::default_value());
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let setting = &GeneralSettings::as_ref(ctx).add_app_as_login_item;
+            assert!(!**setting);
+            assert_eq!(
+                setting.is_supported_on_current_platform(),
+                cfg!(any(target_os = "macos", target_os = "windows")),
+            );
+        });
+    });
+}
+
+/// `t!` checks at compile time that each key exists in the English bundle;
+/// this pins that they resolve at runtime and that the label names the app.
+#[test]
+fn launch_at_login_strings_resolve_to_real_text() {
+    crate::i18n::init(Some("en"));
+
+    assert_eq!(
+        crate::t!("settings-features-launch-at-login"),
+        "Launch Phosphor at login"
+    );
+    let description = crate::t!("settings-features-launch-at-login-description");
+    let description_macos = crate::t!("settings-features-launch-at-login-description-macos");
+    assert!(description.contains("Off by default"), "got: {description}");
+    assert!(
+        description_macos.contains("macOS 13"),
+        "got: {description_macos}"
+    );
+}
+
+/// Settings search must find the switch by the words people actually type.
+#[test]
+fn login_item_widget_is_found_by_search() {
+    use super::super::settings_page::SettingsWidget as _;
+
+    let widget = super::LoginItemWidget::default();
+    let terms = widget.search_terms();
+    for word in ["launch", "login", "startup"] {
+        assert!(terms.contains(word), "{word:?} missing from {terms:?}");
+    }
+}
+
+/// The action writes through to `general.login_item` (whose change event the
+/// `login_item` reconcile in lib.rs listens for), and its telemetry reports the
+/// value the user ends up with.
+#[test]
+fn toggle_login_item_flips_the_setting_and_reports_telemetry() {
+    use ::settings::{Setting as _, ToggleableSetting as _};
+    use warpui::SingletonEntity as _;
+
+    use crate::terminal::general_settings::GeneralSettings;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+
+        let telemetry_value = |app: &App| {
+            app.read(
+                |ctx| match FeaturesPageAction::ToggleLoginItem.telemetry_event(ctx) {
+                    TelemetryEvent::FeaturesPageAction { action, value } => {
+                        assert_eq!(action, "ToggleLoginItem");
+                        value
+                    }
+                    _ => panic!("expected a FeaturesPageAction telemetry event"),
+                },
+            )
+        };
+        assert_eq!(telemetry_value(&app), "false");
+
+        app.update(|ctx| {
+            GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .add_app_as_login_item
+                    .toggle_and_save_value(ctx)
+                    .expect("toggle general.login_item");
+            });
+        });
+
+        assert!(app.read(|ctx| *GeneralSettings::as_ref(ctx).add_app_as_login_item.value()));
+        assert_eq!(telemetry_value(&app), "true");
+    });
+}

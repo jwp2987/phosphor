@@ -58,8 +58,8 @@ use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
 };
 use crate::terminal::general_settings::{
-    GeneralSettings, LinkTooltip, PersistConversations, QuitOnLastWindowClosed, RestoreSession,
-    ShowWarningBeforeQuitting,
+    GeneralSettings, LinkTooltip, LoginItem, PersistConversations, QuitOnLastWindowClosed,
+    RestoreSession, ShowWarningBeforeQuitting,
 };
 use crate::terminal::keys_settings::{
     ActivationHotkeyEnabled, CtrlTabBehaviorSetting, KeysSettings, KeysSettingsChangedEvent,
@@ -697,6 +697,7 @@ pub enum FeaturesPageAction {
     ToggleNotificationSound,
     SetNotificationToastDuration,
     ToggleShowWarningBeforeQuitting,
+    ToggleLoginItem,
     ToggleQuitOnLastWindowClosed,
     ToggleSmartSelection,
     SetWordCharAllowlist,
@@ -1064,6 +1065,10 @@ impl FeaturesPageAction {
                         .show_warning_before_quitting
                         .value(),
                 ),
+            },
+            Self::ToggleLoginItem => TelemetryEvent::FeaturesPageAction {
+                action: "ToggleLoginItem".to_string(),
+                value: to_string(*GeneralSettings::as_ref(ctx).add_app_as_login_item.value()),
             },
             Self::ToggleQuitOnLastWindowClosed => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleQuitOnLastWindowClosed".to_string(),
@@ -1947,6 +1952,12 @@ impl TypedActionView for FeaturesPageView {
                 self.page.scroll_by(warpui::units::Pixels::new(40.));
                 ctx.notify();
             }
+            // Saving the value fires `GeneralSettingsChangedEvent::LoginItem`,
+            // which `lib.rs` turns into a `login_item` reconcile that
+            // registers or unregisters the app with the OS.
+            ToggleLoginItem => GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.add_app_as_login_item.toggle_and_save_value(ctx));
+            }),
             ToggleQuitOnLastWindowClosed => {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings
@@ -2622,6 +2633,15 @@ impl FeaturesPageView {
             .is_supported_on_current_platform()
         {
             general_widgets.push(Box::new(QuitWhenAllWindowsClosedWidget::default()));
+        }
+
+        // macOS and Windows only (the setting's `supported_platforms`). Off by
+        // default since #1073; this is the only in-app way to opt in (#1081).
+        if general_settings
+            .add_app_as_login_item
+            .is_supported_on_current_platform()
+        {
+            general_widgets.push(Box::new(LoginItemWidget::default()));
         }
 
         let scroll_settings = ScrollSettings::as_ref(ctx);
@@ -4797,6 +4817,59 @@ impl SettingsWidget for QuitWarningModalWidget {
                 })
                 .finish(),
             None,
+        )
+    }
+}
+
+#[derive(Default)]
+struct LoginItemWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for LoginItemWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "launch at login item startup start automatically sign in boot mac windows"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let general_settings = GeneralSettings::as_ref(app);
+        let ui_builder = appearance.ui_builder();
+        // `SMAppService` needs macOS 13; on older systems the switch still
+        // saves but registration no-ops (see `login_item::macos`).
+        #[cfg(target_os = "macos")]
+        let description = crate::t!("settings-features-launch-at-login-description-macos");
+        #[cfg(not(target_os = "macos"))]
+        let description = crate::t!("settings-features-launch-at-login-description");
+        render_body_item::<FeaturesPageAction>(
+            crate::t!("settings-features-launch-at-login"),
+            None,
+            LocalOnlyIconState::for_setting(
+                LoginItem::storage_key(),
+                LoginItem::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            ui_builder
+                .switch(self.switch_state.clone())
+                .check(*general_settings.add_app_as_login_item)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(FeaturesPageAction::ToggleLoginItem);
+                })
+                .finish(),
+            Some(description),
         )
     }
 }
