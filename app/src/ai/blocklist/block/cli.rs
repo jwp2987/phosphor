@@ -1037,6 +1037,29 @@ impl CLISubagentView {
             .next()
             .is_some_and(|action| !can_accept_blocked_action_from_cli_subagent(&action.action))
         {
+            // An action with no card here (#1070), a question included, is not approved by a
+            // keypress the user made without seeing it. Say why rather than ignoring the key.
+            if self
+                .action_model
+                .as_ref(ctx)
+                .get_pending_actions_for_conversation(&self.conversation_id)
+                .next()
+                .is_some_and(|action| !cli_view_renders_card(&action.action))
+            {
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(
+                            "The agent is waiting on an action this view cannot show, so it \
+                             was not approved. Reject it here, or review it once the \
+                             full-screen program exits."
+                                .to_owned(),
+                        ),
+                        window_id,
+                        ctx,
+                    );
+                });
+            }
             return;
         }
         // Likewise for a requested command whose approval card elides part of it (issue #847):
@@ -2004,8 +2027,12 @@ impl View for CLISubagentView {
             }
 
             if !is_restored_read_only {
-                if let Some(rendered_action) =
-                    blocked_action.and_then(|action| match action.action {
+                // Only an action `cli_view_renders_card` vouches for is drawn here, and only
+                // those can be accepted from this view (`handle_execute_blocked_action`), so
+                // Enter can never approve an action the user was not shown (#1070).
+                if let Some(rendered_action) = blocked_action
+                    .filter(|action| cli_view_renders_card(&action.action))
+                    .and_then(|action| match action.action {
                         AIAgentActionType::WriteToLongRunningShellCommand {
                             block_id,
                             input,
@@ -2103,6 +2130,8 @@ impl View for CLISubagentView {
                             },
                             app,
                         )),
+                        // Unreachable while `cli_view_renders_card` and the arms above agree;
+                        // `cli_view_card_predicate_matches_render_arms` pins the list.
                         _ => None,
                     })
                 {
@@ -2777,8 +2806,49 @@ fn render_transfer_control_reason(reason: &str, app: &AppContext) -> Box<dyn Ele
 /// answer, so executing it here would `recv()` on an empty channel: the turn hangs forever and
 /// the orphaned `recv()` can swallow the next properly answered question. Pressing enter is not
 /// an answer.
+///
+/// Nor for an action this view draws no card for (see [`cli_view_renders_card`]): Enter, the
+/// Allow menu and auto-approve are bound for any blocked action, so without this they would
+/// approve whatever sat at the queue front, unseen (#1070).
 fn can_accept_blocked_action_from_cli_subagent(action: &AIAgentActionType) -> bool {
-    action.can_be_accepted_without_its_own_ui()
+    action.can_be_accepted_without_its_own_ui() && cli_view_renders_card(action)
+}
+
+/// Whether this view draws a blocked-action card (with what is about to happen) for `action`.
+/// The render match in `render` draws one for exactly these and is filtered by this predicate.
+///
+/// Exhaustive on purpose: a new action type does not compile until someone decides whether
+/// this view can show it. Everything else that blocks here stays blocked: it can be rejected
+/// from this view, or reviewed and approved on its own card once the full-screen program
+/// releases the screen. The CLI-subagent tool set (`chat_stream::CLI_AGENT_TOOLS`) keeps such
+/// actions off tag-in turns in the first place; this is the backstop for the turns that
+/// classification misses.
+fn cli_view_renders_card(action: &AIAgentActionType) -> bool {
+    match action {
+        AIAgentActionType::WriteToLongRunningShellCommand { .. }
+        | AIAgentActionType::TransferShellCommandControlToUser { .. }
+        | AIAgentActionType::ReadFiles(..)
+        | AIAgentActionType::Grep { .. }
+        | AIAgentActionType::FileGlobV2 { .. } => true,
+        AIAgentActionType::RequestCommandOutput { .. }
+        | AIAgentActionType::RequestFileEdits { .. }
+        | AIAgentActionType::FileGlob { .. }
+        | AIAgentActionType::ReadMCPResource { .. }
+        | AIAgentActionType::CallMCPTool { .. }
+        | AIAgentActionType::SuggestNewConversation { .. }
+        | AIAgentActionType::SuggestPrompt(..)
+        | AIAgentActionType::OpenCodeReview
+        | AIAgentActionType::ReadDocuments(..)
+        | AIAgentActionType::EditDocuments(..)
+        | AIAgentActionType::CreateDocuments(..)
+        | AIAgentActionType::ReadShellCommandOutput { .. }
+        | AIAgentActionType::UseComputer(..)
+        | AIAgentActionType::InsertCodeReviewComments { .. }
+        | AIAgentActionType::RequestComputerUse(..)
+        | AIAgentActionType::ReadSkill(..)
+        | AIAgentActionType::SendMessageToAgent { .. }
+        | AIAgentActionType::AskUserQuestion { .. } => false,
+    }
 }
 
 fn get_blocked_action_header(action: AIAgentActionType) -> Option<String> {
@@ -3076,6 +3146,99 @@ mod tests {
                 reason: String::new(),
             }
         ));
+    }
+
+    fn actions_with_a_card() -> Vec<AIAgentActionType> {
+        vec![
+            AIAgentActionType::WriteToLongRunningShellCommand {
+                block_id: BlockId::new(),
+                input: b":wq\n".to_vec().into(),
+                mode: AIAgentPtyWriteMode::Raw,
+            },
+            AIAgentActionType::TransferShellCommandControlToUser {
+                reason: String::new(),
+            },
+            AIAgentActionType::Grep {
+                queries: vec!["needle".to_owned()],
+                path: ".".to_owned(),
+            },
+        ]
+    }
+
+    /// Action types this view draws no blocked-action card for. `RequestFileEdits`,
+    /// `CallMCPTool` and `RequestCommandOutput` are the ones a misclassified turn could
+    /// realistically put here.
+    fn actions_without_a_card() -> Vec<AIAgentActionType> {
+        vec![
+            AIAgentActionType::RequestFileEdits {
+                file_edits: vec![],
+                title: None,
+            },
+            AIAgentActionType::CallMCPTool {
+                server_id: None,
+                name: "alpha".to_owned(),
+                input: serde_json::Value::Null,
+            },
+            AIAgentActionType::ReadMCPResource {
+                server_id: None,
+                name: "res".to_owned(),
+                uri: None,
+            },
+            AIAgentActionType::RequestCommandOutput {
+                command: "rm -rf build".to_owned(),
+                is_read_only: None,
+                is_risky: None,
+                rationale: None,
+                uses_pager: None,
+                wait_until_completion: true,
+                citations: vec![],
+            },
+            AIAgentActionType::FileGlob {
+                patterns: vec!["*.rs".to_owned()],
+                path: None,
+            },
+            AIAgentActionType::SendMessageToAgent {
+                addresses: vec![],
+                subject: String::new(),
+                message: String::new(),
+            },
+            AIAgentActionType::OpenCodeReview,
+            AIAgentActionType::AskUserQuestion { questions: vec![] },
+        ]
+    }
+
+    /// #1070: the predicate the render match is filtered by names exactly the action types
+    /// that match has a card arm for (WriteToLongRunningShellCommand,
+    /// TransferShellCommandControlToUser, ReadFiles, Grep, FileGlobV2). Adding a card arm, or a
+    /// new action type (which does not compile until `cli_view_renders_card` classifies it),
+    /// means updating both.
+    #[test]
+    fn cli_view_card_predicate_matches_render_arms() {
+        for action in actions_with_a_card() {
+            assert!(cli_view_renders_card(&action), "{action:?} has a card");
+        }
+        for action in actions_without_a_card() {
+            assert!(!cli_view_renders_card(&action), "{action:?} has no card");
+        }
+    }
+
+    /// #1070: Enter, the Allow menu and auto-approve in this view refuse an action it draws no
+    /// card for. Before, they accepted the queue front whatever it was, so a file edit, an MCP
+    /// call or a shell command blocked behind a full-screen program was approved unseen.
+    #[test]
+    fn cli_subagent_accept_refuses_actions_without_a_card() {
+        for action in actions_without_a_card() {
+            assert!(
+                !can_accept_blocked_action_from_cli_subagent(&action),
+                "Enter must not approve {action:?}: this view never showed it"
+            );
+        }
+        for action in actions_with_a_card() {
+            assert!(
+                can_accept_blocked_action_from_cli_subagent(&action),
+                "{action:?} is shown on a card and stays acceptable"
+            );
+        }
     }
 
     #[test]

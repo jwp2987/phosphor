@@ -4609,10 +4609,11 @@ const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs",
 /// turns either. BYOP's `file_glob` is upstream's `FileGlobV2`; `read_files` stays subject to
 /// `NO_FILE_ROUTE_BLOCKED_TOOLS`.
 ///
-/// Why this is a security boundary and not just tidiness (#1070): the CLI subagent view is the
-/// only confirmation UI while a tagged-in program owns the screen. Any other action blocked on
-/// confirmation there has no card (the match falls through to `None`), yet the view's
-/// Enter/Allow still accepts it, so the user would approve an action they were never shown.
+/// Why this matters (#1070): the CLI subagent view is the only confirmation UI while a
+/// tagged-in program owns the screen, and it draws a card only for these actions
+/// (`cli_view_renders_card` in `blocklist/block/cli.rs`). Any other action would sit blocked
+/// with nothing on screen; the view refuses to accept it, so the turn would stall until the
+/// user rejects it or the program exits.
 /// Ported from mehmetbaykar/zap `e503fdcb7` + `c401597cb`.
 const CLI_AGENT_TOOLS: &[&str] = &[
     "write_to_long_running_shell_command",
@@ -4633,12 +4634,18 @@ const CLI_AGENT_TOOLS: &[&str] = &[
 /// `available_tool_names` / `build_tools_array`.
 fn tool_withdrawn_reason(params: &RequestParams, tool_name: &str) -> Option<&'static str> {
     if params.lrc_command_id.is_some() && tool_name == "run_shell_command" {
-        return Some(
+        // `ask_user_question` is not offered on a CLI-subagent turn, so don't point at it there.
+        return Some(if params.lrc_is_cli_subagent_turn {
+            "A command is already running in this terminal, so `run_shell_command` is not \
+             available. Interact with the running command using \
+             `write_to_long_running_shell_command` / `read_shell_command_output`, or reply \
+             to the user in text."
+        } else {
             "A command is already running in this terminal, so `run_shell_command` is not \
              available. Interact with the running command using \
              `write_to_long_running_shell_command` / `read_shell_command_output`, or ask the \
-             user.",
-        );
+             user."
+        });
     }
     if params.lrc_is_cli_subagent_turn && !CLI_AGENT_TOOLS.contains(&tool_name) {
         return Some(
@@ -14441,6 +14448,20 @@ mod plan_mode_round_trip_tests {
         }
     }
 
+    /// #1070: `ask_user_question` is withheld on a CLI-subagent turn, so the
+    /// `run_shell_command` refusal there must not tell the model to ask the user; the
+    /// monitoring agent's turn, which keeps the question tool, still may.
+    #[test]
+    fn run_shell_command_refusal_only_suggests_asking_when_it_can() {
+        let mut params = tool_result_round_trip(false);
+        params.lrc_command_id = Some("block-1".to_owned());
+        let monitoring = tool_withdrawn_reason(&params, SHELL).expect("refused");
+        assert!(monitoring.contains("ask the user"), "{monitoring}");
+        params.lrc_is_cli_subagent_turn = true;
+        let tagged_in = tool_withdrawn_reason(&params, SHELL).expect("refused");
+        assert!(!tagged_in.contains("ask the"), "{tagged_in}");
+    }
+
     /// #1070 (`c401597cb`): the agent that started or monitors a long-running command is not a
     /// CLI-subagent turn. Its actions render in its own AI block, so it keeps its tools, minus
     /// `run_shell_command`.
@@ -15278,6 +15299,189 @@ mod plan_mode_round_trip_tests {
             assert_eq!(kind, RejectedToolCallKind::NotOffered, "{refusal:?}");
             assert_eq!(tool.as_deref(), Some("some_tool"), "{refusal:?}");
             assert!(!detail.is_empty(), "{refusal:?}");
+        }
+    }
+
+    /// Streams one model turn whose only output is a single `name(args)` tool call, through
+    /// the real `generate_byop_output` path against a local mock OpenAI endpoint, and returns
+    /// every message the stream emitted. Same harness as
+    /// `streaming_a_withheld_websearch_emits_no_card_and_one_refusal`.
+    async fn stream_one_tool_call(
+        params: RequestParams,
+        call_id: &str,
+        name: &str,
+        args: Value,
+    ) -> Vec<api::Message> {
+        use std::io::{Read, Write};
+
+        let chunk_call = serde_json::json!({
+            "id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "gpt-test",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [{
+                "index": 0, "id": call_id, "type": "function",
+                "function": {"name": name, "arguments": args.to_string()}
+            }]}, "finish_reason": null}]
+        })
+        .to_string();
+        let chunk_done = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let body = format!("data: {chunk_call}\n\ndata: {chunk_done}\n\ndata: [DONE]\n\n");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("local_addr").port();
+        std::thread::spawn(move || {
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + want {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                 connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.flush();
+        });
+
+        let lrc_command_id = params.lrc_command_id.clone();
+        let (_cancel_tx, cancellation_rx) = futures::channel::oneshot::channel::<()>();
+        let mut stream = generate_byop_output(ByopOutputInput {
+            params,
+            base_url: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "test-key".to_owned(),
+            model_id: "gpt-test".to_owned(),
+            api_type: AgentProviderApiType::OpenAi,
+            reasoning_effort: Default::default(),
+            extra_headers: vec![],
+            task_id: "task-1".to_owned(),
+            target_task_id: "task-1".to_owned(),
+            needs_create_task: false,
+            lrc_command_id,
+            lrc_should_spawn_subagent: false,
+            context_window: None,
+            max_output_tokens: 0,
+            cancellation_rx,
+            attachment_caps: attachment_caps::AttachmentCaps::default(),
+            other_provider_hint: None,
+        })
+        .await
+        .unwrap_or_else(|_| panic!("generate_byop_output should build the request"));
+
+        let mut messages: Vec<api::Message> = Vec::new();
+        let collect = async {
+            while let Some(event) = stream.next().await {
+                let Ok(event) = event else { continue };
+                let Some(api::response_event::Type::ClientActions(actions)) = event.r#type else {
+                    continue;
+                };
+                for action in actions.actions {
+                    match action.action {
+                        Some(api::client_action::Action::AddMessagesToTask(add)) => {
+                            messages.extend(add.messages)
+                        }
+                        Some(api::client_action::Action::UpdateTaskMessage(update)) => {
+                            messages.extend(update.message)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), collect)
+            .await
+            .expect("the mock stream should finish");
+        messages
+    }
+
+    /// #1070, through the real streaming path: on a CLI-subagent turn (the user tagged the
+    /// agent in to a running command) the locally intercepted tools -- `webfetch`, `todowrite`,
+    /// `search_codebase` -- are refused by the dispatch gate before their interceptors run,
+    /// even with web access and codebase context switched on. Each call gets exactly one
+    /// carrier ToolCall and one `tool_not_offered` result naming the tag-in, and no
+    /// web-status card or todo update is emitted.
+    #[tokio::test]
+    async fn cli_subagent_turn_refuses_intercepted_tools_before_they_run() {
+        for (name, args) in [
+            (
+                tools::webfetch::TOOL_NAME,
+                serde_json::json!({ "url": "https://example.com" }),
+            ),
+            (
+                tools::todowrite::TOOL_NAME,
+                serde_json::json!({ "todos": [
+                    { "content": "x", "status": "pending", "priority": "high", "id": "1" }
+                ] }),
+            ),
+            (
+                tools::codebase::TOOL_NAME,
+                serde_json::json!({ "query": "main" }),
+            ),
+        ] {
+            let mut params = tool_result_round_trip(false);
+            params.web_search_enabled = true;
+            params.codebase_context_enabled = true;
+            params.lrc_command_id = Some("block-1".to_owned());
+            params.lrc_is_cli_subagent_turn = true;
+
+            let call_id = format!("call_{name}");
+            let messages = stream_one_tool_call(params, &call_id, name, args).await;
+
+            assert!(
+                !messages.iter().any(|m| matches!(
+                    &m.message,
+                    Some(api::message::Message::WebSearch(_))
+                        | Some(api::message::Message::WebFetch(_))
+                        | Some(api::message::Message::UpdateTodos(_))
+                )),
+                "{name} on a CLI-subagent turn must not reach its interceptor"
+            );
+            let calls = messages
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        &m.message,
+                        Some(api::message::Message::ToolCall(tc)) if tc.tool_call_id == call_id
+                    )
+                })
+                .count();
+            assert_eq!(calls, 1, "{name}: exactly one (carrier) ToolCall");
+            let results: Vec<&api::Message> = messages
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        &m.message,
+                        Some(api::message::Message::ToolCallResult(r)) if r.tool_call_id == call_id
+                    )
+                })
+                .collect();
+            assert_eq!(results.len(), 1, "{name}: exactly one error result");
+            let data = &results[0].server_message_data;
+            assert!(
+                data.contains(r#""error":"tool_not_offered""#),
+                "{name}: {data}"
+            );
+            assert!(
+                data.contains("tagged in"),
+                "{name}: refused as a tag-in turn: {data}"
+            );
+            assert!(!data.contains("_byop_intercepted"), "{name}: {data}");
         }
     }
 
