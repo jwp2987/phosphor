@@ -767,6 +767,18 @@ impl LLMPreferences {
             .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
     }
 
+    /// The model a profile's own `base_model` names (agent-mode default when unset),
+    /// ignoring the `/model` override; the settings card compares it with
+    /// [`Self::get_effective_base_model_for_profile`] to tell whether `/model` is in play.
+    pub fn get_configured_base_model_for_profile<'a>(
+        &'a self,
+        base_model_id: Option<&LLMId>,
+    ) -> &'a LLMInfo {
+        base_model_id
+            .and_then(|id| self.models_by_feature.agent_mode.info_for_id(id))
+            .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
+    }
+
     /// What a profile's title / active-AI / next-command / full-terminal-use slot shows on
     /// the settings pages: the slot's own model when it is set (and still known), otherwise
     /// the model the profile's *base* slot resolves to

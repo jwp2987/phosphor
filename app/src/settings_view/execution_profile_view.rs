@@ -5,7 +5,7 @@ use crate::ai::execution_profiles::profiles::{
 use crate::ai::execution_profiles::{
     ActionPermission, AskUserQuestionPermission, WriteToPtyPermission,
 };
-use crate::ai::llms::LLMPreferences;
+use crate::ai::llms::{LLMId, LLMPreferences};
 use crate::appearance::Appearance;
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::settings::AISettings;
@@ -135,36 +135,30 @@ impl View for ExecutionProfileView {
         // The title / active-AI / next-command models fall back to the model the profile's
         // base slot resolves to (#1099: not the first configured model); matching base means
         // "not configured separately".
-        let title_model = llm_preferences
-            .get_slot_model_for_profile(
-                app,
-                profile.title_model.as_ref(),
-                profile.base_model.as_ref(),
-            )
-            .display_name
-            .clone();
+        let title_model = slot_model_label(
+            llm_preferences,
+            app,
+            profile.title_model.as_ref(),
+            profile.base_model.as_ref(),
+        );
 
         // The active AI model (used for prompt suggestions / NLD / relevant files), falls back
         // to base.
-        let active_ai_model = llm_preferences
-            .get_slot_model_for_profile(
-                app,
-                profile.active_ai_model.as_ref(),
-                profile.base_model.as_ref(),
-            )
-            .display_name
-            .clone();
+        let active_ai_model = slot_model_label(
+            llm_preferences,
+            app,
+            profile.active_ai_model.as_ref(),
+            profile.base_model.as_ref(),
+        );
 
         // The Next Command model (ghost-text completion / zero-state suggestions), falls back
         // to base.
-        let next_command_model = llm_preferences
-            .get_slot_model_for_profile(
-                app,
-                profile.next_command_model.as_ref(),
-                profile.base_model.as_ref(),
-            )
-            .display_name
-            .clone();
+        let next_command_model = slot_model_label(
+            llm_preferences,
+            app,
+            profile.next_command_model.as_ref(),
+            profile.base_model.as_ref(),
+        );
 
         let computer_use_model = profile
             .computer_use_model
@@ -638,6 +632,37 @@ fn with_standard_vertical_margin(element: Box<dyn Element>) -> Box<dyn Element> 
         .finish()
 }
 
+/// The card's text for a title / active-AI / next-command slot: its own model when set;
+/// otherwise "Same as base: <model it will actually use>", noting `/model` when that choice
+/// (not the profile's own base) is what the slot follows at request time (#1114).
+fn slot_model_label(
+    llm_preferences: &LLMPreferences,
+    app: &AppContext,
+    slot_model_id: Option<&LLMId>,
+    base_model_id: Option<&LLMId>,
+) -> String {
+    if let Some(info) = slot_model_id.and_then(|id| llm_preferences.get_llm_info(id)) {
+        return info.display_name.clone();
+    }
+    let effective = llm_preferences.get_effective_base_model_for_profile(app, base_model_id);
+    let configured = llm_preferences.get_configured_base_model_for_profile(base_model_id);
+    unset_slot_label(
+        effective.display_name.clone(),
+        effective.id != configured.id,
+    )
+}
+
+fn unset_slot_label(model: String, chosen_with_model_command: bool) -> String {
+    if chosen_with_model_command {
+        crate::t!(
+            "settings-exec-profile-slot-same-as-base-override",
+            model = model
+        )
+    } else {
+        crate::t!("settings-exec-profile-slot-same-as-base", model = model)
+    }
+}
+
 fn render_model_line_with_icon(
     icon: Icon,
     label: impl Into<String>,
@@ -955,3 +980,7 @@ fn render_mcp_denylist(
         is_ai_enabled,
     ))
 }
+
+#[cfg(test)]
+#[path = "execution_profile_view_tests.rs"]
+mod tests;
