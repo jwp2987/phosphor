@@ -2,7 +2,8 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{copy, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Local;
@@ -18,6 +19,18 @@ const MAX_FILES_IN_CLI_ROTATION: usize = 10;
 const CLI_LOG_SUBDIRECTORY: &str = "oz";
 const TUI_LOG_SUBDIRECTORY: &str = "warp-cli";
 const TEMP_LOG_FILE_SUFFIX: &str = "old.temp";
+/// `<name>.log.lock`: held (exclusively, for the process lifetime) by the one
+/// process that owns `<name>.log` and its rotation slots (#1071).
+const LOCK_FILE_SUFFIX: &str = "lock";
+/// `<name>.log.secondary.<pid>`: the log of a process that started while
+/// another live process owned `<name>.log` (#1071).
+const SECONDARY_LOG_FILE_INFIX: &str = "secondary";
+/// How many `<name>.log.secondary.<pid>` files to keep, newest first.
+const MAX_SECONDARY_LOGS: usize = 5;
+/// How long the crash-recovery process waits for the OS to release the
+/// crashed parent's log lock (Windows releases it "eventually").
+const PARENT_LOCK_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
+const PARENT_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Runtime logging state, computed from `LogConfig` during initialization.
 #[derive(Debug)]
@@ -110,6 +123,245 @@ impl LogState {
 
 static LOG_STATE: OnceLock<LogState> = OnceLock::new();
 
+/// Whether this process may rename or rotate `<name>.log` and its `.old.*`
+/// slots (#1071).
+///
+/// A second process (a forwarding launch that hands off to the running
+/// instance, a concurrent CLI command, the crash-recovery child) starts while
+/// another live process is writing `<name>.log`. Before #1071 every process
+/// renamed `<name>.log` to `.old.temp` at startup, so the live instance kept
+/// writing into `.old.temp` (an open handle follows a rename on every
+/// platform) and the next launch renamed over it, destroying that session's
+/// log. Ownership is an exclusive OS lock on `<name>.log.lock`; it is released
+/// by the OS when the owner exits or crashes.
+#[derive(Debug)]
+enum LogOwnership {
+    /// This process owns `<name>.log`. Holds the lock file for the life of the
+    /// process; `None` when the filesystem cannot lock, in which case we keep
+    /// the pre-#1071 behaviour rather than refuse to rotate at all.
+    Owner(#[allow(dead_code)] Option<File>),
+    /// Another process owns `<name>.log`; this one must not touch it.
+    NotOwner,
+}
+
+impl LogOwnership {
+    fn is_owner(&self) -> bool {
+        matches!(self, LogOwnership::Owner(_))
+    }
+}
+
+/// The file this process is logging to, and whether it owns the main log.
+#[derive(Debug)]
+struct ActiveLog {
+    path: PathBuf,
+    ownership: LogOwnership,
+}
+
+/// Set during init; updated when the crash-recovery process takes over the
+/// log of its crashed parent. `None` when not logging to a file.
+static ACTIVE_LOG: Mutex<Option<ActiveLog>> = Mutex::new(None);
+
+enum LockAttempt {
+    Acquired(File),
+    HeldByAnotherProcess,
+    /// The lock file could not be opened or the filesystem does not support
+    /// locking.
+    Unavailable(std::io::Error),
+}
+
+fn lock_file_path(log_directory: &Path, logfile_name: &str) -> PathBuf {
+    log_directory.join(format!("{logfile_name}.{LOCK_FILE_SUFFIX}"))
+}
+
+fn secondary_log_file_path(log_directory: &Path, logfile_name: &str, pid: u32) -> PathBuf {
+    log_directory.join(format!("{logfile_name}.{SECONDARY_LOG_FILE_INFIX}.{pid}"))
+}
+
+/// Tries to take the exclusive lock that marks this process as the owner of
+/// `<logfile_name>`. Never blocks.
+fn try_acquire_log_lock(log_directory: &Path, logfile_name: &str) -> LockAttempt {
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_file_path(log_directory, logfile_name))
+    {
+        Ok(file) => file,
+        Err(err) => return LockAttempt::Unavailable(err),
+    };
+    match file.try_lock() {
+        Ok(()) => LockAttempt::Acquired(file),
+        Err(fs::TryLockError::WouldBlock) => LockAttempt::HeldByAnotherProcess,
+        Err(fs::TryLockError::Error(err)) => LockAttempt::Unavailable(err),
+    }
+}
+
+/// Deletes the oldest `<logfile_name>.secondary.<pid>` files so at most
+/// `keep` remain, never deleting `exclude` (counted towards `keep`).
+fn prune_secondary_logs(
+    log_directory: &Path,
+    logfile_name: &str,
+    keep: usize,
+    exclude: Option<&Path>,
+) {
+    let prefix = format!("{logfile_name}.{SECONDARY_LOG_FILE_INFIX}.");
+    let Ok(read_dir) = fs::read_dir(log_directory) else {
+        return;
+    };
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = read_dir
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            name.strip_prefix(&prefix)?.parse::<u32>().ok()?;
+            if exclude == Some(path.as_path()) {
+                return None;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            Some((modified, path))
+        })
+        .collect();
+    // Newest first.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let keep_others = keep.saturating_sub(usize::from(exclude.is_some()));
+    for (_, path) in candidates.into_iter().skip(keep_others) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// What [`setup_log_files_for_current_execution`] opened.
+struct LogFileSetup {
+    file: File,
+    path: PathBuf,
+    ownership: LogOwnership,
+    /// A note to log once the logger exists.
+    warning: Option<String>,
+}
+
+/// Opens the file this execution logs to.
+///
+/// - The crash-recovery process logs to `<name>.recovery` and touches nothing
+///   else (its parent owns `<name>`).
+/// - A process that takes the lock owns `<name>`: the previous execution's log
+///   is renamed to `<name>.old.temp` (rotated later in the background) and a
+///   fresh `<name>` is created.
+/// - A process that finds the lock held by another live process logs to
+///   `<name>.secondary.<pid>` and never renames, truncates or rotates the
+///   owner's files (#1071).
+fn setup_log_files_for_current_execution(
+    log_directory: &Path,
+    logfile_name: &str,
+    is_from_crash_recovery_process: bool,
+) -> Result<LogFileSetup> {
+    fs::create_dir_all(log_directory)?;
+
+    let (path, ownership, warning) = if is_from_crash_recovery_process {
+        // Use a temporary file for logs within the crash recovery process. We intentionally do
+        // not rename the old main log file to `warp.log.temp` like we do below because this
+        // would result in us moving the log file of the parent process.
+        (
+            crash_recovery_process_log_file_path(log_directory, logfile_name),
+            LogOwnership::NotOwner,
+            None,
+        )
+    } else {
+        let (ownership, warning) = match try_acquire_log_lock(log_directory, logfile_name) {
+            LockAttempt::Acquired(lock) => (LogOwnership::Owner(Some(lock)), None),
+            LockAttempt::HeldByAnotherProcess => (LogOwnership::NotOwner, None),
+            LockAttempt::Unavailable(err) => (
+                LogOwnership::Owner(None),
+                Some(format!(
+                    "Could not lock {}: {err}. Rotating logs without checking for another \
+                     running instance.",
+                    lock_file_path(log_directory, logfile_name).display()
+                )),
+            ),
+        };
+        if ownership.is_owner() {
+            let main_log_path = main_process_log_file_path(log_directory, logfile_name);
+            // Rename the old main log file to `warp.log.temp`.
+            // We rotate the log files later in the background to make fewer blocking calls.
+            let _ = fs::rename(
+                &main_log_path,
+                temp_log_file_path(log_directory, logfile_name),
+            );
+            (main_log_path, ownership, warning)
+        } else {
+            let path = secondary_log_file_path(log_directory, logfile_name, std::process::id());
+            prune_secondary_logs(log_directory, logfile_name, MAX_SECONDARY_LOGS, Some(&path));
+            let warning = Some(format!(
+                "Another process owns {}; this process logs to {} instead.",
+                main_process_log_file_path(log_directory, logfile_name).display(),
+                path.display()
+            ));
+            (path, ownership, warning)
+        }
+    };
+
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    Ok(LogFileSetup {
+        file,
+        path,
+        ownership,
+        warning,
+    })
+}
+
+/// The crash-recovery process's half of [`on_parent_process_crash`]: takes
+/// ownership of the main log once the crashed parent's lock is released, then
+/// moves the parent's log to `<name>.old.temp` and its own `<name>.recovery`
+/// into `<name>`.
+///
+/// If another live process still owns the main log (the parent was not its
+/// owner), nothing of the owner's is touched; this process's log moves from
+/// `<name>.recovery` to `<name>.secondary.<pid>` instead, so the next
+/// crash-recovery child does not truncate it. Returns the new active log.
+fn take_over_log_after_parent_crash(log_directory: &Path, logfile_name: &str) -> ActiveLog {
+    let main_log_path = main_process_log_file_path(log_directory, logfile_name);
+    let recovery_path = crash_recovery_process_log_file_path(log_directory, logfile_name);
+
+    let mut waited = Duration::ZERO;
+    let ownership = loop {
+        match try_acquire_log_lock(log_directory, logfile_name) {
+            LockAttempt::Acquired(lock) => break LogOwnership::Owner(Some(lock)),
+            LockAttempt::Unavailable(_) => break LogOwnership::Owner(None),
+            LockAttempt::HeldByAnotherProcess if waited < PARENT_LOCK_RELEASE_TIMEOUT => {
+                std::thread::sleep(PARENT_LOCK_RETRY_INTERVAL);
+                waited += PARENT_LOCK_RETRY_INTERVAL;
+            }
+            LockAttempt::HeldByAnotherProcess => break LogOwnership::NotOwner,
+        }
+    };
+
+    if ownership.is_owner() {
+        let _ = fs::rename(
+            &main_log_path,
+            temp_log_file_path(log_directory, logfile_name),
+        );
+        let _ = fs::rename(&recovery_path, &main_log_path);
+        ActiveLog {
+            path: main_log_path,
+            ownership,
+        }
+    } else {
+        let path = secondary_log_file_path(log_directory, logfile_name, std::process::id());
+        let path = if fs::rename(&recovery_path, &path).is_ok() {
+            path
+        } else {
+            recovery_path
+        };
+        ActiveLog { path, ownership }
+    }
+}
+
 /// Formats a log record to be output to the terminal.
 fn format_for_terminal_output(
     buf: &mut env_logger::fmt::Formatter,
@@ -182,7 +434,8 @@ pub fn on_crash_recovery_process_killed() {
     ));
 }
 
-/// Handles the crash recovery process "recovering" from a parent crash by:
+/// Handles the crash recovery process "recovering" from a parent crash by
+/// first taking ownership of the main log (see [`take_over_log_after_parent_crash`]), then:
 /// 1) Renaming the log file from the main process (which just panicked) to `warp.log.old.temp`.
 /// 2) Moving the crash recovery process log (which is located at `warp.log.recovery`) to the usual
 ///    path warp logs are located (log_directory/warp.log).
@@ -195,15 +448,10 @@ pub fn on_parent_process_crash() {
         return;
     }
 
-    let main_log_path = main_process_log_file_path(&config.log_directory, &config.logfile_name);
-    let temp_path = temp_log_file_path(&config.log_directory, &config.logfile_name);
-
-    let _ = fs::rename(&main_log_path, temp_path);
-
-    let _ = fs::rename(
-        crash_recovery_process_log_file_path(&config.log_directory, &config.logfile_name),
-        main_log_path,
-    );
+    let active = take_over_log_after_parent_crash(&config.log_directory, &config.logfile_name);
+    if let Ok(mut slot) = ACTIVE_LOG.lock() {
+        *slot = Some(active);
+    }
 }
 
 /// Rotates the log and telemetry files, such that:
@@ -222,6 +470,8 @@ pub async fn rotate_log_files() {
     }
 }
 
+/// Rotates the startup slots, if this process owns the main log. A process
+/// that does not own it (#1071) must not move the owner's files.
 pub async fn rotate_files(channel_file_name: &str, max_rotation: usize) -> Result<()> {
     let log_directory = match log_directory() {
         Ok(log_directory) => log_directory,
@@ -229,6 +479,43 @@ pub async fn rotate_files(channel_file_name: &str, max_rotation: usize) -> Resul
             return Err(anyhow::anyhow!("Could not get log directory {err:?}"));
         }
     };
+
+    rotate_files_if_owner(&log_directory, channel_file_name, max_rotation);
+    Ok(())
+}
+
+/// Rotates with this process's [`ActiveLog`] ownership. Synchronous so the
+/// mutex guard never lives inside the `rotate_files` future.
+fn rotate_files_if_owner(log_directory: &Path, channel_file_name: &str, max_rotation: usize) {
+    let Ok(active) = ACTIVE_LOG.lock() else {
+        return;
+    };
+    if let Some(active) = active.as_ref() {
+        rotate_files_in(
+            log_directory,
+            channel_file_name,
+            max_rotation,
+            &active.ownership,
+        );
+    }
+}
+
+/// The body of [`rotate_files`]. Does nothing unless `ownership` says this
+/// process owns the main log: a process that started while another one was
+/// running must not shift, rename or delete the owner's files (#1071).
+/// Returns whether it rotated.
+fn rotate_files_in(
+    log_directory: &Path,
+    channel_file_name: &str,
+    max_rotation: usize,
+    ownership: &LogOwnership,
+) -> bool {
+    if !ownership.is_owner() {
+        return false;
+    }
+    let log_directory = log_directory.to_path_buf();
+
+    prune_secondary_logs(&log_directory, channel_file_name, MAX_SECONDARY_LOGS, None);
 
     // Delete the oldest log file (and any nested .in_session.M chunks that
     // belonged to that oldest startup-rotation slot).
@@ -268,8 +555,7 @@ pub async fn rotate_files(channel_file_name: &str, max_rotation: usize) -> Resul
         temp_file_path,
         log_directory.join(format!("{channel_file_name}.old.0")),
     );
-
-    Ok(())
+    true
 }
 
 /// Remove every `<channel_file_name>.old.{slot_index}.in_session.M` file.
@@ -395,6 +681,12 @@ pub fn log_file_path() -> Result<PathBuf> {
     let state = LOG_STATE
         .get()
         .ok_or_else(|| anyhow::anyhow!("Logging not initialized"))?;
+    // A process that does not own the main log writes elsewhere (#1071).
+    if let Ok(active) = ACTIVE_LOG.lock()
+        && let Some(active) = active.as_ref()
+    {
+        return Ok(active.path.clone());
+    }
     Ok(state.log_file_path())
 }
 
@@ -410,13 +702,19 @@ pub fn log_file_path() -> Result<PathBuf> {
 /// - For each previous-startup slot `K = 0..max_rotation`, in order:
 ///   `<name>.log.old.K` (that session's final-state log) immediately
 ///   followed by its `<name>.log.old.K.in_session.N` chunks, sorted by N.
+/// - `<name>.log.secondary.<pid>` logs of processes that ran while another
+///   process owned `<name>.log` (#1071), sorted by pid.
 ///
 /// Scans the resolved log directory for files belonging to `logfile_name`.
 fn collect_log_paths_in(log_directory: &Path, logfile_name: &str) -> Result<Vec<PathBuf>> {
     let current_log_path = log_directory.join(logfile_name);
     let in_session_prefix = format!("{logfile_name}.in_session.");
     let old_prefix = format!("{logfile_name}.old.");
+    let secondary_prefix = format!("{logfile_name}.{SECONDARY_LOG_FILE_INFIX}.");
 
+    // Logs of processes that ran while another process owned the main log
+    // (#1071): <name>.log.secondary.<pid>.
+    let mut secondary_logs: Vec<(u32, PathBuf)> = Vec::new();
     // Current session's mid-session rotation slots: <name>.log.in_session.N.
     let mut current_in_session: Vec<(usize, PathBuf)> = Vec::new();
     // Previous-startup final logs: <name>.log.old.K.
@@ -445,8 +743,13 @@ fn collect_log_paths_in(log_directory: &Path, logfile_name: &str) -> Result<Vec<
             {
                 old_nested.push((slot, chunk, path));
             }
+        } else if let Some(suffix) = file_name.strip_prefix(&secondary_prefix)
+            && let Ok(pid) = suffix.parse::<u32>()
+        {
+            secondary_logs.push((pid, path));
         }
     }
+    secondary_logs.sort_by_key(|(pid, _)| *pid);
     current_in_session.sort_by_key(|(index, _)| *index);
     old_logs.sort_by_key(|(index, _)| *index);
     old_nested.sort_by_key(|(slot, chunk, _)| (*slot, *chunk));
@@ -488,6 +791,12 @@ fn collect_log_paths_in(log_directory: &Path, logfile_name: &str) -> Result<Vec<
             files.push(npath);
         }
     }
+    files.extend(
+        secondary_logs
+            .into_iter()
+            .map(|(_, path)| path)
+            .filter(|path| path.is_file()),
+    );
 
     if files.is_empty() {
         return Err(anyhow::anyhow!("No warp logs were found for {logfile_name}"));
@@ -693,40 +1002,6 @@ fn init_internal(
     log_destination: Option<LogDestination>,
     max_file_size_bytes: Option<u64>,
 ) -> Result<()> {
-    /// Returns an empty file named `warp.log` to log the current execution, and
-    /// renames the previous execution's log to a temporary name.
-    fn setup_log_files_for_current_execution(
-        log_directory: &Path,
-        logfile_name: &str,
-        is_from_crash_recovery_process: bool,
-    ) -> Result<File> {
-        fs::create_dir_all(log_directory)?;
-
-        let main_log_path = if is_from_crash_recovery_process {
-            // Use a temporary file for logs within the crash recovery process. We intentionally do
-            // not rename the old main log file to `warp.log.temp` like we do below because this
-            // would result in us moving the log file of the parent process.
-            crash_recovery_process_log_file_path(log_directory, logfile_name)
-        } else {
-            let main_log_path = main_process_log_file_path(log_directory, logfile_name);
-
-            // Rename the old main log file to `warp.log.temp`.
-            // We rotate the log files later in the background to make fewer blocking calls.
-            let _ = fs::rename(
-                main_log_path.clone(),
-                temp_log_file_path(log_directory, logfile_name),
-            );
-            main_log_path
-        };
-
-        let main_log_file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(main_log_path)?;
-        Ok(main_log_file)
-    }
-
     let mut base_logger = env_logger::builder();
 
     base_logger.filter_level(LevelFilter::Info);
@@ -770,6 +1045,7 @@ fn init_internal(
     // must not stop the app from starting. Fall back to terminal logging and
     // say, once the logger exists, which path was the problem.
     let mut log_file_failure = None;
+    let mut log_file_warning = None;
     let mut log_file_target = None;
     if use_logfile {
         let setup = setup_log_files_for_current_execution(
@@ -777,27 +1053,40 @@ fn init_internal(
             &state.logfile_name,
             is_from_crash_recovery_process,
         )
-        .and_then(|file| {
-            // Crash-recovery logs are short-lived (the file is renamed into place
-            // by the parent on crash, and otherwise deleted on clean exit), so
-            // skip in-session rotation for them -- `max_file_size_bytes` only
-            // applies to the main process's `warp.log`.
-            let target: Box<dyn std::io::Write + Send + 'static> = if is_from_crash_recovery_process
-            {
-                Box::new(file)
-            } else {
-                crate::rotation::wrap_for_rotation(
-                    file,
-                    &state.log_directory,
-                    &state.logfile_name,
-                    max_file_size_bytes,
-                    state.max_rotation,
-                )?
-            };
-            Ok(target)
+        .and_then(|setup| {
+            let LogFileSetup {
+                file,
+                path,
+                ownership,
+                warning,
+            } = setup;
+            // Crash-recovery and secondary logs are short-lived (the file is
+            // renamed into place by the parent on crash, and otherwise deleted
+            // on clean exit; secondaries are pruned), so skip in-session
+            // rotation for them -- `max_file_size_bytes` only applies to the
+            // owner's `warp.log`.
+            let target: Box<dyn std::io::Write + Send + 'static> =
+                if is_from_crash_recovery_process || !ownership.is_owner() {
+                    Box::new(file)
+                } else {
+                    crate::rotation::wrap_for_rotation(
+                        file,
+                        &state.log_directory,
+                        &state.logfile_name,
+                        max_file_size_bytes,
+                        state.max_rotation,
+                    )?
+                };
+            Ok((target, ActiveLog { path, ownership }, warning))
         });
         match setup {
-            Ok(target) => log_file_target = Some(target),
+            Ok((target, active, warning)) => {
+                log_file_target = Some(target);
+                log_file_warning = warning;
+                if let Ok(mut slot) = ACTIVE_LOG.lock() {
+                    *slot = Some(active);
+                }
+            }
             Err(err) => {
                 crate::record_log_fallback(state.log_directory.clone(), format!("{err:#}"));
                 log_file_failure = Some(format!(
@@ -826,6 +1115,9 @@ fn init_internal(
 
     if let Some(message) = log_file_failure {
         log::error!("{message}");
+    }
+    if let Some(message) = log_file_warning {
+        log::info!("{message}");
     }
 
     // If we're logging to a file, initialize the `log_panics` crate, which

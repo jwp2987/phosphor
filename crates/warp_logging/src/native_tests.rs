@@ -324,3 +324,223 @@ fn crash_recovery_paths_use_channel_name_in_tui_directory() {
         tui_dir.join("warp_dev.log.recovery")
     );
 }
+
+// --- #1071: a second process must never rename, truncate or rotate the live
+// owner's log. Each `setup_log_files_for_current_execution` call below opens
+// its own handle on `<name>.lock`, so the OS lock contends exactly as it does
+// between two processes (flock on Unix, LockFileEx on Windows).
+
+const LOG: &str = "phosphor.log";
+
+fn read(dir: &Path, name: &str) -> String {
+    fs::read_to_string(dir.join(name)).unwrap()
+}
+
+fn owner_setup(dir: &Path) -> LogFileSetup {
+    let setup = setup_log_files_for_current_execution(dir, LOG, false).unwrap();
+    assert!(setup.ownership.is_owner(), "first process must own the log");
+    assert_eq!(setup.path, dir.join(LOG));
+    setup
+}
+
+#[test]
+fn second_process_does_not_rename_or_truncate_the_live_owner_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut owner = owner_setup(tmp.path());
+    owner.file.write_all(b"owner line 1\n").unwrap();
+
+    let mut second = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+
+    assert!(!second.ownership.is_owner());
+    assert_eq!(
+        second.path,
+        tmp.path()
+            .join(format!("{LOG}.secondary.{}", std::process::id()))
+    );
+    second.file.write_all(b"second line\n").unwrap();
+    // The owner keeps writing after the second process started.
+    owner.file.write_all(b"owner line 2\n").unwrap();
+
+    assert_eq!(read(tmp.path(), LOG), "owner line 1\nowner line 2\n");
+    assert!(!tmp.path().join(format!("{LOG}.old.temp")).exists());
+    assert_eq!(fs::read_to_string(&second.path).unwrap(), "second line\n");
+}
+
+#[test]
+fn second_process_rotation_does_not_move_the_owner_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_bytes(&tmp.path().join(format!("{LOG}.old.0")), b"older session");
+    let mut owner = owner_setup(tmp.path());
+    owner.file.write_all(b"owner live").unwrap();
+
+    // The second process's background rotation, with the ownership its own
+    // startup determined.
+    let second = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+    let rotated = rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &second.ownership,
+    );
+
+    assert!(!rotated);
+    assert_eq!(read(tmp.path(), LOG), "owner live");
+    assert_eq!(read(tmp.path(), &format!("{LOG}.old.0")), "older session");
+    assert!(!tmp.path().join(format!("{LOG}.old.1")).exists());
+}
+
+#[test]
+fn owner_session_log_survives_repeated_second_launches_and_rotates_after_exit() {
+    // The #1071 sequence: A runs; B and C launch (and forward) while A is
+    // alive; A exits; D starts. A's whole log must end up in `.old.0`.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = owner_setup(tmp.path());
+    a.file.write_all(b"A: whole session\n").unwrap();
+
+    let b = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+    drop(b);
+    let c = setup_log_files_for_current_execution(tmp.path(), LOG, false).unwrap();
+    drop(c);
+    a.file.write_all(b"A: graceful quit\n").unwrap();
+    drop(a);
+
+    let d = owner_setup(tmp.path());
+    assert!(rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &d.ownership
+    ));
+
+    assert_eq!(
+        read(tmp.path(), &format!("{LOG}.old.0")),
+        "A: whole session\nA: graceful quit\n"
+    );
+    assert!(!tmp.path().join(format!("{LOG}.old.1")).exists());
+    assert_eq!(read(tmp.path(), LOG), "");
+    drop(d);
+}
+
+#[test]
+fn normal_start_after_clean_exit_still_rotates() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_bytes(&tmp.path().join(LOG), b"previous");
+    write_bytes(&tmp.path().join(format!("{LOG}.old.0")), b"older");
+
+    let setup = owner_setup(tmp.path());
+    assert!(rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &setup.ownership
+    ));
+
+    assert_eq!(read(tmp.path(), LOG), "");
+    assert_eq!(read(tmp.path(), &format!("{LOG}.old.0")), "previous");
+    assert_eq!(read(tmp.path(), &format!("{LOG}.old.1")), "older");
+    assert!(!tmp.path().join(format!("{LOG}.old.temp")).exists());
+    drop(setup);
+}
+
+#[test]
+fn crash_recovery_child_takes_over_the_crashed_parent_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut parent = owner_setup(tmp.path());
+    parent.file.write_all(b"parent before crash").unwrap();
+
+    let mut child = setup_log_files_for_current_execution(tmp.path(), LOG, true).unwrap();
+    assert!(!child.ownership.is_owner());
+    assert_eq!(child.path, tmp.path().join(format!("{LOG}.recovery")));
+    assert_eq!(read(tmp.path(), LOG), "parent before crash");
+    child.file.write_all(b"child").unwrap();
+
+    // The parent crashes: the OS releases its lock.
+    drop(parent);
+    let active = take_over_log_after_parent_crash(tmp.path(), LOG);
+
+    assert!(active.ownership.is_owner());
+    assert_eq!(active.path, tmp.path().join(LOG));
+    assert_eq!(read(tmp.path(), LOG), "child");
+    assert!(!tmp.path().join(format!("{LOG}.recovery")).exists());
+    assert!(rotate_files_in(
+        tmp.path(),
+        LOG,
+        MAX_FILES_IN_GUI_ROTATION,
+        &active.ownership
+    ));
+    assert_eq!(
+        read(tmp.path(), &format!("{LOG}.old.0")),
+        "parent before crash"
+    );
+}
+
+#[test]
+fn crash_recovery_child_leaves_a_live_owner_alone() {
+    // The crashed parent was not the owner: another live process still holds
+    // the lock and its log must not move.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut owner = owner_setup(tmp.path());
+    owner.file.write_all(b"owner").unwrap();
+    let mut child = setup_log_files_for_current_execution(tmp.path(), LOG, true).unwrap();
+    child.file.write_all(b"child").unwrap();
+
+    let active = take_over_log_after_parent_crash(tmp.path(), LOG);
+
+    assert!(!active.ownership.is_owner());
+    assert_eq!(read(tmp.path(), LOG), "owner");
+    assert!(!tmp.path().join(format!("{LOG}.old.temp")).exists());
+    assert_eq!(fs::read_to_string(&active.path).unwrap(), "child");
+    assert_ne!(active.path, tmp.path().join(LOG));
+}
+
+#[test]
+fn secondary_logs_are_pruned_to_a_bound() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for pid in 1..=8u32 {
+        let path = tmp.path().join(format!("{LOG}.secondary.{pid}"));
+        let file = File::create(&path).unwrap();
+        file.set_modified(base + Duration::from_secs(u64::from(pid)))
+            .unwrap();
+    }
+    let unrelated = touch(tmp.path(), &format!("{LOG}.secondary.notapid"));
+    let own = touch(tmp.path(), &format!("{LOG}.secondary.999"));
+    File::options()
+        .write(true)
+        .open(&own)
+        .unwrap()
+        .set_modified(base)
+        .unwrap();
+
+    prune_secondary_logs(tmp.path(), LOG, MAX_SECONDARY_LOGS, Some(&own));
+
+    let mut remaining: Vec<u32> = fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .strip_prefix(&format!("{LOG}.secondary."))?
+                .parse()
+                .ok()
+        })
+        .collect();
+    remaining.sort_unstable();
+    // The excluded (own, oldest) file survives and counts towards the bound;
+    // the newest others fill the rest.
+    assert_eq!(remaining, vec![5, 6, 7, 8, 999]);
+    assert!(unrelated.is_file());
+}
+
+#[test]
+fn bundle_includes_secondary_logs_after_the_owner_logs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let active = touch(tmp.path(), LOG);
+    let old_0 = touch(tmp.path(), &format!("{LOG}.old.0"));
+    let secondary = touch(tmp.path(), &format!("{LOG}.secondary.42"));
+    touch(tmp.path(), &format!("{LOG}.lock"));
+
+    let paths = collect_log_paths_in(tmp.path(), LOG).unwrap();
+
+    assert_eq!(paths, vec![active, old_0, secondary]);
+}
