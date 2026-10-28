@@ -10437,6 +10437,11 @@ impl TerminalView {
     /// connect. Windows that show output (host-key / password prompts, banners) are not held, so
     /// Ctrl-D keeps cancelling a prompt, and the window is bounded by the gate's own ceilings.
     fn ssh_connect_holds_eot(&mut self) -> bool {
+        // Only for an ssh connect the user started: a local shell's own bootstrap (an rc file
+        // waiting on `read`) or a subshell bootstrap needs its Ctrl-D (EOF) to reach the pty.
+        if self.ssh_connect_gate.is_none() {
+            return false;
+        }
         if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
             return true;
         }
