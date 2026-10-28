@@ -9780,6 +9780,11 @@ impl TerminalView {
     }
 
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1111: not into an ssh connect that is still starting (before the lock below).
+        if self.ssh_connect_holds_eot() {
+            self.note_ssh_interrupt_held(ctx);
+            return;
+        }
         let arc = self.model.clone();
         let mut model = arc.lock();
 
@@ -9985,6 +9990,7 @@ impl TerminalView {
             // in the connect window before the remote session is announced (#983/#1001).
             if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
                 || self.ssh_gate_holds_interrupt()
+                || (characters == "\u{4}" && self.ssh_connect_holds_eot())
             {
                 self.note_ssh_interrupt_held(ctx);
                 return;
@@ -10285,6 +10291,31 @@ impl TerminalView {
         self.ssh_connect_gate.as_ref().is_some_and(|g| g.block_done)
     }
 
+    /// #1111: whether a Ctrl-D (EOT) falls into an ssh connect that is not yet usable. Written to
+    /// the pty there it lands in the wrapper's cooked tty or the remote shell's startup: the
+    /// remote shell then exits or eats it while the app, which set `ignore_bootstrapping_messages`
+    /// for it, ignores the remote's hooks -- leaving an unmanaged remote shell behind (bash), or
+    /// it feeds the remote bootstrap to the local shell after ssh is gone (fish). Held with a
+    /// notice instead, exactly like Ctrl-C in the remote-setup window; Ctrl-C still aborts the
+    /// connect. Windows that show output (host-key / password prompts, banners) are not held, so
+    /// Ctrl-D keeps cancelling a prompt, and the window is bounded by the gate's own ceilings.
+    fn ssh_connect_holds_eot(&mut self) -> bool {
+        if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold) {
+            return true;
+        }
+        let (pending, hook_seen) = {
+            let model = self.model.lock();
+            (
+                model.pending_session_id().is_some(),
+                model.has_pending_ssh_session(),
+            )
+        };
+        if pending || !self.refresh_ssh_connect_gate() {
+            return false;
+        }
+        hook_seen || self.ssh_connect_gate_drops_keys()
+    }
+
     /// #1001: a Ctrl-C while an ssh command is still connecting (gate armed, no remote session
     /// pending, no ssh hook yet) is delivered as SIGINT to the pty's foreground group. The local
     /// tty may already be raw after authentication, where a written ^C byte is forwarded to the
@@ -10518,6 +10549,7 @@ impl TerminalView {
             // in the connect window before the remote session is announced (#983/#1001).
             if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
                 || self.ssh_gate_holds_interrupt()
+                || (characters == "\u{4}" && self.ssh_connect_holds_eot())
             {
                 self.note_ssh_interrupt_held(ctx);
                 return;

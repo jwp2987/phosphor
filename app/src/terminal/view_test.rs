@@ -16656,11 +16656,17 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
             view.model
                 .lock()
                 .simulate_long_running_block("ssh host", "");
+            // #1111: Ctrl-D is NOT written into a connect that is still silent (see
+            // `ssh_ctrl_d_is_held_during_a_silent_connect`); the other interrupt keys are.
             for key in ["\u{3}", "\u{4}", "\u{1a}", "\u{1c}"] {
                 view.keydown_on_terminal(key, ctx);
             }
         });
         let writes = pty_writes.borrow();
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"\x04"),
+            "Ctrl-D must be held during the silent connect: {writes:?}"
+        );
         assert!(
             !writes.iter().any(|w| w.as_slice() == b"echo typed-"
                 || w.as_slice() == b"during-connect"
@@ -16671,7 +16677,7 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
             *sigints.borrow() == 1 || writes.iter().any(|w| w.as_slice() == b"\x03"),
             "Ctrl-C must reach ssh while armed (as SIGINT or the byte): {writes:?}"
         );
-        for key in [&b"\x04"[..], b"\x1a", b"\x1c"] {
+        for key in [&b"\x1a"[..], b"\x1c"] {
             assert!(
                 writes.iter().any(|w| w.as_slice() == key),
                 "interrupt key {key:?} must reach the pty while armed: {writes:?}"
@@ -17383,6 +17389,46 @@ fn ssh_bootstrap_interrupt_route_is_none_without_pending_session() {
         terminal.update(&mut app, |view, _| {
             assert_eq!(view.ssh_bootstrap_interrupt_route(), None);
         });
+    })
+}
+
+/// #1111: Ctrl-D while the ssh connect is still silent (before the remote announces itself) is
+/// held, not written: written there it left an unmanaged remote shell behind (bash) or fed the
+/// remote bootstrap to the local shell (fish). The same through the `ctrl_d` action. Once
+/// the connect prints something (a password prompt) Ctrl-D reaches ssh again.
+#[test]
+fn ssh_ctrl_d_is_held_during_a_silent_connect() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.keydown_on_terminal("\u{4}", ctx);
+            view.typed_characters_on_terminal("\u{4}", ctx);
+            view.ctrl_d(ctx);
+        });
+        assert!(
+            !pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
+            "{:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("Password: ");
+            view.keydown_on_terminal("\u{4}", ctx);
+        });
+        assert!(
+            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
+            "Ctrl-D must still cancel a visible prompt: {:?}",
+            pty_writes.borrow()
+        );
     })
 }
 
