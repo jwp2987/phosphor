@@ -14,7 +14,7 @@ use warp_util::assets::{
     ASSETS_DIR, ASYNC_ASSETS_DIR, CONPTY_DLL_FILE, DXCOMPILER_DLL_FILE, DXIL_DLL_FILE,
     OPEN_CONSOLE_EXE_FILE, REMOTE_ASSETS_DIR, WINDOWS_ASSETS_DIR,
 };
-use warp_util::path::app_target_dir;
+use warp_util::path::{app_target_dir, artifact_dir_from_out_dir};
 
 fn main() -> Result<()> {
     cfg_aliases! {
@@ -136,22 +136,20 @@ fn main() -> Result<()> {
             );
         }
 
-        // Retrieve the Cargo profile name so that we can put a copy of ConPTY in
-        // the correct target subdirectory.
-        //
-        // We need to pass this information manually through an environment variable.
-        // Of the built-in variables set by Cargo: `OUT_DIR` is only a temporary
-        // directory, and `PROFILE` can only be `debug` or `release`.
-        // See https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts
-        // for more on Cargo environment variables.
-        //
-        // Ideally we could access `CARGO_TARGET_DIR` but this doesn't exist at build time.
-        // See https://github.com/rust-lang/cargo/issues/9661.
-        //
-        // Cargo defaults to the `debug` profile.
-        let cargo_full_profile = env::var("CARGO_FULL_PROFILE").unwrap_or(String::from("debug"));
-        let target_dir =
-            app_target_dir(&cargo_full_profile).expect("Could not get app target directory");
+        // ConPTY, the DXC DLLs and OpenConsole.exe must sit next to the binary so a
+        // plain `cargo build`/`cargo run` works. Cargo doesn't expose the artifact
+        // directory to build scripts (https://github.com/rust-lang/cargo/issues/9661),
+        // so derive it from `OUT_DIR`. That honours `CARGO_TARGET_DIR`, `--target
+        // <triple>` and every profile, which the old `<workspace>/target/<profile>`
+        // guess did not (#1044). The installer does not depend on this copy: it takes
+        // these files straight from `assets/windows/<arch>`.
+        let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+        let target_dir = artifact_dir_from_out_dir(&out_dir).unwrap_or_else(|| {
+            panic!(
+                "Could not derive the binary output directory from OUT_DIR {out_dir:?}: \
+                 expected <target-dir>[/<triple>]/<profile>/build/<pkg>-<hash>/out"
+            )
+        });
         copy_windows_assets(&target_dir);
 
         #[cfg(windows)]
@@ -325,33 +323,28 @@ fn copy_windows_assets(target_dir: &Path) {
         .join(WINDOWS_ASSETS_DIR)
         .join(target_arch);
 
-    // Copy conpty.dll into target directory.
-    fs::copy(
-        windows_asset_dir.join(CONPTY_DLL_FILE),
-        target_dir.join(CONPTY_DLL_FILE),
-    )
-    .unwrap_or_else(|err| {
-        panic!("Could not copy conpty.dll from {windows_asset_dir:?} to {target_dir:?}: {err:#}")
+    fs::create_dir_all(target_dir).unwrap_or_else(|err| {
+        panic!("Could not create the binary output directory {target_dir:?}: {err:#}")
     });
 
-    // Copy the DXC DLLs into the target directory.
-    for dxc_file in [DXCOMPILER_DLL_FILE, DXIL_DLL_FILE] {
-        fs::copy(
-            windows_asset_dir.join(dxc_file),
-            target_dir.join(dxc_file),
-        )
-        .unwrap_or_else(|err| {
-            panic!("Could not copy {dxc_file} from {windows_asset_dir:?} to {target_dir:?}: {err:#}")
-        });
+    // Copy conpty.dll and the DXC DLLs next to the binary.
+    for file in [CONPTY_DLL_FILE, DXCOMPILER_DLL_FILE, DXIL_DLL_FILE] {
+        let src = windows_asset_dir.join(file);
+        let dst = target_dir.join(file);
+        fs::copy(&src, &dst)
+            .unwrap_or_else(|err| panic!("Could not copy {src:?} to {dst:?}: {err:#}"));
     }
 
     // Copy OpenConsole.exe into {target_directory}/{arch}.
     let old_open_console_exe = windows_asset_dir.join(OPEN_CONSOLE_EXE_FILE);
     let new_platform_dir = target_dir.join(target_arch);
     let new_open_console_exe = new_platform_dir.join(OPEN_CONSOLE_EXE_FILE);
-    fs::create_dir_all(&new_platform_dir).expect("Could not create new platform directory");
-    fs::copy(old_open_console_exe, new_open_console_exe)
-        .expect("Could not copy platform OpenConsole.exe");
+    fs::create_dir_all(&new_platform_dir).unwrap_or_else(|err| {
+        panic!("Could not create the platform directory {new_platform_dir:?}: {err:#}")
+    });
+    fs::copy(&old_open_console_exe, &new_open_console_exe).unwrap_or_else(|err| {
+        panic!("Could not copy {old_open_console_exe:?} to {new_open_console_exe:?}: {err:#}")
+    });
 }
 
 /// Parses `GIT_RELEASE_TAG` (e.g. `v2026.05.10.preview` or `v0`) into the

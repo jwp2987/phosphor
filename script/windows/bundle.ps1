@@ -166,13 +166,10 @@ $INSTALLER_NAME = "$($APP_NAME)$($FILE_ENDING)"
 $INSTALLER_PATH = "$($INSTALLER_OUTPUT_DIR)\$($INSTALLER_NAME).exe"
 $PDB_PATH = "$CARGO_TARGET_OUTPUT_DIR\$WARP_BIN.pdb"
 
-# The CARGO_FULL_PROFILE environment variable is read by the `cargo` build
-# script (`app/build.rs`) to determine where to place `conpty.dll`.
-if ($DEBUG_BUILD) {
-    $env:CARGO_FULL_PROFILE = 'debug'
-} else {
-    $env:CARGO_FULL_PROFILE = $CARGO_PROFILE
-}
+# `app/build.rs` places conpty.dll, the DXC DLLs and OpenConsole.exe next to
+# the binary (here $CARGO_TARGET_OUTPUT_DIR), deriving that directory from
+# cargo's OUT_DIR; it no longer reads CARGO_FULL_PROFILE (#1044). The
+# installer takes those files from app\assets\windows\<arch> directly.
 
 # If we only want to check that compilation will succeed, perform the checks
 # then exit.  We use this script to invoke `cargo check` to ensure that we are
