@@ -551,6 +551,8 @@ impl Presenter {
         ctx.manage_pending_assets(self.window_id, pending_assets);
         let scene = Rc::new(scene);
         self.scene = Some(scene.clone());
+        // Times the frame that shows pty output read after a keystroke (#1092).
+        crate::input_order::log_frame_if_pty_output_pending(!skip_layout);
         if !skip_layout {
             // `finish_frame` ages the 2-generation line/text-frame cache (see
             // `text_layout.rs`): whatever wasn't re-fetched via `layout_line`/
