@@ -1,5 +1,7 @@
 #[cfg(not(target_family = "wasm"))]
 mod bootstrap_file;
+#[cfg(not(target_family = "wasm"))]
+mod long_command_file;
 pub mod command_history;
 mod message;
 pub mod pty_controller;

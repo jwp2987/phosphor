@@ -12,12 +12,14 @@ use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{
-    ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
+    BootstrapSessionType, ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
 use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
+#[cfg(not(target_family = "wasm"))]
+use crate::terminal::writeable_pty::long_command_file;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
 use crate::terminal::{
@@ -152,6 +154,13 @@ pub struct PtyController<T: EventLoopSender> {
     /// complete, it will be dropped to clean up the temporary file.
     #[cfg(not(target_family = "wasm"))]
     bootstrap_file: Option<TempBootstrapFile>,
+    /// Whether this is a local PowerShell session, whose very long commands run from a temp file
+    /// rather than being typed into PSReadLine (#1106). Set when the shell is initialised.
+    #[cfg(not(target_family = "wasm"))]
+    runs_long_commands_from_file: bool,
+    /// The temp file of the last such command; replaced by the next one, removed on drop.
+    #[cfg(not(target_family = "wasm"))]
+    long_command_file: Option<tempfile::TempPath>,
     tmux_control_mode: Option<TmuxControlMode>,
     in_flight_native_completions_state: Option<NativeShellCompletionsState>,
     /// Incremented every time a native-completions handshake starts or advances a phase, so a
@@ -405,6 +414,10 @@ impl<T: EventLoopSender> PtyController<T> {
             is_bracketed_paste_enabled: false,
             #[cfg(not(target_family = "wasm"))]
             bootstrap_file: None,
+            #[cfg(not(target_family = "wasm"))]
+            runs_long_commands_from_file: false,
+            #[cfg(not(target_family = "wasm"))]
+            long_command_file: None,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
@@ -938,6 +951,12 @@ impl<T: EventLoopSender> PtyController<T> {
         ctx: &mut ModelContext<Self>,
     ) {
         let shell_type = pending_session_info.shell.shell_type();
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.runs_long_commands_from_file = shell_type == ShellType::PowerShell
+                && pending_session_info.session_type == BootstrapSessionType::Local;
+        }
 
         #[cfg(feature = "local_fs")]
         if let Some(path) = permanent_bootstrap_file(shell_type, pending_session_info) {
@@ -1528,6 +1547,23 @@ impl<T: EventLoopSender> PtyController<T> {
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
+    /// What to type into the line editor for `command`: the command itself, or, for a command too
+    /// long for PSReadLine to render (#1106), a short line that dot-sources it from a temp file.
+    fn command_to_type(&mut self, command: String, shell_type: ShellType) -> String {
+        #[cfg(not(target_family = "wasm"))]
+        if shell_type == ShellType::PowerShell
+            && self.runs_long_commands_from_file
+            && long_command_file::needs_file(&command)
+        {
+            if let Some((file, launcher)) = long_command_file::write_command_file(&command) {
+                self.long_command_file = Some(file);
+                return launcher;
+            }
+        }
+        let _ = shell_type;
+        command
+    }
+
     /// Sends a message to the event loop thread requesting a PTY write for the given `bytes`.
     ///
     /// If the write corresponds to a command, this also calls
@@ -1567,16 +1603,19 @@ impl<T: EventLoopSender> PtyController<T> {
                 shell_type,
                 before_write_fn: on_write_fn,
                 ..
-            } => (
-                Cow::Owned(bytes_to_execute_command(
-                    command.as_str(),
-                    shell_type,
-                    self.is_bracketed_paste_enabled,
-                )),
-                true,
-                on_write_fn,
-                false,
-            ),
+            } => {
+                let command = self.command_to_type(command, shell_type);
+                (
+                    Cow::Owned(bytes_to_execute_command(
+                        command.as_str(),
+                        shell_type,
+                        self.is_bracketed_paste_enabled,
+                    )),
+                    true,
+                    on_write_fn,
+                    false,
+                )
+            }
             PtyWrite::AgentInput { bytes, mode } => {
                 let decorated_bytes =
                     mode.decorate_bytes(bytes.into_owned(), self.is_bracketed_paste_enabled);

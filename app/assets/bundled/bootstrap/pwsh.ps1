@@ -418,7 +418,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # file. The subshell bootstrap's first line installs a handler with the same filter
             # before either is typed; this one keeps them out once it has replaced that handler.
             $trimmed = $line.TrimStart()
-            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$') {
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$' -or $trimmed -match '^\.\s+''[^\r\n]*[\\/]\.phosphor-cmd-[A-Za-z0-9]{6}\.ps1''\s*$') {
                 return $false
             }
             # Keep honouring the handler the user had before the subshell bootstrap replaced it.
@@ -1039,7 +1039,17 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $function:global:PSConsoleHostReadLine = {
             $line = & $script:oldPSConsoleHostReadLine
 
-            Warp-Preexec "$line"
+            # A command too long to type into PSReadLine (#1106) arrives as a line that dot-sources
+            # a temp file; report the command itself, not the launcher.
+            $reported = "$line"
+            if ($reported -match '^\.\s+''([^\r\n]*[\\/]\.phosphor-cmd-[A-Za-z0-9]{6}\.ps1)''\s*$') {
+                try {
+                    $reported = [System.IO.File]::ReadAllText(($Matches[1] -replace "''''", "''"), [System.Text.Encoding]::UTF8)
+                } catch {
+                    $reported = "$line"
+                }
+            }
+            Warp-Preexec $reported
 
             $line
         }
