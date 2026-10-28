@@ -135,12 +135,17 @@ pub enum OverflowVerdict {
     Under,
     /// Over the threshold, and summarizing the history can bring it back under.
     Over,
-    /// Over the threshold and at (or past) the window itself, although a summary is not
-    /// expected to get it back under the threshold: compact anyway, as the last resort before
-    /// the provider rejects or truncates the next request. Typical on a window barely larger
-    /// than the fixed prompt (8k with ~6k of system prompt and tools); the controller tells
-    /// the user once per conversation.
+    /// Over the threshold and at the window itself ([`at_window`]), although a summary is
+    /// not expected to get it back under the threshold: compact anyway, as the last resort
+    /// before the provider rejects or truncates the next request. Only when there is
+    /// something to summarize (more than a summary's worth).
     OverAtWindow,
+    /// At the window, and the history is no larger than a summary: compacting would only
+    /// swap it for a summary of the same size, then give up (the #1090 symptom). Typical of a
+    /// window barely larger than the fixed prompt (8k with ~6k of system prompt and tools).
+    /// Not compacted; the controller tells the user once per conversation that the window
+    /// is too small.
+    AtWindowCannotHelp,
     /// Over the threshold, but the history a summary could replace is too small for that:
     /// the usage is the fixed part of every request (system prompt, tool definitions, the
     /// environment) plus the tail a compaction keeps verbatim, which compaction does not
@@ -166,8 +171,8 @@ impl OverflowVerdict {
 /// ([`super::commit::summarizable_history_tokens`]). Only called once the usage is over the
 /// threshold (it walks the whole history). After a compaction the request carries the rest
 /// (fixed overhead and the kept tail) plus the summary; when that is still at or over the
-/// threshold, compacting can't help — unless the usage already reached the window
-/// ([`OverflowVerdict::OverAtWindow`]): the verdict never blocks the last resort.
+/// threshold, compacting can't help — unless the usage already reached the window and there
+/// is something to summarize ([`OverflowVerdict::OverAtWindow`], the last resort).
 pub fn overflow_verdict(
     cfg: &CompactionConfig,
     tokens: TokenCounts,
@@ -181,15 +186,27 @@ pub fn overflow_verdict(
     let summary = expected_summary_tokens(model);
     let replaced = summarizable_tokens().min(count);
     // A summary no smaller than what it replaces frees nothing ("never compact a tiny
-    // conversation"); otherwise it must get the request back under the threshold.
-    if replaced > summary && count - replaced + summary < usable(cfg, model) {
-        OverflowVerdict::Over
-    } else if count >= model.context {
-        OverflowVerdict::OverAtWindow
-    } else {
-        OverflowVerdict::OverButCompactionCannotHelp
+    // conversation", not even at the window); otherwise it must get the request back under
+    // the threshold, or the window must be full (the last resort).
+    let worth_summarizing = replaced > summary;
+    match (worth_summarizing, at_window(count, model)) {
+        (true, _) if count - replaced + summary < usable(cfg, model) => OverflowVerdict::Over,
+        (true, true) => OverflowVerdict::OverAtWindow,
+        (false, true) => OverflowVerdict::AtWindowCannotHelp,
+        (_, false) => OverflowVerdict::OverButCompactionCannotHelp,
     }
 }
+
+/// Whether `count` has (all but) reached `model`'s window: 98% of it or more. Not `>=
+/// context`: providers rarely report that much — Anthropic and vLLM reject a request over
+/// the window instead of answering it, and Ollama truncates the prompt to `num_ctx` so the
+/// reported total stays just under — so only a margin makes the last resort reachable.
+pub fn at_window(count: usize, model: ModelLimit) -> bool {
+    count >= model.context - model.context / AT_WINDOW_MARGIN_DIVISOR
+}
+
+/// [`at_window`]'s margin: the last 1/50th (2%) of the window.
+pub const AT_WINDOW_MARGIN_DIVISOR: usize = 50;
 
 /// Whether the turn that just finished asked for a tool call (any `ToolCall` among the
 /// messages `is_new` accepts), i.e. whether the agent loop is about to continue on its own.

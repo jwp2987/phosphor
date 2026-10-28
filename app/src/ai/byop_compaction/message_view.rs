@@ -126,36 +126,33 @@ pub(super) fn estimate_message(msg: &api::Message) -> usize {
         })
         .unwrap_or(0);
     // Same algorithm as opencode: chars / 4 round.
-    estimate(&" ".repeat(chars)) + estimate_attachments(msg)
+    estimate(&" ".repeat(chars))
 }
 
-/// Estimated tokens of a fixed image: a 1568 px screenshot costs roughly 1.5k tokens
-/// (`chat_stream`'s screenshot budget), the size providers downscale images to.
-pub(super) const IMAGE_ATTACHMENT_TOKENS: usize = 1_600;
+/// Estimated tokens of one attachment: about what a 1568 px image costs (`chat_stream`'s
+/// screenshot budget; providers downscale images to about that size). PDFs and audio get the
+/// same fixed cost — their raw size says little about their tokens (a 500 KB PDF is not
+/// 125k tokens), and a fixed cost can't make one attachment outweigh a conversation.
+pub(super) const ATTACHMENT_TOKENS: usize = 1_600;
 
 /// Tokens of the attachments a `UserQuery` carries (`UserQuery.context.images`: images, PDFs
-/// and audio, persisted by `make_user_query_message`). `build_chat_request` re-sends every
-/// one of them on every later request, so they count toward what a summary replaces (#1090:
-/// counting only the query text let an attachment-heavy conversation look too small to
-/// compact). An image is a fixed [`IMAGE_ATTACHMENT_TOKENS`]; anything else is counted by
-/// size, a token per [`CHARS_PER_TOKEN`](super::consts::CHARS_PER_TOKEN) bytes, as text is.
-fn estimate_attachments(msg: &api::Message) -> usize {
+/// and audio, persisted by `make_user_query_message`), [`ATTACHMENT_TOKENS`] each.
+/// `build_chat_request` re-sends every one of them on every later request, so they count
+/// toward what a summary replaces (#1090: counting only the query text let an
+/// attachment-heavy conversation look too small to compact).
+///
+/// Only for that judgement (`commit::summarizable_history_tokens`), not part of
+/// [`estimate_message`]: that one also sizes the tail `select` keeps, and counting
+/// attachments there would push the current turn — with its attachments — into the
+/// summarized head, so the model would lose the turn's PDF or images after a compaction.
+/// Attachments the model's caps drop (sent as ERROR text instead) are still counted: the
+/// estimate errs towards compacting.
+pub(super) fn estimate_attachments(msg: &api::Message) -> usize {
     let Some(api::message::Message::UserQuery(u)) = &msg.message else {
         return 0;
     };
     u.context.as_ref().map_or(0, |context| {
-        context
-            .images
-            .iter()
-            .filter(|b| !b.data.is_empty())
-            .map(|b| {
-                if b.mime_type.starts_with("image/") {
-                    IMAGE_ATTACHMENT_TOKENS
-                } else {
-                    b.data.len() / super::consts::CHARS_PER_TOKEN
-                }
-            })
-            .sum()
+        context.images.iter().filter(|b| !b.data.is_empty()).count() * ATTACHMENT_TOKENS
     })
 }
 

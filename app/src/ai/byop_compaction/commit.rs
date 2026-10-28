@@ -175,7 +175,8 @@ pub fn commit_summarization_for_stream(
 /// [`select`] would hand the summarize request — computed exactly as `build_chat_request`
 /// does (same message order and the request model's `model_limit`), so the kept tail is not
 /// counted — minus the messages an earlier compaction already hides (they are not in the
-/// usage). The earlier summary itself is not counted either: a new summary carries it
+/// usage). Attachments in the head count too (`message_view::estimate_attachments`). The
+/// earlier summary itself is not counted either: a new summary carries it
 /// forward (`<previous-summary>`), so it does not shrink. Feeds
 /// [`super::overflow_verdict`] (#1090).
 pub fn summarizable_history_tokens(
@@ -206,7 +207,9 @@ pub fn summarizable_history_tokens(
         .iter()
         .copied()
         .filter(|m| !hidden.contains(&m.id))
-        .map(super::message_view::estimate_message)
+        .map(|m| {
+            super::message_view::estimate_message(m) + super::message_view::estimate_attachments(m)
+        })
         .sum()
 }
 

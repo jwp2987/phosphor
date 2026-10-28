@@ -234,6 +234,7 @@ ai-block-compaction-in-progress = 会話を圧縮しています…
 ai-block-compaction-done-auto = 会話を自動的に圧縮しました
 ai-block-compaction-done-manual = 会話を圧縮しました
 ai-block-compaction-interrupted = 会話の圧縮を中止しました
+ai-block-compaction-window-too-small = { $model } の { $window } トークンのコンテキストウィンドウが埋まりました。大半はエージェント自身の指示とツールのため、この会話を圧縮しても効果がありません。返信が途中で切れる可能性があります。モデルのコンテキストウィンドウを大きくする（Ollama: num_ctx）か、より大きなモデルを使用してください。
 ai-block-resume-conversation = 会話を再開
 ai-block-continue-conversation = 会話を続ける
 ai-block-fork-conversation = 会話をフォーク
