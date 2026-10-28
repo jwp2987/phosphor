@@ -296,7 +296,9 @@ inquire = "0.9.1"
 diesel = { workspace = true, features = ["sqlite", "chrono"] }
 diesel_migrations = { version = "2.2.0", features = ["sqlite"] }
 env_logger.workspace = true
-git2 = { version = "0.20.4", default-features = false, features = [
+# 0.21: RUSTSEC-2026-0183/0184 (unsound Remote::list / BlameHunk signatures; we
+# call neither -- only Repository::discover + workdir) (refs #1076).
+git2 = { version = "0.21.0", default-features = false, features = [
     "vendored-libgit2",
 ] }
 http_server.workspace = true
@@ -346,7 +348,10 @@ is_executable = "1.0.1"
 gethostname = "1.1.0"
 watcher.workspace = true
 warp_files.workspace = true
-tantivy = "0.26.0"
+# 0.27: moves tantivy onto lru 0.18.2+ and zstd 0.14 / zstd-safe 8.2+
+# (RUSTSEC-2026-0253, -0391, -0395..-0406) (refs #1076). Index is in RAM
+# (Index::create_in_ram), so no on-disk format migration.
+tantivy = "0.27.0"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 console_error_panic_hook = { version = "0.1.6" }
