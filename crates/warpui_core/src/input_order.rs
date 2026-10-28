@@ -6,9 +6,15 @@
 //!
 //! Keystrokes can be passwords, so text is redacted to its length unless the tester opts in with
 //! `WARP_INPUT_ORDER_LOG_TEXT=1`. Named keys (`enter`, `backspace`, ...) are always logged by name.
+//!
+//! The same target also times the rest of a keystroke's round trip (#1092), so a slow echo can be
+//! placed without guessing: `pty_write` when user bytes reach the pty, `pty_read` for the first
+//! output read after them (with the gap since the write), and `frame` for the first frame built
+//! after that output. Only byte counts and times are logged, never the bytes.
 
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The log target every input-order line uses.
 pub const TARGET: &str = "warp::input_order";
@@ -84,6 +90,54 @@ fn submit_line(buffer: &str) -> String {
     )
 }
 
+fn pty_write_line(bytes: usize) -> String {
+    format!("{LINE_PREFIX} pty_write bytes={bytes} t={}", now_ms())
+}
+
+fn pty_read_line(bytes: usize, since_write: Duration) -> String {
+    format!(
+        "{LINE_PREFIX} pty_read bytes={bytes} since_write_ms={:.1} t={}",
+        since_write.as_secs_f64() * 1000.,
+        now_ms()
+    )
+}
+
+fn frame_line(layout: bool) -> String {
+    format!("{LINE_PREFIX} frame layout={layout} t={}", now_ms())
+}
+
+/// Set when pty output that followed user input was read, cleared by the next frame (#1092).
+static FRAME_OWED_FOR_PTY_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Logs user input (not a query reply) having been written to a pty, `bytes` long.
+pub fn log_pty_write(bytes: usize) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", pty_write_line(bytes));
+    }
+}
+
+/// Logs the first pty output read after user input was written, `since_write` after the write,
+/// and arms [`log_frame_if_pty_output_pending`] for the frame that should show it.
+pub fn log_pty_read_after_write(bytes: usize, since_write: Duration) {
+    if enabled() {
+        FRAME_OWED_FOR_PTY_OUTPUT.store(true, Ordering::Relaxed);
+        log::debug!(target: TARGET, "{}", pty_read_line(bytes, since_write));
+    }
+}
+
+/// Whether a frame line is owed, clearing the debt: only the first frame after the output counts.
+fn take_frame_owed(owed: &AtomicBool) -> bool {
+    owed.swap(false, Ordering::Relaxed)
+}
+
+/// Logs the first frame built after [`log_pty_read_after_write`]; `layout` is false for a
+/// paint-only frame. Costs one atomic swap when input-order logging is off.
+pub fn log_frame_if_pty_output_pending(layout: bool) {
+    if take_frame_owed(&FRAME_OWED_FOR_PTY_OUTPUT) && enabled() {
+        log::debug!(target: TARGET, "{}", frame_line(layout));
+    }
+}
+
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
@@ -127,5 +181,33 @@ mod tests {
         }
         assert!(key_down_line("enter", false, false, false, false).contains("key=enter"));
         assert!(typed_characters_line("hunter2").contains("<7 chars>"));
+    }
+
+    #[test]
+    fn round_trip_lines_carry_counts_and_times_only() {
+        let write = pty_write_line(1);
+        assert!(
+            write.starts_with("input_order pty_write bytes=1 t="),
+            "{write}"
+        );
+        let read = pty_read_line(3, Duration::from_micros(12_345));
+        assert!(
+            read.starts_with("input_order pty_read bytes=3 since_write_ms=12.3 t="),
+            "{read}"
+        );
+        let frame = frame_line(false);
+        assert!(
+            frame.starts_with("input_order frame layout=false t="),
+            "{frame}"
+        );
+    }
+
+    #[test]
+    fn only_the_first_frame_after_pty_output_is_due() {
+        let owed = AtomicBool::new(false);
+        assert!(!take_frame_owed(&owed));
+        owed.store(true, Ordering::Relaxed);
+        assert!(take_frame_owed(&owed));
+        assert!(!take_frame_owed(&owed));
     }
 }

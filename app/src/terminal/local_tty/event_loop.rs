@@ -94,6 +94,9 @@ pub struct State {
     /// yet. Nothing more can be read or written, so the loop must wait for the exit event
     /// instead of retrying the dead fd (#953).
     hung_up: bool,
+    /// When the last user input (not a query reply) finished reaching the pty and no output has
+    /// been read since. Times the keystroke round trip for the input-order log (#1092).
+    user_write_finished_at: Option<Instant>,
 }
 
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
@@ -140,6 +143,7 @@ impl Default for State {
             gated_count: 0,
             withheld_since: None,
             hung_up: false,
+            user_write_finished_at: None,
         }
     }
 }
@@ -353,6 +357,22 @@ impl State {
     #[inline]
     fn set_current(&mut self, new: Option<Writing>) {
         self.writing = new;
+    }
+
+    /// Records that a queued write finished reaching the pty. Only user input starts the
+    /// round-trip clock; a query reply is not something the user waits to see echoed (#1092).
+    fn note_write_finished(&mut self, is_reply: bool, at: Instant) {
+        if !is_reply {
+            self.user_write_finished_at = Some(at);
+        }
+    }
+
+    /// How long ago user input finished reaching the pty, for the first output read after it;
+    /// `None` once that read has been counted, so a flood logs one line per keystroke (#1092).
+    fn take_user_write_age(&mut self, now: Instant) -> Option<Duration> {
+        self.user_write_finished_at
+            .take()
+            .map(|at| now.saturating_duration_since(at))
     }
 }
 
@@ -630,6 +650,13 @@ where
             FairMutexGuard::bump(terminal);
         }
 
+        // #1092: time the first output after a keystroke reached the pty (counts only).
+        if bytes_processed > 0
+            && let Some(age) = state.take_user_write_age(Instant::now())
+        {
+            warpui::input_order::log_pty_read_after_write(bytes_processed, age);
+        }
+
         // Queue a terminal redraw if we processed some number
         // of non-(synchronized output) bytes.
         if bytes_processed > state.parser.sync_output_buffer_len().unwrap_or(0) {
@@ -657,6 +684,10 @@ where
                     Ok(n) => {
                         current.advance(n);
                         if current.finished() {
+                            state.note_write_finished(current.is_reply, Instant::now());
+                            if !current.is_reply {
+                                warpui::input_order::log_pty_write(current.source.len());
+                            }
                             state.goto_next();
                             break 'write_one;
                         }

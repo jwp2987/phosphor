@@ -753,3 +753,23 @@ fn discard_queued_input_does_not_double_close_a_finished_paste() {
     state.discard_queued_input();
     assert!(drain(&mut state).is_empty());
 }
+
+/// #1092: the keystroke round-trip clock starts when user input reaches the pty, is read once by
+/// the first output after it, and is never started by a query reply.
+#[test]
+fn user_write_age_is_taken_once_and_replies_do_not_start_it() {
+    let mut state = State::default();
+    let start = Instant::now();
+    assert_eq!(state.take_user_write_age(start), None);
+
+    state.note_write_finished(true, start);
+    assert_eq!(state.take_user_write_age(start), None);
+
+    state.note_write_finished(false, start);
+    let later = start + Duration::from_millis(30);
+    assert_eq!(
+        state.take_user_write_age(later),
+        Some(Duration::from_millis(30))
+    );
+    assert_eq!(state.take_user_write_age(later), None);
+}
