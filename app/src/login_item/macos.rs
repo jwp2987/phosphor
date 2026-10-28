@@ -17,7 +17,10 @@ use crate::terminal::general_settings::GeneralSettings;
 pub(super) fn maybe_register_app_as_login_item(ctx: &mut AppContext) {
     GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
         let add_app_as_login_item = *settings.add_app_as_login_item;
-        if add_app_as_login_item && *settings.app_added_as_login_item {
+        // Also nothing to do when the setting is off and the app was never
+        // registered, the default since #1073; off-but-registered (registered
+        // under the old default) still falls through and unregisters once.
+        if add_app_as_login_item == *settings.app_added_as_login_item {
             // App has already been added as a login item, so we don't need to do anything.
             // We don't want to re-run the adding logic because it breaks the case where
             // a user manually unregisters the app as a login item in System Preferences >
