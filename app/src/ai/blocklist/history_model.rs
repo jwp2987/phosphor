@@ -153,6 +153,31 @@ pub enum UpdateHistoryError {
     ConversationNotFound(AIConversationId),
 }
 
+/// Returns the BYOP preflight persistence failure carried by `error`, whether it was raised as a
+/// bare [`UpdateConversationError`] or wrapped in an [`UpdateHistoryError`], which is how the
+/// controller's preflight commits receive it through
+/// [`BlocklistAIHistoryModel::append_byop_preflight_messages_to_task`]. A plain `downcast_ref`
+/// to `UpdateConversationError` does not see through that wrapper (#1066).
+pub(crate) fn byop_preflight_persistence_failure(
+    error: &anyhow::Error,
+) -> Option<&UpdateConversationError> {
+    let conversation_error =
+        error
+            .downcast_ref::<UpdateConversationError>()
+            .or_else(|| match error.downcast_ref::<UpdateHistoryError>() {
+                Some(UpdateHistoryError::Conversation(conversation_error)) => {
+                    Some(conversation_error)
+                }
+                _ => None,
+            })?;
+    matches!(
+        conversation_error,
+        UpdateConversationError::ByopPreflightPersistenceUnavailable(_)
+            | UpdateConversationError::ByopPreflightPersistenceSend(_)
+    )
+    .then_some(conversation_error)
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ForkConversationError {
     #[error("cannot fork an empty conversation")]

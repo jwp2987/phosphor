@@ -5572,3 +5572,249 @@ fn conversation_writes_reach_the_writer_in_order_without_an_executor_hop() {
         assert_eq!(seen, titles, "writes must arrive in order, immediately");
     });
 }
+
+/// Message id of the tool result a BYOP preflight commits in the tests below.
+const BYOP_PREFLIGHT_RESULT_MESSAGE_ID: &str = "preflight-tool-result";
+
+/// Restores a conversation whose root task already holds a user query and one tool call
+/// (`call_1`) still waiting for its result, which is the state the BYOP preflight finds after a
+/// tool runs.
+fn restore_conversation_awaiting_tool_result(
+    app: &mut App,
+    history_model: &warpui::ModelHandle<BlocklistAIHistoryModel>,
+) -> (AIConversationId, crate::ai::agent::task::TaskId) {
+    let conversation_id = AIConversationId::new();
+    let persisted_conversation = persisted_agent_conversation_for_test(
+        conversation_id,
+        Utc::now().naive_utc(),
+        vec![
+            byop_user_query_message("user-query-1", "request-1", "list files", None),
+            byop_tool_call_message("root-task", "tool-call-1", "call_1"),
+        ],
+    );
+    let conversation =
+        convert_persisted_conversation_to_ai_conversation_with_metadata(persisted_conversation)
+            .expect("persisted conversation should restore");
+    let task_id = conversation.get_root_task_id().clone();
+    history_model.update(app, |history_model, ctx| {
+        history_model.restore_conversations(EntityId::new(), vec![conversation], ctx);
+    });
+    (conversation_id, task_id)
+}
+
+fn append_byop_preflight_tool_result(
+    app: &mut App,
+    history_model: &warpui::ModelHandle<BlocklistAIHistoryModel>,
+    conversation_id: AIConversationId,
+    task_id: &crate::ai::agent::task::TaskId,
+) -> Result<usize, super::UpdateHistoryError> {
+    let message = byop_tool_result_message(
+        &task_id.to_string(),
+        BYOP_PREFLIGHT_RESULT_MESSAGE_ID,
+        "call_1",
+    );
+    history_model.update(app, |history_model, ctx| {
+        history_model.append_byop_preflight_messages_to_task(
+            conversation_id,
+            task_id.clone(),
+            vec![message],
+            ctx,
+        )
+    })
+}
+
+fn has_byop_preflight_tool_result(
+    app: &App,
+    history_model: &warpui::ModelHandle<BlocklistAIHistoryModel>,
+    conversation_id: AIConversationId,
+) -> bool {
+    history_model.read(app, |history_model, _| {
+        history_model
+            .conversation(&conversation_id)
+            .expect("conversation should exist")
+            .all_tasks()
+            .any(|task| {
+                task.messages()
+                    .any(|msg| msg.id == BYOP_PREFLIGHT_RESULT_MESSAGE_ID)
+            })
+    })
+}
+
+/// Installs global resource handles whose SQLite sender feeds the returned receiver.
+fn install_byop_preflight_sqlite_receiver(app: &mut App) -> std::sync::mpsc::Receiver<ModelEvent> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(16);
+    let mut global_resource_handles = GlobalResourceHandles::mock(app);
+    global_resource_handles.model_event_sender = Some(sender);
+    app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+    receiver
+}
+
+/// #1066: `phosphor-cli agent run` runs in the SDK execution mode, which never saves sessions.
+/// The preflight used to refuse every tool-result commit there, so the follow-up request that
+/// carries a tool result was never sent and the run stalled after its first tool call.
+#[test]
+fn test_byop_preflight_commits_in_memory_when_execution_mode_cannot_save_sessions() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests_with_mode(
+            &mut app,
+            warp_core::execution_mode::ExecutionMode::Sdk,
+            false,
+        );
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let (conversation_id, task_id) =
+            restore_conversation_awaiting_tool_result(&mut app, &history_model);
+        while receiver.try_recv().is_ok() {}
+
+        let appended =
+            append_byop_preflight_tool_result(&mut app, &history_model, conversation_id, &task_id);
+
+        assert_eq!(appended.expect("preflight commit should succeed"), 1);
+        assert!(has_byop_preflight_tool_result(
+            &app,
+            &history_model,
+            conversation_id
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "the SDK execution mode must not write conversations to SQLite"
+        );
+    });
+}
+
+/// #1066: with conversation persistence turned off, the tool result is committed to the
+/// in-memory history so the turn can continue, and nothing is written to SQLite.
+#[test]
+fn test_byop_preflight_commits_in_memory_when_conversation_persistence_is_disabled() {
+    use settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.update(|ctx| {
+            crate::terminal::general_settings::GeneralSettings::handle(ctx).update(
+                ctx,
+                |settings, ctx| {
+                    settings
+                        .persist_conversations
+                        .set_value(false, ctx)
+                        .expect("setting should update");
+                },
+            );
+        });
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let (conversation_id, task_id) =
+            restore_conversation_awaiting_tool_result(&mut app, &history_model);
+        while receiver.try_recv().is_ok() {}
+
+        let appended =
+            append_byop_preflight_tool_result(&mut app, &history_model, conversation_id, &task_id);
+
+        assert_eq!(appended.expect("preflight commit should succeed"), 1);
+        assert!(has_byop_preflight_tool_result(
+            &app,
+            &history_model,
+            conversation_id
+        ));
+        assert!(
+            receiver.try_recv().is_err(),
+            "persistence is off, so nothing may be written to SQLite"
+        );
+    });
+}
+
+/// When conversations should be persisted but SQLite is unavailable, the preflight must still
+/// refuse to continue on in-memory-only tool results, and leave no partial commit behind.
+#[test]
+fn test_byop_preflight_blocks_when_expected_persistence_is_unavailable() {
+    App::test((), |mut app| async move {
+        // Persistence on, App mode, and `GlobalResourceHandles::mock` has no SQLite sender.
+        initialize_history_model_test_app(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let (conversation_id, task_id) =
+            restore_conversation_awaiting_tool_result(&mut app, &history_model);
+
+        let appended =
+            append_byop_preflight_tool_result(&mut app, &history_model, conversation_id, &task_id);
+
+        assert!(
+            matches!(
+                appended,
+                Err(super::UpdateHistoryError::Conversation(
+                    crate::ai::agent::conversation::UpdateConversationError::ByopPreflightPersistenceUnavailable(_)
+                ))
+            ),
+            "expected ByopPreflightPersistenceUnavailable, got {appended:?}"
+        );
+        assert!(!has_byop_preflight_tool_result(
+            &app,
+            &history_model,
+            conversation_id
+        ));
+    });
+}
+
+/// Persistence on: the preflight commit is still written to SQLite before the request is sent.
+#[test]
+fn test_byop_preflight_persists_when_sessions_are_saved() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let (conversation_id, task_id) =
+            restore_conversation_awaiting_tool_result(&mut app, &history_model);
+        while receiver.try_recv().is_ok() {}
+
+        let appended =
+            append_byop_preflight_tool_result(&mut app, &history_model, conversation_id, &task_id);
+
+        assert_eq!(appended.expect("preflight commit should succeed"), 1);
+        assert!(has_byop_preflight_tool_result(
+            &app,
+            &history_model,
+            conversation_id
+        ));
+        let event = receiver
+            .try_recv()
+            .expect("the preflight commit should be written to SQLite");
+        let ModelEvent::UpdateMultiAgentConversation {
+            conversation_id: persisted_conversation_id,
+            ..
+        } = event
+        else {
+            panic!("expected UpdateMultiAgentConversation event");
+        };
+        assert_eq!(persisted_conversation_id, conversation_id.to_string());
+    });
+}
+
+/// #1066: the controller receives preflight persistence failures wrapped in
+/// `UpdateHistoryError`, and its blocked-request handler must recognise them there too.
+#[test]
+fn test_byop_preflight_persistence_failure_sees_through_update_history_error() {
+    use crate::ai::agent::conversation::UpdateConversationError;
+
+    let unavailable =
+        || UpdateConversationError::ByopPreflightPersistenceUnavailable("sqlite sender".to_owned());
+
+    let bare = anyhow::Error::from(unavailable());
+    assert!(super::byop_preflight_persistence_failure(&bare).is_some());
+
+    let wrapped = anyhow::Error::from(super::UpdateHistoryError::Conversation(unavailable()));
+    assert!(super::byop_preflight_persistence_failure(&wrapped).is_some());
+
+    let send_failed = anyhow::Error::from(super::UpdateHistoryError::Conversation(
+        UpdateConversationError::ByopPreflightPersistenceSend("Full(..)".to_owned()),
+    ));
+    assert!(super::byop_preflight_persistence_failure(&send_failed).is_some());
+
+    let unrelated = anyhow::Error::from(super::UpdateHistoryError::Conversation(
+        UpdateConversationError::TaskNotFound,
+    ));
+    assert!(super::byop_preflight_persistence_failure(&unrelated).is_none());
+}
