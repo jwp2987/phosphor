@@ -9,10 +9,12 @@ use core::fmt;
 use itertools::Itertools;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{collections::HashMap, future::Future};
 
 use crate::ai::mcp::http_client::build_client_with_headers;
 use crate::ai::mcp::sse_transport::{SseClientConfig, SseClientTransport};
+use crate::ai::mcp::tool_call::{self, McpClientHandler};
 use crate::ai::mcp::templatable::GalleryData;
 use crate::ai::mcp::templatable_manager::FigmaMcpStatus;
 use crate::ai::mcp::{
@@ -736,6 +738,23 @@ impl TemplatableMCPServerManager {
             }
         };
 
+        // The server's tool-call idle timeout: its `tool_timeout_secs`, or the default (#1064).
+        // An invalid value fails the start, like any other config error, rather than being
+        // silently replaced by the default.
+        let tool_call_timeout = match MCPServer::tool_timeout_secs_from_user_json(&resolved_json) {
+            Ok(tool_timeout_secs) => tool_call::tool_call_timeout(tool_timeout_secs),
+            Err(err) => {
+                log::error!("Invalid MCP server config for '{template_uuid}': {err}");
+                self.server_error_messages
+                    .insert(installation_uuid, err.clone());
+                self.change_server_state(installation_uuid, MCPServerState::FailedToStart, ctx);
+                if mode.is_reconnect() {
+                    self.notify_reconnect_waiters(installation_uuid, Err(err));
+                }
+                return;
+            }
+        };
+
         // If we're executing a CLI MCP server, ensure that the environment variables includes
         // PATH.
         if let TransportType::CLIServer(cli_server) = &mut server.transport_type {
@@ -879,6 +898,7 @@ impl TemplatableMCPServerManager {
                 logger.clone(),
                 auth_context,
                 child.clone(),
+                tool_call_timeout,
             )
             .compat(),
             move |me, server_info: Result<_, rmcp::RmcpError>, ctx| {
@@ -1722,10 +1742,11 @@ impl TemplatableMCPServerManager {
         self.active_servers
             .iter()
             .find(|(_, server)| server.tools.iter().any(|t| t.name == tool_name))
-            .map(|(installation_uuid, _)| {
+            .map(|(installation_uuid, server)| {
                 crate::ai::mcp::reconnecting_peer::ReconnectingPeer::new(
                     *installation_uuid,
                     spawner.clone(),
+                    server.tool_call_timeout,
                 )
             })
     }
@@ -1744,6 +1765,7 @@ impl TemplatableMCPServerManager {
             Some(crate::ai::mcp::reconnecting_peer::ReconnectingPeer::new(
                 installation_id,
                 spawner.clone(),
+                server.tool_call_timeout,
             ))
         } else {
             None
@@ -1817,6 +1839,7 @@ async fn spawn_server(
     logger: SimpleLogger,
     auth_context: AuthContext,
     child: Arc<ChildProcessSlot>,
+    tool_call_timeout: Duration,
 ) -> Result<TemplatableMCPServerInfo, rmcp::RmcpError> {
     logger.log("[note] Attention! There may be sensitive information (such as API keys) in these logs. Make sure to redact any secrets before sharing with others.".to_string());
 
@@ -1958,7 +1981,7 @@ async fn spawn_server(
             };
 
             // Create the MCP client and connect to the server.
-            let service = make_client_info().into_dyn().serve(transport).await;
+            let service = make_client_handler(uuid).into_dyn().serve(transport).await;
             if service.is_err() {
                 // rmcp dropped the transport, and is killing and reaping the child.
                 child.release();
@@ -1989,7 +2012,10 @@ async fn spawn_server(
                         transport,
                         logger: logger.clone(),
                     };
-                    Ok(make_client_info().into_dyn().serve(transport).await?)
+                    Ok(make_client_handler(uuid)
+                        .into_dyn()
+                        .serve(transport)
+                        .await?)
                 }
                 Ok(Transport::Http(None)) => {
                     logger.log("[info] MCP: Using Streaming HTTP transport".to_string());
@@ -2010,7 +2036,10 @@ async fn spawn_server(
                         transport,
                         logger: logger.clone(),
                     };
-                    Ok(make_client_info().into_dyn().serve(transport).await?)
+                    Ok(make_client_handler(uuid)
+                        .into_dyn()
+                        .serve(transport)
+                        .await?)
                 }
                 Ok(Transport::Sse(Some(client))) => {
                     is_authenticated_transport = true;
@@ -2029,7 +2058,10 @@ async fn spawn_server(
                         transport,
                         logger: logger.clone(),
                     };
-                    Ok(make_client_info().into_dyn().serve(transport).await?)
+                    Ok(make_client_handler(uuid)
+                        .into_dyn()
+                        .serve(transport)
+                        .await?)
                 }
                 Ok(Transport::Sse(None)) => {
                     logger.log("[info] MCP: Using (legacy) SSE transport (due to preflight failing with a 404)".to_string());
@@ -2055,7 +2087,10 @@ async fn spawn_server(
                         transport,
                         logger: logger.clone(),
                     };
-                    Ok(make_client_info().into_dyn().serve(transport).await?)
+                    Ok(make_client_handler(uuid)
+                        .into_dyn()
+                        .serve(transport)
+                        .await?)
                 }
                 Err(err) => {
                     logger.log(format!(
@@ -2088,6 +2123,7 @@ async fn spawn_server(
         description,
         is_authenticated_transport,
         child,
+        tool_call_timeout,
     })
 }
 
@@ -2277,6 +2313,13 @@ where
 /// Creates a [`ClientInfo`] for the MCP client.
 ///
 /// This tells the MCP server who we are and what capabilities we have.
+/// The client side of a connection to the server installed as `installation_uuid`: our
+/// client info, plus routing of the server's progress notifications to the tool call they
+/// belong to, which resets that call's timeout (#1064).
+fn make_client_handler(installation_uuid: Uuid) -> McpClientHandler {
+    McpClientHandler::new(make_client_info(), installation_uuid)
+}
+
 fn make_client_info() -> rmcp::model::ClientInfo {
     // `ClientInfo` (= `InitializeRequestParams`) and `Implementation` are both
     // `#[non_exhaustive]` in rmcp 1.x, so they can no longer be built with a

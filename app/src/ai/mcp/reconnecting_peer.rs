@@ -1,6 +1,7 @@
 //! A peer wrapper that transparently handles reconnection when the underlying transport is closed.
 
 use std::future::Future;
+use std::time::Duration;
 
 use uuid::Uuid;
 use warpui::ModelSpawner;
@@ -17,6 +18,8 @@ use super::tool_call::call_tool_with_deadline;
 pub struct ReconnectingPeer {
     installation_uuid: Uuid,
     spawner: ModelSpawner<TemplatableMCPServerManager>,
+    /// The server's tool-call idle timeout (its `tool_timeout_secs`, or the default).
+    tool_call_timeout: Duration,
 }
 
 /// Error type for reconnecting peer operations.
@@ -45,10 +48,12 @@ impl ReconnectingPeer {
     pub fn new(
         installation_uuid: Uuid,
         spawner: ModelSpawner<TemplatableMCPServerManager>,
+        tool_call_timeout: Duration,
     ) -> Self {
         Self {
             installation_uuid,
             spawner,
+            tool_call_timeout,
         }
     }
 
@@ -120,16 +125,21 @@ impl ReconnectingPeer {
 
     /// Calls a tool on the MCP server.
     ///
-    /// Bounded by [`super::tool_call::TOOL_CALL_TIMEOUT`] (connecting included) and never
-    /// replayed after a `TransportClosed` error.
+    /// Fails once the call goes the server's tool-call timeout without a result or a
+    /// progress notification (connecting included), and is never replayed after a
+    /// `TransportClosed` error.
     pub async fn call_tool(
         &self,
         params: rmcp::model::CallToolRequestParams,
         operation_id: Uuid,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ServiceError> {
-        call_tool_with_deadline(operation_id, self.installation_uuid, params, async {
-            self.get_connected_peer().await.map_err(Into::into)
-        })
+        call_tool_with_deadline(
+            operation_id,
+            self.installation_uuid,
+            params,
+            self.tool_call_timeout,
+            async { self.get_connected_peer().await.map_err(Into::into) },
+        )
         .await
     }
 
