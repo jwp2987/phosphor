@@ -87,8 +87,8 @@ pub async fn call_tool_with_deadline(
         params,
         connect,
         timeout,
-        move || Timer::after(timeout).map(|_| ()),
-        || Timer::after(CANCELLATION_TIMEOUT).map(|_| ()),
+        move || futures::FutureExt::map(Timer::after(timeout), |_| ()),
+        || futures::FutureExt::map(Timer::after(CANCELLATION_TIMEOUT), |_| ()),
     )
     .await
 }

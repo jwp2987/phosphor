@@ -3,7 +3,7 @@ use crate::ai::skills::bundled::activation_for_bundled_skill;
 use crate::settings::AISettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
-use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use ai::skills::{get_provider_for_path, ParsedSkill, SkillProvider, SkillReference, SkillScope};
 use repo_metadata::{repositories::DetectedRepositories, DirectoryWatcher, RepoMetadataModel};
 use std::collections::{HashMap, HashSet};
 use std::fs;
