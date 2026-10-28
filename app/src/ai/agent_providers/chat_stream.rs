@@ -76,7 +76,7 @@ use crate::ai::byop_readiness::{
 };
 use crate::settings::AgentProviderApiType;
 use ai::agent::convert::ConvertToAPITypeError;
-use ai::skills::{ParsedSkill, SkillScope};
+use ai::skills::{ParsedSkill, SkillPathOrigin, SkillScope};
 
 use super::openai_compatible::OpenAiCompatibleError;
 use super::tools;
@@ -94,6 +94,7 @@ use super::attachment_caps;
 use super::prompt_renderer;
 use super::user_context;
 use crate::ai::agent::AIAgentContext;
+use crate::ai::skills::SkillDescriptor;
 
 /// Extracts the most recent `UserQuery.context` from input (equivalent to what warp's
 /// `convert_to.rs::convert_input` picks up). The conversation-level "last known-good env
@@ -223,6 +224,41 @@ fn latest_input_context(input: &[AIAgentInput]) -> &[AIAgentContext] {
         }
     }
     &[]
+}
+
+/// The skills this turn's system prompt listed in `<available_skills>`: the
+/// `AIAgentContext::Skills` of the same context `build_chat_request` rendered — the latest
+/// non-empty input context, or, for a tool-result / auto-resume request whose input carries
+/// none, the context remembered for this conversation (`CONVERSATION_SYSTEM_CTX`, the same
+/// lookup `wire_skills_env` does).
+///
+/// `read_skill` resolves only against this snapshot (`tools::skill::resolve_reference`), so a
+/// name the model was never offered — or one injected by tool output — cannot pull in some
+/// other same-named SKILL.md the `SkillManager` happens to have indexed (#1068).
+fn turn_listed_skills(params: &RequestParams) -> Vec<SkillDescriptor> {
+    let collect = |ctx: &[AIAgentContext]| -> Vec<SkillDescriptor> {
+        ctx.iter()
+            .filter_map(|context| match context {
+                AIAgentContext::Skills { skills } => Some(skills.iter().cloned()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    let input_ctx = latest_input_context(&params.input);
+    if !input_ctx.is_empty() {
+        return collect(input_ctx);
+    }
+    let Some(id) = params.byop_conversation_id else {
+        return Vec::new();
+    };
+    CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .filter(|(cached_id, _)| *cached_id == id)
+        .map(|(_, ctx)| collect(ctx))
+        .unwrap_or_default()
 }
 
 /// Renders the `<attached_running_command>` XML block for the LRC tag-in scenario, prepended
@@ -4349,15 +4385,19 @@ fn serialize_outgoing_tool_call(
         ),
         Some(Tool::ReadSkill(r)) => {
             use api::message::tool_call::read_skill::SkillReference;
-            // The model passed `name` in the previous turn, which `from_args` loaded into
-            // the `SkillPath` slot; when serializing back into the upstream conversation
-            // history, we change it back to the `name` field, consistent with the current
-            // JSON schema. BundledSkillId uses the Display form `@warp-skill:<id>`,
+            // Replay what the model actually sent: `from_args` keeps its `name`, and
+            // `resolve_reference` only adds the bound reference beside it. Older persisted
+            // history has no `name` (the name used to ride in the `SkillPath` slot), so fall
+            // back to the reference; BundledSkillId uses the Display form `@warp-skill:<id>`,
             // consistent with SkillReference's Display.
-            let name = match &r.skill_reference {
-                Some(SkillReference::SkillPath(s)) => s.clone(),
-                Some(SkillReference::BundledSkillId(id)) => format!("@warp-skill:{id}"),
-                None => String::new(),
+            let name = if r.name.is_empty() {
+                match &r.skill_reference {
+                    Some(SkillReference::SkillPath(s)) => s.clone(),
+                    Some(SkillReference::BundledSkillId(id)) => format!("@warp-skill:{id}"),
+                    None => String::new(),
+                }
+            } else {
+                r.name.clone()
             };
             ("read_skill".to_owned(), json!({ "name": name }).to_string())
         }
@@ -6142,6 +6182,10 @@ pub async fn generate_byop_output(
     let request_id = Uuid::new_v4().to_string();
     let mcp_context = params.mcp_context.clone();
     let tool_names_for_extract = available_tool_names(&params);
+    // The skill snapshot this turn's system prompt lists, and the host it was listed for:
+    // `read_skill` binds only against these (see `parse_turn_tool_call`).
+    let listed_skills = turn_listed_skills(&params);
+    let skill_path_origin = params.session_context.skill_path_origin();
     // Needed at the dispatch site below, not just when building the tools array: see the
     // Plan Mode gate before `parse_incoming_tool_call`.
     let plan_mode = request_plan_mode(&params);
@@ -6920,6 +6964,10 @@ pub async fn generate_byop_output(
                         && call.fn_name != tools::codebase::TOOL_NAME
                         && call.fn_name != tools::get_relevant_files::TOOL_NAME
                         && call.fn_name != tools::todowrite::TOOL_NAME
+                        // read_skill binds its reference only from the FINAL arguments: a
+                        // partial name could bind some other listed skill into a placeholder
+                        // that a rejected final call would then leave behind.
+                        && call.fn_name != tools::skill::READ_SKILL.name
                         // Refused at dispatch (#979): no placeholder card, the dispatch
                         // gate emits the single carrier + error result for this call id.
                         && !tool_call_refused_at_dispatch(&params, plan_mode, &call.fn_name)
@@ -6932,10 +6980,12 @@ pub async fn generate_byop_output(
                                 .map(|t| now.duration_since(t).as_millis() as u64 >= TOOL_ARGS_UPDATE_THROTTLE_MS)
                                 .unwrap_or(true);
                             if elapsed_ok {
-                                if let Ok(parsed) = parse_incoming_tool_call(
+                                if let Ok(parsed) = parse_turn_tool_call(
                                     &call,
                                     mcp_context.as_ref(),
                                     &tool_names_for_extract,
+                                    &listed_skills,
+                                    &skill_path_origin,
                                 ) {
                                     let mut updated = make_tool_call_message(
                                         &current_task_id,
@@ -6954,10 +7004,12 @@ pub async fn generate_byop_output(
                                 // Reparse failed (intermediate state): silent, wait for the
                                 // next chunk.
                             }
-                        } else { match parse_incoming_tool_call(
+                        } else { match parse_turn_tool_call(
                             &call,
                             mcp_context.as_ref(),
                             &tool_names_for_extract,
+                            &listed_skills,
+                            &skill_path_origin,
                         )
                         { Ok(parsed) => {
                             // First successful parse → immediately emit a placeholder card.
@@ -7691,7 +7743,13 @@ pub async fn generate_byop_output(
                 continue;
             }
 
-            match parse_incoming_tool_call(&call, mcp_context.as_ref(), &tool_names_for_extract) {
+            match parse_turn_tool_call(
+                &call,
+                mcp_context.as_ref(),
+                &tool_names_for_extract,
+                &listed_skills,
+                &skill_path_origin,
+            ) {
                 Ok(warp_tool) => {
                     // If a placeholder card was already emitted during the ToolCallChunk
                     // stage (same call_id), use update_message instead to refresh it in
@@ -7755,48 +7813,87 @@ pub async fn generate_byop_output(
                     // strength of that. It had looked at nothing. In a directory that did
                     // contain a compose file, that sequence clobbers it — so the payload has
                     // to say "this produced no result" and not merely "this was an error".
-                    let error_payload = match e.downcast_ref::<UnknownToolName>() {
-                        // The name is wrong, so telling the model to fix its ARGUMENTS
-                        // (the old shared hint) sends it round the loop described on
-                        // `UnknownToolName`. Name the real problem and hand it the menu:
-                        // the valid names are right here, and the model has no other way
-                        // to discover them mid-turn.
-                        Some(_) => serde_json::json!({
-                            "error": "unknown_tool",
-                            "detail": e.to_string(),
+                    let error_payload = if let Some(skill_error) =
+                        e.downcast_ref::<tools::skill::SkillResolutionError>()
+                    {
+                        // The arguments parsed, but the name binds to no skill listed for
+                        // this turn (#1068). Kept under the `invalid_arguments` marker so the
+                        // existing machinery treats it as the rejected call it is — the
+                        // controller auto-resumes on it, the transcript renders a rejected
+                        // call, and readiness classifies it as a structured error — with
+                        // `reason` carrying the precise cause.
+                        serde_json::json!({
+                            "error": "invalid_arguments",
+                            "reason": skill_error.code(),
+                            "detail": skill_error.to_string(),
                             "tool": call.fn_name,
                             "received_args": &args_str,
                             "executed": false,
-                            "available_tools": tools::REGISTRY
+                            "available_skills": listed_skills
                                 .iter()
-                                .map(|t| t.name)
+                                .filter(|skill| tools::skill::is_listed_for_origin(
+                                    skill,
+                                    &skill_path_origin,
+                                ))
+                                .map(|skill| match &skill.reference {
+                                    ai::skills::SkillReference::Path(path) => serde_json::json!({
+                                        "name": skill.name,
+                                        "skill_path": path.display_path(),
+                                    }),
+                                    ai::skills::SkillReference::BundledSkillId(_) => {
+                                        serde_json::json!({ "name": skill.name })
+                                    }
+                                })
                                 .collect::<Vec<_>>(),
-                            "hint": "No tool with that name exists, so NOTHING RAN and you \
-                                     have no result — do not draw any conclusion from this, \
-                                     and in particular do not treat it as an empty or \
-                                     negative result. Your ARGUMENTS were not the problem; \
-                                     re-issue the call using one of the names in \
-                                     `available_tools`.",
-                        }),
-                        None => {
-                            let detail = e.to_string();
-                            let hint = format!(
-                                "The tool exists but the call was REJECTED before it ran, \
-                                 so you have no result — do not draw any conclusion from \
-                                 this, and in particular do not treat it as an empty or \
-                                 negative result. Arguments did not match the tool's JSON \
-                                 Schema. Re-emit the tool call with corrected types / \
-                                 required fields, or pick a different tool.{}",
-                                double_encoded_container_hint(&detail).unwrap_or("")
-                            );
-                            serde_json::json!({
-                                "error": "invalid_arguments",
-                                "detail": detail,
+                            "hint": "NOTHING WAS READ, so you have no skill content — do not \
+                                     act as if you had loaded it. Only skills listed in \
+                                     `available_skills` can be read; pass one of those names, \
+                                     or its exact `skill_path` when several share a name.",
+                        })
+                    } else {
+                        match e.downcast_ref::<UnknownToolName>() {
+                            // The name is wrong, so telling the model to fix its ARGUMENTS
+                            // (the old shared hint) sends it round the loop described on
+                            // `UnknownToolName`. Name the real problem and hand it the menu:
+                            // the valid names are right here, and the model has no other way
+                            // to discover them mid-turn.
+                            Some(_) => serde_json::json!({
+                                "error": "unknown_tool",
+                                "detail": e.to_string(),
                                 "tool": call.fn_name,
                                 "received_args": &args_str,
                                 "executed": false,
-                                "hint": hint,
-                            })
+                                "available_tools": tools::REGISTRY
+                                    .iter()
+                                    .map(|t| t.name)
+                                    .collect::<Vec<_>>(),
+                                "hint": "No tool with that name exists, so NOTHING RAN and you \
+                                         have no result — do not draw any conclusion from this, \
+                                         and in particular do not treat it as an empty or \
+                                         negative result. Your ARGUMENTS were not the problem; \
+                                         re-issue the call using one of the names in \
+                                         `available_tools`.",
+                            }),
+                            None => {
+                                let detail = e.to_string();
+                                let hint = format!(
+                                    "The tool exists but the call was REJECTED before it ran, \
+                                     so you have no result — do not draw any conclusion from \
+                                     this, and in particular do not treat it as an empty or \
+                                     negative result. Arguments did not match the tool's JSON \
+                                     Schema. Re-emit the tool call with corrected types / \
+                                     required fields, or pick a different tool.{}",
+                                    double_encoded_container_hint(&detail).unwrap_or("")
+                                );
+                                serde_json::json!({
+                                    "error": "invalid_arguments",
+                                    "detail": detail,
+                                    "tool": call.fn_name,
+                                    "received_args": &args_str,
+                                    "executed": false,
+                                    "hint": hint,
+                                })
+                            }
                         }
                     };
                     let error_content = serde_json::to_string(&error_payload)
@@ -8635,6 +8732,25 @@ fn recover_tool_by_arg_shape(
         found = Some(candidate);
     }
     found
+}
+
+/// [`parse_incoming_tool_call`], then, for `read_skill`, binds the model's skill name to an
+/// exact reference from this turn's listed skills (`tools::skill::resolve_reference`). Every
+/// live dispatch site goes through this, so a `ReadSkill` reaches the executor only with a
+/// reference the model was actually offered (#1068); an unlisted or ambiguous name surfaces as
+/// a `SkillResolutionError` and takes the rejected-call branch instead.
+fn parse_turn_tool_call(
+    call: &ToolCall,
+    mcp_ctx: Option<&crate::ai::agent::MCPContext>,
+    advertised: &[String],
+    listed_skills: &[SkillDescriptor],
+    skill_path_origin: &SkillPathOrigin,
+) -> anyhow::Result<api::message::tool_call::Tool> {
+    let mut tool = parse_incoming_tool_call(call, mcp_ctx, advertised)?;
+    if let api::message::tool_call::Tool::ReadSkill(read_skill) = &mut tool {
+        tools::skill::resolve_reference(read_skill, listed_skills, skill_path_origin)?;
+    }
+    Ok(tool)
 }
 
 fn parse_incoming_tool_call(
@@ -15096,5 +15212,119 @@ mod byop_diag_privacy_tests {
         assert_eq!(error_number_after(stream_parse, "line "), Some(1));
         assert_eq!(error_number_after("no position in here", "column "), None);
         assert_eq!(error_number_after("column not-a-number", "column "), None);
+    }
+}
+
+/// #1068: every live dispatch site binds `read_skill` through `parse_turn_tool_call`, so a
+/// name the turn did not list never becomes a `ReadSkill` action.
+#[cfg(test)]
+mod read_skill_binding_tests {
+    use super::*;
+    use ai::skills::{SkillProvider, SkillReference};
+    use api::message::tool_call::read_skill::SkillReference as ApiSkillReference;
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+
+    const LISTED_PATH: &str = "/home/user/repo-b/.agents/skills/deploy/SKILL.md";
+
+    fn read_skill_call(name: &str) -> ToolCall {
+        ToolCall {
+            call_id: "call_read_skill".to_owned(),
+            fn_name: "read_skill".to_owned(),
+            fn_arguments: json!({ "name": name }),
+            thought_signatures: None,
+        }
+    }
+
+    fn listed(name: &str, path: &str) -> SkillDescriptor {
+        SkillDescriptor {
+            reference: SkillReference::Path(LocalOrRemotePath::Local(std::path::PathBuf::from(
+                path,
+            ))),
+            name: name.to_owned(),
+            description: "test skill".to_owned(),
+            scope: SkillScope::Project,
+            provider: SkillProvider::Agents,
+            icon_override: None,
+        }
+    }
+
+    #[test]
+    fn listed_name_parses_with_the_listed_reference() {
+        let skills = [listed("deploy", LISTED_PATH)];
+        let tool = parse_turn_tool_call(
+            &read_skill_call("deploy"),
+            None,
+            &[],
+            &skills,
+            &SkillPathOrigin::Local,
+        )
+        .expect("a listed skill binds");
+        match tool {
+            api::message::tool_call::Tool::ReadSkill(read_skill) => {
+                assert_eq!(
+                    read_skill.skill_reference,
+                    Some(ApiSkillReference::SkillPath(LISTED_PATH.to_owned()))
+                );
+                assert_eq!(read_skill.name, "deploy");
+            }
+            other => panic!("expected ReadSkill, got {other:?}"),
+        }
+    }
+
+    /// The defect path: the old parse produced a ReadSkill carrying the bare name, which the
+    /// executor then resolved against every indexed SKILL.md. Now the call is rejected before
+    /// any action exists, with an error the rejected-call branch recognises.
+    #[test]
+    fn unlisted_name_is_rejected_before_an_action_exists() {
+        let skills = [listed("review", "/home/user/.agents/skills/review/SKILL.md")];
+        let err = parse_turn_tool_call(
+            &read_skill_call("deploy"),
+            None,
+            &[],
+            &skills,
+            &SkillPathOrigin::Local,
+        )
+        .expect_err("an unlisted skill must not parse into an action");
+        assert_eq!(
+            err.downcast_ref::<tools::skill::SkillResolutionError>(),
+            Some(&tools::skill::SkillResolutionError::NotAvailable)
+        );
+    }
+
+    #[test]
+    fn other_tools_are_untouched_by_skill_binding() {
+        let call = ToolCall {
+            call_id: "call_glob".to_owned(),
+            fn_name: "file_glob".to_owned(),
+            fn_arguments: json!({ "patterns": ["*.rs"] }),
+            thought_signatures: None,
+        };
+        // No skills listed at all: a non-skill tool still parses.
+        assert!(parse_turn_tool_call(&call, None, &[], &[], &SkillPathOrigin::Local).is_ok());
+    }
+
+    /// History replay sends the model back exactly the name it used, not the bound path;
+    /// older history with no `name` still falls back to the reference.
+    #[test]
+    fn outgoing_read_skill_replays_the_models_name() {
+        let tool_call = |read_skill: api::message::tool_call::ReadSkill| api::message::ToolCall {
+            tool_call_id: "call_read_skill".to_owned(),
+            tool: Some(api::message::tool_call::Tool::ReadSkill(read_skill)),
+        };
+
+        let bound = tool_call(api::message::tool_call::ReadSkill {
+            skill_reference: Some(ApiSkillReference::SkillPath(LISTED_PATH.to_owned())),
+            name: "deploy".to_owned(),
+        });
+        let (name, args) = serialize_outgoing_tool_call(&bound, None, "");
+        assert_eq!(name, "read_skill");
+        assert_eq!(args, json!({ "name": "deploy" }));
+
+        let legacy = tool_call(api::message::tool_call::ReadSkill {
+            skill_reference: Some(ApiSkillReference::SkillPath("deploy".to_owned())),
+            name: String::new(),
+        });
+        let (_, args) = serialize_outgoing_tool_call(&legacy, None, "");
+        assert_eq!(args, json!({ "name": "deploy" }));
     }
 }

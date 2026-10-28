@@ -9,11 +9,13 @@
 //! ## Input contract
 //!
 //! The BYOP path exposes a `name` field, whose value comes from the system prompt's
-//! `<available_skills><skill><name>`. `from_args` loads the name into the proto's
-//! `SkillReference::SkillPath` slot (without changing the proto); the `read_skill` executor,
-//! on a cache miss, first reverse-looks-up the real absolute SKILL.md path by name before
-//! reading it from disk. This fallback also tolerates the model passing an absolute path
-//! directly, or the old bundled-form syntax `@warp-skill:<id>`.
+//! `<available_skills><skill><name>`. `from_args` keeps the model's name in the proto's `name`
+//! field, and [`resolve_reference`] binds it to an exact reference from **this turn's** skill
+//! list before any client action is created. Only skills listed for the session's execution
+//! host resolve, so a same-named SKILL.md from some other indexed repository (or host) can
+//! never stand in for a listed one — `read_skill` runs without approval, so the listed set is
+//! the permission (#1068). Same-named listed skills are told apart by the full `skill_path`
+//! from the list; a bundled skill can also be named as `@warp-skill:<id>`.
 //!
 //! ## Usage guidance (written into the description)
 //!
@@ -21,12 +23,42 @@
 //! - The user mentions a skill name / filename / path
 //! - The task matches a skill's description (e.g. "do a PR review" triggers the `review` skill)
 
+use ai::skills::{SkillPathOrigin, SkillReference};
 use anyhow::Result;
+use api::message::tool_call::read_skill::SkillReference as ApiSkillReference;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use warp_multi_agent_api as api;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 use super::OpenAiTool;
+use crate::ai::skills::SkillDescriptor;
+
+/// Why a `read_skill` name did not bind to a listed skill. Surfaced to the model as a
+/// structured tool result (see `chat_stream`'s parse-failure branch), never executed.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SkillResolutionError {
+    #[error(
+        "This skill is unavailable in the current session. Choose a skill from the \
+         <available_skills> list in the system prompt."
+    )]
+    NotAvailable,
+    #[error(
+        "Multiple listed skills have this name. Call read_skill again with the exact \
+         skill_path from the <available_skills> list."
+    )]
+    Ambiguous,
+}
+
+impl SkillResolutionError {
+    /// The machine-readable code carried in the error payload's `reason` field.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SkillResolutionError::NotAvailable => "skill_unavailable",
+            SkillResolutionError::Ambiguous => "ambiguous_skill_name",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct Args {
@@ -39,7 +71,7 @@ fn parameters() -> Value {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Skill name (must exactly match the <available_skills><skill><name> field in the system prompt)."
+                "description": "Skill name (must exactly match the <available_skills><skill><name> field in the system prompt); when several listed skills share a name, pass that skill's full <skill_path> instead."
             }
         },
         "required": ["name"],
@@ -48,16 +80,73 @@ fn parameters() -> Value {
 }
 
 fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
-    use api::message::tool_call::read_skill::SkillReference;
     let parsed: Args = serde_json::from_str(args)?;
-    // Reuse the proto's `SkillPath` slot to carry the name (avoids a proto schema change);
-    // on cache miss, the executor side reverse-looks-up the real SKILL.md path by name.
+    // The reference is left unset here: only `resolve_reference`, which knows this turn's
+    // skill list, may fill it. A ReadSkill without a reference never converts into an action
+    // (`convert_read_skill` rejects it), so a name that skipped resolution reads nothing.
     Ok(api::message::tool_call::Tool::ReadSkill(
         api::message::tool_call::ReadSkill {
-            skill_reference: Some(SkillReference::SkillPath(parsed.name)),
-            name: String::new(),
+            skill_reference: None,
+            name: parsed.name,
         },
     ))
+}
+
+/// Whether a listed skill lives on the execution host selected by `path_origin`.
+///
+/// The turn's list is already built for the session's host, so this is a second guard, not
+/// the primary one: it keeps a remote-host skill from binding in a local session (or for a
+/// different host) and vice versa. A bundled id carries no host — the executor resolves it
+/// against `path_origin`'s own catalog. Local paths stay resolvable when the host identity is
+/// unknown (`Unavailable`, a legacy SSH session), because that is exactly what such a session
+/// lists: the client's own skills.
+pub fn is_listed_for_origin(skill: &SkillDescriptor, path_origin: &SkillPathOrigin) -> bool {
+    match (&skill.reference, path_origin) {
+        (SkillReference::BundledSkillId(_), _) => true,
+        (SkillReference::Path(LocalOrRemotePath::Local(_)), SkillPathOrigin::Remote { .. }) => {
+            false
+        }
+        (SkillReference::Path(LocalOrRemotePath::Local(_)), _) => true,
+        (
+            SkillReference::Path(LocalOrRemotePath::Remote(path)),
+            SkillPathOrigin::Remote { host_id },
+        ) => path.host_id == *host_id,
+        (SkillReference::Path(LocalOrRemotePath::Remote(_)), _) => false,
+    }
+}
+
+/// Binds the model's `read_skill` name to an exact reference from the skills listed for this
+/// turn (`skills`, the same `AIAgentContext::Skills` snapshot the system prompt rendered),
+/// filling `read_skill.skill_reference`.
+///
+/// A name matches a listed skill by its frontmatter `name`, by its full listed `skill_path`,
+/// or (bundled skills) by `@warp-skill:<id>`. Nothing outside the list is ever consulted —
+/// there is deliberately no fallback to the `SkillManager`'s global name index (#1068).
+pub fn resolve_reference(
+    read_skill: &mut api::message::tool_call::ReadSkill,
+    skills: &[SkillDescriptor],
+    path_origin: &SkillPathOrigin,
+) -> Result<(), SkillResolutionError> {
+    let requested = read_skill.name.trim();
+    let mut candidates = skills.iter().filter(|skill| {
+        is_listed_for_origin(skill, path_origin)
+            && (skill.name == requested
+                || match &skill.reference {
+                    SkillReference::Path(path) => path.display_path() == requested,
+                    SkillReference::BundledSkillId(id) => format!("@warp-skill:{id}") == requested,
+                })
+    });
+    let selected = candidates
+        .next()
+        .ok_or(SkillResolutionError::NotAvailable)?;
+    if candidates.any(|candidate| candidate.reference != selected.reference) {
+        return Err(SkillResolutionError::Ambiguous);
+    }
+    read_skill.skill_reference = Some(match &selected.reference {
+        SkillReference::Path(path) => ApiSkillReference::SkillPath(path.display_path()),
+        SkillReference::BundledSkillId(id) => ApiSkillReference::BundledSkillId(id.clone()),
+    });
+    Ok(())
 }
 
 fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Value> {
@@ -91,3 +180,7 @@ pub static READ_SKILL: OpenAiTool = OpenAiTool {
     from_args,
     result_to_json,
 };
+
+#[cfg(test)]
+#[path = "skill_tests.rs"]
+mod tests;

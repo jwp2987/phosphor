@@ -39,10 +39,7 @@ use super::{
     SkillManagerEvent, SkillPathQuery,
 };
 use crate::ai::skills::skill_utils::SkillDeduplicator;
-use ai::skills::{
-    get_provider_for_path, provider_rank, ParsedSkill, SkillPathOrigin, SkillProvider,
-    SkillReference,
-};
+use ai::skills::{provider_rank, ParsedSkill, SkillPathOrigin, SkillProvider, SkillReference};
 use warp_core::features::FeatureFlag;
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
@@ -367,45 +364,6 @@ impl SkillManager {
             SkillReference::Path(path) => self.skill_by_location(path),
             SkillReference::BundledSkillId(id) => self.bundled_skills.local_skill(id),
         }
-    }
-
-    /// Looks up the best match by skill name (the SKILL.md frontmatter `name` field).
-    ///
-    /// Used by the BYOP `read_skill` tool: the model can only see `<name>` in the
-    /// system prompt and doesn't know SKILL.md's absolute path, so name →
-    /// ParsedSkill resolution must be supported.
-    ///
-    /// When multiple copies share the same name, picks the first by ascending
-    /// [`provider_rank`] (`Agents > Zap > Claude > …`), keeping priority consistent
-    /// with [`SkillDeduplicator`]/`list_skill_inventory`. Bundled skills don't enter the
-    /// `skills_by_name` index, so the local bundled catalog is searched separately as a
-    /// fallback (fork-original; no pin equivalent — see this file's module doc comment).
-    ///
-    /// Local-only (the BYOP `read_skill` tool's cache-miss fallback this backs only
-    /// ever reads from the local filesystem — see `read_skill.rs`): a remote skill
-    /// sharing `name` is never returned here, even when connected to exactly one
-    /// remote host.
-    pub fn find_skill_by_name(&self, name: &str) -> Option<&ParsedSkill> {
-        // Prefers filesystem skills: when multiple copies share a name, picks the best by provider_rank.
-        let best_fs_path = self
-            .skill_paths_by_name(name)
-            .into_iter()
-            .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
-            .min_by_key(|path| {
-                get_provider_for_path(&LocalOrRemotePath::Local(path.clone()))
-                    .map(provider_rank)
-                    .unwrap_or(usize::MAX)
-            });
-        if let Some(path) = best_fs_path {
-            if let Some(skill) = self.skills_by_path.get(&LocalOrRemotePath::Local(path)) {
-                return Some(skill);
-            }
-        }
-        // Fallback: local bundled skills (matched by name rather than id).
-        self.bundled_skills
-            .local_definitions()
-            .map(|(_, skill)| skill)
-            .find(|skill| skill.name == name)
     }
 
     /// Returns a local bundled skill by ID only if its activation condition is met.

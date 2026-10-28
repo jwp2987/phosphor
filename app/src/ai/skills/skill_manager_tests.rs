@@ -588,87 +588,9 @@ fn best_supported_provider_falls_back_when_no_match() {
     });
 }
 
-// ============================================================================
-// Tests for find_skill_by_name (the BYOP read_skill tool looking up ParsedSkill by name)
-// ============================================================================
-
-#[test]
-fn find_skill_by_name_returns_filesystem_skill() {
-    App::test((), |mut app| async move {
-        app.add_singleton_model(DirectoryWatcher::new);
-        app.add_singleton_model(|_| DetectedRepositories::default());
-        app.add_singleton_model(RepoMetadataModel::new);
-        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
-        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
-        let handle = app.add_singleton_model(SkillManager::new);
-
-        let deploy_skill = make_skill("deploy", ".agents");
-        handle.update(&mut app, |manager, _| {
-            manager.add_skill_for_testing(deploy_skill.clone());
-        });
-
-        let resolved = handle.read(&app, |manager, _| {
-            manager.find_skill_by_name("deploy").cloned()
-        });
-        let resolved = resolved.expect("expected to find skill by name");
-        assert_eq!(resolved.name, "deploy");
-        assert_eq!(resolved.path, deploy_skill.path);
-    });
-}
-
-#[test]
-fn find_skill_by_name_prefers_higher_priority_provider() {
-    // When a same-name skill is registered in both .agents and .claude,
-    // find_skill_by_name should return the .agents (rank 0) copy, per
-    // SKILL_PROVIDER_DEFINITIONS order.
-    App::test((), |mut app| async move {
-        app.add_singleton_model(DirectoryWatcher::new);
-        app.add_singleton_model(|_| DetectedRepositories::default());
-        app.add_singleton_model(RepoMetadataModel::new);
-        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
-        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
-        let handle = app.add_singleton_model(SkillManager::new);
-
-        let agents_skill = make_skill("deploy", ".agents");
-        let claude_skill = make_skill("deploy", ".claude");
-        handle.update(&mut app, |manager, _| {
-            manager.add_skill_for_testing(claude_skill.clone());
-            manager.add_skill_for_testing(agents_skill.clone());
-        });
-
-        let resolved = handle.read(&app, |manager, _| {
-            manager.find_skill_by_name("deploy").cloned()
-        });
-        let resolved = resolved.expect("expected to find skill by name");
-        assert_eq!(resolved.provider, SkillProvider::Agents);
-        assert_eq!(resolved.path, agents_skill.path);
-    });
-}
-
-#[test]
-fn find_skill_by_name_returns_none_for_unknown_name() {
-    App::test((), |mut app| async move {
-        app.add_singleton_model(DirectoryWatcher::new);
-        app.add_singleton_model(|_| DetectedRepositories::default());
-        app.add_singleton_model(RepoMetadataModel::new);
-        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
-        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
-        let handle = app.add_singleton_model(SkillManager::new);
-
-        // Registers a skill to ensure the manager's index is non-empty — otherwise
-        // the `mut app` warning would get flagged by unused_mut (no other manager
-        // operation here modifies app itself).
-        let known = make_skill("deploy", ".agents");
-        handle.update(&mut app, |manager, _| {
-            manager.add_skill_for_testing(known);
-        });
-
-        let resolved = handle.read(&app, |manager, _| {
-            manager.find_skill_by_name("nope").cloned()
-        });
-        assert!(resolved.is_none());
-    });
-}
+// `find_skill_by_name` (the BYOP `read_skill` by-name lookup over the whole index) and its
+// three tests were removed with #1068: `read_skill` now binds only to a skill listed for the
+// turn. That binding is covered by `agent_providers/tools/skill_tests.rs`.
 
 // ============================================================================
 // Tests for the SkillPathOrigin-aware remote-catalog surface (#487).
