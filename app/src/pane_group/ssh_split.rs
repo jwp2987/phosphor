@@ -57,7 +57,10 @@ pub fn resolve_ssh_spawning_command<'a>(
             .ssh_connection_info
             .is_some()
             .then_some(info.spawning_command.as_str()),
+        // The block's command text can carry surrounding whitespace (a leading space, a
+        // trailing tab); the parser expects the bare command.
         None => legacy_ssh_spawning_command
+            .map(str::trim)
             .filter(|command| parse_interactive_ssh_command(command).is_some()),
     }
 }
