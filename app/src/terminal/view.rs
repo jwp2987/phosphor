@@ -10803,13 +10803,16 @@ impl TerminalView {
                     // #1089: keys for a running command the hand-off does not own are typeahead
                     // the shell may report at its next prompt; the hand-off takes them over
                     // (see `TypeaheadHandoff::adopt_untracked_typeahead`).
+                    // Keys that are not adopted (an agent command, a block before the bootstrap
+                    // precmd, or a command drained behind an outstanding request, which only an
+                    // editor-owned hand-off adopts) keep the editor literal until a report
+                    // requested behind them is in. Noting is a no-op once the pty owns input.
                     if keys_reach_a_command_the_handoff_does_not_own(&terminal_model) {
-                        terminal_model
-                            .typeahead_handoff_mut()
-                            .adopt_untracked_typeahead();
+                        let handoff = terminal_model.typeahead_handoff_mut();
+                        if !handoff.adopt_untracked_typeahead() {
+                            handoff.note_untracked_line_bytes();
+                        }
                     } else if shell_reports_keys_left_in_its_line(&terminal_model) {
-                        // Not adopted (an agent command, a block before the bootstrap precmd):
-                        // the editor inserts literally until a report covers these keys.
                         terminal_model
                             .typeahead_handoff_mut()
                             .note_untracked_line_bytes();

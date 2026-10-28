@@ -17595,3 +17595,65 @@ fn typeahead_handoff_does_not_adopt_keys_for_excluded_commands() {
         }
     })
 }
+
+/// #1089: a key typed into a command drained behind the hand-off's outstanding request (an
+/// ordinary command past the bootstrap precmd, not an agent's) is not adopted -- only an
+/// editor-owned hand-off adopts -- but it is behind the request in the tty, so the report does
+/// not cover it. The editor stays literal after that report hands it input, until a report
+/// requested behind the key is in.
+#[test]
+fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal() {
+    use crate::terminal::model::bootstrap::BootstrapStage;
+    use crate::terminal::model::early_output::TypeaheadMode;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            {
+                let mut model = view.model.lock();
+                // The hand-off's request is outstanding...
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.on_user_bytes(b"echo \"a b");
+                handoff.on_user_write_flushed();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                // ...and a queued command drained behind it is running.
+                model.simulate_long_running_block("sleep 0.3", "");
+                model
+                    .block_list_mut()
+                    .early_output_mut()
+                    .set_typeahead_mode_for_test(TypeaheadMode::ShellReported);
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_bootstrap_stage_for_test(BootstrapStage::PostBootstrapPrecmd);
+                assert_eq!(
+                    model.typeahead_handoff().state(),
+                    &HandoffState::AwaitingReport
+                );
+            }
+            view.typed_characters_on_terminal("x", ctx);
+            let mut model = view.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            assert_eq!(handoff.state(), &HandoffState::AwaitingReport, "not adopted");
+            // The report answers the request written before the key.
+            assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+            assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+            assert!(
+                handoff.editor_text_precedes_report(),
+                "the key is still in the shell's line: the editor must stay literal"
+            );
+            // The next prompt's legacy request goes out behind it; its report brings it back.
+            handoff.on_legacy_request_written();
+            handoff.on_report();
+            assert!(!handoff.editor_text_precedes_report());
+        });
+    })
+}

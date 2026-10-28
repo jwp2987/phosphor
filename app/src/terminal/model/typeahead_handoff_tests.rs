@@ -1205,3 +1205,36 @@ fn untracked_line_bytes_keep_the_editor_literal_until_a_covering_report() {
     assert!(handoff.try_commit_at_prompt());
     assert!(!handoff.editor_text_precedes_report());
 }
+
+/// #1089: the hand-off's own request covers untracked bytes written before it, like a legacy
+/// one: its report ends literal insertion. Reports count in request order, so the report of a
+/// request written before the bytes never does.
+#[test]
+fn the_handoffs_own_request_covers_untracked_bytes_written_before_it() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_untracked_line_bytes();
+    // The shell runs a typeahead line itself: the pty owns input from here.
+    assert!(handoff.on_preexec(true));
+    // A line typed into a command that has been running a while (not young, #933).
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"ls");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.untracked_bytes_requested());
+    assert!(handoff.editor_text_precedes_report());
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert!(!handoff.editor_text_precedes_report());
+
+    // Two requests outstanding, the bytes between them: only the second report covers them.
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    handoff.on_legacy_request_written();
+    handoff.on_report();
+    assert!(handoff.editor_text_precedes_report());
+    handoff.on_report();
+    assert!(!handoff.editor_text_precedes_report());
+}

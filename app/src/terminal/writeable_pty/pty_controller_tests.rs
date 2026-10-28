@@ -2419,6 +2419,37 @@ mod typeahead_handoff {
             );
         });
     }
+
+    /// #1089: a legacy request (the editor owns input) is reported to the hand-off when it is
+    /// written, so keys the hand-off did not adopt, written before it, count as covered by its
+    /// report: the editor stays literal until that report is in, and no longer.
+    #[test]
+    fn a_legacy_request_covers_untracked_keys_written_before_it() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_untracked_line_bytes();
+            assert!(!harness.model.lock().typeahead_handoff().untracked_bytes_requested());
+
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(
+                written(&harness).last(),
+                Some(&REQUEST.to_vec()),
+                "the legacy request is written"
+            );
+            let mut model = harness.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+            assert!(handoff.untracked_bytes_requested());
+            assert!(handoff.editor_text_precedes_report());
+            handoff.on_report();
+            assert!(!handoff.editor_text_precedes_report());
+        });
+    }
 }
 
 /// nushell cannot eval a string, so its bootstrap is always a file: the app types a space-led
