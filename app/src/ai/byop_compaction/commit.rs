@@ -23,10 +23,30 @@ use super::state::CompletedCompaction;
 /// AgentOutput; if there is none, a standalone uuid is synthesized (used only as a
 /// marker key — build_chat_request's hidden projection won't match it against a
 /// real message).
+///
+/// Takes the last AgentOutput anywhere in the conversation. The controller uses
+/// [`commit_summarization_for_stream`] instead, which only accepts the summary stream's own
+/// output.
 pub fn commit_summarization(
     conversation: &mut AIConversation,
     overflow: bool,
     cfg: &CompactionConfig,
+) -> bool {
+    commit_summarization_for_stream(conversation, overflow, cfg, |_| true)
+}
+
+/// [`commit_summarization`] restricted to the AgentOutput messages `is_summary_stream_message`
+/// accepts (the summarize stream's own new messages).
+///
+/// Without the restriction, a summarize stream that produced no text (an empty response, or
+/// a model that answered with a tool call, which is dropped on a summarize turn) committed the
+/// conversation's previous AgentOutput — some earlier narration — as "the summary", hiding
+/// the head behind text that does not summarize it.
+pub fn commit_summarization_for_stream(
+    conversation: &mut AIConversation,
+    overflow: bool,
+    cfg: &CompactionConfig,
+    is_summary_stream_message: impl Fn(&str) -> bool,
 ) -> bool {
     // Uses the conversation's existing linearized messages accessor — already merged in timestamp order across all tasks
     let mut all_msgs: Vec<&api::Message> = conversation.all_linearized_messages();
@@ -40,13 +60,22 @@ pub fn commit_summarization(
     let last_agent_output: Option<(String, String)> = all_msgs.iter().rev().find_map(|m| {
         let inner = m.message.as_ref()?;
         match inner {
-            api::message::Message::AgentOutput(a) => Some((m.id.clone(), a.text.clone())),
+            api::message::Message::AgentOutput(a) if is_summary_stream_message(&m.id) => {
+                Some((m.id.clone(), a.text.clone()))
+            }
             _ => None,
         }
     });
 
     let Some((assistant_id, summary_text)) = last_agent_output else {
-        log::warn!("[byop-compaction] commit: no AgentOutput found — nothing to commit");
+        log::warn!(
+            "[byop-compaction] commit: the summarize stream produced no AgentOutput — nothing to commit"
+        );
+        // The recorded head belongs to this request; drop it so a later summarization
+        // can't pick it up.
+        let _ = crate::ai::agent_providers::chat_stream::take_last_summarization_head(
+            conversation.id(),
+        );
         return false;
     };
 

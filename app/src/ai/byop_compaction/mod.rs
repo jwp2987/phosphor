@@ -147,8 +147,10 @@ pub enum ToolResultsRequest {
     /// { overflow: true }` (#1059). The BYOP preflight records the results in history
     /// before the summary request is built (the same commit a plain follow-up gets), so the
     /// summarizer sees every call with its real result and nothing is cancelled or
-    /// synthesized. The committed summary then resumes the task with the continue message
-    /// ([`FinishedStreamPlan::resume_with_continue_message`]).
+    /// synthesized. The summary then resumes the task with the continue message
+    /// ([`FinishedStreamPlan::resume_with_continue_message`]) — even if it found nothing to
+    /// commit, because this summary interrupted a task mid-loop. The controller reports the
+    /// send with [`TurnCompactionState::on_deferred_summary_sent`].
     SummarizeWithResults,
 }
 
@@ -163,17 +165,24 @@ pub enum ToolResultsRequest {
 ///   are ready: any later finished stream recomputes it, and a new user turn, a stop, a
 ///   close, or a step whose results trigger no follow-up drops it;
 /// - the deferral never cancels, drops or replaces a tool result: it only changes the request
-///   the results travel in.
+///   the results travel in;
+/// - the allowance is spent only once the deferred summary request was actually sent (or
+///   stashed to be sent), not when it was merely decided;
+/// - a deferred summary always resumes the task when it finishes cleanly, committed or not:
+///   it interrupted a task mid-loop, which must never stop silently.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnCompactionState {
     auto_compacted: bool,
     compact_after_tool_results: bool,
+    /// A deferred summary (with a tool-loop step's results) is in flight; the next finished
+    /// stream is that summary.
+    awaiting_deferred_summary: bool,
 }
 
 impl TurnCompactionState {
     /// Nothing to remember; the controller may drop the entry.
     pub fn is_idle(&self) -> bool {
-        !self.auto_compacted && !self.compact_after_tool_results
+        !self.auto_compacted && !self.compact_after_tool_results && !self.awaiting_deferred_summary
     }
 
     /// Whether this turn's one auto-compaction allowance is spent.
@@ -188,8 +197,18 @@ impl TurnCompactionState {
 
     /// A BYOP stream of this conversation finished cleanly: plan per
     /// [`plan_after_stream_finished`] and record what the plan implies.
+    ///
+    /// One addition to the pure plan: a deferred summary (see
+    /// [`Self::on_deferred_summary_sent`]) that committed nothing still resumes the task. It
+    /// interrupted a loop mid-task; without the continue message the task would just stop.
+    /// The resumed request carries the uncompacted history, so a context still over the
+    /// threshold ends at the next tool-free turn with the visible GiveUp error, not silently.
     pub fn on_stream_finished(&mut self, stream: FinishedStream) -> FinishedStreamPlan {
-        let plan = plan_after_stream_finished(stream, self.auto_compacted);
+        let deferred_summary = std::mem::take(&mut self.awaiting_deferred_summary);
+        let mut plan = plan_after_stream_finished(stream, self.auto_compacted);
+        if deferred_summary && matches!(stream, FinishedStream::Summary { auto: true, .. }) {
+            plan.resume_with_continue_message = true;
+        }
         if plan.restore_turn_allowance {
             self.auto_compacted = false;
         }
@@ -206,20 +225,40 @@ impl TurnCompactionState {
     /// deferral. `results_all_in_root_task`: every result answers a call of the
     /// conversation's root task; results of a subagent task (a CLI/LRC subagent's own loop)
     /// are sent as a plain follow-up and the deferral is dropped, so a summary never lands in
-    /// the middle of a subagent's work. The next finished stream re-checks the usage.
+    /// the middle of a subagent's work (subagent loops are not compacted: #1074). The next
+    /// finished stream re-checks the usage.
+    ///
+    /// Does not spend the allowance: the controller calls [`Self::on_deferred_summary_sent`]
+    /// once the request really went out.
     pub fn on_tool_results_ready(&mut self, results_all_in_root_task: bool) -> ToolResultsRequest {
         if !std::mem::take(&mut self.compact_after_tool_results) || !results_all_in_root_task {
             return ToolResultsRequest::FollowUp;
         }
-        self.auto_compacted = true;
         ToolResultsRequest::SummarizeWithResults
     }
 
-    /// The step's results will not be sent (the user stopped the conversation, rejected the
-    /// only call, closed the pane, or submitted something else): drop a deferral so it can't
-    /// fire on an unrelated later follow-up. The allowance is unchanged.
+    /// The [`ToolResultsRequest::SummarizeWithResults`] request was sent (or stashed by the
+    /// BYOP readiness pass, to be sent once pending results land): the turn's allowance is
+    /// spent, and the next finished stream is the deferred summary.
+    pub fn on_deferred_summary_sent(&mut self) {
+        self.auto_compacted = true;
+        self.awaiting_deferred_summary = true;
+    }
+
+    /// The step's results will not be sent as their own follow-up (the user rejected the
+    /// only call, or a stashed request took them): drop a deferral so it can't fire on an
+    /// unrelated later follow-up. The allowance is unchanged.
     pub fn on_tool_results_abandoned(&mut self) {
         self.compact_after_tool_results = false;
+    }
+
+    /// The user stopped the conversation (Stop / Ctrl-C / a superseding submission) or
+    /// closed its pane: drop the deferral, and forget an in-flight deferred summary (a
+    /// stopped stream never finishes cleanly, so nothing must resume on its behalf). The
+    /// allowance is unchanged.
+    pub fn on_conversation_stopped(&mut self) {
+        self.compact_after_tool_results = false;
+        self.awaiting_deferred_summary = false;
     }
 
     /// The user started a new turn (anything but the agent's own continue message): a fresh

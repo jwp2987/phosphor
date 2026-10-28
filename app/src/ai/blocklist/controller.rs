@@ -724,7 +724,7 @@ impl BlocklistAIController {
                     action_model.clear_finished_action_results(*conversation_id);
                 });
                 me.update_compaction_turn_state(*conversation_id, |state| {
-                    state.on_tool_results_abandoned()
+                    state.on_conversation_stopped()
                 });
                 let history_model = BlocklistAIHistoryModel::handle(ctx);
                 let is_in_progress = history_model
@@ -1006,7 +1006,7 @@ impl BlocklistAIController {
             handle.abort();
         }
         self.update_compaction_turn_state(conversation_id, |state| {
-            state.on_tool_results_abandoned()
+            state.on_conversation_stopped()
         });
         self.action_model.update(ctx, |action_model, _| {
             action_model.clear_finished_action_results(conversation_id);
@@ -2007,7 +2007,7 @@ impl BlocklistAIController {
             }
         }
 
-        let _ = self.send_request_input(
+        let sent = self.send_request_input(
             request_input,
             None,
             /*default_to_follow_up_on_success*/ false,
@@ -2015,6 +2015,20 @@ impl BlocklistAIController {
             /*is_queued_prompt*/ false,
             ctx,
         );
+        // The allowance is spent only by a summary that really went out, or that the BYOP
+        // readiness pass stashed to send once pending results land
+        // (`flush_pending_byop_request_after_finished_action` resends it, summary input
+        // included). Any other refusal sent nothing, so nothing was compacted.
+        if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults
+            && match &sent {
+                Ok(_) => true,
+                Err(e) => e.downcast_ref::<PendingByopToolResultsError>().is_some(),
+            }
+        {
+            self.update_compaction_turn_state(conversation_id, |state| {
+                state.on_deferred_summary_sent()
+            });
+        }
 
         self.pending_passive_follow_ups.remove(&conversation_id);
     }
@@ -3857,10 +3871,9 @@ impl BlocklistAIController {
 
         // Stop / Ctrl-C / a superseding submission: the current step's results will not go
         // out as the loop's follow-up, so a tool-loop compaction deferred to them (#1059) is
-        // dropped. Results already recorded stay in history; nothing is lost.
-        self.update_compaction_turn_state(conversation_id, |state| {
-            state.on_tool_results_abandoned()
-        });
+        // dropped, and so is an in-flight deferred summary's resume. Results already
+        // recorded stay in history; nothing is lost.
+        self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
 
         if !self
             .in_flight_response_streams
@@ -4574,17 +4587,35 @@ impl BlocklistAIController {
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         match finished_event.reason {
             Some(warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)) | None => {
-                // Zap BYOP local session compaction - write the summary back
+                // The messages this stream added: the summary text of a summarize stream, the
+                // tool calls of an agent turn.
+                let stream_message_ids: std::collections::HashSet<MessageId> =
+                    BlocklistAIHistoryModel::as_ref(ctx)
+                        .conversation(&conversation_id)
+                        .map(|conversation| {
+                            conversation
+                                .new_exchange_ids_for_response(stream_id)
+                                .filter_map(|id| conversation.exchange_with_id(id))
+                                .flat_map(|exchange| exchange.added_message_ids.iter().cloned())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                // Zap BYOP local session compaction - write the summary back. Only this
+                // stream's own AgentOutput can be the summary: an earlier one is some old
+                // narration that does not summarize the head it would replace.
                 let mut summary_committed = false;
                 if let Some(overflow) = summarize_overflow {
                     let compaction_cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                     history_model.update(ctx, |history_model, _ctx| {
                         if let Some(convo) = history_model.conversation_mut(&conversation_id) {
-                            summary_committed = crate::ai::byop_compaction::commit::commit_summarization(
-                                convo,
-                                overflow,
-                                &compaction_cfg,
-                            );
+                            summary_committed =
+                                crate::ai::byop_compaction::commit::commit_summarization_for_stream(
+                                    convo,
+                                    overflow,
+                                    &compaction_cfg,
+                                    |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
+                                );
                         }
                     });
                 }
@@ -4608,14 +4639,9 @@ impl BlocklistAIController {
                         let requested_tool_calls = {
                             let history = BlocklistAIHistoryModel::as_ref(ctx);
                             history.conversation(&conversation_id).is_some_and(|conversation| {
-                                let new_ids: std::collections::HashSet<MessageId> = conversation
-                                    .new_exchange_ids_for_response(stream_id)
-                                    .filter_map(|id| conversation.exchange_with_id(id))
-                                    .flat_map(|exchange| exchange.added_message_ids.iter().cloned())
-                                    .collect();
                                 crate::ai::byop_compaction::turn_has_tool_calls(
                                     conversation.all_tasks().flat_map(|task| task.messages()),
-                                    |id| new_ids.contains(&MessageId::new(id.to_owned())),
+                                    |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
                                 )
                             })
                         };
