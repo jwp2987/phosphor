@@ -144,6 +144,12 @@ use warpui::{windowing, BlurContext, EntityId, FocusContext};
 use warpui::{CursorInfo, ModelContext, SingletonEntity, TypedActionView};
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+/// Number of blink toggles (10 s at the 500 ms interval) after the last cursor
+/// activity, after which the cursor stops blinking and stays solid. Every toggle
+/// re-renders the editor view and re-lays-out the window, which on a software
+/// renderer keeps an idle focused window busy (#1108). Any edit, cursor move or
+/// focus change restarts the blinking.
+const MAX_IDLE_CURSOR_BLINKS: u32 = 20;
 const DEFAULT_TAB_SIZE: usize = 4;
 
 pub const ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME: &str = "editor_view:insert_autosuggestion";
@@ -1816,6 +1822,8 @@ pub struct EditorView {
     get_cursor_colors_fn: CursorColorsFn,
     cursors_visible: bool,
     blink_epoch: usize,
+    /// Blink toggles since the last cursor activity; see `MAX_IDLE_CURSOR_BLINKS`.
+    blinks_since_activity: u32,
     single_line: bool,
     /// A cache for text that is cut within the input using ctrl-k/u. This text is not copied to clipboard.
     internal_clipboard: String,
@@ -3258,6 +3266,7 @@ impl EditorView {
             focused: false,
             cursors_visible: false,
             blink_epoch: 0,
+            blinks_since_activity: 0,
             single_line: options.single_line,
             internal_clipboard: "".to_string(),
             propagate_vertical_navigation_keys: options
@@ -7603,6 +7612,7 @@ impl EditorView {
     /// Mark the cursor as visible and schedule the next cursor blink at the right interval.
     fn reset_cursor_blink_timer(&mut self, ctx: &mut ViewContext<Self>) {
         self.cursors_visible = true;
+        self.blinks_since_activity = 0;
         ctx.notify();
 
         let epoch = self.next_blink_epoch();
@@ -7634,6 +7644,16 @@ impl EditorView {
                 cursor_blink.value() == &CursorBlink::Enabled || !self.cursors_visible
             )
         {
+            if self.blinks_since_activity >= MAX_IDLE_CURSOR_BLINKS {
+                // Idle for a while: leave the cursor solid and stop the timer chain.
+                // Activity (`reset_cursor_blink_timer`) starts it again.
+                if !self.cursors_visible {
+                    self.cursors_visible = true;
+                    ctx.notify();
+                }
+                return;
+            }
+            self.blinks_since_activity += 1;
             self.cursors_visible = !self.cursors_visible;
             ctx.notify();
 
@@ -8906,6 +8926,7 @@ impl View for EditorView {
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
         if focus_ctx.is_self_focused() {
             self.focused = true;
+            self.blinks_since_activity = 0;
             self.blink_cursors(self.blink_epoch, ctx);
             if self.select_all_on_focus {
                 self.select_all(ctx);

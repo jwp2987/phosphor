@@ -4385,6 +4385,45 @@ fn test_cursor_blink() {
 }
 
 #[test]
+fn test_cursor_stops_blinking_when_idle() {
+    // #1108: an idle focused cursor must stop toggling (and re-rendering the window).
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (window_id, editor_handle) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let mut editor = EditorView::single_line(Default::default(), ctx);
+            editor.on_focus(&FocusContext::SelfFocused, ctx);
+            editor
+        });
+        let windowing_state = app.get_singleton_model_handle::<WindowManager>();
+        app.update_model(&windowing_state, |state, ctx| {
+            state.overwrite_for_test(state.stage(), Some(window_id));
+            ctx.notify();
+        });
+        app.update_view(&editor_handle, |editor, ctx| {
+            editor.reset_cursor_blink_timer(ctx);
+            for _ in 0..MAX_IDLE_CURSOR_BLINKS {
+                let epoch = editor.next_blink_epoch();
+                editor.blink_cursors(epoch, ctx);
+            }
+            assert_eq!(editor.blinks_since_activity, MAX_IDLE_CURSOR_BLINKS);
+            // Past the limit: cursor is solid and no longer toggles.
+            for _ in 0..3 {
+                let epoch = editor.next_blink_epoch();
+                editor.blink_cursors(epoch, ctx);
+                assert!(editor.cursors_visible);
+            }
+            assert_eq!(editor.blinks_since_activity, MAX_IDLE_CURSOR_BLINKS);
+            // Activity restarts blinking.
+            editor.reset_cursor_blink_timer(ctx);
+            assert_eq!(editor.blinks_since_activity, 0);
+            let epoch = editor.next_blink_epoch();
+            editor.blink_cursors(epoch, ctx);
+            assert!(!editor.cursors_visible);
+        });
+    });
+}
+
+#[test]
 fn test_interaction_state() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
