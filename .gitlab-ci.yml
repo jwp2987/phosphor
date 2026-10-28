@@ -892,22 +892,40 @@ release-publish:
       api = os.environ["CI_API_V4_URL"]; pid = os.environ["CI_PROJECT_ID"]
       version = os.environ["RELEASE_VERSION"]
       links = []
-      seen = set()
+      digests = {}
+      def link(name):
+          return {
+              "name": name,
+              "url": f"{api}/projects/{pid}/packages/generic/phosphor/{version}/{name}",
+              "direct_asset_path": f"/{name}",
+              "link_type": "package",
+          }
       for manifest in sorted(glob.glob("manifest-*.txt") + glob.glob("cli-artifacts/manifest-*.txt")):
           for line in open(manifest):
               parts = line.split()
               if len(parts) < 2: continue
               name = parts[-1].lstrip("*")
-              if name in seen: continue
-              seen.add(name)
-              links.append({
-                  "name": name,
-                  "url": f"{api}/projects/{pid}/packages/generic/phosphor/{version}/{name}",
-                  "direct_asset_path": f"/{name}",
-                  "link_type": "package",
-              })
+              digest = parts[0].lower()
+              if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                  raise SystemExit(f"ERROR {manifest}: no SHA-256 for {name}")
+              if name in digests:
+                  if digests[name] != digest:
+                      raise SystemExit(f"ERROR {name} has two different digests in the manifests")
+                  continue
+              digests[name] = digest
+              links.append(link(name))
       if not links:
           raise SystemExit("ERROR no release assets found in the manifests")
+      # SHA256SUMS: the digest of every asset, from the manifests the build jobs wrote
+      # over the exact bytes they uploaded. A GitLab release link carries no digest, so
+      # this file is what the GUI updater verifies a download against (#1056,
+      # app/src/autoupdate/gitlab.rs); without it the updater refuses the release.
+      if "SHA256SUMS" in digests:
+          raise SystemExit("ERROR a build job published an asset named SHA256SUMS")
+      with open("SHA256SUMS", "w") as sums:
+          for name in sorted(digests):
+              sums.write(f"{digests[name]}  {name}\n")
+      links.append(link("SHA256SUMS"))
       body = open("release-body.md").read()
       name = os.environ["RELEASE_NAME"]
       if os.environ.get("IS_PRERELEASE") == "true":
@@ -917,4 +935,6 @@ release-publish:
       json.dump(payload, open("release.json", "w"))
       print(f"{len(links)} asset links")
       PY
+    - cat SHA256SUMS
+    - ./script/ci/upload_package "$RELEASE_VERSION" SHA256SUMS
     - 'curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --header "Content-Type: application/json" --data @release.json "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/releases" | python3 -c "import sys,json; d=json.load(sys.stdin); print(\"created release\", d[\"tag_name\"], d[\"_links\"][\"self\"])"'
