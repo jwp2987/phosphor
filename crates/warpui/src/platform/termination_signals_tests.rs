@@ -319,70 +319,258 @@ mod ctrl_event_shutdown_reason {
     }
 }
 
-// jwp2987/phosphor#773: `session_end_action` is the pure decision behind the
-// `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass, so -- like
-// `ctrl_event_shutdown_reason` above -- it builds and runs on every platform,
-// not only Windows.
-mod session_end_action {
-    use super::{SessionEndAction, session_end_action};
+// jwp2987/phosphor#773, jwp2987/phosphor#1072: `session_end_step` is the pure state machine
+// behind the `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass, so -- like
+// `ctrl_event_shutdown_reason` above -- it builds and runs on every platform, not only Windows.
+mod session_end_step {
+    use super::{
+        ENDSESSION_CLOSEAPP, ENDSESSION_CRITICAL, ENDSESSION_LOGOFF, SHUTDOWN_DEADLINE,
+        SessionEndEffect as Effect, SessionEndInput as Input, SessionEndState as State,
+        SessionEndStep, describe_end_session_flags, exit_code_for_signal, session_end_step,
+    };
 
-    const QUERY_END_SESSION: bool = true;
-    const END_SESSION: bool = false;
+    const SHUTDOWN: i32 = 6;
+    const LOGOFF: i32 = 5;
+
+    fn end_session(session_ending: bool, lparam: u32) -> Input {
+        Input::EndSession {
+            session_ending,
+            lparam,
+        }
+    }
+
+    const ALL_STATES: [State; 4] = [
+        State::Idle,
+        State::Arming {
+            reason_signal: SHUTDOWN,
+        },
+        State::ShuttingDown {
+            reason_signal: SHUTDOWN,
+        },
+        State::Exiting {
+            reason_signal: SHUTDOWN,
+        },
+    ];
 
     #[test]
-    fn query_end_session_always_blocks_and_allows() {
-        // Never veto a shutdown/logoff, and this is independent of whether a
-        // shutdown is already underway or what a later `WM_ENDSESSION` will say.
-        assert_eq!(
-            session_end_action(QUERY_END_SESSION, false, false, false),
-            SessionEndAction::BlockAndAllow
-        );
-        assert_eq!(
-            session_end_action(QUERY_END_SESSION, true, true, true),
-            SessionEndAction::BlockAndAllow
-        );
+    fn query_end_session_allows_without_registering_a_block_reason() {
+        // A reason registered at query time puts Phosphor on Windows's "apps are preventing
+        // shutdown" screen whenever any app blocks, waiting on the user, with no work running.
+        for lparam in [
+            0,
+            ENDSESSION_LOGOFF,
+            ENDSESSION_CLOSEAPP,
+            ENDSESSION_CRITICAL,
+        ] {
+            for state in ALL_STATES {
+                assert_eq!(
+                    session_end_step(state, Input::QueryEndSession { lparam }),
+                    SessionEndStep {
+                        next: state,
+                        effects: vec![Effect::AllowSessionEnd],
+                    },
+                    "state {state:?}, lParam {lparam:#x}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn first_endsession_true_begins_a_graceful_shutdown() {
+    fn endsession_true_registers_the_reason_and_arms_the_deadline_before_posting() {
+        let step = session_end_step(State::Idle, end_session(true, 0));
         assert_eq!(
-            session_end_action(END_SESSION, true, false, false),
-            SessionEndAction::BeginGracefulShutdown { reason_signal: 6 },
+            step,
+            SessionEndStep {
+                next: State::Arming {
+                    reason_signal: SHUTDOWN
+                },
+                effects: vec![
+                    Effect::CreateBlockReason,
+                    Effect::ArmDeadline {
+                        deadline: SHUTDOWN_DEADLINE,
+                        exit_code: exit_code_for_signal(SHUTDOWN),
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            session_end_step(step.next, Input::DeadlineArmed),
+            SessionEndStep {
+                next: State::ShuttingDown {
+                    reason_signal: SHUTDOWN
+                },
+                effects: vec![Effect::RequestTerminate { signal: SHUTDOWN }],
+            }
         );
     }
 
     #[test]
     fn logoff_maps_to_the_console_paths_logoff_reason() {
+        let step = session_end_step(
+            State::Idle,
+            end_session(true, ENDSESSION_LOGOFF | ENDSESSION_CRITICAL),
+        );
         assert_eq!(
-            session_end_action(END_SESSION, true, true, false),
-            SessionEndAction::BeginGracefulShutdown { reason_signal: 5 },
+            step.next,
+            State::Arming {
+                reason_signal: LOGOFF
+            }
+        );
+        assert!(step.effects.contains(&Effect::ArmDeadline {
+            deadline: SHUTDOWN_DEADLINE,
+            exit_code: exit_code_for_signal(LOGOFF),
+        }));
+    }
+
+    #[test]
+    fn a_second_windows_endsession_true_does_nothing_once_shutting_down() {
+        // Windows sends `WM_ENDSESSION` to every top-level window for the one real session end;
+        // only the first may start anything.
+        for state in &ALL_STATES[1..] {
+            assert_eq!(
+                session_end_step(*state, end_session(true, ENDSESSION_LOGOFF)),
+                SessionEndStep {
+                    next: *state,
+                    effects: vec![],
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn endsession_false_while_idle_is_a_cancellation_that_releases_any_reason() {
+        assert_eq!(
+            session_end_step(State::Idle, end_session(false, 0)),
+            SessionEndStep {
+                next: State::Idle,
+                effects: vec![Effect::DestroyBlockReason],
+            }
+        );
+        // A later, successful attempt starts a fresh shutdown.
+        let next = session_end_step(State::Idle, end_session(false, 0)).next;
+        assert!(matches!(
+            session_end_step(next, end_session(true, 0)).next,
+            State::Arming { .. }
+        ));
+    }
+
+    #[test]
+    fn endsession_false_cannot_recall_a_shutdown_already_posted() {
+        let state = State::ShuttingDown {
+            reason_signal: SHUTDOWN,
+        };
+        assert_eq!(
+            session_end_step(state, end_session(false, 0)),
+            SessionEndStep {
+                next: state,
+                effects: vec![],
+            }
         );
     }
 
     #[test]
-    fn a_second_windows_endsession_true_is_ignored_once_already_shutting_down() {
-        // Windows sends `WM_ENDSESSION` to every top-level window for the one
-        // real shutdown attempt; only the first should start anything.
+    fn completion_destroys_the_reason() {
         assert_eq!(
-            session_end_action(END_SESSION, true, false, true),
-            SessionEndAction::AlreadyShuttingDown
-        );
-        assert_eq!(
-            session_end_action(END_SESSION, true, true, true),
-            SessionEndAction::AlreadyShuttingDown
+            session_end_step(
+                State::ShuttingDown {
+                    reason_signal: LOGOFF
+                },
+                Input::ShutdownCompleted
+            ),
+            SessionEndStep {
+                next: State::Exiting {
+                    reason_signal: LOGOFF
+                },
+                effects: vec![Effect::DestroyBlockReason],
+            }
         );
     }
 
     #[test]
-    fn endsession_false_is_a_cancellation_regardless_of_the_latch() {
-        // Some other application vetoed the session end.
+    fn completion_of_an_ordinary_quit_does_nothing() {
         assert_eq!(
-            session_end_action(END_SESSION, false, false, false),
-            SessionEndAction::Cancelled
+            session_end_step(State::Idle, Input::ShutdownCompleted),
+            SessionEndStep {
+                next: State::Idle,
+                effects: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn deadline_hard_exits_with_the_reasons_status() {
+        for state in &ALL_STATES[1..] {
+            assert_eq!(
+                session_end_step(*state, Input::DeadlineElapsed).effects,
+                vec![Effect::HardExit {
+                    exit_code: exit_code_for_signal(SHUTDOWN)
+                }],
+                "state {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn watchdog_spawn_failure_exits_instead_of_running_an_unbounded_shutdown() {
+        let arming = State::Arming {
+            reason_signal: LOGOFF,
+        };
+        let step = session_end_step(arming, Input::DeadlineUnavailable);
+        assert_eq!(
+            step,
+            SessionEndStep {
+                next: State::Exiting {
+                    reason_signal: LOGOFF
+                },
+                effects: vec![
+                    Effect::DestroyBlockReason,
+                    Effect::HardExit {
+                        exit_code: exit_code_for_signal(LOGOFF)
+                    },
+                ],
+            }
+        );
+        assert!(
+            !step
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::RequestTerminate { .. })),
+            "no terminate request may be posted without a running watchdog"
+        );
+    }
+
+    #[test]
+    fn an_undeliverable_terminate_request_exits_now() {
+        assert_eq!(
+            session_end_step(
+                State::ShuttingDown {
+                    reason_signal: SHUTDOWN
+                },
+                Input::TerminateUndeliverable
+            )
+            .effects,
+            vec![
+                Effect::DestroyBlockReason,
+                Effect::HardExit {
+                    exit_code: exit_code_for_signal(SHUTDOWN)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn end_session_flags_are_named_for_the_log() {
+        assert_eq!(
+            describe_end_session_flags(0),
+            "0x00000000 (shutdown/restart)"
         );
         assert_eq!(
-            session_end_action(END_SESSION, false, false, true),
-            SessionEndAction::Cancelled
+            describe_end_session_flags(ENDSESSION_LOGOFF | ENDSESSION_CRITICAL),
+            "0xc0000000 (LOGOFF|CRITICAL)"
+        );
+        assert_eq!(
+            describe_end_session_flags(ENDSESSION_CLOSEAPP),
+            "0x00000001 (CLOSEAPP)"
         );
     }
 }
