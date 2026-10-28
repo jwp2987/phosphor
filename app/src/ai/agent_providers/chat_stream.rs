@@ -6042,6 +6042,9 @@ fn build_chat_options(
         );
         opts = opts.with_extra_body(json!({"enable_thinking": true}));
     }
+    // Filtered (#1091): one empty or malformed row would otherwise fail the whole request
+    // with reqwest's opaque `builder error`.
+    let extra_headers = super::usable_extra_headers(&extra_headers);
     if !extra_headers.is_empty() {
         opts = opts.with_extra_headers(extra_headers);
     }
@@ -10558,6 +10561,47 @@ mod dashscope_thinking_tests {
             "deepseek-r1",
             R::High
         ));
+    }
+}
+
+/// #1091: `build_chat_options` filters the provider's custom headers, so an empty row (the
+/// `["", ""]` the settings page's "+ Add Header" used to persist on click) is dropped
+/// instead of failing every streaming request with reqwest's `builder error`.
+#[cfg(test)]
+mod build_chat_options_extra_header_tests {
+    use super::*;
+    use crate::settings::ReasoningEffortSetting as R;
+
+    fn opts_with_headers(headers: Vec<(String, String)>) -> genai::chat::ChatOptions {
+        build_chat_options(
+            AgentProviderApiType::OpenAi,
+            "https://example.com/v1/",
+            "gpt-test",
+            R::Auto,
+            headers,
+            None,
+            0,
+        )
+    }
+
+    #[test]
+    fn an_empty_header_row_is_not_forwarded() {
+        let o = opts_with_headers(vec![(String::new(), String::new())]);
+        assert!(o.extra_headers.is_none());
+    }
+
+    #[test]
+    fn valid_rows_are_kept_next_to_an_empty_one() {
+        let o = opts_with_headers(vec![
+            (String::new(), String::new()),
+            ("X-Gateway".to_owned(), "route-a".to_owned()),
+        ]);
+        let headers = o.extra_headers.expect("the valid row must still be sent");
+        let pairs: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(pairs, vec![("X-Gateway".to_owned(), "route-a".to_owned())]);
     }
 }
 

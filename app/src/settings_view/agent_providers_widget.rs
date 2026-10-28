@@ -40,13 +40,17 @@ use warpui::ui_components::{
 };
 use warpui::{AppContext, Element, SingletonEntity, ViewContext, ViewHandle};
 
-use crate::ai::agent_providers::AgentProviderSecrets;
+use crate::ai::agent_providers::{
+    AgentProviderSecrets, ExtraHeaderProblem, check_extra_header, normalized_extra_header,
+};
 use crate::appearance::Appearance;
 use crate::editor::{
-    EditorView, Event as EditorEvent, SingleLineEditorOptions, TextColors, TextOptions,
+    EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
+    TextColors, TextOptions,
 };
 use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
 use strum::IntoEnumIterator;
+use warp_editor::editor::NavigationKey;
 use warp_util::redacted_secret::RedactedSecret;
 
 use super::ai_page::{
@@ -153,6 +157,91 @@ pub(super) fn gcloud_login_status() -> Option<String> {
 
 pub(super) fn set_gcloud_login_status(status: Option<String>) {
     GCLOUD_LOGIN_STATUS.with(|s| *s.borrow_mut() = status);
+}
+
+// ---------------------------------------------------------------------------
+// Custom-header form rows (process-local, not persisted) -- #1091
+// ---------------------------------------------------------------------------
+//
+// A header row is only written to settings once it has a valid name: "+ Add Header" used to
+// persist `["", ""]` on click, and genai/reqwest turned that empty name into a `builder
+// error` on every request to the provider. So a row that is not (yet) persistable lives
+// here, as part of the form's full row list, and survives the page rebuilds that adding or
+// removing a row causes.
+
+/// A custom-header row the settings page did not persist, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UnsavedHeaderRow {
+    /// 1-based position in the form, as the user sees it.
+    pub(super) position: usize,
+    /// The trimmed name, for the error message. Never the value: it may be a secret.
+    pub(super) name: String,
+    pub(super) problem: ExtraHeaderProblem,
+}
+
+/// Splits the form's header rows into what may be persisted -- trimmed, with a valid name
+/// and value -- and the rows that were held back. A row with neither a name nor a value
+/// (the one "+ Add Header" just created) is held back without being reported.
+pub(super) fn persistable_headers(
+    rows: &[(String, RedactedSecret)],
+) -> (Vec<(String, String)>, Vec<UnsavedHeaderRow>) {
+    let mut persisted = Vec::new();
+    let mut unsaved = Vec::new();
+    for (index, (name, value)) in rows.iter().enumerate() {
+        let (name, value) = normalized_extra_header(name, value.expose());
+        match check_extra_header(&name, &value) {
+            Ok(()) => persisted.push((name, value)),
+            Err(ExtraHeaderProblem::EmptyName) if value.is_empty() => {}
+            Err(problem) => unsaved.push(UnsavedHeaderRow {
+                position: index + 1,
+                name,
+                problem,
+            }),
+        }
+    }
+    (persisted, unsaved)
+}
+
+std::thread_local! {
+    /// {provider_id => every header row in the form, in display order}, kept only while
+    /// the form holds a row that is not in settings. Dropped as stale (see
+    /// [`header_form_rows`]) once its persistable rows no longer match settings.
+    static HEADER_FORM_ROWS: RefCell<HashMap<String, Vec<(String, RedactedSecret)>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The header rows the form shows for `provider`: the remembered form rows when they still
+/// agree with what is persisted, otherwise the persisted rows.
+pub(super) fn header_form_rows(provider: &AgentProvider) -> Vec<(String, RedactedSecret)> {
+    let remembered = HEADER_FORM_ROWS.with(|m| m.borrow().get(&provider.id).cloned());
+    resolve_header_form_rows(remembered, &provider.extra_headers)
+}
+
+fn resolve_header_form_rows(
+    remembered: Option<Vec<(String, RedactedSecret)>>,
+    persisted: &[(String, String)],
+) -> Vec<(String, RedactedSecret)> {
+    match remembered {
+        Some(rows) if persistable_headers(&rows).0 == persisted => rows,
+        _ => persisted
+            .iter()
+            .map(|(name, value)| (name.clone(), RedactedSecret::new(value.clone())))
+            .collect(),
+    }
+}
+
+/// Records the form's header rows for `provider_id` -- only kept when they hold something
+/// settings does not (an empty or invalid row), so the common case leaves nothing behind.
+pub(super) fn set_header_form_rows(provider_id: &str, rows: Vec<(String, RedactedSecret)>) {
+    let all_persisted = persistable_headers(&rows).0.len() == rows.len();
+    HEADER_FORM_ROWS.with(|m| {
+        let mut map = m.borrow_mut();
+        if all_persisted {
+            map.remove(provider_id);
+        } else {
+            map.insert(provider_id.to_owned(), rows);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +771,7 @@ impl AgentProvidersWidget {
         let initial_key = key.to_owned();
         let key_editor = ctx.add_typed_action_view(move |ctx| {
             let appearance = Appearance::handle(ctx).as_ref(ctx);
-            let options = single_line_editor_options(appearance, false);
+            let options = header_editor_options(appearance);
             let mut editor = EditorView::single_line(options, ctx);
             editor.set_placeholder_text(
                 crate::t!("settings-agent-providers-header-key-placeholder"),
@@ -701,7 +790,7 @@ impl AgentProvidersWidget {
         let initial_value = value.to_owned();
         let val_editor = ctx.add_typed_action_view(move |ctx| {
             let appearance = Appearance::handle(ctx).as_ref(ctx);
-            let options = single_line_editor_options(appearance, false);
+            let options = header_editor_options(appearance);
             let mut editor = EditorView::single_line(options, ctx);
             editor.set_placeholder_text(
                 crate::t!("settings-agent-providers-header-value-placeholder"),
@@ -721,11 +810,23 @@ impl AgentProvidersWidget {
         // only responsible for collapsing the selection on blur.
         // (header_index / provider_id / val_editor are still read live inside build_row as
         // `HeaderRow`.)
+        //
+        // Tab in the name field moves to its value field, Shift-Tab in the value field back to
+        // the name (#1091): the two editors propagate Tab instead of handling it themselves
+        // (see `header_editor_options`), so without these a Tab went nowhere.
+        let val_editor_for_tab = val_editor.clone();
         ctx.subscribe_to_view(&key_editor, move |_, editor, event, ctx| {
+            if header_tab_target(HeaderField::Name, event) == Some(HeaderField::Value) {
+                ctx.focus(&val_editor_for_tab);
+            }
             collapse_selection_if_blurred(&editor, event, ctx);
         });
 
+        let key_editor_for_tab = key_editor.clone();
         ctx.subscribe_to_view(&val_editor, move |_, editor, event, ctx| {
+            if header_tab_target(HeaderField::Value, event) == Some(HeaderField::Name) {
+                ctx.focus(&key_editor_for_tab);
+            }
             collapse_selection_if_blurred(&editor, event, ctx);
         });
 
@@ -901,10 +1002,11 @@ impl AgentProvidersWidget {
             });
         }
 
-        let header_rows: Vec<HeaderRow> = provider
-            .extra_headers
+        // The form's rows, not just the persisted ones: a row added with "+ Add Header" (or
+        // left without a valid name on Save) lives only in the form until it has one (#1091).
+        let header_rows: Vec<HeaderRow> = header_form_rows(provider)
             .iter()
-            .map(|(k, v)| Self::build_header_row(k, v, ctx))
+            .map(|(k, v)| Self::build_header_row(k, v.expose(), ctx))
             .collect();
         let add_header_button_state = MouseStateHandle::default();
 
@@ -2229,6 +2331,35 @@ fn collapse_selection_if_blurred(
     }
 }
 
+/// The options for a custom-header name/value editor: a plain single-line editor that
+/// propagates Tab / Shift-Tab (as `EditorEvent::Navigate`) so the row can move focus between
+/// its two fields (#1091).
+fn header_editor_options(appearance: &Appearance) -> SingleLineEditorOptions {
+    SingleLineEditorOptions {
+        propagate_and_no_op_vertical_navigation_keys: PropagateAndNoOpNavigationKeys::Always,
+        ..single_line_editor_options(appearance, false)
+    }
+}
+
+/// The two fields of a custom-header row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeaderField {
+    Name,
+    Value,
+}
+
+/// Where a Tab / Shift-Tab in one field of a header row moves focus: name → value on Tab,
+/// value → name on Shift-Tab, nowhere otherwise.
+fn header_tab_target(from: HeaderField, event: &EditorEvent) -> Option<HeaderField> {
+    match (from, event) {
+        (HeaderField::Name, EditorEvent::Navigate(NavigationKey::Tab)) => Some(HeaderField::Value),
+        (HeaderField::Value, EditorEvent::Navigate(NavigationKey::ShiftTab)) => {
+            Some(HeaderField::Name)
+        }
+        _ => None,
+    }
+}
+
 fn single_line_editor_options(
     appearance: &Appearance,
     is_password: bool,
@@ -2845,5 +2976,126 @@ mod model_filter_tests {
 
         toggle_disabled_models_expanded(provider_id);
         assert!(!disabled_models_expanded(provider_id));
+    }
+}
+
+/// #1091: "+ Add Header" persisted `["", ""]` on click, and that empty name failed every
+/// request on the provider with reqwest's `builder error`. A row is now persisted only once
+/// it has a valid name, and an unfinished row lives in the form instead.
+#[cfg(test)]
+mod header_form_tests {
+    use super::*;
+
+    fn row(name: &str, value: &str) -> (String, RedactedSecret) {
+        (name.to_owned(), RedactedSecret::new(value))
+    }
+
+    fn pair(name: &str, value: &str) -> (String, String) {
+        (name.to_owned(), value.to_owned())
+    }
+
+    #[test]
+    fn a_freshly_added_empty_row_is_not_persisted_and_not_reported() {
+        let (persisted, unsaved) = persistable_headers(&[row("", "")]);
+        assert!(
+            persisted.is_empty(),
+            "an empty row must never reach settings"
+        );
+        assert!(unsaved.is_empty(), "an untouched new row is not an error");
+    }
+
+    #[test]
+    fn valid_rows_persist_trimmed_and_bad_rows_are_reported_without_their_value() {
+        let rows = [
+            row(" X-Portkey-Provider ", " openai "),
+            row("", "orphan-secret"),
+            row("Bad Name", "v"),
+            row("X-Newline", "line\nbreak-secret"),
+            row("", ""),
+        ];
+        let (persisted, unsaved) = persistable_headers(&rows);
+        assert_eq!(persisted, vec![pair("X-Portkey-Provider", "openai")]);
+        assert_eq!(
+            unsaved,
+            vec![
+                UnsavedHeaderRow {
+                    position: 2,
+                    name: String::new(),
+                    problem: ExtraHeaderProblem::EmptyName,
+                },
+                UnsavedHeaderRow {
+                    position: 3,
+                    name: "Bad Name".to_owned(),
+                    problem: ExtraHeaderProblem::InvalidName,
+                },
+                UnsavedHeaderRow {
+                    position: 4,
+                    name: "X-Newline".to_owned(),
+                    problem: ExtraHeaderProblem::InvalidValue,
+                },
+            ]
+        );
+        assert!(!format!("{unsaved:?}").contains("secret"));
+    }
+
+    #[test]
+    fn the_form_keeps_an_unpersisted_row_across_a_rebuild() {
+        let persisted = vec![pair("X-A", "1")];
+        let form = vec![row("X-A", "1"), row("", "")];
+        assert_eq!(
+            resolve_header_form_rows(Some(form.clone()), &persisted),
+            form,
+            "the empty row the user just added must survive the page rebuild"
+        );
+    }
+
+    #[test]
+    fn stale_form_rows_give_way_to_settings() {
+        // settings.toml changed under the form (another window, a hand edit): the
+        // remembered rows no longer describe what is persisted, so they are dropped.
+        let persisted = vec![pair("X-B", "2")];
+        let form = vec![row("X-A", "1"), row("", "")];
+        assert_eq!(
+            resolve_header_form_rows(Some(form), &persisted),
+            vec![row("X-B", "2")]
+        );
+        assert_eq!(
+            resolve_header_form_rows(None, &persisted),
+            vec![row("X-B", "2")]
+        );
+    }
+
+    #[test]
+    fn form_rows_are_remembered_only_while_they_hold_something_unsaved() {
+        let mut provider = AgentProvider::new_empty();
+        provider.id = "test-provider-header-form-1091".to_owned();
+        provider.extra_headers = vec![pair("X-A", "1")];
+
+        set_header_form_rows(&provider.id, vec![row("X-A", "1"), row("", "")]);
+        assert_eq!(header_form_rows(&provider).len(), 2);
+
+        set_header_form_rows(&provider.id, vec![row("X-A", "1")]);
+        assert_eq!(header_form_rows(&provider), vec![row("X-A", "1")]);
+        assert!(HEADER_FORM_ROWS.with(|m| !m.borrow().contains_key(&provider.id)));
+    }
+
+    #[test]
+    fn tab_moves_from_the_name_to_the_value_and_shift_tab_back() {
+        let tab = EditorEvent::Navigate(NavigationKey::Tab);
+        let shift_tab = EditorEvent::Navigate(NavigationKey::ShiftTab);
+        assert_eq!(
+            header_tab_target(HeaderField::Name, &tab),
+            Some(HeaderField::Value)
+        );
+        assert_eq!(
+            header_tab_target(HeaderField::Value, &shift_tab),
+            Some(HeaderField::Name)
+        );
+        assert_eq!(header_tab_target(HeaderField::Name, &shift_tab), None);
+        assert_eq!(header_tab_target(HeaderField::Value, &tab), None);
+        assert_eq!(
+            header_tab_target(HeaderField::Name, &EditorEvent::Blurred),
+            None
+        );
     }
 }

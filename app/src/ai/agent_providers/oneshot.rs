@@ -97,8 +97,10 @@ fn build_oneshot_request(
             }
         }
     }
-    if !cfg.extra_headers.is_empty() {
-        chat_opts = chat_opts.with_extra_headers(cfg.extra_headers.clone());
+    // Filtered (#1091): see `usable_extra_headers`.
+    let extra_headers = super::usable_extra_headers(&cfg.extra_headers);
+    if !extra_headers.is_empty() {
+        chat_opts = chat_opts.with_extra_headers(extra_headers);
     }
 
     let max_chars = opts.max_chars.unwrap_or(DEFAULT_MAX_CHARS);
@@ -369,6 +371,20 @@ mod tests {
         assert!(
             chat_opts.extra_headers.is_none(),
             "an empty extra_headers must not synthesize an empty header set on the wire"
+        );
+    }
+
+    /// #1091: the `["", ""]` row the settings page's "+ Add Header" used to persist must
+    /// not reach genai, where reqwest turned it into a `builder error` that failed the call.
+    #[test]
+    fn an_empty_header_row_never_reaches_chat_options() {
+        let cfg = a_config(vec![(String::new(), String::new())]);
+        let opts = OneshotOptions::default();
+        let (_req, chat_opts) = build_oneshot_request(&cfg, "system", "user", &opts);
+
+        assert!(
+            chat_opts.extra_headers.is_none(),
+            "an empty header row must be dropped, not sent as an empty header name"
         );
     }
 }

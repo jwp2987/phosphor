@@ -77,7 +77,7 @@ use warpui::{
     ViewHandle,
 };
 
-use super::agent_providers_widget::AgentProvidersWidget;
+use super::agent_providers_widget::{self, AgentProvidersWidget};
 use super::execution_profile_view::{ExecutionProfileView, ExecutionProfileViewEvent};
 use super::settings_page::{render_custom_size_header, render_settings_info_banner};
 use super::{
@@ -2441,8 +2441,28 @@ impl AISettingsPageView {
             .collect()
     }
 
+    /// Applies `edit` to the provider's custom-header form rows, then persists only the rows
+    /// that have a valid name and value (#1091).
+    fn edit_agent_provider_header_rows(
+        provider_id: &str,
+        ctx: &mut ViewContext<Self>,
+        edit: impl FnOnce(&mut Vec<(String, RedactedSecret)>),
+    ) {
+        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            let mut providers = settings.agent_providers.value().clone();
+            if let Some(p) = providers.iter_mut().find(|p| p.id == provider_id) {
+                let mut rows = agent_providers_widget::header_form_rows(p);
+                edit(&mut rows);
+                p.extra_headers = agent_providers_widget::persistable_headers(&rows).0;
+                agent_providers_widget::set_header_form_rows(provider_id, rows);
+            }
+            report_settings_write_error!(settings.agent_providers.set_value(providers, ctx), ctx);
+        });
+    }
+
     fn save_agent_provider_edits(fields: &ProviderEditFields, ctx: &mut ViewContext<Self>) {
         let mut validation_error = None;
+        let mut unsaved_headers = Vec::new();
         AISettings::handle(ctx).update(ctx, |settings, ctx| {
             let mut providers = settings.agent_providers.value().clone();
             if let Some(p) = providers.iter_mut().find(|p| p.id == fields.provider_id) {
@@ -2451,11 +2471,16 @@ impl AISettingsPageView {
                 // Vertex-only fields; harmless (kept empty) for other provider types.
                 p.vertex_project = fields.vertex_project.trim().to_owned();
                 p.vertex_location = fields.vertex_location.trim().to_owned();
-                p.extra_headers = fields
-                    .headers
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.expose().to_owned()))
-                    .collect();
+                // Only rows with a valid name (and value) are persisted (#1091); the rest
+                // stay in the form, and the invalid ones are reported below.
+                let (persisted, unsaved) =
+                    agent_providers_widget::persistable_headers(&fields.headers);
+                p.extra_headers = persisted;
+                agent_providers_widget::set_header_form_rows(
+                    &fields.provider_id,
+                    fields.headers.clone(),
+                );
+                unsaved_headers = unsaved;
                 // Updates by model_index, skipping out-of-range indices (the form and settings
                 // may briefly disagree mid-rebuild).
                 for model_fields in &fields.models {
@@ -2497,12 +2522,38 @@ impl AISettingsPageView {
                 secrets.set(&fields.provider_id, fields.api_key.expose().to_owned(), ctx);
             },
         );
-        if let Some(message) = validation_error {
+        let header_errors = unsaved_headers.iter().map(unsaved_header_message);
+        for message in validation_error.into_iter().chain(header_errors) {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
             });
         }
+    }
+}
+
+/// The error a Save shows for a custom-header row it did not persist (#1091). Names the
+/// header by name (or position, when the name is the problem) -- never by value.
+fn unsaved_header_message(row: &agent_providers_widget::UnsavedHeaderRow) -> String {
+    use crate::ai::agent_providers::ExtraHeaderProblem;
+    let position = row.position;
+    match row.problem {
+        ExtraHeaderProblem::EmptyName => {
+            crate::t!(
+                "settings-agent-providers-header-error-no-name",
+                position = position
+            )
+        }
+        ExtraHeaderProblem::InvalidName => {
+            crate::t!(
+                "settings-agent-providers-header-error-invalid-name",
+                position = position
+            )
+        }
+        ExtraHeaderProblem::InvalidValue => crate::t!(
+            "settings-agent-providers-header-error-invalid-value",
+            name = row.name.clone()
+        ),
     }
 }
 
@@ -4121,16 +4172,20 @@ impl TypedActionView for AISettingsPageView {
                 ctx.notify();
             }
             AISettingsPageAction::AddAgentProviderHeader { provider_id } => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let mut providers = settings.agent_providers.value().clone();
-                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
-                        p.extra_headers.push((String::new(), String::new()));
-                    }
-                    report_settings_write_error!(
-                        settings.agent_providers.set_value(providers, ctx),
-                        ctx
-                    );
-                });
+                // Form-only (#1091): the new row is not written to settings until it has a
+                // valid name and the user saves. Persisting `["", ""]` here failed every
+                // request on the provider with reqwest's `builder error`.
+                let provider = AISettings::as_ref(ctx)
+                    .agent_providers
+                    .value()
+                    .iter()
+                    .find(|p| p.id == *provider_id)
+                    .cloned();
+                if let Some(provider) = provider {
+                    let mut rows = agent_providers_widget::header_form_rows(&provider);
+                    rows.push((String::new(), RedactedSecret::default()));
+                    agent_providers_widget::set_header_form_rows(provider_id, rows);
+                }
                 // A changed header-row count requires creating/destroying EditorView handles;
                 // a plain notify won't refresh the rows.
                 self.rebuild_current_page(ctx);
@@ -4139,17 +4194,12 @@ impl TypedActionView for AISettingsPageView {
                 provider_id,
                 header_index,
             } => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let mut providers = settings.agent_providers.value().clone();
-                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
-                        if *header_index < p.extra_headers.len() {
-                            p.extra_headers.remove(*header_index);
-                        }
+                // `header_index` is the row's position in the form, which may hold rows that
+                // are not in settings (#1091).
+                Self::edit_agent_provider_header_rows(provider_id, ctx, |rows| {
+                    if *header_index < rows.len() {
+                        rows.remove(*header_index);
                     }
-                    report_settings_write_error!(
-                        settings.agent_providers.set_value(providers, ctx),
-                        ctx
-                    );
                 });
                 // Deletion likewise shifts the index relative to existing HeaderRow handles,
                 // requiring the page to be rebuilt.
@@ -4161,17 +4211,10 @@ impl TypedActionView for AISettingsPageView {
                 key,
                 value,
             } => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let mut providers = settings.agent_providers.value().clone();
-                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
-                        if let Some(h) = p.extra_headers.get_mut(*header_index) {
-                            *h = (key.clone(), value.expose().to_owned());
-                        }
+                Self::edit_agent_provider_header_rows(provider_id, ctx, |rows| {
+                    if let Some(row) = rows.get_mut(*header_index) {
+                        *row = (key.clone(), value.clone());
                     }
-                    report_settings_write_error!(
-                        settings.agent_providers.set_value(providers, ctx),
-                        ctx
-                    );
                 });
                 ctx.notify();
             }

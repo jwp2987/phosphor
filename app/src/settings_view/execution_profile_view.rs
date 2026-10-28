@@ -132,47 +132,39 @@ impl View for ExecutionProfileView {
             .map(|info| info.display_name.clone())
             .unwrap_or_else(|| crate::t!("settings-exec-profile-auto"));
 
-        // The title model falls back to base's display name; matching base means "not
-        // configured separately".
-        let title_model = profile
-            .title_model
-            .as_ref()
-            .and_then(|id| llm_preferences.get_llm_info(id))
-            .map(|info| info.display_name.clone())
-            .unwrap_or_else(|| {
-                llm_preferences
-                    .get_default_base_model()
-                    .display_name
-                    .clone()
-            });
+        // The title / active-AI / next-command models fall back to the model the profile's
+        // base slot resolves to (#1099: not the first configured model); matching base means
+        // "not configured separately".
+        let title_model = llm_preferences
+            .get_slot_model_for_profile(
+                app,
+                profile.title_model.as_ref(),
+                profile.base_model.as_ref(),
+            )
+            .display_name
+            .clone();
 
         // The active AI model (used for prompt suggestions / NLD / relevant files), falls back
         // to base.
-        let active_ai_model = profile
-            .active_ai_model
-            .as_ref()
-            .and_then(|id| llm_preferences.get_llm_info(id))
-            .map(|info| info.display_name.clone())
-            .unwrap_or_else(|| {
-                llm_preferences
-                    .get_default_base_model()
-                    .display_name
-                    .clone()
-            });
+        let active_ai_model = llm_preferences
+            .get_slot_model_for_profile(
+                app,
+                profile.active_ai_model.as_ref(),
+                profile.base_model.as_ref(),
+            )
+            .display_name
+            .clone();
 
         // The Next Command model (ghost-text completion / zero-state suggestions), falls back
         // to base.
-        let next_command_model = profile
-            .next_command_model
-            .as_ref()
-            .and_then(|id| llm_preferences.get_llm_info(id))
-            .map(|info| info.display_name.clone())
-            .unwrap_or_else(|| {
-                llm_preferences
-                    .get_default_base_model()
-                    .display_name
-                    .clone()
-            });
+        let next_command_model = llm_preferences
+            .get_slot_model_for_profile(
+                app,
+                profile.next_command_model.as_ref(),
+                profile.base_model.as_ref(),
+            )
+            .display_name
+            .clone();
 
         let computer_use_model = profile
             .computer_use_model

@@ -721,3 +721,125 @@ fn forgetting_an_unknown_terminal_view_is_a_no_op_without_a_snapshot_save() {
         );
     });
 }
+
+/// #1099: a BYOP Ollama provider listing several models, a profile whose base model is the
+/// second one. `agent_mode`'s own default is the first-listed model (gemma), as in
+/// `build_byop_models_by_feature`.
+fn gemma_first_preferences() -> (LLMId, LLMId, LLMPreferences) {
+    let gemma = LLMId::from("ollama-gemma4-31b");
+    let gpt_oss = LLMId::from("ollama-gpt-oss-20b");
+    let agent_mode = AvailableLLMs::new(
+        gemma.clone(),
+        vec![
+            agent_llm(gemma.as_str(), "Ollama / gemma4:31b"),
+            agent_llm(gpt_oss.as_str(), "Ollama / gpt-oss:20b"),
+        ],
+        None,
+    )
+    .expect("choices are non-empty");
+    let preferences = LLMPreferences {
+        models_by_feature: ModelsByFeature {
+            agent_mode,
+            ..Default::default()
+        },
+        last_update: None,
+        base_llm_for_terminal_view: HashMap::new(),
+        reasoning_effort_per_terminal: HashMap::new(),
+        last_used_reasoning: HashMap::new(),
+        agent_mode_models_unavailable: false,
+    };
+    (gemma, gpt_oss, preferences)
+}
+
+/// #1099: an unset title / active-AI / next-command slot shows the profile's base model,
+/// as its help text promises -- not the provider's first model. Fails before the fix: the
+/// settings pages fell back to `get_default_base_model` (gemma).
+#[test]
+fn an_unset_profile_slot_shows_the_profile_base_model_not_the_first_model() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let (gemma, gpt_oss, preferences) = gemma_first_preferences();
+        let preferences = app.add_singleton_model(|_| preferences);
+
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences.get_default_base_model().id,
+                gemma,
+                "sanity check: the BYOP default is the first-listed model"
+            );
+            assert_eq!(
+                preferences
+                    .get_slot_model_for_profile(ctx, None, Some(&gpt_oss))
+                    .id,
+                gpt_oss,
+                "an unset slot must follow the profile's base model"
+            );
+            assert_eq!(
+                preferences
+                    .get_slot_model_for_profile(ctx, Some(&gemma), Some(&gpt_oss))
+                    .id,
+                gemma,
+                "an explicit slot choice still wins over the base model"
+            );
+        });
+    });
+}
+
+/// #1099: the title request for a conversation already on gpt-oss must also go to gpt-oss
+/// when the profile has no title model of its own. Fails before the fix: the title was
+/// resolved with no terminal view, so it fell through the (default) profile's unset base
+/// model to the first-listed model, and on a shared Ollama server the first request of the
+/// conversation evicted the model the user had chosen.
+#[test]
+fn the_title_request_follows_the_conversation_model_when_no_title_model_is_set() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let (gemma, gpt_oss, preferences) = gemma_first_preferences();
+        let preferences = app.add_singleton_model(|_| preferences);
+
+        let terminal_view_id = EntityId::new();
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(terminal_view_id, gpt_oss.clone());
+        });
+
+        preferences.read(&app, |preferences, ctx| {
+            let request_model = preferences
+                .get_active_base_model(ctx, Some(terminal_view_id))
+                .id
+                .clone();
+            assert_eq!(
+                request_model, gpt_oss,
+                "sanity check: the request is on gpt-oss"
+            );
+            assert_eq!(
+                preferences.get_title_model_for_request(
+                    ctx,
+                    Some(terminal_view_id),
+                    &request_model
+                ),
+                gpt_oss,
+                "with no title model set, the title must use the conversation's own model"
+            );
+        });
+
+        // An explicit title model on the terminal's profile still wins.
+        let profile_id = profiles.read(&app, |profiles, ctx| {
+            *profiles.active_profile(Some(terminal_view_id), ctx).id()
+        });
+        profiles.update(&mut app, |profiles, ctx| {
+            profiles.set_title_model(profile_id, Some(gemma.clone()), ctx);
+        });
+        preferences.read(&app, |preferences, ctx| {
+            assert_eq!(
+                preferences.get_title_model_for_request(ctx, Some(terminal_view_id), &gpt_oss),
+                gemma,
+                "an explicit title model must still be used"
+            );
+        });
+    });
+}
