@@ -16847,16 +16847,17 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
             view.keydown_on_terminal("\r", ctx);
             // #1113: the dropped line is kept, whole and unexecuted, in the editor (when it is
             // visible); it never reaches the tty.
-            let expected = if view.is_long_running() {
-                ""
-            } else {
-                "echo TY$((20+1))-$(uname -n)"
-            };
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), expected);
+            // Fixed setup: the ssh block is still the running block (it was made long running
+            // above and no real precmd ended it), so the editor is hidden and the line waits,
+            // whole, in the held state; it must reach neither the tty nor a hidden editor.
+            assert!(view.is_long_running());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(view.ssh_held_typing.text, "echo TY$((20+1))-$(uname -n)");
+            assert!(view.ssh_held_typing.ended);
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
             });
-            view.ssh_held_typing.clear();
+            view.ssh_held_typing = SshHeldTyping::default();
             // A new line passes.
             view.typed_characters_on_terminal("ls", ctx);
             assert!(!view.ssh_setup_drop_notified, "ls must not be dropped");
@@ -17429,7 +17430,7 @@ fn ssh_line_typed_during_connect_is_kept_in_the_editor_not_run() {
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "exit\nls -l");
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
@@ -17453,7 +17454,7 @@ fn ssh_complete_line_typed_during_connect_is_shown_after_release() {
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
-            assert!(view.ssh_held_typing.is_empty());
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
@@ -17476,10 +17477,10 @@ fn ssh_text_typed_before_a_prompt_is_not_shown_later() {
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
-            assert_eq!(view.ssh_held_typing, "hunter2");
+            assert_eq!(view.ssh_held_typing.text, "hunter2");
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\r", ctx);
-            assert!(view.ssh_held_typing.is_empty());
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
     })
@@ -17559,6 +17560,83 @@ fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
             "{:?}",
             pty_writes.borrow()
         );
+    })
+}
+
+/// #1113 (password leak): `hunter2` + Enter typed blind during the silent connect, THEN the
+/// prompt appears. The held line must be discarded as soon as output is seen, so releasing the
+/// gate never puts it in the editor in cleartext.
+#[test]
+fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("hunter2", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_typing.text, "hunter2");
+            view.model.lock().process_bytes("Password: ");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            release_ssh_gate_for_test(view);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1113: the held line follows the user's edits, so deleted characters do not come back, and
+/// a paste or an escape sequence makes the whole line be discarded rather than half-shown.
+#[test]
+fn ssh_held_typing_follows_edits_and_discards_unreproducible_lines() {
+    let mut held = SshHeldTyping::default();
+    for key in ["echo", " ", "secrex", "\u{7f}", "t"] {
+        held.key(Some(key));
+    }
+    assert_eq!(held.text, "echo secret");
+    held.key(Some("\u{17}"));
+    assert_eq!(held.text, "echo ");
+    held.key(Some("\u{15}"));
+    assert_eq!(held, SshHeldTyping::default());
+    // A paste inside the line: discarded at its Enter, nothing kept.
+    held.key(Some("rm "));
+    held.key(None);
+    assert_eq!(held.key(Some("\r")), SshHeldKey::DiscardedLine);
+    assert_eq!(held, SshHeldTyping::default());
+    // An escape sequence (arrow key) is not printable text.
+    held.key(Some("ls"));
+    held.key(Some("\u{1b}[A"));
+    assert!(held.tainted);
+    assert_eq!(held.key(Some("\r")), SshHeldKey::DiscardedLine);
+    // Only the last complete line is kept.
+    held.key(Some("exit"));
+    held.key(Some("\r"));
+    held.key(Some("ls"));
+    assert_eq!(
+        (held.text.as_str(), held.superseded, held.ended),
+        ("ls", true, false)
+    );
+}
+
+/// #1113: the flush goes in FRONT of what the editor already holds, never in the middle of it.
+#[test]
+fn ssh_held_line_is_put_in_front_of_existing_editor_text() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.input
+                .update(ctx, |input, ctx| input.replace_buffer_content("world", ctx));
+            view.ssh_held_typing.key(Some("hello "));
+            view.ssh_held_typing.key(Some("\r"));
+            view.flush_ssh_held_typing(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "hello world");
+        });
     })
 }
 
