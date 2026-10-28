@@ -827,7 +827,7 @@ settings-warpify-use-tmux = 使用 Tmux Phosphorize
 settings-warpify-tmux-description = tmux ssh 包装器在许多默认方式无效的场景下能正常工作，但可能需要你手动点击按钮才能 Phosphorize。在新标签页中生效。
 settings-warpify-ssh-tmux-toggle-binding-label = 用于 Phosphorize 的 SSH 会话检测
 settings-warpify-split-inherits-ssh = 从 SSH 会话拆分的窗格在同一主机上打开
-settings-warpify-split-inherits-ssh-description = 拆分 SSH 会话所在的窗格时，新窗格会运行相同的 ssh 命令，然后切换到相同的远程目录。新窗格使用自己的连接，因此可能需要再次认证。显式选择 Shell 进行拆分时，始终打开本地 Shell。
+settings-warpify-split-inherits-ssh-description = 拆分 SSH 会话所在的窗格时，新窗格会运行相同的 ssh 命令，然后切换到相同的远程目录。新窗格使用自己的连接，因此可能需要再次认证。显式选择 Shell 或通过脚本进行拆分时，始终打开本地 Shell。默认关闭。
 
 # --- ANCHOR-SUB-NETWORK (network-settings) ---
 # 全局 HTTP 代理设置页(见 Issue #72)。

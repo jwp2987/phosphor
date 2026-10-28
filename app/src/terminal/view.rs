@@ -247,7 +247,7 @@ use crate::env_vars::{
     EnvVar, EnvVarCollectionObject,
 };
 use crate::pane_group::focus_state::PaneFocusHandle;
-use crate::pane_group::ssh_split::{PendingRemoteCd, remote_cd_command};
+use crate::pane_group::ssh_split::{PendingRemoteCd, SplitFollowUp};
 use crate::persistence::{self, FinishedCommandMetadata};
 use crate::server::ids::{ObjectUid, SyncId};
 #[cfg(feature = "local_fs")]
@@ -2702,8 +2702,9 @@ pub struct TerminalView {
     /// deferred until after the remote session becomes available.
     enter_agent_view_after_ssh_bootstrap: bool,
     /// Set on a pane split from an SSH session (#1069): `cd` to the original pane's remote
-    /// directory once the first ssh session bootstraps here. One-shot.
-    cd_after_ssh_bootstrap: Option<PendingRemoteCd>,
+    /// directory (and enter agent view, for the Agent default session mode) once the replayed
+    /// ssh session bootstraps here. One-shot; see [`SplitFollowUp`].
+    ssh_split_follow_up: SplitFollowUp,
     slow_bootstrap_banner: ViewHandle<Banner<TerminalAction>>,
     is_slow_bootstrap_banner_open: bool,
     /// Timer that auto-dismisses the slow-bootstrap banner after
@@ -4504,7 +4505,7 @@ impl TerminalView {
             awaiting_pending_command_completion: false,
             enter_agent_view_after_pending_commands: false,
             enter_agent_view_after_ssh_bootstrap: false,
-            cd_after_ssh_bootstrap: None,
+            ssh_split_follow_up: SplitFollowUp::default(),
             slow_bootstrap_banner,
             is_slow_bootstrap_banner_open: false,
             slow_bootstrap_banner_auto_dismiss_handle: None,
@@ -14380,6 +14381,25 @@ impl TerminalView {
                 // because the abort is time sensitive.
                 self.warpify_state.abort_auto_warpify();
 
+                // #1069: a user block completing before the replayed ssh bootstrapped means that
+                // ssh failed or exited; nothing armed by the split may outlive it. The bootstrap
+                // block of the replayed session completing is its bootstrap precmd: the remote
+                // `cd` goes out then, after the same settling delay as a pending command.
+                match block_type {
+                    BlockType::User(_) => self.ssh_split_follow_up.on_user_block_completed(),
+                    BlockType::BootstrapHidden | BlockType::BootstrapVisible(_)
+                        if self.ssh_split_follow_up.has_ready_cd() =>
+                    {
+                        let _ = ctx.spawn(
+                            async move {
+                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
+                            },
+                            |me, _, ctx| me.run_ssh_split_cd(ctx),
+                        );
+                    }
+                    _ => {}
+                }
+
                 let active_session = self
                     .active_block_session_id()
                     .and_then(|id| self.sessions.as_ref(ctx).get(id));
@@ -16302,18 +16322,21 @@ impl TerminalView {
         self.any_session_contains_remote_blocks |= self.active_block_is_considered_remote(ctx);
         self.update_focused_terminal_info(ctx);
 
-        // #1069: a split that inherited an ssh session restores the original remote directory,
-        // only on the host it came from and only if the user has not started typing.
-        if is_ssh_session && let Some(pending) = self.cd_after_ssh_bootstrap.take() {
-            let input_is_empty = {
-                let input = self.input.as_ref(ctx);
-                input.buffer_text(ctx).is_empty() && !input.has_pending_command()
-            };
-            if let Some(cd) =
-                remote_cd_command(&pending, &session_host, session_shell_type, input_is_empty)
-            {
-                self.execute_command_or_set_pending(&cd, ctx);
-            }
+        // #1069: a split that inherited an ssh session prepares the remote `cd` (sent when this
+        // session's bootstrap block completes, see `ModelEvent::AfterBlockCompleted`) and
+        // enters agent view for the Agent default session mode.
+        if is_ssh_session
+            && self.ssh_split_follow_up.on_ssh_session_bootstrapped(
+                session_id,
+                &session_host,
+                session_shell_type,
+            )
+        {
+            self.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::DefaultSessionMode,
+                ctx,
+            );
         }
 
         if self.enter_agent_view_after_ssh_bootstrap && is_ssh_session {
@@ -18832,9 +18855,50 @@ impl TerminalView {
         self.enter_agent_view_after_pending_commands = false;
     }
 
-    /// Arms the one-shot remote `cd` a pane split from an SSH session runs after bootstrap.
-    pub fn set_cd_after_ssh_bootstrap(&mut self, pending: PendingRemoteCd) {
-        self.cd_after_ssh_bootstrap = Some(pending);
+    /// Arms the one-shot follow-up of a pane split from an SSH session (#1069): the remote `cd`
+    /// and, for the Agent default session mode, entering agent view once the replayed ssh
+    /// session has bootstrapped.
+    pub fn arm_ssh_split_follow_up(
+        &mut self,
+        remote_cd: Option<PendingRemoteCd>,
+        enter_agent_view: bool,
+    ) {
+        self.ssh_split_follow_up.arm(remote_cd, enter_agent_view);
+    }
+
+    /// Whether a split armed this pane's #1069 follow-up and it is still waiting.
+    #[cfg(test)]
+    pub fn ssh_split_follow_up_is_armed(&self) -> bool {
+        self.ssh_split_follow_up.is_armed()
+    }
+
+    /// Makes `metadata` the active block's metadata, as a precmd would.
+    #[cfg(test)]
+    pub fn set_active_block_metadata_for_test(&mut self, metadata: BlockMetadata) {
+        self.active_block_metadata = Some(metadata);
+    }
+
+    /// Sends the remote `cd` prepared for the session whose bootstrap block just completed, if
+    /// that session is still the active one. Only executed if it can run right now: it is never
+    /// left pending, where it could run later in a different (e.g. the local) session.
+    fn run_ssh_split_cd(&mut self, ctx: &mut ViewContext<Self>) {
+        let active_session_id = self.model.lock().block_list().active_block().session_id();
+        let input_is_empty = {
+            let input = self.input.as_ref(ctx);
+            input.buffer_text(ctx).is_empty() && !input.has_pending_command()
+        };
+        let Some(cd) = self
+            .ssh_split_follow_up
+            .take_cd_for_bootstrap_precmd(active_session_id, input_is_empty)
+        else {
+            return;
+        };
+        let executed = self
+            .input
+            .update(ctx, |input, ctx| input.try_execute_command(&cd, ctx));
+        if !executed {
+            log::info!("Dropped the split's remote cd: the session could not run it yet");
+        }
     }
 
     pub fn set_enter_agent_view_after_ssh_bootstrap(&mut self) {

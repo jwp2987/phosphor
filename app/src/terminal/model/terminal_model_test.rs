@@ -211,7 +211,22 @@ fn wrapper_ssh_session(terminal: &mut TerminalModel, typed: &str, with_ssh_hook:
         shell: String::from("bash"),
         ..Default::default()
     });
-    command_finished_and_precmd(terminal);
+    // The local prompt the `ssh` is typed at, in /home/me/proj.
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        session_id: None,
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/home/me/proj".to_owned()),
+            ..Default::default()
+        },
+    });
 
     terminal.start_command_execution();
     for c in typed.chars() {
@@ -258,6 +273,11 @@ fn wrapper_ssh_session_records_the_typed_command() {
         info.legacy_ssh_spawning_command.as_deref(),
         Some("ssh -p 2222 me@box")
     );
+    // ...and the local directory it was typed in, for the split to replay it there.
+    assert_eq!(
+        info.ssh_spawning_local_pwd.as_deref(),
+        Some("/home/me/proj")
+    );
 }
 
 /// #1069: without the wrapper's SSH hook nothing is recorded, so a split never replays a
@@ -272,6 +292,7 @@ fn init_shell_without_ssh_hook_records_no_ssh_command() {
         .as_ref()
         .expect("InitShell leaves a pending session");
     assert_eq!(info.legacy_ssh_spawning_command, None);
+    assert_eq!(info.ssh_spawning_local_pwd, None);
 }
 
 /// #966: the exact hook order a fish subshell emits (`fish.sh`): InitShell (is_subshell), then

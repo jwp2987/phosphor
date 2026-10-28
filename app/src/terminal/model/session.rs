@@ -658,6 +658,10 @@ pub struct SessionInfo {
     /// (local) session. Such sessions have no `subshell_info`, so it is kept separately; a split
     /// from the session replays it (#1069, `pane_group::ssh_split`).
     pub legacy_ssh_spawning_command: Option<String>,
+    /// For an ssh session (wrapper or tmux-warpified), the working directory of the spawning
+    /// local session when the `ssh` was typed, as that session reported it. A split replays the
+    /// ssh command there (#1069).
+    pub ssh_spawning_local_pwd: Option<String>,
 }
 
 impl SessionInfo {
@@ -728,6 +732,7 @@ impl SessionInfo {
             wsl_name: init_shell_value.wsl_name,
             spawning_session_id,
             legacy_ssh_spawning_command: None,
+            ssh_spawning_local_pwd: None,
         }
     }
 
@@ -865,6 +870,7 @@ impl SessionInfo {
             wsl_name: bootstrapped_value.wsl_name,
             spawning_session_id: self.spawning_session_id,
             legacy_ssh_spawning_command: self.legacy_ssh_spawning_command.take(),
+            ssh_spawning_local_pwd: self.ssh_spawning_local_pwd.take(),
         }
     }
 
@@ -1037,6 +1043,11 @@ impl Session {
     /// See [`SessionInfo::legacy_ssh_spawning_command`].
     pub fn legacy_ssh_spawning_command(&self) -> Option<&str> {
         self.info.legacy_ssh_spawning_command.as_deref()
+    }
+
+    /// See [`SessionInfo::ssh_spawning_local_pwd`].
+    pub fn ssh_spawning_local_pwd(&self) -> Option<&str> {
+        self.info.ssh_spawning_local_pwd.as_deref()
     }
 
     /// Updates the `host_id` on a `WarpifiedRemote` session type after the
@@ -2035,6 +2046,7 @@ pub mod testing {
                 wsl_name: None,
                 spawning_session_id: None,
                 legacy_ssh_spawning_command: None,
+                ssh_spawning_local_pwd: None,
             }
         }
 

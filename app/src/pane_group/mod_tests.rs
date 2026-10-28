@@ -50,6 +50,8 @@ use warpui::platform::{WindowBounds, WindowStyle};
 
 use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
 use crate::notebooks::notebook::NotebookView;
+use crate::terminal::model::block::BlockMetadata;
+use crate::terminal::model::session::{SessionId, SessionInfo};
 use crate::terminal::shared_session::SharedSessionStatus;
 use warpui::windowing::state::ApplicationStage;
 
@@ -2302,5 +2304,172 @@ fn test_child_view_ids_reports_owned_but_unrendered_views() {
                 );
             }
         });
+    });
+}
+
+// #1069: splitting a pane whose active session is an ssh session.
+
+const SSH_SPLIT_COMMAND: &str = "ssh -p 2222 me@box";
+
+fn set_split_inherits_ssh(app: &mut App, enabled: bool) {
+    SshSettings::handle(&*app).update(app, |settings, ctx| {
+        settings.split_inherits_ssh.set_value(enabled, ctx).unwrap();
+    });
+}
+
+/// Makes the focused pane's active session a wrapper ssh session to `me@box` (remote cwd
+/// `/srv/app`), typed as `command` in a local session whose cwd was `local_pwd`. Returns the
+/// focused pane's id.
+fn make_focused_pane_an_ssh_session(
+    pane_group: &ViewHandle<PaneGroup>,
+    command: &str,
+    local_pwd: &str,
+    app: &mut App,
+) -> PaneId {
+    let (pane_id, view) = pane_group.read(&*app, |panes, ctx| {
+        let pane_id = panes.focused_pane_id(ctx);
+        let view = panes
+            .terminal_view_from_pane_id(pane_id, ctx)
+            .expect("the mock pane group starts with a terminal pane");
+        (pane_id, view)
+    });
+    view.update(app, |view, ctx| {
+        view.sessions_model().update(ctx, |sessions, _| {
+            sessions.register_session_for_test(SessionInfo::new_for_test().with_id(1));
+            let mut remote = SessionInfo::new_for_test()
+                .with_id(2)
+                .with_user("me".to_owned())
+                .with_hostname("box".to_owned())
+                .with_ssh_socket_path(PathBuf::from("/tmp/phosphor-1069-test-socket"));
+            remote.spawning_session_id = Some(SessionId::from(1));
+            remote.legacy_ssh_spawning_command = Some(command.to_owned());
+            remote.ssh_spawning_local_pwd = Some(local_pwd.to_owned());
+            sessions.register_session_for_test(remote);
+        });
+        view.set_active_block_metadata_for_test(BlockMetadata::new(
+            Some(SessionId::from(2)),
+            Some("/srv/app".to_owned()),
+        ));
+    });
+    pane_id
+}
+
+fn new_pane_follow_up_is_armed(
+    pane_group: &ViewHandle<PaneGroup>,
+    new_pane_id: TerminalPaneId,
+    app: &App,
+) -> bool {
+    pane_group.read(app, |panes, ctx| {
+        panes
+            .terminal_view_from_pane_id(new_pane_id, ctx)
+            .expect("the split created a terminal pane")
+            .as_ref(ctx)
+            .ssh_split_follow_up_is_armed()
+    })
+}
+
+#[test]
+fn test_ssh_split_replays_the_ssh_command_in_the_base_shell_and_local_cwd() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        set_split_inherits_ssh(&mut app, true);
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_pwd = local_dir.path().to_str().unwrap().to_owned();
+        let base_pane_id =
+            make_focused_pane_an_ssh_session(&pane_group, SSH_SPLIT_COMMAND, &local_pwd, &mut app);
+
+        let (plan, base_shell) = pane_group.read(&app, |panes, ctx| {
+            let base = base_pane_id.as_terminal_pane_id().unwrap();
+            let base_shell = panes
+                .terminal_view_from_pane_id(base, ctx)
+                .unwrap()
+                .as_ref(ctx)
+                .model
+                .lock()
+                .shell_launch_state()
+                .available_shell();
+            (panes.ssh_split_plan(base, ctx), base_shell)
+        });
+        let plan = plan.expect("an ssh session typed in a local session is inherited");
+        assert_eq!(plan.command, SSH_SPLIT_COMMAND);
+        assert_eq!(plan.local_cwd.as_deref(), Some(local_dir.path()));
+        assert_eq!(plan.shell, base_shell);
+        assert_eq!(
+            plan.remote_cd,
+            Some(ssh_split::PendingRemoteCd {
+                remote_host: "me@box".to_owned(),
+                path: "/srv/app".to_owned(),
+            })
+        );
+
+        let new_pane_id = pane_group.update(&mut app, |panes, ctx| {
+            panes.split_terminal_pane(Direction::Right, base_pane_id, None, ctx)
+        });
+        assert!(new_pane_follow_up_is_armed(&pane_group, new_pane_id, &app));
+    });
+}
+
+#[test]
+fn test_ssh_split_is_opt_in() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_pwd = local_dir.path().to_str().unwrap().to_owned();
+        let base_pane_id =
+            make_focused_pane_an_ssh_session(&pane_group, SSH_SPLIT_COMMAND, &local_pwd, &mut app);
+
+        // Default: off.
+        let plan = pane_group.read(&app, |panes, ctx| {
+            panes.ssh_split_plan(base_pane_id.as_terminal_pane_id().unwrap(), ctx)
+        });
+        assert!(plan.is_none());
+        let new_pane_id = pane_group.update(&mut app, |panes, ctx| {
+            panes.split_terminal_pane(Direction::Right, base_pane_id, None, ctx)
+        });
+        assert!(!new_pane_follow_up_is_armed(&pane_group, new_pane_id, &app));
+    });
+}
+
+#[test]
+fn test_local_control_split_never_inherits_ssh() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        set_split_inherits_ssh(&mut app, true);
+        let local_dir = tempfile::tempdir().unwrap();
+        let local_pwd = local_dir.path().to_str().unwrap().to_owned();
+        make_focused_pane_an_ssh_session(&pane_group, SSH_SPLIT_COMMAND, &local_pwd, &mut app);
+
+        let new_pane_id = pane_group.update(&mut app, |panes, ctx| {
+            panes.add_split_pane_for_local_control(Direction::Right, ctx)
+        });
+        assert!(!new_pane_follow_up_is_armed(&pane_group, new_pane_id, &app));
+    });
+}
+
+#[test]
+fn test_ssh_split_without_its_local_cwd_refuses_cwd_dependent_commands() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        set_split_inherits_ssh(&mut app, true);
+        let gone = "/nonexistent/phosphor-1069-test-dir";
+
+        let base_pane_id =
+            make_focused_pane_an_ssh_session(&pane_group, "ssh -i ./key me@box", gone, &mut app);
+        let plan = pane_group.read(&app, |panes, ctx| {
+            panes.ssh_split_plan(base_pane_id.as_terminal_pane_id().unwrap(), ctx)
+        });
+        assert!(
+            plan.is_none(),
+            "a relative -i path is never replayed elsewhere"
+        );
+
+        let base_pane_id =
+            make_focused_pane_an_ssh_session(&pane_group, SSH_SPLIT_COMMAND, gone, &mut app);
+        let plan = pane_group
+            .read(&app, |panes, ctx| {
+                panes.ssh_split_plan(base_pane_id.as_terminal_pane_id().unwrap(), ctx)
+            })
+            .expect("a command that does not depend on the directory is still replayed");
+        assert_eq!(plan.local_cwd, None);
     });
 }
