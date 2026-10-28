@@ -30,6 +30,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::terminal::local_tty::windows::proc_thread_attribute_list::ProcThreadAttributeList;
+mod job;
 pub use conpty_api::ConptyApi;
 
 trait ToCoord {
@@ -204,6 +205,11 @@ pub(super) fn spawn(
             PtySpawnError::CreateShellProcessFailed { detail, error }
         })?;
     }
+
+    // Tie the shell's lifetime to ours so a force-kill of the app (taskkill /F,
+    // crash) cannot orphan it (#1107). Best-effort: a failure only means the
+    // old behaviour.
+    job::assign_to_app_job(process_information.hProcess);
 
     let _ = unsafe { conpty_api.release(pty_handle) };
 
