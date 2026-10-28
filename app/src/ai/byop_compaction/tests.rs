@@ -1982,24 +1982,61 @@ fn a_restored_blank_summary_is_skipped_by_both_readers() {
     );
 }
 
-/// A stream that also produced a (dropped) tool call still commits text that has the
-/// summary's shape; text without it is refused.
+/// Refute round 13: when the stream also produced a (dropped) tool call, only a COMPLETE
+/// summary (it reaches the template's last section) is committed; a half-written one is
+/// refused, and the note is consumed either way.
 #[test]
-fn a_summary_shaped_reply_commits_despite_a_dropped_call() {
+fn with_a_dropped_call_only_a_complete_summary_commits() {
     use super::commit::commit_summarization_for_stream;
-    use crate::ai::agent_providers::chat_stream::note_summary_stream_dropped_tool_calls;
+    use super::prompt::SUMMARY_TEMPLATE;
+    use crate::ai::agent_providers::chat_stream::{
+        note_summary_stream_dropped_tool_calls, take_summary_stream_dropped_tool_calls,
+    };
 
-    let mut summary = agent_output("s1", "root", "r2", 3);
-    if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
-        output.text = "## Goal\n- pass the tests\n\n## Next Steps\n- rerun".to_string();
-    }
-    let mut conversation = conversation_with_messages(vec![
-        user_query("u1", "root", "r1", 1),
-        agent_output("a1", "root", "r1", 2),
-        summary,
-    ]);
-    note_summary_stream_dropped_tool_calls(conversation.id());
+    let conversation_with_summary = |text: &str| {
+        let mut summary = agent_output("s1", "root", "r2", 3);
+        if let Some(api::message::Message::AgentOutput(output)) = summary.message.as_mut() {
+            output.text = text.to_string();
+        }
+        conversation_with_messages(vec![
+            user_query("u1", "root", "r1", 1),
+            agent_output("a1", "root", "r1", 2),
+            summary,
+        ])
+    };
     let cfg = CompactionConfig::default();
+
+    // Half-written: refused.
+    let mut conversation =
+        conversation_with_summary("## Goal\n- x\n## Progress\n### Done\n- reading");
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    assert!(!commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    assert!(conversation.compaction_state.completed().is_empty());
+    assert!(!take_summary_stream_dropped_tool_calls(conversation.id()));
+
+    // The full template, filled in: committed.
+    let full = SUMMARY_TEMPLATE
+        .lines()
+        .filter(|line| line.starts_with('#'))
+        .map(|heading| format!("{heading}\n- filled in"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut conversation = conversation_with_summary(&full);
+    note_summary_stream_dropped_tool_calls(conversation.id());
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+
+    // Without any call, any non-blank text is the summary (unchanged).
+    let mut conversation = conversation_with_summary("## Goal\n- x");
     assert!(commit_summarization_for_stream(
         &mut conversation,
         true,

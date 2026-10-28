@@ -16,22 +16,58 @@ pub fn summary_section_headings() -> impl Iterator<Item = &'static str> {
         .filter(|line| line.starts_with("## "))
 }
 
-/// Whether `text` has the shape of a summary: at least two of the template's section headings
-/// on lines of their own (inside a wrapping code fence too). Used to tell a summary that
-/// quotes a tool call from a reply that is a tool call.
-pub fn looks_like_summary(text: &str) -> bool {
-    let headings: Vec<&str> = summary_section_headings().collect();
-    let found = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            headings.iter().any(|heading| {
-                line.strip_prefix(heading)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-            })
-        })
-        .count();
-    found >= 2
+/// The section names of the template headings, lowercase ("goal", "progress", ...).
+fn summary_section_names() -> Vec<String> {
+    summary_section_headings()
+        .map(|heading| heading.trim_start_matches('#').trim().to_lowercase())
+        .collect()
+}
+
+/// The section name a line declares, if it is a heading: `#` to `####` followed by a space,
+/// or a line that is entirely bold (`**Goal**`). Lowercased, with optional numbering
+/// ("1. Goal", "2) Progress"), surrounding bold inside a `#` heading, and a trailing colon
+/// removed. Real models vary all of these; the section name itself must match whole.
+fn heading_line_name(line: &str) -> Option<String> {
+    let line = line.trim();
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    let rest = if (1..=4).contains(&hashes) && line[hashes..].starts_with(char::is_whitespace) {
+        line[hashes..].trim()
+    } else if hashes == 0 && line.len() > 4 && line.starts_with("**") && line.ends_with("**") {
+        &line[2..line.len() - 2]
+    } else {
+        return None;
+    };
+    let mut name = rest.trim().trim_matches('*').trim();
+    // Optional numbering: "1. Goal" / "1) Goal".
+    let digits = name.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        let after = &name[digits..];
+        if let Some(after) = after.strip_prefix('.').or_else(|| after.strip_prefix(')')) {
+            name = after.trim();
+        }
+    }
+    let name = name.trim_end_matches(':').trim().trim_matches('*').trim();
+    (!name.is_empty()).then(|| name.to_lowercase())
+}
+
+/// The template sections `text` declares as headings, in order of appearance.
+fn declared_sections(text: &str) -> Vec<String> {
+    let names = summary_section_names();
+    text.lines()
+        .filter_map(heading_line_name)
+        .filter(|name| names.contains(name))
+        .collect()
+}
+
+/// Whether `text` is a COMPLETE summary: it declares the template's last section ("Relevant
+/// Files") as a heading. A summarize stream that also produced a tool call commits only such
+/// a summary: a half-written one ("## Goal ... ## Progress ..." and then a call to gather
+/// facts) would hide the head behind a partial summary.
+pub fn is_complete_summary(text: &str) -> bool {
+    let Some(last) = summary_section_names().pop() else {
+        return false;
+    };
+    declared_sections(text).contains(&last)
 }
 
 /// Builds the final user prompt — matches `compaction.ts:121-132 buildPrompt`.

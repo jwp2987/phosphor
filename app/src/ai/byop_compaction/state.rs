@@ -75,6 +75,13 @@ impl CompletedCompaction {
         self.head_message_ids.is_empty() || self.head_message_ids.contains(&self.user_msg_id)
     }
 
+    /// Whether this compaction can be shown in a request whose messages `message_exists`
+    /// answers for: it has a non-blank summary and its insertion target is present. Only such
+    /// a compaction hides its head or is shown.
+    fn is_shown(&self, message_exists: &impl Fn(&str) -> bool) -> bool {
+        self.summary().is_some() && message_exists(self.insertion_target())
+    }
+
     /// The summary text, if it is not blank.
     fn summary(&self) -> Option<&str> {
         self.summary_text
@@ -198,8 +205,23 @@ impl CompactionState {
     /// instruction for that turn, so for those the anchor stays visible and the summary is
     /// shown before the tail instead (see [`Self::summary_insertions`]).
     pub fn hidden_message_ids(&self) -> HashSet<String> {
+        self.hidden_message_ids_where(|_| true)
+    }
+
+    /// [`Self::hidden_message_ids`] for a request whose messages `message_exists` answers for.
+    /// Skips exactly the compactions [`Self::summary_insertions`] skips — no non-blank summary,
+    /// or an insertion target that is not in the request — so a head is never hidden without
+    /// a summary that could stand in for it.
+    pub fn hidden_message_ids_where(
+        &self,
+        message_exists: impl Fn(&str) -> bool,
+    ) -> HashSet<String> {
         let mut out = HashSet::new();
-        for c in &self.completed {
+        for c in self
+            .completed
+            .iter()
+            .filter(|c| c.is_shown(&message_exists))
+        {
             out.extend(c.head_message_ids.iter().cloned());
             if c.anchor_is_summarized() {
                 out.insert(c.user_msg_id.clone());
@@ -235,7 +257,7 @@ impl CompactionState {
         self.completed
             .iter()
             .rev()
-            .filter(|c| message_exists(c.insertion_target()))
+            .filter(|c| c.is_shown(&message_exists))
             .find_map(|c| Some((c.insertion_target().to_owned(), c.summary()?.to_owned())))
             .into_iter()
             .collect()

@@ -816,4 +816,157 @@ mod startup_restore {
             vec![ROOT_TASK_ID.to_string()],
         );
     }
+
+    /// #1059 refute round 13: a rewind through `AIConversation::truncate_from_exchange` that
+    /// removes the latest compaction's summary drops that compaction, so its head's surviving
+    /// part is visible again and the earlier summary is the one shown.
+    #[test]
+    fn a_rewind_past_a_summary_drops_its_compaction() {
+        use crate::ai::byop_compaction::state::CompletedCompaction;
+
+        fn compaction(
+            user: &str,
+            assistant: &str,
+            head: &[&str],
+            tail: &str,
+        ) -> CompletedCompaction {
+            CompletedCompaction {
+                user_msg_id: user.to_string(),
+                assistant_msg_id: assistant.to_string(),
+                head_message_ids: head.iter().map(|id| id.to_string()).collect(),
+                tail_start_id: Some(tail.to_string()),
+                summary_text: Some(format!("summary-{assistant}")),
+                auto: true,
+                overflow: true,
+            }
+        }
+
+        warpui::App::test((), |mut app| async move {
+            let (history_model, _receiver) = history_model_harness(&mut app);
+            let terminal_view_id = warpui::EntityId::new();
+            history_model.update(&mut app, |history_model, ctx| {
+                let conversation_id =
+                    history_model.start_new_conversation(terminal_view_id, false, false, ctx);
+                let conversation = history_model
+                    .conversation_mut(&conversation_id)
+                    .expect("the conversation should exist");
+                // Four exchanges: [u1 a1] [s1] [q2 a2] [s2].
+                let exchanges: [(&str, Vec<api::Message>); 4] = [
+                    (
+                        "first question",
+                        vec![
+                            message("u1", "root", "req-1", user_query("first question")),
+                            message("a1", "root", "req-1", agent_output("first answer")),
+                        ],
+                    ),
+                    (
+                        "summarize",
+                        vec![message("s1", "root", "req-2", agent_output("summary-s1"))],
+                    ),
+                    (
+                        "second question",
+                        vec![
+                            message("q2", "root", "req-3", user_query("second question")),
+                            message("a2", "root", "req-3", agent_output("second answer")),
+                        ],
+                    ),
+                    (
+                        "summarize",
+                        vec![message("s2", "root", "req-4", agent_output("summary-s2"))],
+                    ),
+                ];
+                for (index, (query, messages)) in exchanges.into_iter().enumerate() {
+                    let stream_id = crate::ai::blocklist::ResponseStreamId::new_for_test();
+                    let root_task_id = conversation.get_root_task_id().clone();
+                    conversation
+                        .update_for_new_request_input(
+                            follow_up_request_input(conversation_id, root_task_id, query),
+                            stream_id.clone(),
+                            terminal_view_id,
+                            ctx,
+                        )
+                        .expect("the request should be accepted");
+                    conversation
+                        .initialize_output_for_response_stream(
+                            &stream_id,
+                            api::response_event::StreamInit {
+                                request_id: String::new(),
+                                conversation_id: String::new(),
+                                run_id: String::new(),
+                            },
+                            terminal_view_id,
+                            ctx,
+                        )
+                        .expect("stream init should succeed");
+                    if index == 0 {
+                        apply_action(
+                            conversation,
+                            &stream_id,
+                            terminal_view_id,
+                            api::client_action::Action::CreateTask(
+                                api::client_action::CreateTask {
+                                    task: Some(api::Task {
+                                        id: "root".to_string(),
+                                        ..Default::default()
+                                    }),
+                                },
+                            ),
+                            ctx,
+                        );
+                    }
+                    apply_action(
+                        conversation,
+                        &stream_id,
+                        terminal_view_id,
+                        api::client_action::Action::AddMessagesToTask(
+                            api::client_action::AddMessagesToTask {
+                                task_id: "root".to_string(),
+                                messages,
+                            },
+                        ),
+                        ctx,
+                    );
+                }
+                conversation.compaction_state.push_completed(compaction(
+                    "u1",
+                    "s1",
+                    &["u1", "a1"],
+                    "q2",
+                ));
+                conversation.compaction_state.push_completed(compaction(
+                    "q2",
+                    "s2",
+                    &["u1", "a1", "s1", "q2", "a2"],
+                    "cont2",
+                ));
+                assert!(
+                    conversation
+                        .compaction_state
+                        .hidden_message_ids()
+                        .contains("q2"),
+                    "precondition: C2 hides q2"
+                );
+
+                let last_exchange_id = conversation
+                    .all_exchanges()
+                    .last()
+                    .expect("four exchanges")
+                    .id;
+                conversation
+                    .truncate_from_exchange(last_exchange_id, ctx)
+                    .expect("the rewind should succeed");
+
+                let state = &conversation.compaction_state;
+                assert_eq!(state.completed().len(), 1, "C2 is dropped with its summary");
+                assert_eq!(state.completed()[0].assistant_msg_id, "s1");
+                let hidden = state.hidden_message_ids();
+                assert!(
+                    !hidden.contains("q2") && !hidden.contains("a2"),
+                    "{hidden:?}"
+                );
+                assert!(hidden.contains("u1") && hidden.contains("a1"));
+                assert_eq!(state.previous_summary(), Some("summary-s1"));
+            });
+        });
+    }
 }

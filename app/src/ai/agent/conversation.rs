@@ -743,7 +743,7 @@ impl AIConversation {
             .map(|task| task.id().clone())
             .collect();
 
-        Ok(Self {
+        let mut conversation = Self {
             id,
             is_viewing_shared_session: false,
             task_store,
@@ -782,7 +782,28 @@ impl AIConversation {
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
-        })
+        };
+        // State persisted by older builds can name messages that no longer exist (a rewind
+        // before compactions were pruned on rewind). Prune it the same way on restore.
+        let dropped_compactions = conversation.prune_stale_compactions();
+        if dropped_compactions > 0 {
+            log::info!(
+                "[byop-compaction] restore dropped {dropped_compactions} compaction(s) whose summary or insertion point is gone"
+            );
+        }
+        Ok(conversation)
+    }
+
+    /// Drops every completed compaction whose summary message or insertion target is no
+    /// longer in the conversation (with its markers), un-hiding its head. Returns how many.
+    fn prune_stale_compactions(&mut self) -> usize {
+        let remaining_message_ids: HashSet<String> = self
+            .all_linearized_messages()
+            .into_iter()
+            .map(|message| message.id.clone())
+            .collect();
+        self.compaction_state
+            .retain_compactions_whose_messages_exist(|id| remaining_message_ids.contains(id))
     }
 
     pub fn id(&self) -> AIConversationId {
@@ -4608,14 +4629,7 @@ impl AIConversation {
         // more; left in place it would keep its head hidden with nothing standing in for it,
         // and (as the latest summary) suppress the earlier one. Drop it, which un-hides its
         // head (#1059 refute round 11).
-        let remaining_message_ids: HashSet<String> = self
-            .all_linearized_messages()
-            .into_iter()
-            .map(|message| message.id.clone())
-            .collect();
-        let dropped_compactions = self
-            .compaction_state
-            .retain_compactions_whose_messages_exist(|id| remaining_message_ids.contains(id));
+        let dropped_compactions = self.prune_stale_compactions();
         if dropped_compactions > 0 {
             log::info!(
                 "[byop-compaction] rewind dropped {dropped_compactions} compaction(s) whose summary was removed"
