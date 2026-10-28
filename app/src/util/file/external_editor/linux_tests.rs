@@ -768,3 +768,55 @@ fn test_exec_with_no_tokens_reports_no_exec() {
     let result = metadata.build_default_command(&PathBuf::from("/tmp/foo.txt"));
     assert!(matches!(result, Err(DesktopExecError::NoExec)));
 }
+
+/// freedesktop-desktop-entry 0.8's strict decoder rejected each of these whole
+/// files (refs #1076); 0.5, which this parser replaces, accepted them.
+#[test]
+fn test_lenient_desktop_file_parsing() {
+    let data = "\
+# comment
+[Desktop Entry]
+Type=Application
+Name[de]=Editor (de)
+Name[en]=Editor
+  Exec = /usr/bin/editor --title=\\\"x\\\" %f
+this line has no equals sign
+Icon=editor
+[Desktop Action new-window]
+Exec=/usr/bin/other %f
+Icon=other
+";
+    with_files("test_lenient_desktop_file_parsing", data, |desktop, _| {
+        let metadata = EditorMetadata::try_new(desktop)?;
+        // Values are verbatim (no string-level unescaping), keys/values trimmed,
+        // and keys from other groups do not leak in.
+        assert_eq!(metadata.exec, r#"/usr/bin/editor --title=\"x\" %f"#);
+        assert_eq!(metadata.localized_name.as_deref(), Some("Editor"));
+        assert_eq!(metadata.icon.as_deref(), Some("editor"));
+        Ok(())
+    })
+}
+
+#[test]
+fn test_name_falls_back_to_unlocalized() {
+    let data = "[Desktop Entry]\nName=Plain\nName[fr]=Simple\nExec=ed %f\n";
+    with_files("test_name_falls_back_to_unlocalized", data, |desktop, _| {
+        let metadata = EditorMetadata::try_new(desktop)?;
+        assert_eq!(metadata.localized_name.as_deref(), Some("Plain"));
+        Ok(())
+    })
+}
+
+#[test]
+fn test_exec_outside_desktop_entry_group_is_not_used() {
+    let data = "[Desktop Action foo]\nExec=/usr/bin/foo %f\n[Desktop Entry]\nName=X\n";
+    with_files(
+        "test_exec_outside_desktop_entry_group_is_not_used",
+        data,
+        |desktop, _| {
+            let result = EditorMetadata::try_new(desktop);
+            assert!(matches!(result, Err(DesktopExecError::NoExec)));
+            Ok(())
+        },
+    )
+}
