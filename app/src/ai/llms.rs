@@ -767,38 +767,23 @@ impl LLMPreferences {
             .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
     }
 
-    /// The model a profile's own `base_model` setting names (the agent-mode default when
-    /// unset or unknown), *ignoring* the `/model` override -- what the settings pages' Base
-    /// row shows. [`Self::get_effective_base_model_for_profile`] is this plus the override.
-    pub fn get_configured_base_model_for_profile<'a>(
-        &'a self,
-        base_model_id: Option<&LLMId>,
-    ) -> &'a LLMInfo {
-        base_model_id
-            .and_then(|id| self.models_by_feature.agent_mode.info_for_id(id))
-            .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
-    }
-
     /// What a profile's title / active-AI / next-command / full-terminal-use slot shows on
     /// the settings pages: the slot's own model when it is set (and still known), otherwise
-    /// the model the profile's *configured* base slot shows -- "Defaults to the base model",
-    /// as each slot's help text says.
+    /// the model the profile's *base* slot resolves to
+    /// ([`Self::get_effective_base_model_for_profile`]) -- "Defaults to the base model", as
+    /// each slot's help text says.
     ///
     /// #1099: the unset slots used to show [`Self::get_default_base_model`] instead, which
     /// for BYOP is simply the first configured model -- unrelated to the profile's base.
-    /// #1114: and they must not show the `/model` override either (they did, so a new
-    /// profile's Base said gemma while every other slot said gpt-oss): at request time an
-    /// unset slot does follow the override, but that is a session-level fact the card
-    /// states once, on the "Currently using ... (chosen with /model)" line under Base.
     pub fn get_slot_model_for_profile<'a>(
         &'a self,
-        _app: &AppContext,
+        app: &AppContext,
         slot_model_id: Option<&LLMId>,
         base_model_id: Option<&LLMId>,
     ) -> &'a LLMInfo {
         slot_model_id
             .and_then(|id| self.get_llm_info(id))
-            .unwrap_or_else(|| self.get_configured_base_model_for_profile(base_model_id))
+            .unwrap_or_else(|| self.get_effective_base_model_for_profile(app, base_model_id))
     }
 
     /// The model that generates the title for an agent request already routed to
