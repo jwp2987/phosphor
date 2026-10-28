@@ -17763,6 +17763,29 @@ fn ssh_enter_just_after_release_follows_its_dropped_letters() {
     }
 }
 
+/// #1111 regression: with NO ssh connect pending, Ctrl-D is never held -- a local shell whose
+/// rc file waits on `read` during bootstrap needs the EOT to reach the pty.
+#[test]
+fn ctrl_d_is_written_during_local_bootstrapping_without_an_ssh_connect() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.ssh_connect_gate.is_none());
+            assert!(!view.ssh_connect_holds_eot());
+            view.ctrl_d(ctx);
+            view.keydown_on_terminal("\u{4}", ctx);
+        });
+        assert!(
+            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\x04"),
+            "{:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,
