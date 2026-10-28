@@ -373,6 +373,7 @@ pub fn init_subshell_command_lines(
             // later sources the temp bootstrap file; nothing rewrites the user's history file.
             vec![
                 POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
+                POWERSHELL_EXECUTION_POLICY_LINE.to_owned(),
                 format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"),
             ]
         }
@@ -402,6 +403,14 @@ pub fn init_subshell_command_lines(
 /// later). A user-replaced handler or an older PSReadLine still saves this one short line; nothing
 /// ever rewrites or deletes history.
 const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
+
+/// Second line of the PowerShell subshell bootstrap (#1116): lifts a Restricted execution policy
+/// for this process, as `pwsh_init_shell.ps1` does for the app-started shell, so the ` . <tmp>.ps1`
+/// line that sources the bootstrap file is not refused on a stock Windows install. `pwsh.ps1`
+/// restores the policy from `$global:_warp_PSProcessExecPolicy`. A separate short line because the
+/// subshell script is typed as one line and must stay under
+/// [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`]; it starts with the guard the history handler filters.
+const POWERSHELL_EXECUTION_POLICY_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { if ($PSEdition -eq 'Desktop' -or $IsWindows) { $EP = [Microsoft.PowerShell.ExecutionPolicy]; $m = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope MachinePolicy; $u = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope UserPolicy; if ($m -eq $EP::Restricted -or $u -eq $EP::Restricted) { Microsoft.PowerShell.Utility\Write-Error 'ExecutionPolicy is Restricted. Unable to Phosphorize this session.' } elseif ((Microsoft.PowerShell.Security\Get-ExecutionPolicy) -eq $EP::Restricted -and $m -eq $EP::Undefined -and $u -eq $EP::Undefined) { $global:_warp_PSProcessExecPolicy = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope Process; Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force }} }"#;
 
 /// Single-quote escapes `text` for embedding in a single-quoted word of `shell_type`.
 fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
