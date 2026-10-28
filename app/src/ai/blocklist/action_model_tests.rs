@@ -102,42 +102,6 @@ fn finished_results_stay_in_original_action_order() {
     );
 }
 
-/// Tag-in batch `[A, B, C]`: A is sync, and its `Agent` drain runs B and leaves C blocked on a
-/// confirmation only the override can give. The step for B then finds it already taken. The
-/// batch must go on to C and auto-accept it; stopping at B stranded C in the alt screen.
-#[test]
-fn auto_accept_batch_continues_past_action_taken_by_earlier_drain() {
-    let mut calls = Vec::new();
-    let attempted = run_auto_accept_batch(&["a", "b", "c"], |id| {
-        calls.push(*id);
-        match *id {
-            "a" => AutoAcceptOutcome::Started,
-            "b" => AutoAcceptOutcome::AlreadyTaken,
-            _ => AutoAcceptOutcome::Started,
-        }
-    });
-
-    assert_eq!(calls, vec!["a", "b", "c"]);
-    assert_eq!(attempted, 3);
-}
-
-/// A blocked action (for example an `ask_user_question`) stops the batch: nothing queued after
-/// it may run before the user has answered.
-#[test]
-fn auto_accept_batch_stops_at_action_left_pending() {
-    let mut calls = Vec::new();
-    let attempted = run_auto_accept_batch(&["a", "q", "c"], |id| {
-        calls.push(*id);
-        match *id {
-            "q" => AutoAcceptOutcome::LeftPending,
-            _ => AutoAcceptOutcome::Started,
-        }
-    });
-
-    assert_eq!(calls, vec!["a", "q"]);
-    assert_eq!(attempted, 2);
-}
-
 fn pending_action(id: &str, action: AIAgentActionType) -> AIAgentAction {
     AIAgentAction {
         id: AIAgentActionId::from(id.to_owned()),

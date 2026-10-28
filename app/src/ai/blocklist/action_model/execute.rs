@@ -228,11 +228,10 @@ impl NotExecutedReason {
 ///
 /// This replaces a bare `is_user_initiated: bool`. The bool had exactly two producers at the
 /// pin (`42effe840:app/src/ai/blocklist/action_model.rs:767,782`), both of them genuine user
-/// clicks, so a bool was enough there. This fork added a third
-/// (`BlocklistAIActionModel::queue_actions_with_options(auto_accept=true)`, which has no
-/// counterpart at the pin) that passed `true` for something the user never clicked, and the
-/// bool gave it the full authority of a click. Splitting the cases means a new caller has to
-/// name which one it is instead of inheriting the strongest.
+/// clicks, so a bool was enough there. This fork once added a third: the LRC tag-in
+/// auto-accept, which passed `true` for something the user never clicked and so gave it the
+/// full authority of a click (#617). That path is gone (#1070), but the split stays: a new
+/// caller has to name which one it is instead of inheriting the strongest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActionInitiator {
     /// The agent's own turn: actions drain from the queue in order and every confirmation is
@@ -241,12 +240,6 @@ pub(super) enum ActionInitiator {
     /// The user clicked Accept (or Run, or answered the question) on this exact action's
     /// confirmation UI. This is a real, specific, per-action approval.
     User,
-    /// Zap: the LRC alt-screen tag-in override. The user tagged the agent in while a
-    /// long-running command owns the alt screen, so the Accept button is not rendered and a
-    /// confirmation prompt would deadlock the turn. The override answers a prompt the user
-    /// cannot see — which is why it is NOT `User`. See
-    /// `BlocklistAIActionModel::queue_actions_with_options`.
-    AutoAcceptedTagIn,
 }
 
 impl ActionInitiator {
@@ -259,66 +252,28 @@ impl ActionInitiator {
 
     /// Whether this initiator may stand in for the confirmation prompt on `action`.
     ///
-    /// `User` may, for anything: it *is* the answer to the prompt.
+    /// `User` may, for anything: it *is* the answer to the prompt. `Agent` never may: on the
+    /// agent's own turn `should_autoexecute` and the execution profile are the only deciders.
     ///
-    /// `AutoAcceptedTagIn` may for ordinary actions — that is the deadlock it exists to
-    /// break — but NOT for the computer-use pair. Two reasons, and both are load-bearing:
-    ///
-    /// * `UseComputer` drives the user's real mouse and keyboard. It is the one action whose
-    ///   confirmation cannot be reconstructed after the fact, and the whole point of
-    ///   `AIConversation::has_approved_computer_use` is that it be checked. Letting the
-    ///   override short-circuit `needs_confirmation` computes that verdict and discards it,
-    ///   which is precisely how the first attempt at this fix was defeated.
-    /// * `RequestComputerUse` is the approval prompt itself. Auto-accepting it would
-    ///   manufacture the very `RequestComputerUseResult::Approved` record the gate reads, so
-    ///   excluding only `UseComputer` would leave a one-hop laundering path.
-    ///
-    /// Nor for any action `AIAgentActionType::can_be_accepted_without_its_own_ui` rejects --
-    /// today `AskUserQuestion` -- for a different reason: its confirmation is not an approval
-    /// at all, it IS the user's answer. The same predicate gates every plain accept (the AI
-    /// block's Enter via `execute_next_action_for_user`, the CLI subagent views), so the
-    /// override and the keypresses cannot drift apart. The inline question view collects the answers,
-    /// writes them to `AskUserQuestionExecutor`'s channel, and only then executes the
-    /// action, whose execution is a bare `recv()` on that channel. Auto-accepting it
-    /// executes with nothing on the channel, and the view does not render for a running
-    /// action, so the question is never shown and the turn hangs forever. Worse, the
-    /// orphaned `recv()` shares the channel with every later question in the view and can
-    /// swallow the next properly answered one. Nothing can stand in for an answer except
-    /// the user giving it.
-    ///
-    /// The cost is bounded: on this path a blocked action stays pending and the turn waits,
-    /// rather than the machine being driven with no prompt or a question being answered by
-    /// no one. None of these actions is a shell command, so none is the thing holding the
-    /// alt screen.
-    ///
-    /// Checked and deliberately NOT excluded, because their execution completes without
-    /// input from the Blocked UI: `SuggestNewConversation` (the executor pre-sends `Reject`
-    /// to its own channel), `SuggestPrompt` (always auto-executes; the chip is driven by an
-    /// executor event), `RequestFileEdits` (execution itself calls `accept_and_save` on the
-    /// diff view — but see [`Self::can_stand_in_for_confirmation_of_write`] for protected
-    /// paths), and `TransferShellCommandControlToUser` (resolves on hand-back or when the
-    /// block finishes, neither of which is the confirmation UI).
-    pub(super) fn can_stand_in_for_confirmation(self, action: &AIAgentActionType) -> bool {
+    /// There is deliberately no third answer. The LRC alt-screen tag-in used to stand in for
+    /// every confirmation except computer use, on the theory that the Accept button is not
+    /// rendered while a full-screen program owns the screen. It is: the CLI subagent view is
+    /// mounted over the alt screen on a tag-in and renders Allow/Reject for every tool a
+    /// tag-in turn is offered (`chat_stream::CLI_AGENT_TOOLS`). The override only ever
+    /// changed anything when the profile had said no (#617, #1070).
+    pub(super) fn can_stand_in_for_confirmation(self, _action: &AIAgentActionType) -> bool {
         match self {
             Self::Agent => false,
             Self::User => true,
-            Self::AutoAcceptedTagIn => {
-                !matches!(
-                    action,
-                    AIAgentActionType::UseComputer(_) | AIAgentActionType::RequestComputerUse(_)
-                ) && action.can_be_accepted_without_its_own_ui()
-            }
         }
     }
 
     /// [`Self::can_stand_in_for_confirmation`], additionally refusing every stand-in except
     /// a real click when the action writes a protected path.
     ///
-    /// The LRC tag-in override answers a prompt the user cannot see. That is acceptable for an
-    /// ordinary edit, but a write to `~/.ssh/authorized_keys`, an MCP config, a shell rc file
-    /// or this app's own settings is exactly how an agent escalates itself, so it must wait
-    /// for the user's own confirmation even if that leaves the turn blocked until the
-    /// long-running command releases the screen — the same trade-off computer use makes.
+    /// A write to `~/.ssh/authorized_keys`, an MCP config, a shell rc file or this app's own
+    /// settings is exactly how an agent escalates itself, so only the user's own confirmation
+    /// may approve it.
     pub(super) fn can_stand_in_for_confirmation_of_write(
         self,
         action: &AIAgentActionType,
@@ -646,14 +601,12 @@ impl BlocklistAIActionExecutor {
         );
 
         // Whether this caller may answer the confirmation prompt on this caller's behalf.
-        // NOT simply "the caller said user-initiated": the LRC tag-in override says that too,
-        // and it must not be able to say it about computer use. See
-        // `ActionInitiator::can_stand_in_for_confirmation`.
+        // See `ActionInitiator::can_stand_in_for_confirmation`.
         //
         // A write to a protected path (MCP/agent configs, this app's settings, ssh, shell rc,
         // git hooks, ...: `blocklist::protected_paths`) is never stood in for by anything but
-        // the user's own click. `should_autoexecute` already refuses it on the autonomy path;
-        // this closes the LRC tag-in path, which otherwise bypassed the guard entirely (#682).
+        // the user's own click. `should_autoexecute` already refuses it on the autonomy path
+        // (#682).
         let writes_protected_path = self
             .request_file_edits_executor
             .as_ref(ctx)
@@ -1515,49 +1468,9 @@ mod initiator_tests {
         assert!(ActionInitiator::User.can_stand_in_for_confirmation(&request_computer_use()));
     }
 
-    /// The whole point of splitting `ActionInitiator` out of `is_user_initiated: bool`.
-    ///
-    /// The tag-in override exists for the alt-screen deadlock, where a long-running shell
-    /// command owns the screen and the Accept button is never rendered — so it keeps its
-    /// authority over shell commands. It must NOT extend to computer use: `UseComputer`
-    /// drives the real mouse and keyboard, and `RequestComputerUse` is the approval prompt
-    /// whose result `AIConversation::has_approved_computer_use` reads, so auto-accepting it
-    /// would manufacture the approval one hop later.
-    ///
-    /// Reverting to the old behaviour (any out-of-band initiator standing in for every
-    /// confirmation) must turn the last two assertions red. If they stay green the test is
-    /// vacuous and pins nothing.
+    /// The question's confirmation is the user's answer, which only its own view collects.
     #[test]
-    fn the_tag_in_override_stops_at_computer_use() {
-        assert!(
-            ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&shell_command()),
-            "the alt-screen deadlock is about shell commands; the override must still break it"
-        );
-        assert!(
-            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&use_computer()),
-            "a tag-in must never silently grant control of the real mouse and keyboard"
-        );
-        assert!(
-            !ActionInitiator::AutoAcceptedTagIn
-                .can_stand_in_for_confirmation(&request_computer_use()),
-            "auto-accepting the approval prompt would forge the approval record itself"
-        );
-    }
-
-    /// Auto-accepting `ask_user_question` executes a bare `recv()` on the executor's answer
-    /// channel with nothing written to it, and the question view does not render for a
-    /// running action, so the question is never shown and the turn hangs forever. The
-    /// answer IS the confirmation; the override must leave the action blocked so the view
-    /// can collect it.
-    ///
-    /// Red without the `AskUserQuestion` arm in `can_stand_in_for_confirmation`: the
-    /// override then answers `true` for it, as it does for every non-computer-use action.
-    #[test]
-    fn the_tag_in_override_cannot_answer_a_question() {
-        assert!(
-            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&ask_user_question()),
-            "auto-accepting a question runs it with no answer on the channel and hangs the turn"
-        );
+    fn only_the_user_answers_a_question() {
         assert!(
             ActionInitiator::User.can_stand_in_for_confirmation(&ask_user_question()),
             "the question view submits the answers and then executes as the user"
@@ -1576,25 +1489,14 @@ mod initiator_tests {
         }
     }
 
-    /// The LRC tag-in override stood in for `RequestFileEdits` unconditionally, so a move onto
-    /// a protected path ran with no guard at all (#682). A protected write needs the user's
-    /// own click; the override (and the agent) must be refused, while an ordinary edit keeps
-    /// the override's deadlock-breaking power.
+    /// A protected write needs the user's own click (#682); the agent is refused.
     #[test]
-    fn the_tag_in_override_cannot_approve_a_protected_write() {
+    fn only_a_user_click_approves_a_protected_write() {
         let edit = protected_move();
-        assert!(
-            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation_of_write(&edit, true),
-            "a tag-in must never approve a write to a protected path"
-        );
         assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation_of_write(&edit, true));
         assert!(
             ActionInitiator::User.can_stand_in_for_confirmation_of_write(&edit, true),
             "the user's own click on the edit is the explicit confirmation"
-        );
-        assert!(
-            ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation_of_write(&edit, false),
-            "an unprotected edit keeps the override, or the alt-screen deadlock returns"
         );
     }
 
@@ -1616,14 +1518,11 @@ mod initiator_tests {
         assert!(!file_edits_touch_protected_path(&ordinary, &None, &cwd));
     }
 
-    /// Both out-of-band initiators dequeue one specific action rather than draining the queue,
-    /// so both keep the one-at-a-time serialisation in `start_pending_action_by_id`. This
-    /// pins that the security split did not quietly change the concurrency behaviour the old
-    /// `is_user_initiated=true` provided on the tag-in path.
+    /// A user accept dequeues one specific action rather than draining the queue, so it keeps
+    /// the one-at-a-time serialisation in `start_pending_action_by_id`.
     #[test]
-    fn both_out_of_band_initiators_serialise() {
+    fn a_user_accept_serialises() {
         assert!(ActionInitiator::User.is_out_of_band());
-        assert!(ActionInitiator::AutoAcceptedTagIn.is_out_of_band());
         assert!(!ActionInitiator::Agent.is_out_of_band());
     }
 }

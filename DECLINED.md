@@ -861,9 +861,10 @@ upstream's behavior is actually a defect rather than a preference.
   - This entry covers the GUI card only. The TUI shell command view draws its own editor in
     terminal cells, and its accept marks the text it runs as shown. Whether it can hide part
     of a command is tracked in #865.
-  - The alt-screen tag-in override (`ActionInitiator::AutoAcceptedTagIn`) runs commands with
-    no card at all. That is pre-existing and deliberate, and this gate does not apply to it.
-  - Neither does profile auto-execution (`ActionInitiator::Agent`).
+  - The alt-screen tag-in override (`ActionInitiator::AutoAcceptedTagIn`) that ran commands with
+    no card at all was removed in #1070. Tag-in actions now go through the profile and the CLI
+    subagent view's own card.
+  - This gate does not apply to profile auto-execution (`ActionInitiator::Agent`).
 
 - **A streamed agent answer is parsed incrementally, not re-parsed whole per chunk**
   (`#849`, 2026-10-13, `app/src/ai/agent/util.rs`, `app/src/ai/agent/task.rs`,

@@ -753,3 +753,221 @@ fn suspended_controller_sends_no_request_until_lifted() {
         });
     });
 }
+
+/// A finished exchange of `stream_id`'s response whose only output is `action` -- the shape the
+/// stream-finished handler turns into `actions_to_queue`. Appended while streaming (only a
+/// streaming exchange is registered against its response stream) and completed by the caller.
+fn streaming_exchange_with_action(action: AIAgentAction) -> AIAgentExchange {
+    use crate::ai::agent::{
+        AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, MessageId, Shared,
+    };
+
+    let output = AIAgentOutput {
+        messages: vec![AIAgentOutputMessage {
+            id: MessageId::new("tag-in-action-message".to_owned()),
+            message: AIAgentOutputMessageType::Action(action),
+            citations: Vec::new(),
+        }],
+        ..Default::default()
+    };
+    AIAgentExchange {
+        output_status: AIAgentOutputStatus::Streaming {
+            output: Some(Shared::new(output)),
+        },
+        ..streaming_exchange()
+    }
+}
+
+/// Drives one LRC tag-in round to completion through the controller's real stream-finished
+/// path: the request says the user tagged the agent in while the command holds the alt screen
+/// (the exact shape #617 kept auto-accepting), and the model's only tool call is a PTY write.
+/// Returns the write's status once it has settled out of preprocessing.
+///
+/// `allow_pty_writes` sets the profile's "Interact with running commands" to Always allow --
+/// the user's own explicit opt-in, which must still be honoured.
+///
+/// The write targets a block id that is not registered, so if it does execute it resolves at
+/// once (`BlockNotFound`) instead of writing anywhere; and that lookup miss still consults the
+/// `write_to_pty` permission (#615), so the profile is what decides.
+async fn alt_screen_tag_in_write_status(
+    app: &mut App,
+    allow_pty_writes: bool,
+) -> Option<crate::ai::blocklist::action_model::AIActionStatus> {
+    use crate::ai::agent::{AIAgentPtyWriteMode, RunningCommand};
+    use crate::ai::blocklist::BlocklistAIPermissions;
+    use crate::ai::blocklist::controller::response_stream::ResponseStreamEvent;
+    use crate::ai::execution_profiles::WriteToPtyPermission;
+    use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+    use crate::terminal::model::block::BlockId;
+
+    initialize_app_for_terminal_view(app);
+    // Completing the exchange persists the conversation, which reads this singleton.
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(&*app, |view, _| view.id());
+
+    if allow_pty_writes {
+        AIExecutionProfilesModel::handle(&*app).update(app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_write_to_pty(profile_id, &WriteToPtyPermission::AlwaysAllow, ctx);
+        });
+    }
+    let pty_permission = app.read(|ctx| {
+        BlocklistAIPermissions::as_ref(ctx).get_write_to_pty_setting(ctx, Some(terminal_view_id))
+    });
+    assert_eq!(
+        pty_permission,
+        if allow_pty_writes {
+            WriteToPtyPermission::AlwaysAllow
+        } else {
+            WriteToPtyPermission::AlwaysAsk
+        },
+        "fixture precondition: the profile's pty-write permission is what the test says it is"
+    );
+
+    let action_id = AIAgentActionId::from("tag-in-pty-write".to_owned());
+    let action = AIAgentAction {
+        id: action_id.clone(),
+        task_id: TaskId::new("task".to_owned()),
+        action: AIAgentActionType::WriteToLongRunningShellCommand {
+            block_id: BlockId::new(),
+            input: b":!echo injected\n".to_vec().into(),
+            mode: AIAgentPtyWriteMode::Raw,
+        },
+        requires_result: true,
+    };
+
+    let controller = terminal.read(&*app, |view, _| view.ai_controller().clone());
+    let action_model = controller.read(&*app, |controller, _| controller.action_model.clone());
+    terminal.update(app, |view, ctx| {
+        let stream_id = ResponseStreamId::new_for_test();
+        let history = BlocklistAIHistoryModel::handle(ctx);
+        let conversation_id = history.update(ctx, |history, ctx| {
+            let conversation_id =
+                history.start_new_conversation(terminal_view_id, false, false, ctx);
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation should exist")
+                .append_reassigned_exchange(
+                    &stream_id,
+                    streaming_exchange_with_action(action),
+                    terminal_view_id,
+                    ctx,
+                )
+                .expect("exchange should append");
+            conversation_id
+        });
+        let stream = ctx.add_model(|_| {
+            let mut stream = ResponseStream::new_for_test(stream_id.clone());
+            let params = stream.params_mut_for_test();
+            params.lrc_command_id = Some("lrc-block".to_owned());
+            params.lrc_should_spawn_subagent = true;
+            params.lrc_running_command = Some(RunningCommand {
+                command: "vim notes.md".to_owned(),
+                block_id: BlockId::new(),
+                grid_contents: String::new(),
+                cursor: String::new(),
+                requested_command_id: None,
+                is_alt_screen_active: true,
+            });
+            stream
+        });
+        view.ai_controller().update(ctx, |controller, ctx| {
+            controller.register_mock_stream_for_test(
+                stream_id.clone(),
+                conversation_id,
+                stream.clone(),
+                ctx,
+            );
+        });
+        history.update(ctx, |history, ctx| {
+            history.mark_response_stream_completed_successfully(
+                &stream_id,
+                conversation_id,
+                terminal_view_id,
+                ctx,
+            );
+        });
+        stream.update(ctx, |_, ctx| {
+            ctx.emit(ResponseStreamEvent::AfterStreamFinished { cancellation: None });
+        });
+    });
+
+    // Queued actions preprocess via `ctx.spawn`; pump until the write leaves preprocessing.
+    let mut status = None;
+    for _ in 0..64 {
+        status = action_model.read(&*app, |action_model, _| {
+            action_model.get_action_status(&action_id)
+        });
+        if status
+            .as_ref()
+            .is_some_and(|status| status.is_blocked() || status.is_running() || status.is_done())
+        {
+            break;
+        }
+        futures_lite::future::yield_now().await;
+    }
+    status
+}
+
+/// #1070: tagging the agent in to a full-screen program (vim, htop, less, tmux, a full-screen
+/// ssh) must not let the agent type into it without the user's approval.
+///
+/// The controller used to queue an alt-screen tag-in round with an auto-accept that stood in
+/// for the user's Accept, so with "Interact with running commands: Always ask" the model's
+/// first `write_to_long_running_shell_command` went straight into the PTY of the program the
+/// user was in. #617 narrowed that to the alt screen; it did not remove it. Red on that code:
+/// the write executes (here: resolves `BlockNotFound`) instead of waiting for approval.
+#[test]
+fn alt_screen_tag_in_does_not_auto_accept_a_pty_write() {
+    App::test((), |mut app| async move {
+        let status = alt_screen_tag_in_write_status(&mut app, false).await;
+        assert!(
+            status.as_ref().is_some_and(|status| status.is_blocked()),
+            "an alt-screen tag-in round must leave the PTY write waiting for the user's \
+             approval, got {status:?}"
+        );
+    });
+}
+
+/// #1070, the other half: removing the forged Accept must not remove the user's own opt-in.
+/// With "Interact with running commands: Always allow" the same round's write runs without a
+/// prompt, through the ordinary profile check.
+#[test]
+fn alt_screen_tag_in_still_honours_an_always_allow_profile() {
+    App::test((), |mut app| async move {
+        let status = alt_screen_tag_in_write_status(&mut app, true).await;
+        assert!(
+            status
+                .as_ref()
+                .is_some_and(|status| status.is_running() || status.is_done()),
+            "an explicit Always allow must still let the write run unprompted, got {status:?}"
+        );
+    });
+}
+
+/// #1070 (port of mehmetbaykar/zap `c401597cb`): only the CLI subagent's own turns -- the user's
+/// tag-in turn, or a later turn targeting that subagent's task -- are limited to the CLI-agent
+/// tool set. The agent that started or monitors the command keeps its tools.
+#[test]
+fn lrc_cli_subagent_turn_only_for_tag_in_or_the_subagent_task() {
+    let subagent = TaskId::new("cli-subagent".to_owned());
+    assert!(super::is_lrc_cli_subagent_turn(true, None, Some("root")));
+    assert!(super::is_lrc_cli_subagent_turn(
+        false,
+        Some(&subagent),
+        Some("cli-subagent")
+    ));
+    assert!(!super::is_lrc_cli_subagent_turn(
+        false,
+        Some(&subagent),
+        Some("root")
+    ));
+    assert!(!super::is_lrc_cli_subagent_turn(
+        false,
+        Some(&subagent),
+        None
+    ));
+    assert!(!super::is_lrc_cli_subagent_turn(false, None, Some("root")));
+}

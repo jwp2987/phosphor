@@ -60,11 +60,11 @@ impl UseComputerExecutor {
         // returns. When this gate first landed, the LRC alt-screen tag-in path
         // (`queue_actions_with_options(auto_accept=true)`) reached the executor as a forged
         // `is_user_initiated=true` and did exactly that -- the gate was computed and thrown
-        // away on the one path that most needed it. `ActionInitiator::AutoAcceptedTagIn` now
-        // withholds that authority for `UseComputer` and `RequestComputerUse`, so on every
-        // path except a literal user click on this action's own Accept button, this function's
-        // answer is the one that decides. Keep the two in step: widening
-        // `ActionInitiator::can_stand_in_for_confirmation` re-opens this hole silently.
+        // away on the one path that most needed it. That path is gone (#1070): only a literal
+        // user click on this action's own Accept button stands in for the confirmation, so on
+        // every other path this function's answer is the one that decides. Keep the two in
+        // step: widening `ActionInitiator::can_stand_in_for_confirmation` re-opens this hole
+        // silently.
         //
         // Deliberately NOT re-checked here: the profile's own always-allow setting. This
         // executor is constructed without a `terminal_view_id` (`execute.rs`:

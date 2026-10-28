@@ -2543,6 +2543,11 @@ impl BlocklistAIController {
 
         request_params.lrc_command_id = Some(active_block.id().to_string());
         request_params.lrc_should_spawn_subagent = is_lrc_tagged_in;
+        request_params.lrc_is_cli_subagent_turn = is_lrc_cli_subagent_turn(
+            is_lrc_tagged_in,
+            active_block.cli_subagent_task_id(),
+            request_params.byop_target_task_id.as_deref(),
+        );
 
         if let Some(running_command) = byop_get_running_command_for_lrc(&terminal_model) {
             request_params.lrc_running_command = Some(running_command.clone());
@@ -4268,44 +4273,17 @@ impl BlocklistAIController {
                             .join(", "),
                         conversation_id,
                     );
-                    // Zap: auto-authorizes agent tool execution on the first round
-                    // of an LRC tag-in, but ONLY when the tagged-in command owns the
-                    // alt screen.
-                    //
-                    // Trigger condition: when this round's request was dispatched,
-                    // active_block was in
-                    // InteractionMode::User { did_user_tag_in_agent: true }. Can't
-                    // fall back to the current active_block's monitored metadata,
-                    // otherwise subsequent ordinary requests within the same CLI
-                    // subagent session would also get auto-confirmed, making the
-                    // confirmation UI never show up.
-                    //
-                    // The alt-screen condition is #617. Auto-accept works by calling
-                    // `execute_action`, which forges `is_user_initiated=true` and so
-                    // discards the profile's verdict -- `can_auto_execute=false` from
-                    // an `Always ask` profile is computed and then ignored. That
-                    // override is only defensible where the user genuinely cannot
-                    // answer a prompt, i.e. where the Accept button is not rendered
-                    // because the command holds the alt screen. Keying it on the
-                    // tag-in alone extended it to ordinary sessions with a perfectly
-                    // visible button, which is how an agent ran `free -h` against a
-                    // PROD host with the profile set to Always ask.
-                    let auto_accept_for_lrc_tag_in = response_stream
-                        .as_ref(ctx)
-                        .is_lrc_tag_in_without_confirmation_ui();
-                    if auto_accept_for_lrc_tag_in {
-                        log::info!(
-                            "[byop] LRC tag-in: alt screen holds the confirmation UI,                              queue with auto-accept ({} action(s))",
-                            actions_to_queue.len()
-                        );
-                    }
+                    // Every action goes through the ordinary drain, so the execution
+                    // profile decides, including on an LRC tag-in round. That round used
+                    // to be queued with an auto-accept that stood in for the user's
+                    // Accept and overrode an `Always ask` profile -- first on every
+                    // tag-in, then (#617) only while the command held the alt screen.
+                    // Neither was needed: on a tag-in the CLI subagent view is mounted
+                    // over the alt screen and renders Allow/Reject for every tool the
+                    // round is offered (`chat_stream::CLI_AGENT_TOOLS`). Removed in
+                    // #1070, as upstream never had it.
                     self.action_model.update(ctx, |action_model, ctx| {
-                        action_model.queue_actions_with_options(
-                            actions_to_queue,
-                            conversation_id,
-                            auto_accept_for_lrc_tag_in,
-                            ctx,
-                        );
+                        action_model.queue_actions(actions_to_queue, conversation_id, ctx);
                     });
                 } else {
                     // Zap BYOP: when from_args parsing fails, chat_stream takes the
@@ -4964,6 +4942,20 @@ fn byop_get_running_command_for_lrc(terminal_model: &TerminalModel) -> Option<Ru
         requested_command_id: active_block.requested_command_action_id().cloned(),
         is_alt_screen_active,
     })
+}
+
+/// Whether an LRC-attached request is a turn of the CLI subagent driving the command (the
+/// user's tag-in round, or a later round targeting that subagent's task) rather than a turn of
+/// the agent that started or monitors the command. Only CLI-subagent turns are limited to
+/// upstream's CLI-agent tool set: their actions are confirmed through the CLI subagent view,
+/// which can only show those tools (#1070).
+fn is_lrc_cli_subagent_turn(
+    is_lrc_tagged_in: bool,
+    cli_subagent_task_id: Option<&TaskId>,
+    target_task_id: Option<&str>,
+) -> bool {
+    is_lrc_tagged_in
+        || cli_subagent_task_id.is_some_and(|task_id| target_task_id == Some(&**task_id))
 }
 
 /// Whether a cancelled response stream should hand Classic input back to the shell.
