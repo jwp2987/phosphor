@@ -40,5 +40,18 @@ define_settings_group!(SshSettings,
             toml_path: "warpify.ssh.reuse_existing_control_master",
             description: "Whether the legacy SSH wrapper attaches to an existing SSH ControlMaster for the destination host instead of always creating its own.",
         },
+        // #1069: a default split of an SSH pane replays its `ssh` command in the new pane
+        // (`pane_group::ssh_split`). Ported by content from TranscriptionFactory/warp
+        // `96ad4fe1e`; the pin has no such setting.
+        split_inherits_ssh: SplitInheritsSshSetting {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+            private: false,
+            storage_key: "SplitInheritsSsh",
+            toml_path: "warpify.ssh.split_inherits_ssh",
+            description: "Whether splitting a pane whose active session is an SSH session opens the new pane on the same host (it runs the same ssh command, then changes to the same remote directory).",
+        },
     ]
 );

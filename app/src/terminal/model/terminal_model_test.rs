@@ -201,6 +201,79 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
     );
 }
 
+/// Drives the local shell's `ssh ...` block (typed, echoed, preexec'd) and then the ssh
+/// wrapper's SSH hook and the remote InitShell, the order the wrapper produces.
+fn wrapper_ssh_session(terminal: &mut TerminalModel, typed: &str, with_ssh_hook: bool) {
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(terminal);
+    command_finished_and_precmd(terminal);
+    terminal.bootstrapped(BootstrappedValue {
+        shell: String::from("bash"),
+        ..Default::default()
+    });
+    command_finished_and_precmd(terminal);
+
+    terminal.start_command_execution();
+    for c in typed.chars() {
+        terminal.block_list_mut().input(c);
+    }
+    terminal.preexec(PreexecValue {
+        command: typed.to_owned(),
+        session_id: None,
+    });
+    assert_eq!(
+        terminal.block_list().active_block().command_to_string(),
+        typed
+    );
+
+    if with_ssh_hook {
+        terminal.ssh(SSHValue {
+            remote_shell: "bash".to_owned(),
+            remote_session_id: Some(8_675_309_123),
+            ..Default::default()
+        });
+    }
+    terminal.init_shell(InitShellValue {
+        shell: "bash".into(),
+        user: "me".to_owned(),
+        hostname: "box".to_owned(),
+        session_id: 0.into(),
+        ..Default::default()
+    });
+}
+
+/// #1069: a session started by the ssh wrapper has no `subshell_info`, so the command the user
+/// typed must be recorded on the pending `SessionInfo` for a split to replay it.
+#[test]
+fn wrapper_ssh_session_records_the_typed_command() {
+    let mut terminal = TerminalModel::mock(None, None);
+    wrapper_ssh_session(&mut terminal, "ssh -p 2222 me@box", true);
+
+    let info = terminal
+        .pending_session_info
+        .as_ref()
+        .expect("InitShell after the SSH hook leaves a pending session");
+    assert!(info.subshell_info.is_none());
+    assert_eq!(
+        info.legacy_ssh_spawning_command.as_deref(),
+        Some("ssh -p 2222 me@box")
+    );
+}
+
+/// #1069: without the wrapper's SSH hook nothing is recorded, so a split never replays a
+/// command that did not start an ssh session.
+#[test]
+fn init_shell_without_ssh_hook_records_no_ssh_command() {
+    let mut terminal = TerminalModel::mock(None, None);
+    wrapper_ssh_session(&mut terminal, "bash", false);
+
+    let info = terminal
+        .pending_session_info
+        .as_ref()
+        .expect("InitShell leaves a pending session");
+    assert_eq!(info.legacy_ssh_spawning_command, None);
+}
+
 /// #966: the exact hook order a fish subshell emits (`fish.sh`): InitShell (is_subshell), then
 /// the explicit `warp_precmd` (CommandFinished + Precmd, same id), `Bootstrapped`, the first
 /// `fish_prompt` precmd (CommandFinished + Precmd), then per user command Preexec, and at the

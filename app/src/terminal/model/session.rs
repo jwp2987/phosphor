@@ -654,6 +654,10 @@ pub struct SessionInfo {
     pub wsl_name: Option<String>,
     /// If this is a subshell or remote session, e.g. ssh, store the parent session ID here.
     pub spawning_session_id: Option<SessionId>,
+    /// For a session started by the ssh wrapper, the command the user typed in the spawning
+    /// (local) session. Such sessions have no `subshell_info`, so it is kept separately; a split
+    /// from the session replays it (#1069, `pane_group::ssh_split`).
+    pub legacy_ssh_spawning_command: Option<String>,
 }
 
 impl SessionInfo {
@@ -723,6 +727,7 @@ impl SessionInfo {
             tmux_control_mode: false,
             wsl_name: init_shell_value.wsl_name,
             spawning_session_id,
+            legacy_ssh_spawning_command: None,
         }
     }
 
@@ -859,6 +864,7 @@ impl SessionInfo {
             tmux_control_mode,
             wsl_name: bootstrapped_value.wsl_name,
             spawning_session_id: self.spawning_session_id,
+            legacy_ssh_spawning_command: self.legacy_ssh_spawning_command.take(),
         }
     }
 
@@ -1021,6 +1027,16 @@ impl Session {
 
     pub fn session_type(&self) -> SessionType {
         self.session_type.lock().clone()
+    }
+
+    /// The session this one was launched from, if it is a subshell or remote session.
+    pub fn spawning_session_id(&self) -> Option<SessionId> {
+        self.info.spawning_session_id
+    }
+
+    /// See [`SessionInfo::legacy_ssh_spawning_command`].
+    pub fn legacy_ssh_spawning_command(&self) -> Option<&str> {
+        self.info.legacy_ssh_spawning_command.as_deref()
     }
 
     /// Updates the `host_id` on a `WarpifiedRemote` session type after the
@@ -2018,6 +2034,7 @@ pub mod testing {
                 tmux_control_mode: false,
                 wsl_name: None,
                 spawning_session_id: None,
+                legacy_ssh_spawning_command: None,
             }
         }
 

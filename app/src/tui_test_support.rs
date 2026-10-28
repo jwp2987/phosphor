@@ -314,6 +314,7 @@ pub fn add_tui_history_test_models(
         tmux_control_mode: false,
         wsl_name: None,
         spawning_session_id: None,
+        legacy_ssh_spawning_command: None,
     };
     let session = Arc::new(Session::new(
         session_info,
