@@ -929,10 +929,79 @@ fn commit_summarization_records_head_message_ids() {
 
     assert!(commit_summarization(&mut conversation, false, &cfg));
     let completed = conversation.compaction_state.completed().last().unwrap();
-    assert_eq!(completed.user_msg_id, "u3");
+    // #1078: the summary is anchored inside the head it summarizes (the head's last user
+    // turn), not at the kept tail's user message — that one was never summarized and must
+    // stay visible. (This assertion used to pin `u3`, the bug.)
+    assert_eq!(completed.user_msg_id, "u2");
     assert_eq!(completed.assistant_msg_id, "a3");
     assert_eq!(completed.tail_start_id.as_deref(), Some("u3"));
     assert_eq!(completed.head_message_ids, ["u1", "a1", "u2", "a2"]);
+    let hidden = conversation.compaction_state.hidden_message_ids();
+    assert!(
+        !hidden.contains("u3"),
+        "the kept tail's user message stays visible"
+    );
+}
+
+/// #1078 attack: an older turn (`u1` + a large answer) is summarized while the current turn
+/// (`q2` and its tool call and result) fits the kept tail. The summary is shown where the
+/// head was and the current turn's instruction survives — before the fix `q2` was the anchor
+/// and therefore hidden. The hidden set is persisted with the conversation
+/// (`compaction_state_json`), so it must survive a serde round trip unchanged.
+#[test]
+fn commit_keeps_the_current_turn_visible_and_after_the_summary() {
+    use super::commit::commit_summarization_for_stream;
+
+    let mut big = agent_output("a1", "root", "r1", 2);
+    if let Some(api::message::Message::AgentOutput(output)) = big.message.as_mut() {
+        output.text = "x".repeat(4_000);
+    }
+    let mut conversation = conversation_with_messages(vec![
+        user_query("u1", "root", "r1", 1),
+        big,
+        user_query("q2", "root", "r2", 3),
+        tool_call_with_id("c1", "root", "call-1", 4),
+        tool_result("t1", "root", "call-1", 40, 5),
+        agent_output("s1", "root", "r3", 6),
+    ]);
+    let cfg = CompactionConfig {
+        tail_turns: 1,
+        preserve_recent_tokens: Some(200),
+        ..Default::default()
+    };
+    assert!(commit_summarization_for_stream(
+        &mut conversation,
+        true,
+        &cfg,
+        |id| id == "s1"
+    ));
+    let completed = conversation
+        .compaction_state
+        .completed()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(completed.head_message_ids, ["u1", "a1"]);
+    assert_eq!(completed.tail_start_id.as_deref(), Some("q2"));
+    assert_eq!(completed.user_msg_id, "u1", "anchored inside the head");
+    let hidden = conversation.compaction_state.hidden_message_ids();
+    for kept in ["q2", "c1", "t1"] {
+        assert!(
+            !hidden.contains(kept),
+            "{kept} is in the kept tail and stays visible"
+        );
+    }
+    for gone in ["u1", "a1", "s1"] {
+        assert!(
+            hidden.contains(gone),
+            "{gone} is summarized (or is the summary)"
+        );
+    }
+
+    // Restore: the persisted state hides exactly the same messages.
+    let json = serde_json::to_string(&conversation.compaction_state).unwrap();
+    let restored: super::state::CompactionState = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.hidden_message_ids(), hidden);
 }
 
 // -- message_view ----------------------------------------------------------
@@ -1157,10 +1226,13 @@ fn committed_auto_summary_resumes_the_task() {
     assert!(build_continue_message(false).starts_with("Continue if you have next steps"));
 }
 
-/// A summary that found nothing to commit has nothing to continue from.
+/// Every auto-compaction is followed by the continue message (owner rule, #1059 refute round
+/// 5): an automatic summary that found nothing to commit (blank, or narration before a dropped
+/// tool call) still resumes from the uncompacted history instead of leaving the task stopped
+/// with no error. (This test used to assert the opposite, which the owner rule overturned.)
 #[test]
-fn uncommitted_auto_summary_does_not_resume() {
-    use super::{FinishedStream, plan_after_stream_finished as plan};
+fn uncommitted_auto_summary_still_resumes() {
+    use super::{AutoCompactionDecision as D, FinishedStream, plan_after_stream_finished as plan};
     let p = plan(
         FinishedStream::Summary {
             auto: true,
@@ -1168,7 +1240,12 @@ fn uncommitted_auto_summary_does_not_resume() {
         },
         true,
     );
-    assert!(!p.resume_with_continue_message);
+    assert!(p.resume_with_continue_message);
+    assert_eq!(
+        p.decision,
+        D::None,
+        "a summary never triggers another summary"
+    );
 }
 
 /// Manual `/compact` (sent with overflow=false) only summarizes: no continue, no new turn.
@@ -1466,41 +1543,41 @@ fn uncommitted_deferred_summary_still_resumes_and_cannot_loop() {
     );
 }
 
-/// Only the deferred summary gets that resume: an uncommitted tool-free auto summary (the
-/// task had already ended with an answer) still doesn't, and neither does a manual one.
+/// Every automatic summary resumes when it finishes cleanly, committed or not — the
+/// tool-free one as well as the deferred one — and that cannot loop: the allowance is spent,
+/// so the next tool-free turn still over the threshold gives up visibly. A manual `/compact`
+/// never resumes. (Replaces two tests that pinned a deferred-only resume, overturned by the
+/// owner rule that every auto-compaction is followed by the continue message.)
 #[test]
-fn only_the_deferred_summary_resumes_without_a_commit() {
-    use super::TurnCompactionState;
+fn every_auto_summary_resumes_and_cannot_loop_while_a_manual_one_never_does() {
+    use super::{AutoCompactionDecision as D, TurnCompactionState};
     let mut state = TurnCompactionState::default();
-    state.on_stream_finished(turn(false, Some(true)));
-    assert!(
-        !state
-            .on_stream_finished(summary_stream(true, false))
-            .resume_with_continue_message
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::Compact
     );
-    let mut state = TurnCompactionState::default();
-    state.on_deferred_summary_sent();
     assert!(
-        !state
-            .on_stream_finished(summary_stream(false, false))
+        state
+            .on_stream_finished(summary_stream(true, false))
             .resume_with_continue_message,
-        "a manual /compact never resumes"
+        "the tool-free auto summary that committed nothing resumes too"
     );
-}
+    assert_eq!(
+        state.on_stream_finished(turn(false, Some(true))).decision,
+        D::GiveUp,
+        "still over after the summary: no second summary, a visible error"
+    );
 
-/// The resume is owed only to the one summary that was sent: the flag is consumed by the
-/// next finished stream whatever it is.
-#[test]
-fn deferred_summary_resume_is_consumed_by_the_next_finished_stream() {
-    use super::TurnCompactionState;
     let mut state = TurnCompactionState::default();
     state.on_deferred_summary_sent();
-    state.on_stream_finished(summary_stream(true, true));
-    assert!(
-        !state
-            .on_stream_finished(summary_stream(true, false))
-            .resume_with_continue_message
-    );
+    for committed in [false, true] {
+        assert!(
+            !state
+                .on_stream_finished(summary_stream(false, committed))
+                .resume_with_continue_message,
+            "a manual /compact never resumes"
+        );
+    }
 }
 
 /// The allowance is spent only once the deferred summary request was sent: deciding to send
@@ -1551,13 +1628,6 @@ fn stop_during_the_deferred_summary_leaves_a_clean_state() {
     state.on_conversation_stopped();
     assert!(!state.compaction_deferred_to_tool_results());
     assert!(state.auto_compacted());
-    // Nothing resumes on the stopped summary's behalf: the next clean summary finish (here
-    // an uncommitted auto one) is not treated as the deferred one.
-    assert!(
-        !state
-            .on_stream_finished(summary_stream(true, false))
-            .resume_with_continue_message
-    );
     state.on_new_user_turn();
     assert!(state.is_idle());
 }

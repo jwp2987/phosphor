@@ -4575,29 +4575,37 @@ fn chat_options_for_request(
     }
 }
 
-/// Whether the endpoint is known to accept `tool_choice: "none"`. The first-party APIs do
-/// (Anthropic, Gemini / Vertex, OpenAI Chat Completions and Responses). Arbitrary
-/// OpenAI-compatible servers are not assumed to: some accept only `"auto"` and reject
-/// anything else (Zhipu GLM, Baidu Qianfan), which would turn every automatic summary into a
-/// 400; Ollama, DeepSeek and other compatible endpoints get the client-side drop instead.
+/// Whether the endpoint is known to accept `tool_choice: "none"`: the first-party APIs on
+/// their own hosts (Anthropic, Gemini on `*.googleapis.com`, Vertex, OpenAI Chat Completions
+/// and Responses on `api.openai.com` / Azure OpenAI). The api type alone is not trusted: a
+/// relay configured with the Anthropic or OpenAI api type is an arbitrary server, and some
+/// OpenAI-compatible servers accept only `"auto"` and reject anything else (Zhipu GLM, Baidu
+/// Qianfan), which would turn every automatic summary into a 400. Hosts are compared parsed,
+/// so a proxy path or a look-alike host (`api.openai.com.example`) does not match. Everything
+/// else gets the client-side drop instead.
 fn accepts_tool_choice_none(
     api_type: AgentProviderApiType,
     effective_adapter: AdapterKind,
     base_url: &str,
 ) -> bool {
-    if effective_adapter == AdapterKind::Anthropic {
-        return true;
+    let host_ends_with = |suffix: &str| {
+        url::Url::parse(base_url.trim())
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .is_some_and(|host| host.ends_with(suffix))
+    };
+    if effective_adapter == AdapterKind::Anthropic || api_type == AgentProviderApiType::Anthropic {
+        return is_anthropic_api_host(base_url);
     }
     match api_type {
-        AgentProviderApiType::OpenAiResp
-        | AgentProviderApiType::Anthropic
-        | AgentProviderApiType::Gemini
-        | AgentProviderApiType::Vertex => true,
-        AgentProviderApiType::OpenAi => {
-            let url = base_url.to_ascii_lowercase();
-            url.contains("api.openai.com") || url.contains(".openai.azure.com")
+        AgentProviderApiType::Vertex => true,
+        AgentProviderApiType::Gemini => host_ends_with(".googleapis.com"),
+        AgentProviderApiType::OpenAi | AgentProviderApiType::OpenAiResp => {
+            is_openai_api_host(base_url) || host_ends_with(".openai.azure.com")
         }
-        AgentProviderApiType::Ollama | AgentProviderApiType::DeepSeek => false,
+        AgentProviderApiType::Anthropic
+        | AgentProviderApiType::Ollama
+        | AgentProviderApiType::DeepSeek => false,
     }
 }
 
@@ -4607,7 +4615,8 @@ fn accepts_tool_choice_none(
 /// stream's text (if any) is all the commit sees.
 ///
 /// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
-/// stream's text, if any, preceded a tool call and is not a summary.
+/// stream's text, if any, preceded a tool call and is not a summary. Nothing is committed and
+/// the task resumes uncompacted; retrying the summary is #1079.
 fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
     if !calls.is_empty() && is_summarize_request(params) {
         log::warn!(
@@ -16743,6 +16752,12 @@ mod summarize_turn_tool_gate_tests {
             (T::OpenAi, "http://127.0.0.1:8080/v1"),
             (T::Ollama, "http://127.0.0.1:11434"),
             (T::DeepSeek, "https://api.deepseek.com"),
+            // The api type alone is not trusted: relays and look-alike hosts.
+            (T::Anthropic, "https://relay.example.com/anthropic"),
+            (T::Gemini, "https://gemini-proxy.example.com/v1beta"),
+            (T::OpenAi, "https://api.openai.com.evil.example/v1"),
+            (T::OpenAi, "https://proxy.example.com/api.openai.com/v1"),
+            (T::OpenAiResp, "https://relay.example.com/v1"),
         ] {
             assert_eq!(
                 tool_choice_for(summary(), true, api_type, url),

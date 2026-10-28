@@ -18,11 +18,9 @@ use super::state::CompletedCompaction;
 /// Walks the conversation's root task backwards to find the last
 /// `Message::AgentOutput` — that's the summary text the model just emitted.
 ///
-/// `user_msg_id` picks the id of the nearest user turn (`UserQuery` or `InvokeSkill` —
-/// a conversation started with `/skill` has no `UserQuery` at all) before that last
-/// AgentOutput; if there is none, a standalone uuid is synthesized (used only as a
-/// marker key — build_chat_request's hidden projection won't match it against a
-/// real message).
+/// `user_msg_id` (where the summary is shown) is the last user turn (`UserQuery` or
+/// `InvokeSkill` — a conversation started with `/skill` has no `UserQuery` at all) *inside the
+/// summarized head*; see `summary_anchor` (#1078).
 ///
 /// Takes the last AgentOutput anywhere in the conversation. The controller uses
 /// [`commit_summarization_for_stream`] instead, which only accepts the summary stream's own
@@ -99,20 +97,6 @@ pub fn commit_summarization_for_stream(
     let assistant_pos = all_msgs
         .iter()
         .position(|m| m.id.as_str() == assistant_id_str);
-    let user_msg_id: String = assistant_pos
-        .and_then(|pos| {
-            all_msgs[..pos]
-                .iter()
-                .rev()
-                .find_map(|m| match m.message.as_ref() {
-                    Some(
-                        api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_),
-                    ) => Some(m.id.clone()),
-                    _ => None,
-                })
-        })
-        .unwrap_or_else(|| format!("compaction-trigger-{}", uuid::Uuid::new_v4()));
-
     // The head to hide is the head the summarizer was actually shown, recorded by
     // `build_chat_request` when it built this summarization request. Re-deriving it here does
     // not reproduce it, and the difference is not cosmetic: anything the re-derived head
@@ -157,6 +141,7 @@ pub fn commit_summarization_for_stream(
             (ids, select_result.tail_start_id)
         }
     };
+    let user_msg_id = summary_anchor(&all_msgs, &head_message_ids);
     let auto = overflow;
     let summary_len = summary_text.len();
     let completed = CompletedCompaction {
@@ -180,6 +165,41 @@ pub fn commit_summarization_for_stream(
     );
     conversation.compaction_state.push_completed(completed);
     true
+}
+
+/// The message the summary is shown in place of (`CompletedCompaction::user_msg_id`): the
+/// projection hides it and inserts the summary at its position, so it must be a message the
+/// summary actually covers — one of `head_message_ids` — and the summary then sits where the
+/// head was, before the kept tail (#1078).
+///
+/// It used to be the nearest user turn before the summary output, i.e. the *latest* user
+/// message. The summarize request adds no user message of its own (opencode's does), so when
+/// the kept tail started at or before that message it was hidden although it was never
+/// summarized: the continuation lost the user's instruction for the current turn, and the
+/// summary landed after the kept turns instead of before them.
+///
+/// The last user turn (`UserQuery` / `InvokeSkill`) in the head, else the head's last message
+/// (a head without a user turn: a split inside one long turn). Only an empty head (nothing
+/// summarized) falls back to a synthetic id, which hides nothing and is never inserted.
+fn summary_anchor(all_msgs: &[&api::Message], head_message_ids: &[String]) -> String {
+    let by_id: std::collections::HashMap<&str, &api::Message> =
+        all_msgs.iter().map(|m| (m.id.as_str(), *m)).collect();
+    head_message_ids
+        .iter()
+        .rev()
+        .find(|id| {
+            by_id.get(id.as_str()).is_some_and(|m| {
+                matches!(
+                    m.message,
+                    Some(
+                        api::message::Message::UserQuery(_) | api::message::Message::InvokeSkill(_)
+                    )
+                )
+            })
+        })
+        .or_else(|| head_message_ids.last())
+        .cloned()
+        .unwrap_or_else(|| format!("compaction-trigger-{}", uuid::Uuid::new_v4()))
 }
 
 /// Automatically runs prune before every LLM request — matches opencode

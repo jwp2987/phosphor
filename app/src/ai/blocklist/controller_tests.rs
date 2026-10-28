@@ -1731,6 +1731,16 @@ fn narration_before_a_dropped_tool_call_is_not_committed_as_the_summary() {
     drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::NarrationThenToolCall);
 }
 
+/// #1078: an older turn (a question and a large answer) precedes the tool-loop turn, so the
+/// summary covers only the older turn and the current one is the kept tail. The current
+/// turn's instruction, calls and results must reach the continue request, after the summary.
+/// Before the fix the summary was anchored at the current turn's user message, which was then
+/// hidden although it was never summarized.
+#[test]
+fn the_kept_current_turn_survives_the_compaction_after_the_summary() {
+    drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::SummaryOfAnOlderTurn);
+}
+
 /// What the summarize stream answers in [`drive_tool_loop_through_the_byop_path`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SummaryStreamOutcome {
@@ -1738,6 +1748,8 @@ enum SummaryStreamOutcome {
     Summary,
     /// "Let me check" followed by a tool call, which the stream drops.
     NarrationThenToolCall,
+    /// A real summary, of an older turn that precedes the tool-loop turn (#1078).
+    SummaryOfAnOlderTurn,
 }
 
 fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
@@ -1818,6 +1830,31 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
         // The tool-call step: a user query, then a stream that adds two tool calls, exactly
         // as the BYOP stream applies them (StreamInit, CreateTask upgrading the optimistic
         // root, AddMessagesToTask).
+        // #1078: an older, large turn the summary will cover, ahead of the tool-loop turn.
+        let older_turn: Vec<api::Message> = if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn
+        {
+            vec![
+                timestamped_message(
+                    "u0",
+                    api::message::Message::UserQuery(api::message::UserQuery {
+                        query: "explain the build".to_owned(),
+                        ..Default::default()
+                    }),
+                    -2,
+                ),
+                timestamped_message(
+                    "a0",
+                    api::message::Message::AgentOutput(api::message::AgentOutput {
+                        // Over the summarize request's 8_000-token preserve budget, so the
+                        // older turn is summarized and the tool-loop turn is kept.
+                        text: "the build works like this. ".repeat(2_000),
+                    }),
+                    -1,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
         let step_stream = ResponseStreamId::new_for_test();
         let conversation_id =
             BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
@@ -1887,20 +1924,24 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                                 action: Some(api::client_action::Action::AddMessagesToTask(
                                     api::client_action::AddMessagesToTask {
                                         task_id: "root".to_owned(),
-                                        messages: vec![
-                                            timestamped_message(
-                                                "q1",
-                                                api::message::Message::UserQuery(
-                                                    api::message::UserQuery {
-                                                        query: "read both files".to_owned(),
-                                                        ..Default::default()
-                                                    },
+                                        messages: older_turn
+                                            .clone()
+                                            .into_iter()
+                                            .chain([
+                                                timestamped_message(
+                                                    "q1",
+                                                    api::message::Message::UserQuery(
+                                                        api::message::UserQuery {
+                                                            query: "read both files".to_owned(),
+                                                            ..Default::default()
+                                                        },
+                                                    ),
+                                                    1,
                                                 ),
-                                                1,
-                                            ),
-                                            run_shell_tool_call("c1", "call-1", 2),
-                                            run_shell_tool_call("c2", "call-2", 3),
-                                        ],
+                                                run_shell_tool_call("c1", "call-1", 2),
+                                                run_shell_tool_call("c2", "call-2", 3),
+                                            ])
+                                            .collect(),
                                     },
                                 )),
                             },
@@ -2023,12 +2064,17 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                 conversation_id,
             )
             .expect("the summarize request recorded its head");
-            for id in ["c1", "c2"]
-                .iter()
-                .map(|id| id.to_string())
-                .chain(result_message_ids.iter().cloned())
-            {
-                assert!(head.head_message_ids.contains(&id), "{id} is summarized");
+            if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
+                assert_eq!(head.head_message_ids, ["u0", "a0"], "only the older turn");
+                assert_eq!(head.tail_start_id.as_deref(), Some("q1"));
+            } else {
+                for id in ["c1", "c2"]
+                    .iter()
+                    .map(|id| id.to_string())
+                    .chain(result_message_ids.iter().cloned())
+                {
+                    assert!(head.head_message_ids.contains(&id), "{id} is summarized");
+                }
             }
             // Re-record it for the commit below, as the stream itself would have.
             crate::ai::agent_providers::chat_stream::build_chat_request_for_test(&summary_params)
@@ -2037,6 +2083,7 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
             // 3. The summary stream answers and finishes.
             let summary_text = match outcome {
                 SummaryStreamOutcome::Summary => "## Goal\n- read both files",
+                SummaryStreamOutcome::SummaryOfAnOlderTurn => "## Goal\n- explain the build",
                 SummaryStreamOutcome::NarrationThenToolCall => "Let me check the next file.",
             };
             if outcome == SummaryStreamOutcome::NarrationThenToolCall {
@@ -2119,6 +2166,26 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                         assert!(completed.head_message_ids.contains(&id), "{id} is compacted");
                     }
                 }
+                SummaryStreamOutcome::SummaryOfAnOlderTurn => {
+                    let completed = completed.expect("the summary committed");
+                    assert_eq!(completed.head_message_ids, ["u0", "a0"]);
+                    assert_eq!(
+                        completed.user_msg_id, "u0",
+                        "anchored inside the head it summarizes"
+                    );
+                    let hidden = history
+                        .conversation(&conversation_id)
+                        .unwrap()
+                        .compaction_state
+                        .hidden_message_ids();
+                    for kept in ["q1", "c1", "c2"]
+                        .iter()
+                        .map(|id| id.to_string())
+                        .chain(result_message_ids.iter().cloned())
+                    {
+                        assert!(!hidden.contains(&kept), "{kept} is kept and stays visible");
+                    }
+                }
                 SummaryStreamOutcome::NarrationThenToolCall => {
                     assert!(
                         completed.is_none(),
@@ -2145,6 +2212,48 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                 })
                 .count();
             assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+
+            if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
+                // What the continue request sends: the summary first, then the kept turn's
+                // instruction, then the continue message.
+                let continue_params = controller
+                    .in_flight_response_streams
+                    .streams_for_test()
+                    .map(|stream| stream.as_ref(ctx).params_for_test().clone())
+                    .find(|params| {
+                        params.input.iter().any(|input| {
+                            matches!(input, AIAgentInput::UserQuery { query, .. } if *query == continue_text)
+                        })
+                    })
+                    .expect("the continue request");
+                let request =
+                    crate::ai::agent_providers::chat_stream::build_chat_request_for_test(
+                        &continue_params,
+                    )
+                    .expect("the continue request builds");
+                let texts: Vec<String> = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.first_text().unwrap_or_default().to_owned())
+                    .collect();
+                let position = |needle: &str| {
+                    texts
+                        .iter()
+                        .position(|text| text.contains(needle))
+                        .unwrap_or_else(|| panic!("{needle:?} is not in the continue request"))
+                };
+                let summary_at = position("explain the build");
+                let instruction_at = position("read both files");
+                let continue_at = position(&continue_text);
+                assert!(
+                    summary_at < instruction_at && instruction_at < continue_at,
+                    "summary ({summary_at}) < kept instruction ({instruction_at}) < continue ({continue_at})"
+                );
+                assert!(
+                    !texts.iter().any(|text| text.contains("the build works like this")),
+                    "the summarized answer itself is hidden"
+                );
+            }
         });
     });
 }
