@@ -125,6 +125,165 @@ mod plaintext_bearer_risk_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Custom (extra) request headers (#1091)
+// ---------------------------------------------------------------------------
+//
+// `AgentProvider::extra_headers` is free text the user typed (or hand-edited into
+// settings.toml). genai hands every pair to `reqwest::RequestBuilder::header`, which
+// records an invalid name or value as a *deferred* error that only surfaces at send time
+// as the opaque `builder error` -- so one empty `["", ""]` row (which the settings page's
+// "+ Add Header" button used to persist on click) failed every request on the provider.
+// Every request path filters through [`usable_extra_headers`]; the settings page checks
+// rows with [`check_extra_header`] before persisting them, which is where an invalid row
+// is reported to the user.
+
+/// Why a custom header row cannot go on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtraHeaderProblem {
+    /// The name is empty (or only whitespace) -- a row the user added but never filled in.
+    EmptyName,
+    /// The name is not a valid HTTP header name (spaces, `:`, non-ASCII, ...).
+    InvalidName,
+    /// The value is not a valid HTTP header value (a newline or other control character).
+    InvalidValue,
+}
+
+/// Checks one custom header row, with the name and value already trimmed the way
+/// [`normalized_extra_header`] trims them.
+pub(crate) fn check_extra_header(name: &str, value: &str) -> Result<(), ExtraHeaderProblem> {
+    if name.is_empty() {
+        return Err(ExtraHeaderProblem::EmptyName);
+    }
+    if http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+        return Err(ExtraHeaderProblem::InvalidName);
+    }
+    if http::HeaderValue::from_str(value).is_err() {
+        return Err(ExtraHeaderProblem::InvalidValue);
+    }
+    Ok(())
+}
+
+/// Trims a header row's surrounding whitespace: leading/trailing whitespace is never part
+/// of a header name, and HTTP strips it from a value anyway, so a pasted `"X-Key "` should
+/// not make the row invalid.
+pub(crate) fn normalized_extra_header(name: &str, value: &str) -> (String, String) {
+    (name.trim().to_owned(), value.trim().to_owned())
+}
+
+/// The provider's custom headers that can actually be sent: empty rows are skipped
+/// silently, invalid names and values are skipped with a warning. Never fails the
+/// request -- one bad row must not take down every call on the provider (#1091).
+///
+/// The warning never includes a value (it may be a secret), and for an invalid name only
+/// its length: a name that fails to parse is as likely to be a token pasted into the wrong
+/// field as a real header name.
+pub(crate) fn usable_extra_headers(extra_headers: &[(String, String)]) -> Vec<(String, String)> {
+    extra_headers
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (name, value))| {
+            let (name, value) = normalized_extra_header(name, value);
+            match check_extra_header(&name, &value) {
+                Ok(()) => Some((name, value)),
+                Err(ExtraHeaderProblem::EmptyName) => {
+                    if !value.is_empty() {
+                        log::warn!(
+                            "[byop] skipping custom header #{}: it has a value but no name",
+                            index + 1
+                        );
+                    }
+                    None
+                }
+                Err(ExtraHeaderProblem::InvalidName) => {
+                    log::warn!(
+                        "[byop] skipping custom header #{}: its name ({} chars, redacted) is \
+                         not a valid HTTP header name",
+                        index + 1,
+                        name.chars().count()
+                    );
+                    None
+                }
+                Err(ExtraHeaderProblem::InvalidValue) => {
+                    log::warn!(
+                        "[byop] skipping custom header {name:?}: its value (redacted) is not a \
+                         valid HTTP header value (it contains a control character such as a \
+                         newline)"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod extra_header_tests {
+    use super::*;
+
+    fn pair(name: &str, value: &str) -> (String, String) {
+        (name.to_owned(), value.to_owned())
+    }
+
+    /// #1091: the row "+ Add Header" used to persist must not reach the wire, where it
+    /// failed every request on the provider with reqwest's `builder error`.
+    #[test]
+    fn an_empty_row_is_skipped_and_the_valid_rows_survive() {
+        let headers = vec![pair("", ""), pair("X-Portkey-Provider", "openai")];
+        assert_eq!(
+            usable_extra_headers(&headers),
+            vec![pair("X-Portkey-Provider", "openai")]
+        );
+    }
+
+    #[test]
+    fn invalid_names_and_values_are_skipped() {
+        let headers = vec![
+            pair("Bad Name", "v"),
+            pair("X-Ok", "fine"),
+            pair("X-Newline", "a\nb"),
+            pair("   ", "orphan value"),
+        ];
+        assert_eq!(usable_extra_headers(&headers), vec![pair("X-Ok", "fine")]);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed_not_rejected() {
+        let headers = vec![pair("  X-Key ", " secret ")];
+        assert_eq!(usable_extra_headers(&headers), vec![pair("X-Key", "secret")]);
+    }
+
+    #[test]
+    fn every_usable_header_is_accepted_by_reqwest() {
+        // The property the request path needs: nothing this returns can make reqwest's
+        // builder fail.
+        let headers = vec![
+            pair("", ""),
+            pair("Bad Name", "v"),
+            pair("X-Ok", "fine"),
+            pair("X-Cr", "a\rb"),
+        ];
+        for (name, value) in usable_extra_headers(&headers) {
+            assert!(http::HeaderName::from_bytes(name.as_bytes()).is_ok());
+            assert!(http::HeaderValue::from_str(&value).is_ok());
+        }
+    }
+
+    #[test]
+    fn check_reports_each_problem() {
+        assert_eq!(check_extra_header("", ""), Err(ExtraHeaderProblem::EmptyName));
+        assert_eq!(
+            check_extra_header("a b", "v"),
+            Err(ExtraHeaderProblem::InvalidName)
+        );
+        assert_eq!(
+            check_extra_header("X-A", "a\nb"),
+            Err(ExtraHeaderProblem::InvalidValue)
+        );
+        assert_eq!(check_extra_header("X-A", ""), Ok(()));
+    }
+}
+
 // Current external use sites:
 // - `fetch_openai_compatible_models`: the FetchAgentProviderModels handler in
 //   ai_page.rs
