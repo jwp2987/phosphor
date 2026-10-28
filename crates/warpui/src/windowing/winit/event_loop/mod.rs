@@ -702,6 +702,7 @@ impl EventLoop {
                 // something the process happened to receive at some point
                 // (jwp2987/phosphor#726: a key/menu quit can race a concurrent
                 // signal and must not inherit its re-raise).
+                log::info!("Main loop received TerminateFromSignal({signal})");
                 if let ApproveTerminateResult::Terminate =
                     self.terminate_app_requested(TerminationMode::ForceTerminate)
                 {
@@ -1027,6 +1028,9 @@ impl EventLoop {
                 }
 
                 self.callbacks.app_will_terminate();
+
+                #[cfg(windows)]
+                super::windows::session_end::notify_shutdown_complete();
 
                 // A signal-initiated quit ends the way the signal would have
                 // (jwp2987/phosphor#685); otherwise this returns. Uses this exit's

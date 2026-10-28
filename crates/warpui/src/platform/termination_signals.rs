@@ -173,79 +173,257 @@ pub(crate) fn ctrl_event_shutdown_reason(ctrl_type: u32) -> Option<i32> {
     }
 }
 
-/// What a Windows GUI window's `WM_QUERYENDSESSION` / `WM_ENDSESSION` subclass
-/// callback should do for one such message (jwp2987/phosphor#773, the GUI
-/// follow-up to the console path above, which has no equivalent window to
-/// subclass -- a console app has no HWND).
-///
-/// A winit app can own several top-level windows, and Windows sends
-/// `WM_ENDSESSION` to *every one of them* for a single real shutdown attempt --
-/// so `already_shutting_down` must be a process-wide latch the caller threads
-/// through each window's callback, not per-window state, or a two-window app
-/// would post two terminate requests for the one event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionEndAction {
-    /// `WM_QUERYENDSESSION`: tell Windows this process may need a moment to
-    /// clean up (`ShutdownBlockReasonCreate`) and allow the session to end --
-    /// this fork never vetoes a shutdown/logoff/close-all-programs from here.
-    BlockAndAllow,
-    /// The first `WM_ENDSESSION` with `wParam` true that any window has seen
-    /// since the latch was last clear: start the graceful shutdown, carrying
-    /// which of the two reasons [`ctrl_event_shutdown_reason`]'s synthetic
-    /// signal space `WM_ENDSESSION`'s `lParam` can distinguish.
-    BeginGracefulShutdown { reason_signal: i32 },
-    /// A later `WM_ENDSESSION` true while that shutdown is already in flight --
-    /// another window's copy of the same one real event, not a second attempt.
-    AlreadyShuttingDown,
-    /// `WM_ENDSESSION` with `wParam` false: a *different* application vetoed
-    /// the session end, so this one was cancelled. The caller should release
-    /// its shutdown block and clear the latch, so a later, successful attempt
-    /// still starts a shutdown instead of being mistaken for a continuation of
-    /// the cancelled one.
-    Cancelled,
+/// Prefix shared by every log line on the Windows session-end paths (the `WM_ENDSESSION` window
+/// subclass and the console control handler), so a test can grep one log for which path a
+/// logoff/restart took (jwp2987/phosphor#1072).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const SESSION_END_LOG_PREFIX: &str = "[session-end]";
+
+/// `WM_QUERYENDSESSION`/`WM_ENDSESSION` `lParam` bits (winuser.h), duplicated as plain `u32`s
+/// so the session-end state machine below builds and is unit-tested on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const ENDSESSION_CLOSEAPP: u32 = 0x0000_0001;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const ENDSESSION_CRITICAL: u32 = 0x4000_0000;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const ENDSESSION_LOGOFF: u32 = 0x8000_0000;
+
+/// Renders an end-session `lParam` for the log, e.g. `0x80000000 (LOGOFF)`. `0` means a
+/// shutdown or restart, which Windows does not distinguish.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn describe_end_session_flags(lparam: u32) -> String {
+    let names: Vec<&str> = [
+        (ENDSESSION_LOGOFF, "LOGOFF"),
+        (ENDSESSION_CLOSEAPP, "CLOSEAPP"),
+        (ENDSESSION_CRITICAL, "CRITICAL"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| lparam & bit != 0)
+    .map(|(_, name)| name)
+    .collect();
+    if names.is_empty() {
+        format!("{lparam:#010x} (shutdown/restart)")
+    } else {
+        format!("{lparam:#010x} ({})", names.join("|"))
+    }
 }
 
-/// The pure decision behind [`SessionEndAction`]: given which message arrived
-/// (`is_query_end_session` for `WM_QUERYENDSESSION`, else `WM_ENDSESSION`),
-/// `WM_ENDSESSION`'s own `wParam`/`lParam` (`session_ending`, `is_logoff`), and
-/// whether a shutdown this message could be part of has already been started
-/// (`already_shutting_down`), decide what to do. Free of the `windows` crate --
-/// like [`ctrl_event_shutdown_reason`] -- so it builds and is unit-tested on
-/// every platform, not only Windows; its only non-test caller is
-/// `windowing::winit::windows::session_end`'s subclass procedure.
-///
-/// `is_logoff` maps to [`ctrl_event_shutdown_reason`]'s `CTRL_LOGOFF_EVENT` (5),
-/// otherwise to its `CTRL_SHUTDOWN_EVENT` (6) -- `WM_ENDSESSION`'s `lParam` has
-/// no flag that distinguishes an actual shutdown/restart from the user picking
-/// "Close all programs and shut down" in the Shutdown Event Tracker, so both
-/// collapse to the one reason code already used for every non-logoff console
-/// close/shutdown event. Reusing the same numbers means the GUI's
-/// `WM_ENDSESSION` path and the headless/console `CTRL_*` path exit with the
-/// same conventional status for the same real-world event.
+/// The name of a console control event, for the log.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn session_end_action(
-    is_query_end_session: bool,
-    session_ending: bool,
-    is_logoff: bool,
-    already_shutting_down: bool,
-) -> SessionEndAction {
+pub(crate) fn ctrl_event_name(ctrl_type: u32) -> &'static str {
+    match ctrl_type {
+        0 => "CTRL_C_EVENT",
+        1 => "CTRL_BREAK_EVENT",
+        2 => "CTRL_CLOSE_EVENT",
+        5 => "CTRL_LOGOFF_EVENT",
+        6 => "CTRL_SHUTDOWN_EVENT",
+        _ => "unknown console control event",
+    }
+}
+
+/// One thing that happened to the Windows GUI session-end path (jwp2987/phosphor#773,
+/// jwp2987/phosphor#1072): a window message, or the outcome of an effect the previous step asked
+/// for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum SessionEndInput {
+    QueryEndSession {
+        lparam: u32,
+    },
+    EndSession {
+        session_ending: bool,
+        lparam: u32,
+    },
+    /// The [`SessionEndEffect::ArmDeadline`] watchdog thread is running.
+    DeadlineArmed,
+    /// The [`SessionEndEffect::ArmDeadline`] watchdog thread could not be spawned.
+    DeadlineUnavailable,
+    /// [`SessionEndEffect::RequestTerminate`] could not reach the main loop.
+    TerminateUndeliverable,
+    /// `app_will_terminate` returned on the main loop.
+    ShutdownCompleted,
+    /// The watchdog's deadline passed.
+    DeadlineElapsed,
+}
+
+/// Where the process is in a session end. Process-wide, not per-window: Windows sends
+/// `WM_ENDSESSION` to *every* top-level window this process owns for one real session end, and
+/// only the first may start a shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum SessionEndState {
+    Idle,
+    /// `WM_ENDSESSION(TRUE)` seen; the block reason is registered and the watchdog is being
+    /// armed. The terminate request is only posted once the watchdog is known to be running, so
+    /// the graceful shutdown never runs unbounded.
+    Arming {
+        reason_signal: i32,
+    },
+    /// The terminate request is posted and the watchdog is armed.
+    ShuttingDown {
+        reason_signal: i32,
+    },
+    /// The shutdown completed or is being cut short; the process is about to exit.
+    Exiting {
+        reason_signal: i32,
+    },
+}
+
+/// A side effect the caller performs, in order, for one [`session_end_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum SessionEndEffect {
+    /// Reply `TRUE` to `WM_QUERYENDSESSION`.
+    AllowSessionEnd,
+    CreateBlockReason,
+    DestroyBlockReason,
+    /// Spawn the deadline watchdog, then feed back [`SessionEndInput::DeadlineArmed`] or
+    /// [`SessionEndInput::DeadlineUnavailable`].
+    ArmDeadline {
+        deadline: Duration,
+        exit_code: i32,
+    },
+    /// Post `TerminateFromSignal(signal)`; feed back [`SessionEndInput::TerminateUndeliverable`]
+    /// if the main loop is gone.
+    RequestTerminate {
+        signal: i32,
+    },
+    HardExit {
+        exit_code: i32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct SessionEndStep {
+    pub(crate) next: SessionEndState,
+    pub(crate) effects: Vec<SessionEndEffect>,
+}
+
+/// The pure decision behind the `WM_QUERYENDSESSION`/`WM_ENDSESSION` window subclass. Free of
+/// the `windows` crate -- like [`ctrl_event_shutdown_reason`] -- so it builds and is unit-tested
+/// on every platform.
+///
+/// # Block-reason lifetime (jwp2987/phosphor#1072)
+///
+/// `WM_QUERYENDSESSION` is answered `TRUE` immediately, with **no** block reason. Microsoft's
+/// guidance ("Shutdown Changes for Windows Vista", and the archived "Application Shutdown Changes
+/// in Windows Vista"): "Respond to WM_QUERYENDSESSION as quickly as possible and postpone cleanup
+/// activities until processing the WM_ENDSESSION message"; `ShutdownBlockReasonCreate` is to be
+/// called "as [apps] begin an operation that cannot be interrupted" and destroyed "when the
+/// operation has completed"; and "Applications that return TRUE to WM_QUERYENDSESSION will be
+/// closed at shutdown, regardless of whether they have used the API". A reason registered at
+/// query time therefore buys nothing, but while it is registered Windows lists the app on its
+/// full-screen "apps are preventing shutdown" UI whenever *any* app blocks -- which then waits on
+/// the user. Phosphor has no uninterruptible work to protect at query time.
+///
+/// The reason is registered only from the first `WM_ENDSESSION(TRUE)` until `app_will_terminate`
+/// completes (destroyed) or the deadline fires (released by process exit -- the watchdog thread
+/// cannot destroy it, as the call must come from the window's own thread). It is still worth
+/// registering then: the main loop hides every window before `app_will_terminate`, and the same
+/// article says Windows terminates apps with "no visible top-level windows" that take over 5s
+/// on `WM_ENDSESSION`, "However, if an application with no visible top-level windows uses the
+/// new API ... Windows Vista will not automatically terminate it". `wParam = FALSE` means another
+/// app vetoed the session end; any reason is destroyed so no stale string is shown next time.
+///
+/// `ENDSESSION_LOGOFF` maps to [`ctrl_event_shutdown_reason`]'s `CTRL_LOGOFF_EVENT` (5), anything
+/// else to its `CTRL_SHUTDOWN_EVENT` (6), so this path and the console `CTRL_*` path exit with
+/// the same conventional status for the same real-world event.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn session_end_step(state: SessionEndState, input: SessionEndInput) -> SessionEndStep {
+    use SessionEndEffect as Effect;
+    use SessionEndState as State;
+
     const CTRL_LOGOFF_EVENT: i32 = 5;
     const CTRL_SHUTDOWN_EVENT: i32 = 6;
 
-    if is_query_end_session {
-        return SessionEndAction::BlockAndAllow;
-    }
-    if !session_ending {
-        return SessionEndAction::Cancelled;
-    }
-    if already_shutting_down {
-        return SessionEndAction::AlreadyShuttingDown;
-    }
-    SessionEndAction::BeginGracefulShutdown {
-        reason_signal: if is_logoff {
-            CTRL_LOGOFF_EVENT
-        } else {
-            CTRL_SHUTDOWN_EVENT
+    let stay = |effects| SessionEndStep {
+        next: state,
+        effects,
+    };
+    let reason_signal = match state {
+        State::Idle => None,
+        State::Arming { reason_signal }
+        | State::ShuttingDown { reason_signal }
+        | State::Exiting { reason_signal } => Some(reason_signal),
+    };
+    let exit_now = |reason_signal: i32, mut effects: Vec<SessionEndEffect>| {
+        effects.push(Effect::HardExit {
+            exit_code: exit_code_for_signal(reason_signal),
+        });
+        SessionEndStep {
+            next: State::Exiting { reason_signal },
+            effects,
+        }
+    };
+
+    match input {
+        SessionEndInput::QueryEndSession { .. } => stay(vec![Effect::AllowSessionEnd]),
+        SessionEndInput::EndSession {
+            session_ending: true,
+            lparam,
+        } => match state {
+            State::Idle => {
+                let reason_signal = if lparam & ENDSESSION_LOGOFF != 0 {
+                    CTRL_LOGOFF_EVENT
+                } else {
+                    CTRL_SHUTDOWN_EVENT
+                };
+                SessionEndStep {
+                    next: State::Arming { reason_signal },
+                    effects: vec![
+                        Effect::CreateBlockReason,
+                        Effect::ArmDeadline {
+                            deadline: SHUTDOWN_DEADLINE,
+                            exit_code: exit_code_for_signal(reason_signal),
+                        },
+                    ],
+                }
+            }
+            State::Arming { .. } | State::ShuttingDown { .. } | State::Exiting { .. } => {
+                stay(vec![])
+            }
+        },
+        SessionEndInput::EndSession {
+            session_ending: false,
+            ..
+        } => match state {
+            State::Idle => stay(vec![Effect::DestroyBlockReason]),
+            // Windows never sends FALSE after TRUE for one session end; and a posted terminate
+            // request cannot be recalled, so the watchdog must stay the bound.
+            State::Arming { .. } | State::ShuttingDown { .. } | State::Exiting { .. } => {
+                stay(vec![])
+            }
+        },
+        SessionEndInput::DeadlineArmed => match state {
+            State::Arming { reason_signal } => SessionEndStep {
+                next: State::ShuttingDown { reason_signal },
+                effects: vec![Effect::RequestTerminate {
+                    signal: reason_signal,
+                }],
+            },
+            State::Idle | State::ShuttingDown { .. } | State::Exiting { .. } => stay(vec![]),
+        },
+        SessionEndInput::DeadlineUnavailable | SessionEndInput::TerminateUndeliverable => {
+            match state {
+                State::Arming { reason_signal } | State::ShuttingDown { reason_signal } => {
+                    exit_now(reason_signal, vec![Effect::DestroyBlockReason])
+                }
+                State::Idle | State::Exiting { .. } => stay(vec![]),
+            }
+        }
+        SessionEndInput::ShutdownCompleted => match state {
+            State::Arming { reason_signal } | State::ShuttingDown { reason_signal } => {
+                SessionEndStep {
+                    next: State::Exiting { reason_signal },
+                    effects: vec![Effect::DestroyBlockReason],
+                }
+            }
+            State::Idle | State::Exiting { .. } => stay(vec![]),
+        },
+        SessionEndInput::DeadlineElapsed => match reason_signal {
+            Some(reason_signal) => exit_now(reason_signal, vec![]),
+            None => stay(vec![]),
         },
     }
 }
@@ -300,6 +478,19 @@ pub(crate) fn run_deadline_watchdog(
         deadline.as_secs()
     );
     exit(exit_code);
+}
+
+/// Spawns a thread that runs [`run_deadline_watchdog`] with the real `sleep`, reporting whether
+/// the watchdog is actually running so a caller can choose its own bound when it is not.
+pub(crate) fn spawn_deadline_watchdog(
+    deadline: Duration,
+    exit_code: i32,
+    exit: impl FnOnce(i32) + Send + 'static,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("shutdown-deadline".to_string())
+        .spawn(move || run_deadline_watchdog(deadline, exit_code, std::thread::sleep, exit))
+        .map(drop)
 }
 
 /// Ends the process now with `exit_code`, without running `atexit` handlers or
@@ -552,11 +743,7 @@ impl<F: Fn(i32) -> bool> ShutdownHooks for ProcessHooks<F> {
     }
 
     fn arm_deadline(&self, deadline: Duration, exit_code: i32) {
-        let exit = self.exit;
-        let spawned = std::thread::Builder::new()
-            .name("shutdown-deadline".to_string())
-            .spawn(move || run_deadline_watchdog(deadline, exit_code, std::thread::sleep, exit));
-        if let Err(err) = spawned {
+        if let Err(err) = spawn_deadline_watchdog(deadline, exit_code, self.exit) {
             log::warn!("Failed to spawn the shutdown deadline watchdog: {err}");
         }
     }
@@ -666,8 +853,8 @@ pub(crate) mod console {
     use windows::core::BOOL;
 
     use super::{
-        ProcessHooks, SHUTDOWN_DEADLINE, ShutdownHooks, ShutdownState, ctrl_event_shutdown_reason,
-        handle_signal,
+        ProcessHooks, SESSION_END_LOG_PREFIX, SHUTDOWN_DEADLINE, ShutdownHooks, ShutdownState,
+        ctrl_event_name, ctrl_event_shutdown_reason, handle_signal,
     };
 
     /// Which signals have been seen so far (for escalation) and how to post a
@@ -701,11 +888,14 @@ pub(crate) mod console {
     }
 
     /// Blocks the calling thread until [`notify_shutdown_complete`] runs or
-    /// `deadline` elapses, whichever is first.
-    fn wait_for_shutdown_or_deadline(deadline: Duration) {
+    /// `deadline` elapses, whichever is first. Returns whether the shutdown completed.
+    fn wait_for_shutdown_or_deadline(deadline: Duration) -> bool {
         let (lock, cvar) = shutdown_complete();
         let done = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _ = cvar.wait_timeout_while(done, deadline, |done| !*done);
+        match cvar.wait_timeout_while(done, deadline, |done| !*done) {
+            Ok((done, _)) => *done,
+            Err(poisoned) => *poisoned.into_inner().0,
+        }
     }
 
     /// The `SetConsoleCtrlHandler` callback. Runs on its own OS thread, never
@@ -725,6 +915,10 @@ pub(crate) mod console {
         let Some(signal) = ctrl_event_shutdown_reason(ctrl_type) else {
             return FALSE;
         };
+        log::info!(
+            "{SESSION_END_LOG_PREFIX} console control event {} ({ctrl_type}) received",
+            ctrl_event_name(ctrl_type)
+        );
         let (Some(state), Some(hooks)) = (STATE.get(), HOOKS.get()) else {
             // `install` was never called, so this handler was never registered
             // either; unreachable in practice.
@@ -741,7 +935,26 @@ pub(crate) mod console {
         // `handle_signal` (through `hooks.exit`, which never returns); this
         // wait only matters for the first event of a shutdown that is still in
         // progress.
-        wait_for_shutdown_or_deadline(SHUTDOWN_DEADLINE);
+        log::info!(
+            "{SESSION_END_LOG_PREFIX} console handler: graceful shutdown begun; waiting up to {}s",
+            SHUTDOWN_DEADLINE.as_secs()
+        );
+        // If the watchdog failed to spawn, this wait is still the bound: Windows ends the process
+        // once this handler returns for close/logoff/shutdown.
+        let started = Instant::now();
+        if wait_for_shutdown_or_deadline(SHUTDOWN_DEADLINE) {
+            log::info!(
+                "{SESSION_END_LOG_PREFIX} console handler: graceful shutdown completed in {}ms",
+                started.elapsed().as_millis()
+            );
+        } else {
+            log::warn!(
+                "{SESSION_END_LOG_PREFIX} console handler: deadline ({}s) elapsed before the \
+                 graceful shutdown completed; returning to Windows",
+                SHUTDOWN_DEADLINE.as_secs()
+            );
+        }
+        log::logger().flush();
         TRUE
     }
 
