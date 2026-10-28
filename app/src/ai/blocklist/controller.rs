@@ -4690,15 +4690,31 @@ impl BlocklistAIController {
                                 total: aggregate_token_count,
                                 ..Default::default()
                             };
-                            let overflowing =
-                                crate::ai::byop_compaction::is_overflow(&cfg, counts, model_limit);
-                            if overflowing {
-                                log::info!(
-                                    "[byop-compaction] auto overflow detected: tokens={aggregate_token_count} usable={} requested_tool_calls={requested_tool_calls}",
-                                    crate::ai::byop_compaction::usable(&cfg, model_limit)
-                                );
+                            // #1090: on a small window most of the count is the fixed part of
+                            // every request (system prompt, tools); summarizing a short history
+                            // can't get under the threshold, so that is not an overflow.
+                            let history_tokens = BlocklistAIHistoryModel::as_ref(ctx)
+                                .conversation(&conversation_id)
+                                .map_or(0, crate::ai::byop_compaction::compactable_history_tokens);
+                            let usable = crate::ai::byop_compaction::usable(&cfg, model_limit);
+                            let verdict = crate::ai::byop_compaction::overflow_verdict(
+                                &cfg,
+                                counts,
+                                model_limit,
+                                history_tokens,
+                            );
+                            match verdict {
+                                crate::ai::byop_compaction::OverflowVerdict::Under => {}
+                                crate::ai::byop_compaction::OverflowVerdict::Over => log::info!(
+                                    "[byop-compaction] auto overflow detected: tokens={aggregate_token_count} usable={usable} window={} history~{history_tokens} requested_tool_calls={requested_tool_calls}",
+                                    model_limit.context
+                                ),
+                                crate::ai::byop_compaction::OverflowVerdict::OverButCompactionCannotHelp => log::info!(
+                                    "[byop-compaction] over the threshold but not compacting: tokens={aggregate_token_count} usable={usable} window={} history~{history_tokens} (a summary would not free enough)",
+                                    model_limit.context
+                                ),
                             }
-                            Some(overflowing)
+                            Some(verdict.compacts())
                         } else {
                             None
                         };

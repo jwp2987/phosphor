@@ -2068,6 +2068,24 @@ pub(crate) fn build_chat_request_for_test(
     )
 }
 
+/// Test-only: [`build_chat_request_for_model`] with
+/// [`byop_compaction::overflow::ModelLimit::FALLBACK`] as the model's limits.
+#[cfg(test)]
+fn build_chat_request(
+    params: &RequestParams,
+    force_echo_reasoning: bool,
+    api_type: AgentProviderApiType,
+    attachment_caps: attachment_caps::AttachmentCaps,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
+    build_chat_request_for_model(
+        params,
+        force_echo_reasoning,
+        api_type,
+        attachment_caps,
+        byop_compaction::overflow::ModelLimit::FALLBACK,
+    )
+}
+
 /// Translates RequestParams into a genai `ChatRequest` (including system + messages +
 /// tools).
 ///
@@ -2075,11 +2093,16 @@ pub(crate) fn build_chat_request_for_test(
 /// When true, every assistant message is forced to carry reasoning_content (empty-string
 /// placeholder), fixing thinking-mode endpoints with tightened validation such as
 /// DeepSeek-v4-flash / Kimi.
-fn build_chat_request(
+///
+/// `model_limit`: the request's model's token limits. They size the tail a summarization
+/// request keeps back: `algorithm::select`'s preserve-recent budget scales with the model's
+/// usable window (#1090).
+fn build_chat_request_for_model(
     params: &RequestParams,
     force_echo_reasoning: bool,
     api_type: AgentProviderApiType,
     attachment_caps: attachment_caps::AttachmentCaps,
+    model_limit: byop_compaction::overflow::ModelLimit,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
@@ -2281,7 +2304,9 @@ fn build_chat_request(
             })
             .collect();
         let cfg = byop_compaction::CompactionConfig::default();
-        let model_limit = byop_compaction::overflow::ModelLimit::FALLBACK;
+        // The model's own limits, not always `ModelLimit::FALLBACK` (#1090): the fallback's
+        // 8k tail budget is most of a small window, so a compaction kept nearly everything
+        // and the conversation stayed over the threshold.
         let result = byop_compaction::algorithm::select(&views, &cfg, model_limit, |slice| {
             slice
                 .iter()
@@ -6588,11 +6613,15 @@ pub async fn generate_byop_output(
         } else {
             api_type
         };
-    let chat_req = build_chat_request(
+    let chat_req = build_chat_request_for_model(
         &params,
         force_echo_reasoning,
         shaping_api_type,
         attachment_caps,
+        byop_compaction::config::model_limit_from_parts(
+            context_window.unwrap_or(0),
+            max_output_tokens,
+        ),
     )?;
     let conversation_id = params
         .conversation_token

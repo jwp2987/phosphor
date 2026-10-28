@@ -85,7 +85,7 @@ pub struct WarpMessageView<'a> {
 }
 
 /// Estimates a single message's token usage — sums visible text character count / 4.
-fn estimate_message(msg: &api::Message) -> usize {
+pub(super) fn estimate_message(msg: &api::Message) -> usize {
     use super::token::estimate;
     use api::message::Message as M;
     let chars = msg

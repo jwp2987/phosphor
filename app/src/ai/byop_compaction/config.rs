@@ -27,7 +27,8 @@ pub struct CompactionConfig {
     pub tail_turns: usize,
     /// Force-overrides `preserve_recent_budget` (tokens). None uses opencode's formula.
     pub preserve_recent_tokens: Option<usize>,
-    /// Force-overrides the reserved buffer (tokens) in `usable()`. None takes min(20_000, max_output).
+    /// Force-overrides the reserved buffer (tokens) in `usable()` when the model has a separate
+    /// input limit. None takes min(20_000, max_output).
     pub reserved: Option<usize>,
     /// A model reference dedicated to summarization (optional). If set, it's used; otherwise falls back to the conversation's current model.
     pub compaction_model: Option<CompactionModelRef>,
@@ -55,11 +56,15 @@ impl Default for CompactionConfig {
 impl CompactionConfig {
     /// Computes the actual preserve_recent_budget — matches opencode
     /// `compaction.ts:134-139`:
-    /// `cfg.preserve_recent_tokens ?? min(MAX, max(MIN, floor(usable * 0.25)))`
+    /// `cfg.preserve_recent_tokens ?? min(MAX, max(MIN, floor(usable * 0.25)))`,
+    /// and never more than half of `usable` (#1090): opencode's 2k floor alone would keep a
+    /// tail bigger than a tiny window's whole budget. Changes nothing from `usable >= 4_000`.
     pub fn preserve_recent_budget(&self, usable_tokens: usize) -> usize {
         use super::consts::{MAX_PRESERVE_RECENT_TOKENS, MIN_PRESERVE_RECENT_TOKENS};
         self.preserve_recent_tokens.unwrap_or_else(|| {
-            MAX_PRESERVE_RECENT_TOKENS.min(MIN_PRESERVE_RECENT_TOKENS.max(usable_tokens / 4))
+            MAX_PRESERVE_RECENT_TOKENS
+                .min(MIN_PRESERVE_RECENT_TOKENS.max(usable_tokens / 4))
+                .min(usable_tokens / 2)
         })
     }
 
@@ -146,7 +151,8 @@ impl CompactionConfig {
 ///   takes the `context - max_output` branch (`overflow.rs:80`), which ignores `cfg.reserved`
 ///   entirely — so a literal 0 leaves no headroom and the trigger only fires once the prompt
 ///   already fills the whole window, too late to fit a response. 20k matches the cap opencode
-///   puts on `reserved`.
+///   puts on `reserved`; `ModelLimit::output_reserve` caps it at a quarter of the window, so
+///   a small window is not left with nothing (#1090).
 ///
 /// `input` stays 0 because `AgentProviderModel` has no separate input limit to report; that
 /// selects the `context - max_output` branch, which is the correct reading of a single

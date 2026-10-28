@@ -1700,8 +1700,8 @@ fn stream_done(prompt_tokens: u32) -> warp_multi_agent_api::response_event::Stre
 }
 
 /// #1059 end to end through the BYOP path, on the issue's scenario: a provider with a
-/// 32_000-token window, a step reporting 20_000 prompt tokens that asks for two (parallel)
-/// tool calls.
+/// 32_000-token window, a step reporting 26_000 prompt tokens that asks for two (parallel)
+/// tool calls (the issue's 20_000 is under the #1090 threshold of 24_000).
 ///
 /// 1. The real stream-finished wiring (`handle_response_stream_finished`, reading the tool
 ///    calls off the stream's own exchange and the window off the configured model) defers
@@ -1932,7 +1932,14 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                                                     "q1",
                                                     api::message::Message::UserQuery(
                                                         api::message::UserQuery {
-                                                            query: "read both files".to_owned(),
+                                                            // ~6_000 estimated tokens of
+                                                            // pasted context: history a
+                                                            // summary can replace (#1090).
+                                                            query: format!(
+                                                                "read both files{}",
+                                                                " with this pasted context in mind"
+                                                                    .repeat(720)
+                                                            ),
                                                             ..Default::default()
                                                         },
                                                     ),
@@ -1957,11 +1964,13 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
         let root_task_id = TaskId::new("root".to_owned());
 
         controller.update(&mut app, |controller, ctx| {
-            // 1. The step finishes over the threshold (20_000 of 32_000 with the default
-            //    reserve) asking for tool calls.
+            // 1. The step finishes over the threshold asking for tool calls: 26_000 of
+            //    32_000, where the default reserve (a quarter of the window, #1090) puts the
+            //    threshold at 24_000, and the ~6_000-token instruction is history a summary
+            //    can replace (26_000 - 6_000 + a 2_000 summary is back under 24_000).
             controller.handle_response_stream_finished(
                 &step_stream,
-                stream_done(20_000),
+                stream_done(26_000),
                 conversation_id,
                 /*did_request_contain_user_query*/ true,
                 /*summarize_overflow*/ None,

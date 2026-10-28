@@ -171,6 +171,24 @@ pub fn commit_summarization_for_stream(
     true
 }
 
+/// Estimated tokens of the history a summary could replace: every message of `conversation`
+/// the next request still sends verbatim, i.e. not hidden behind an earlier compaction. The
+/// earlier summary itself is left out: a new summary carries it forward
+/// (`<previous-summary>`), so it does not shrink. Feeds [`super::overflow_verdict`] (#1090).
+pub fn compactable_history_tokens(conversation: &AIConversation) -> usize {
+    let all_msgs = conversation.all_linearized_messages();
+    let ids: std::collections::HashSet<&str> = all_msgs.iter().map(|m| m.id.as_str()).collect();
+    let hidden = conversation
+        .compaction_state
+        .hidden_message_ids_where(|id| ids.contains(id));
+    all_msgs
+        .iter()
+        .copied()
+        .filter(|m| !hidden.contains(&m.id))
+        .map(super::message_view::estimate_message)
+        .sum()
+}
+
 /// The message the summary is shown in place of (`CompletedCompaction::user_msg_id`): the
 /// projection hides it and inserts the summary at its position, so it must be a message the
 /// summary actually covers — one of `head_message_ids` — and the summary then sits where the
