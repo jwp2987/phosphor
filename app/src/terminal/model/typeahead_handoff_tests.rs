@@ -1051,3 +1051,108 @@ fn an_eof_flushes_a_held_enter_ahead_of_itself_but_other_signals_drop_it() {
         None
     );
 }
+
+/// #1089: keys typed into a running command the hand-off does not own (here a queued command,
+/// so the editor owned input when it started) are taken over like typeahead for an editor
+/// command: counted, reported by a request written behind all of them, and inserted literally
+/// by the editor until the report is in.
+#[test]
+fn keys_for_a_command_the_handoff_does_not_own_are_adopted() {
+    let mut handoff = TypeaheadHandoff::default();
+    assert!(handoff.adopt_untracked_typeahead());
+    assert!(handoff.routes_keys_to_pty());
+    assert!(
+        handoff.editor_text_precedes_report(),
+        "the editor cannot see the line the report will put in front of its text"
+    );
+    assert_eq!(
+        type_and_flush(&mut handoff, b"echo TY$((20+1))-$("),
+        UserBytesRoute::WriteCounted
+    );
+    assert!(
+        handoff.holds_queued_writes(),
+        "a queued command's kill prefix must not wipe the unreported line"
+    );
+    // Before the command's own prompt nothing can be asked for: the line may still be read by
+    // the command.
+    assert_eq!(
+        handoff.on_line_editor_active(false, true),
+        ActiveDecision::Wait {
+            activity_generation: handoff.activity_generation,
+        }
+    );
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.editor_text_precedes_report());
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert!(!handoff.editor_text_precedes_report());
+}
+
+/// #1089: the legacy request goes out whenever the line editor is active, so it can be in the
+/// tty ahead of keys the user types afterwards (the remote bootstrap tail of #1085). Those keys
+/// are adopted: the legacy report that answers the early request does not end ownership
+/// (it is stashed), and a new request written behind them collects the rest of the line --
+/// nothing stays in the shell's line to prefix the next command (`)exit`).
+#[test]
+fn keys_written_behind_a_legacy_request_are_collected_by_a_second_request() {
+    let mut handoff = TypeaheadHandoff::default();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Legacy
+    );
+    assert!(handoff.adopt_untracked_typeahead());
+    assert_eq!(
+        type_and_flush(&mut handoff, b")"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::Stash,
+        "the early report is kept for the front of the line, not inserted ahead of `)`"
+    );
+    assert!(handoff.holds_queued_writes());
+    handoff.on_precmd();
+    assert!(handoff.needs_request_at_prompt());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert!(!handoff.holds_queued_writes());
+}
+
+/// #1089: an Enter typed in the editor while the adopted line's report is outstanding waits
+/// for it, so the submitted line is the whole line, in typed order.
+#[test]
+fn an_editor_enter_waits_for_the_report_of_an_adopted_line() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.age_last_activity_for_test();
+    assert!(handoff.adopt_untracked_typeahead());
+    type_and_flush(&mut handoff, b"echo $(da");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.defer_enter());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+}
+
+/// #1089: only an editor-owned hand-off adopts; one that already owns the keys, or waits for a
+/// report, keeps its own counts.
+#[test]
+fn adoption_never_disturbs_a_handoff_that_is_already_engaged() {
+    let mut owned = after_submit();
+    type_and_flush(&mut owned, b"ls");
+    let before = owned.state().clone();
+    assert!(!owned.adopt_untracked_typeahead());
+    assert_eq!(owned.state(), &before);
+
+    let mut awaiting = awaiting_report();
+    assert!(!awaiting.adopt_untracked_typeahead());
+    assert_eq!(awaiting.state(), &HandoffState::AwaitingReport);
+}

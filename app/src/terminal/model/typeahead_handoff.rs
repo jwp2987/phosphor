@@ -457,6 +457,35 @@ impl TypeaheadHandoff {
         false
     }
 
+    /// The user is about to write keys to a running command the hand-off does not own (one the
+    /// queued-command panel or an env-var collection wrote, or any command started while the
+    /// editor owned input) (#1089). Whatever the command leaves unread is in the shell's line at
+    /// the next prompt, so the hand-off takes it over exactly as it does a command submitted from
+    /// the editor: the keys are counted, the request is written only behind every one of them,
+    /// and the editor inserts what they typed literally until the report is in.
+    ///
+    /// Left to the legacy path, those keys were never counted. The legacy request could already
+    /// be in the tty ahead of them (it goes out whenever the line editor is active), so the
+    /// shell's report missed them and they stayed in its line, to prefix the next line run there
+    /// (`)exit`) or be killed by the next command's kill prefix. Keys the editor took meanwhile
+    /// were auto-paired, and the late report was placed in front of them with the cursor moved to
+    /// the end: `$(uname -n)` became `$()uname -n)`.
+    ///
+    /// The command's own Enter is counted as unanswered, so its prompt (not an earlier one) is
+    /// the one that hands input back. Returns whether ownership changed; it only does from
+    /// [`HandoffState::EditorOwned`].
+    pub fn adopt_untracked_typeahead(&mut self) -> bool {
+        if self.state != HandoffState::EditorOwned {
+            return false;
+        }
+        self.state = HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 1,
+            precmds_seen: 0,
+        };
+        true
+    }
+
     /// Hands input back to the editor without a request when nothing the user typed can be in
     /// the shell's line. Called on the main thread once a prompt was seen, after the editor has
     /// been reinitialized for the new block. Returns whether the editor took over.

@@ -10455,3 +10455,127 @@ fn multiline_confirmation_ignores_a_set_grid_mode_when_the_pty_flag_is_clear() {
         });
     });
 }
+
+/// #1089: the cursor arithmetic of a typeahead insertion. A cursor in the user's own text keeps
+/// its place in that text, wherever the replaced front ends; one inside earlier typeahead is left
+/// where the user put it.
+#[test]
+fn typeahead_prefix_cursor_arithmetic() {
+    assert_eq!(typeahead_prefix_byte_len("", 0), 0);
+    assert_eq!(typeahead_prefix_byte_len("ech$(", 3), 3);
+    assert_eq!(typeahead_prefix_byte_len("é$(", 1), 2, "multibyte front");
+    assert_eq!(typeahead_prefix_byte_len("ec", 5), 2);
+    // Empty editor, first report: the cursor ends after it.
+    assert_eq!(cursor_after_typeahead_prefix(0, 0, 9), Some(9));
+    // `$()` with the cursor between the parens, then the report in front: still between them.
+    assert_eq!(cursor_after_typeahead_prefix(2, 0, 17), Some(19));
+    // A second report grows the front from 3 to 7 bytes; the user's cursor moves by 4.
+    assert_eq!(cursor_after_typeahead_prefix(5, 3, 7), Some(9));
+    // Inside the earlier typeahead: untouched.
+    assert_eq!(cursor_after_typeahead_prefix(1, 3, 7), None);
+}
+
+fn cursor_byte_offset(input: &ViewHandle<Input>, app: &App) -> usize {
+    input.read(app, |input, ctx| {
+        input
+            .editor
+            .as_ref(ctx)
+            .start_byte_index_of_first_selection(ctx)
+            .as_usize()
+    })
+}
+
+fn place_cursor(input: &ViewHandle<Input>, app: &mut App, byte: usize) {
+    input.update(app, |input, ctx| {
+        input.editor.update(ctx, |editor, ctx| {
+            let at = ByteOffset::from(byte);
+            editor.select_ranges_by_byte_offset([at..at], ctx);
+        });
+    });
+}
+
+/// #1089: what the editor received while a command finished goes behind the shell's report,
+/// and the cursor stays where the user's last keystroke left it -- not at the buffer end, which
+/// put the rest of `$(uname -n)` behind the closer the editor had auto-inserted
+/// (`$()uname -n)`). Covers both the legacy and the hand-off insertion, brackets and quotes.
+#[test]
+fn typeahead_report_goes_in_front_of_editor_text_and_keeps_the_cursor() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        // (report, editor text, cursor in the editor text, expected line, expected cursor)
+        let cases: &[(&str, &str, usize, &str, usize)] = &[
+            // The #1085 line: `$(` auto-paired in the editor, cursor between the parens.
+            ("echo TY$((20+1))-", "$()", 2, "echo TY$((20+1))-$()", 19),
+            // The report holds the opener; the editor the rest, cursor at its end.
+            ("echo $(da", "te)", 3, "echo $(date)", 12),
+            // Quotes split across the two.
+            (
+                "echo \"a b",
+                " c\" > /dev/null",
+                15,
+                "echo \"a b c\" > /dev/null",
+                24,
+            ),
+            // The user moved the cursor to the start of their own text.
+            ("ls ", "-la", 0, "ls -la", 3),
+            // Nothing reached the editor.
+            ("exit", "", 0, "exit", 4),
+        ];
+        for legacy in [true, false] {
+            for (report, editor_text, cursor, expected, expected_cursor) in cases {
+                input.update(&mut app, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.replace_buffer_content(editor_text, ctx);
+                });
+                place_cursor(&input, &mut app, *cursor);
+                input.update(&mut app, |input, ctx| {
+                    if legacy {
+                        input.insert_typeahead_text(CharOffset::from(0), report, ctx);
+                    } else {
+                        input.insert_handoff_typeahead_text(CharOffset::from(0), report, ctx);
+                    }
+                });
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        *expected,
+                        "legacy={legacy} report={report:?} editor={editor_text:?}"
+                    );
+                });
+                assert_eq!(
+                    cursor_byte_offset(&input, &app),
+                    *expected_cursor,
+                    "legacy={legacy} report={report:?} editor={editor_text:?}"
+                );
+            }
+        }
+
+        // A second report for the same line replaces the first one's text at the front, adds the
+        // rest, and leaves the user's text and cursor in place relative to it (#1085's `)` that
+        // was written behind the first request comes back with the second).
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(CharOffset::from(0), "echo $(uname -n", ctx);
+            input.system_insert(" && exit", ctx);
+        });
+        let cursor = cursor_byte_offset(&input, &app);
+        assert_eq!(cursor, "echo $(uname -n && exit".len());
+        input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(
+                CharOffset::from("echo $(uname -n".chars().count()),
+                "echo $(uname -n)",
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo $(uname -n) && exit");
+        });
+        assert_eq!(cursor_byte_offset(&input, &app), cursor + 1);
+    });
+}
