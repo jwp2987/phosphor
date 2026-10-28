@@ -16299,10 +16299,28 @@ fn ssh_connect_gate_transitions() {
     assert!(gate.drops_keys(false));
     assert!(!gate.should_release(t0 + Duration::from_secs(1), false));
     assert!(gate.should_release(t0 + SSH_CONNECT_POST_BLOCK_GRACE, false));
-    // Announced session, then gone: released.
+    // Announced session, then gone (bootstrapped, or exited): held until the remote shell's
+    // first prompt (#1085). Releasing at `Bootstrapped` let keys typed while the bootstrap was
+    // still finishing reach the remote tty as typeahead, which came back split at the prompt.
     let mut gate = SshConnectGate::new(t0);
     assert!(!gate.should_release(t0, true));
+    assert!(!gate.should_release(t0, false));
+    gate.output_seen = true;
+    assert!(
+        gate.drops_keys(false),
+        "the bootstrap tail drops keys even after the MOTD was printed"
+    );
+    assert!(!gate.drops_keys(true), "full-screen programs never hold");
+    gate.first_prompt_seen = true;
     assert!(gate.should_release(t0, false));
+    // A remote whose first prompt never comes is bounded by the first-prompt grace, counted from
+    // the end of the bootstrap.
+    let mut gate = SshConnectGate::new(t0);
+    let bootstrapped = t0 + Duration::from_millis(500);
+    assert!(!gate.should_release(t0, true));
+    assert!(!gate.should_release(bootstrapped, false));
+    assert!(!gate.should_release(bootstrapped + Duration::from_secs(1), false));
+    assert!(gate.should_release(bootstrapped + SSH_CONNECT_FIRST_PROMPT_GRACE, false));
     // Failure releases at once; so does the ceiling.
     let mut gate = SshConnectGate::new(t0);
     gate.note_block_completed(t0, false);
@@ -16472,6 +16490,109 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             assert!(view.ssh_setup_drop_notified);
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1085 (#983 window 5): the remote session is announced and finishes bootstrapping
+/// (`Bootstrapped`), but its shell is not at its prompt yet: the bootstrap script, MOTD and rc
+/// files are still finishing in a running block. Keys typed there used to be written to the tty
+/// (the gate released at `Bootstrapped`), reached the remote line editor as typeahead, and came
+/// back at the prompt merged with the keys the editor took meanwhile: `echo TY$((20+1))-$(uname
+/// -n)` ran as `ech TY$((20+1))-$()uname -n)`, and a stray `)` stayed in the remote line to
+/// prefix the next command. The line must be dropped whole, its tail and Enter included, even
+/// after the first prompt released the gate; the next line passes.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let remote_session = SessionId::from(167303092612202);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            // The ssh block, captured before the remote shell's InitShell can start another.
+            let armed = view.model.lock().active_block_id().clone();
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            simulate_ssh_hook(view);
+            view.refresh_ssh_connect_gate();
+            // The remote shell announces itself (pending session); the gate sees it.
+            view.model.lock().init_shell(InitShellValue {
+                session_id: remote_session,
+                shell: "bash".to_owned(),
+                user: "user".to_owned(),
+                hostname: "host".to_owned(),
+                ..Default::default()
+            });
+            assert!(view.refresh_ssh_connect_gate());
+            assert!(
+                view.ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|g| g.saw_pending)
+            );
+            // The ssh block ends cleanly at the bootstrap's own precmd.
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            view.warpify_state.clear_pending_ssh_host();
+            // That precmd is handled while the session is still pending: not the first prompt.
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            // The bootstrap finishes; its prompt has not been drawn yet.
+            view.model.lock().bootstrapped(BootstrappedValue {
+                shell: "bash".to_owned(),
+                ..Default::default()
+            });
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: remote_session,
+                    is_subshell: false,
+                }),
+                ctx,
+            );
+            assert!(
+                view.ssh_connect_gate.is_some(),
+                "Bootstrapped is not the remote prompt: the gate must still hold"
+            );
+            view.typed_characters_on_terminal("ec", ctx);
+            assert!(
+                view.ssh_setup_drop_notified,
+                "the drop notice must be raised"
+            );
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "dropped text must not land in the editor either"
+            );
+            // The remote shell's first prompt: the gate hands input over...
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "the first remote prompt releases the gate"
+            );
+            // ...but the rest of the line whose head was dropped stays dropped through its Enter.
+            view.typed_characters_on_terminal("ho TY$((20+1))-$(uname -n)", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // A new line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(!view.ssh_setup_drop_notified, "ls must not be dropped");
+        });
+        let writes = pty_writes.borrow();
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"ec"
+                || w.as_slice() == b"ho TY$((20+1))-$(uname -n)"
+                || w.as_slice() == b"\r"),
+            "no part of the dropped line may reach the tty: {writes:?}"
+        );
+        let editor = terminal.read(&app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        assert!(
+            writes.iter().any(|w| w.as_slice() == b"ls") || editor == "ls",
+            "the next line must be delivered whole (pty {writes:?}, editor {editor:?})"
+        );
     })
 }
 
