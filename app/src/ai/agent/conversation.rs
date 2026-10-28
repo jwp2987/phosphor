@@ -502,6 +502,7 @@ impl AIConversation {
         tasks: Vec<api::Task>,
         conversation_data: Option<AgentConversationData>,
     ) -> Result<Self, RestoreConversationError> {
+        let restored_without_tasks = tasks.is_empty();
         let (task_store, todo_lists, status) = if tasks.is_empty() {
             // Bypass `derive_status_from_root_task`: it would return `Success`
             // for a root with no exchanges, silently misclassifying a restored
@@ -784,8 +785,14 @@ impl AIConversation {
             cli_subagent_block_snapshots,
         };
         // State persisted by older builds can name messages that no longer exist (a rewind
-        // before compactions were pruned on rewind). Prune it the same way on restore.
-        let dropped_compactions = conversation.prune_stale_compactions();
+        // before compactions were pruned on rewind). Prune it the same way on restore — but
+        // not on a hollow restore (no task rows): there every message is merely absent from
+        // this load, and pruning would discard compactions and markers that are still valid.
+        let dropped_compactions = if restored_without_tasks {
+            0
+        } else {
+            conversation.prune_stale_compactions()
+        };
         if dropped_compactions > 0 {
             log::info!(
                 "[byop-compaction] restore dropped {dropped_compactions} compaction(s) whose summary or insertion point is gone"

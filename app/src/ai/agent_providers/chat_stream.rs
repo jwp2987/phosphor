@@ -4646,8 +4646,10 @@ fn accepts_tool_choice_none(
 /// stream's text (if any) is all the commit sees.
 ///
 /// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
-/// stream's text, if any, preceded a tool call and is not a summary. Nothing is committed and
-/// the task resumes uncompacted; retrying the summary is #1079.
+/// commit then accepts the stream's text only if it is a complete summary
+/// (`byop_compaction::prompt::is_complete_summary`); anything else — narration before the
+/// call, a half-written summary — is not committed and the task resumes uncompacted
+/// (retrying the summary is #1079).
 fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
     if !calls.is_empty() && is_summarize_request(params) {
         log::warn!(
@@ -17306,6 +17308,21 @@ mod summarize_turn_tool_gate_tests {
         assert_dropped_and_noted(&format!(
             "## Goal\n- x\n## Progress\n### Done\n- reading\n{QUOTED_CALL}"
         ));
+    }
+
+    /// Refute round 15: the last section alone is not enough — narration with a bold
+    /// "**Relevant Files**" label, or an echoed tail of the previous summary, followed by a
+    /// call is not a complete summary (it lacks the first section).
+    #[test]
+    fn the_last_section_alone_is_not_a_complete_summary() {
+        assert_dropped_and_noted(&format!(
+            "Before summarizing I need one more file.\n**Relevant Files**\n- src/a.rs\n{QUOTED_CALL}"
+        ));
+        assert_dropped_and_noted(&format!(
+            "<previous-summary>\n## Relevant Files\n- src/a.rs\n</previous-summary>\n{QUOTED_CALL}"
+        ));
+        // A complete one (first and last sections) quoting a call is still the summary.
+        assert_kept_as_summary(&markdown_summary_quoting_a_call());
     }
 
     /// The headings come from the template itself; a summary is complete when it declares

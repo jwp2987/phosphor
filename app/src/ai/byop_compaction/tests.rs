@@ -2044,3 +2044,28 @@ fn with_a_dropped_call_only_a_complete_summary_commits() {
         |id| id == "s1"
     ));
 }
+
+/// Refute round 15: `hidden_message_ids_where` skips exactly what `summary_insertions` skips:
+/// a compaction with a blank summary, and one whose insertion target is not in the request —
+/// their heads stay visible because nothing could stand in for them.
+#[test]
+fn hidden_message_ids_where_skips_unshowable_compactions() {
+    let mut state = super::state::CompactionState::default();
+    let mut blank = completed("u1", "s1", &["u1", "a1"], Some("q2"));
+    blank.summary_text = Some("   ".to_string());
+    state.push_completed(blank);
+    state.push_completed(completed("q2", "s2", &["q2", "a2"], Some("q3")));
+
+    // Everything present: only the blank one is skipped.
+    let hidden = state.hidden_message_ids_where(|_| true);
+    assert!(
+        !hidden.contains("u1") && !hidden.contains("a1"),
+        "{hidden:?}"
+    );
+    assert!(hidden.contains("q2") && hidden.contains("a2") && hidden.contains("s2"));
+
+    // The second one's insertion target (its anchor q2) is not in the request: skipped too.
+    let hidden = state.hidden_message_ids_where(|id| id != "q2");
+    assert!(hidden.is_empty(), "{hidden:?}");
+    assert!(state.summary_insertions(|id| id != "q2").is_empty());
+}

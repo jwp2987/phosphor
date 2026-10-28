@@ -59,15 +59,18 @@ fn declared_sections(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether `text` is a COMPLETE summary: it declares the template's last section ("Relevant
-/// Files") as a heading. A summarize stream that also produced a tool call commits only such
-/// a summary: a half-written one ("## Goal ... ## Progress ..." and then a call to gather
-/// facts) would hide the head behind a partial summary.
+/// Whether `text` is a COMPLETE summary: it declares both the template's first section
+/// ("Goal") and its last ("Relevant Files") as headings. A summarize stream that also produced
+/// a tool call commits only such a summary: a half-written one ("## Goal ... ## Progress ..."
+/// and then a call to gather facts) would hide the head behind a partial summary, and the
+/// first heading keeps narration with a bold "**Relevant Files**" label from passing.
 pub fn is_complete_summary(text: &str) -> bool {
-    let Some(last) = summary_section_names().pop() else {
+    let names = summary_section_names();
+    let (Some(first), Some(last)) = (names.first(), names.last()) else {
         return false;
     };
-    declared_sections(text).contains(&last)
+    let declared = declared_sections(text);
+    declared.contains(first) && declared.contains(last)
 }
 
 /// Builds the final user prompt — matches `compaction.ts:121-132 buildPrompt`.
