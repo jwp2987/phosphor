@@ -213,14 +213,63 @@ fn skills_from_another_host_never_bind() {
     );
 }
 
-/// A session whose host identity is unknown (a legacy SSH session, `Unavailable`) lists the
-/// client's own skills, and those keep working — exactly as before this change.
+/// A session whose host identity is unknown (`Unavailable`, e.g. legacy SSH) cannot place a
+/// skill path anywhere: `location_for_path` returns `PathOriginUnavailable`, so a bound local
+/// path would only fail later in `convert_read_skill`. It is rejected up front, consistently.
+/// A bundled id carries no host and still binds; the executor resolves it per origin.
 #[test]
-fn local_skill_still_binds_when_the_host_identity_is_unavailable() {
+fn path_skills_do_not_bind_when_the_host_identity_is_unavailable() {
     let skills = [local("deploy", LISTED_PATH)];
     let mut read_skill = read_skill_call("deploy");
-    resolve_reference(&mut read_skill, &skills, &SkillPathOrigin::Unavailable).expect("local");
-    assert_eq!(bound_path(&read_skill), LISTED_PATH);
+    assert_eq!(
+        resolve_reference(&mut read_skill, &skills, &SkillPathOrigin::Unavailable),
+        Err(SkillResolutionError::NotAvailable)
+    );
+    assert!(!is_listed_for_origin(&skills[0], &SkillPathOrigin::Unavailable));
+    // The same path could not have been converted either — the reason for the rule.
+    assert!(
+        skill_reference_from_read_skill_ref(
+            ApiSkillReference::SkillPath(LISTED_PATH.to_owned()),
+            &SkillPathOrigin::Unavailable,
+        )
+        .is_err()
+    );
+
+    let bundled_skills = [bundled("find-skills", "find-skills-id")];
+    let mut read_bundled = read_skill_call("find-skills");
+    resolve_reference(
+        &mut read_bundled,
+        &bundled_skills,
+        &SkillPathOrigin::Unavailable,
+    )
+    .expect("a bundled id has no host");
+}
+
+/// A bundled skill sharing its name with a file skill is ambiguous by name, and reachable by
+/// the `@warp-skill:<id>` shown as its `skill_path` — the form `listed_skill_path` renders.
+#[test]
+fn bundled_skill_sharing_a_file_skills_name_is_reachable_by_its_skill_path() {
+    let skills = [
+        local("find-skills", LISTED_PATH),
+        bundled("find-skills", "find-skills-id"),
+    ];
+
+    let mut by_name = read_skill_call("find-skills");
+    assert_eq!(
+        resolve_reference(&mut by_name, &skills, &SkillPathOrigin::Local),
+        Err(SkillResolutionError::Ambiguous)
+    );
+
+    let shown = listed_skill_path(&skills[1].reference);
+    assert_eq!(shown, "@warp-skill:find-skills-id");
+    let mut by_path = read_skill_call(&shown);
+    resolve_reference(&mut by_path, &skills, &SkillPathOrigin::Local).expect("bundled path");
+    assert_eq!(
+        by_path.skill_reference,
+        Some(ApiSkillReference::BundledSkillId("find-skills-id".to_owned()))
+    );
+
+    assert_eq!(listed_skill_path(&skills[0].reference), LISTED_PATH);
 }
 
 #[test]

@@ -1234,3 +1234,50 @@ fn dispatch_refusals_do_not_auto_resume() {
         r#"{"status":"ok"}"#
     ));
 }
+
+/// #1068: a rejected `read_skill` name auto-resumes at most
+/// `MAX_SKILL_RESOLUTION_RESUMES_PER_TURN` times per turn, so a model (or injected tool
+/// output) that keeps naming an unlisted skill cannot loop on the user's API key.
+#[test]
+fn skill_resolution_resumes_are_capped_per_turn() {
+    let mut spent = 0u8;
+    for attempt in 0..super::MAX_SKILL_RESOLUTION_RESUMES_PER_TURN {
+        assert!(
+            super::charge_skill_resolution_resume(&mut spent),
+            "resume {attempt} is within the allowance"
+        );
+    }
+    for _ in 0..3 {
+        assert!(
+            !super::charge_skill_resolution_resume(&mut spent),
+            "past the allowance, no further resume"
+        );
+    }
+    assert_eq!(spent, super::MAX_SKILL_RESOLUTION_RESUMES_PER_TURN);
+    assert!(super::MAX_SKILL_RESOLUTION_RESUMES_PER_TURN > 0);
+}
+
+/// The cap applies to exactly the payload `chat_stream` emits for a rejected `read_skill`
+/// name, and not to any other synthetic result (a schema-invalid call, an intercepted tool).
+#[test]
+fn skill_resolution_failures_are_recognised_by_their_reason() {
+    for reason in ["skill_unavailable", "ambiguous_skill_name"] {
+        let payload = serde_json::json!({
+            "error": "invalid_arguments",
+            "reason": reason,
+            "tool": "read_skill",
+            "executed": false,
+        })
+        .to_string();
+        assert!(super::is_skill_resolution_failure(&payload), "{payload}");
+    }
+    let schema_error = serde_json::json!({
+        "error": "invalid_arguments",
+        "tool": "read_files",
+        "executed": false,
+    })
+    .to_string();
+    assert!(!super::is_skill_resolution_failure(&schema_error));
+    let intercepted = serde_json::json!({ "_byop_intercepted": true, "status": "ok" }).to_string();
+    assert!(!super::is_skill_resolution_failure(&intercepted));
+}

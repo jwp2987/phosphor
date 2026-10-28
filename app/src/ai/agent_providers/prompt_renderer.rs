@@ -694,10 +694,10 @@ struct GitCtx {
 struct SkillCtx {
     name: String,
     description: String,
-    /// Absolute path to SKILL.md for filesystem skills; `None` for bundled skills.
-    /// Bundled skills are loaded via `AIAgentInput::InvokeSkill`, not `read_skill`,
-    /// so exposing `@warp-skill:<id>` here would mislead the model into calling a
-    /// path that always fails the BYOP `skill_by_reference` lookup.
+    /// What `read_skill` accepts in place of the name: the absolute SKILL.md path for a
+    /// filesystem skill, `@warp-skill:<id>` for a bundled one
+    /// (`tools::skill::listed_skill_path`). Always set today; kept optional so the template's
+    /// `{% if s.path %}` guard stays meaningful.
     path: Option<String>,
 }
 
@@ -812,13 +812,10 @@ fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptConte
             }
             AIAgentContext::Skills { skills } => {
                 for s in skills {
-                    let path = match &s.reference {
-                        ai::skills::SkillReference::Path(p) => Some(p.display_path()),
-                        // Bundled skills load via InvokeSkill, not read_skill.
-                        // Omit skill_path to avoid guiding the model toward a
-                        // value that will always fail BYOP's skill_by_reference.
-                        ai::skills::SkillReference::BundledSkillId(_) => None,
-                    };
+                    // `@warp-skill:<id>` for a bundled skill: `read_skill` resolves it
+                    // (`tools::skill::resolve_reference`), and it is the only way to name a
+                    // bundled skill that shares its name with a file skill (#1068).
+                    let path = Some(super::tools::skill::listed_skill_path(&s.reference));
                     out.skills.push(SkillCtx {
                         name: s.name.clone(),
                         description: s.description.clone(),
@@ -1865,11 +1862,13 @@ mod tests {
         );
     }
 
-    /// Issue #169 follow-up: the BundledSkillId variant of a bundled skill can't be loaded via
-    /// read_skill on the BYOP path (it goes through InvokeSkill), so the system prompt should not emit <skill_path>,
-    /// to avoid the model using the @warp-skill:{id} value that is bound to fail.
+    /// #1068 (supersedes the #169 follow-up that omitted it): a bundled skill is shown with
+    /// `<skill_path>@warp-skill:<id></skill_path>`. `read_skill` now binds only to listed
+    /// skills and accepts that form (`tools::skill::resolve_reference`), so it no longer "always
+    /// fails" — and it is the only way to name a bundled skill that shares its name with a file
+    /// skill, which otherwise resolves as ambiguous with no way to pick the bundled one.
     #[test]
-    fn render_omits_skill_path_for_bundled_skill() {
+    fn render_shows_bundled_skill_id_as_its_skill_path() {
         use crate::ai::skills::SkillDescriptor;
         use ai::skills::{SkillProvider, SkillReference, SkillScope};
         use warp_core::ui::icons::Icon;
@@ -1898,12 +1897,8 @@ mod tests {
             "bundled skill name should still appear in prompt: {out}"
         );
         assert!(
-            !out.contains("@warp-skill:"),
-            "bundled skill must NOT emit <skill_path> to avoid misleading the model: {out}"
-        );
-        assert!(
-            !out.contains("<skill_path>"),
-            "no <skill_path> tag should be rendered for bundled skills: {out}"
+            out.contains("<skill_path>@warp-skill:find-skills</skill_path>"),
+            "a bundled skill must be shown with the @warp-skill:<id> read_skill accepts: {out}"
         );
     }
 

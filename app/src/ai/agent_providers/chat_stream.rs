@@ -261,6 +261,22 @@ fn turn_listed_skills(params: &RequestParams) -> Vec<SkillDescriptor> {
         .unwrap_or_default()
 }
 
+/// Whether this turn offers `read_skill` at all: at least one listed skill can bind for the
+/// session's execution host (`tools::skill::is_listed_for_origin`).
+///
+/// With nothing bindable, every `read_skill` call would be rejected, and that rejection is an
+/// auto-resumed synthetic result — offering the tool anyway hands a model (or prompt-injected
+/// tool output) a loop that spends the user's API key on nothing. Withheld instead, a call is
+/// refused once as `tool_not_offered` (#1067), with no resume. Covers the `ListSkills` flag
+/// being off, an empty skill list, and a tool-result turn whose remembered context is gone
+/// (the system prompt lists no skills then either, so the tool set stays consistent with it).
+fn turn_offers_read_skill(params: &RequestParams) -> bool {
+    let origin = params.session_context.skill_path_origin();
+    turn_listed_skills(params)
+        .iter()
+        .any(|skill| tools::skill::is_listed_for_origin(skill, &origin))
+}
+
 /// Renders the `<attached_running_command>` XML block for the LRC tag-in scenario, prepended
 /// to the user message so the model can see the current PTY's actual state (command, grid
 /// contents, whether it's an alt-screen), and thus correctly choose the
@@ -4839,6 +4855,7 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     // was built, because the answer needs the `RemoteServerManager` singleton and there is
     // no `AppContext` here.
     let no_file_route = params.session_context.is_remote_without_file_tools();
+    let read_skill_offered = turn_offers_read_skill(params);
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
@@ -4874,6 +4891,10 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             // reintroducing exactly the failure the withdrawal exists to prevent, by the
             // back door.
             if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // Must mirror `build_tools_array`: see `turn_offers_read_skill`.
+            if !read_skill_offered && t.name == tools::skill::READ_SKILL.name {
                 return false;
             }
             true
@@ -4940,6 +4961,7 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     // was built, because the answer needs the `RemoteServerManager` singleton and there is
     // no `AppContext` here.
     let no_file_route = params.session_context.is_remote_without_file_tools();
+    let read_skill_offered = turn_offers_read_skill(params);
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
     // handle_suggest_prompt_executor_event`), so it can be exposed to the model.
@@ -5006,6 +5028,11 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             // are deliberately kept, and why the condition is *not* `is_legacy_ssh()`.
             // Keep in step with `available_tool_names`.
             if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // No skill this turn can bind, so `read_skill` could only ever be rejected —
+            // and each rejection auto-resumes. See `turn_offers_read_skill`.
+            if !read_skill_offered && t.name == tools::skill::READ_SKILL.name {
                 return false;
             }
             true
@@ -7937,9 +7964,10 @@ pub async fn generate_byop_output(
                         // The arguments parsed, but the name binds to no skill listed for
                         // this turn (#1068). Kept under the `invalid_arguments` marker so the
                         // existing machinery treats it as the rejected call it is — the
-                        // controller auto-resumes on it, the transcript renders a rejected
-                        // call, and readiness classifies it as a structured error — with
-                        // `reason` carrying the precise cause.
+                        // controller auto-resumes on it (capped per turn for this `reason`,
+                        // see `controller::MAX_SKILL_RESOLUTION_RESUMES_PER_TURN`), the
+                        // transcript renders a rejected call, and readiness classifies it as
+                        // a structured error — with `reason` carrying the precise cause.
                         serde_json::json!({
                             "error": "invalid_arguments",
                             "reason": skill_error.code(),
@@ -7953,14 +7981,12 @@ pub async fn generate_byop_output(
                                     skill,
                                     &skill_path_origin,
                                 ))
-                                .map(|skill| match &skill.reference {
-                                    ai::skills::SkillReference::Path(path) => serde_json::json!({
+                                .map(|skill| {
+                                    serde_json::json!({
                                         "name": skill.name,
-                                        "skill_path": path.display_path(),
-                                    }),
-                                    ai::skills::SkillReference::BundledSkillId(_) => {
-                                        serde_json::json!({ "name": skill.name })
-                                    }
+                                        "skill_path":
+                                            tools::skill::listed_skill_path(&skill.reference),
+                                    })
                                 })
                                 .collect::<Vec<_>>(),
                             "hint": "NOTHING WAS READ, so you have no skill content — do not \
@@ -12954,9 +12980,40 @@ mod serializer_readiness_tests {
     }
 
     /// The withdrawal must be scoped to legacy SSH -- a local session keeps its file tools.
+    /// A user query whose context lists one skill at `reference`. `read_skill` is offered only
+    /// while a listed skill can bind for the session's host (#1068), so the fixtures asserting
+    /// that every `NO_FILE_ROUTE_BLOCKED_TOOLS` entry survives must list one.
+    fn query_listing_skill(reference: ai::skills::SkillReference) -> AIAgentInput {
+        AIAgentInput::UserQuery {
+            query: "q".to_owned(),
+            context: Arc::<[AIAgentContext]>::from(vec![AIAgentContext::Skills {
+                skills: vec![SkillDescriptor {
+                    reference,
+                    name: "deploy".to_owned(),
+                    description: "Deploys.".to_owned(),
+                    scope: SkillScope::Home,
+                    provider: ai::skills::SkillProvider::Agents,
+                    icon_override: None,
+                }],
+            }]),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: UserQueryMode::default(),
+            running_command: None,
+            intended_agent: None,
+        }
+    }
+
     #[test]
     fn a_local_session_keeps_the_file_tools() {
-        let params = request_params(vec![], vec![]);
+        let params = request_params(
+            vec![],
+            vec![query_listing_skill(ai::skills::SkillReference::Path(
+                warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                    std::path::PathBuf::from("/home/user/.agents/skills/deploy/SKILL.md"),
+                ),
+            ))],
+        );
         assert!(
             !params.session_context.is_legacy_ssh(),
             "fixture should be a local session",
@@ -13057,7 +13114,21 @@ mod serializer_readiness_tests {
     /// `WarpifiedRemote { .. }` alone would have withdrawn them here.
     #[test]
     fn a_remote_session_with_a_client_keeps_the_file_tools() {
-        let mut params = request_params(vec![], vec![]);
+        // `new_warpified_remote_for_test(true)` connects host "test-host"; list a skill there.
+        let mut params = request_params(
+            vec![],
+            vec![query_listing_skill(ai::skills::SkillReference::Path(
+                warp_util::local_or_remote_path::LocalOrRemotePath::Remote(
+                    warp_util::remote_path::RemotePath::new(
+                        warp_util::host_id::HostId::new("test-host".to_owned()),
+                        warp_util::standardized_path::StandardizedPath::try_new(
+                            "/home/remote/.agents/skills/deploy/SKILL.md",
+                        )
+                        .expect("absolute remote path"),
+                    ),
+                ),
+            ))],
+        );
         params.session_context =
             crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
         assert!(
@@ -14637,7 +14708,95 @@ mod plan_mode_round_trip_tests {
         params.web_search_enabled = true;
         params.codebase_context_enabled = true;
         params.computer_use_enabled = true;
+        // `read_skill` is offered only while a listed skill can bind (#1068,
+        // `turn_offers_read_skill`), so "everything on" lists one.
+        set_turn_context(&mut params, listed_skill_context());
         params
+    }
+
+    fn listed_skill_context() -> Vec<AIAgentContext> {
+        vec![AIAgentContext::Skills {
+            skills: vec![SkillDescriptor {
+                reference: ai::skills::SkillReference::Path(
+                    warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                        std::path::PathBuf::from("/home/user/.agents/skills/deploy/SKILL.md"),
+                    ),
+                ),
+                name: "deploy".to_owned(),
+                description: "Deploys.".to_owned(),
+                scope: SkillScope::Home,
+                provider: ai::skills::SkillProvider::Agents,
+                icon_override: None,
+            }],
+        }]
+    }
+
+    /// Replaces the context the round trip's `ActionResult` carries.
+    fn set_turn_context(params: &mut RequestParams, ctx: Vec<AIAgentContext>) {
+        match params.input.first_mut() {
+            Some(AIAgentInput::ActionResult { context, .. }) => {
+                *context = Arc::<[AIAgentContext]>::from(ctx);
+            }
+            other => panic!("fixture: expected the round trip's ActionResult, got {other:?}"),
+        }
+    }
+
+    /// #1068: `read_skill` is withheld — from the tools array and from the offered names the
+    /// dispatch gate checks — whenever no listed skill can bind, so a call is refused once as
+    /// `tool_not_offered` (#1067) instead of being rejected and auto-resumed over and over.
+    #[test]
+    fn read_skill_is_offered_only_while_a_listed_skill_can_bind() {
+        let offers = |params: &RequestParams| {
+            let names = available_tool_names(params);
+            let in_names = names.iter().any(|n| n == "read_skill");
+            let in_array = build_tools_array(params, false)
+                .iter()
+                .any(|t| t.name.as_str() == "read_skill");
+            assert_eq!(in_names, in_array, "names and tools array must agree");
+            in_names
+        };
+
+        assert!(offers(&all_tools_on()), "a listed local skill offers read_skill");
+
+        // No skills context at all (ListSkills off / nothing discovered), and a tool-result
+        // turn whose remembered context is missing: the fixture's conversation id was never
+        // remembered, and its ActionResult carries no context.
+        let mut none_listed = all_tools_on();
+        set_turn_context(&mut none_listed, vec![]);
+        assert!(!offers(&none_listed), "no listed skills");
+
+        // A Skills context that lists nothing.
+        let mut empty = all_tools_on();
+        set_turn_context(&mut empty, vec![AIAgentContext::Skills { skills: vec![] }]);
+        assert!(!offers(&empty), "an empty skills list");
+
+        // Listed, but not for this session's host: a local skill in a remote session.
+        let mut remote = all_tools_on();
+        remote.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
+        assert!(!offers(&remote), "a local skill cannot bind on a remote host");
+
+        // Refused at dispatch once it is withheld.
+        let offered = available_tool_names(&none_listed);
+        let plan_mode = request_plan_mode(&none_listed);
+        assert!(
+            dispatch_refusal(&none_listed, plan_mode, &offered, "read_skill").is_some(),
+            "a withheld read_skill must be refused, not dispatched"
+        );
+    }
+
+    /// The remembered context is what a real tool-result turn reads (the controller remembers
+    /// the result's context before the request is built), and it offers `read_skill`.
+    #[test]
+    fn read_skill_is_offered_from_the_remembered_context_on_a_tool_result_turn() {
+        let mut params = all_tools_on();
+        set_turn_context(&mut params, vec![]);
+        let conversation_id = params
+            .byop_conversation_id
+            .expect("fixture: a BYOP conversation");
+        remember_conversation_context(conversation_id, &listed_skill_context());
+        assert!(available_tool_names(&params).iter().any(|n| n == "read_skill"));
+        assert_eq!(turn_listed_skills(&params).len(), 1);
     }
 
     fn mcp_context_with_lookup_tool() -> crate::ai::agent::MCPContext {
