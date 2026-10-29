@@ -30295,6 +30295,15 @@ impl TerminalSurface for TerminalView {
         );
     }
 
+    fn restore_user_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
+        // Never over text the user has typed since.
+        if !command.is_empty() && self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+            let command = command.to_owned();
+            self.input
+                .update(ctx, |input, ctx| input.replace_buffer_content(&command, ctx));
+        }
+    }
+
     fn on_active_shell_launch_data_updated(
         &mut self,
         shell_launch_data: Option<ShellLaunchData>,

@@ -17837,6 +17837,60 @@ fn editor_ctrl_d_is_held_in_the_ssh_first_prompt_window() {
     })
 }
 
+/// #1125: a line the user submitted that the controller did NOT start (a command already
+/// running / waiting, a terminated session) used to vanish: the editor was already cleared and
+/// nothing was written. It is given back to the editor (an empty one only) with a toast.
+#[test]
+fn a_user_command_that_was_not_started_is_given_back_to_the_editor() {
+    use crate::terminal::model::lifecycle::StartCommandOutcome;
+    use crate::terminal::writeable_pty::terminal_manager_util::handle_command_not_run;
+    for outcome in [
+        StartCommandOutcome::RejectedExecuting,
+        StartCommandOutcome::Coalesced,
+        StartCommandOutcome::IgnoredTerminated,
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let event = ExecuteCommandEvent {
+                command: "exit".to_owned(),
+                session_id: SessionId::from(9001),
+                workflow_id: None,
+                workflow_command: None,
+                should_add_command_to_history: true,
+                source: CommandExecutionSource::User,
+            };
+            let weak = terminal.downgrade();
+            app.update(|ctx| handle_command_not_run(&weak, &event, outcome, ctx));
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "exit");
+            });
+            // Text typed since is never overwritten.
+            terminal.update(&mut app, |view, ctx| {
+                view.input
+                    .update(ctx, |input, ctx| input.replace_buffer_content("ls", ctx));
+            });
+            app.update(|ctx| handle_command_not_run(&weak, &event, outcome, ctx));
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            });
+            // An accepted start restores nothing.
+            terminal.update(&mut app, |view, ctx| {
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx)
+                });
+            });
+            app.update(|ctx| {
+                handle_command_not_run(&weak, &event, StartCommandOutcome::Accepted, ctx)
+            });
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+        });
+    }
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,

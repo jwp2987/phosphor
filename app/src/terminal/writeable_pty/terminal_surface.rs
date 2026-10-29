@@ -115,6 +115,10 @@ where
     /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
     fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when a command the USER submitted was not started (#1125): the surface gives the
+    /// line back so it is never lost.
+    fn restore_user_command(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when the active shell launch data is updated (e.g. shell
     /// indicator metadata).
     fn on_active_shell_launch_data_updated(

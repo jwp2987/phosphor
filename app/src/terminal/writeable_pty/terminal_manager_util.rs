@@ -21,6 +21,31 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use warpui::{AppContext, Entity, ModelHandle, ViewHandle};
 
+/// #1125: the input already cleared the line when it submitted it, so a command the controller
+/// did not start (another one waiting, one running, a terminated session) must never vanish:
+/// say so, and give a user's own line back to the editor.
+pub(crate) fn handle_command_not_run<S: TerminalSurface>(
+    surface: &warpui::WeakViewHandle<S>,
+    event: &view::ExecuteCommandEvent,
+    outcome: StartCommandOutcome,
+    ctx: &mut AppContext,
+) {
+    if outcome.is_accepted() {
+        return;
+    }
+    if let Some(surface) = surface.upgrade(ctx) {
+        surface.update(ctx, |surface, ctx| {
+            surface.on_command_coalesced(&event.command, ctx);
+            if matches!(
+                event.source,
+                crate::terminal::input::CommandExecutionSource::User
+            ) {
+                surface.restore_user_command(&event.command, ctx);
+            }
+        });
+    }
+}
+
 /// Wires up bi-directional communication between the PtyController and the TerminalView.
 /// Note that this interaction can't live in the TerminalView because the view must be manager-agnostic.
 ///
@@ -143,19 +168,13 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                             ctx,
                         )
                     });
-                    // The input only knows the command left it; say why it never ran.
-                    if outcome == StartCommandOutcome::Coalesced {
-                        if let Some(surface) = surface_weak_handle_for_intents.upgrade(ctx) {
-                            surface.update(ctx, |surface, ctx| {
-                                surface.on_command_coalesced(&event.command, ctx)
-                            });
-                        }
-                    }
+                    handle_command_not_run(&surface_weak_handle_for_intents, &event, outcome, ctx);
                 } else {
                     model_clone.lock().block_list_mut().active_block_mut().set_cloud_workflow_state(event.workflow_id);
-                    controller.update(ctx, |controller, ctx| {
+                    let outcome = controller.update(ctx, |controller, ctx| {
                         controller.write_command(&event.command, shell_type, event.source.clone(), ctx)
                     });
+                    handle_command_not_run(&surface_weak_handle_for_intents, &event, outcome, ctx);
                 }
 
                 if event.should_add_command_to_history {
