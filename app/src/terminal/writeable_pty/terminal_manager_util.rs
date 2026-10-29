@@ -29,7 +29,9 @@ pub(crate) fn handle_command_not_run<S: TerminalSurface>(
     event: &view::ExecuteCommandEvent,
     outcome: StartCommandOutcome,
     ctx: &mut AppContext,
-) {
+) where
+    <S as Entity>::Event: PtyIntentEvent,
+{
     if outcome.is_accepted() {
         return;
     }
