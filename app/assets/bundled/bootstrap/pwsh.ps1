@@ -262,7 +262,22 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Clamped: Windows PowerShell 5.1's console host throws above ~1023 characters, and a throw
         # here would keep PSConsoleHostReadLine from returning the line (#1106).
         try {
-            $title = ($command -replace "(?s)\r?\n.*", [string][char]0x2026)
+            $titleSource = $command
+            # A command too long to type (#1106) is the launcher line `. (Warp-Run-LongCommand
+            # '<path>')`; title it with the start of the real command (#1121). This runs before
+            # the function, which deletes the file, so the file is still there to read.
+            if ($command -match "^\.\s+\(Warp-Run-LongCommand\s+'(.*)'\)\s*$") {
+                $titleReader = $null
+                try {
+                    $titleReader = [System.IO.StreamReader]::new(($Matches[1] -replace "(['\u2018\u2019\u201a\u201b])\1", '$1'), [System.Text.Encoding]::UTF8)
+                    $titleBuffer = [char[]]::new(400)
+                    $titleSource = [string]::new($titleBuffer, 0, $titleReader.Read($titleBuffer, 0, 400))
+                } catch {
+                } finally {
+                    if ($titleReader) { $titleReader.Dispose() }
+                }
+            }
+            $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
             $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
