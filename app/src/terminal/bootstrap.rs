@@ -402,7 +402,7 @@ pub fn init_subshell_command_lines(
 /// (`apikey`: lines matching its sensitive pattern are saved to memory only on PSReadLine 2.2 and
 /// later). A user-replaced handler or an older PSReadLine still saves this one short line; nothing
 /// ever rewrites or deletes history.
-const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/]\.tmp[A-Za-z0-9]{6}\.ps1\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
+const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["']?\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
 
 /// Second line of the PowerShell subshell bootstrap (#1116): lifts a Restricted execution policy
 /// for this process, as `pwsh_init_shell.ps1` does for the app-started shell, so the ` . <tmp>.ps1`

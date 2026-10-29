@@ -1292,6 +1292,9 @@ fn test_init_subshell_never_deletes_or_rewrites_history() {
             // out of the history file.
             assert!(lines[0].contains(r"\.tmp[A-Za-z0-9]{6}\.ps1"), "{}", lines[0]);
             assert!(lines[0].trim_end().ends_with("# apikey"), "{}", lines[0]);
+            // #1122: and the line that sources the installed bootstrap file on Windows
+            // (`<install dir>\Phosphor\pwsh.ps1`), which was saved to PSReadLine's history file.
+            assert!(lines[0].contains(r"Phosphor[\\/]pwsh\.ps1"), "{}", lines[0]);
             // The pattern in the handler matches the line `source_bootstrap_script` types for a
             // `tempfile` path (same regex dialect for this subset), and not an ordinary command.
             let tmp_path = "/var/folders/ab/c_d/T/.tmpAbC123.ps1";
