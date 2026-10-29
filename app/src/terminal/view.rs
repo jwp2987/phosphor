@@ -10175,6 +10175,11 @@ impl TerminalView {
                 self.discard_ssh_held_typing(prompt_arrived, ctx);
             }
         }
+        self.log_ssh_drop_state(if gate_drops {
+            "key_gate_drops"
+        } else {
+            "key_gate_open"
+        });
         // #1113: keep the line being dropped (edited as the user edits it) so it can be shown,
         // never run, once it is over. Not for the setup dialog, which owns its own keys.
         if !dialog_up && (gate_drops || self.ssh_drop_line_through_enter) {
@@ -10328,6 +10333,20 @@ impl TerminalView {
                 ctx,
             );
         });
+    }
+
+    /// #1123: one input_order line describing the ssh drop state, for telling a gate miss from
+    /// a typeahead hand-off loss in a capture. Lengths only, never the typed text.
+    fn log_ssh_drop_state(&self, what: &str) {
+        if warpui::input_order::enabled() {
+            log::debug!(
+                target: warpui::input_order::TARGET,
+                "ssh_drop {what} drop_through={} held_len={} gate_armed={}",
+                self.ssh_drop_line_through_enter,
+                self.ssh_held_typing.text.chars().count(),
+                self.ssh_connect_gate.is_some()
+            );
+        }
     }
 
     /// Arms the ssh connect gate when `command` is an interactive ssh command the user just
@@ -25348,6 +25367,7 @@ impl TerminalView {
                 // #983: the head of this line was dropped during an ssh connect and the rest
                 // reached the input editor (it takes focus once the ssh block has ended), so
                 // its Enter must not run the tail as a command of its own.
+                self.log_ssh_drop_state("execute_command");
                 if self.ssh_drop_line_through_enter
                     && matches!(event.source, CommandExecutionSource::User)
                 {
