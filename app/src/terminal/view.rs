@@ -25683,7 +25683,15 @@ impl TerminalView {
                 ctx.emit(Event::ShowCommandSearch(options.clone()));
             }
             InputEvent::CtrlD => {
-                ctx.emit(Event::CtrlD);
+                // #1124: the editor's own Ctrl-D reaches the pty controller directly, which
+                // writes the EOT AND marks a command started. Inside an ssh connect that left a
+                // phantom running block (the next Precmd was ignored). It is held like the
+                // terminal-path Ctrl-D (see `ssh_connect_holds_eot`).
+                if self.ssh_connect_holds_eot() {
+                    self.note_ssh_interrupt_held(ctx);
+                } else {
+                    ctx.emit(Event::CtrlD);
+                }
             }
             InputEvent::CtrlC { cleared_buffer_len } => {
                 self.handle_ctrl_c_input_event(*cleared_buffer_len, ctx);

@@ -17800,6 +17800,43 @@ fn ctrl_d_is_written_during_local_bootstrapping_without_an_ssh_connect() {
     })
 }
 
+/// #1124: the input editor's Ctrl-D (InputEvent::CtrlD) in the first-prompt window after the
+/// remote's Bootstrapped hook must be held, not turned into an EOT write plus a started
+/// command (which left a phantom running block); with no ssh connect it still goes through.
+#[test]
+fn editor_ctrl_d_is_held_in_the_ssh_first_prompt_window() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ctrl_ds = Rc::new(RefCell::new(0usize));
+        let counter = ctrl_ds.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::CtrlD) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            // No ssh connect: the editor's Ctrl-D goes through as before.
+            view.handle_input_event(&InputEvent::CtrlD, ctx);
+        });
+        assert_eq!(*ctrl_ds.borrow(), 1);
+        terminal.update(&mut app, |view, ctx| {
+            submit_command(view, "ssh host", ctx);
+            // The remote announced itself and finished bootstrapping; its prompt is pending.
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.saw_pending = true;
+            gate.managed = true;
+            gate.bootstrap_done_at = Some(Instant::now());
+            view.handle_input_event(&InputEvent::CtrlD, ctx);
+        });
+        assert_eq!(*ctrl_ds.borrow(), 1, "held: no EOT write, no started block");
+    })
+}
+
 fn record_pty_writes(
     app: &mut App,
     terminal: &ViewHandle<TerminalView>,
