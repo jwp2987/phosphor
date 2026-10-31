@@ -736,6 +736,7 @@ Selecting and pasting with the mouse.
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
 | `warpify.ssh.reuse_existing_control_master` | boolean | `false` | Whether the wrapper attaches to an existing SSH `ControlMaster` for the destination host instead of always opening its own connection. |
+| `warpify.ssh.keepalive` | boolean | `true` | Whether the wrapper adds `-o ServerAliveInterval=30 -o ServerAliveCountMax=6` to a connection, so a silently dead link (laptop sleep, wifi handover) is shown as closed within about 3 minutes instead of hanging for ~15 minutes or forever. Added **only** when `ssh -G <host>` reports `serveraliveinterval 0`; any `ServerAliveInterval` in your ssh config or on your command line always wins. New tabs only. |
 | `warpify.ssh.split_inherits_ssh` | boolean | `false` | Opt-in. Whether splitting a pane whose active session is an SSH session opens the new pane on the same host. The new pane re-runs the `ssh` command you typed, in the same local shell and directory, then `cd`s to the same remote directory. |
 
 `warpify.ssh.enable_legacy_ssh_wrapper` used to be listed here too. It was

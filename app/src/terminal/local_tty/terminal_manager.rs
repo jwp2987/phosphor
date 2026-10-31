@@ -668,7 +668,7 @@ impl<S> TerminalManager<S> {
     fn create_pty(
         startup_directory: Option<PathBuf>,
         shell_starter: ShellStarter,
-        env_vars: HashMap<OsString, OsString>,
+        mut env_vars: HashMap<OsString, OsString>,
         model: Arc<FairMutex<TerminalModel>>,
         #[cfg(windows)] event_loop_tx: mio_channel::Sender<Message>,
         ctx: &mut AppContext,
@@ -713,6 +713,12 @@ impl<S> TerminalManager<S> {
             // second declaration of the same storage key, not a second setting.
             *WarpifySettings::as_ref(ctx).enable_ssh_wrapper.value()
         };
+
+        // #1171: the wrapper adds ssh keepalives unless this is "0". Only the "off" case is
+        // exported, so every other launch path keeps the default (on).
+        if !*SshSettings::as_ref(ctx).keepalive.value() {
+            env_vars.insert(OsString::from("WARP_SSH_KEEPALIVE"), OsString::from("0"));
+        }
 
         // Only meaningful when the legacy ControlMaster wrapper is active.
         let reuse_ssh_control_master = enable_ssh_wrapper

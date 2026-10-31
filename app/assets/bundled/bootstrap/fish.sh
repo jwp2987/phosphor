@@ -821,9 +821,18 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
         # and an older OpenSSH is left alone.
         set -l warp_ipqos_args
-        set -l warp_ipqos_default (command ssh -G $argv 2>/dev/null | command sed -n 's/^ipqos //p')
+        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
+        set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
+        end
+        # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
+        # handover) is never noticed while idle and takes ~15 min to notice with unacked data. Add
+        # 30 s x 6 (180 s tolerance: a 2-minute sleep survives) ONLY when the SAME `ssh -G` output
+        # reports interval 0, so any user config or command-line -o always wins. Opt out with the
+        # warpify.ssh.keepalive setting (WARP_SSH_KEEPALIVE=0).
+        if test "$WARP_SSH_KEEPALIVE" != "0"; and string match -q -- 'serveraliveinterval 0' $warp_ssh_g
+            set -a warp_ipqos_args -o ServerAliveInterval=30 -o ServerAliveCountMax=6
         end
 
         # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
