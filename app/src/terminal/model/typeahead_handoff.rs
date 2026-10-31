@@ -80,7 +80,7 @@ impl std::fmt::Debug for ForegroundProbe {
 
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
-/// text stays in the editor, unsubmitted.
+/// Enter then submits on the Enter-time rules without it (#1174), never kept in the editor.
 pub const YOUNG_DETECTION_CAP: Duration = Duration::from_secs(5);
 
 /// What the view does with the deferred Enter of a young line whose text must be classified
@@ -91,8 +91,13 @@ pub enum YoungSubmit {
     Submit,
     /// Keep waiting for the verdict.
     Wait,
-    /// The classifier cannot answer: keep the text in the editor and let the user press Enter.
+    /// No classifier can run at all (no session): keep the text in the editor and let the user
+    /// press Enter.
     KeepInEditor,
+    /// A classifier exists but did not answer within [`YOUNG_DETECTION_CAP`] (#1174): drop the
+    /// request and submit on the Enter-time rules, exactly as an Enter whose verdict is late
+    /// does. An Enter is never swallowed.
+    SubmitWithoutVerdict,
 }
 
 /// Decides [`YoungSubmit`]. `can_run` is whether a classification can run at all;
@@ -107,7 +112,7 @@ pub fn young_submit_decision(
     } else if !verdict_pending {
         YoungSubmit::Submit
     } else if waited >= YOUNG_DETECTION_CAP {
-        YoungSubmit::KeepInEditor
+        YoungSubmit::SubmitWithoutVerdict
     } else {
         YoungSubmit::Wait
     }

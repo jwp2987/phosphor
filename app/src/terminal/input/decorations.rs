@@ -33,9 +33,26 @@ pub use warp_completer::{
 
 /// Input buffers with more chars than this get no background parse: no syntax
 /// highlighting, error underlining or input-type detection (#868). Lowered from 1 MiB to
-/// 150_000 (#1009): a ~786 KB paste was still under the old cap and re-parsed the whole
-/// buffer on every keystroke. This is the only thing that keys off the constant.
-pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 150_000;
+/// 150_000 (#1009), then to 4096 (#1174): the completer lexer/parser is roughly quadratic in
+/// the token count, so a 5k-100k char single-line paste kept a core at 100% for over a minute
+/// and parked the first Enter. Measured in round 18: 2k chars parsed in ~137 ms, 10k in
+/// ~1-2 s, 100k in over 60 s, so the knee sits at 2-5k chars; 4096 is the conservative end
+/// that still decorates every command anyone types by hand.
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 4096;
+
+/// The token cap that goes with [`MAX_BACKGROUND_JOB_BUFFER_CHARS`] (#1174): the parse cost
+/// follows the token count, and a 4096-char buffer of one-char words holds 2048 tokens. A
+/// buffer with more whitespace-separated words than this gets no background parse either.
+pub(super) const MAX_BACKGROUND_JOB_BUFFER_TOKENS: usize = 1024;
+
+/// Whether `text` has more whitespace-separated words than [`MAX_BACKGROUND_JOB_BUFFER_TOKENS`].
+/// Stops counting one past the cap.
+pub(super) fn text_exceeds_background_job_token_cap(text: &str) -> bool {
+    text.split_whitespace()
+        .take(MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1)
+        .count()
+        > MAX_BACKGROUND_JOB_BUFFER_TOKENS
+}
 
 /// Options to enable/disable command decoration and/or AI input background tasks spawned on input
 /// edits.
@@ -241,10 +258,18 @@ impl Input {
         }
     }
 
-    /// Whether the buffer is over [`MAX_BACKGROUND_JOB_BUFFER_CHARS`], so no background parse
-    /// (and so no input-type verdict) will run for it. Reads the cached length, no copy.
+    /// Whether the buffer is over [`MAX_BACKGROUND_JOB_BUFFER_CHARS`] chars or
+    /// [`MAX_BACKGROUND_JOB_BUFFER_TOKENS`] words, so no background parse (and so no input-type
+    /// verdict) will run for it. The length check reads the cached length, no copy; the text
+    /// is only copied (at most the char cap) when it is long enough to hold that many words.
     pub(super) fn buffer_exceeds_background_job_cap(&self, ctx: &AppContext) -> bool {
-        self.editor.as_ref(ctx).buffer_size(ctx).as_usize() > MAX_BACKGROUND_JOB_BUFFER_CHARS
+        let len = self.editor.as_ref(ctx).buffer_size(ctx).as_usize();
+        if len > MAX_BACKGROUND_JOB_BUFFER_CHARS {
+            return true;
+        }
+        // N words need at least 2N-1 chars, so shorter buffers cannot be over the token cap.
+        len >= 2 * MAX_BACKGROUND_JOB_BUFFER_TOKENS
+            && text_exceeds_background_job_token_cap(&self.editor.as_ref(ctx).buffer_text(ctx))
     }
 
     /// Computes information about the currently-entered command in a background

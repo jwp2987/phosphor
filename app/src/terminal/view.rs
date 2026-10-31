@@ -11723,8 +11723,9 @@ impl TerminalView {
 
     /// Waits for the verdict of the detection requested for a young line's exact text, then runs
     /// its deferred Enter (#933). It never submits on an inherited or default input type: if the
-    /// classifier cannot answer (no verdict within [`YOUNG_DETECTION_CAP`]) the text stays in the
-    /// editor, unsubmitted. Ctrl-C meanwhile cancels the Enter.
+    /// classifier does not answer (no verdict within [`YOUNG_DETECTION_CAP`]) the Enter submits on
+    /// the Enter-time rules without it (#1174); it is never swallowed. With no classifier at all
+    /// the text stays in the editor. Ctrl-C meanwhile cancels the Enter.
     fn submit_deferred_enter_after_detection(
         &mut self,
         started: Instant,
@@ -11733,6 +11734,10 @@ impl TerminalView {
         if !self.model.lock().typeahead_handoff().deferred_submit_pending() {
             return;
         }
+        // #1174: text over the background-job cap is never parsed, so no verdict can land; do not
+        // wait the whole cap for one.
+        self.input
+            .update(ctx, |input, ctx| input.abandon_detection_if_over_parse_cap(ctx));
         let (can_run, pending) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
@@ -11741,6 +11746,11 @@ impl TerminalView {
         });
         match young_submit_decision(can_run, pending, started.elapsed()) {
             YoungSubmit::Submit => self.run_deferred_enter(true, ctx),
+            YoungSubmit::SubmitWithoutVerdict => {
+                self.input
+                    .update(ctx, |input, ctx| input.give_up_pending_detection_for_submit(ctx));
+                self.run_deferred_enter(true, ctx);
+            }
             YoungSubmit::Wait => {
                 ctx.spawn(Timer::after(Duration::from_millis(10)), move |me, _, ctx| {
                     me.submit_deferred_enter_after_detection(started, ctx);

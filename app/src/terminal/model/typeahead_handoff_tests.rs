@@ -976,7 +976,7 @@ fn a_young_line_is_submitted_only_on_an_actual_verdict() {
         young_submit_decision(true, false, Duration::ZERO),
         YoungSubmit::Submit
     );
-    // Never submit on a guess: no classifier, or none that answered in time.
+    // No classifier at all: keep the text.
     assert_eq!(
         young_submit_decision(false, false, Duration::ZERO),
         YoungSubmit::KeepInEditor
@@ -985,9 +985,11 @@ fn a_young_line_is_submitted_only_on_an_actual_verdict() {
         young_submit_decision(false, true, wait),
         YoungSubmit::KeepInEditor
     );
+    // #1174: a classifier that is running but silent past the cap no longer swallows the
+    // Enter: it submits on the Enter-time rules.
     assert_eq!(
         young_submit_decision(true, true, YOUNG_DETECTION_CAP),
-        YoungSubmit::KeepInEditor
+        YoungSubmit::SubmitWithoutVerdict
     );
 }
 

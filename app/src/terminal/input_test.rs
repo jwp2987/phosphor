@@ -7479,6 +7479,71 @@ fn test_enter_on_oversized_buffer_does_not_wait_for_a_verdict() {
     });
 }
 
+/// #1174: a 20k-char single-line paste of words is over the parse cap (chars and tokens), so no
+/// parse runs and the first Enter submits at once instead of waiting on a verdict. Text under
+/// the cap still waits for its verdict, as before.
+#[test]
+fn test_enter_on_20k_char_paste_submits_without_waiting_for_the_parse() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let pasted = vec!["word"; 4000].join(" ");
+        assert!(pasted.len() >= 20_000);
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&pasted, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_exceeds_background_job_cap(ctx));
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "an Enter on a huge paste must not park waiting for the parse"
+            );
+            assert!(!input.detection_pending_for_buffer(ctx));
+        });
+
+        // Under the cap, a short prose line is not over it.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("is it true", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(!input.buffer_exceeds_background_job_cap(ctx));
+        });
+    });
+}
+
 /// #1016: a burst of lines typed with no gaps behind an Enter that waits for its verdict queues
 /// every line and every Enter, in typed order, and the waiting Enter still submits only the first
 /// line.
