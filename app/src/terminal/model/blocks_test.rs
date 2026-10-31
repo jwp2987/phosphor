@@ -475,6 +475,52 @@ fn lazy_restore_test_blocks() -> Vec<SerializedBlockListItem> {
     vec![small, wide, multiline]
 }
 
+/// The background parse finishes each block on a scratch list; that `finish` must not reach the
+/// terminal's own event channel as a second `BlockCompleted` per block (the placeholder already
+/// sent one), where the view would treat it as a block completing mid-session.
+#[test]
+fn test_deferred_restore_sends_one_block_completed_per_block_like_eager_restore() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let block_completed_count = |events_rx: &async_channel::Receiver<Event>| {
+        let mut count = 0;
+        while let Ok(event) = events_rx.try_recv() {
+            if matches!(event, Event::BlockCompleted(_)) {
+                count += 1;
+            }
+        }
+        count
+    };
+
+    let (eager_tx, eager_rx) = async_channel::unbounded();
+    let _eager = TestBlockListBuilder::new()
+        .with_channel_event_proxy(
+            ChannelEventListener::builder_for_test()
+                .with_terminal_events_tx(eager_tx)
+                .build(),
+        )
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    let eager_completed = block_completed_count(&eager_rx);
+    assert_eq!(eager_completed, restored_blocks.len());
+
+    let (deferred_tx, deferred_rx) = async_channel::unbounded();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_channel_event_proxy(
+            ChannelEventListener::builder_for_test()
+                .with_terminal_events_tx(deferred_tx)
+                .build(),
+        )
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    assert!(deferred.install_ready_deferred_restores());
+    assert_eq!(
+        block_completed_count(&deferred_rx),
+        eager_completed,
+        "the scratch parse must not add a BlockCompleted per deferred block"
+    );
+}
+
 // A block restored as a placeholder and filled in by the background parse must end up identical
 // to one restored eagerly: same text, same grid sizes, same heights (#1254).
 #[test]

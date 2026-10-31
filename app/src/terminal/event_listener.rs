@@ -33,6 +33,8 @@ pub struct ChannelEventListener {
     /// Monotonic count of blocks evicted by `terminal.max_retained_lines` (#889), shared by every
     /// clone of this listener. See [`EvictionStamp`].
     evicted_blocks_total: Arc<AtomicUsize>,
+    /// Events go nowhere (see [`Self::detached`]).
+    sink: bool,
 }
 
 impl ChannelEventListener {
@@ -46,6 +48,26 @@ impl ChannelEventListener {
             terminal_events_tx,
             pty_reads_tx,
             evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            sink: false,
+        }
+    }
+
+    /// A listener whose events go nowhere, for a scratch `BlockList` that parses saved blocks off
+    /// the UI thread (#1254). The parse finishes each block, which emits `BlockCompleted` (and
+    /// prompt and cwd events from the saved bytes); on the live terminal's listener those reached
+    /// the view mid-session, where they bumped the input generation, rescanned the find model and
+    /// redetermined focus for a block that was not completing. The blocks themselves are handed
+    /// over through the restore mailbox, not through events.
+    pub fn detached() -> Self {
+        let (wakeups_tx, _) = async_channel::bounded(1);
+        let (terminal_events_tx, _) = async_channel::bounded(1);
+        let (pty_reads_tx, _) = async_broadcast::broadcast(1);
+        ChannelEventListener {
+            wakeups_tx,
+            terminal_events_tx,
+            pty_reads_tx,
+            evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            sink: true,
         }
     }
 
@@ -82,12 +104,18 @@ impl ChannelEventListener {
     }
 
     fn send_wakeup(&self, wakeup: Wakeup) {
+        if self.sink {
+            return;
+        }
         if let Err(e) = self.wakeups_tx.try_send(wakeup) {
             log::warn!("Failed to send Wakeup event: {e:?}");
         }
     }
 
     pub fn send_terminal_event(&self, event: TerminalEvent) {
+        if self.sink {
+            return;
+        }
         if let Err(e) = self.terminal_events_tx.try_send(event) {
             let try_send_error_dbg = format!("{e:?}");
             log::warn!(
@@ -99,6 +127,9 @@ impl ChannelEventListener {
     }
 
     pub fn send_handler_event(&self, event: HandlerEvent) {
+        if self.sink {
+            return;
+        }
         if let Err(e) = self
             .terminal_events_tx
             .try_send(TerminalEvent::Handler(event))
@@ -108,6 +139,9 @@ impl ChannelEventListener {
     }
 
     pub fn send_pty_read_event(&self, bytes: &[u8]) {
+        if self.sink {
+            return;
+        }
         // Don't bother sending the event if there aren't any
         // active receivers. This avoids an unnecessary allocation of the bytes vector.
         // Note that we don't simply close the sending side since receivers

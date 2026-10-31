@@ -2644,6 +2644,12 @@ fn handle_model_event_unsettled(
         | ModelEvent::Terminate => {
             panic!("Unhandled control-flow event {event:?}");
         }
+        // Reached here, in order, after every event queued before it was handled (or parked
+        // behind the same lock in the retry queue, which drains in order).
+        ModelEvent::WriteBarrier(barrier) => {
+            barrier.reached();
+            Ok(())
+        }
         ModelEvent::SaveBlock(BlockCompleted {
             pane_id,
             block,

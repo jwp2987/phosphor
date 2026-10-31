@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::HostId;
 use crate::auth::RemoteServerAuthContext;
@@ -35,6 +35,26 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 2;
 /// Delay between reconnection attempts.
 #[cfg(not(target_family = "wasm"))]
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+/// A remote-server connection that lived shorter than this before the proxy died is counted as
+/// short-lived (#1250). Reconnecting resets the attempt counter, so a daemon that handshakes and
+/// then crashes was reconnected to forever, a new ssh channel and `Initialize` every few seconds.
+#[cfg(not(target_family = "wasm"))]
+const STABLE_CONNECTION_AFTER: Duration = Duration::from_secs(30);
+/// Consecutive short-lived connections after which the session gives up reconnecting and falls
+/// back to the ControlMaster executor for good.
+#[cfg(not(target_family = "wasm"))]
+const MAX_SHORT_LIVED_CONNECTIONS: u32 = 3;
+
+/// The consecutive short-lived connections of a session after one that lived `lived` (`None`
+/// when it never reached `Connected`): a connection that stayed up long enough proves the daemon
+/// works and resets the count.
+#[cfg(not(target_family = "wasm"))]
+fn consecutive_short_lived_connections(previous: u32, lived: Option<Duration>) -> u32 {
+    match lived {
+        Some(lived) if lived < STABLE_CONNECTION_AFTER => previous.saturating_add(1),
+        Some(_) | None => 0,
+    }
+}
 /// Outer bound on one reconnect attempt (connect + `Initialize`). Without it
 /// the only bound was the 120 s `Initialize` request timeout, so two attempts
 /// could sit in `Reconnecting` for ~4 minutes.
@@ -855,6 +875,11 @@ pub struct RemoteServerManager {
     /// from an attempt that timed out) cannot mark the session disconnected over a
     /// `Reconnecting` or newer state.
     connection_generation: HashMap<SessionId, u64>,
+    /// When each session's remote-server connection reached `Connected`, to tell a daemon that
+    /// keeps dying right after the handshake from a one-off drop (#1250).
+    connected_at: HashMap<SessionId, Instant>,
+    /// Consecutive connections of a session that died within `STABLE_CONNECTION_AFTER`.
+    short_lived_connections: HashMap<SessionId, u32>,
     /// Last accepted `RemoteAgentContextSnapshot` per host, used by
     /// `accept_remote_agent_context_snapshot_revision` to drop stale/
     /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
@@ -886,6 +911,8 @@ impl RemoteServerManager {
             session_labels: HashMap::new(),
             pending_host_requests: HashMap::new(),
             connection_generation: HashMap::new(),
+            connected_at: HashMap::new(),
+            short_lived_connections: HashMap::new(),
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
         }
@@ -1262,7 +1289,12 @@ impl RemoteServerManager {
                 ctx.spawn_stream_local(
                     event_rx,
                     move |me, event, ctx| {
-                        me.forward_client_event(session_id, event, ctx);
+                        // #1171: a stale stream's items must not reach the session state either;
+                        // they are routed by session id, so a late item of a dead connection
+                        // would apply to the one that replaced it.
+                        if me.connection_generation.get(&session_id) == Some(&generation) {
+                            me.forward_client_event(session_id, event, ctx);
+                        }
                     },
                     move |me, ctx| {
                         // #1171: only the newest stream may end the session.
@@ -1429,6 +1461,8 @@ impl RemoteServerManager {
         self.session_platforms.remove(&session_id);
         self.session_labels.remove(&session_id);
         self.connection_generation.remove(&session_id);
+        self.connected_at.remove(&session_id);
+        self.short_lived_connections.remove(&session_id);
 
         // Remove the session entry. Dropping the `RemoteSessionState`
         // here drops the transport's owned `Child` (if any), which
@@ -1875,6 +1909,7 @@ impl RemoteServerManager {
         };
 
         let is_first_session = !self.host_to_sessions.contains_key(&host_id);
+        self.connected_at.insert(session_id, Instant::now());
         self.sessions.insert(
             session_id,
             RemoteSessionState::Connected {
@@ -2148,6 +2183,37 @@ impl RemoteServerManager {
         // We need to do this on disconnect because the cached
         // navigated path is only deduping for the current _remote server session.
         self.last_navigated_path.remove(&session_id);
+
+        // A daemon that keeps dying right after the handshake is not reconnected to forever
+        // (#1250): each reconnect would reset `attempt`, so this counts connections instead.
+        let lived = self
+            .connected_at
+            .remove(&session_id)
+            .map(|connected_at| connected_at.elapsed());
+        let short_lived = consecutive_short_lived_connections(
+            self.short_lived_connections
+                .get(&session_id)
+                .copied()
+                .unwrap_or(0),
+            lived,
+        );
+        if short_lived >= MAX_SHORT_LIVED_CONNECTIONS {
+            log::warn!(
+                "Remote server for session {session_id:?} died within {STABLE_CONNECTION_AFTER:?} \
+                 of connecting {short_lived} times in a row (last lived {lived:?}); not \
+                 reconnecting again"
+            );
+            self.short_lived_connections.remove(&session_id);
+            self.sessions
+                .insert(session_id, RemoteSessionState::Disconnected);
+            ctx.emit(RemoteServerManagerEvent::SessionDisconnected {
+                session_id,
+                host_id,
+                exit_status,
+            });
+            return;
+        }
+        self.short_lived_connections.insert(session_id, short_lived);
 
         self.attempt_reconnect(
             session_id,

@@ -214,6 +214,15 @@ impl PersistenceWriter {
                 log::error!("Model event sender should exist if thread handle is set");
                 return;
             };
+            // Writes that found the channel full are still on their way (#1251).
+            if !wait_for_deferred_sends(DEFERRED_SENDS_QUIT_WAIT) {
+                log::warn!(
+                    "{} deferred SQLite write(s) did not reach the writer within {:?}; stopping \
+                     the writer without them",
+                    outstanding_deferred_sends(),
+                    DEFERRED_SENDS_QUIT_WAIT
+                );
+            }
             if let Err(err) = sender.send(ModelEvent::Terminate) {
                 log::error!("Could not terminate SQLite writer thread: {err}");
             }
@@ -230,6 +239,151 @@ impl PersistenceWriter {
 impl Drop for PersistenceWriter {
     fn drop(&mut self) {
         self.terminate();
+    }
+}
+
+/// The answer side of [`ModelEvent::WriteBarrier`]: the writer sends `()` when it reaches the
+/// barrier; a dropped sender (the writer stopped, the event was dropped from a full retry
+/// queue) cancels the receiver, which callers treat as "not written".
+pub struct WriteBarrier(futures::channel::oneshot::Sender<()>);
+
+impl WriteBarrier {
+    /// A barrier and the receiver that resolves when the writer reaches it.
+    pub fn new() -> (Self, futures::channel::oneshot::Receiver<()>) {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        (Self(sender), receiver)
+    }
+
+    /// Answers the barrier. Called by the writer thread, in event order.
+    pub(crate) fn reached(self) {
+        let _ = self.0.send(());
+    }
+}
+
+impl std::fmt::Debug for WriteBarrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WriteBarrier")
+    }
+}
+
+/// Sends still parked on "SQLite deferred send" threads (see [`send_model_event_nonblocking`]).
+/// [`PersistenceWriter::terminate`] waits for them before it sends `Terminate`, or a write that
+/// was only waiting for room in the channel would arrive after the writer stopped and be lost
+/// (#1251).
+static DEFERRED_SENDS: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static DEFERRED_SENDS_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn note_deferred_send_started() {
+    let mut count = DEFERRED_SENDS.lock().unwrap_or_else(|e| e.into_inner());
+    *count += 1;
+}
+
+fn note_deferred_send_finished() {
+    let mut count = DEFERRED_SENDS.lock().unwrap_or_else(|e| e.into_inner());
+    *count = count.saturating_sub(1);
+    DEFERRED_SENDS_CHANGED.notify_all();
+}
+
+/// How many deferred sends have not reached the channel yet.
+pub(crate) fn outstanding_deferred_sends() -> usize {
+    *DEFERRED_SENDS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Waits until no deferred send is outstanding, at most `timeout`. Returns whether all of them
+/// reached the channel.
+pub(crate) fn wait_for_deferred_sends(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut count = DEFERRED_SENDS.lock().unwrap_or_else(|e| e.into_inner());
+    while *count > 0 {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        count = DEFERRED_SENDS_CHANGED
+            .wait_timeout(count, deadline - now)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+    true
+}
+
+/// Longest the quit path waits for deferred sends before it stops the writer anyway: a writer
+/// wedged on a lock would otherwise hold the quit for as long as the lock.
+const DEFERRED_SENDS_QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The newest session snapshot that found the writer channel full, waiting for room. One slot:
+/// a newer snapshot replaces an older one that has not been sent yet, and while the delivering
+/// thread is alive every snapshot goes through the slot, so an older snapshot can never reach the
+/// writer after a newer one (#1251).
+static DEFERRED_SNAPSHOT: std::sync::Mutex<DeferredSnapshot> =
+    std::sync::Mutex::new(DeferredSnapshot {
+        state: None,
+        thread_running: false,
+    });
+
+struct DeferredSnapshot {
+    state: Option<AppState>,
+    thread_running: bool,
+}
+
+/// Sends a session snapshot without ever blocking the caller. On a full channel the snapshot is
+/// kept (newest wins) and delivered by a short-lived thread as soon as there is room, so the last
+/// snapshot before a quit is not skipped when the writer is behind (#1251). Delivery counts as a
+/// deferred send for [`wait_for_deferred_sends`].
+pub fn send_snapshot_nonblocking(sender: &SyncSender<ModelEvent>, state: AppState) {
+    let mut deferred = DEFERRED_SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+    let state = if deferred.thread_running {
+        state
+    } else {
+        match sender.try_send(ModelEvent::Snapshot(state)) {
+            Ok(()) => return,
+            Err(std::sync::mpsc::TrySendError::Full(ModelEvent::Snapshot(state))) => state,
+            Err(std::sync::mpsc::TrySendError::Full(_)) => return,
+            Err(err @ std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                log::error!("Error trying to send model event {err:?}");
+                return;
+            }
+        }
+    };
+    log::warn!("SQLite writer channel is full; the session snapshot waits for room");
+    deferred.state = Some(state);
+    if deferred.thread_running {
+        return;
+    }
+    deferred.thread_running = true;
+    note_deferred_send_started();
+    let sender = sender.clone();
+    let spawned = std::thread::Builder::new()
+        .name("SQLite deferred snapshot".to_owned())
+        .spawn(move || {
+            loop {
+                let state = {
+                    let mut deferred = DEFERRED_SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+                    match deferred.state.take() {
+                        Some(state) => state,
+                        None => {
+                            deferred.thread_running = false;
+                            break;
+                        }
+                    }
+                };
+                if let Err(err) = sender.send(ModelEvent::Snapshot(state)) {
+                    log::warn!("Deferred session snapshot send failed: {err:?}");
+                    let mut deferred = DEFERRED_SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
+                    deferred.state = None;
+                    deferred.thread_running = false;
+                    break;
+                }
+            }
+            note_deferred_send_finished();
+        });
+    if spawned.is_err() {
+        // No thread to deliver it: dropped, like a skipped snapshot before #1251, rather than
+        // left in the slot to be sent after a newer one.
+        deferred.state = None;
+        deferred.thread_running = false;
+        note_deferred_send_finished();
+        log::warn!("Could not start the deferred snapshot thread; this session snapshot is skipped");
     }
 }
 
@@ -269,6 +423,7 @@ pub fn send_model_event_nonblocking(
     let pending = Arc::new(std::sync::Mutex::new(Some(event)));
     let thread_pending = pending.clone();
     let thread_sender = sender.clone();
+    note_deferred_send_started();
     let spawned = std::thread::Builder::new()
         .name("SQLite deferred send".to_owned())
         .spawn(move || {
@@ -278,8 +433,10 @@ pub fn send_model_event_nonblocking(
             {
                 log::warn!("Deferred SQLite writer send failed: {err:?}");
             }
+            note_deferred_send_finished();
         });
     if spawned.is_err() {
+        note_deferred_send_finished();
         // Could not start a thread: fall back to the blocking send rather than lose the write.
         let event = pending.lock().ok().and_then(|mut slot| slot.take());
         if let Some(event) = event {
@@ -610,6 +767,9 @@ pub enum ModelEvent {
     },
     /// Close the SQLite writer thread when the app is about to quit.
     Terminate,
+    /// Answered once every event queued before it has been written (or parked behind the same
+    /// lock, in order), so a caller can learn that the database holds what it sent (#1252).
+    WriteBarrier(WriteBarrier),
     UpsertAIQuery {
         query: Arc<PersistedAIInput>,
     },

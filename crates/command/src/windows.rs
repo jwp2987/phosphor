@@ -144,6 +144,9 @@ impl KillOnCloseJob {
         let job = win32job::Job::create()?;
         let mut info = job.query_extended_limit_info()?;
         info.limit_kill_on_job_close();
+        // As `create_internal`: a descendant that asks for CREATE_BREAKAWAY_FROM_JOB (some
+        // installers and daemons do) fails with access denied inside a job without it.
+        info.limit_breakaway_ok();
         job.set_extended_limit_info(&info)?;
         job.assign_process(process)?;
         Ok(Self { job })
