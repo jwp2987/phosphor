@@ -7,6 +7,7 @@ app/frameworks/**/*.xcframework
 /lib/*
 !/lib/rust-genai/
 !/lib/cosmic-text/
+!/lib/arboard/
 /lib/rust-genai/target/
 /lib/cosmic-text/target/
 /warp.xcworkspace

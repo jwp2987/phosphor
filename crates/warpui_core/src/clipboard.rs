@@ -36,6 +36,14 @@ pub trait Clipboard: 'static {
         content
     }
 
+    /// A self-contained reader for the clipboard's text and copied paths that can run on another
+    /// thread, or `None` when the platform's clipboard read is cheap enough (or not thread-safe
+    /// enough) to stay on the main thread. A multi-MB X11 selection is transferred in INCR chunks
+    /// by a possibly slow owner, which froze the UI for seconds (#1255).
+    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
+        None
+    }
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text
@@ -57,6 +65,17 @@ pub trait Clipboard: 'static {
     #[cfg(target_family = "wasm")]
     fn save(&mut self, content: ClipboardContent);
 }
+
+/// The result of a [`Clipboard::background_text_reader`] read.
+pub enum BackgroundTextRead {
+    /// The text and copied paths (empty content when the clipboard held no text).
+    Content(ClipboardContent),
+    /// The clipboard owner never answered (the same condition as `take_read_failure`).
+    TimedOut,
+}
+
+/// See [`Clipboard::background_text_reader`].
+pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 'static>;
 
 // Clipboard could contain content with multiple data types at the same type.
 #[derive(Debug, Clone, Default)]
