@@ -20,7 +20,7 @@ if ($env.WARP_PATH_APPEND? | default "" | is-not-empty) {
 # A JSON string literal (quotes included) for any string. nushell's `to json` leaves control
 # characters raw, which is not valid JSON, so they are written as \u00XX here.
 def __warp_jstr [s: string]: nothing -> string {
-    let e = ($s | str replace -a '\' '\\' | str replace -a '"' '\"')
+    let e = ($s | str replace -a '\' '\\' | str replace -a '"' '\"' | str replace -a (char nl) '\u000a')
     if ($e =~ '[\x00-\x1f\x7f]') {
         let digits = ('0123456789abcdef' | split chars)
         let body = ($e | split chars | each {|c|
@@ -137,8 +137,8 @@ def --wrapped __warp_git [...args: string]: nothing -> string {
 # the .git directory itself, a symlinked .git, a repo owned by someone else (git refuses it),
 # reftable (HEAD is refs/heads/.invalid), a detached HEAD (needs an abbreviated hash), a branch
 # whose short name git would qualify because a ref of the same name exists elsewhere, and any
-# error. The walk starts at the physical path (`path expand` follows symlinks), as git's does.
-def __warp_git_probe [me: string]: nothing -> any {
+# error. The user name (one `id -un`, once, only inside a repository) is for the owner check. The walk starts at the physical path (`path expand` follows symlinks), as git's does.
+def --env __warp_git_probe []: nothing -> any {
     mut p = ($env.PWD | path expand)
     mut gd = ""
     for _ in 1..64 {
@@ -152,6 +152,9 @@ def __warp_git_probe [me: string]: nothing -> any {
         $p = $parent
     }
     if $gd == "" { return null }
+    if ($env.__warp_me? | default "") == "" { $env.__warp_me = (do -i { ^id -un } | default "" | into string | str trim) }
+    let me = $env.__warp_me
+    if $me == "" { return null }
     let owners = (ls --long --directory $gd $p | get user)
     if ($owners | any {|u| $u != $me }) { return null }
     if not (($gd | path join objects | path exists) and ($gd | path join refs | path exists)) { return null }
@@ -168,10 +171,9 @@ def __warp_git_probe [me: string]: nothing -> any {
 # directory and branch in a repository that has one.
 def --env __warp_git_info []: nothing -> record {
     if (which git | is-empty) { return {branch: "", head: ""} }
-    let me = ($env.__warp_me? | default "")
-    let plain = ($me != "" and $nu.os-info.name != "windows" and $env.GIT_DIR? == null and $env.GIT_WORK_TREE? == null and $env.GIT_CEILING_DIRECTORIES? == null and $env.GIT_DISCOVERY_ACROSS_FILESYSTEM? == null and $env.GIT_NAMESPACE? == null and $env.GIT_COMMON_DIR? == null)
+    let plain = ($nu.os-info.name != "windows" and $env.GIT_DIR? == null and $env.GIT_WORK_TREE? == null and $env.GIT_CEILING_DIRECTORIES? == null and $env.GIT_DISCOVERY_ACROSS_FILESYSTEM? == null and $env.GIT_NAMESPACE? == null and $env.GIT_COMMON_DIR? == null)
     if $plain {
-        let r = (try { __warp_git_probe $me } catch { null })
+        let r = (try { __warp_git_probe } catch { null })
         if $r != null {
             let key = $"($env.PWD)|($r.branch)"
             if not $r.packed or ($env.__warp_git_checked? | default "") == $key {
@@ -307,9 +309,6 @@ def __warp_bootstrapped [] {
     let path = ($env.PATH | each {|p| $p | into string } | str join (char esep))
     __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
 }
-
-# Who owns the repositories git will accept (see __warp_git_probe); one fork, once.
-$env.__warp_me = (do -i { ^id -un } | default "" | into string | str trim)
 
 # Hooks. Ours is first in pre_prompt so user hooks cannot disturb $env.LAST_EXIT_CODE before the
 # exit code is read.
