@@ -2702,11 +2702,11 @@ fn paste_bytes_are_sent_whole_as_cancellable_input() {
         let messages = sender.messages.lock();
         assert_eq!(messages.len(), 2, "{messages:?}");
         match &messages[0] {
-            Message::CommandInput(bytes) => assert_eq!(bytes.as_ref(), paste.as_slice()),
+            Message::CommandInput(bytes) => assert_eq!(&bytes[..], paste.as_slice()),
             other => panic!("a paste must be sent as cancellable input, got {other:?}"),
         }
         // A keystroke behind it stays ordinary input, so a cancel never takes typed keys.
-        assert!(matches!(&messages[1], Message::Input(bytes) if bytes.as_ref() == b"k"));
+        assert!(matches!(&messages[1], Message::Input(bytes) if &bytes[..] == b"k"));
 
         drop(model_events_tx);
     });
