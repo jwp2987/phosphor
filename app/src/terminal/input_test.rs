@@ -11783,3 +11783,119 @@ fn slow_enter_hold_threshold() {
     assert!(is_slow_enter_hold(Duration::from_millis(500)));
     assert!(is_slow_enter_hold(Duration::from_millis(3700)));
 }
+
+/// A bootstrapped terminal of `shell_type` whose shell history file holds `histfile`, with the
+/// input autodetecting and inheriting AI (#1203). Returns the input and the directory the file
+/// lives in (dropped with the test).
+async fn input_with_shell_history(
+    app: &mut App,
+    shell_type: ShellType,
+    histfile: &str,
+) -> (ViewHandle<Input>, tempfile::TempDir) {
+    use crate::ai::blocklist::InputConfig;
+
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history");
+    std::fs::write(&path, histfile).unwrap();
+    let session_info = SessionInfo::new_for_test()
+        .with_shell_type(shell_type)
+        .with_histfile(Some(path.to_str().unwrap().to_owned()));
+    let terminal = add_window_with_bootstrapped_terminal(app, None, Some(session_info)).await;
+    let input = terminal.read(app, |terminal, _| terminal.input().clone());
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::AI,
+                    is_locked: false,
+                },
+                false, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert("x", ctx);
+    });
+    (input, dir)
+}
+
+/// Types `line` and presses Enter; whether it ran as a shell command at once (no verdict wait).
+fn enter_runs_in_shell_at_once(app: &mut App, input: &ViewHandle<Input>, line: &str) -> bool {
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(line, ctx);
+    });
+    input.update(app, |input, ctx| {
+        input.last_enter_submitted_shell_command = false;
+        input.input_enter(ctx);
+    });
+    input.read(app, |input, _| {
+        input.verdict_wait.is_none() && input.last_enter_submitted_shell_command
+    })
+}
+
+/// #1203: a line the shell's own history file holds, verbatim, runs as a shell command at Enter
+/// without waiting for the classifier, in every supported shell's history format and syntax
+/// (bash, zsh extended, fish yaml, PSReadLine with a pipeline, nushell plaintext). Each line has a
+/// prose word the pre-filter would otherwise leave to the classifier.
+#[test]
+fn test_history_file_line_runs_in_shell_at_once_for_every_shell() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        for (shell_type, histfile, line) in [
+            (ShellType::Bash, "git log --since yesterday\n", "git log --since yesterday"),
+            (
+                ShellType::Zsh,
+                ": 1699251735:0;git log --since yesterday\n",
+                "git log --since yesterday",
+            ),
+            (
+                ShellType::Fish,
+                "- cmd: git log --since yesterday\n  when: 1699251735\n",
+                "git log --since yesterday",
+            ),
+            (
+                ShellType::PowerShell,
+                "Get-ChildItem | Where-Object Length -gt 1kb\n",
+                "Get-ChildItem | Where-Object Length -gt 1kb",
+            ),
+            (ShellType::Nu, "sys host\n", "sys host"),
+        ] {
+            let (input, _dir) = input_with_shell_history(&mut app, shell_type, histfile).await;
+            assert!(
+                enter_runs_in_shell_at_once(&mut app, &input, line),
+                "{shell_type:?}: {line:?} ran before, so Enter must not wait"
+            );
+        }
+    });
+}
+
+/// #1203: history never pulls a request shape or a bare English word into the shell (#965,
+/// #1183): `help` and `say hello` in the history file still go to the agent; a line that is not in
+/// the history still waits for its verdict as before.
+#[test]
+fn test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let (input, _dir) =
+            input_with_shell_history(&mut app, ShellType::Bash, "help\nsay hello\nbar\n").await;
+        for line in ["help", "say hello", "bar", "git log --since yesterday"] {
+            assert!(
+                !enter_runs_in_shell_at_once(&mut app, &input, line),
+                "{line:?} must not run in the shell on the strength of the history file"
+            );
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+            });
+        }
+    });
+}

@@ -1840,23 +1840,27 @@ enum DenyExecutionReason {
     HistoryNotAppendable,
 }
 
-/// Whether `buffer_text`, verbatim, ran in `session_id`'s shell before and exited 0 (#1203): the
-/// history matcher's exact, successful case, cheap enough for Enter to decide on at once (one pass
-/// over the session's visible history, newest first). A line that reads as a request to the agent
-/// is never pinned to the shell by its history (#965), as in the matcher.
-fn history_ran_exactly_before(history: &History, session_id: SessionId, buffer_text: &str) -> bool {
+/// Whether `buffer_text`, verbatim, is a line the session's shell ran before (#1203), as the
+/// host's history records it ([`History::ran_before`], O(1) through the command index): the
+/// newest entry with a recorded exit code decides, the shell's own history file counts without
+/// one, a Phosphor-recorded entry needs exit 0. Never for a line the classifier reserves for the
+/// agent whatever the history says (#965): a request shape, or one bare word that reads as English
+/// rather than as a command (`where`, `bar`, `help`). A pipeline or redirection is a command in
+/// any shell's syntax (`ls | where size > 1kb`, `Get-ChildItem | Where-Object ...`), so those
+/// shapes are not asked.
+fn history_says_ran_before(history: &History, session_id: SessionId, buffer_text: &str) -> bool {
     let line = buffer_text.trim();
-    if line.is_empty() || input_classifier::util::reads_as_request_to_agent(line) {
+    if line.is_empty() {
         return false;
     }
-    history
-        .visible_commands(session_id)
-        .is_some_and(|entries| {
-            entries.rev().any(|entry| {
-                entry.command.trim() == line
-                    && entry.exit_code.is_some_and(|code| code.value() == 0)
-            })
-        })
+    let has_shell_operator = line.contains(['|', '>', '<', '$', ';', '&', '(']);
+    if !has_shell_operator
+        && (input_classifier::util::reads_as_request_to_agent(line)
+            || input_classifier::util::lone_word_belongs_to_agent(line))
+    {
+        return false;
+    }
+    history.ran_before(session_id, line) == crate::terminal::history::RanBefore::Succeeded
 }
 
 /// The notice for a command the shell cannot take now. A running command blocks user
@@ -12901,7 +12905,7 @@ impl Input {
         // matcher the Enter would otherwise wait up to its budget for.
         let ran_before_exactly = prompt_session_is_the_target
             && self.active_block_session_id().is_some_and(|session_id| {
-                history_ran_exactly_before(History::as_ref(ctx), session_id, &snapshot.buffer_text)
+                history_says_ran_before(History::as_ref(ctx), session_id, &snapshot.buffer_text)
             });
         self.ai_input_model.update(ctx, |model, ctx| {
             model.settle_pending_detection_for_submit(

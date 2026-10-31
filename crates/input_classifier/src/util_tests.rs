@@ -1351,3 +1351,29 @@ fn test_is_unambiguous_shell_command_rule3_known_subcommand_is_the_only_prose_wo
         }
     });
 }
+
+/// #1203: a history entry for one bare word that reads as English (a typo, `where` in the wrong
+/// shell, `bar`) must not pull it into the shell; a bare command word is a command.
+#[test]
+fn test_lone_word_belongs_to_agent() {
+    for word in [
+        "help", "where", "what", "say", "bar", "show", "make", "Help ",
+    ] {
+        assert!(lone_word_belongs_to_agent(word), "{word:?} is the agent's");
+    }
+    for word in [
+        "ls",
+        "git",
+        "systemctl",
+        "pwd",
+        "htop",
+        "cargo",
+        "nvim",
+        "ls -la",
+    ] {
+        assert!(
+            !lone_word_belongs_to_agent(word),
+            "{word:?} is a command (or not one word)"
+        );
+    }
+}

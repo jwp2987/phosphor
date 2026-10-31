@@ -265,6 +265,18 @@ impl LoadedHistoryFile {
     }
 }
 
+/// Whether a line was run before on a host, as [`History::ran_before`] reads its history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RanBefore {
+    /// No entry equals the line (or only Phosphor-recorded entries without an exit code do).
+    Never,
+    /// The newest entry with a recorded exit code exited 0, or none recorded one and the shell's
+    /// own history file holds the line.
+    Succeeded,
+    /// The newest entry with a recorded exit code failed.
+    Failed,
+}
+
 /// Where each command sits in a host's `history_file_commands ++ session_commands`.
 #[derive(Debug, Default)]
 struct HostCommandIndex {
@@ -1133,6 +1145,70 @@ impl History {
     /// ownership so callers can keep an owned snapshot without deep-cloning command data.
     pub fn commands_shared(&self, session_id: SessionId) -> Option<Vec<Arc<HistoryEntry>>> {
         self.collect_visible_commands_for_session(session_id, Arc::clone)
+    }
+
+    /// What the host's history says about `line`, run verbatim (#1203): decided by the newest
+    /// entry that recorded an exit code; with none recorded, a line the shell's own history file
+    /// holds counts as run (the file records no exit codes), a line Phosphor recorded does not
+    /// until its command has exited 0. O(1) through the command index (#1140); only entries
+    /// appended since the index last synced are scanned.
+    pub fn ran_before(&self, session_id: SessionId, line: &str) -> RanBefore {
+        let Some(shell_host) = self.session_id_to_shell_host.get(&session_id) else {
+            return RanBefore::Never;
+        };
+        let (Some(histfile), Some(session)) = (
+            self.history_file_commands.get(shell_host),
+            self.session_commands.get(shell_host),
+        ) else {
+            return RanBefore::Never;
+        };
+        let histfile_len = histfile.len();
+        let mut positions: Vec<usize> = match self.command_indices.get(shell_host) {
+            Some(index) if index.histfile_indexed_len == histfile_len => {
+                let mut positions: Vec<usize> = index.positions_of(line).collect();
+                positions.extend(
+                    session
+                        .iter()
+                        .enumerate()
+                        .skip(index.session_indexed_len)
+                        .filter(|(_, entry)| entry.command == line)
+                        .map(|(idx, _)| histfile_len + idx),
+                );
+                positions
+            }
+            _ => histfile
+                .iter()
+                .chain(session.iter())
+                .enumerate()
+                .filter(|(_, entry)| entry.command == line)
+                .map(|(idx, _)| idx)
+                .collect(),
+        };
+        positions.sort_unstable_by(|a, b| b.cmp(a));
+        let mut in_history_file = false;
+        for position in positions {
+            let entry = if position < histfile_len {
+                histfile.get(position)
+            } else {
+                session.get(position - histfile_len)
+            };
+            let Some(entry) = entry else {
+                continue;
+            };
+            if let Some(exit_code) = entry.exit_code {
+                return if exit_code.value() == 0 {
+                    RanBefore::Succeeded
+                } else {
+                    RanBefore::Failed
+                };
+            }
+            in_history_file |= position < histfile_len;
+        }
+        if in_history_file {
+            RanBefore::Succeeded
+        } else {
+            RanBefore::Never
+        }
     }
 
     #[allow(clippy::len_without_is_empty)]

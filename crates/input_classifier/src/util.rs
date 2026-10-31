@@ -1576,6 +1576,22 @@ fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool
 const COLLISION_SENTENCE_WORDS: [&str; 8] =
     ["a", "does", "do", "did", "has", "have", "will", "about"];
 
+/// #1203: whether `word`, a line of one bare word, is one the classifier would send to the agent
+/// rather than run, so a history entry for it (a typo'd `bar`, a `where` typed into the wrong
+/// shell) must not pull it into the shell: a one-off natural-language word, a request opener or
+/// an ambiguous lone head (#1183), or any ordinary English word that is not a known shell command.
+pub fn lone_word_belongs_to_agent(word: &str) -> bool {
+    let word = word.trim().to_lowercase();
+    if word.is_empty() || word.contains(char::is_whitespace) {
+        return false;
+    }
+    let word = word.as_str();
+    is_one_off_natural_language_word(word)
+        || REQUEST_OPENER_HEADS.contains(&word)
+        || AMBIGUOUS_LONE_HEADS.contains(&word)
+        || (is_ordinary_english_word(word) && !is_known_shell_command_word(word))
+}
+
 /// [`reads_as_command_headed_prose`] with the one-off shell keyword exemption applied: a buffer
 /// headed by `echo`, `sudo`... (after any `VAR=x` prefixes) carries English arguments as a matter
 /// of course and is never prose. The one predicate the safety gate and the Enter-time settle

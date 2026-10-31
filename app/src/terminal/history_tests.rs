@@ -1456,3 +1456,93 @@ fn visible_commands_snapshot_matches_visible_commands() {
 
     assert!(history.visible_commands_snapshot(other_session).is_none());
 }
+
+/// #1203: what the history says about a line run verbatim. The shell's own history file counts
+/// without an exit code; a Phosphor-recorded entry needs exit 0; the newest entry with a recorded
+/// exit code decides, so a known failure after an older success does not count and a later success
+/// does again.
+#[test]
+fn ran_before_follows_the_newest_recorded_exit_code() {
+    App::test((), |mut app| async move {
+        let mut history_handle = app.add_model(|_| History::default());
+        let session = Arc::new(Session::new(
+            SessionInfo::new_for_test().with_shell_type(ShellType::Bash),
+            Arc::new(TestCommandExecutor::default()),
+        ));
+        let session_id = session.id();
+        initialize_history_for_testing(
+            &mut history_handle,
+            session.clone(),
+            async move { vec!["git log --since yesterday".to_owned(), "say hello".to_owned()] },
+            vec![],
+            &mut app,
+        )
+        .await;
+        history_handle.read(&app, |history, _| {
+            assert_eq!(
+                history.ran_before(session_id, "git log --since yesterday"),
+                super::RanBefore::Succeeded,
+                "a history-file line counts without an exit code"
+            );
+            assert_eq!(
+                history.ran_before(session_id, "never typed"),
+                super::RanBefore::Never
+            );
+        });
+
+        // Phosphor records the line again; until it exits nothing changes, a failure counts
+        // against it, a later success for it.
+        let run = |app: &mut App, command: &str, at_ms: i64, exit: Option<i32>| {
+            let start_ts = Local::now() + chrono::Duration::milliseconds(at_ms);
+            history_handle.update(app, |history, _| {
+                history.append_commands(
+                    session_id,
+                    vec![HistoryEntry::command_at_time(
+                        command.to_owned(),
+                        start_ts,
+                        Some(session_id),
+                        false,
+                    )],
+                );
+                if let Some(exit) = exit {
+                    history.mark_command_as_finished(
+                        session_id,
+                        start_ts,
+                        start_ts,
+                        ExitCode::from(exit),
+                    );
+                }
+            });
+        };
+        run(&mut app, "git log --since yesterday", 1000, None);
+        history_handle.read(&app, |history, _| {
+            assert_eq!(
+                history.ran_before(session_id, "git log --since yesterday"),
+                super::RanBefore::Succeeded,
+                "a running Phosphor entry is neutral; the history file still counts"
+            );
+        });
+        run(&mut app, "git log --since yesterday", 2000, Some(128));
+        history_handle.read(&app, |history, _| {
+            assert_eq!(
+                history.ran_before(session_id, "git log --since yesterday"),
+                super::RanBefore::Failed
+            );
+        });
+        run(&mut app, "git log --since yesterday", 3000, Some(0));
+        history_handle.read(&app, |history, _| {
+            assert_eq!(
+                history.ran_before(session_id, "git log --since yesterday"),
+                super::RanBefore::Succeeded
+            );
+        });
+        // A line only Phosphor recorded, without an exit code, does not count.
+        run(&mut app, "cargo build", 4000, None);
+        history_handle.read(&app, |history, _| {
+            assert_eq!(
+                history.ran_before(session_id, "cargo build"),
+                super::RanBefore::Never
+            );
+        });
+    });
+}
