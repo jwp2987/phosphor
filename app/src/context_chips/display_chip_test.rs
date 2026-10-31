@@ -515,3 +515,16 @@ fn test_truncate_from_beginning_preserves_char_boundaries() {
         );
     }
 }
+
+#[test]
+fn test_from_diff_stats_keeps_deletions() {
+    let stats = crate::code_review::diff_state::DiffStats {
+        files_changed: 3,
+        total_additions: 1,
+        total_deletions: 13,
+    };
+    let result = GitLineChanges::from_diff_stats(&stats);
+    assert_eq!(result.files_changed, 3);
+    assert_eq!(result.lines_added, 1);
+    assert_eq!(result.lines_removed, 13);
+}

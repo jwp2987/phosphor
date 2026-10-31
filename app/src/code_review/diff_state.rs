@@ -1989,6 +1989,76 @@ impl LocalDiffStateModel {
         })
     }
 
+    /// Stats for the prompt git chip: insertions and deletions of tracked files
+    /// against HEAD, i.e. what `git diff --shortstat HEAD` reports (the chip's
+    /// shell fallback), so the watcher value and the fallback agree (#1134).
+    ///
+    /// Unlike [`Self::diff_metadata_against_head`] (which backs the code-review
+    /// panel, where untracked files are shown as all-added diffs), untracked
+    /// files contribute only to `files_changed` -- never their line counts, and
+    /// no untracked file is read. Lines come straight from
+    /// `git diff --numstat -z HEAD`, summed per entry, so renames and paths git
+    /// would quote (non-ASCII etc.) are counted instead of silently dropped by
+    /// a path-keyed lookup.
+    pub async fn chip_stats_against_head(repo_path: &Path) -> Result<DiffStats> {
+        log::debug!(
+            "[GIT OPERATION] diff_state.rs chip_stats_against_head git status --porcelain=2 -z; git diff --numstat -z HEAD"
+        );
+        let status_output = run_git_command(
+            repo_path,
+            &[
+                "--no-optional-locks",
+                "status",
+                // Collapse untracked directories to one entry: they only count as files.
+                "--untracked-files=normal",
+                "--porcelain=2",
+                "-z",
+            ],
+        )
+        .await?;
+        let files_changed = Self::parse_git_status(&status_output)?.len();
+
+        // No HEAD yet (or numstat fails): no tracked line changes to report.
+        let (total_additions, total_deletions) = match run_git_command(
+            repo_path,
+            &["--no-optional-locks", "diff", "--numstat", "-z", "HEAD"],
+        )
+        .await
+        {
+            Ok(output) => Self::sum_numstat_z(&output),
+            Err(_) => (0, 0),
+        };
+
+        Ok(DiffStats {
+            files_changed,
+            total_additions,
+            total_deletions,
+        })
+    }
+
+    /// Sums `(additions, deletions)` over `git diff --numstat -z` output.
+    /// Binary files (`-\t-`) count as 0. A rename/copy entry is
+    /// `<add>\t<del>\t\0<old>\0<new>\0`, so its two path tokens are skipped.
+    pub(crate) fn sum_numstat_z(output: &str) -> (usize, usize) {
+        let mut tokens = output.split('\0');
+        let (mut additions, mut deletions) = (0usize, 0usize);
+        while let Some(token) = tokens.next() {
+            let mut fields = token.splitn(3, '\t');
+            let (Some(added), Some(removed), Some(path)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            additions += added.parse().unwrap_or(0);
+            deletions += removed.parse().unwrap_or(0);
+            if path.is_empty() {
+                tokens.next();
+                tokens.next();
+            }
+        }
+        (additions, deletions)
+    }
+
     async fn file_statuses_against_head(repo_path: &Path) -> Result<Vec<GitStatusEntry>> {
         // First, get the list of changed files with their status
         log::debug!(
