@@ -26,6 +26,7 @@ use crate::view_components::FeaturePopup;
 use base64::{engine::general_purpose, Engine as _};
 use element::CommandXRayMouseStateHandle;
 use figma_utils::is_figma_png;
+use instant::Instant;
 use itertools::{Either, Itertools};
 use mime_guess::from_path;
 use model::{
@@ -151,6 +152,9 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 /// focus change restarts the blinking.
 const MAX_IDLE_CURSOR_BLINKS: u32 = 20;
 const DEFAULT_TAB_SIZE: usize = 4;
+/// How long an accept keypress (Right/End at the end of the buffer) that found no ghost yet is
+/// remembered, waiting for the ghost for that exact buffer to land (#1186).
+const PENDING_AUTOSUGGESTION_ACCEPT_WINDOW: Duration = Duration::from_millis(50);
 
 pub const ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME: &str = "editor_view:insert_autosuggestion";
 pub const MAX_IMAGES_PER_CONVERSATION: usize = 200;
@@ -1848,6 +1852,10 @@ pub struct EditorView {
     cursor_display_override: Option<CursorDisplayType>,
     window_id: WindowId,
     autosuggestion_state: Option<Arc<AutosuggestionState>>,
+    /// An accept keypress that arrived at the end of the buffer before the ghost for that
+    /// buffer was ready: the buffer text at the time and when. Applied by `set_autosuggestion`
+    /// if the ghost lands for the same buffer within [`PENDING_AUTOSUGGESTION_ACCEPT_WINDOW`].
+    pending_autosuggestion_accept: Option<(String, Instant)>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
 
     /// The height of the editor at the last render.
@@ -3280,6 +3288,7 @@ impl EditorView {
             autocomplete_symbols_veto: None,
             cursor_display_override,
             autosuggestion_state: None,
+            pending_autosuggestion_accept: None,
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
                 editor_height_before_shrink: 0.,
@@ -3597,7 +3606,37 @@ impl EditorView {
             });
 
             ctx.notify();
+
+            if matches!(location, AutosuggestionLocation::EndOfBuffer)
+                && self.take_matching_pending_autosuggestion_accept(ctx)
+            {
+                self.insert_full_autosuggestion(ctx);
+            }
         }
+    }
+
+    /// Remembers an accept keypress that found no ghost, when the cursor is at the end of a
+    /// non-empty buffer (where Right/End would otherwise do nothing), so the ghost can be
+    /// accepted if it lands for this same buffer a moment later (#1186).
+    fn note_pending_autosuggestion_accept(&mut self, ctx: &AppContext) {
+        self.pending_autosuggestion_accept = None;
+        if self.autosuggestion_state.is_some() || !self.single_cursor_at_buffer_end(true, ctx) {
+            return;
+        }
+        let buffer_text = self.buffer_text(ctx);
+        if !buffer_text.is_empty() {
+            self.pending_autosuggestion_accept = Some((buffer_text, Instant::now()));
+        }
+    }
+
+    /// Consumes the pending accept; true if it is still valid for the current buffer.
+    fn take_matching_pending_autosuggestion_accept(&mut self, ctx: &AppContext) -> bool {
+        let Some((buffer_text, at)) = self.pending_autosuggestion_accept.take() else {
+            return false;
+        };
+        at.elapsed() <= PENDING_AUTOSUGGESTION_ACCEPT_WINDOW
+            && self.single_cursor_at_buffer_end(true, ctx)
+            && self.buffer_text(ctx) == buffer_text
     }
 
     /// Clears any existing autosuggestions (intelligent or not) that weren't for the current input_type.
@@ -5981,6 +6020,7 @@ impl EditorView {
         if self.single_cursor_at_autosuggestion_beginning(ctx) {
             self.insert_full_autosuggestion(ctx);
         } else {
+            self.note_pending_autosuggestion_accept(ctx);
             self.change_selections(ctx, |editor_model, ctx| {
                 editor_model.cursor_line_end(false, ctx);
             });
@@ -6209,6 +6249,7 @@ impl EditorView {
         if self.single_cursor_at_autosuggestion_beginning(ctx) {
             self.insert_full_autosuggestion(ctx);
         } else {
+            self.note_pending_autosuggestion_accept(ctx);
             self.change_selections(ctx, |editor_model, ctx| {
                 let map = editor_model.display_map(ctx);
                 let mut new_selections = editor_model.selections(ctx).clone();

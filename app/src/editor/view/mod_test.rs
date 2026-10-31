@@ -5032,3 +5032,130 @@ mod vim_handler_tests;
 
 #[path = "marked_text_tests.rs"]
 mod marked_text_tests;
+
+fn ghost_type() -> AutosuggestionType {
+    AutosuggestionType::Command {
+        was_intelligent_autosuggestion: false,
+    }
+}
+
+// #1186: Right pressed at the end of the buffer before the ghost lands is applied once the
+// ghost for that same buffer lands.
+#[test]
+fn test_accept_before_ghost_lands_is_applied() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            assert_eq!(view.buffer_text(ctx), "git st");
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+    })
+}
+
+// End behaves the same as Right.
+#[test]
+fn test_end_before_ghost_lands_is_applied() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_to_line_end(ctx);
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+        });
+    })
+}
+
+// The accept is dropped if the buffer changed before the ghost landed.
+#[test]
+fn test_pending_accept_dropped_when_buffer_changed() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            view.user_insert("a", ctx);
+            view.set_autosuggestion(
+                "tus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git sta");
+            assert_eq!(view.current_autosuggestion_text(), Some("tus"));
+        });
+    })
+}
+
+// The accept is dropped if the ghost lands after the window.
+#[test]
+fn test_pending_accept_dropped_when_ghost_is_late() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            if let Some((_, at)) = view.pending_autosuggestion_accept.as_mut() {
+                *at = *at - PENDING_AUTOSUGGESTION_ACCEPT_WINDOW * 4;
+            }
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git st");
+            assert_eq!(view.current_autosuggestion_text(), Some("atus"));
+        });
+    })
+}
+
+// Right not at the end of the buffer still moves the cursor and records no accept.
+#[test]
+fn test_right_mid_buffer_moves_cursor_without_pending_accept() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_start(ctx);
+            view.move_right(false, ctx);
+            assert!(view.pending_autosuggestion_accept.is_none());
+            assert!(!view.single_cursor_at_buffer_end(false, ctx));
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git st");
+        });
+    })
+}
