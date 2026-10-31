@@ -205,3 +205,83 @@ mod clipboard_tests {
         });
     }
 }
+
+/// The retry/timeout classification behind #1173: a slow `ContentNotAvailable` is retried and,
+/// if it persists, reported; a fast one (empty clipboard) is neither.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod read_retry_tests {
+    use std::time::Duration;
+
+    use super::super::{TEXT_READ_ATTEMPTS, TEXT_READ_TIMEOUT_FLOOR, read_text_with_retry};
+
+    const SLOW: Duration = Duration::from_millis(10);
+
+    #[test]
+    fn slow_failure_is_retried_then_reported() {
+        let mut reads = 0;
+        let mut pauses = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (Err(arboard::Error::ContentNotAvailable), SLOW)
+            },
+            || pauses += 1,
+        );
+        assert!(result.is_err());
+        assert!(timed_out, "persistent slow failure must be reported");
+        assert_eq!(reads, TEXT_READ_ATTEMPTS);
+        assert_eq!(pauses, TEXT_READ_ATTEMPTS - 1);
+    }
+
+    #[test]
+    fn slow_failure_then_success_returns_text_without_failure() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                if reads < 3 {
+                    (Err(arboard::Error::ContentNotAvailable), SLOW)
+                } else {
+                    (Ok("pasted".to_string()), SLOW)
+                }
+            },
+            || {},
+        );
+        assert_eq!(result.unwrap(), "pasted");
+        assert!(!timed_out);
+        assert_eq!(reads, 3);
+    }
+
+    #[test]
+    fn fast_failure_is_an_empty_clipboard_not_retried() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (
+                    Err(arboard::Error::ContentNotAvailable),
+                    TEXT_READ_TIMEOUT_FLOOR / 2,
+                )
+            },
+            || panic!("must not pause for an empty clipboard"),
+        );
+        assert!(result.is_err());
+        assert!(!timed_out);
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn other_errors_are_not_retried() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (Err(arboard::Error::ClipboardNotSupported), SLOW)
+            },
+            || panic!("must not pause"),
+        );
+        assert!(result.is_err());
+        assert!(!timed_out);
+        assert_eq!(reads, 1);
+    }
+}

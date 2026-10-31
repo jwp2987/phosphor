@@ -20009,6 +20009,15 @@ impl TerminalView {
                 ctx.clipboard().read_text_and_paths()
             };
 
+            // The owner never answered (X11 timeout): say so rather than pasting nothing (#1173).
+            if ctx.clipboard().take_read_failure() {
+                self.show_error_toast(
+                    "Paste failed \u{2014} clipboard read timed out".to_string(),
+                    ctx,
+                );
+                return;
+            }
+
             if is_cli_agent_paste && clipboard_content.has_image_data() {
                 if !cfg!(windows) {
                     self.write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], ctx);

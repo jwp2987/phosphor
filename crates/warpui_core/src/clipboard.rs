@@ -7,6 +7,13 @@ pub trait Clipboard: 'static {
 
     fn read(&mut self) -> ClipboardContent;
 
+    /// True once if the most recent read failed because the clipboard owner did not answer in time
+    /// (as opposed to the clipboard having nothing to read), clearing the flag. Lets a paste tell
+    /// the user it failed instead of silently pasting nothing (#1173).
+    fn take_read_failure(&mut self) -> bool {
+        false
+    }
+
     /// Whether the clipboard holds anything at all. Platforms should override this with a probe
     /// that does not decode images; the default reads (and decodes) everything.
     fn has_content(&mut self) -> bool {

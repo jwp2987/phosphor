@@ -1,4 +1,5 @@
 use std::ops::Not;
+use std::time::{Duration, Instant};
 
 use arboard::{
     self, Clipboard as LinuxClipboardInner, GetExtLinux, LinuxClipboardKind, SetExtLinux,
@@ -7,14 +8,55 @@ use zbus::zvariant::NoneValue;
 
 use crate::{clipboard::ClipboardContent, Clipboard};
 
+/// How many times the text read is attempted when the owner is slow (#1173).
+const TEXT_READ_ATTEMPTS: usize = 3;
+/// Pause between attempts, so a busy owner can finish serving the previous request.
+const TEXT_READ_RETRY_PAUSE: Duration = Duration::from_millis(50);
+/// A failed read that returned faster than this was an immediate "no text" answer from the
+/// owner (an empty clipboard), not a timeout. arboard's X11 chunk timeout is 10 ms, so a timed-out
+/// read always takes at least this long; retrying a quick failure would only delay a paste of
+/// nothing.
+const TEXT_READ_TIMEOUT_FLOOR: Duration = Duration::from_millis(8);
+
 pub struct LinuxClipboard {
     inner: LinuxClipboardInner,
+    /// Set when the last text read kept failing after retries (the owner timed out), as opposed
+    /// to the clipboard simply having no text. Taken by `take_read_failure`.
+    read_failed: bool,
+}
+
+/// Reads text, retrying when the failure looks like a timeout rather than an empty clipboard.
+///
+/// `read` returns the result and how long the attempt took; `pause` sleeps between attempts.
+/// Returns the final result and whether it was a timeout-shaped failure (i.e. every attempt
+/// failed slowly with `ContentNotAvailable`, which is what arboard reports for an X11
+/// INCR/selection-request timeout).
+fn read_text_with_retry(
+    mut read: impl FnMut() -> (Result<String, arboard::Error>, Duration),
+    mut pause: impl FnMut(),
+) -> (Result<String, arboard::Error>, bool) {
+    let mut attempt = 1;
+    loop {
+        let (result, elapsed) = read();
+        let timeout_shaped = matches!(result, Err(arboard::Error::ContentNotAvailable))
+            && elapsed >= TEXT_READ_TIMEOUT_FLOOR;
+        if !timeout_shaped {
+            return (result, false);
+        }
+        if attempt >= TEXT_READ_ATTEMPTS {
+            return (result, true);
+        }
+        log::warn!("Clipboard text read timed out (attempt {attempt}); retrying");
+        attempt += 1;
+        pause();
+    }
 }
 
 impl LinuxClipboard {
     pub fn new() -> Result<Self, arboard::Error> {
         Ok(Self {
             inner: LinuxClipboardInner::new()?,
+            read_failed: false,
         })
     }
 }
@@ -29,6 +71,10 @@ impl Clipboard for LinuxClipboard {
                 log::warn!("Unable to set clipboard text: {err:?}");
             }
         }
+    }
+
+    fn take_read_failure(&mut self) -> bool {
+        std::mem::take(&mut self.read_failed)
     }
 
     fn read(&mut self) -> ClipboardContent {
@@ -197,7 +243,15 @@ impl LinuxClipboard {
         clipboard_kind: LinuxClipboardKind,
         include_images: bool,
     ) -> Result<ClipboardContent, arboard::Error> {
-        let text_result = self.inner.get().text();
+        let (text_result, timed_out) = read_text_with_retry(
+            || {
+                let start = Instant::now();
+                let result = self.inner.get().text();
+                (result, start.elapsed())
+            },
+            || std::thread::sleep(TEXT_READ_RETRY_PAUSE),
+        );
+        self.read_failed = timed_out;
         let mut content = ClipboardContent {
             plain_text: text_result.as_ref().map(|s| s.clone()).unwrap_or_default(),
             ..Default::default()
