@@ -20237,6 +20237,10 @@ impl TerminalView {
     /// `open_terminal_content_url`, which is called while a highlighted link is borrowed out of
     /// `self` -- can report a refusal without an exclusive borrow.
     fn show_error_toast(&self, text: String, ctx: &mut ViewContext<Self>) {
+        // `handle` panics when the singleton was never registered (bare views); ask first.
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::error(text);

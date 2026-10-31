@@ -1289,7 +1289,12 @@ impl RemoteServerManager {
                 ctx.spawn_stream_local(
                     event_rx,
                     move |me, event, ctx| {
-                        me.forward_client_event(session_id, event, ctx);
+                        // #1171: a stale stream's items must not reach the session state either;
+                        // they are routed by session id, so a late item of a dead connection
+                        // would apply to the one that replaced it.
+                        if me.connection_generation.get(&session_id) == Some(&generation) {
+                            me.forward_client_event(session_id, event, ctx);
+                        }
                     },
                     move |me, ctx| {
                         // #1171: only the newest stream may end the session.

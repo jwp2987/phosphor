@@ -865,7 +865,7 @@ pub(crate) fn large_buffer_real_rows(
     }
     let viewport_rows = visible.end.saturating_sub(visible.start);
     let margin = OFFSCREEN_ROW_MARGIN.max(viewport_rows.saturating_mul(4));
-    let edge = viewport_rows + 64;
+    let edge = viewport_rows.saturating_add(64);
     let around = |row: u32| row.saturating_sub(margin)..row.saturating_add(margin);
     let mut ranges = vec![
         visible.start.saturating_sub(margin)..visible.end.saturating_add(margin),
