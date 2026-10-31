@@ -2135,6 +2135,45 @@ pub fn test_emits_after_block_completed_event() {
 }
 
 #[test]
+fn user_block_completed_without_output_variant_skips_only_the_output() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = new_bootstrapped_block_list(
+        None,
+        None,
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+    );
+    command_finished_and_precmd(&mut block_list);
+    while let Ok(_event) = events_rx.try_recv() {}
+
+    insert_block(&mut block_list, "command\n", "output\n");
+    input_string(&mut block_list, "next");
+
+    let mut completed = vec![];
+    while let Ok(event) = events_rx.try_recv() {
+        if let Event::AfterBlockCompleted(event_content) = event {
+            completed.push(event_content);
+        }
+    }
+    let Some(BlockType::User(block)) = completed.first().map(|e| &e.block_type) else {
+        panic!("Expected a completed user block, got {completed:?}");
+    };
+    let lite = block.serialized_block_without_output.get(&block_list);
+    let full = block.serialized_block.get(&block_list);
+    assert!(lite.stylized_output.is_empty());
+    assert!(!full.stylized_output.is_empty());
+    assert_eq!(lite.id, full.id);
+    assert_eq!(lite.stylized_command, full.stylized_command);
+    assert_eq!(lite.exit_code, full.exit_code);
+    assert_eq!(lite.pwd, full.pwd);
+    assert_eq!(lite.session_id, full.session_id);
+    assert_eq!(lite.start_ts, full.start_ts);
+    assert_eq!(lite.completed_ts, full.completed_ts);
+    assert_eq!(lite.honor_ps1, full.honor_ps1);
+}
+
+#[test]
 fn test_background_blocks_finished() {
     let (events_tx, events_rx) = async_channel::unbounded();
     let mut block_list = new_bootstrapped_block_list(

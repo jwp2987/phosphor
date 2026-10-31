@@ -239,7 +239,7 @@ impl PassiveSuggestionsModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let block_id = block_completed
-            .serialized_block
+            .serialized_block_without_output
             .get_with(|compute| {
                 let model = self.terminal_model.lock();
                 compute(model.block_list())
@@ -325,7 +325,7 @@ impl PassiveSuggestionsModel {
 
         #[cfg(not(target_family = "wasm"))]
         {
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
+            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = self.terminal_model.lock();
                 compute(model.block_list())
             });
@@ -608,7 +608,7 @@ fn should_generate_unit_test_suggestion(
         && command.starts_with("git")
         && command.contains("commit")
         && block_completed
-            .serialized_block
+            .serialized_block_without_output
             .get_with(|compute| {
                 let model = terminal_model.lock();
                 compute(model.block_list())
@@ -630,7 +630,7 @@ fn fetch_static_prompt_suggestion(
     terminal_model: &FairMutex<TerminalModel>,
 ) -> Option<AgentModePromptSuggestion> {
     let was_successful = block
-        .serialized_block
+        .serialized_block_without_output
         .get_with(|compute| {
             let model = terminal_model.lock();
             compute(model.block_list())
@@ -653,7 +653,7 @@ fn build_prompt_suggestions_request(
     execution_context: WarpAiExecutionContext,
     terminal_model: &FairMutex<TerminalModel>,
 ) -> Option<GenerateAMQuerySuggestionsRequest> {
-    let serialized_block = block.serialized_block.get_with(|compute| {
+    let serialized_block = block.serialized_block_without_output.get_with(|compute| {
         let model = terminal_model.lock();
         compute(model.block_list())
     });
@@ -703,7 +703,7 @@ fn build_prompt_suggestions_byop_request(
 ) -> Option<crate::ai::agent_providers::active_ai::RenderedRequest> {
     use crate::ai::agent_providers::active_ai::{prompt_suggestions, BlockSnippet};
 
-    let serialized_block = block.serialized_block.get_with(|compute| {
+    let serialized_block = block.serialized_block_without_output.get_with(|compute| {
         let model = terminal_model.lock();
         compute(model.block_list())
     });

@@ -667,6 +667,9 @@ impl From<&Block> for BlockType {
                         lazy_block_field!(id, |block: &Block| Arc::new(SerializedBlock::from(
                             block
                         ))),
+                        lazy_block_field!(id, |block: &Block| Arc::new(
+                            SerializedBlock::from_block_without_output(block)
+                        )),
                         lazy_block_field!(id, Block::command_to_string),
                         lazy_block_field!(id, Block::compute_command_with_obfuscated_secrets),
                         lazy_block_field!(id, Block::compute_output_truncated),

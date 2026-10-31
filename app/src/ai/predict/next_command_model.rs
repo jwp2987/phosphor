@@ -336,7 +336,7 @@ impl NextCommandModel {
         #[cfg(feature = "local_fs")]
         if let Some(conn) = conn {
             let mut conn = conn.lock();
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
+            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = terminal_model.lock();
                 compute(model.block_list())
             });

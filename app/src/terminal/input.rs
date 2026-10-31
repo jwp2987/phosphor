@@ -8682,7 +8682,7 @@ impl Input {
                             })
                             .to_owned(),
                         block
-                            .serialized_block
+                            .serialized_block_without_output
                             .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
@@ -12452,15 +12452,26 @@ impl Input {
         };
         // #1019: look the head up on `$PATH` first, so a program installed since the bootstrap
         // scan is not reported unknown.
+        // Enter must never wait on the `$PATH` stat (a slow or stale NFS entry stalls it for
+        // seconds), so a word not yet probed is probed in the background and, as the answer is
+        // not in yet, is not reported unknown ("do not guess").
+        let mut head_probe_pending = false;
         if prompt_session_is_the_target {
             if let (Some(word), Some(session)) = (
                 snapshot.buffer_text.split_whitespace().next(),
                 self.active_session(ctx),
             ) {
-                session.discover_command_word(word);
+                if session.command_word_needs_probe(word) {
+                    head_probe_pending = true;
+                    let word = word.to_owned();
+                    ctx.background_executor()
+                        .spawn(async move { session.probe_command_word(&word) })
+                        .detach();
+                }
             }
         }
         let head_unknown_to_shell = prompt_session_is_the_target
+            && !head_probe_pending
             && snapshot
                 .buffer_text
                 .split_whitespace()
@@ -13701,7 +13712,7 @@ impl Input {
             return;
         }
         let block = block.as_ref().unwrap();
-        let serialized_block = block.serialized_block.get_with(|compute| {
+        let serialized_block = block.serialized_block_without_output.get_with(|compute| {
             let model = self.model.lock();
             compute(model.block_list())
         });
@@ -14867,7 +14878,7 @@ impl Input {
                     compute(model.block_list())
                 });
                 let exit_code = block_completed
-                    .serialized_block
+                    .serialized_block_without_output
                     .get_with(|compute| {
                         let model = self.model.lock();
                         compute(model.block_list())
@@ -14911,7 +14922,7 @@ impl Input {
                             })
                             .to_owned();
                         let serialized_block =
-                            block_completed.serialized_block.get_with(|compute| {
+                            block_completed.serialized_block_without_output.get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });

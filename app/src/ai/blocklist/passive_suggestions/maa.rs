@@ -494,7 +494,7 @@ impl PassiveSuggestionsModel {
         #[cfg(feature = "local_fs")]
         if is_passive_code_diffs_enabled {
             if let Some(current_working_directory) = block_completed
-                .serialized_block
+                .serialized_block_without_output
                 .get_with(|compute| {
                     let model = self.terminal_model.lock();
                     compute(model.block_list())
