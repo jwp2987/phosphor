@@ -1404,7 +1404,6 @@ impl UseAgentToolbar {
     }
 
     /// Returns whether there's a current CLI agent (like Claude Code).
-    #[cfg(feature = "voice_input")]
     pub fn has_cli_agent(&self, app: &AppContext) -> bool {
         self.cli_agent(app).is_some()
     }
