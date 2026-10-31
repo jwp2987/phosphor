@@ -38,6 +38,20 @@ pub struct LogConfig {
     pub max_file_size_bytes: Option<u64>,
 }
 
+/// In-session size cap for the GUI log (#1187). Without it a long-running GUI session grows
+/// the log without bound (~10 MB/h under heavy use). Rotation keeps the newest
+/// `MAX_FILES_IN_GUI_ROTATION` chunks, so disk use is bounded to roughly six times this.
+pub const GUI_MAX_LOG_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The in-session size cap to configure for `frontend`. Only the GUI sets one: the TUI and
+/// CLI processes are short-lived and keep the existing unbounded-within-session behaviour.
+pub fn default_max_file_size_bytes(frontend: LogFrontend) -> Option<u64> {
+    match frontend {
+        LogFrontend::Gui => Some(GUI_MAX_LOG_FILE_SIZE_BYTES),
+        LogFrontend::Tui | LogFrontend::Cli => None,
+    }
+}
+
 #[cfg_attr(not(target_family = "wasm"), path = "native.rs")]
 #[cfg_attr(target_family = "wasm", path = "wasm.rs")]
 mod imp;
@@ -105,5 +119,21 @@ mod fallback_notice_tests {
         assert_eq!(notice.directory, std::path::PathBuf::from("/state"));
         assert!(notice.reason.contains("Permission denied"));
         assert!(take_log_fallback_notice().is_none());
+    }
+}
+
+#[cfg(test)]
+mod size_cap_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_gui_gets_an_in_session_size_cap() {
+        assert_eq!(
+            default_max_file_size_bytes(LogFrontend::Gui),
+            Some(GUI_MAX_LOG_FILE_SIZE_BYTES)
+        );
+        assert!(GUI_MAX_LOG_FILE_SIZE_BYTES > 0);
+        assert_eq!(default_max_file_size_bytes(LogFrontend::Tui), None);
+        assert_eq!(default_max_file_size_bytes(LogFrontend::Cli), None);
     }
 }

@@ -855,3 +855,28 @@ mod control_master_fallback {
         assert!(!is_control_master_executor(&session));
     }
 }
+
+#[test]
+fn git_corrections_skipped_only_for_existing_dirs_outside_a_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    assert!(super::local_dir_is_outside_git_repo(&plain));
+
+    // Inside a repo (including nested directories) git must still be consulted.
+    let repo = tmp.path().join("repo");
+    let nested = repo.join("a/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir(repo.join(".git")).unwrap();
+    assert!(!super::local_dir_is_outside_git_repo(&repo));
+    assert!(!super::local_dir_is_outside_git_repo(&nested));
+
+    // A worktree/submodule `.git` file counts too.
+    let wt = tmp.path().join("wt");
+    std::fs::create_dir(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: elsewhere").unwrap();
+    assert!(!super::local_dir_is_outside_git_repo(&wt));
+
+    // Paths we can't inspect fall back to running git.
+    assert!(!super::local_dir_is_outside_git_repo(&tmp.path().join("missing")));
+}

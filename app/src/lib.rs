@@ -974,6 +974,9 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
                 warp_logging::init(warp_logging::LogConfig {
                     frontend: launch_mode.log_frontend(),
                     log_destination,
+                    max_file_size_bytes: warp_logging::default_max_file_size_bytes(
+                        launch_mode.log_frontend(),
+                    ),
                     ..Default::default()
                 })?;
             }
@@ -981,6 +984,9 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
             warp_logging::init(warp_logging::LogConfig {
                 frontend: launch_mode.log_frontend(),
                 log_destination,
+                max_file_size_bytes: warp_logging::default_max_file_size_bytes(
+                    launch_mode.log_frontend(),
+                ),
                 ..Default::default()
             })?;
         }

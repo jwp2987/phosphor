@@ -1969,6 +1969,11 @@ impl Session {
     }
 
     pub async fn git_branches_for_command_corrections(&self, working_dir: &str) -> Vec<String> {
+        // Running `git branch` outside a repository always fails; skip the process spawn
+        // (and the log noise) when we can cheaply tell the local directory isn't in a repo.
+        if self.is_local() && local_dir_is_outside_git_repo(Path::new(working_dir)) {
+            return vec![];
+        }
         let env_vars = self
             .info
             .path
@@ -1999,7 +2004,9 @@ impl Session {
                 res
             }
             _ => {
-                log::warn!("failed to get git_branches_for_command_corrections");
+                // Expected whenever the directory isn't a git repository (or git is missing),
+                // so this must not WARN once per command.
+                log::debug!("failed to get git_branches_for_command_corrections");
                 vec![]
             }
         }

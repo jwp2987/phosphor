@@ -261,7 +261,7 @@ impl App {
             responder_chain,
             name,
             &arg,
-            log::Level::Info,
+            log::Level::Debug,
         );
     }
 
@@ -292,7 +292,7 @@ impl App {
     }
 
     pub fn dispatch_standard_action(&mut self, window_id: WindowId, action: StandardAction) {
-        log::info!("Dispatching standard action {action:?}");
+        log::debug!("Dispatching standard action {action:?}");
         self.update(move |ctx| {
             let responder_chain = ctx.get_responder_chain(window_id);
             let res = ctx.dispatch_standard_action(action, window_id, &responder_chain);
@@ -2232,7 +2232,7 @@ impl AppContext {
         Action: Into<CustomTag> + Debug + Copy,
     {
         if self.key_bindings_enabled(window_id) {
-            log::info!("Dispatching custom action {action:?}");
+            log::debug!("Dispatching custom action {action:?}");
             let responder_chain = self.get_responder_chain(window_id);
             let res =
                 self.dispatch_custom_action_internal(action.into(), window_id, &responder_chain);
@@ -2285,7 +2285,7 @@ impl AppContext {
             })
             .and_then(|key_event| {
                 self.presenter(window_id).map(|presenter| {
-                    log::info!("Dispatching key event {key_event:?} for custom action {action:?}");
+                    log::debug!("Dispatching key event {key_event:?} for custom action {action:?}");
                     self.handle_non_keybound_event(key_event, window_id, presenter.clone())
                         .handled
                 })
@@ -2795,7 +2795,7 @@ impl AppContext {
 
         let callbacks = WindowCallbacks {
             standard_action_callback: Box::new(move |action, ctx| {
-                log::info!("Dispatching standard action {action:?}");
+                log::debug!("Dispatching standard action {action:?}");
                 let responder_chain = ctx.get_responder_chain(window_id);
                 let res = ctx.dispatch_standard_action(action, window_id, &responder_chain);
                 if let Err(error) = res {
