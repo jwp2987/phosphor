@@ -1816,9 +1816,21 @@ enum DenyExecutionReason {
     HistoryNotAppendable,
 }
 
-impl DenyExecutionReason {
-    pub fn is_existing_active_command(&self) -> bool {
-        matches!(self, DenyExecutionReason::ExistingActiveCommand)
+/// The notice for a command the shell cannot take now. A running command blocks user
+/// submissions, as before; a shell that is not ready yet (still bootstrapping, or its history not
+/// initialised) used to drop the Enter with only a log line (#1216). An empty Enter gets none.
+fn deny_execution_toast(reason: &DenyExecutionReason, command: &str) -> Option<String> {
+    const MAX_COMMAND_LENGTH: usize = 43;
+    let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
+    match reason {
+        DenyExecutionReason::ExistingActiveCommand => Some(format!(
+            "Cannot run `{truncated_command}` (command already running)."
+        )),
+        DenyExecutionReason::NotBootstrapped | DenyExecutionReason::HistoryNotAppendable => {
+            (!command.trim().is_empty()).then(|| {
+                format!("Cannot run `{truncated_command}` yet: the shell is still starting.")
+            })
+        }
     }
 }
 
@@ -6699,17 +6711,11 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         if let CanExecuteCommand::No(reason) = self.can_execute_command(ctx) {
-            if reason.is_existing_active_command() {
-                const MAX_COMMAND_LENGTH: usize = 43;
-                let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
-
-                // Block user submissions while a requested command is actively running
+            if let Some(message) = deny_execution_toast(&reason, command) {
                 let window_id = ctx.window_id();
                 ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(
-                        DismissibleToast::error(format!(
-                            "Cannot run `{truncated_command}` (command already running)."
-                        )),
+                        DismissibleToast::error(message),
                         window_id,
                         ctx,
                     );

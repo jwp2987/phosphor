@@ -10302,6 +10302,27 @@ fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
     assert!(!super::completer_autosuggestion_allowed("echo a\n"));
 }
 
+/// #1216: an Enter the shell cannot take yet gets a notice instead of a silent drop; an empty
+/// Enter gets none; a running command keeps its notice.
+#[test]
+fn test_deny_execution_toast_names_a_shell_that_is_not_ready() {
+    let not_ready = super::deny_execution_toast(&DenyExecutionReason::NotBootstrapped, "ls -la")
+        .expect("a non-empty command that cannot run yet is announced");
+    assert!(not_ready.contains("ls -la") && not_ready.contains("still starting"));
+    assert!(
+        super::deny_execution_toast(&DenyExecutionReason::HistoryNotAppendable, "ls").is_some()
+    );
+    assert_eq!(
+        super::deny_execution_toast(&DenyExecutionReason::NotBootstrapped, "  "),
+        None
+    );
+    assert!(
+        super::deny_execution_toast(&DenyExecutionReason::ExistingActiveCommand, "")
+            .expect("a running command always blocks visibly")
+            .contains("already running")
+    );
+}
+
 /// #1016: an Enter pressed while the replay of input typed behind a deferred Enter is pending
 /// queues behind that input; it never submits the editor ahead of it.
 #[test]

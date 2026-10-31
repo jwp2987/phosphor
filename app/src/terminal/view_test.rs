@@ -7695,6 +7695,41 @@ fn typing_during_an_agent_driven_command_with_hidden_input_is_not_dropped() {
     })
 }
 
+/// #1217: a replayed Enter goes where the text before it went. While the agent drives the running
+/// command the replayed text is steer text for the input (#1179), so the Enter behind it submits
+/// the input instead of reaching the command's pty as a bare Enter.
+#[test]
+fn replayed_enter_follows_its_text_into_the_input_while_the_agent_drives_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.input.update(ctx, |input, _| {
+                input.open_after_enter_replay_for_test(
+                    vec![
+                        AfterEnterInput::Text("ls".to_string()),
+                        AfterEnterInput::Enter,
+                    ],
+                    false,
+                )
+            });
+            view.replay_after_deferred_enter(Instant::now(), ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "neither the text nor its Enter may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).after_enter_replay_open());
+        });
+    })
+}
+
 /// #1179: once the user takes the command over (here the non-resuming `Stop` Ctrl-C installs) the
 /// agent no longer owns it and keys go to the pty again, not the input.
 #[test]

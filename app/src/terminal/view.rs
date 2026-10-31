@@ -11045,6 +11045,22 @@ impl TerminalView {
         }
     }
 
+    /// #1217: whether a replayed Enter goes to the pty: exactly when `typed_characters_on_terminal`
+    /// would have written the text before it there. Printable keys that belong to the agent's
+    /// input (a pending approval card or an AI block awaiting confirmation holds focus, or the
+    /// agent drives the running command, #1179) take their Enter with them to the editor.
+    fn replayed_enter_goes_to_pty(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.typed_on_approval_card(ctx)
+            || self.typed_on_ai_block_awaiting_confirmation(ctx)
+            || self.agent_owns_command_pty()
+        {
+            return false;
+        }
+        self.should_write_typed_chars_to_pty(ctx)
+            || self.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty()
+    }
+
     /// Routes what the user typed behind an Enter that waited for its classification verdict
     /// (#1016), in order, once that Enter has run: the same way keys typed right after any
     /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
@@ -11079,10 +11095,7 @@ impl TerminalView {
             match input {
                 AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
                 AfterEnterInput::Enter => {
-                    if self.should_write_typed_chars_to_pty(ctx)
-                        || self.is_long_running()
-                        || self.typeahead_handoff_routes_keys_to_pty()
-                    {
+                    if self.replayed_enter_goes_to_pty(ctx) {
                         self.report_possible_typeahead("\r");
                         self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
                     } else {
