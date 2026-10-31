@@ -1115,7 +1115,8 @@ impl TypedActionView for CodeEditorView {
                         model.open_comment_line(line_info, ctx);
                     });
 
-                    ctx.focus(&self.active_comment_editor);
+                    let active_comment_editor = self.ensure_comment_editor(ctx);
+                    ctx.focus(&active_comment_editor);
                     ctx.notify();
                 }
             }

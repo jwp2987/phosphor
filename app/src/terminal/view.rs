@@ -2329,7 +2329,7 @@ pub struct TerminalViewRenderContext {
     pub approval_card_view_id: Option<EntityId>,
     /// AI blocks and their settled action cards: printable keys typed while one of them holds
     /// focus are routed as if the terminal held it (#1095).
-    pub settled_ai_focus_view_ids: Vec<EntityId>,
+    pub settled_ai_focus_view_id: Option<EntityId>,
     /// The SSH-extension "Choose your experience" card, if one is showing: printable keys typed
     /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
     /// card's "choose an option first" hint instead of dropping them silently (#1087).
@@ -9750,6 +9750,27 @@ impl TerminalView {
             );
         }
         ids
+    }
+
+    /// The focused view, if it is one of [`Self::settled_ai_focus_view_ids`]. The render
+    /// context carries just this (the set only matters while focus is on a member), so a frame
+    /// no longer builds a Vec over every block and card (O(blocks) allocations, issue #1267).
+    /// The element still re-checks live focus on the id when a key arrives.
+    fn focused_settled_ai_target(&self, app: &AppContext) -> Option<EntityId> {
+        let window_id = self.view_handle.window_id(app)?;
+        let focused = app.focused_view_id(window_id)?;
+        let is_member = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                metadata.ai_block_handle.id() == focused
+                    || metadata
+                        .ai_block_handle
+                        .as_ref(app)
+                        .is_settled_action_card(focused, app)
+            });
+        is_member.then_some(focused)
     }
 
     /// Whether the window's focus is exactly on one of [`Self::settled_ai_focus_view_ids`].
@@ -28010,7 +28031,7 @@ impl TerminalView {
                 .expect("terminal should upgrade")
                 .is_focused(app),
             approval_card_view_id: self.approval_card_view_id(app),
-            settled_ai_focus_view_ids: self.settled_ai_focus_view_ids(app),
+            settled_ai_focus_view_id: self.focused_settled_ai_target(app),
             ssh_choice_card_view_id: self
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),

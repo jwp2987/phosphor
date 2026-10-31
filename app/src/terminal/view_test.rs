@@ -8306,6 +8306,11 @@ fn typing_on_a_finished_card_reaches_the_input_and_focus_follows() {
                 view.settled_ai_focus_view_ids(ctx).contains(&card.id()),
                 "precondition: the finished card is a settled card"
             );
+            assert_eq!(
+                view.focused_settled_ai_target(ctx),
+                Some(card.id()),
+                "the render context carries the focused settled card"
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
