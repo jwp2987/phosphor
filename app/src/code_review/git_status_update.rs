@@ -463,15 +463,17 @@ impl LocalGitRepoStatusModel {
         // shows the short SHA instead of the literal "HEAD").
         let current_branch_name = detect_current_branch_display(&repo_path).await?;
         // Diff stats against HEAD.
+        // Chip-specific stats: tracked insertions/deletions like `git diff --shortstat
+        // HEAD`, untracked files counted as files only (#1134).
         let stats_against_head =
-            super::diff_state::LocalDiffStateModel::diff_metadata_against_head(&repo_path).await?;
+            super::diff_state::LocalDiffStateModel::chip_stats_against_head(&repo_path).await?;
         let branch_tracking_status =
             Self::branch_tracking_status(&repo_path, &current_branch_name).await;
 
         Ok(GitStatusMetadata {
             current_branch_name,
             main_branch_name,
-            stats_against_head: stats_against_head.aggregate_stats,
+            stats_against_head,
             branch_tracking_status,
         })
     }
