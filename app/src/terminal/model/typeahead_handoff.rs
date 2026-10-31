@@ -21,6 +21,7 @@ use instant::Instant;
 
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
 
 /// How long after a command was written (or a prompt or preexec seen) an Enter the user types
 /// while the pty owns input may still be a line typed at a prompt the app has not noticed yet
@@ -88,7 +89,11 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
 /// Enter then submits on the Enter-time rules without it (#1174), never kept in the editor.
-pub const YOUNG_DETECTION_CAP: Duration = Duration::from_secs(5);
+///
+/// The same local, generator-free classifier the editor Enter waits [`ENTER_VERDICT_BUDGET`] for
+/// (#1158); the young line's parse only starts when the report lands (no debounce head start) and
+/// the line is rare, so it gets a few budgets, not the seconds it had before #1158.
+pub const YOUNG_DETECTION_CAP: Duration = ENTER_VERDICT_BUDGET.saturating_mul(5);
 
 /// What the view does with the deferred Enter of a young line whose text must be classified
 /// before it is submitted (#933). It is never submitted on an inherited or default input type.

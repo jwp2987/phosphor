@@ -960,7 +960,7 @@ fn without_a_held_enter_the_editor_owns_keys_while_the_request_is_outstanding() 
 
 #[test]
 fn a_young_line_is_submitted_only_on_an_actual_verdict() {
-    let wait = Duration::from_millis(100);
+    let wait = YOUNG_DETECTION_CAP / 2;
     // The verdict is pending: wait, however long it takes up to the cap.
     assert_eq!(
         young_submit_decision(true, true, Duration::ZERO),

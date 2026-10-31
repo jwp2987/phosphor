@@ -10352,11 +10352,12 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
             input.user_insert("true", ctx);
             // The Enter is waiting; two characters typed behind it are still in the buffer, for
             // the wait's reconcile to take out (it moves them into the queue, never both).
-            input.verdict_wait = Some(VerdictWait {
-                text: "true".to_string(),
-                queued: Vec::new(),
-                completion_hold: None,
-            });
+            input.start_verdict_wait(
+                "true".to_string(),
+                EnterHold::Verdict {
+                    since: Instant::now(),
+                },
+            );
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
         });
@@ -10388,11 +10389,12 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert("true", ctx);
-            input.verdict_wait = Some(VerdictWait {
-                text: "true".to_string(),
-                queued: Vec::new(),
-                completion_hold: None,
-            });
+            input.start_verdict_wait(
+                "true".to_string(),
+                EnterHold::Verdict {
+                    since: Instant::now(),
+                },
+            );
             // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
             // reach the editor before the wait is reconciled.
             for key in ["e", "c", "h", "o"] {
@@ -10492,6 +10494,158 @@ fn test_notification_with_verdict_still_pending_keeps_the_enter_waiting() {
             );
         });
     })
+}
+
+/// A bootstrapped terminal whose input autodetects and holds `line`, prose whose verdict is
+/// pending, with an Enter waiting for that verdict. The inherited input type is AI.
+async fn waiting_prose_enter_fixture(app: &mut App, line: &str) -> ViewHandle<Input> {
+    use crate::ai::blocklist::InputConfig;
+
+    AISettings::handle(app).update(app, |ai_settings, ctx| {
+        let _ = ai_settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx);
+    });
+    let terminal = add_window_with_bootstrapped_terminal(app, None, None).await;
+    let input = terminal.read(app, |terminal, _| terminal.input().clone());
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::AI,
+                    is_locked: false,
+                },
+                false, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert("x", ctx);
+    });
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert(line, ctx);
+    });
+    input.update(app, |input, ctx| input.input_enter(ctx));
+    input.read(app, |input, ctx| {
+        assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+        assert!(
+            input.detection_pending_for_buffer(ctx),
+            "precondition: the verdict has not landed"
+        );
+    });
+    input
+}
+
+/// #1205: keys typed behind an Enter that waits for its verdict are moved behind it at once and
+/// leave the waiting line's detection request alone, so the Enter still waits for that line's
+/// verdict instead of submitting on the inherited input type when the keys redirect the request.
+#[test]
+fn test_keys_typed_behind_waiting_enter_keep_its_verdict_pending() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let line = "is it true";
+        let input = waiting_prose_enter_fixture(&mut app, line).await;
+
+        // Each key is its own event, before any backstop tick reconciles the wait.
+        input.update(&mut app, |input, ctx| input.user_insert("e", ctx));
+        input.update(&mut app, |input, ctx| input.user_insert("c", ctx));
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "keys typed behind the Enter are moved behind it at once"
+            );
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.queued, vec![AfterEnterInput::Text("ec".to_string())]);
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(line, ctx),
+                "the waiting line's verdict is still pending: the keys must not cancel or redirect it"
+            );
+        });
+
+        // The verdict is still pending, so neither the notification nor a tick releases the Enter
+        // on the inherited input type.
+        input.update(&mut app, |input, ctx| {
+            input.release_verdict_wait_if_settled(ctx);
+            input.wait_for_verdict_then_enter(line.to_string(), Instant::now(), ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "the Enter must keep waiting for the line's own verdict"
+            );
+            assert_eq!(input.buffer_text(ctx), line);
+        });
+    });
+}
+
+/// #1206: a backstop tick armed for an Enter that was voided since must not release the Enter
+/// that replaced it, however late it fires.
+#[test]
+fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let first = "is it true";
+        let second = "is it false";
+        let input = waiting_prose_enter_fixture(&mut app, first).await;
+        let stale_id = input.read(&app, |input, _| input.verdict_wait_id().expect("waiting"));
+
+        // The user clears the line (the first Enter is void) and Enters another line that waits.
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(second, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            let wait = input.verdict_wait.as_ref().expect("the second Enter waits");
+            assert_eq!(wait.text, second);
+            assert_ne!(wait.id, stale_id, "a new wait has a new id");
+            assert!(input.detection_pending_for_buffer(ctx));
+        });
+
+        // The first wait's tick fires late: it finds another wait and leaves it alone.
+        input.update(&mut app, |input, ctx| input.tick_enter_hold(stale_id, ctx));
+        input.read(&app, |input, ctx| {
+            let wait = input
+                .verdict_wait
+                .as_ref()
+                .expect("the later Enter must keep waiting for its own verdict");
+            assert_eq!(wait.text, second);
+            assert!(input.detection_pending_for_buffer(ctx));
+            assert!(!input.last_enter_submitted_shell_command);
+        });
+
+        // The later wait's own tick decides it: past the budget it submits on the Enter-time
+        // rules and drops the late verdict.
+        let current_id = input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().expect("waiting");
+            wait.hold = EnterHold::Verdict {
+                since: Instant::now() - ENTER_VERDICT_BUDGET * 2,
+            };
+            let id = wait.id;
+            input.tick_enter_hold(id, ctx);
+            id
+        });
+        assert_ne!(current_id, stale_id);
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the budget is spent");
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the late verdict is dropped"
+            );
+        });
+    });
 }
 
 /// #1017: a quote completion consumes the editor's auto-paired closing quote instead of doubling it.
@@ -11136,7 +11290,7 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         input.read(&app, |input, _| {
             let wait = input.verdict_wait.as_ref().expect("the Enter must hold");
-            assert!(wait.completion_hold.is_some());
+            assert!(wait.holds_for_tab_completion());
         });
         assert!(
             executed.borrow().is_empty(),
@@ -11200,8 +11354,9 @@ fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         input.update(&mut app, |input, ctx| {
             input.input_enter(ctx);
-            input.verdict_wait.as_mut().unwrap().completion_hold =
-                Some(Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2);
+            input.verdict_wait.as_mut().unwrap().hold = EnterHold::TabCompletion {
+                since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2,
+            };
             input.poll_completion_hold(ctx);
         });
         assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);

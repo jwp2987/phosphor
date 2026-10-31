@@ -222,6 +222,65 @@ fn test_subscribe_to_view_from_app() {
     })
 }
 
+/// #1176: urgent events (the ones that carry a key's bytes to the pty) are delivered ahead of the
+/// ordinary events queued before them, and keep their own order, including when they are queued
+/// from inside a handler that is itself running during the flush.
+#[test]
+fn test_emit_urgent_runs_ahead_of_ordinary_effects_in_order() {
+    #[derive(Default)]
+    struct View;
+
+    impl Entity for View {
+        type Event = usize;
+    }
+
+    impl super::View for View {
+        fn render(&self, _: &AppContext) -> Box<dyn Element> {
+            Empty::new().finish()
+        }
+
+        fn ui_name() -> &'static str {
+            "View"
+        }
+    }
+
+    impl TypedActionView for View {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        let app: &mut App = &mut app;
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |_ctx| View);
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+
+        app.update(|ctx| {
+            let delivered = delivered.clone();
+            ctx.subscribe_to_view(&view, move |view, event, ctx| {
+                delivered.borrow_mut().push(*event);
+                if *event == 1 {
+                    // Queued while the flush is running: still ahead of the ordinary 2.
+                    view.update(ctx, |_view, ctx| {
+                        ctx.emit_urgent(20);
+                        ctx.emit_urgent(21);
+                        ctx.emit(3);
+                    });
+                }
+            });
+        });
+
+        app.update(|ctx| {
+            view.update(ctx, |_view, ctx| {
+                ctx.emit(1);
+                ctx.emit(2);
+                ctx.emit_urgent(10);
+                ctx.emit_urgent(11);
+            })
+        });
+
+        assert_eq!(*delivered.borrow(), vec![10, 11, 1, 20, 21, 2, 3]);
+    })
+}
+
 #[test]
 fn test_subscribe_to_view_from_model() {
     #[derive(Default)]
