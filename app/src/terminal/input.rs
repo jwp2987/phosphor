@@ -28,6 +28,7 @@ use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
+use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::input_model::{
     EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision,
@@ -1107,6 +1108,9 @@ pub enum InputEmptyStateChangeReason {
 
 pub enum Event {
     AutosuggestionAccepted,
+    /// Enter on an empty input while an agent approval card awaits the user's decision: the
+    /// terminal view accepts the pending action, like the card's Run button (#1180).
+    AcceptPendingAgentAction,
     ClearSelectedBlock,
     PageUp,
     PageDown,
@@ -12704,6 +12708,13 @@ impl Input {
         });
     }
 
+    /// The status of the active conversation's front pending agent action, if any.
+    fn pending_action_status(&self, ctx: &AppContext) -> Option<AIActionStatus> {
+        let action_model = self.ai_action_model.as_ref(ctx);
+        let action = action_model.get_pending_action(ctx)?;
+        action_model.get_action_status(&action.id)
+    }
+
     /// Handles the user's 'Enter' keypress.
     ///
     /// Depending on input state, this method may either execute a command, accept an input
@@ -12877,6 +12888,14 @@ impl Input {
             self.inline_slash_commands_view.update(ctx, |view, ctx| {
                 view.accept_selected_item(false, ctx);
             });
+            return;
+        } else if empty_enter_accepts_pending_action(
+            self.editor.as_ref(ctx).is_empty(ctx),
+            self.pending_action_status(ctx).as_ref(),
+        ) {
+            // The card advertises Run with Enter; an empty Enter must run it, never fall through
+            // to submit an empty command or query (#1180). Non-empty input keeps queueing/steering.
+            ctx.emit(Event::AcceptPendingAgentAction);
             return;
         } else if self
             .queued_prompts_panel
@@ -16374,6 +16393,17 @@ pub(crate) fn end_past_auto_paired_closing_quote(
 
 /// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
 /// multi-line buffer: the completer tokenizes a single command line (#1013).
+/// Whether Enter in the agent input should accept the pending approval card instead of
+/// submitting: only with an empty input and an action still `Blocked` on the user's decision. A
+/// running or finished action never takes Enter (#871), and a non-empty input keeps queueing or
+/// steering (#1180).
+pub(crate) fn empty_enter_accepts_pending_action(
+    input_is_empty: bool,
+    pending_action_status: Option<&AIActionStatus>,
+) -> bool {
+    input_is_empty && pending_action_status.is_some_and(AIActionStatus::is_blocked)
+}
+
 pub(crate) fn completer_autosuggestion_allowed(buffer_text: &str) -> bool {
     !buffer_text.contains('\n')
 }

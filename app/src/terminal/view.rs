@@ -25801,6 +25801,13 @@ impl TerminalView {
                 );
             }
             InputEvent::ClearSelectionsWhenShellMode => self.clear_selections_when_shell_mode(ctx),
+            InputEvent::AcceptPendingAgentAction => {
+                if let Some(ai_block) = self.last_ai_block() {
+                    // A refused accept (part of the command still hidden on the card) leaves the
+                    // card pending; the result is not needed here.
+                    let _ = ai_block.update(ctx, |ai_block, ctx| ai_block.accept_pending_action(ctx));
+                }
+            }
             InputEvent::AutosuggestionAccepted => {
                 // TODO(suraj): maybe pass down the autosuggestion type and send
                 // the telemetry deeper so we don't have to guesstimate the state
