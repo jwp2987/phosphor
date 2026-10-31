@@ -2499,6 +2499,13 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
         {
             ::settings::PublicPreferences::as_ref(self.ctx).flush_pending_writes();
         }
+        // The private (JSON) preferences are written off-thread too (#1203).
+        if self
+            .ctx
+            .has_singleton_model::<::settings::PrivatePreferences>()
+        {
+            ::settings::PrivatePreferences::as_ref(self.ctx).flush_pending_writes();
+        }
         // Unbounded on purpose: this drains queued writes and checkpoints the WAL, and
         // abandoning it loses the last app state. The SIGTERM path's 5s watchdog still
         // bounds it there.

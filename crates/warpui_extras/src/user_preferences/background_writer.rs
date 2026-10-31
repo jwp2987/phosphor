@@ -161,6 +161,7 @@ impl BackgroundWriter {
     /// Drops the pending write (not one already running). Used when the file was changed
     /// by someone else and the in-memory document was replaced by it: writing the stale
     /// pending string would undo their edit.
+    #[allow(dead_code)] // only the TOML store needs this
     pub(super) fn discard_pending(&self) {
         let mut state = self.shared.lock();
         state.pending = None;
@@ -169,6 +170,7 @@ impl BackgroundWriter {
 
     /// Whether `contents` is byte-for-byte something this writer wrote (or is writing)
     /// recently: the file watcher's echo of our own write, which must not be reloaded.
+    #[allow(dead_code)] // only the TOML store needs this
     pub(super) fn is_recent_write(&self, contents: &[u8]) -> bool {
         let wanted = digest(contents);
         self.shared.lock().recent.contains(&wanted)

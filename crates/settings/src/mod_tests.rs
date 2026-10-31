@@ -860,6 +860,51 @@ mod write_to_preferences_tests {
         );
     }
 
+    /// A value that never compares equal to its own round trip (a lossy
+    /// `Deserialize`, a NaN) must not look changed on every call (#1203): the
+    /// byte-identical stored string settles it before the typed comparison.
+    #[test]
+    fn test_byte_identical_stored_value_is_unchanged_even_if_partial_eq_is_false() {
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        pub struct NeverEqual {
+            n: u32,
+        }
+
+        impl PartialEq for NeverEqual {
+            fn eq(&self, _: &Self) -> bool {
+                false
+            }
+        }
+
+        impl SettingsValue for NeverEqual {}
+
+        impl Default for NeverEqual {
+            fn default() -> Self {
+                Self { n: 1 }
+            }
+        }
+
+        define_settings_group!(NeverEqualGroup, settings: [
+            never_equal_setting: NeverEqualSetting {
+                type: NeverEqual,
+                default: NeverEqual::default(),
+                supported_platforms: SupportedPlatforms::ALL,
+                sync_to_cloud: SyncToCloud::Never,
+                private: true,
+                storage_key: "NeverEqualSetting",
+            },
+        ]);
+
+        let prefs =
+            Box::<warpui_extras::user_preferences::in_memory::InMemoryPreferences>::default();
+        let value = NeverEqual::default();
+        // Old code: typed comparison never matches, so the post-write read-back also
+        // "fails" and the first call reported no durable change.
+        assert!(NeverEqualSetting::write_to_preferences(&value, prefs.as_ref()).unwrap());
+        // Old code rewrote the store here; now the identical string means no change.
+        assert!(!NeverEqualSetting::write_to_preferences(&value, prefs.as_ref()).unwrap());
+    }
+
     /// A write the backend accepted but silently skipped must not be reported
     /// as a durable change.
     ///
