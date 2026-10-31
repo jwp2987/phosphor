@@ -36,7 +36,9 @@ pub(crate) type RasterizeGlyphFn<'a> = dyn Fn(
 /// A cache that caches glyphs in a texture atlas.  
 pub struct GlyphCache<Texture> {
     textures: Vec<Texture>,
-    cache: HashMap<GlyphCacheKey, GlyphTextureOffset>,
+    /// `None` records a glyph with nothing to draw (zero-size raster bounds, e.g. a blank glyph
+    /// such as a no-break space) so it is not re-measured on every frame.
+    cache: HashMap<GlyphCacheKey, Option<GlyphTextureOffset>>,
     glyph_config: rendering::GlyphConfig,
     atlas_manager: atlas::Manager,
 }
@@ -114,6 +116,7 @@ impl<Texture> GlyphCache<Texture> {
                     raster_bounds_fn(glyph_key, Vector2F::splat(scale_factor), &self.glyph_config)?;
 
                 if bounds.size() == Vector2I::zero() {
+                    self.cache.insert(cache_key, None);
                     return Ok(None);
                 }
 
@@ -141,10 +144,14 @@ impl<Texture> GlyphCache<Texture> {
                     allocated_region: texture_offset.allocated_region,
                 };
 
-                self.cache.insert(cache_key, glyph_texture_offset);
+                self.cache.insert(cache_key, Some(glyph_texture_offset));
                 Ok(Some(glyph_texture_offset))
             }
-            Some(gto) => Ok(Some(*gto)),
+            Some(gto) => Ok(*gto),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "glyph_cache_tests.rs"]
+mod tests;
