@@ -6,6 +6,7 @@ mod text_layout_system;
 pub use text_layout_system::TextLayoutSystem;
 
 use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{platform, rendering, scene::GlyphKey, SingletonEntity};
 use anyhow::{Error, Result};
@@ -211,6 +212,8 @@ type RasterBoundsKey = (GlyphKey, (OrderedFloat<f32>, OrderedFloat<f32>));
 type AvailableSystemFonts = Vec<(Option<FamilyId>, FontInfo)>;
 type AvailableSystemFontsSender = futures::channel::oneshot::Sender<AvailableSystemFonts>;
 
+static NEXT_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(0);
+
 pub struct Cache {
     selections: DashMap<(FamilyId, Properties), FontId>,
     /// Note that the properties stored in this map might not exactly match the
@@ -232,6 +235,16 @@ pub struct Cache {
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pending_system_fonts_senders: Vec<AvailableSystemFontsSender>,
     font_fallback_cache: FontFallbackCache,
+    /// Unique per `Cache`, so that a derived cache keyed on [`Cache::glyph_epoch`] can tell two
+    /// font caches apart.
+    instance_id: u64,
+    /// Bumped whenever the set of fonts that can answer a glyph lookup changes (a family is
+    /// loaded, the app fallback function is replaced, a pending fallback request is resolved).
+    /// Negative fallback results and downstream glyph caches are only valid for one epoch.
+    glyph_epoch: AtomicU64,
+    /// Characters for which the full fallback walk found nothing, with the epoch they were
+    /// checked in. Avoids re-walking the whole fallback list on every lookup of an unmapped char.
+    fallback_misses: DashMap<(FontId, char), u64>,
 }
 
 #[derive(Default)]
@@ -267,7 +280,20 @@ impl Cache {
             available_system_fonts: Default::default(),
             pending_system_fonts_senders: Default::default(),
             font_fallback_cache: Default::default(),
+            instance_id: NEXT_CACHE_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            glyph_epoch: AtomicU64::new(0),
+            fallback_misses: Default::default(),
         }
+    }
+
+    /// Identifies this cache and the current set of fonts available for glyph lookup. Any cache
+    /// derived from `glyph_for_char` results must be dropped when this value changes.
+    pub fn glyph_epoch(&self) -> (u64, u64) {
+        (self.instance_id, self.glyph_epoch.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn bump_glyph_epoch(&self) {
+        self.glyph_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Returns the [`TextLayoutSystem`], which can be used to layout text either on the main thread
@@ -329,6 +355,7 @@ impl Cache {
     }
 
     pub fn load_family_from_bytes(&mut self, name: &str, bytes: Vec<Vec<u8>>) -> Result<FamilyId> {
+        self.bump_glyph_epoch();
         self.platform.load_from_bytes(name, bytes)
     }
 
@@ -355,6 +382,7 @@ impl Cache {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn load_system_font(&mut self, font_family: &str) -> Result<FamilyId> {
+        self.bump_glyph_epoch();
         self.platform.load_from_system(font_family)
     }
 
@@ -488,6 +516,15 @@ impl Cache {
                     return glyph_id;
                 }
 
+                // The fallback walk already came up empty and no font has been added since.
+                if self
+                    .fallback_misses
+                    .get(&(font, char))
+                    .is_some_and(|epoch| *epoch == self.glyph_epoch.load(Ordering::Acquire))
+                {
+                    return None;
+                }
+
                 should_check_fallback_fonts = true;
             }
             Entry::Vacant(entry) => {
@@ -506,6 +543,8 @@ impl Cache {
         }
 
         if should_check_fallback_fonts {
+            // Read before the walk: a font added mid-walk leaves the miss stale, never wrong.
+            let epoch = self.glyph_epoch.load(Ordering::Acquire);
             self.font_fallback_cache.request_fallback_font_for_char(
                 char,
                 RequestedFallbackFontSource::GlyphForChar((font, char)),
@@ -517,6 +556,11 @@ impl Cache {
 
             self.glyphs_by_char
                 .insert((font, char), fallback_glyph_and_font);
+            if fallback_glyph_and_font.is_none() {
+                self.fallback_misses.insert((font, char), epoch);
+            } else {
+                self.fallback_misses.remove(&(font, char));
+            }
             return fallback_glyph_and_font;
         }
 
@@ -559,6 +603,8 @@ impl Cache {
 
     pub(crate) fn remove_glyphs_by_char_entry(&mut self, key: (FontId, char)) {
         self.glyphs_by_char.remove(&key);
+        self.fallback_misses.remove(&key);
+        self.bump_glyph_epoch();
     }
 }
 
