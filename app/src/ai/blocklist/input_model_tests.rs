@@ -1679,3 +1679,29 @@ fn history_close_match_is_not_allowed_without_command_evidence_in_agent_conversa
         &snapshot("make commit port")
     ));
 }
+
+#[test]
+fn a_verdict_wakes_observers_only_when_something_asked_whether_it_is_pending() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        input_model.update(&mut app, |model, _| {
+            model.note_detection_requested(PREFILTERED_COMMAND.to_owned());
+        });
+        // Typing alone asks nobody to wait: settling must not re-render the message bars.
+        input_model.read(&app, |model, _| {
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        // An Enter that finds the verdict pending registers the wait.
+        input_model.read(&app, |model, ctx| {
+            assert!(model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert!(model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        // Settling consumes the wake-up.
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        input_model.read(&app, |model, _| {
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+    });
+}

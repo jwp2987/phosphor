@@ -397,6 +397,17 @@ impl Presenter {
     /// it used to get is still owed — and everything before the first layout,
     /// when nothing is mounted yet.
     ///
+    /// Why this re-renders eagerly instead of marking the view dirty and rendering it when a
+    /// parent mounts it (audited for #1213, deliberately left as is): the eager render runs in the
+    /// effect flush, where views are allowed to read and mutate models, set ambient render state
+    /// and register position/focus data. A deferred render would run inside `layout`, a new
+    /// calling context for every `View::render`, and `ChildView::layout` would have to render on
+    /// demand. Many views also notify from observers and rely on their element tree being current
+    /// for `after_layout`/`dispatch_event` before they are next shown. None of that is provably
+    /// safe across the ~hundreds of view types, so the cost is addressed at its sources (a hidden
+    /// view's `render` must be cheap, and a model must not notify when nothing changed) rather
+    /// than by deferral. No kill switch is offered because there is no deferred path to switch to.
+    ///
     /// Returns whether anything was taken out.
     pub(crate) fn render_unmounted_updates(
         &mut self,

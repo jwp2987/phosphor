@@ -3527,6 +3527,17 @@ impl Entity for CompiledCommandsForCodingAgentToolbar {
 
 impl SingletonEntity for CompiledCommandsForCodingAgentToolbar {}
 
+/// `entered_agent_mode_num_times` only gates the voice-input new-feature popup, which compares it
+/// against a small threshold. Counting past this cap changes no reader's outcome, so the counter
+/// stops here: each increment is a persisted write plus an `AISettings` change event that
+/// re-renders every settings view, which cost a main-thread burst on each autodetect flip to AI.
+pub const ENTERED_AGENT_MODE_COUNT_CAP: usize = 5;
+
+/// Whether entering agent mode once more still changes the stored counter.
+pub fn should_count_agent_mode_entry(current: usize) -> bool {
+    current < ENTERED_AGENT_MODE_COUNT_CAP
+}
+
 #[cfg(test)]
 #[path = "ai_tests.rs"]
 mod tests;

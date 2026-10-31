@@ -5,6 +5,7 @@
 //! exposes methods for running query autodetection, where an algorithm determines if the current
 //! input contents are an AI query or shell command, which is then used to update the input mode.
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -176,6 +177,12 @@ pub struct BlocklistAIInputModel {
     /// [`Self::is_detection_pending_for`]).
     pending_detection_buffer: Option<String>,
 
+    /// Set when something asked "is a verdict still pending?" and got yes, i.e. an Enter is (or
+    /// may be) held behind the verdict. Only then does settling a detection notify observers
+    /// (#1181): an unconditional notify re-rendered the message bars, status bar and terminal
+    /// view after every keystroke's verdict, an extra frame per key with nothing visible changed.
+    settle_wake_wanted: AtomicBool,
+
     /// Incremented for every spawned classification task, so a task that completed just before
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
     detection_generation: u64,
@@ -269,6 +276,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
+            settle_wake_wanted: AtomicBool::new(false),
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
@@ -480,6 +488,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
+            settle_wake_wanted: AtomicBool::new(false),
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
@@ -656,7 +665,13 @@ impl BlocklistAIInputModel {
             self.last_ai_autodetection_ts = None;
         }
 
-        if new_config.input_type.is_ai() {
+        // Capped: past the cap no reader's outcome changes, and every write is a persisted
+        // setting change that re-renders the settings pages (see `ENTERED_AGENT_MODE_COUNT_CAP`).
+        if new_config.input_type.is_ai()
+            && crate::settings::should_count_agent_mode_entry(
+                *AISettings::as_ref(ctx).entered_agent_mode_num_times,
+            )
+        {
             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                 let new_num_times = *settings.entered_agent_mode_num_times + 1;
                 report_if_error!(settings
@@ -819,6 +834,16 @@ impl BlocklistAIInputModel {
     /// [`Self::settle_pending_detection_for_submit`] (#886, the shell-ward half of #833's F6); it
     /// is the model's answer to "is this buffer's mode a real verdict?".
     pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
+        let pending = self.detection_pending_for_buffer_text(buffer_text, app);
+        if pending {
+            // The asker is about to wait for the verdict; wake it when it lands (#1181).
+            self.settle_wake_wanted.store(true, AtomicOrdering::Relaxed);
+        }
+        pending
+    }
+
+    /// [`Self::is_detection_pending_for`] without registering a wait for the verdict.
+    fn detection_pending_for_buffer_text(&self, buffer_text: &str, app: &AppContext) -> bool {
         if buffer_text.trim().is_empty()
             || !self.should_run_input_autodetection(app)
             || self.is_steering_running_agent(app)
@@ -981,7 +1006,7 @@ impl BlocklistAIInputModel {
         head_known_to_shell: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        if !self.is_detection_pending_for(&input.buffer_text, ctx) {
+        if !self.detection_pending_for_buffer_text(&input.buffer_text, ctx) {
             return false;
         }
         // #1185: classified without a trailing comment. #1183: in an agent conversation a line
@@ -1087,7 +1112,11 @@ impl BlocklistAIInputModel {
     fn settle_detection(&mut self, buffer_text: &str, ctx: &mut ModelContext<Self>) {
         if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
             self.pending_detection_buffer = None;
-            ctx.notify();
+            // Only wake observers when someone is waiting on the verdict (an Enter deferred
+            // behind it); otherwise nothing they render has changed.
+            if self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed) {
+                ctx.notify();
+            }
         }
     }
 

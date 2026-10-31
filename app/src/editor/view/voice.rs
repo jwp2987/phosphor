@@ -29,6 +29,8 @@ use super::VoiceTranscriber;
 
 const MICROPHONE_ACCESS_ERROR_ID: &str = "MICROPHONE_ACCESS_ERROR";
 const NUM_TIMES_TO_SHOW_VOICE_NEW_FEATURE_POPUP: usize = 4;
+// The stored counter stops at `ENTERED_AGENT_MODE_COUNT_CAP`; the popup check must stay below it.
+const _: () = assert!(NUM_TIMES_TO_SHOW_VOICE_NEW_FEATURE_POPUP < crate::settings::ENTERED_AGENT_MODE_COUNT_CAP);
 
 #[derive(Debug, Default, Clone)]
 pub(super) enum VoiceInputState {
