@@ -309,15 +309,35 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             Warp-Stop-ActiveThread
         }
 
-        # Clean up any completed warp jobs so they do not show up on the user's 'get-job'
-        # commands
-        Warp-Clean-CompletedThread
+        # The housekeeping that used to follow here (cleaning up completed warp jobs, scrubbing our
+        # own commands from the history) runs in Warp-Idle-Maintenance, once the next prompt is on
+        # screen: nothing about it has to happen before the command starts (#1279).
+    }
 
-        # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
-        Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
-        # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
-        Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
-        Warp-Clear-BootstrapHistory
+    # Housekeeping that does not have to happen on the way from the user's Enter to the next
+    # prompt: it ran in Warp-Preexec and Warp-Precmd, so a command's output and the next prompt
+    # waited for it, which costs several ms per cmdlet on Windows PowerShell 5.1 (#1279). It now
+    # runs at the start of the next PSConsoleHostReadLine, after the prompt has been written and
+    # the hooks have been sent. The history entries it scrubs are the same ones as before, plus
+    # the command that just ran (formerly scrubbed at the next command's preexec).
+    function Warp-Idle-Maintenance {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'Housekeeping must never keep PSConsoleHostReadLine from reading the line')]
+        param()
+        # A throw here would keep PSConsoleHostReadLine from reading the next line at all.
+        try {
+            # Clean up any completed warp jobs so they do not show up on the user's 'get-job'
+            # commands
+            Warp-Clean-CompletedThread
+
+            # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
+            Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
+            # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
+            Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
+            Warp-Clear-BootstrapHistory
+
+            Warp-Configure-PSReadLine-IfChanged
+        } catch {
+        }
     }
 
     function Warp-Finish-Update([string]$updateId) {
@@ -644,7 +664,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         Warp-Send-JsonMessage $commandFinishedMsg
         Warp-Send-ResetGridOSC
 
-        Warp-Configure-PSReadLine-IfChanged
+        # Warp-Configure-PSReadLine-IfChanged runs in Warp-Idle-Maintenance (#1279).
 
         # If this is being called for a generator command, short circuit and send an unpopulated
         # precmd payload (except for pwd), since we don't re-render the prompt after generator commands
@@ -1199,6 +1219,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # PSConsoleHostReadLine.
         $script:oldPSConsoleHostReadLine = $function:global:PSConsoleHostReadLine
         $function:global:PSConsoleHostReadLine = {
+            Warp-Idle-Maintenance
+
             $line = & $script:oldPSConsoleHostReadLine
 
             # A command too long to type into PSReadLine (#1106) arrives as the launcher line
