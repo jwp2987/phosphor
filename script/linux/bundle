@@ -141,7 +141,9 @@ elif [[ $RELEASE_CHANNEL = "local" || $RELEASE_CHANNEL = "dev" ]]; then
   fi
 else
   if [[ "$ARTIFACT" == "cli" ]]; then
-    CARGO_PROFILE="release-cli"
+    # The CLI artifact is the remote-server tarball downloaded once onto ssh hosts, so it is
+    # built for speed, not download size (#1157). Other release-cli users keep the size profile.
+    CARGO_PROFILE="release-remote"
   else
     CARGO_PROFILE="release-lto"
   fi
