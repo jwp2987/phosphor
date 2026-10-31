@@ -10378,6 +10378,7 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
                 EnterHold::Verdict {
                     since: Instant::now(),
                 },
+                ctx,
             );
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
@@ -10415,6 +10416,7 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
                 EnterHold::Verdict {
                     since: Instant::now(),
                 },
+                ctx,
             );
             // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
             // reach the editor before the wait is reconciled.
@@ -10664,6 +10666,98 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
             assert!(
                 !input.detection_pending_for_buffer(ctx),
                 "the late verdict is dropped"
+            );
+        });
+    });
+}
+
+/// #1207: what counts as keys typed behind a waiting Enter: a suffix (cursor at the end) or an
+/// insertion at the cursor the Enter was pressed at; anything else is an edit of the line.
+#[test]
+fn test_keys_typed_behind_waiting_enter_recognises_suffix_and_cursor_insertion() {
+    let wait = VerdictWait {
+        id: 1,
+        text: "show the file".to_string(),
+        queued: Vec::new(),
+        hold: EnterHold::Verdict {
+            since: Instant::now(),
+        },
+        cursor: 4,
+    };
+    let behind = |current: &str| super::keys_typed_behind_waiting_enter(current, &wait);
+    assert_eq!(behind("show the file"), None, "the line itself");
+    assert_eq!(behind("show the files"), Some("s".to_string()));
+    assert_eq!(behind("show me the file"), Some(" me".to_string()));
+    assert_eq!(behind("show th file"), None, "an edit of the line voids the Enter");
+    assert_eq!(behind("shw the file!"), None);
+    assert_eq!(behind("show the fil"), None);
+}
+
+/// #1207: an Enter pressed with the cursor in the middle of the line, then keys before its
+/// verdict: the keys land at that cursor and are still keys typed behind the Enter, moved behind
+/// it; the Enter keeps waiting instead of being voided with the keys merged into the line.
+#[test]
+fn test_keys_typed_behind_waiting_enter_pressed_mid_line_queue_behind_it() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+            // Cursor after `is it`.
+            for _ in 0..5 {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.handle_action(&EditorAction::Left, ctx);
+                });
+            }
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            let wait = input.verdict_wait.as_ref().expect("the Enter must be waiting");
+            assert_eq!(wait.cursor, 5);
+            assert!(input.detection_pending_for_buffer(ctx));
+        });
+
+        input.update(&mut app, |input, ctx| input.user_insert(" all", ctx));
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "keys typed at the cursor are moved behind the Enter, not merged into its line"
+            );
+            let wait = input.verdict_wait.as_ref().expect("the Enter still waits");
+            assert_eq!(wait.queued, vec![AfterEnterInput::Text(" all".to_string())]);
+            assert!(
+                input
+                    .ai_input_model()
+                    .as_ref(ctx)
+                    .is_detection_pending_for(line, ctx)
             );
         });
     });

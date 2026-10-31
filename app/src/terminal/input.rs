@@ -1325,6 +1325,30 @@ struct VerdictWait {
     text: String,
     queued: Vec<AfterEnterInput>,
     hold: EnterHold,
+    /// Byte offset of the cursor in `text` when the Enter was pressed (#1207): keys typed behind
+    /// the Enter land there until the wait restores the line (which moves the cursor to its end).
+    cursor: usize,
+}
+
+/// The keys typed behind a waiting Enter, if `current` is the waiting line with them added
+/// (#1016): appended at its end, or inserted at the cursor the Enter was pressed at (#1207).
+/// `None` when the buffer still is the line, or the user edited the line itself.
+fn keys_typed_behind_waiting_enter(current: &str, wait: &VerdictWait) -> Option<String> {
+    let text = wait.text.as_str();
+    if let Some(suffix) = current.strip_prefix(text) {
+        return (!suffix.is_empty()).then(|| suffix.to_string());
+    }
+    let inserted = current.len().checked_sub(text.len()).filter(|len| *len > 0)?;
+    let cursor = wait.cursor.min(text.len());
+    let end = cursor + inserted;
+    if !text.is_char_boundary(cursor)
+        || !current.is_char_boundary(cursor)
+        || !current.is_char_boundary(end)
+    {
+        return None;
+    }
+    (current[..cursor] == text[..cursor] && current[end..] == text[cursor..])
+        .then(|| current[cursor..end].to_string())
 }
 
 /// Why the Enter of a [`VerdictWait`] is held, and since when. Each hold is released by its own
@@ -13484,7 +13508,7 @@ impl Input {
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
         let since = Instant::now();
-        self.start_verdict_wait(text.clone(), EnterHold::Verdict { since });
+        self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
         self.wait_for_verdict_then_enter(text, since, ctx);
@@ -13576,6 +13600,7 @@ impl Input {
             EnterHold::TabCompletion {
                 since: Instant::now(),
             },
+            ctx,
         );
         self.begin_deferred_enter_activity(ctx);
         self.poll_completion_hold(ctx);
@@ -13584,14 +13609,24 @@ impl Input {
 
     /// Starts the wait of the Enter just pressed on `text`, held for `hold`, and returns its id
     /// (#1206).
-    fn start_verdict_wait(&mut self, text: String, hold: EnterHold) -> u64 {
+    fn start_verdict_wait(
+        &mut self,
+        text: String,
+        hold: EnterHold,
+        ctx: &ViewContext<Self>,
+    ) -> u64 {
         self.next_verdict_wait_id = self.next_verdict_wait_id.wrapping_add(1);
         let id = self.next_verdict_wait_id;
+        let cursor = self
+            .start_byte_index_of_last_selection(ctx)
+            .as_usize()
+            .min(text.len());
         self.verdict_wait = Some(VerdictWait {
             id,
             text,
             queued: Vec::new(),
             hold,
+            cursor,
         });
         id
     }
@@ -13780,16 +13815,17 @@ impl Input {
     /// submits, possibly with keys typed behind that Enter, which are moved behind it here
     /// (#1016). False when no Enter waits, or the user edited the waiting line itself.
     fn reconcile_edit_behind_waiting_enter(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        let Some(text) = self.verdict_wait.as_ref().map(|wait| wait.text.clone()) else {
+        let Some(wait) = self.verdict_wait.as_ref() else {
             return false;
         };
         let current = self.buffer_text(ctx);
-        if !current.starts_with(text.as_str()) {
+        if current == wait.text {
+            return true;
+        }
+        if keys_typed_behind_waiting_enter(&current, wait).is_none() {
             return false;
         }
-        if current.len() > text.len() {
-            self.reconcile_verdict_wait(ctx);
-        }
+        self.reconcile_verdict_wait(ctx);
         true
     }
 
@@ -13806,9 +13842,8 @@ impl Input {
         if current == wait.text {
             return true;
         }
-        match current.strip_prefix(wait.text.as_str()) {
-            Some(suffix) if !suffix.is_empty() => {
-                let suffix = suffix.to_string();
+        match keys_typed_behind_waiting_enter(&current, wait) {
+            Some(suffix) => {
                 let text = wait.text.clone();
                 if let Some(wait) = self.verdict_wait.as_mut() {
                     match wait.queued.last_mut() {
@@ -13820,7 +13855,7 @@ impl Input {
                     .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
                 true
             }
-            _ => {
+            None => {
                 // The user edited the waiting text itself: the Enter is void. Keep what was
                 // typed behind it in the editor rather than losing it.
                 let wait = self.verdict_wait.take();
