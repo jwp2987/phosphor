@@ -131,3 +131,20 @@ fn slow_frame_thresholds() {
     assert!(is_slow_frame(ms(51), None));
     assert!(is_slow_frame(ms(10), Some(ms(9))));
 }
+
+#[test]
+fn minimized_windows_skip_redraws_and_redraw_once_restored() {
+    let mut gate = MinimizedRedrawGate::default();
+    // Visible window: nothing is skipped, nothing is owed.
+    assert!(!gate.should_skip_redraw(false));
+    assert!(!gate.redraw_due_on_event(false));
+
+    // Minimized: every redraw is skipped, and no event owes a redraw while it stays minimized.
+    assert!(gate.should_skip_redraw(true));
+    assert!(gate.should_skip_redraw(true));
+    assert!(!gate.redraw_due_on_event(true));
+
+    // The first event after restoring owes exactly one redraw.
+    assert!(gate.redraw_due_on_event(false));
+    assert!(!gate.redraw_due_on_event(false));
+}

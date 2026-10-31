@@ -887,6 +887,23 @@ impl Window {
         }
     }
 
+    /// Whether the window is minimized. `false` where winit cannot tell (Wayland, wasm), which
+    /// keeps the old behavior of always attempting the frame.
+    pub(super) fn is_minimized(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.inner
+                .borrow()
+                .as_ref()
+                .and_then(|inner| inner.window.is_minimized())
+                .unwrap_or(false)
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            false
+        }
+    }
+
     /// How long the last surface texture acquire took, for slow-frame diagnostics.
     pub(super) fn last_acquire_wait(&self) -> Option<std::time::Duration> {
         let inner = self.inner.borrow();

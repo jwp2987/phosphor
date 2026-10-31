@@ -2,9 +2,9 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     path::{Path, PathBuf},
-    sync::mpsc::{self, channel},
+    sync::mpsc::{self, channel, RecvTimeoutError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub mod home_watcher;
@@ -13,29 +13,87 @@ pub use home_watcher::{HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
 use anyhow::Result;
 use futures::channel::oneshot;
 use notify_debouncer_full::{
-    new_debouncer_opt,
     notify::{
         self,
         event::{ModifyKind, RenameMode},
-        EventKind, RecommendedWatcher, RecursiveMode, WatchFilter,
+        EventKind, RecommendedWatcher, RecursiveMode, WatchFilter, Watcher as _,
     },
-    DebounceEventHandler, DebounceEventResult, DebouncedEvent, Debouncer, NoCache,
+    DebounceEventHandler, DebounceEventResult, DebouncedEvent,
 };
 use warpui::{Entity, ModelContext};
 
-/// Shortest tick we give the debouncer's polling thread.
-const MIN_DEBOUNCER_TICK: Duration = Duration::from_millis(250);
+/// Whether a raw watcher event can change what [`deduplicate_and_merge_raw_notifier_events`]
+/// reports. Everything else (file opens/closes, metadata-only changes, backend meta events) must
+/// not start a debounce window, or an unrelated read of a watched file would wake the thread.
+/// `RenameMode::Both` is dropped because the `From` and `To` halves already carry the rename, and
+/// replaying all three would overwrite a chained rename's source.
+fn is_relevant_event(event: &notify::Event) -> bool {
+    if event.paths.is_empty() {
+        return false;
+    }
+    match event.kind {
+        EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any) => true,
+        EventKind::Modify(ModifyKind::Name(mode)) => mode != RenameMode::Both,
+        _ => false,
+    }
+}
 
-/// How often a debouncer's thread wakes to flush settled events.
+/// Event-driven debounce loop for one watcher.
 ///
-/// The debouncer polls (it has no timer-on-event), so every watcher costs one wakeup per tick
-/// for the whole session, even when nothing changes. Its default tick is a quarter of the
-/// debounce timeout, which made five watchers wake 20+8+8+8+4 = ~48 times a second at idle.
-/// Ticking at half the timeout (but not faster than `MIN_DEBOUNCER_TICK`, and never slower
-/// than the timeout, which the debouncer rejects) cuts that to ~19/s and delays a flushed
-/// event by at most `tick` more than before, i.e. 250 ms for the 500 ms watchers.
-fn debouncer_tick(timeout: Duration) -> Duration {
-    (timeout / 2).max(MIN_DEBOUNCER_TICK).min(timeout)
+/// Blocks on `rx` with no timer while nothing happens, so an idle watcher costs zero wakeups
+/// (the debouncer this replaces polled on a fixed tick for the whole session: ~19 wakeups/s
+/// across the app's five watchers at idle). The first relevant event opens a window of
+/// `timeout`; everything that arrives inside it is flushed together, in arrival order, when the
+/// window closes, so a burst of churn costs at most one flush per `timeout`. Returns when the
+/// sending side (the platform watcher) is dropped, after flushing what is pending.
+fn run_debounce_loop(
+    rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+    timeout: Duration,
+    mut flush: impl FnMut(Vec<DebouncedEvent>, Vec<notify::Error>),
+) {
+    let mut events: Vec<DebouncedEvent> = Vec::new();
+    let mut errors: Vec<notify::Error> = Vec::new();
+    fn absorb(
+        item: notify::Result<notify::Event>,
+        events: &mut Vec<DebouncedEvent>,
+        errors: &mut Vec<notify::Error>,
+    ) {
+        match item {
+            Ok(event) if is_relevant_event(&event) => {
+                events.push(DebouncedEvent::new(event, Instant::now()))
+            }
+            Ok(_) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+
+    'outer: loop {
+        // Idle: no timer, wake only for an event.
+        match rx.recv() {
+            Ok(item) => absorb(item, &mut events, &mut errors),
+            Err(_) => break,
+        }
+        if events.is_empty() && errors.is_empty() {
+            continue;
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(item) => absorb(item, &mut events, &mut errors),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    flush(std::mem::take(&mut events), std::mem::take(&mut errors));
+                    break 'outer;
+                }
+            }
+        }
+        flush(std::mem::take(&mut events), std::mem::take(&mut errors));
+    }
 }
 
 #[derive(Debug)]
@@ -53,7 +111,7 @@ enum BackgroundFileWatcherCommand {
 }
 
 struct BackgroundFileWatcher {
-    notifier: Debouncer<RecommendedWatcher, NoCache>,
+    notifier: RecommendedWatcher,
     rx: mpsc::Receiver<BackgroundFileWatcherCommand>,
 }
 
@@ -63,18 +121,29 @@ impl BackgroundFileWatcher {
         handler: WatcherEventHandler,
         rx: mpsc::Receiver<BackgroundFileWatcherCommand>,
     ) -> Result<Self> {
-        let debounced_watcher = new_debouncer_opt(
-            debounce_duration,
-            Some(debouncer_tick(debounce_duration)),
-            handler,
-            NoCache,
+        let (event_tx, event_rx) = mpsc::channel::<notify::Result<notify::Event>>();
+        let notifier = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let _ = event_tx.send(event);
+            },
             notify::Config::default(),
         )?;
 
-        Ok(Self {
-            notifier: debounced_watcher,
-            rx,
-        })
+        let mut handler = handler;
+        thread::Builder::new()
+            .name("Filesystem Debouncer".into())
+            .spawn(move || {
+                run_debounce_loop(&event_rx, debounce_duration, |events, errors| {
+                    if !events.is_empty() {
+                        handler.handle_event(Ok(events));
+                    }
+                    if !errors.is_empty() {
+                        handler.handle_event(Err(errors));
+                    }
+                });
+            })?;
+
+        Ok(Self { notifier, rx })
     }
 
     /// Listen to streamed in commands to modify the internal notifier state.
@@ -89,7 +158,7 @@ impl BackgroundFileWatcher {
                 } => {
                     let _ = response.send(
                         self.notifier
-                            .watch_filtered(path, recursive_mode, filter)
+                            .watch_filtered(&path, recursive_mode, filter)
                             .inspect_err(|err| {
                                 log::warn!("Failed to watch path: {err:?}");
                             })
@@ -99,7 +168,7 @@ impl BackgroundFileWatcher {
                 BackgroundFileWatcherCommand::RemovePath { path, response } => {
                     let _ = response.send(
                         self.notifier
-                            .unwatch(path)
+                            .unwatch(&path)
                             .inspect_err(|err| {
                                 log::warn!("Failed to remove repo watcher: {err:?}");
                             })

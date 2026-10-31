@@ -105,6 +105,38 @@ fn retry_delay(consecutive_skips: u32) -> Duration {
     (BASE_RETRY_DELAY * (1u32 << shift)).min(MAX_RETRY_DELAY)
 }
 
+/// Skips redraws of a minimized window and remembers that it did, so the window is redrawn the
+/// first time anything happens to it after it comes back.
+///
+/// A minimized window cannot show a frame, yet every repaint timer (clock chip, spinners, output
+/// of a running command) would still build a scene, ask the compositor for a texture, fail, and
+/// schedule a retry. Skipping the redraw costs nothing and loses nothing: there is no stale frame
+/// to see, and the redraw is requested again on the next event once the window is not minimized.
+#[derive(Default)]
+pub(super) struct MinimizedRedrawGate {
+    skipped: bool,
+}
+
+impl MinimizedRedrawGate {
+    /// A redraw was requested. Returns `true` when it should be skipped.
+    pub fn should_skip_redraw(&mut self, minimized: bool) -> bool {
+        if minimized {
+            self.skipped = true;
+        }
+        minimized
+    }
+
+    /// Some other event reached the window. Returns `true` when a redraw skipped earlier is now
+    /// due because the window is no longer minimized.
+    pub fn redraw_due_on_event(&mut self, minimized: bool) -> bool {
+        if self.skipped && !minimized {
+            self.skipped = false;
+            return true;
+        }
+        false
+    }
+}
+
 /// A frame whose redraw (scene build, acquire, encode, present) took longer than this is slow.
 const SLOW_FRAME: Duration = Duration::from_millis(50);
 /// Waiting longer than this for the swapchain to hand out an image delays every key behind it.

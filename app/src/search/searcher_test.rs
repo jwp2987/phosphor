@@ -2,10 +2,12 @@ use crate::define_search_schema;
 use crate::search::searcher::{
     AsyncSearcher, CustomTokenizer, FullTextSearchDocumentEntry, FullTextSearchFieldValue,
     MIN_MEMORY_BUDGET, PendingRebuild, ProducerState, QueuedItem, SearchDocumentEntry, SearchSchemaConfig,
-    SearcherEvent, SearcherProducerState, SimpleFullTextSearcher, merge_with_rebuild,
+    SearcherEvent, SearcherProducerState, SimpleFullTextSearcher, SEARCH_IDLE_TIMEOUT, idle_deadline,
+    merge_with_rebuild,
 };
 use itertools::Itertools;
 use std::sync::Arc;
+use instant::Instant;
 use std::time::Duration;
 use tantivy::tokenizer::{TextAnalyzer, Token};
 use warpui::r#async::executor::Background;
@@ -883,4 +885,14 @@ fn test_searcher_async_writer_has_zero_wakeups_while_idle() {
         .wakeups
         .load(std::sync::atomic::Ordering::SeqCst)
         == 1));
+}
+
+/// After the idle timeout has joined the index writer, the next cycle must wait for an event with
+/// no timer at all; otherwise every searcher wakes every `SEARCH_IDLE_TIMEOUT` for the whole
+/// session.
+#[test]
+fn idle_timeout_is_armed_once_per_burst_of_activity() {
+    let now = Instant::now();
+    assert_eq!(idle_deadline(false, now), Some(now + SEARCH_IDLE_TIMEOUT));
+    assert_eq!(idle_deadline(true, now), None);
 }
