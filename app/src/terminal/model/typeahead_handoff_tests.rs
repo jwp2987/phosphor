@@ -1463,6 +1463,37 @@ fn a_request_to_report_round_trip_is_sampled() {
     assert!(handoff.rtt_pending.is_empty());
 }
 
+/// #1131: the editor's command write to its preexec is a round trip through the same shell and
+/// pty pipeline, so it seeds the hold from the session's first command on; before any sample the
+/// first young Enter waited at least `YOUNG_ENTER_MIN_HOLD`. A line the shell started itself is
+/// not the command's preexec, and the command's own sample is dropped with it.
+#[test]
+fn a_command_write_to_preexec_round_trip_seeds_the_hold_before_any_report() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    assert_eq!(
+        handoff.young_hold_wait(now),
+        YOUNG_ENTER_WINDOW,
+        "no sample yet"
+    );
+    assert!(!handoff.on_preexec(false));
+    assert_eq!(handoff.rtt_samples.len(), 1);
+    assert!(
+        handoff.young_hold_wait(Instant::now()) < YOUNG_ENTER_MIN_HOLD,
+        "a local loop of microseconds sizes the hold at its floor"
+    );
+
+    let mut queued = young_after_submit();
+    assert!(!queued.on_preexec(true));
+    assert_eq!(queued.rtt_samples.len(), 0, "a shell-started line is not the command");
+    assert!(!queued.on_preexec(false));
+    assert_eq!(
+        queued.rtt_samples.len(),
+        0,
+        "the command's own preexec after a queued line would include that line's run"
+    );
+}
+
 #[test]
 fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
     // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or

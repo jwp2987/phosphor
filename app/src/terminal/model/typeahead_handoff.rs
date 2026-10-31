@@ -303,6 +303,11 @@ pub struct TypeaheadHandoff {
     tracks_view_precmds: bool,
     /// The last command written, prompt or preexec seen (see [`YOUNG_ENTER_WINDOW`]).
     last_activity_at: Option<Instant>,
+    /// When the editor's last command was written, until its preexec arrives: that round trip
+    /// (write, shell preexec hook, pty read, parse) is sampled like a request-to-report one
+    /// (#1131), so the young hold is measured from the session's first command on, before any
+    /// typeahead exists, instead of starting at `YOUNG_ENTER_MIN_HOLD`.
+    command_written_at: Option<Instant>,
     /// Whether the pty's foreground process group is provably not a shell at a prompt. A line
     /// typed into such a program cannot be a #933 line typed at an unnoticed prompt.
     foreground_probe: ForegroundProbe,
@@ -412,6 +417,12 @@ impl TypeaheadHandoff {
 
     #[cfg(test)]
     pub(crate) fn record_rtt_for_test(&mut self, rtt: Duration) {
+        self.record_rtt(rtt);
+    }
+
+    /// Records one measured round trip through the shell and the pty pipeline, in the rolling
+    /// window the young hold is sized from.
+    fn record_rtt(&mut self, rtt: Duration) {
         if self.rtt_samples.len() >= RTT_WINDOW {
             self.rtt_samples.pop_front();
         }
@@ -500,10 +511,7 @@ impl TypeaheadHandoff {
     /// bytes, they are back in the editor.
     fn on_report_received(&mut self) {
         if let Some(written_at) = self.rtt_pending.pop_front() {
-            if self.rtt_samples.len() >= RTT_WINDOW {
-                self.rtt_samples.pop_front();
-            }
-            self.rtt_samples.push_back(written_at.elapsed());
+            self.record_rtt(written_at.elapsed());
         }
         self.requests_outstanding = self.requests_outstanding.saturating_sub(1);
         if let Some(remaining) = self.untracked_cover_after_reports.as_mut() {
@@ -691,7 +699,9 @@ impl TypeaheadHandoff {
             ),
             HandoffState::EditorOwned | HandoffState::AwaitingReport => (Vec::new(), 0, 0),
         };
-        self.last_activity_at = Some(Instant::now());
+        let now = Instant::now();
+        self.last_activity_at = Some(now);
+        self.command_written_at = Some(now);
         let (held_enters, wrote_user_bytes) = scan_line_terminators(&held, false);
         self.state = HandoffState::PtyOwned {
             wrote_user_bytes,
@@ -756,6 +766,14 @@ impl TypeaheadHandoff {
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
         self.activity_generation = self.activity_generation.wrapping_add(1);
         self.last_activity_at = Some(Instant::now());
+        // The editor's command reached the shell: one write-to-preexec loop measured. A line the
+        // shell started itself ran ahead of that command, so its preexec is not the command's and
+        // the command's own would include the line's run: the sample is dropped.
+        if let Some(written_at) = self.command_written_at.take()
+            && !shell_started
+        {
+            self.record_rtt(written_at.elapsed());
+        }
         if shell_started && self.state == HandoffState::EditorOwned {
             self.state = HandoffState::PtyOwned {
                 wrote_user_bytes: false,
