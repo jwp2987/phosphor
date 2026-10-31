@@ -537,6 +537,22 @@ lto = "thin"
 [profile.rlto]
 inherits = "release-lto"
 
+# Hot-loop crates (terminal parser/grid, UI core layout, completer) get a single codegen unit so
+# LLVM can inline within the crate; scoped per package to bound the build-time/memory cost (#1157).
+# Package overrides are per-profile, so `rlto` repeats the `release-lto` ones.
+[profile.release-lto.package.warpui_core]
+codegen-units = 1
+[profile.release-lto.package.warp_terminal]
+codegen-units = 1
+[profile.release-lto.package.warp_completer]
+codegen-units = 1
+[profile.rlto.package.warpui_core]
+codegen-units = 1
+[profile.rlto.package.warp_terminal]
+codegen-units = 1
+[profile.rlto.package.warp_completer]
+codegen-units = 1
+
 # A custom release-like profile that forces debug assertions on.
 [profile.release-lto-debug_assertions]
 inherits = "release-lto"
