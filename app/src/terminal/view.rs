@@ -2511,6 +2511,7 @@ enum SubagentFinishedQueueDelivery {
 /// [`TerminalView::block_completion_auto_resumes`].
 fn subagent_finished_queue_delivery(
     has_active_subagent: bool,
+    completion_report_outstanding: bool,
     skipped_turn_end: Option<SkippedTurnEndDrain>,
     conversation_cancelled: bool,
     turn_in_progress: bool,
@@ -2520,6 +2521,13 @@ fn subagent_finished_queue_delivery(
     use SubagentFinishedQueueDelivery::*;
     if has_active_subagent {
         return SendLrcRows;
+    }
+    // A report of the finished command is held for a turn end or is the running request
+    // (#1264): the rows wait for that report's own turn end, which drains them. Asked of the
+    // controller, not inferred from event order: `FinishedSubagent` can reach the view before
+    // the controller's `ResumedOnBlockCompletion`.
+    if completion_report_outstanding {
+        return Nothing;
     }
     match skipped_turn_end {
         Some(SkippedTurnEndDrain::Replayed) => Nothing,
@@ -5641,6 +5649,19 @@ impl TerminalView {
         if self.suspended_for_close {
             return;
         }
+        // Nor into a pending or running report of a finished command (#1264): the rows stay
+        // queued (unlocked) for that report's turn end.
+        if self
+            .ai_controller
+            .as_ref(ctx)
+            .completion_report_outstanding(conversation_id)
+        {
+            log::info!(
+                "Queued prompts for conversation {conversation_id} wait for the monitored \
+                 command's completion report"
+            );
+            return;
+        }
 
         let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
@@ -5760,8 +5781,13 @@ impl TerminalView {
         // own `FinishedReceivingOutput` clears it, and that turn end drains the queue.
         let auto_resumed_on_block_completion =
             !has_active_subagent && self.block_completion_auto_resumes.contains(&conversation_id);
+        let completion_report_outstanding = self
+            .ai_controller
+            .as_ref(ctx)
+            .completion_report_outstanding(conversation_id);
         let delivery = subagent_finished_queue_delivery(
             has_active_subagent,
+            completion_report_outstanding,
             skipped_turn_end,
             conversation_cancelled,
             // A status, not the block's finish reason: a block whose finish reason has not
@@ -5772,7 +5798,8 @@ impl TerminalView {
         );
         log::debug!(
             "Queued prompts after subagent finished: conversation={conversation_id} \
-             auto_resumed={auto_resumed_on_block_completion} delivery={delivery:?}"
+             auto_resumed={auto_resumed_on_block_completion} \
+             report_outstanding={completion_report_outstanding} delivery={delivery:?}"
         );
         // Keep the handoff retry's transition detector in step, so it does not treat this
         // already-handled finish as a fresh handoff.
@@ -6228,7 +6255,15 @@ impl TerminalView {
             // read as `finish_reason() == None` and silently swallow this conversation's
             // queued prompt. `finish_reason_for_conversation` scopes the lookup to
             // `conversation_id` instead.
-            if !has_active_subagent {
+            // Nor while a report of a finished monitored command is held for a later turn end
+            // or is the request now running (#1264): that report's own turn end drains instead.
+            // The controller re-decided the hold before emitting this event, so the report's own
+            // stream end never reads as outstanding here.
+            let completion_report_outstanding = self
+                .ai_controller
+                .as_ref(ctx)
+                .completion_report_outstanding(*conversation_id);
+            if !has_active_subagent && !completion_report_outstanding {
                 if let Some(reason) =
                     self.queue_drain_reason_for_conversation(*conversation_id, ctx)
                 {

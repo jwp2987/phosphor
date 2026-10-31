@@ -2608,6 +2608,129 @@ mod monitored_completion {
             });
         });
     }
+
+    /// #1264: finished results a step kept back (no request follows them) do not hold a
+    /// completion; actions still pending or running always do, and finished results do while a
+    /// request to send them is coming.
+    #[test]
+    fn retained_results_block_only_while_a_request_is_coming() {
+        use super::super::unsent_actions_block;
+        assert!(unsent_actions_block(true, false, false));
+        assert!(unsent_actions_block(true, false, true));
+        assert!(unsent_actions_block(false, true, true));
+        assert!(!unsent_actions_block(false, true, false));
+        assert!(!unsent_actions_block(false, false, true));
+    }
+
+    /// #1264: while a completion is held, the view is told a report is outstanding, so no queued
+    /// prompt fires into it; the command's own optimistic completion keeps it, the user's stop
+    /// clears it, and a closed pane drops every hold at once.
+    #[test]
+    fn a_held_completion_is_an_outstanding_report_until_the_user_stops_or_the_pane_closes() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    assert!(!controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &block_id,
+                        ctx
+                    ));
+                    assert!(
+                        controller.completion_report_outstanding(conversation_id),
+                        "a held completion is an outstanding report"
+                    );
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::OptimisticCLISubagentCompletion,
+                        ctx,
+                    );
+                    assert!(controller.completion_report_outstanding(conversation_id));
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn closing_the_pane_drops_the_held_completion() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &block_id,
+                        ctx,
+                    );
+                    assert!(controller.has_deferred_monitored_completion(conversation_id));
+                    controller.set_suspended_for_close(true);
+                    assert!(!controller.has_deferred_monitored_completion(conversation_id));
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                });
+            });
+        });
+    }
 }
 
 /// The end-of-step decision behind the `FinishedAction` subscriber: every finished batch ends

@@ -430,11 +430,32 @@ enum DeferredContent {
 }
 
 impl DeferredBlockContent {
+    /// Copies the grids for a later conversion. An output grid over the serialized bound
+    /// (`MAX_SERIALIZED_STYLIZED_OUTPUT_LINES`) is converted here instead, as before this type
+    /// existed: the conversion of that many rows is what the lock paid then, while a copy of a
+    /// 100k-row grid is not bounded by anything (#1262). The bytes are the same either way.
     pub fn capture(block: &Block) -> Self {
+        if block.output_grid().len() > MAX_SERIALIZED_STYLIZED_OUTPUT_LINES {
+            return Self::from_bytes(
+                block
+                    .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
+                    .into_bytes(),
+                SerializedBlock::stylized_output_of(block),
+            );
+        }
         Self::new(DeferredContent::Grids {
             command: block.command_snapshot_with_secrets_unobfuscated(),
             output: block.output_grid().clone(),
         })
+    }
+
+    /// Whether the content is already bytes (converted at capture) rather than copied grids.
+    #[cfg(test)]
+    pub(crate) fn holds_bytes(&self) -> bool {
+        matches!(
+            self.0.content.lock().as_ref(),
+            Some(DeferredContent::Bytes { .. })
+        )
     }
 
     pub fn from_bytes(stylized_command: Vec<u8>, stylized_output: Vec<u8>) -> Self {

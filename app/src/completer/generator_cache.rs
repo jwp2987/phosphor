@@ -208,7 +208,8 @@ impl GeneratorCache {
     fn sweep(&mut self, now: Instant) {
         self.slots.retain(|_, slot| match slot {
             Slot::Done { at, .. } => now.saturating_duration_since(*at) < GENERATOR_CACHE_TTL,
-            Slot::InFlight { .. } => true,
+            // An attached run whose last waiter went away is dead: nothing will finish it.
+            Slot::InFlight { run, .. } => run.join().is_some(),
         });
         if self.slots.len() >= GENERATOR_CACHE_MAX_SLOTS {
             self.slots

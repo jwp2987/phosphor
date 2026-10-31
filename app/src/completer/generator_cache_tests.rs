@@ -367,3 +367,46 @@ fn attached_run_is_dropped_when_no_caller_waits() {
         "a local run stays alive for later callers"
     );
 }
+
+/// An attached (remote) run whose last waiter dropped is dead: nothing polls it and nothing
+/// will call `finish`, so the sweep drops its slot instead of keeping it until the session ends.
+#[test]
+fn sweep_drops_an_in_flight_slot_whose_run_is_gone() {
+    let mut cache = GeneratorCache::default();
+    let now = Instant::now();
+    let dead = key(1, "/repo", "git branch");
+    let alive = key(1, "/repo", "git tag");
+    let waited_on = ready_run(ok("v1"));
+    let weak_alive = waited_on
+        .downgrade()
+        .expect("an unpolled shared run can be downgraded");
+    let gone = ready_run(ok("v2"));
+    let weak_gone = gone
+        .downgrade()
+        .expect("an unpolled shared run can be downgraded");
+    drop(gone);
+    cache.slots.insert(
+        dead.clone(),
+        Slot::InFlight {
+            run_id: 1,
+            run: RunHandle::Attached(weak_gone),
+        },
+    );
+    cache.slots.insert(
+        alive.clone(),
+        Slot::InFlight {
+            run_id: 2,
+            run: RunHandle::Attached(weak_alive),
+        },
+    );
+    cache.sweep(now);
+    assert!(
+        !cache.slots.contains_key(&dead),
+        "the dead run's slot is swept"
+    );
+    assert!(
+        cache.slots.contains_key(&alive),
+        "a run somebody waits on stays"
+    );
+    drop(waited_on);
+}
