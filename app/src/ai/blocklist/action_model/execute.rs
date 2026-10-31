@@ -1585,17 +1585,39 @@ pub(super) fn expand_session_tilde(
     path: &str,
     ctx: &AppContext,
 ) -> String {
-    let is_remote = matches!(
-        active_session.session_type(ctx),
-        Some(crate::terminal::model::session::SessionType::WarpifiedRemote { .. })
-    );
-    if !is_remote {
+    if !is_remote_session(active_session, ctx) {
         return path.to_owned();
     }
-    let home = active_session
+    crate::ai::paths::expand_tilde_against(
+        path,
+        remote_session_home(active_session, ctx).as_deref(),
+    )
+}
+
+fn is_remote_session(active_session: &ActiveSession, ctx: &AppContext) -> bool {
+    matches!(
+        active_session.session_type(ctx),
+        Some(crate::terminal::model::session::SessionType::WarpifiedRemote { .. })
+    )
+}
+
+fn remote_session_home(active_session: &ActiveSession, ctx: &AppContext) -> Option<String> {
+    active_session
         .session(ctx)
-        .and_then(|session| session.home_dir().map(str::to_owned));
-    crate::ai::paths::expand_tilde_against(path, home.as_deref())
+        .and_then(|session| session.home_dir().map(str::to_owned))
+}
+
+/// Whether `path` starts with a `~` that [`expand_session_tilde`] cannot resolve: a remote
+/// session whose home is unknown. The permission check would then judge the LOCAL home's
+/// path while the action runs on the remote host, so callers must not auto-run (#1288).
+pub(super) fn session_tilde_unresolved(
+    active_session: &ActiveSession,
+    path: &str,
+    ctx: &AppContext,
+) -> bool {
+    crate::ai::paths::path_needs_home(path)
+        && is_remote_session(active_session, ctx)
+        && remote_session_home(active_session, ctx).is_none_or(|home| home.is_empty())
 }
 
 #[cfg(all(test, feature = "local_fs"))]
@@ -1707,15 +1729,15 @@ mod initiator_tests {
         let AIAgentActionType::RequestFileEdits { file_edits, .. } = protected_move() else {
             unreachable!()
         };
-        let cwd = Some("/project".to_owned());
-        assert!(file_edits_touch_protected_path(&file_edits, &None, &cwd));
+        let session = crate::ai::blocklist::SessionContext::new_local_with_cwd_for_test("/project");
+        assert!(file_edits_touch_protected_path(&file_edits, &session));
 
         let ordinary = [FileEdit::Edit(ParsedDiff::V4AEdit {
             file: Some("src/a.rs".to_owned()),
             move_to: Some("src/b.rs".to_owned()),
             hunks: Vec::new(),
         })];
-        assert!(!file_edits_touch_protected_path(&ordinary, &None, &cwd));
+        assert!(!file_edits_touch_protected_path(&ordinary, &session));
     }
 
     /// A user accept dequeues one specific action rather than draining the queue, so it keeps

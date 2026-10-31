@@ -59,6 +59,14 @@ impl ReadFilesExecutor {
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
 
+        // Fail closed: a `~` we cannot resolve on a remote session is judged against the wrong
+        // host's path (#1288).
+        if locations.iter().any(|file| {
+            super::session_tilde_unresolved(self.active_session.as_ref(ctx), &file.name, ctx)
+        }) {
+            return false;
+        }
+
         BlocklistAIPermissions::as_ref(ctx)
             .can_read_files_with_conversation(
                 &conversation_id,
@@ -100,10 +108,17 @@ impl ReadFilesExecutor {
             return ActionExecution::InvalidAction;
         };
 
+        let expanded_names: Vec<String> = locations
+            .iter()
+            .map(|file| {
+                super::expand_session_tilde(self.active_session.as_ref(ctx), &file.name, ctx)
+            })
+            .collect();
         BlocklistAIPermissions::handle(ctx).update(ctx, |model, _ctx| {
             model.add_temporary_file_read_permissions(
                 conversation_id,
-                locations.iter().map(|file| Path::new(&file.name)),
+                // The resolved path, so the grant matches the absolute path later checks use.
+                expanded_names.iter().map(Path::new),
             );
         });
 

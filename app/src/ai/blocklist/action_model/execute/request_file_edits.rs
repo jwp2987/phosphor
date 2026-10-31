@@ -43,7 +43,6 @@ use crate::{
             },
             permissions::file_edits_touch_protected_path,
         },
-        paths::host_native_absolute_path,
     },
     safe_warn,
     terminal::model::session::{SessionType, active_session::ActiveSession},
@@ -159,8 +158,7 @@ impl RequestFileEditsExecutor {
             .can_apply_file_edits(
                 &conversation_id,
                 file_edits,
-                session_context.shell(),
-                session_context.current_working_directory(),
+                &session_context,
                 Some(self.terminal_view_id),
                 ctx,
             )
@@ -183,11 +181,7 @@ impl RequestFileEditsExecutor {
             return false;
         };
         let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
-        file_edits_touch_protected_path(
-            file_edits,
-            session_context.shell(),
-            session_context.current_working_directory(),
-        )
+        file_edits_touch_protected_path(file_edits, &session_context)
     }
 
     /// Registers a diff view to handle a RequestFileEdits action.
@@ -431,21 +425,12 @@ impl RequestFileEditsExecutor {
             }
         };
 
-        let current_working_directory = self
-            .active_session
-            .as_ref(ctx)
-            .current_working_directory()
-            .cloned();
-
-        let shell_launch_data = self.active_session.as_ref(ctx).shell_launch_data(ctx);
-
+        // Resolve exactly as the permission guard and `apply_edits` do: `~` on a remote session
+        // is the remote home (#1288).
+        let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
         let mut diffs = Vec::with_capacity(applied_diffs.len());
         for diff in applied_diffs {
-            let path = host_native_absolute_path(
-                diff.file_name.as_str(),
-                &shell_launch_data,
-                &current_working_directory,
-            );
+            let path = session_context.resolve_path(diff.file_name.as_str());
             let file_diff = FileDiff::new(diff.original_content, path, diff.diff_type);
             diffs.push(file_diff);
         }

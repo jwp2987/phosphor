@@ -141,6 +141,13 @@ pub fn expand_tilde_against(file_path: &str, home: Option<&str>) -> String {
     }
 }
 
+/// Whether `file_path` starts with a `~` that [`expand_tilde_against`] would expand (`~` or
+/// `~/...`). A remote session with no known home must not let such a path fall through to the
+/// local expansion; callers fail closed on it (#1288).
+pub fn path_needs_home(file_path: &str) -> bool {
+    file_path == "~" || file_path.starts_with("~/")
+}
+
 #[cfg(test)]
 #[path = "paths_tests.rs"]
 mod tests;

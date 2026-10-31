@@ -1542,3 +1542,95 @@ fn a_read_failure_carries_its_cause_into_the_message() {
         assert!(message.len() > format!("Could not read {file_path}:").len() + 1);
     });
 }
+
+// ── #1288: `~` on a remote session is the remote home ───────────────────────────────────
+
+/// Runs `edits` on `session` with a reader that records every path it is asked for.
+async fn read_paths_for(
+    app: &App,
+    session: &SessionContext,
+    edits: Vec<FileEdit>,
+) -> (
+    Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>>,
+    Vec<String>,
+) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_in_reader = seen.clone();
+    let result = apply_edits(
+        edits,
+        session,
+        &AIIdentifiers::default(),
+        app.background_executor(),
+        Arc::new(AuthState::new_for_test()),
+        false,
+        move |path| {
+            seen_in_reader.lock().unwrap().push(path);
+            async { FileReadResult::NotFound }
+        },
+    )
+    .await;
+    let seen = seen.lock().unwrap().clone();
+    (result, seen)
+}
+
+/// Old code resolved `~/tmp-r18-1288/a.txt` with the local home, so the remote server was asked
+/// for `<local home>/tmp-r18-1288/a.txt`.
+#[test]
+fn a_remote_create_reads_the_remote_home_path() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser",
+        );
+        let create = FileEdit::Create {
+            file: Some("~/tmp-r18-1288/a.txt".to_owned()),
+            content: Some("hi".to_owned()),
+        };
+        let (_, seen) = read_paths_for(&app, &session, vec![create]).await;
+        assert_eq!(seen, ["/home/remoteuser/tmp-r18-1288/a.txt"]);
+    });
+}
+
+#[test]
+fn a_remote_move_resolves_source_and_destination_against_the_remote_home() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser",
+        );
+        let edit = FileEdit::Edit(ParsedDiff::V4AEdit {
+            file: Some("~/a.txt".to_owned()),
+            move_to: Some("~/b.txt".to_owned()),
+            hunks: Vec::new(),
+        });
+        let (_, seen) = read_paths_for(&app, &session, vec![edit]).await;
+        assert_eq!(
+            seen.first().map(String::as_str),
+            Some("/home/remoteuser/a.txt")
+        );
+        assert!(
+            seen.iter()
+                .all(|path| path.starts_with("/home/remoteuser/")),
+            "{seen:?}"
+        );
+    });
+}
+
+/// Unknown remote home: nothing is read or written, and the model is told why.
+#[test]
+fn a_remote_tilde_with_unknown_home_is_refused_before_any_io() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(None, "/srv");
+        let create = FileEdit::Create {
+            file: Some("~/tmp-r18-1288/a.txt".to_owned()),
+            content: Some("hi".to_owned()),
+        };
+        let (result, seen) = read_paths_for(&app, &session, vec![create]).await;
+        assert!(seen.is_empty(), "no read may happen: {seen:?}");
+        let errors = result.expect_err("must fail closed");
+        assert!(matches!(
+            &errors[..],
+            [DiffApplicationError::ReadFailed { .. }]
+        ));
+    });
+}

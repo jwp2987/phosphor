@@ -144,6 +144,10 @@ pub struct SessionContext {
     /// filesystem and need no client; `is_remote()` is what separates "no client because
     /// there is no remote host" from "no client on a host that needs one".
     has_remote_server_client: bool,
+    /// The home directory of the host a `WarpifiedRemote` session's shell runs on, when known.
+    /// `~` in an agent-supplied path means THIS on a remote session, never the local user's
+    /// home (#1288). Always `None` for a local session.
+    remote_home: Option<String>,
 }
 
 impl SessionContext {
@@ -181,7 +185,15 @@ impl SessionContext {
             | Some(SessionType::Local)
             | None => false,
         };
+        let remote_home = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. })) {
+            session_arc
+                .as_ref()
+                .and_then(|s| s.home_dir().map(str::to_owned))
+        } else {
+            None
+        };
         SessionContext {
+            remote_home,
             session_type,
             shell: session.shell_launch_data(app),
             current_working_directory: session.current_working_directory().cloned(),
@@ -201,6 +213,35 @@ impl SessionContext {
 
     pub fn current_working_directory(&self) -> &Option<String> {
         &self.current_working_directory
+    }
+
+    /// Whether `path` begins with a `~` that cannot be resolved: a remote session whose home
+    /// is unknown. The local expansion would name the wrong host's file, so every consumer
+    /// that makes a permission decision or writes must fail closed on it (#1288).
+    pub fn tilde_unresolvable(&self, path: &str) -> bool {
+        self.is_remote()
+            && self.remote_home.as_deref().is_none_or(str::is_empty)
+            && crate::ai::paths::path_needs_home(path)
+    }
+
+    /// Resolves an agent-supplied `path` to the absolute path the file tools act on. On a
+    /// remote session `~` is expanded against the remote host's home first
+    /// ([`crate::ai::paths::expand_tilde_against`], the same expansion `read_files`, `grep` and
+    /// `file_glob` use), because [`crate::ai::paths::host_native_absolute_path`] alone expands
+    /// it against the LOCAL home. Permission checks, the diff and the writer must all resolve
+    /// through this so they name the same file (#1288). Check [`Self::tilde_unresolvable`]
+    /// first.
+    pub fn resolve_path(&self, path: &str) -> String {
+        let expanded = if self.is_remote() {
+            crate::ai::paths::expand_tilde_against(path, self.remote_home.as_deref())
+        } else {
+            path.to_owned()
+        };
+        crate::ai::paths::host_native_absolute_path(
+            &expanded,
+            &self.shell,
+            &self.current_working_directory,
+        )
     }
 
     /// Returns the remote host ID if this is a `WarpifiedRemote` session with
@@ -283,6 +324,7 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: false,
             has_remote_server_client: false,
+            remote_home: None,
         }
     }
 
@@ -322,6 +364,7 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: true,
             has_remote_server_client: false,
+            remote_home: None,
         }
     }
 
@@ -348,6 +391,18 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: false,
             has_remote_server_client,
+            remote_home: None,
+        }
+    }
+
+    /// A warpified-remote session with a connected remote-server client, whose home is
+    /// `remote_home` (`None` = not yet known) and whose cwd is `cwd`.
+    #[cfg(test)]
+    pub fn new_remote_with_home_for_test(remote_home: Option<&str>, cwd: &str) -> Self {
+        SessionContext {
+            remote_home: remote_home.map(str::to_owned),
+            current_working_directory: Some(cwd.to_owned()),
+            ..Self::new_warpified_remote_for_test(true)
         }
     }
 }
