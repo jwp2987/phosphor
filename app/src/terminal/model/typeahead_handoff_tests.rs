@@ -1487,3 +1487,95 @@ fn a_held_enter_waits_only_for_what_is_left_of_the_window() {
     handoff.last_activity_at = None;
     assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
 }
+
+/// A hand-off on a ConPTY session whose command was written just now (#1162).
+fn conpty_young_after_submit() -> TypeaheadHandoff {
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_input(true);
+    handoff
+}
+
+#[test]
+fn conpty_writes_a_held_run_back_one_chunk_per_key_event() {
+    let mut handoff = conpty_young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    for key in [&b"e"[..], b"c", b"h", b"\x1b[A", b"o", b"\r", b"x"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
+    }
+    let chunks = handoff.expire_young_hold_chunks(id).unwrap();
+    // Old behaviour (one write, `\recho\x1b[Ao\rx`, one in-flight count) coalesced the Enters.
+    assert_eq!(
+        chunks,
+        vec![
+            b"\r".to_vec(),
+            b"e".to_vec(),
+            b"c".to_vec(),
+            b"h".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"o".to_vec(),
+            b"\r".to_vec(),
+            b"x".to_vec(),
+        ]
+    );
+    // Each chunk is its own routed write, and both Enters are queued for the shell.
+    assert_eq!(handoff.writes_in_flight(), 8);
+    assert!(handoff.has_unanswered_lines());
+    assert_eq!(handoff.expire_young_hold_chunks(id), None);
+}
+
+#[test]
+fn other_platforms_write_a_held_run_as_one_chunk() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    assert_eq!(handoff.on_user_bytes(b"d"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.expire_young_hold_chunks(id),
+        Some(vec![b"\rd".to_vec()])
+    );
+    assert_eq!(handoff.writes_in_flight(), 1);
+}
+
+#[test]
+fn conpty_writes_no_request_while_a_line_is_still_being_typed() {
+    let mut handoff = conpty_young_after_submit();
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"ec");
+    handoff.on_precmd();
+    // Old behaviour: `SendRequest` here, between two keys of the line being typed.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    assert_eq!(
+        handoff.state().clone(),
+        HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 1,
+            precmds_seen: 1,
+        }
+    );
+    // Once the user paused, the request goes out.
+    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+#[test]
+fn conpty_still_commits_without_a_request_at_a_line_boundary() {
+    let mut handoff = conpty_young_after_submit();
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"ls");
+    type_and_flush(&mut handoff, b"\r");
+    handoff.on_precmd();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}

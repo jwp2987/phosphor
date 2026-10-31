@@ -78,6 +78,13 @@ impl std::fmt::Debug for ForegroundProbe {
     }
 }
 
+/// On a ConPTY session (#1162): how long the user must have stopped typing before the hand-off
+/// asks the shell for a line that holds raw-typed keys. A request (`ESC i`) landing between two
+/// keys of a line the user is still typing is written into the middle of that line's raw
+/// writes, and ConPTY / MSYS readline lose the line. Well above the 10-25 ms between keys of
+/// fast typing, below the stale-count reset (250 ms) that re-runs a waiting decision.
+pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
+
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
 /// Enter then submits on the Enter-time rules without it (#1174), never kept in the editor.
@@ -306,6 +313,14 @@ pub struct TypeaheadHandoff {
     young_hold_started: bool,
     /// Identifies the current hold; a timer armed for an earlier one must not release it.
     young_hold_id: u64,
+    /// The length of each routed write appended to `young_hold`, in typed order (#1162).
+    young_hold_chunks: Vec<usize>,
+    /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
+    /// written back one chunk per key event, never as one write with an embedded Enter, and no
+    /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
+    conpty_input: bool,
+    /// When the user last typed a byte that reached the shell's line.
+    last_line_bytes_at: Option<Instant>,
     /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
     /// activity, i.e. before the app could know the shell was at its prompt (#933).
     young_line: bool,
@@ -340,6 +355,20 @@ pub struct HeldAgentCommand {
 impl TypeaheadHandoff {
     pub fn state(&self) -> &HandoffState {
         &self.state
+    }
+
+    /// Marks the session's input as going through ConPTY (#1162).
+    pub fn set_conpty_input(&mut self, conpty_input: bool) {
+        self.conpty_input = conpty_input;
+    }
+
+    /// Whether, on a ConPTY session, the user typed into the shell's line so recently that a
+    /// request now would land in the middle of the line (#1162).
+    fn typing_a_line_on_conpty(&self, now: Instant) -> bool {
+        self.conpty_input
+            && self
+                .last_line_bytes_at
+                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_MIDLINE_QUIET)
     }
 
     pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
@@ -820,6 +849,12 @@ impl TypeaheadHandoff {
                     }
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
+                } else if self.typing_a_line_on_conpty(Instant::now()) {
+                    // #1162: keys of a line are still arriving raw; the request waits for a
+                    // pause (the quiet-period timer or the next flushed write decides again).
+                    ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    }
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
                     self.state = HandoffState::AwaitingReport;
                     // Its report covers every untracked byte written before it too (#1089).
@@ -860,10 +895,12 @@ impl TypeaheadHandoff {
         // held Enter; that window is the report's latency.
         if let Some(hold) = &mut self.young_hold {
             hold.extend_from_slice(bytes);
+            self.young_hold_chunks.push(bytes.len());
             return UserBytesRoute::Held;
         }
         if self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now()) {
             self.young_hold = Some(bytes.to_vec());
+            self.young_hold_chunks = vec![bytes.len()];
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
             self.young_hold_started = true;
             return UserBytesRoute::Held;
@@ -993,8 +1030,39 @@ impl TypeaheadHandoff {
             return None;
         }
         let bytes = self.young_hold.take()?;
+        self.young_hold_chunks.clear();
         self.route_user_bytes_unheld(&bytes, true);
         Some(bytes)
+    }
+
+    /// As [`Self::expire_young_hold`], but on a ConPTY session the bytes come back as the
+    /// separate writes the user typed them in (#1162), each routed and counted on its own, so
+    /// they reach the pty in the granularity of the controls that never lost a line. Elsewhere
+    /// it is one chunk, exactly what `expire_young_hold` returns.
+    pub fn expire_young_hold_chunks(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
+        if !self.conpty_input {
+            return self.expire_young_hold(id).map(|bytes| vec![bytes]);
+        }
+        self.drop_stale_hold();
+        if id != self.young_hold_id || !matches!(self.state, HandoffState::PtyOwned { .. }) {
+            return None;
+        }
+        let bytes = self.young_hold.take()?;
+        let lengths = mem::take(&mut self.young_hold_chunks);
+        let lengths = if lengths.iter().sum::<usize>() == bytes.len() {
+            lengths
+        } else {
+            vec![bytes.len()]
+        };
+        let mut start = 0;
+        let mut chunks = Vec::with_capacity(lengths.len());
+        for len in lengths {
+            let chunk = bytes[start..start + len].to_vec();
+            start += len;
+            self.route_user_bytes_unheld(&chunk, true);
+            chunks.push(chunk);
+        }
+        Some(chunks)
     }
 
     fn route_user_bytes_unheld(
@@ -1018,6 +1086,7 @@ impl TypeaheadHandoff {
                     {
                         self.young_line = true;
                     }
+                    self.last_line_bytes_at = Some(Instant::now());
                     let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;

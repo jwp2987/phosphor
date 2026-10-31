@@ -1031,6 +1031,10 @@ fn on_shell_determined<S: TerminalSurface>(
             }));
         });
     }
+    // #1162: the session's input goes through ConPTY, which loses lines when a held run of
+    // keys with an embedded Enter arrives as one write, or when a request lands mid-line.
+    #[cfg(windows)]
+    model.lock().typeahead_handoff_mut().set_conpty_input(true);
 }
 
 /// Wires the Unix terminal-attributes poller to a terminal surface.

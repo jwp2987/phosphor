@@ -11406,17 +11406,21 @@ impl TerminalView {
     /// The window of a held Enter ran out with no prompt (#933): the command is running, so the
     /// Enter and the keys behind it go to the pty as typeahead.
     fn release_expired_young_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
-        let bytes = self
+        // #1162: on a ConPTY session the held keys come back as the separate writes they were
+        // typed in, in order; elsewhere as one chunk.
+        let chunks = self
             .model
             .lock()
             .typeahead_handoff_mut()
-            .expire_young_hold(hold_id);
-        if let Some(bytes) = bytes {
+            .expire_young_hold_chunks(hold_id);
+        if let Some(chunks) = chunks {
             self.input
                 .update(ctx, |input, _| input.clear_handoff_enter_mark());
-            ctx.emit(Event::WriteHandoffUserBytesToPty {
-                bytes: Cow::Owned(bytes),
-            });
+            for bytes in chunks {
+                ctx.emit(Event::WriteHandoffUserBytesToPty {
+                    bytes: Cow::Owned(bytes),
+                });
+            }
         }
     }
 
