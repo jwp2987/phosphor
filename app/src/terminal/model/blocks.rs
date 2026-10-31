@@ -456,6 +456,111 @@ pub struct BlockList {
     /// removed and re-appended so it stays last.
     pinned_to_bottom: Option<EntityId>,
     is_executing_oz_environment_startup_commands: bool,
+
+    /// Where background-parsed restored blocks arrive (#1254). `None` unless startup restore
+    /// deferred at least one large saved block.
+    deferred_restores: Option<Arc<DeferredRestoreMailbox>>,
+}
+
+/// Saved blocks whose command + output bytes together reach this size are restored as cheap
+/// placeholders and parsed off the UI thread (#1254). Smaller blocks parse in well under a
+/// millisecond, so they keep the original eager path.
+const LAZY_RESTORE_MIN_BYTES: usize = 64 * 1024;
+
+/// The size threshold for deferring a restored block's parse, or `None` when the
+/// `PHOSPHOR_LAZY_RESTORE=0` kill switch asks for fully eager restore.
+fn lazy_restore_min_bytes_from_env() -> Option<usize> {
+    std::env::var("PHOSPHOR_LAZY_RESTORE")
+        .map_or(true, |value| value.trim() != "0")
+        .then_some(LAZY_RESTORE_MIN_BYTES)
+}
+
+/// How much of `restore_block` runs on the calling thread (#1254).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RestoreMode {
+    /// Parse the saved bytes inline.
+    Full,
+    /// Everything except parsing the command and output bytes: the block gets its metadata,
+    /// timestamps and height bookkeeping now and its grids are filled in later.
+    Placeholder,
+    /// Like `Full`, but on a scratch list off the UI thread. The placeholder already sent the
+    /// block's `AfterBlockCompleted`, so this must not send a second one.
+    Detached,
+}
+
+/// Blocks parsed off-thread, waiting to be installed into their placeholders.
+#[derive(Default)]
+struct DeferredRestoreMailbox {
+    ready: std::sync::Mutex<Vec<(BlockId, Block)>>,
+    /// Mirrors `ready.len()` so the per-frame check is a single atomic load.
+    ready_count: std::sync::atomic::AtomicUsize,
+}
+
+impl DeferredRestoreMailbox {
+    fn push(&self, id: BlockId, block: Block) {
+        let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        ready.push((id, block));
+        self.ready_count
+            .store(ready.len(), std::sync::atomic::Ordering::Release);
+    }
+
+    fn take(&self) -> Vec<(BlockId, Block)> {
+        let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        self.ready_count
+            .store(0, std::sync::atomic::Ordering::Release);
+        std::mem::take(&mut *ready)
+    }
+
+    fn has_ready(&self) -> bool {
+        self.ready_count.load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+}
+
+/// Everything a scratch [`BlockList`] needs to build a block the way the real list would.
+struct DeferredRestoreConfig {
+    sizes: BlockSize,
+    event_proxy: ChannelEventListener,
+    background_executor: Arc<Background>,
+    show_warp_bootstrap_input: bool,
+    show_in_band_command_blocks: bool,
+    show_memory_stats: bool,
+    honor_ps1: bool,
+    is_inverted: bool,
+    obfuscate_secrets: ObfuscateSecrets,
+    is_ai_ugc_telemetry_enabled: bool,
+}
+
+/// Parses `blocks` one at a time on a scratch list and hands each finished block to `mailbox`.
+/// Runs on a background thread; takes no locks other than the mailbox's.
+fn run_deferred_restore_job(
+    config: DeferredRestoreConfig,
+    blocks: Vec<SerializedBlock>,
+    mailbox: Arc<DeferredRestoreMailbox>,
+) {
+    for serialized in blocks {
+        let mut scratch = BlockList::new_internal(
+            config.sizes.clone(),
+            config.event_proxy.clone(),
+            config.background_executor.clone(),
+            config.show_warp_bootstrap_input,
+            config.show_in_band_command_blocks,
+            config.show_memory_stats,
+            config.honor_ps1,
+            config.is_inverted,
+            config.obfuscate_secrets,
+            config.is_ai_ugc_telemetry_enabled,
+        );
+        scratch.restore_block_with_mode(
+            &serialized,
+            BootstrapStage::RestoreBlocks,
+            &mut Processor::new(),
+            RestoreMode::Detached,
+        );
+        if let Some(block) = scratch.blocks.pop() {
+            mailbox.push(serialized.id.clone(), block);
+            config.event_proxy.send_wakeup_event();
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -713,6 +818,39 @@ impl BlockList {
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
     ) -> Self {
+        Self::new_with_lazy_restore_min_bytes(
+            restored_blocks,
+            sizes,
+            event_proxy,
+            background_executor,
+            show_warp_bootstrap_input,
+            show_in_band_command_blocks,
+            show_memory_stats,
+            honor_ps1,
+            is_inverted,
+            obfuscate_secrets,
+            is_ai_ugc_telemetry_enabled,
+            lazy_restore_min_bytes_from_env(),
+        )
+    }
+
+    /// [`Self::new`] with an explicit threshold for deferring a restored block's parse to a
+    /// background job (#1254); `None` restores everything eagerly.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_lazy_restore_min_bytes(
+        restored_blocks: Option<&[SerializedBlockListItem]>,
+        sizes: BlockSize,
+        event_proxy: ChannelEventListener,
+        background_executor: Arc<Background>,
+        show_warp_bootstrap_input: bool,
+        show_in_band_command_blocks: bool,
+        show_memory_stats: bool,
+        honor_ps1: bool,
+        is_inverted: bool,
+        obfuscate_secrets: ObfuscateSecrets,
+        is_ai_ugc_telemetry_enabled: bool,
+        lazy_restore_min_bytes: Option<usize>,
+    ) -> Self {
         let mut block_list = Self::new_internal(
             sizes,
             event_proxy,
@@ -725,7 +863,7 @@ impl BlockList {
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
         );
-        block_list.initialize(restored_blocks);
+        block_list.initialize(restored_blocks, lazy_restore_min_bytes);
         block_list
     }
 
@@ -811,12 +949,18 @@ impl BlockList {
             transcript_scope: TranscriptScope::Terminal,
             pinned_to_bottom: None,
             is_executing_oz_environment_startup_commands: false,
+            deferred_restores: None,
         }
     }
 
     /// Must be called before the model is used. Even if no blocks are to be restored,
     /// this is necessary in the BlockList lifecycle.
-    fn initialize(&mut self, restored_blocks: Option<&[SerializedBlockListItem]>) {
+    fn initialize(
+        &mut self,
+        restored_blocks: Option<&[SerializedBlockListItem]>,
+        lazy_restore_min_bytes: Option<usize>,
+    ) {
+        let mut deferred_blocks: Vec<SerializedBlock> = Vec::new();
         if let Some(restored_blocks) = restored_blocks {
             self.is_restored_session = true;
 
@@ -832,10 +976,23 @@ impl BlockList {
                         // For session-restoration, we only want to restore blocks
                         // that were completed.
                         if block.start_ts.is_some() && block.completed_ts.is_some() {
-                            self.restore_block(
+                            // A big saved block is parsed off the UI thread (#1254); this
+                            // placeholder carries everything but the grids' contents.
+                            let defer = lazy_restore_min_bytes.is_some_and(|min| {
+                                block.stylized_command.len() + block.stylized_output.len() >= min
+                            });
+                            if defer {
+                                deferred_blocks.push(SerializedBlock::clone(block));
+                            }
+                            self.restore_block_with_mode(
                                 block,
                                 BootstrapStage::RestoreBlocks,
                                 &mut processor,
+                                if defer {
+                                    RestoreMode::Placeholder
+                                } else {
+                                    RestoreMode::Full
+                                },
                             );
                         } else {
                             log::warn!(
@@ -847,6 +1004,7 @@ impl BlockList {
             }
         }
         self.create_warp_input_block();
+        self.spawn_deferred_restore_job(deferred_blocks);
         // Note: We no longer call start() here.
         // When shell input arrives, the block will be started (see the `input` handler).
         // This ensures sessions without a shell (like cloude mode) don't permanently trigger is_active_and_long_running()
@@ -3963,6 +4121,86 @@ impl BlockList {
         bootstrap_stage: BootstrapStage,
         processor: &mut Processor,
     ) {
+        self.restore_block_with_mode(block, bootstrap_stage, processor, RestoreMode::Full);
+    }
+
+    /// Starts a background job that parses `blocks` (saved blocks restored as placeholders by
+    /// `initialize`) and later installs the result with
+    /// [`Self::install_ready_deferred_restores`] (#1254).
+    fn spawn_deferred_restore_job(&mut self, blocks: Vec<SerializedBlock>) {
+        if blocks.is_empty() {
+            return;
+        }
+        let mailbox = Arc::new(DeferredRestoreMailbox::default());
+        self.deferred_restores = Some(mailbox.clone());
+        let config = DeferredRestoreConfig {
+            sizes: self.block_size(),
+            event_proxy: self.event_proxy.clone(),
+            background_executor: self.background_executor.clone(),
+            show_warp_bootstrap_input: self.show_warp_bootstrap_block,
+            show_in_band_command_blocks: self.show_in_band_command_blocks,
+            show_memory_stats: self.show_memory_stats,
+            honor_ps1: self.honor_ps1,
+            is_inverted: self.is_inverted,
+            obfuscate_secrets: self.obfuscate_secrets,
+            is_ai_ugc_telemetry_enabled: self.is_ai_ugc_telemetry_enabled,
+        };
+        // Unit tests have no executor threads to wait on, so they run the job inline and then
+        // call `install_ready_deferred_restores` themselves.
+        #[cfg(test)]
+        run_deferred_restore_job(config, blocks, mailbox);
+        #[cfg(not(test))]
+        self.background_executor
+            .spawn(async move { run_deferred_restore_job(config, blocks, mailbox) })
+            .detach();
+    }
+
+    /// Whether background-parsed restored blocks are waiting to be installed.
+    pub fn has_ready_deferred_restores(&self) -> bool {
+        self.deferred_restores
+            .as_ref()
+            .is_some_and(|mailbox| mailbox.has_ready())
+    }
+
+    /// Moves the grids of blocks parsed off-thread into their placeholders and refreshes the
+    /// placeholders' heights (#1254). One atomic load when nothing is waiting, so it is cheap
+    /// enough to call every frame and every pty chunk. Returns whether anything was installed.
+    ///
+    /// Only the parse-derived state moves (see `Block::adopt_restored_content`); anything the
+    /// view or model did to the placeholder since startup (visibility, banners, conversation
+    /// attachment) stays. A block evicted in the meantime (#889) is simply dropped.
+    pub fn install_ready_deferred_restores(&mut self) -> bool {
+        if !self.has_ready_deferred_restores() {
+            return false;
+        }
+        let Some(mailbox) = self.deferred_restores.clone() else {
+            return false;
+        };
+        let mut installed = false;
+        for (id, restored) in mailbox.take() {
+            let Some(index) = self.block_id_to_block_index.get(&id).copied() else {
+                continue;
+            };
+            let Some(placeholder) = self.blocks.get_mut(index.0) else {
+                continue;
+            };
+            if placeholder.id() != &id {
+                continue;
+            }
+            placeholder.adopt_restored_content(restored);
+            self.refresh_block_height(index);
+            installed = true;
+        }
+        installed
+    }
+
+    fn restore_block_with_mode(
+        &mut self,
+        block: &SerializedBlock,
+        bootstrap_stage: BootstrapStage,
+        processor: &mut Processor,
+        mode: RestoreMode,
+    ) {
         let prompt_metadata = PromptMetadata {
             pwd: block.pwd.clone(),
             git_head: block.git_head.clone(),
@@ -4032,14 +4270,18 @@ impl BlockList {
         // Set the start_ts to the saved start_ts _after_ `start`ing the block (which would have set its own start_ts).
         self.active_block_mut().override_start_ts(start_ts);
 
-        processor.parse_bytes(self, &block.stylized_command, &mut io::sink());
+        // A placeholder (#1254) skips both parses; the detached job does them later.
+        let parse_now = mode != RestoreMode::Placeholder;
+        if parse_now {
+            processor.parse_bytes(self, &block.stylized_command, &mut io::sink());
+        }
 
         if block.did_execute {
             let command = self.active_block_mut().command_to_string();
             self.preexec(PreexecValue { command, session_id: None });
         }
 
-        if block.did_execute || block.is_background {
+        if parse_now && (block.did_execute || block.is_background) {
             processor.parse_bytes(self, &block.stylized_output, &mut io::sink());
         }
 
@@ -4055,15 +4297,17 @@ impl BlockList {
         self.active_block_mut().finish(block.exit_code);
         self.update_active_block_height();
 
-        self.event_proxy
-            .send_terminal_event(AfterBlockCompleted(AfterBlockCompletedEvent {
-                command_finished_to_precmd_delay: None,
-                block_type: BlockType::Restored,
-                num_secrets_obfuscated: self.active_block().num_secrets_obfuscated(),
-                // We don't track if a restored block was a cloud workflow execution.
-                cloud_workflow_id: None,
-                cloud_env_var_collection_id: None,
-            }));
+        if mode != RestoreMode::Detached {
+            self.event_proxy
+                .send_terminal_event(AfterBlockCompleted(AfterBlockCompletedEvent {
+                    command_finished_to_precmd_delay: None,
+                    block_type: BlockType::Restored,
+                    num_secrets_obfuscated: self.active_block().num_secrets_obfuscated(),
+                    // We don't track if a restored block was a cloud workflow execution.
+                    cloud_workflow_id: None,
+                    cloud_env_var_collection_id: None,
+                }));
+        }
 
         // Set the completed_ts to the saved completed_ts _after_ `finish`ing the block (which would have set its own completed_ts).
         self.active_block_mut().override_completed_ts(completed_ts);
@@ -5017,6 +5261,10 @@ impl ansi::Handler for BlockList {
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {
         delegate!(self.on_finish_byte_processing(input));
+
+        // Restored blocks parsed off-thread (#1254) land here too, so a tab that is not being
+        // painted still gets its content.
+        self.install_ready_deferred_restores();
 
         // After processing a chunk of data from the PTY, make sure the active
         // block and background block heights are up-to-date.  We do this once

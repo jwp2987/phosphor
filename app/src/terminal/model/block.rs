@@ -1265,6 +1265,17 @@ impl Block {
         self.block_banner.as_ref()
     }
 
+    /// Takes the contents a restore parses (the command/prompt grid and the output grid, plus the
+    /// scalars that parsing sets) from `restored`, a copy of this block built off the UI thread
+    /// from the same saved bytes (#1254). Everything else on `self` is kept, because the model
+    /// and view may have changed it since this placeholder was created.
+    pub(super) fn adopt_restored_content(&mut self, mut restored: Block) {
+        std::mem::swap(&mut self.header_grid, &mut restored.header_grid);
+        std::mem::swap(&mut self.output_grid, &mut restored.output_grid);
+        self.is_for_in_band_command = restored.is_for_in_band_command;
+        self.leading_linefeeds_ignored = restored.leading_linefeeds_ignored;
+    }
+
     /// Prefer using the `reset_block_index` fn on the BlockList instead.
     /// Resets the index of the block to `index`. This is useful in the case where the block list
     /// may have had a block deleted, in which case some blocks may need to have their index reset.
