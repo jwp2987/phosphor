@@ -1269,3 +1269,33 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
         assert!(!reads_as_request_to_agent(text), "{text:?}");
     }
 }
+
+/// #1183 (Mac verification): a make completion spec can describe the words after `make` as
+/// subcommands or options (its targets). That is no evidence for words that are not routine
+/// targets, so `make commit port` still lacks command evidence. Fails on the old order, where
+/// the completion-description check returned "has evidence" before the make-target check.
+#[test]
+fn test_make_with_described_non_targets_lacks_evidence_in_agent_conversation() {
+    futures::executor::block_on(async move {
+        let mut token = mock_parsed_input_token("make commit port".to_string()).await;
+        clear_all_token_descriptions(&mut token);
+        for index in 0..token.parsed_tokens.len() {
+            let suggestion_type = if index == 0 {
+                SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive)
+            } else {
+                SuggestionType::Subcommand
+            };
+            token.parsed_tokens[index].token_description = Some(Description {
+                token: token.parsed_tokens[index].token.clone(),
+                description_text: Some("described".to_string()),
+                suggestion_type,
+            });
+        }
+        assert!(lacks_command_evidence_in_agent_conversation(&token));
+
+        // Routine targets stay evidence.
+        let mut token = mock_parsed_input_token("make test".to_string()).await;
+        clear_all_token_descriptions(&mut token);
+        assert!(!lacks_command_evidence_in_agent_conversation(&token));
+    });
+}

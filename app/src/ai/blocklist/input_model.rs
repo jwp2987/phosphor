@@ -222,6 +222,18 @@ pub struct BlocklistAIInputModel {
     model: Arc<FairMutex<TerminalModel>>,
 }
 
+/// #1183: whether a command-history close match may decide the input type. Not in an agent
+/// conversation for a line with no positive command evidence: `make commit port` is a close
+/// match of an earlier `make ...` line, and a history verdict returns before the classifier's
+/// safety gate runs.
+fn history_close_match_allowed(
+    in_active_agent_view: bool,
+    snapshot: &ParsedTokensSnapshot,
+) -> bool {
+    !(in_active_agent_view
+        && input_classifier::util::lacks_command_evidence_in_agent_conversation(snapshot))
+}
+
 impl BlocklistAIInputModel {
     /// Builds a mock input model for the `warp_tui` test suite, wired against a
     /// mock terminal, a test `Sessions`, and an agent-view-less context model
@@ -1396,6 +1408,12 @@ impl BlocklistAIInputModel {
             }
         };
 
+        // #1183: in an agent conversation, a line with no positive command evidence is never
+        // decided Shell by the history close-match below (`make commit port` is a close match of
+        // an earlier `make ...` line, and that match returned before the classifier's gate ran).
+        let history_may_decide =
+            history_close_match_allowed(in_active_agent_view, &classify_snapshot);
+
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
         let handle = ctx
             .spawn(
@@ -1418,7 +1436,7 @@ impl BlocklistAIInputModel {
                     // If we have history entries (i.e., a live session), check for
                     // close matches against command history and agent prompt history.
                     // TODO(vorporeal): decide if we still want to do this with NldImprovements.
-                    if let Some(history_entries) = history_entries {
+                    if let Some(history_entries) = history_entries.filter(|_| history_may_decide) {
                         let history_entries = shell_history_candidates(
                             history_entries.iter().map(|entry| entry.as_ref()),
                             &buffer_cloned,

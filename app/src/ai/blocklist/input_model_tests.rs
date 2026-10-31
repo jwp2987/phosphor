@@ -1655,3 +1655,27 @@ fn shell_history_candidates_accepts_shared_snapshot_entries() {
     let commands: Vec<&str> = candidates.iter().map(|(c, _)| c.as_str()).collect();
     assert_eq!(commands, ["ls -a", "ls -l"]);
 }
+
+/// #1183 (Mac verification): `make commit port` is a close match of earlier `make` history, and
+/// a history verdict returned before the classifier's safety gate ran, so the line ran in the
+/// shell in an idle agent conversation. History may not decide a line with no command evidence
+/// there; outside an agent view, or with evidence, it still may.
+#[test]
+fn history_close_match_is_not_allowed_without_command_evidence_in_agent_conversation() {
+    let snapshot = snapshot_without_parse;
+    assert!(!history_close_match_allowed(
+        true,
+        &snapshot("make commit port")
+    ));
+    assert!(!history_close_match_allowed(
+        true,
+        &snapshot("git can memory my to")
+    ));
+    // Evidence, or no agent conversation: history keeps its say.
+    assert!(history_close_match_allowed(true, &snapshot("make test")));
+    assert!(history_close_match_allowed(true, &snapshot("ls -la")));
+    assert!(history_close_match_allowed(
+        false,
+        &snapshot("make commit port")
+    ));
+}

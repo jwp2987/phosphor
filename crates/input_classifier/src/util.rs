@@ -2465,6 +2465,13 @@ pub fn lacks_command_evidence_in_agent_conversation(input: &ParsedTokensSnapshot
     if args.iter().any(is_data_shaped_word) {
         return false;
     }
+    // Before the completion-spec check: a make spec describes whatever words follow as targets or
+    // options (#1183: `make commit port`), which is no evidence that they are real ones.
+    if matches!(head, "make" | "gmake" | "just" | "ninja") {
+        return !args
+            .iter()
+            .all(|word| COMMON_MAKE_TARGETS.contains(&word.text.as_str()));
+    }
     if input.parsed_tokens.iter().any(|token| {
         token.token_index >= 1
             && token.token_description.as_ref().is_some_and(|d| {
@@ -2479,11 +2486,6 @@ pub fn lacks_command_evidence_in_agent_conversation(input: &ParsedTokensSnapshot
     }
     if let Some(subcommands) = known_subcommands(head) {
         return !subcommands.contains(&args[0].text.as_str());
-    }
-    if matches!(head, "make" | "gmake" | "just" | "ninja") {
-        return !args
-            .iter()
-            .all(|word| COMMON_MAKE_TARGETS.contains(&word.text.as_str()));
     }
     if FREE_WORD_ARG_HEADS.contains(&head) || FREE_TEXT_ARG_HEADS.contains(&head) {
         return false;
