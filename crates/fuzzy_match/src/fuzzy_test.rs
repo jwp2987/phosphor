@@ -371,3 +371,66 @@ fn test_ignore_spaces_single_word_query() {
     );
     assert_eq!(regular_result.score, space_ignoring_result.score);
 }
+
+/// #1151 F4: the shared matchers must give exactly the results a fresh matcher gives, including
+/// when the same matcher (and its reused scratch buffers) is called repeatedly with differently
+/// sized inputs and from several threads.
+#[test]
+fn shared_matcher_matches_fresh_matcher() {
+    use fuzzy_matcher::skim::SkimMatcherV2;
+    use fuzzy_matcher::FuzzyMatcher;
+
+    let texts = [
+        "Open theme chooser",
+        "a",
+        "",
+        "workspace show theme chooser with a much longer description than the others",
+        "Split Pane Right",
+        "ünïcödé text ✓ mixed",
+    ];
+    let queries = [
+        "theme",
+        "Theme",
+        "spr",
+        "x",
+        "",
+        "ö",
+        "chooser with",
+        "OPEN",
+    ];
+
+    let to_result = |m: Option<(i64, Vec<usize>)>| {
+        m.map(|(score, matched_indices)| FuzzyMatchResult {
+            score,
+            matched_indices,
+        })
+    };
+    let check = || {
+        for _ in 0..3 {
+            for text in texts {
+                for query in queries {
+                    let fresh = to_result(SkimMatcherV2::default().fuzzy_indices(text, query));
+                    assert_eq!(match_indices(text, query), fresh, "{text:?} / {query:?}");
+
+                    let fresh_ci = to_result(
+                        SkimMatcherV2::default()
+                            .ignore_case()
+                            .fuzzy_indices(text, query),
+                    );
+                    assert_eq!(
+                        match_indices_case_insensitive(text, query),
+                        fresh_ci,
+                        "{text:?} / {query:?}"
+                    );
+                }
+            }
+        }
+    };
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4).map(|_| scope.spawn(check)).collect();
+        check();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+}
