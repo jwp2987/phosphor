@@ -1179,3 +1179,66 @@ fn a_local_command_that_fails_is_not_retried() {
         assert!(replacement.recorded().is_empty());
     });
 }
+
+/// Errors on the first `failures` calls (a dropped remote connection), then lists names.
+#[derive(Debug)]
+struct ErrorsThenNamesExecutor {
+    failures: Mutex<usize>,
+}
+
+#[async_trait]
+impl CommandExecutor for ErrorsThenNamesExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<CommandOutput> {
+        {
+            let mut failures = self.failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                anyhow::bail!("Remote command failed: the connection was lost");
+            }
+        }
+        Ok(CommandOutput {
+            stdout: b"Invoke-Custom\n".to_vec(),
+            stderr: Vec::new(),
+            status: CommandExitStatus::Success,
+            exit_code: None,
+        })
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        false
+    }
+}
+
+/// #1289: a transport error while enumerating deferred names must not be kept as an empty set
+/// for the rest of the session; the load is retried and the names arrive.
+#[test]
+fn a_transport_error_does_not_make_the_deferred_names_permanently_empty() {
+    App::test((), |_app| async move {
+        let executor = Arc::new(ErrorsThenNamesExecutor {
+            failures: Mutex::new(1),
+        });
+        let info = SessionInfo::new_for_test()
+            .with_shell_type(ShellType::PowerShell)
+            .with_function_names(names(&["prompt"]));
+        let session = Arc::new(Session::new(info, executor));
+
+        session.load_all_function_names().await;
+
+        assert_eq!(
+            sorted(session.function_names()),
+            vec!["Invoke-Custom", "prompt"],
+            "the retry after the dropped request must have stored the names"
+        );
+    });
+}

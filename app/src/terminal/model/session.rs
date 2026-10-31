@@ -187,6 +187,12 @@ impl Entity for Sessions {
     type Event = SessionsEvent;
 }
 
+/// Waits between attempts to enumerate deferred function/builtin names after a transport error.
+const DEFERRED_NAME_RETRY_DELAYS: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_secs(3),
+];
+
 impl Sessions {
     pub fn new(
         executor_command_tx: Sender<ExecutorCommandEvent>,
@@ -1520,9 +1526,26 @@ impl Session {
         label: &'static str,
     ) {
         let (load_future, receiver) = (async {
-            let result = self
+            // A transport error (the remote connection dropped under the command) says nothing
+            // about the names, so it is retried after a short backoff and, if it never
+            // succeeds, nothing is stored; storing an empty set made the failure permanent for
+            // the session (#1289).
+            let mut result = self
                 .execute_command(command, None, None, ExecuteCommandOptions::default())
                 .await;
+            for delay in DEFERRED_NAME_RETRY_DELAYS {
+                if result.is_ok() {
+                    break;
+                }
+                warpui::r#async::Timer::after(delay).await;
+                result = self
+                    .execute_command(command, None, None, ExecuteCommandOptions::default())
+                    .await;
+            }
+            if let Err(e) = &result {
+                log::warn!("Failed to load {label} names, will not store an empty set: {e:#}");
+                return;
+            }
 
             let new_names: HashSet<SmolStr> = match result {
                 Ok(output) if output.status == CommandExitStatus::Success => {
@@ -1542,10 +1565,7 @@ impl Session {
                     log::warn!("In-band command for {label} names returned non-success status");
                     HashSet::new()
                 }
-                Err(e) => {
-                    log::warn!("Failed to load {label} names: {e:#}");
-                    HashSet::new()
-                }
+                Err(_) => return,
             };
 
             if storage.set(new_names).is_err() {
