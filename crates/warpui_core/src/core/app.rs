@@ -85,8 +85,9 @@ lazy_static! {
     static ref LAST_USER_ACTION_UNIX_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
 }
 
-/// Anything on the UI thread that holds it this long is a visible hitch (#1146).
-const UI_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+/// Anything on the UI thread that holds it this long drops a 60 Hz frame (#1146; owner budget:
+/// a UI work item should take ≤4 ms, and 16 ms is a visible hitch).
+const UI_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// Slow-operation loggers for the UI thread. One per kind so a sustained slow
 /// frame cannot hide a slow action. Rate limited; see `warp_util::slow_log`.

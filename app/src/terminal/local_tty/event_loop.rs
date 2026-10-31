@@ -32,9 +32,11 @@ use super::mio_channel::Receiver;
 
 /// Slow-operation thresholds for the pty loop (#1146). The parse holds the terminal model lock
 /// the UI thread renders from, so it is held to the UI-thread budget.
-const PTY_PARSE_SLOW: Duration = Duration::from_millis(50);
-/// User input waiting in the writer, and the write -> first output read round trip.
-const PTY_LATENCY_SLOW: Duration = Duration::from_millis(100);
+const PTY_PARSE_SLOW: Duration = Duration::from_millis(16);
+/// User input waiting in the writer (owner budget: Enter→shell ≤2 ms, so 16 ms is a real stall).
+const PTY_WRITE_SLOW: Duration = Duration::from_millis(16);
+/// Write -> first output read: includes the shell's and, over ssh, the network's round trip.
+const PTY_ECHO_SLOW: Duration = Duration::from_millis(50);
 static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "pty parse (terminal model lock held)",
     PTY_PARSE_SLOW,
@@ -42,12 +44,12 @@ static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowL
 );
 static SLOW_PTY_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "pty write (input received -> written)",
-    PTY_LATENCY_SLOW,
+    PTY_WRITE_SLOW,
     warp_util::slow_log::DEFAULT_WINDOW,
 );
 static SLOW_PTY_ECHO: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "pty echo (write -> first output read)",
-    PTY_LATENCY_SLOW,
+    PTY_ECHO_SLOW,
     warp_util::slow_log::DEFAULT_WINDOW,
 );
 
