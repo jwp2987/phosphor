@@ -3420,8 +3420,8 @@ fn test_pixel_only_resize_skips_height_tree_rebuild() {
     let cols = block_list.size().columns();
     let items_before = block_list.block_heights().items();
 
-    let pixel_only_size = SizeInfo::new_without_font_metrics(rows + 1, cols + 1)
-        .with_rows_and_columns(rows, cols);
+    let pixel_only_size =
+        SizeInfo::new_without_font_metrics(rows + 1, cols + 1).with_rows_and_columns(rows, cols);
     assert_ne!(
         pixel_only_size.pane_size_px(),
         block_list.size().pane_size_px()

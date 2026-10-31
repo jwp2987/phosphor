@@ -375,3 +375,73 @@ mod offset_point_conversion {
         assert_eq!(point, original_point);
     }
 }
+
+/// Builds random content from graphemes that exercise every sizing case: narrow ASCII, spaces,
+/// double-width CJK and emoji, a combining-mark cluster (one cell, three bytes), and newlines
+/// (including runs of them, i.e. empty rows).
+fn random_content(rng: &mut impl rand::Rng, graphemes: usize) -> String {
+    const POOL: &[&str] = &[
+        "a",
+        "b",
+        "z",
+        " ",
+        " ",
+        "\u{4e16}",
+        "\u{1f600}",
+        "e\u{301}",
+        "\n",
+        "\n",
+        "\n",
+    ];
+    (0..graphemes)
+        .map(|_| POOL[rng.gen_range(0..POOL.len())])
+        .collect()
+}
+
+/// #1150: the per-row fast path in `Index::rebuild` must produce exactly the index the
+/// grapheme-by-grapheme path produces, for every width pair.
+#[test]
+fn test_rebuild_fast_path_matches_slow_path() {
+    use rand::{Rng as _, SeedableRng as _};
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0x1150);
+    let widths = [2usize, 3, 4, 5, 7, 8, 10, 13, 20, 40, 80];
+    let mut fast_rows = 0usize;
+    for case in 0..400 {
+        let len = rng.gen_range(0..120);
+        let content = random_content(&mut rng, len);
+        let old_cols = widths[case % widths.len()];
+        let storage = FlatStorage::from_content_using_rows(&content, old_cols, None);
+        for &new_cols in &widths {
+            let fast = Index::rebuild(&storage.index, new_cols);
+            let slow = Index::rebuild_slow(&storage.index, new_cols);
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{slow:?}"),
+                "content {content:?}, {old_cols} -> {new_cols} columns"
+            );
+
+            // Chained reflow (and back) stays equivalent too.
+            let fast_back = Index::rebuild(&fast, old_cols);
+            let slow_back = Index::rebuild_slow(&slow, old_cols);
+            assert_eq!(format!("{fast_back:?}"), format!("{slow_back:?}"));
+
+            let mut probe = Index::new(new_cols, None);
+            fast_rows += (0..storage.index.len())
+                .filter(|&row| probe.try_copy_unchanged_row(&storage.index, row))
+                .count();
+        }
+    }
+    // The comparison above is meaningless if the fast path never fires.
+    assert!(fast_rows > 500, "fast path fired only {fast_rows} times");
+}
+
+#[test]
+fn test_rebuild_fast_path_skips_rows_that_need_reflow() {
+    // 1: abcdef\n (too wide for 4)   2: ab\n (fits)   3: a<wide> (no trailing newline)
+    let storage = FlatStorage::from_content_using_rows("abcdef\nab\na\u{4e16}", 8, None);
+    let mut probe = Index::new(4, None);
+    assert!(!probe.try_copy_unchanged_row(&storage.index, 0));
+    assert!(probe.try_copy_unchanged_row(&storage.index, 1));
+    assert!(!probe.try_copy_unchanged_row(&storage.index, 2));
+}
