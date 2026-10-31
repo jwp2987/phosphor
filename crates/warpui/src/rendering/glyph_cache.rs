@@ -8,7 +8,7 @@ use pathfinder_geometry::{
     rect::RectF,
     vector::{Vector2F, Vector2I},
 };
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 const ATLAS_SIZE: usize = 1024;
 
@@ -38,7 +38,7 @@ pub struct GlyphCache<Texture> {
     textures: Vec<Texture>,
     /// `None` records a glyph with nothing to draw (zero-size raster bounds, e.g. a blank glyph
     /// such as a no-break space) so it is not re-measured on every frame.
-    cache: HashMap<GlyphCacheKey, Option<GlyphTextureOffset>>,
+    cache: FxHashMap<GlyphCacheKey, Option<GlyphTextureOffset>>,
     glyph_config: rendering::GlyphConfig,
     atlas_manager: atlas::Manager,
 }
@@ -73,7 +73,7 @@ impl<Texture> GlyphCache<Texture> {
     pub(crate) fn new(glyph_config: rendering::GlyphConfig) -> Self {
         GlyphCache {
             textures: Vec::new(),
-            cache: HashMap::new(),
+            cache: FxHashMap::default(),
             glyph_config,
             atlas_manager: atlas::Manager::new(ATLAS_SIZE),
         }

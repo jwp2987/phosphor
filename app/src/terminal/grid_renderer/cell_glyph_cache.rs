@@ -8,7 +8,7 @@ use warpui::text_layout::{StyleAndFont, DEFAULT_TOP_BOTTOM_RATIO};
 use warpui::PaintContext;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ops::{Deref, DerefMut};
 
 /// Stores cached glyph values for characters/strings. Note that we normally only need to look up
@@ -17,8 +17,8 @@ use std::ops::{Deref, DerefMut};
 /// performance reasons (avoid allocating strings when we don't need to!).
 #[derive(Default)]
 pub struct CellGlyphCache {
-    glyph_cache: HashMap<(char, FontId), Option<(GlyphId, FontId)>>,
-    string_cache: HashMap<(String, FontId), Option<(GlyphId, FontId)>>,
+    glyph_cache: FxHashMap<(char, FontId), Option<(GlyphId, FontId)>>,
+    string_cache: FxHashMap<(String, FontId), Option<(GlyphId, FontId)>>,
     /// What the entries above were computed against. Entries are only valid while the font
     /// cache's glyph epoch (identity + set of loaded fonts) and the fallback family are unchanged.
     validity: Option<CacheValidity>,
