@@ -1810,7 +1810,9 @@ fn test_mark_end_of_prompt_with_some_rows_in_flat_storage() {
     });
 
     block.start();
-    block.finish(0);
+    // Deliberately not finished: 942338093 (#1198) makes a rows-only resize of a finished grid a
+    // no-op, so a finished prompt grid would stay in flat storage. This test is about the
+    // flat-to-grid conversion of a live grid.
 
     // Resize the grid so that everything ends up in grid storage.
     let rows = block
