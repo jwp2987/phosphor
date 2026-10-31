@@ -4,6 +4,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::terminal::event::{Event as TerminalEvent, EvictionStamp};
 use async_channel::Sender;
 
+/// A request to redraw after PTY output. `AfterUserInput` marks the first output that follows a
+/// keystroke reaching the pty (its echo): the receiving throttle delivers it without waiting for
+/// the next 60 Hz slot (#1138).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wakeup {
+    Output,
+    AfterUserInput,
+}
+
+impl crate::throttle::Urgent for Wakeup {
+    fn is_urgent(&self) -> bool {
+        matches!(self, Wakeup::AfterUserInput)
+    }
+}
+
 /// A wrapper struct that emits events which originate from the PTY event loop.
 /// Instead of passing individual senders, we can pass through this struct
 /// so that users have access to all of the senders in one nicely wrapped struct.
@@ -12,7 +27,7 @@ pub struct ChannelEventListener {
     /// We have a dedicated channel for "wakeup"s because we throttle the receiver
     /// so that we can coalesce successive wakeup events during situations of high
     /// throughput (e.g. running `yes`).
-    wakeups_tx: Sender<()>,
+    wakeups_tx: Sender<Wakeup>,
     terminal_events_tx: Sender<TerminalEvent>,
     pty_reads_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
     /// Monotonic count of blocks evicted by `terminal.max_retained_lines` (#889), shared by every
@@ -22,7 +37,7 @@ pub struct ChannelEventListener {
 
 impl ChannelEventListener {
     pub fn new(
-        wakeups_tx: Sender<()>,
+        wakeups_tx: Sender<Wakeup>,
         terminal_events_tx: Sender<TerminalEvent>,
         pty_reads_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
     ) -> Self {
@@ -58,7 +73,16 @@ impl ChannelEventListener {
     }
 
     pub fn send_wakeup_event(&self) {
-        if let Err(e) = self.wakeups_tx.try_send(()) {
+        self.send_wakeup(Wakeup::Output);
+    }
+
+    /// A wakeup for output that directly follows user input; see [`Wakeup::AfterUserInput`].
+    pub fn send_after_user_input_wakeup_event(&self) {
+        self.send_wakeup(Wakeup::AfterUserInput);
+    }
+
+    fn send_wakeup(&self, wakeup: Wakeup) {
+        if let Err(e) = self.wakeups_tx.try_send(wakeup) {
             log::warn!("Failed to send Wakeup event: {e:?}");
         }
     }

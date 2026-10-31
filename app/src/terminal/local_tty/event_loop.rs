@@ -700,16 +700,23 @@ where
         }
 
         // #1092: time the first output after a keystroke reached the pty (counts only).
+        let mut follows_user_write = false;
         if bytes_processed > 0
             && let Some(age) = state.take_user_write_age(Instant::now())
         {
+            follows_user_write = true;
             warpui::input_order::log_pty_read_after_write(bytes_processed, age);
         }
 
         // Queue a terminal redraw if we processed some number
-        // of non-(synchronized output) bytes.
+        // of non-(synchronized output) bytes. The echo of a keystroke asks the receiving
+        // throttle to skip its trailing-edge wait (#1138).
         if bytes_processed > state.parser.sync_output_buffer_len().unwrap_or(0) {
-            self.event_listener.send_wakeup_event();
+            if follows_user_write {
+                self.event_listener.send_after_user_input_wakeup_event();
+            } else {
+                self.event_listener.send_wakeup_event();
+            }
         }
 
         Ok(())

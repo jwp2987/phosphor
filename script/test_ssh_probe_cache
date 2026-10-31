@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Exercises warp_ssh_remote_is_non_posix_cached (#1136) in each bootstrap script that defines it
+# (bash_body.sh, zsh_body.sh, fish.sh) against a fake `ssh`, under every shell that is installed.
+#
+# The functions are cut out of the shipped scripts, so this tests the real text. A definitive probe
+# answer (exact POSIX reply, or cmd.exe/PowerShell reply) is remembered per `ssh -G` destination
+# for 10 minutes; a timeout, empty or unrecognized reply is never remembered.
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+boot="$root/app/assets/bundled/bootstrap"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/bin"
+
+# Fake ssh: `-G` prints a resolved config for $FAKE_HOST, anything else is a probe that is counted
+# and answers with $FAKE_REPLY.
+cat >"$tmp/bin/ssh" <<'EOF'
+#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "-G" ]; then
+    echo "user u"; echo "hostname $FAKE_HOST"; echo "port 22"; exit 0
+  fi
+done
+echo probe >> "$FAKE_COUNT"
+printf '%s\n' "$FAKE_REPLY"
+EOF
+chmod +x "$tmp/bin/ssh"
+
+# The cases: name, host, reply, expected rc, expected cumulative probe count.
+cases=(
+  "posix first probes|h1|warp-probe-%COMSPEC%-|1|1"
+  "posix second cached|h1|warp-probe-%COMSPEC%-|1|1"
+  "cache hit ignores a changed reply|h1|warp-probe-C:\\Windows\\system32\\cmd.exe-\$PSVersionTable|1|1"
+  "windows host probed|h2|warp-probe-C:\\Windows\\system32\\cmd.exe-\$PSVersionTable|0|2"
+  "windows second cached|h2|warp-probe-%COMSPEC%-|0|2"
+  "inconclusive probed|h3||1|3"
+  "inconclusive not cached|h3||1|4"
+  "garbage not cached|h4|Welcome banner|1|5"
+  "garbage again probed|h4|Welcome banner|1|6"
+  "posix after garbage|h4|warp-probe-%COMSPEC%-|1|7"
+  "now cached|h4|x|1|7"
+  "powershell|h5|warp-probe-%COMSPEC%-System.Collections.Hashtable|0|8"
+)
+expired_case="expired entry re-probed|h1|warp-probe-%COMSPEC%-|1|9"
+
+fail=0
+
+run_posixy() { # shell, script, indent-regex
+  local shell="$1" script="$2"
+  sed -n '/^ *function warp_ssh_remote_is_non_posix() {/,/^ *# Ends the Phosphor-owned master/p' "$script" >"$tmp/fns.$shell"
+  {
+    echo "export PATH=\"$tmp/bin:\$PATH\" FAKE_COUNT=\"$tmp/count.$shell\""
+    echo ": > \"\$FAKE_COUNT\""
+    echo "source \"$tmp/fns.$shell\""
+    echo 'bad=0'
+    echo 'check() { export FAKE_HOST="$2" FAKE_REPLY="$3"; warp_ssh_remote_is_non_posix_cached /nonexistent h; rc=$?; n=$(wc -l < "$FAKE_COUNT" | tr -d " "); if [ "$rc" != "$4" ] || [ "$n" != "$5" ]; then echo "FAIL [$1]: rc=$rc (want $4) probes=$n (want $5)"; bad=1; fi; }'
+    local c
+    for c in "${cases[@]}"; do
+      IFS='|' read -r name host reply rc n <<<"$c"
+      printf 'check %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n"
+    done
+    echo 'WARP_SSH_PROBE_CACHE=$(printf "%s" "$WARP_SSH_PROBE_CACHE" | sed "s/|[0-9]*\$/|1000/")'
+    IFS='|' read -r name host reply rc n <<<"$expired_case"
+    printf 'check %q %q %q %q %q\n' "$name" "$host" "$reply" "$rc" "$n"
+    echo 'exit $bad'
+  } >"$tmp/test.$shell"
+  "$shell" "$tmp/test.$shell" || fail=1
+  echo "$shell ($(basename "$script")): done"
+}
+
+run_fish() {
+  sed -n '/^ *function warp_ssh_remote_is_non_posix$/,/^ *# Ends the Phosphor-owned master/p' "$boot/fish.sh" >"$tmp/fns.fish"
+  {
+    echo "set -x PATH $tmp/bin \$PATH"
+    echo "set -x FAKE_COUNT $tmp/count.fish"
+    echo 'echo -n >$FAKE_COUNT'
+    echo "source $tmp/fns.fish"
+    echo 'set -g bad 0'
+    echo 'function check
+    set -x FAKE_HOST $argv[2]
+    set -x FAKE_REPLY $argv[3]
+    warp_ssh_remote_is_non_posix_cached /nonexistent h
+    set -l rc $status
+    set -l n (wc -l <$FAKE_COUNT | string trim)
+    if test "$rc" != "$argv[4]"; or test "$n" != "$argv[5]"
+        echo "FAIL [$argv[1]]: rc=$rc (want $argv[4]) probes=$n (want $argv[5])"
+        set -g bad 1
+    end
+end'
+    local c
+    for c in "${cases[@]}"; do
+      IFS='|' read -r name host reply rc n <<<"$c"
+      # Single-quote every argument for fish ('' and \\ are the only escapes inside).
+      printf "check '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "${reply//\'/\\\'}" "$rc" "$n"
+    done
+    echo "set -g warp_ssh_probe_cache (printf '%s\\n' \$warp_ssh_probe_cache | string replace -r '\\|[0-9]+\$' '|1000')"
+    IFS='|' read -r name host reply rc n <<<"$expired_case"
+    printf "check '%s' '%s' '%s' '%s' '%s'\n" "$name" "$host" "$reply" "$rc" "$n"
+    echo 'exit $bad'
+  } >"$tmp/test.fish"
+  fish "$tmp/test.fish" || fail=1
+  echo "fish (fish.sh): done"
+}
+
+run_posixy bash "$boot/bash_body.sh"
+if command -v zsh >/dev/null 2>&1; then run_posixy zsh "$boot/zsh_body.sh"; else echo "zsh not installed: skipped"; fi
+if command -v fish >/dev/null 2>&1; then run_fish; else echo "fish not installed: skipped"; fi
+
+if [[ $fail -ne 0 ]]; then
+  echo "test_ssh_probe_cache: FAILED"
+  exit 1
+fi
+echo "test_ssh_probe_cache: ok"

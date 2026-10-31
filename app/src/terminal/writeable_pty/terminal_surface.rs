@@ -200,7 +200,7 @@ where
 /// (Upstream Warp defines this in `local_tty/terminal_manager.rs`; kept here
 /// alongside the trait until the local manager is genericized.)
 pub struct TerminalSurfaceInit {
-    pub wakeups_rx: async_channel::Receiver<()>,
+    pub wakeups_rx: async_channel::Receiver<crate::terminal::event_listener::Wakeup>,
     pub model_events: ModelHandle<ModelEventDispatcher>,
     pub model: Arc<FairMutex<TerminalModel>>,
     pub sessions: ModelHandle<Sessions>,

@@ -1,6 +1,7 @@
 use std::{pin, task, time::Duration};
 
 use futures_lite::{ready, Stream};
+use instant::Instant;
 use pin::Pin;
 use task::{Context, Poll};
 use warpui::r#async::Timer;
@@ -72,3 +73,128 @@ impl<S> Throttle<S> {
         }
     }
 }
+
+/// Why a [`throttle_with_bypass`] item may skip the trailing-edge wait.
+pub trait Urgent {
+    fn is_urgent(&self) -> bool;
+}
+
+/// Decides whether an urgent item may be delivered right now instead of waiting for the
+/// throttle's timer. Kept free of any clock or timer so it can be tested with injected instants.
+#[derive(Debug, Clone, Copy)]
+pub struct BypassGate {
+    /// Smallest gap between two deliveries for which an urgent item may skip the wait. Keeps
+    /// a flood of urgent items from out-running the throttle.
+    floor: Duration,
+    last_delivery: Option<Instant>,
+}
+
+impl BypassGate {
+    pub fn new(floor: Duration) -> Self {
+        Self {
+            floor,
+            last_delivery: None,
+        }
+    }
+
+    pub fn record_delivery(&mut self, at: Instant) {
+        self.last_delivery = Some(at);
+    }
+
+    /// True when an item that arrived at `now` should be delivered immediately.
+    pub fn may_bypass(&self, now: Instant, urgent: bool) -> bool {
+        urgent
+            && self
+                .last_delivery
+                .is_none_or(|at| now.saturating_duration_since(at) >= self.floor)
+    }
+}
+
+/// Like [`throttle`], but an item that reports itself urgent is delivered as soon as it
+/// arrives, provided the previous delivery was at least `floor` ago. Used so the echo of a
+/// keystroke is not held behind the trailing edge of the wakeup throttle (#1138). Non-urgent
+/// items behave exactly as with [`throttle`].
+pub fn throttle_with_bypass<S>(
+    period: Duration,
+    floor: Duration,
+    stream: S,
+) -> impl Stream<Item = S::Item>
+where
+    S: Stream,
+    S::Item: Urgent,
+{
+    BypassThrottle {
+        period,
+        stream,
+        timer: None,
+        pending: None,
+        closed: false,
+        gate: BypassGate::new(floor),
+    }
+}
+
+struct BypassThrottle<S: Stream> {
+    period: Duration,
+    stream: S,
+    timer: Option<Timer>,
+    /// Latest item received while the timer was running; delivered when it fires.
+    pending: Option<S::Item>,
+    closed: bool,
+    gate: BypassGate,
+}
+
+impl<S: Stream> Stream for BypassThrottle<S>
+where
+    S::Item: Urgent,
+{
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // SAFETY: `stream` is the only structurally pinned field and is never moved out of
+        // `this`; every other field is only read or replaced in place.
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // Drain whatever is ready. The stream is polled even while the timer runs so that
+        // its waker is registered and an urgent item can be seen the moment it arrives.
+        while !this.closed {
+            let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+            match stream.poll_next(ctx) {
+                Poll::Ready(Some(item)) => {
+                    let now = Instant::now();
+                    if this.timer.is_none() || this.gate.may_bypass(now, item.is_urgent()) {
+                        // Leading edge, or an urgent item past the floor: deliver now.
+                        this.pending = None;
+                        this.gate.record_delivery(now);
+                        this.timer = Some(Timer::after(this.period));
+                        return Poll::Ready(Some(item));
+                    }
+                    this.pending = Some(item);
+                }
+                Poll::Ready(None) => this.closed = true,
+                Poll::Pending => break,
+            }
+        }
+
+        if let Some(timer) = this.timer.as_mut() {
+            if Pin::new(timer).poll_next(ctx).is_pending() {
+                return Poll::Pending;
+            }
+            if let Some(item) = this.pending.take() {
+                this.gate.record_delivery(Instant::now());
+                this.timer = Some(Timer::after(this.period));
+                return Poll::Ready(Some(item));
+            }
+            this.timer = None;
+        }
+
+        if this.closed {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "throttle_tests.rs"]
+mod tests;

@@ -875,7 +875,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # managed session below; the idle background master expires via ControlPersist.
         end
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
-            if warp_ssh_remote_is_non_posix "$control_path" $argv
+            if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
                 if test $warp_owns_master -eq 1
@@ -996,10 +996,61 @@ esac
         kill $probe_pid 2>/dev/null
         set -l out (command cat $probe_out 2>/dev/null | string collect)
         command rm -f $probe_out
+        # #1136: record a DEFINITIVE answer for warp_ssh_remote_is_non_posix_cached; anything else
+        # leaves the verdict empty (inconclusive, never cached).
+        set -g warp_ssh_probe_verdict ""
         if string match -q -r -i -- 'Hashtable|cmd\.exe-\$PSVersionTable' "$out"
+            set -g warp_ssh_probe_verdict nonposix
             return 0
         end
+        if test "$out" = 'warp-probe-%COMSPEC%-'
+            set -g warp_ssh_probe_verdict posix
+        end
         return 1
+    end
+
+    # #1136: the probe above costs a channel on the master plus a remote shell start on every
+    # connect. Its answer for a host only changes if the machine behind the name is replaced, so a
+    # DEFINITIVE answer is remembered for ten minutes (from when it was measured), keyed by what
+    # `ssh -G` resolves the destination to (user, hostname, port). Only the exact POSIX reply or
+    # a cmd.exe/PowerShell reply is remembered; a timeout, a failure or any other output is
+    # inconclusive, is never cached and is probed again next time. Same arguments and return
+    # values as warp_ssh_remote_is_non_posix.
+    function warp_ssh_remote_is_non_posix_cached
+        set -l control_path $argv[1]
+        set -e argv[1]
+        set -l key (command ssh -G $argv 2>/dev/null | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
+        if test -z "$key"
+            warp_ssh_remote_is_non_posix "$control_path" $argv
+            return
+        end
+        set -l now (command date +%s)
+        set -l kept
+        set -l verdict ""
+        for entry in $warp_ssh_probe_cache
+            set -l parts (string split -r -m 2 '|' -- $entry)
+            test (count $parts) -eq 3; or continue
+            string match -q -r '^[0-9]+$' -- $parts[3]; or continue
+            if test $now -ge $parts[3]; and test (math $now - $parts[3]) -lt 600
+                set -a kept $entry
+                if test "$parts[1]" = "$key"
+                    set verdict $parts[2]
+                end
+            end
+        end
+        set -g warp_ssh_probe_cache $kept
+        switch "$verdict"
+            case nonposix
+                return 0
+            case posix
+                return 1
+        end
+        warp_ssh_remote_is_non_posix "$control_path" $argv
+        set -l probe_rc $status
+        if test -n "$warp_ssh_probe_verdict"
+            set -ga warp_ssh_probe_cache "$key|$warp_ssh_probe_verdict|$now"
+        end
+        return $probe_rc
     end
 
     # Ends the Phosphor-owned master at $argv[1].
