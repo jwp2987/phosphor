@@ -1319,6 +1319,9 @@ impl DeferredEnterActivity {
 /// it (#1016).
 #[derive(Debug)]
 struct VerdictWait {
+    /// Identifies this wait (#1206): a backstop tick armed for a wait that was voided or released
+    /// since must not touch the one that replaced it.
+    id: u64,
     text: String,
     queued: Vec<AfterEnterInput>,
     /// Set while the Enter holds for the Tab completion in flight for `text` (#1165): when the
@@ -2026,6 +2029,8 @@ pub struct Input {
     multiline_submit_confirmed: bool,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
+    /// The id given to the next [`VerdictWait`] (#1206).
+    next_verdict_wait_id: u64,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
     /// coalescing stranded the backstop timers on a late wake).
     deferred_enter_activity: DeferredEnterActivity,
@@ -2041,6 +2046,9 @@ pub struct Input {
     /// taken the command and routes keys (before that, routed text lands in the editor and the
     /// shell's typeahead report is later inserted in front of it).
     after_enter_replay_awaits_pty: bool,
+    /// Bumped every time a replay opens (#1206), so the view's wait-for-pty tick armed for an
+    /// earlier replay cannot drain a later one.
+    after_enter_replay_generation: u64,
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
@@ -3792,11 +3800,13 @@ impl Input {
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
             verdict_wait: None,
+            next_verdict_wait_id: 0,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_mark: None,
             after_enter_replay: Vec::new(),
             after_enter_replay_open: false,
             after_enter_replay_awaits_pty: false,
+            after_enter_replay_generation: 0,
             running_deferred_enter: false,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
@@ -9729,6 +9739,17 @@ impl Input {
                     EditOrigin::SystemEdit => false,
                 };
 
+                // #1205: a key typed behind an Enter that waits for its verdict or Tab completion
+                // is not an edit of the line that Enter submits. It is moved behind the Enter at
+                // once (#1016), which puts the waiting line back in the buffer, and it requests no
+                // detection: the waiting line's request and parse stay as they are, for the Enter
+                // to release on. The restore's own edit arrives here too, with the buffer equal to
+                // the waiting line. An edit of the waiting line itself takes the normal path and
+                // voids the wait at its next reconcile.
+                let typed_behind_waiting_enter = self.reconcile_edit_behind_waiting_enter(ctx);
+                let should_run_ai_input_detection =
+                    should_run_ai_input_detection && !typed_behind_waiting_enter;
+
                 // Abort any autodetection work on the old buffer state, and record that this
                 // buffer's input type is now undecided until its own verdict lands (#833). The
                 // background path only classifies a parse whose text is still requested; see
@@ -9743,23 +9764,26 @@ impl Input {
                     .as_ref(ctx)
                     .has_typeahead_provenance()
                     .then(|| self.buffer_text(ctx));
-                self.ai_input_model.update(ctx, |controller, _| {
-                    controller.abort_in_progress_detection();
-                    if let Some(buffer_text) = buffer_text_for_typeahead {
-                        controller.note_buffer_edited(&buffer_text);
-                    }
-                    if let Some(buffer_text) = buffer_text_for_detection {
-                        controller.note_detection_requested(buffer_text);
-                    }
-                });
+                if !typed_behind_waiting_enter {
+                    self.ai_input_model.update(ctx, |controller, _| {
+                        controller.abort_in_progress_detection();
+                        if let Some(buffer_text) = buffer_text_for_typeahead {
+                            controller.note_buffer_edited(&buffer_text);
+                        }
+                        if let Some(buffer_text) = buffer_text_for_detection {
+                            controller.note_detection_requested(buffer_text);
+                        }
+                    });
+                }
                 // Abort any inflight request to generate a Next Command suggestion.
                 self.next_command_model.update(ctx, |model, _| {
                     model.abort_inflight_request();
                 });
 
-                if self.should_apply_decorations(ctx)
-                    || should_run_ai_input_detection
-                    || is_ai_input_enabled
+                if !typed_behind_waiting_enter
+                    && (self.should_apply_decorations(ctx)
+                        || should_run_ai_input_detection
+                        || is_ai_input_enabled)
                 {
                     let mut mode = InputBackgroundJobOptions::default();
 
@@ -13429,11 +13453,7 @@ impl Input {
         };
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
-        self.verdict_wait = Some(VerdictWait {
-            text: text.clone(),
-            queued: Vec::new(),
-            completion_hold: None,
-        });
+        self.start_verdict_wait(text.clone(), None);
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
         self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
@@ -13520,14 +13540,44 @@ impl Input {
             return false;
         }
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
-        self.verdict_wait = Some(VerdictWait {
-            text,
-            queued: Vec::new(),
-            completion_hold: Some(Instant::now()),
-        });
+        self.start_verdict_wait(text, Some(Instant::now()));
         self.begin_deferred_enter_activity(ctx);
         self.poll_completion_hold(ctx);
         true
+    }
+
+    /// Starts the wait of the Enter just pressed on `text` (#933; `completion_hold` is set for the
+    /// Tab completion hold, #1165) and returns its id (#1206).
+    fn start_verdict_wait(&mut self, text: String, completion_hold: Option<Instant>) -> u64 {
+        self.next_verdict_wait_id = self.next_verdict_wait_id.wrapping_add(1);
+        let id = self.next_verdict_wait_id;
+        self.verdict_wait = Some(VerdictWait {
+            id,
+            text,
+            queued: Vec::new(),
+            completion_hold,
+        });
+        id
+    }
+
+    /// The id of the Enter currently waiting, if any.
+    fn verdict_wait_id(&self) -> Option<u64> {
+        self.verdict_wait.as_ref().map(|wait| wait.id)
+    }
+
+    /// The backstop tick of wait `id` (#1206). A tick armed for a wait that was voided or released
+    /// since finds another wait, or none, and must not touch it: that wait has its own ticks.
+    fn resume_verdict_wait(
+        &mut self,
+        id: u64,
+        text: String,
+        started: Instant,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.verdict_wait_id() != Some(id) {
+            return;
+        }
+        self.wait_for_verdict_then_enter(text, started, ctx);
     }
 
     /// Moves what was typed behind a held Enter out of the buffer, ends the hold at the budget,
@@ -13550,9 +13600,15 @@ impl Input {
             self.finish_completion_hold(None, ctx);
             return;
         }
+        let Some(id) = self.verdict_wait_id() else {
+            return;
+        };
         let rearm = std::time::Duration::from_millis(2);
-        ctx.spawn(Timer::after(rearm), |me, _, ctx| {
-            me.poll_completion_hold(ctx)
+        ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
+            // #1206: only the hold this tick was armed for.
+            if me.verdict_wait_id() == Some(id) {
+                me.poll_completion_hold(ctx);
+            }
         });
     }
 
@@ -13679,6 +13735,23 @@ impl Input {
         self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
     }
 
+    /// #1205: whether the edit just made left the buffer holding the line a waiting Enter
+    /// submits, possibly with keys typed behind that Enter, which are moved behind it here
+    /// (#1016). False when no Enter waits, or the user edited the waiting line itself.
+    fn reconcile_edit_behind_waiting_enter(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(text) = self.verdict_wait.as_ref().map(|wait| wait.text.clone()) else {
+            return false;
+        };
+        let current = self.buffer_text(ctx);
+        if !current.starts_with(text.as_str()) {
+            return false;
+        }
+        if current.len() > text.len() {
+            self.reconcile_verdict_wait(ctx);
+        }
+        true
+    }
+
     /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
     /// submits exactly the text typed before it; text typed after it is queued, in order, and
     /// replayed once the Enter has run. Returns whether the waiting Enter is still valid; if the
@@ -13741,6 +13814,7 @@ impl Input {
             self.after_enter_replay = queued;
             self.after_enter_replay_open = true;
             self.after_enter_replay_awaits_pty = false;
+            self.after_enter_replay_generation = self.after_enter_replay_generation.wrapping_add(1);
         }
         self.last_enter_submitted_shell_command = false;
         self.running_deferred_enter = true;
@@ -13783,11 +13857,14 @@ impl Input {
                 self.submit_held_enter(ctx);
             }
             EnterVerdictWait::Wait => {
+                let Some(id) = self.verdict_wait_id() else {
+                    return;
+                };
                 let rearm = std::time::Duration::from_millis(2);
                 let deadline = Instant::now() + rearm;
                 ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
                     log_late_timer_wake("verdict wait", deadline);
-                    me.wait_for_verdict_then_enter(text, started, ctx)
+                    me.resume_verdict_wait(id, text, started, ctx)
                 });
             }
         }
@@ -13802,6 +13879,12 @@ impl Input {
     /// Whether the replay must wait for the pty to take the submitted shell command.
     pub(crate) fn after_enter_replay_awaits_pty(&self) -> bool {
         self.after_enter_replay_awaits_pty
+    }
+
+    /// Identifies the current replay (#1206): a tick armed while an earlier replay waited for the
+    /// pty must not drain this one.
+    pub(crate) fn after_enter_replay_generation(&self) -> u64 {
+        self.after_enter_replay_generation
     }
 
     /// Appends `input` behind what is already waiting; adjacent text is merged.
@@ -13831,6 +13914,7 @@ impl Input {
         self.after_enter_replay = queued;
         self.after_enter_replay_open = true;
         self.after_enter_replay_awaits_pty = awaits_pty;
+        self.after_enter_replay_generation = self.after_enter_replay_generation.wrapping_add(1);
     }
 
     /// The replay queue, for tests.

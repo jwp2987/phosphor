@@ -2876,6 +2876,9 @@ pub struct TerminalView {
     /// verdict observer and the backstop timer both release it; whichever runs first sets this
     /// and the other finds nothing to do.
     young_enter_released: bool,
+    /// Identifies the young line's current wait (#1206); a backstop tick armed for an earlier one
+    /// must not decide for it.
+    young_enter_wait_id: u64,
     /// The remote shell's first prompt was seen in this connect: the only point where held text
     /// may be shown (#1113). A failed or prompt-less end of the ssh block discards it instead.
     ssh_remote_prompt_seen: bool,
@@ -4625,6 +4628,7 @@ impl TerminalView {
             ssh_connect_gate_released_at: None,
             ssh_held_typing: SshHeldTyping::default(),
             young_enter_released: true,
+            young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
@@ -11038,8 +11042,12 @@ impl TerminalView {
             && !pty_ready
             && started.elapsed() < AFTER_ENTER_REPLAY_PTY_WAIT
         {
+            let generation = self.input.as_ref(ctx).after_enter_replay_generation();
             ctx.spawn(Timer::after(Duration::from_millis(5)), move |me, _, ctx| {
-                me.replay_after_deferred_enter(started, ctx)
+                // #1206: only the replay this tick was armed for; a later one has its own.
+                if me.input.as_ref(ctx).after_enter_replay_generation() == generation {
+                    me.replay_after_deferred_enter(started, ctx);
+                }
             });
             return;
         }
@@ -11787,6 +11795,7 @@ impl TerminalView {
                     YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
                     YoungTypeaheadDetection::Requested => {
                         self.young_enter_released = false;
+                        self.young_enter_wait_id = self.young_enter_wait_id.wrapping_add(1);
                         self.submit_deferred_enter_after_detection(Instant::now(), ctx);
                     }
                     YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
@@ -11919,9 +11928,13 @@ impl TerminalView {
             YoungSubmit::Wait => {
                 let rearm = Duration::from_millis(10);
                 let deadline = Instant::now() + rearm;
+                let id = self.young_enter_wait_id;
                 ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
                     log_late_timer_wake("young detection wait", deadline);
-                    me.submit_deferred_enter_after_detection(started, ctx);
+                    // #1206: only the wait this tick was armed for.
+                    if me.young_enter_wait_id == id {
+                        me.submit_deferred_enter_after_detection(started, ctx);
+                    }
                 });
             }
             YoungSubmit::KeepInEditor => {
