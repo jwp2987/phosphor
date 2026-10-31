@@ -306,6 +306,70 @@ fn test_text_is_memoised_until_the_buffer_changes() -> Result<()> {
     })
 }
 
+/// #1191: `Buffer::text` copies fragment by fragment; it must give exactly the chars the
+/// iterator yields, across edits in the middle, deletions, undo, redo and multi-byte text.
+#[test]
+fn test_text_matches_the_char_iterator_across_edits_undo_and_redo() -> Result<()> {
+    App::test((), |mut app| async move {
+        let buffer = app.add_model(|_| Buffer::new("h\u{e9}llo w\u{f6}rld"));
+        buffer.update(&mut app, |buffer, ctx| {
+            let assert_same = |buffer: &Buffer| {
+                let by_chars: String = buffer.chars().collect();
+                assert_eq!(buffer.text(), by_chars);
+                // A second read comes from the cache and agrees.
+                assert_eq!(buffer.text(), by_chars);
+            };
+            assert_same(buffer);
+            buffer.edit_for_test(
+                vec![to_char_index_range(2..4)],
+                "\u{1f600}XY",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_same(buffer);
+            buffer.edit_for_test(
+                vec![to_char_index_range(0..0)],
+                "start ",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_same(buffer);
+            let len = buffer.len().as_usize();
+            buffer.edit_for_test(
+                vec![to_char_index_range(len..len)],
+                " end\nline two",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_same(buffer);
+            buffer.edit_for_test(
+                vec![to_char_index_range(3..9)],
+                "",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_same(buffer);
+            buffer.undo(ctx);
+            assert_same(buffer);
+            buffer.undo(ctx);
+            assert_same(buffer);
+            buffer.redo(ctx);
+            assert_same(buffer);
+            // The whole buffer deleted: empty, like the iterator.
+            let len = buffer.len().as_usize();
+            buffer.edit_for_test(
+                vec![to_char_index_range(0..len)],
+                "",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert_same(buffer);
+            assert_eq!(buffer.text(), "");
+            Ok(())
+        })
+    })
+}
+
 /// Style updates splice fragments without changing the visible text or the version
 /// vector, so the memoised text stays valid and stays correct across them.
 #[test]

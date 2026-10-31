@@ -10302,6 +10302,36 @@ fn completer_autosuggestion_is_skipped_for_multi_line_buffers() {
     assert!(!super::completer_autosuggestion_allowed("echo a\n"));
 }
 
+// #1191: a huge single-line buffer (a 1 MB paste) must not start a completer run per keystroke.
+#[test]
+fn completer_autosuggestion_is_skipped_for_buffers_past_the_background_parse_caps() {
+    use crate::terminal::input::decorations::{
+        MAX_BACKGROUND_JOB_BUFFER_CHARS, MAX_BACKGROUND_JOB_BUFFER_TOKENS,
+    };
+    // At the cap it still runs; one char over it does not.
+    assert!(super::completer_autosuggestion_allowed(
+        &"x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS)
+    ));
+    assert!(!super::completer_autosuggestion_allowed(
+        &"x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+    ));
+    // Multi-byte chars are counted as chars, like the decoration cap.
+    assert!(super::completer_autosuggestion_allowed(
+        &"\u{e9}".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS)
+    ));
+    // Many short words stay under the char cap but not the token cap.
+    let words = vec!["a"; MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1].join(" ");
+    assert!(words.len() <= MAX_BACKGROUND_JOB_BUFFER_CHARS);
+    assert!(!super::completer_autosuggestion_allowed(&words));
+    assert!(super::completer_autosuggestion_allowed(
+        &vec!["a"; MAX_BACKGROUND_JOB_BUFFER_TOKENS].join(" ")
+    ));
+    // A 1 MB single line (the #1191 paste).
+    assert!(!super::completer_autosuggestion_allowed(
+        &"word ".repeat(200_000)
+    ));
+}
+
 /// #1016: an Enter pressed while the replay of input typed behind a deferred Enter is pending
 /// queues behind that input; it never submits the editor ahead of it.
 #[test]

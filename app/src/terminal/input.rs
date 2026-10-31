@@ -16692,8 +16692,6 @@ pub(crate) fn end_past_auto_paired_closing_quote(
     }
 }
 
-/// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
-/// multi-line buffer: the completer tokenizes a single command line (#1013).
 /// Whether Enter in the agent input should focus the pending approval card instead of
 /// submitting: only with an empty input and an action still `Blocked` on the user's decision. A
 /// running or finished action never takes Enter (#871), and a non-empty input keeps queueing or
@@ -16705,8 +16703,22 @@ pub(crate) fn empty_enter_focuses_pending_action(
     input_is_empty && pending_action_status.is_some_and(AIActionStatus::is_blocked)
 }
 
+/// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
+/// multi-line buffer: the completer tokenizes a single command line (#1013). Nor for a buffer
+/// past the background-parse caps (#1191): the completer's lexer/parser/alias expansion cost
+/// grows with the text, is synchronous (an abort cannot stop it), and every keystroke of a
+/// 1 MB single-line paste started another run, which kept ~2 cores at 100% on the blocking pool
+/// (30 CPU-seconds in 14 s, 97% of the background time in the round-18 profile) and starved the
+/// UI thread through allocator contention. History-based suggestions are unaffected; only the
+/// completer fallback is skipped, for text nobody types by hand.
 pub(crate) fn completer_autosuggestion_allowed(buffer_text: &str) -> bool {
     !buffer_text.contains('\n')
+        && buffer_text
+            .chars()
+            .take(decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+            .count()
+            <= decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS
+        && !decorations::text_exceeds_background_job_token_cap(buffer_text)
 }
 
 impl Autosuggester for Input {

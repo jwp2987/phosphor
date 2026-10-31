@@ -1172,7 +1172,11 @@ impl Buffer {
             }
         }
 
-        let text: String = self.chars().collect();
+        // Copy fragment by fragment, not char by char: after a 1 MB paste every keystroke
+        // rebuilds the text, and the per-char cursor walk was ~5 ms of each (about a quarter
+        // of the UI thread's time in the round-18 profile, #1191).
+        let mut text = String::with_capacity(self.len().as_usize());
+        self.stylized_chars().push_remaining_text_to(&mut text);
         *self.text_cache.borrow_mut() = Some(CachedText {
             versions: self.versions.clone(),
             text: text.clone(),
@@ -3461,6 +3465,30 @@ impl Iterator for TextStyleRuns<'_> {
                 self.byte_index_start..self.byte_index_end,
             )
         })
+    }
+}
+
+impl CharsWithStyle<'_> {
+    /// Appends every char the iterator has not yielded yet to `out`, exactly as collecting them
+    /// would, but one fragment at a time. Forward iteration only.
+    fn push_remaining_text_to(mut self, out: &mut String) {
+        debug_assert!(!self.reversed);
+        out.push_str(self.fragment_chars.as_str());
+        loop {
+            self.fragments_cursor.next();
+            let Some(fragment) = self.fragments_cursor.item() else {
+                break;
+            };
+            if !fragment.is_visible(self.undo_history) {
+                continue;
+            }
+            let fragment_text = fragment.text.as_str();
+            // `next` ends the iteration at a visible but empty fragment; so does this.
+            if fragment_text.is_empty() {
+                break;
+            }
+            out.push_str(fragment_text);
+        }
     }
 }
 
