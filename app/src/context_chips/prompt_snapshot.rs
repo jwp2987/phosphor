@@ -39,7 +39,7 @@ impl PromptSnapshot {
                 let on_click_values = current_prompt_on_click_snapshot
                     .get(chip_kind)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(super::empty_on_click_values);
                 ChipResult {
                     kind: chip_kind.clone(),
                     value,

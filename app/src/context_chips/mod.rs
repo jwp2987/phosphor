@@ -16,6 +16,7 @@ pub mod renderer;
 pub mod spacing;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use context_chip::PromptGenerator;
@@ -139,7 +140,11 @@ const GIT_REFRESH_CONFIG: RefreshConfig =
 pub struct ChipResult {
     kind: ContextChipKind,
     value: Option<ChipValue>,
-    on_click_values: Vec<String>,
+    on_click_values: Arc<[String]>,
+}
+
+pub(crate) fn empty_on_click_values() -> Arc<[String]> {
+    Arc::from(Vec::new())
 }
 
 impl ChipResult {

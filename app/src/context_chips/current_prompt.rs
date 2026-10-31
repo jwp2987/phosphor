@@ -25,7 +25,7 @@ use parking_lot::FairMutex;
 use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
-use super::ChipResult;
+use super::{empty_on_click_values, ChipResult};
 use super::{
     chips_to_string,
     context_chip::{
@@ -138,7 +138,9 @@ enum ChipUpdateStatus {
 #[derive(Clone, Debug, Default)]
 pub struct ChipState {
     last_computed_value: Option<ChipValue>,
-    last_on_click_values: Option<Vec<String>>,
+    /// Shared (`Arc`) so every block/prompt snapshot taken between refreshes points at one copy
+    /// of the (possibly hundreds of entries long) git branch list instead of cloning it.
+    last_on_click_values: Option<Arc<[String]>>,
     /// When `last_on_click_values` was last computed.
     last_on_click_at: Option<Instant>,
     last_fingerprint: Option<ChipFingerprint>,
@@ -480,7 +482,7 @@ impl CurrentPrompt {
         cur
     }
 
-    pub fn on_click_snapshot(&self) -> HashMap<ContextChipKind, Vec<String>> {
+    pub fn on_click_snapshot(&self) -> HashMap<ContextChipKind, Arc<[String]>> {
         self.states
             .iter()
             .filter_map(|(kind, state)| {
@@ -537,7 +539,7 @@ impl CurrentPrompt {
             _ => value,
         };
         if let Some(state) = self.states.get_mut(chip_kind) {
-            state.last_on_click_values = filter_values;
+            state.last_on_click_values = filter_values.map(Arc::from);
             state.last_on_click_at = state.last_on_click_values.is_some().then(Instant::now);
             let _ = self.update_tx.try_send(());
         }
@@ -1768,7 +1770,10 @@ impl CurrentPrompt {
         Some(ChipResult {
             kind: chip_kind.clone(),
             value: state.last_computed_value.clone(),
-            on_click_values: state.last_on_click_values.clone().unwrap_or_default(),
+            on_click_values: state
+                .last_on_click_values
+                .clone()
+                .unwrap_or_else(empty_on_click_values),
         })
     }
 
@@ -1784,7 +1789,7 @@ impl CurrentPrompt {
                     let chip_result = ChipResult {
                         kind: chip_kind,
                         value: value.clone(),
-                        on_click_values: on_click_value.unwrap_or_default(),
+                        on_click_values: on_click_value.unwrap_or_else(empty_on_click_values),
                     };
                     Some(chip_result)
                 }),
