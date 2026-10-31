@@ -310,6 +310,10 @@ if [[ "$BUILD" == "true" ]]; then
   # macOS-only `-headerpad_max_install_names` from `[build].rustflags` is
   # deliberately not carried over; that block is already overridden on Linux.
   # Local dev builds are untouched and keep mold.
+  #
+  # Any new codegen flag (target-cpu, -C options, ...) must be added to this RUSTFLAGS line:
+  # putting it in .cargo/config.toml would be silently ignored on Linux release builds, because
+  # this variable replaces that file's rustflags entirely. The zigbuild/musl path inherits it.
   export RUSTFLAGS="-C symbol-mangling-version=v0"
 
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then
