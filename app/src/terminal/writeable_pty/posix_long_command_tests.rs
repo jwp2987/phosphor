@@ -14,6 +14,20 @@ fn ordinary_commands_are_typed() {
 }
 
 #[test]
+fn bracketed_paste_wraps_only_from_the_larger_size() {
+    // Between the two limits: typed as pasted with bracketed paste, wrapped without it.
+    let between = "a".repeat(MIN_WRAPPED_BYTES_BRACKETED - 1);
+    assert!(!needs_wrapper_for(&between, true));
+    assert!(needs_wrapper_for(&between, false));
+    assert!(needs_wrapper_for(
+        &"a".repeat(MIN_WRAPPED_BYTES_BRACKETED),
+        true
+    ));
+    // A here-doc below the larger size keeps going in as pasted.
+    assert!(!needs_wrapper_for(&"x\n".repeat(100_000), true));
+}
+
+#[test]
 fn the_wrapper_is_one_line_and_carries_the_command_byte_for_byte() {
     // Quotes, here-docs, backslashes, `$`, backticks, CRLF and non-ASCII must all survive.
     let command = format!(

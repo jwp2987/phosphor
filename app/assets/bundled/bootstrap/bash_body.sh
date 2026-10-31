@@ -356,6 +356,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     }
 
 
+    # Phosphor (#1255): sets the variable named by $1 to the head of $BASH_COMMAND, at most 4096
+    # characters. The app reads only the start of a Preexec command (it checks for the in-band
+    # generator prefix; the command it displays is the one it typed), but escaping the whole command
+    # is quadratic in a UTF-8 locale: a 1 MB pasted command took 5.4 s here and a 10 MB one minutes,
+    # while the shell sat unresponsive before running it.
+    __warp_preexec_head_to () {
+        builtin printf -v "$1" '%s' "${BASH_COMMAND:0:4096}"
+    }
+
     # Note that this is very performance sensitive code, so try not to
     # invoke any external commands in here.
     __warp_preexec_impl () {
@@ -372,7 +381,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_via_kv_pairs_end
         else
           local truncated_command
-          __warp_ej_var truncated_command "$BASH_COMMAND"
+          __warp_preexec_head_to truncated_command
+          __warp_ej_var truncated_command "$truncated_command"
           # Phosphor (#1283): the hex encoding is a shell loop, ~4 us a byte, and the fixed
           # text around the command is most of this message. Hex digits of a concatenation are the
           # concatenation of the hex digits, so the head and tail are encoded once per session id.

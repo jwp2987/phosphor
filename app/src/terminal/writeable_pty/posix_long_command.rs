@@ -1,4 +1,4 @@
-//! Delivers a very large command to a bash that has no bracketed paste as one short line (#1129).
+//! Delivers a very large command to bash as one short line (#1129, #1255).
 //!
 //! Bash older than 4.4, and 4.4 and 5.0 where the user's readline config leaves
 //! `enable-bracketed-paste` off, get a command key by key. Typed that way a multi-hundred-KB
@@ -21,9 +21,28 @@ use base64::engine::general_purpose::STANDARD;
 /// well below, so that nothing ordinary changes and only the sizes that risk a stall are routed.
 pub(super) const MIN_WRAPPED_BYTES: usize = 128 * 1024;
 
-/// Whether `command` should be sent through [`wrapper_line`].
+/// The size from which a command is wrapped even when the shell has bracketed paste (#1255).
+/// A multi-line command (a here-doc) pasted in one bracketed chunk is processed by readline and
+/// bash's here-doc reader at a rate that grows faster than its size: measured on bash 5.3, 256 KB
+/// took 0.2 s, 1 MB 1.6 s and 10 MB over 50 s, while the same bytes as one base64 line took 1.0 s
+/// and 9.7 s. Below this size the command goes in as pasted, as before.
+pub(super) const MIN_WRAPPED_BYTES_BRACKETED: usize = 512 * 1024;
+
+/// Whether `command` should be sent through [`wrapper_line`], given whether the shell has
+/// bracketed paste turned on.
+pub(super) fn needs_wrapper_for(command: &str, bracketed_paste: bool) -> bool {
+    let min = if bracketed_paste {
+        MIN_WRAPPED_BYTES_BRACKETED
+    } else {
+        MIN_WRAPPED_BYTES
+    };
+    command.len() >= min
+}
+
+/// Whether `command` should be sent through [`wrapper_line`] for a shell without bracketed paste.
+#[cfg(test)]
 pub(super) fn needs_wrapper(command: &str) -> bool {
-    command.len() >= MIN_WRAPPED_BYTES
+    needs_wrapper_for(command, false)
 }
 
 /// The one-line wrapper that runs `command`. Only base64 characters and fixed text end up

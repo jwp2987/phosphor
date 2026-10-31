@@ -1682,10 +1682,11 @@ impl<T: EventLoopSender> PtyController<T> {
         }
         let _ = shell_type;
         // A bash with no bracketed paste is typed the command key by key, which stalls for a
-        // huge one (#1129); the shell decodes it from one short line instead.
+        // huge one (#1129); the shell decodes it from one short line instead. With bracketed paste
+        // the same holds from a larger size, where readline's multi-line paste turns quadratic
+        // (#1255).
         if shell_type == ShellType::Bash
-            && !self.is_bracketed_paste_enabled
-            && posix_long_command::needs_wrapper(&command)
+            && posix_long_command::needs_wrapper_for(&command, self.is_bracketed_paste_enabled)
         {
             let line = posix_long_command::wrapper_line(&command);
             self.terminal_model

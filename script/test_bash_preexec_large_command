@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Regression test (#1255): the bash Preexec hook must not escape a huge command.
+
+`__warp_ej_var` is quadratic in a UTF-8 locale (1 MB of multi-line text: 5.4 s, 10 MB: minutes),
+and `__warp_preexec_impl` ran it on the whole $BASH_COMMAND, so submitting a big paste froze the
+shell before the command ran. The hook now escapes only the first 4096 characters
+(`__warp_preexec_head_to`). This extracts the real functions from bash_body.sh and checks that
+
+  * the head is at most 4096 characters, is a prefix of the command, and survives escaping;
+  * a short command is passed through unchanged;
+  * 4 MB of multi-line text goes through head + escape in well under 2 s, in a UTF-8 locale.
+
+On the pre-fix code `__warp_preexec_head_to` does not exist, so the first check fails.
+Needs only python3 and bash; exit 0 when everything passes.
+
+USAGE
+    script/test_bash_preexec_large_command [path/to/bash]
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BODY = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash_body.sh")
+BASH = sys.argv[1] if len(sys.argv) > 1 else (shutil.which("bash") or "/bin/bash")
+text = open(BODY).read()
+
+
+def func(name):
+    m = re.search(r"^ {4}%s \(\) \{\n.*?^ {4}\}\n" % re.escape(name), text, re.S | re.M)
+    if not m:
+        sys.exit(f"FAIL: {name} not found in bash_body.sh")
+    return m.group(0)
+
+
+prelude = "\n".join(func(n) for n in ("__warp_preexec_head_to", "__warp_ej_var"))
+failures = []
+
+
+def run(literal):
+    """Runs the head helper from a DEBUG trap (where the Preexec hook runs, and where bash keeps
+    $BASH_COMMAND at the trapped command) on `: <literal>`."""
+    script = f"""{prelude}
+trap '__warp_preexec_head_to head; __warp_ej_var escaped "$head"; trap - DEBUG' DEBUG
+: {literal}
+printf '%s\\n' "${{#head}}" "${{#escaped}}"
+"""
+    env = dict(os.environ, LC_ALL="C.UTF-8")
+    start = time.time()
+    r = subprocess.run([BASH], input=script, capture_output=True, text=True, env=env)
+    return r, time.time() - start
+
+
+r, _ = run("'short'")
+head_len = len(": 'short'")
+if r.returncode != 0 or r.stdout.split()[0] != str(head_len):
+    failures.append(f"short command changed: {r.stdout!r} {r.stderr!r}")
+
+big = "'" + "\n".join("echo line %d %s" % (i, "ab cd" * 10) for i in range(80000)) + "'"
+assert len(big) > 3_000_000
+r, elapsed = run(big)
+out = r.stdout.split()
+if r.returncode != 0 or len(out) != 2 or int(out[0]) > 4096:
+    failures.append(f"head not bounded: {r.stdout!r} {r.stderr!r}")
+if elapsed > 2.0:
+    failures.append(f"large command took {elapsed:.2f}s (limit 2s)")
+
+if failures:
+    print("\n".join("FAIL: " + f for f in failures))
+    sys.exit(1)
+print("ok")

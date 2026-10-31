@@ -313,7 +313,10 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # skipped that precmd (and so owes one) or already ran it.
       _WARP_PRECMD_PENDING=1
       local warp_escaped_command
-      __warp_ej_var warp_escaped_command "$1"
+      # Phosphor (#1255): only the first 4096 characters are escaped and sent. The app reads just the
+      # start of this command (the in-band generator prefix), and escaping a pasted multi-MB command
+      # in full took minutes in a UTF-8 locale with the shell frozen before it ran.
+      __warp_ej_var warp_escaped_command "${1[1,4096]}"
       warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID}}"
       warp_maybe_send_reset_grid_osc
 
