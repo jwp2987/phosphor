@@ -695,6 +695,36 @@ const BOOKMARK_MIN_GAP: f32 = 4.;
 /// Height of a bookmark indicator
 const BOOKMARK_INDICATOR_HEIGHT: f32 = 4.;
 
+/// The bytes a raw paste writes to the pty: every `\n` or `\r\n` becomes `\r`, optionally wrapped
+/// in the bracketed-paste markers. Built in a single pass into one pre-sized buffer.
+fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
+    let wrap = if bracketed {
+        BRACKETED_PASTE_PREFIX.len() + BRACKETED_PASTE_SUFFIX.len()
+    } else {
+        0
+    };
+    let mut out = Vec::with_capacity(text.len() + wrap);
+    if bracketed {
+        out.extend_from_slice(BRACKETED_PASTE_PREFIX.as_bytes());
+    }
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            // A `\r` directly before the `\n` is part of the `\r\n` pair.
+            let end = if i > start && bytes[i - 1] == b'\r' { i - 1 } else { i };
+            out.extend_from_slice(&bytes[start..end]);
+            out.push(b'\r');
+            start = i + 1;
+        }
+    }
+    out.extend_from_slice(&bytes[start..]);
+    if bracketed {
+        out.extend_from_slice(BRACKETED_PASTE_SUFFIX.as_bytes());
+    }
+    out
+}
+
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
 const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
@@ -19968,14 +19998,15 @@ impl TerminalView {
         } else {
             Some(self.shell_dialect_from_app(ctx))
         };
-        let mut copied = if middle_click {
+        let copied = if middle_click {
             TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {
-            // Images matter only for CLI-agent paste; otherwise skip the read and decode.
+            // Images matter only for CLI-agent paste; otherwise skip the read and decode. Paste
+            // never uses the HTML flavor, so the plain path reads just text and copied paths.
             let clipboard_content = if is_cli_agent_paste {
                 ctx.clipboard().read()
             } else {
-                ctx.clipboard().read_without_images()
+                ctx.clipboard().read_text_and_paths()
             };
 
             if is_cli_agent_paste && clipboard_content.has_image_data() {
@@ -20016,18 +20047,16 @@ impl TerminalView {
             // otherwise programs that don't support bracketed paste might
             // misinterpret newlines as a ^J sequence.
             // See: https://github.com/vercel/hyper/issues/1448#issuecomment-367890105
-            copied = LINEFEED_REGEX
-                .replace_all(copied.as_str(), "\r")
-                .to_string();
-
-            if needs_bracketed_paste {
-                // If bracketed paste is enabled in the current grid, then we should surround any
-                // paste operation with `\x1b[200~` and `\x1b[201~` so that the application knows
-                // the text came from paste, rather than from direct user input.
-                // See https://cirw.in/blog/bracketed-paste for more info on bracketed paste
-                copied = format!("{BRACKETED_PASTE_PREFIX}{copied}{BRACKETED_PASTE_SUFFIX}");
-            }
-            self.write_user_bytes_to_pty(copied.into_bytes(), ctx);
+            //
+            // If bracketed paste is enabled in the current grid, we also surround the paste with
+            // `\x1b[200~` and `\x1b[201~` so that the application knows the text came from paste,
+            // rather than from direct user input.
+            // See https://cirw.in/blog/bracketed-paste for more info on bracketed paste
+            // Both are done in one pass into one buffer (no regex, no intermediate copies).
+            self.write_user_bytes_to_pty(
+                paste_bytes_for_pty(&copied, needs_bracketed_paste),
+                ctx,
+            );
         }
     }
 

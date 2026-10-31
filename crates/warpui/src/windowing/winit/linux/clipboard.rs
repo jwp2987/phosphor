@@ -65,6 +65,24 @@ impl Clipboard for LinuxClipboard {
         }
     }
 
+    fn read_text_and_paths(&mut self) -> ClipboardContent {
+        // One text read plus the syntactic path check; the HTML target and image probes are
+        // skipped because paste never uses them (a multi-MB paste paid for them on every read).
+        let plain_text = match self.inner.get().text() {
+            Ok(text) => text,
+            Err(err) => {
+                log::warn!("Failed to read from Linux clipboard: {err:?}");
+                return ClipboardContent::null_value();
+            }
+        };
+        let paths = self.parse_valid_filepaths_from_text(&plain_text);
+        ClipboardContent {
+            plain_text,
+            paths,
+            ..Default::default()
+        }
+    }
+
     fn read_plain_text(&mut self) -> String {
         self.inner.get().text().unwrap_or_default()
     }

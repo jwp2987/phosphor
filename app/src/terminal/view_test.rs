@@ -18655,3 +18655,44 @@ fn ssh_enter_follows_dropped_line_only_inside_the_window() {
     let old = now.checked_sub(SSH_DROPPED_LINE_ENTER_WINDOW).unwrap();
     assert!(!ssh_enter_follows_dropped_line(Some(old), now));
 }
+
+#[test]
+fn paste_bytes_for_pty_normalizes_newlines_like_the_regex() {
+    let regex_reference = |s: &str| LINEFEED_REGEX.replace_all(s, "\r").into_owned();
+    for input in [
+        "",
+        "plain",
+        "a\nb",
+        "a\r\nb",
+        "a\rb",
+        "a\r\rb",
+        "a\r\r\nb",
+        "\n\r\n\n",
+        "trailing\r\n",
+        "\r",
+        "é\nü\r\n日本",
+    ] {
+        assert_eq!(
+            paste_bytes_for_pty(input, false),
+            regex_reference(input).into_bytes(),
+            "plain paste of {input:?}"
+        );
+        let mut expected = BRACKETED_PASTE_PREFIX.as_bytes().to_vec();
+        expected.extend_from_slice(regex_reference(input).as_bytes());
+        expected.extend_from_slice(BRACKETED_PASTE_SUFFIX.as_bytes());
+        assert_eq!(
+            paste_bytes_for_pty(input, true),
+            expected,
+            "bracketed paste of {input:?}"
+        );
+    }
+}
+
+#[test]
+fn paste_bytes_for_pty_exact_bytes() {
+    assert_eq!(paste_bytes_for_pty("a\r\nb\nc\rd", false), b"a\rb\rc\rd");
+    assert_eq!(
+        paste_bytes_for_pty("x\ny", true),
+        b"\x1b[200~x\ry\x1b[201~".to_vec()
+    );
+}

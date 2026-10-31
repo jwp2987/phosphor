@@ -21,6 +21,14 @@ pub trait Clipboard: 'static {
         content
     }
 
+    /// Plain text and copied-file paths only (`html` and `images` are `None`). For paste, which
+    /// uses nothing else, so platforms can skip the HTML and image probes when text is present.
+    fn read_text_and_paths(&mut self) -> ClipboardContent {
+        let mut content = self.read_without_images();
+        content.html = None;
+        content
+    }
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text
