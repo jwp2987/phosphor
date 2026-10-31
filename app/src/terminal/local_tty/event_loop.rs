@@ -682,8 +682,20 @@ where
                         break 'write_many;
                     }
                     Ok(n) => {
+                        // #1162: a short write (a ConPTY pipe taking part of a buffer), and every
+                        // reply written between user bytes, to place a lost or reordered byte.
+                        if n < current.remaining_bytes().len() {
+                            warpui::input_order::log_hop("pty_write_partial", || {
+                                format!("wrote={n} of={}", current.remaining_bytes().len())
+                            });
+                        }
                         current.advance(n);
                         if current.finished() {
+                            if current.is_reply {
+                                warpui::input_order::log_hop("pty_write_reply", || {
+                                    format!("bytes={}", current.source.len())
+                                });
+                            }
                             state.note_write_finished(current.is_reply, Instant::now());
                             if !current.is_reply {
                                 warpui::input_order::log_pty_write(current.source.len());
@@ -698,6 +710,9 @@ where
                             ErrorKind::Interrupted | ErrorKind::WouldBlock => {
                                 if err.kind() == ErrorKind::WouldBlock {
                                     *can_write = false;
+                                    warpui::input_order::log_hop("pty_write_wouldblock", || {
+                                        format!("queued={}", state.write_list.len())
+                                    });
                                 }
                                 break 'write_many;
                             }

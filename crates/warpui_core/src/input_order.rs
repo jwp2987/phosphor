@@ -94,6 +94,12 @@ fn pty_write_line(bytes: usize) -> String {
     format!("{LINE_PREFIX} pty_write bytes={bytes} t={}", now_ms())
 }
 
+/// A hop line for the typeahead path (#1162): `what` names the hop, `detail` is counts and
+/// states only, never typed text.
+fn hop_line(what: &str, detail: &str) -> String {
+    format!("{LINE_PREFIX} hop={what} {detail} t={}", now_ms())
+}
+
 fn pty_read_line(bytes: usize, since_write: Duration) -> String {
     format!(
         "{LINE_PREFIX} pty_read bytes={bytes} since_write_ms={:.1} t={}",
@@ -113,6 +119,15 @@ static FRAME_OWED_FOR_PTY_OUTPUT: AtomicBool = AtomicBool::new(false);
 pub fn log_pty_write(bytes: usize) {
     if enabled() {
         log::debug!(target: TARGET, "{}", pty_write_line(bytes));
+    }
+}
+
+/// Logs one hop of the typeahead -> pty path (#1162), for pinning down where a typed-ahead byte
+/// is lost or reordered on a platform that cannot be debugged live (Windows ConPTY). Takes the
+/// detail lazily so the formatting costs nothing when input-order logging is off.
+pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", hop_line(what, &detail()));
     }
 }
 
@@ -199,6 +214,15 @@ mod tests {
         assert!(
             frame.starts_with("input_order frame layout=false t="),
             "{frame}"
+        );
+    }
+
+    #[test]
+    fn hop_lines_are_greppable_and_carry_the_detail() {
+        let line = hop_line("pty_write_partial", "wrote=1 of=5");
+        assert!(
+            line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
         );
     }
 

@@ -11145,6 +11145,10 @@ impl TerminalView {
                 UserBytesRoute::Write
             }
         };
+        // #1162: which way each user write was routed, to compare with the pty-side hops.
+        warpui::input_order::log_hop("user_bytes_route", || {
+            format!("bytes={} route={handoff_route:?}", bytes.len())
+        });
         if handoff_route == UserBytesRoute::Held {
             // #933: an Enter held because the command may already have finished.
             let hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {

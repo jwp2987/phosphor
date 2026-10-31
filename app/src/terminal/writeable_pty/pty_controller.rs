@@ -463,6 +463,9 @@ impl<T: EventLoopSender> PtyController<T> {
                 .on_line_editor_active(at_prompt, input_reporting_seq.is_some())
         };
 
+        warpui::input_order::log_hop("handoff_decision", || {
+            format!("decision={decision:?} retry={is_retry}")
+        });
         match decision {
             ActiveDecision::Legacy if !is_retry => {
                 self.handoff_request_waiting = false;
@@ -566,7 +569,9 @@ impl<T: EventLoopSender> PtyController<T> {
                 model.block_list_mut().record_typed_ahead_bytes(&bytes);
             }
         }
-        if self.handoff_command_pending {
+        let deferred_behind_command = self.handoff_command_pending;
+        let byte_count = bytes.len();
+        if deferred_behind_command {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
         } else {
             self.write_bytes(bytes, ctx);
@@ -576,6 +581,14 @@ impl<T: EventLoopSender> PtyController<T> {
             .lock()
             .typeahead_handoff_mut()
             .on_user_write_flushed();
+        // #1162: where each typed-ahead write went and what was still in flight behind it.
+        warpui::input_order::log_hop("handoff_user_write", || {
+            format!(
+                "bytes={byte_count} enter={has_enter} deferred_behind_command={deferred_behind_command} \
+                 in_flight={writes_in_flight} request_waiting={}",
+                self.handoff_request_waiting
+            )
+        });
         if writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
             self.retry_typeahead_handoff_request(ctx);
         }
