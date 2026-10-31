@@ -106,6 +106,7 @@ mod voltron;
 mod warp_managed_paths_watcher;
 #[cfg(target_family = "wasm")]
 mod wasm_nux_dialog;
+mod window_close_policy;
 mod window_settings;
 mod word_block_editor;
 mod workspaces;
@@ -2706,11 +2707,13 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
         on_should_close_window: Some(Box::new(move |window_id, ctx| {
             let general_settings = GeneralSettings::as_ref(ctx);
             // On Linux or Windows, if we're about to close the final window, we should quit the app instead.
-            // On Mac, we do this conditionally based on a user setting.
-            let quit_on_last_window_closed =
-                cfg!(any(target_os = "linux", target_os = "freebsd", windows))
-                    || *general_settings.quit_on_last_window_closed;
-            if ctx.window_ids().count() == 1 && quit_on_last_window_closed {
+            // On Mac, we do this conditionally based on a user setting (default on, #1154).
+            if window_close_policy::should_quit_app(
+                window_close_policy::PLATFORM_ALWAYS_QUITS,
+                *general_settings.quit_on_last_window_closed,
+                ctx.window_ids().count(),
+                window_close_policy::CloseReason::Requested,
+            ) {
                 log::info!("No windows left, terminating app");
                 ctx.terminate_app(TerminationMode::Cancellable, None);
                 return ApproveTerminateResult::Cancel;
@@ -2878,6 +2881,21 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
                 });
             }
             ctx.dispatch_global_action("workspace:save_app", &());
+
+            // Backstop (#1154): a window that closed without `on_should_close_window`
+            // deciding to quit (e.g. the unsaved-changes dialog's force-close) must not
+            // leave the app running with no window.
+            if !is_integration_test
+                && window_close_policy::should_quit_app(
+                    window_close_policy::PLATFORM_ALWAYS_QUITS,
+                    *GeneralSettings::as_ref(ctx).quit_on_last_window_closed,
+                    ctx.window_ids().count(),
+                    window_close_policy::CloseReason::AlreadyClosed,
+                )
+            {
+                log::info!("Last window closed without a quit decision, terminating app");
+                ctx.terminate_app(TerminationMode::ForceTerminate, None);
+            }
         })),
         on_window_moved: Some(Box::new(move |ctx| {
             // During startup, winit fires several move/resize events in a row; save_app is meaningless at this stage and slows down startup.

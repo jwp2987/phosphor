@@ -5,6 +5,10 @@ use warp_core::settings::{
     macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
 };
 
+/// Default for `general.quit_on_last_window_closed`. On (#1154): the app must not be
+/// left running with no window; macOS users can opt into Mac-style behaviour.
+pub const QUIT_ON_LAST_WINDOW_CLOSED_DEFAULT: bool = true;
+
 define_settings_group!(GeneralSettings, settings: [
     show_warning_before_quitting: ShowWarningBeforeQuitting {
         type: bool,
@@ -17,12 +21,12 @@ define_settings_group!(GeneralSettings, settings: [
     },
     quit_on_last_window_closed: QuitOnLastWindowClosed {
         type: bool,
-        default: false,
+        default: QUIT_ON_LAST_WINDOW_CLOSED_DEFAULT,
         supported_platforms: SupportedPlatforms::MAC,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "general.quit_on_last_window_closed",
-        description: "Whether to quit Phosphor when the last window is closed.",
+        description: "Whether to quit Phosphor when the last window is closed (default: on).",
     },
     restore_session: RestoreSession {
         type: bool,
