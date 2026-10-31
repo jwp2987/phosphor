@@ -478,8 +478,9 @@ use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvide
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
+use crate::terminal::model::block::interactive_prompt_candidate;
 #[cfg(unix)]
-use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
+use crate::terminal::model::block::InteractivePromptCandidate;
 use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,

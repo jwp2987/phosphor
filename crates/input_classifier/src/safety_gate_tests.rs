@@ -1083,7 +1083,7 @@ fn test_trailing_comment_is_not_classified() {
         ] {
             assert_eq!(
                 route(
-                    &HashMeansProse,
+                    HashMeansProse,
                     snapshot_without_descriptions(buffer),
                     &context(true)
                 )
@@ -1093,7 +1093,7 @@ fn test_trailing_comment_is_not_classified() {
             );
             assert_eq!(
                 route(
-                    &HashMeansProse,
+                    HashMeansProse,
                     snapshot_without_descriptions(buffer),
                     &agent_context()
                 )
@@ -1106,7 +1106,7 @@ fn test_trailing_comment_is_not_classified() {
         for buffer in ["myscript a#b", "myscript '# not a comment'"] {
             assert_eq!(
                 route(
-                    &HashMeansProse,
+                    HashMeansProse,
                     snapshot_without_descriptions(buffer),
                     &context(true)
                 )

@@ -55,7 +55,7 @@ mod native {
         #[cfg(target_os = "macos")]
         {
             // `qos_class_t` is a `repr(u32)` enum; QOS_CLASS_BACKGROUND = 0x09.
-            extern "C" {
+            unsafe extern "C" {
                 fn pthread_set_qos_class_self_np(class: u32, relative_priority: i32) -> i32;
             }
             // SAFETY: affects only the calling thread; no pointer arguments.
