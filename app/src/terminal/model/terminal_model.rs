@@ -1825,6 +1825,21 @@ impl TerminalModel {
         self.disarm_setup_echo();
         self.abandoned_subshell_session = self.pending_session_info.take();
         self.block_list.set_bootstrapped();
+        // The active block is still the hidden bootstrap block, which discards output (#1119).
+        // Continue in an ordinary running block named after the command that started the shell,
+        // so its output is drawn and keys and Ctrl-C reach it like any raw command.
+        if self.block_list.replace_stalled_bootstrap_block() {
+            let command = self
+                .abandoned_subshell_session
+                .as_ref()
+                .and_then(|session| session.subshell_info.as_ref())
+                .map(|info| info.spawning_command.clone())
+                .unwrap_or_default();
+            self.preexec(PreexecValue {
+                command,
+                session_id: None,
+            });
+        }
         true
     }
 

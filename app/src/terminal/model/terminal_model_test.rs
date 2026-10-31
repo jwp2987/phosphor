@@ -3101,6 +3101,47 @@ fn stalled_subshell_bootstrap_can_be_abandoned_once() {
     );
 }
 
+/// #1119: the block left active after an abandoned subshell bootstrap is the hidden bootstrap
+/// block, which discards the shell's output (so keys and Ctrl-C were typed blind). Abandoning must
+/// continue in an ordinary running block that is drawn, named after the spawning command.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn abandoned_subshell_bootstrap_continues_in_a_visible_running_block() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        terminal.block_list().active_block().bootstrap_stage(),
+        BootstrapStage::WarpInput,
+        "InitShell leaves the hidden bootstrap block active"
+    );
+
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    let active = terminal.block_list().active_block();
+    assert_eq!(
+        active.bootstrap_stage(),
+        BootstrapStage::PostBootstrapPrecmd
+    );
+    assert_eq!(active.state(), BlockState::Executing);
+    assert!(active.started());
+    assert_eq!(active.command_to_string(), "zsh");
+    assert!(!active.is_hidden());
+}
+
 /// #1014: a shell whose rc file sleeps only *looks* stalled; when it finally reads the script the
 /// `Bootstrapped` hook arrives after the ceiling abandoned the pending session. The late hook must
 /// still produce the session (a `Bootstrapped` event), not be dropped as "no pending session".
