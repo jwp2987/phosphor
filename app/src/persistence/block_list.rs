@@ -365,14 +365,14 @@ pub(super) fn delete_orphaned_blocks(
     conn: &mut SqliteConnection,
     older_than: NaiveDateTime,
 ) -> Result<usize, Error> {
-    use schema::{blocks, terminal_panes};
-    diesel::delete(
-        blocks::table
-            .filter(
-                blocks::pane_leaf_uuid.ne_all(terminal_panes::table.select(terminal_panes::uuid)),
-            )
-            .filter(blocks::start_ts.lt(older_than)),
+    // Raw SQL: Diesel can't build a DELETE whose filter is a `NOT IN (subquery)`. A NULL
+    // `start_ts` or pane id never satisfies the comparisons, so such rows are kept.
+    diesel::sql_query(
+        "DELETE FROM blocks \
+         WHERE start_ts IS NOT NULL AND start_ts < ? \
+         AND pane_leaf_uuid NOT IN (SELECT uuid FROM terminal_panes)",
     )
+    .bind::<diesel::sql_types::Timestamp, _>(older_than)
     .execute(conn)
 }
 
