@@ -18604,3 +18604,53 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
         });
     })
 }
+
+/// #1123/#1127: a typed-ahead line whose letters were dropped during an ssh connect keeps its
+/// Enter with it even when the drop-through flag was reset before the Enter arrived (a
+/// prompt-shaped line resets it): the Enter is never delivered alone.
+#[test]
+fn ssh_enter_just_after_dropped_letters_is_dropped_with_them_after_a_flag_reset() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("exit", ctx);
+            assert!(view.ssh_drop_line_through_enter);
+            // The flag is reset by something other than the line's Enter.
+            view.ssh_drop_line_through_enter = false;
+            // The editor's Enter (empty buffer) is vetoed, not executed.
+            submit_command(view, "", ctx);
+            assert!(
+                view.ssh_last_dropped_key_at.is_none(),
+                "the Enter ends the line"
+            );
+            // The next line passes.
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        });
+        assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+#[test]
+fn ssh_enter_follows_dropped_line_only_inside_the_window() {
+    let now = Instant::now();
+    assert!(!ssh_enter_follows_dropped_line(None, now));
+    assert!(ssh_enter_follows_dropped_line(Some(now), now));
+    let old = now.checked_sub(SSH_DROPPED_LINE_ENTER_WINDOW).unwrap();
+    assert!(!ssh_enter_follows_dropped_line(Some(old), now));
+}

@@ -698,6 +698,10 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
+/// An Enter this soon after the last dropped key of an ssh connect is part of the same typed
+/// line (#1123): a typed-ahead `exit` + Enter arrives within tens of milliseconds, a human
+/// answering a prompt much later.
+const SSH_DROPPED_LINE_ENTER_WINDOW: Duration = Duration::from_millis(400);
 /// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
 /// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
 /// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
@@ -2812,6 +2816,13 @@ pub struct TerminalView {
     /// Ctrl-C/D/Z or Ctrl-U, visible prompt text arriving (a prompt is a new line context, so
     /// a typed `yes` + Enter answer is not eaten), a failed ssh block, and any new command.
     ssh_drop_line_through_enter: bool,
+    /// #1123/#1127: when the last printable key or paste of a line was dropped during an ssh
+    /// connect. An Enter within `SSH_DROPPED_LINE_ENTER_WINDOW` of it ends that same line even
+    /// if `ssh_drop_line_through_enter` was reset in between (a pre-bootstrap shell prompt looks
+    /// like a password prompt and resets it), so a fast `exit` + Enter is never split into
+    /// dropped letters and a delivered Enter. Cleared by any Enter, interrupt, Ctrl-U or new
+    /// command.
+    ssh_last_dropped_key_at: Option<Instant>,
     /// Whether the "interrupt held" notice was shown for the current connect window before
     /// the remote session was announced (#1001).
     ssh_interrupt_held_gate_notified: bool,
@@ -4555,6 +4566,7 @@ impl TerminalView {
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
             ssh_drop_line_through_enter: false,
+            ssh_last_dropped_key_at: None,
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
@@ -10010,6 +10022,7 @@ impl TerminalView {
                 return;
             }
             self.ssh_drop_line_through_enter = false;
+            self.ssh_last_dropped_key_at = None;
             self.ssh_held_typing = SshHeldTyping::default();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
@@ -10170,6 +10183,9 @@ impl TerminalView {
                 }) && self.active_output_ends_in_unterminated_text();
             if prompt_arrived || characters == Some("\u{15}") {
                 self.ssh_drop_line_through_enter = false;
+                if characters == Some("\u{15}") {
+                    self.ssh_last_dropped_key_at = None;
+                }
                 // Text typed blind before a prompt exists (possibly a password) must not be
                 // shown later; Ctrl-U is the user erasing the line.
                 self.discard_ssh_held_typing(prompt_arrived, ctx);
@@ -10195,9 +10211,26 @@ impl TerminalView {
                 );
             }
         }
+        if is_printable && (gate_drops || self.ssh_drop_line_through_enter) && !dialog_up {
+            self.ssh_last_dropped_key_at = Some(Instant::now());
+        }
+        if !gate_drops
+            && !self.ssh_drop_line_through_enter
+            && is_enter
+            && ssh_enter_follows_dropped_line(self.ssh_last_dropped_key_at, Instant::now())
+        {
+            // #1123: the line's letters were dropped but the drop-through flag was reset before
+            // its Enter arrived (a prompt-shaped line ended the drop). The Enter belongs to the
+            // dropped line: dropped with it, never delivered alone.
+            self.ssh_last_dropped_key_at = None;
+            self.ssh_setup_drop_notified = false;
+            self.drop_ssh_held_typing_with_notice(ctx);
+            return true;
+        }
         if !gate_drops && self.ssh_drop_line_through_enter {
             if is_enter {
                 self.ssh_drop_line_through_enter = false;
+                self.ssh_last_dropped_key_at = None;
                 self.ssh_setup_drop_notified = false;
                 // #1113: the dropped line is complete: show it, unexecuted.
                 self.flush_ssh_held_typing(ctx);
@@ -10211,6 +10244,7 @@ impl TerminalView {
         if is_enter {
             // The dropped Enter ends the line: what is typed next is a new one.
             self.ssh_drop_line_through_enter = false;
+            self.ssh_last_dropped_key_at = None;
         } else if is_printable {
             self.ssh_drop_line_through_enter = true;
         }
@@ -10354,6 +10388,7 @@ impl TerminalView {
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
         self.ssh_drop_line_through_enter = false;
+        self.ssh_last_dropped_key_at = None;
         self.ssh_held_typing = SshHeldTyping::default();
         self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
@@ -10719,6 +10754,7 @@ impl TerminalView {
                 return;
             }
             self.ssh_drop_line_through_enter = false;
+            self.ssh_last_dropped_key_at = None;
             self.ssh_held_typing = SshHeldTyping::default();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
@@ -25368,10 +25404,12 @@ impl TerminalView {
                 // reached the input editor (it takes focus once the ssh block has ended), so
                 // its Enter must not run the tail as a command of its own.
                 self.log_ssh_drop_state("execute_command");
-                if self.ssh_drop_line_through_enter
+                if (self.ssh_drop_line_through_enter
+                    || ssh_enter_follows_dropped_line(self.ssh_last_dropped_key_at, Instant::now()))
                     && matches!(event.source, CommandExecutionSource::User)
                 {
                     self.ssh_drop_line_through_enter = false;
+                    self.ssh_last_dropped_key_at = None;
                     self.ssh_setup_drop_notified = false;
                     // #1113: the vetoed line is discarded (the editor is cleared, as before), with
                     // a notice; held text is never concatenated with what the editor holds.
@@ -33498,6 +33536,14 @@ fn subshell_setup_defer_ready(
     unchanged_for: Duration,
 ) -> bool {
     answered && (!prompt_visible || unchanged_for >= SUBSHELL_SETUP_DEFER_QUIET)
+}
+
+/// #1123/#1127: whether an Enter arriving `now` ends a line whose last key was dropped at
+/// `last_dropped` during an ssh connect. Pure so the window is testable. Text typed blind is
+/// never re-delivered either way; the cost of a false positive is one Enter the user presses
+/// again.
+fn ssh_enter_follows_dropped_line(last_dropped: Option<Instant>, now: Instant) -> bool {
+    last_dropped.is_some_and(|at| now.saturating_duration_since(at) < SSH_DROPPED_LINE_ENTER_WINDOW)
 }
 
 /// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
