@@ -880,3 +880,40 @@ fn git_corrections_skipped_only_for_existing_dirs_outside_a_repo() {
     // Paths we can't inspect fall back to running git.
     assert!(!super::local_dir_is_outside_git_repo(&tmp.path().join("missing")));
 }
+
+/// #1203: nushell's sqlite history (its default `file_format`) is read as the shell wrote it,
+/// oldest first, multi-line entries intact; a file that is not such a database yields nothing.
+#[test]
+fn nu_sqlite_history_is_read_in_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let database = tmp.path().join("history.sqlite3");
+    let database = database.to_str().unwrap().to_owned();
+    {
+        let mut connection =
+            <diesel::sqlite::SqliteConnection as diesel::Connection>::establish(&database).unwrap();
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut connection,
+            "CREATE TABLE history (id integer primary key autoincrement, command_line text not \
+             null, start_timestamp integer, session_id integer, hostname text, cwd text, \
+             duration_ms integer, exit_status integer, more_info text) strict;
+             INSERT INTO history (command_line, exit_status) VALUES ('ls | where size > 1kb', 0), \
+             ('git status', 128), ('def f [] {' || char(10) || ' echo multi' || char(10) || '}', 0);",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::read_nu_sqlite_history(&database),
+        Some(vec![
+            "ls | where size > 1kb".to_owned(),
+            "git status".to_owned(),
+            "def f [] {\n echo multi\n}".to_owned(),
+        ])
+    );
+    let plain = tmp.path().join("history.txt");
+    std::fs::write(&plain, "ls\n").unwrap();
+    assert_eq!(
+        super::read_nu_sqlite_history(plain.to_str().unwrap()),
+        None,
+        "not a database: nothing is loaded, the plaintext path handles it"
+    );
+}

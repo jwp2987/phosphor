@@ -244,10 +244,12 @@ def __warp_bootstrapped [] {
         if ($rel | is-empty) { "" } else { open --raw $rel | lines | where {|l| $l | str starts-with 'NAME="' } | get 0? | default "" | str replace 'NAME="' '' | str replace '"' '' }
     } else { "" }
     let histfile = if ($env.config.history.file_format? | default "plaintext") == "plaintext" { ($nu.history-path? | default "") } else { "" }
+    # The default history format is sqlite; the app reads that file itself (#1203).
+    let history_sqlite = if ($env.config.history.file_format? | default "plaintext") == "sqlite" { ($nu.history-path? | default "") } else { "" }
     let vi = if ($env.config.edit_mode? | default "emacs") == "vi" { "1" } else { "" }
     let options = if ($env.config.history.ignore_space_prefixed? | default true) { "ignore_space_prefixed" } else { "" }
     let path = ($env.PATH | each {|p| $p | into string } | str join (char esep))
-    __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
+    __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "history_sqlite": (__warp_jstr $history_sqlite), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
 }
 
 # Hooks. Ours is first in pre_prompt so user hooks cannot disturb $env.LAST_EXIT_CODE before the

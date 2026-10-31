@@ -866,6 +866,11 @@ pub struct BootstrappedValue {
     #[serde(deserialize_with = "empty_string_is_none")]
     pub histfile: Option<String>,
 
+    /// Nushell's sqlite history (`history.file_format = sqlite`, its default), which `histfile`
+    /// cannot carry (#1203). Only nu reports it; absent elsewhere.
+    #[serde(deserialize_with = "empty_string_is_none", default)]
+    pub history_sqlite: Option<String>,
+
     #[serde(deserialize_with = "trim_null_byte_deserializer", default)]
     pub shell: String,
 

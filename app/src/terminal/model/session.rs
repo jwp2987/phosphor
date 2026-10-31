@@ -661,6 +661,8 @@ pub struct SessionInfo {
     pub shell: Shell,
     pub launch_data: Option<ShellLaunchData>,
     pub histfile: Option<String>,
+    /// Nushell's sqlite history file, when its history is not a plaintext file (#1203).
+    pub history_sqlite: Option<String>,
     pub user: String,
     pub hostname: String,
     pub subshell_info: Option<SubshellInitializationInfo>,
@@ -750,6 +752,7 @@ impl SessionInfo {
             home_dir: None,
             editor: None,
             histfile: None,
+            history_sqlite: None,
             aliases: Default::default(),
             abbreviations: Default::default(),
             function_names: Default::default(),
@@ -876,6 +879,7 @@ impl SessionInfo {
             ),
             launch_data: self.launch_data.take(),
             histfile: bootstrapped_value.histfile,
+            history_sqlite: bootstrapped_value.history_sqlite,
             user: self.user,
             hostname: self.hostname,
             session_type: self.session_type,
@@ -1774,6 +1778,12 @@ impl Session {
     async fn read_history_for_local_session(&self, is_kaspersky_running: bool) -> Vec<String> {
         let histfile = &self.info.histfile;
         let shell_type = &self.info.shell.shell_type();
+        if *shell_type == ShellType::Nu
+            && let Some(database) = self.info.history_sqlite.as_deref()
+            && let Some(history) = read_nu_sqlite_history(database)
+        {
+            return history;
+        }
         let history_files = histfile.as_ref().map_or_else(
             || shell_type.history_files(),
             |histfile| vec![histfile.to_string()],
@@ -2147,6 +2157,7 @@ pub mod testing {
                 shell: Shell::new(shell_type, None, None, Default::default(), None),
                 launch_data: None,
                 histfile: None,
+                history_sqlite: None,
                 user: "local:user".to_owned(),
                 hostname: "local:host".to_owned(),
                 session_type: BootstrapSessionType::Local,
@@ -2192,6 +2203,11 @@ pub mod testing {
 
         pub fn with_histfile(mut self, histfile: Option<String>) -> Self {
             self.histfile = histfile;
+            self
+        }
+
+        pub fn with_history_sqlite(mut self, history_sqlite: Option<String>) -> Self {
+            self.history_sqlite = history_sqlite;
             self
         }
 
@@ -2494,6 +2510,39 @@ fn local_dir_is_outside_git_repo(dir: &Path) -> bool {
         return false;
     }
     !dir.ancestors().any(|ancestor| ancestor.join(".git").exists())
+}
+
+/// The commands in nushell's sqlite history (`history.file_format = sqlite`, its default), oldest
+/// first (#1203): the `history` table's `command_line`, read read-only. `None` when the file
+/// cannot be opened or read (locked, an unknown schema), so the session starts from Phosphor's own
+/// records instead. A plain `SELECT` over a few thousand rows, on the thread that reads the
+/// history file.
+pub(crate) fn read_nu_sqlite_history(database: &str) -> Option<Vec<String>> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        command_line: String,
+    }
+    let url = format!("file:{database}?mode=ro");
+    let mut connection =
+        match <diesel::sqlite::SqliteConnection as diesel::Connection>::establish(&url) {
+            Ok(connection) => connection,
+            Err(error) => {
+                log::warn!("Could not open nushell's sqlite history {database}: {error:#}");
+                return None;
+            }
+        };
+    let rows: Vec<Row> = match diesel::RunQueryDsl::load(
+        diesel::sql_query("SELECT command_line FROM history ORDER BY id"),
+        &mut connection,
+    ) {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::warn!("Could not read nushell's sqlite history {database}: {error:#}");
+            return None;
+        }
+    };
+    Some(rows.into_iter().map(|row| row.command_line).collect())
 }
 
 #[cfg(test)]
