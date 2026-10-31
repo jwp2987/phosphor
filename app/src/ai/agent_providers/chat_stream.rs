@@ -116,9 +116,57 @@ use crate::ai::skills::SkillDescriptor;
 /// just no carrier to bring it here. So we remember the last non-empty context per
 /// conversation, and fall back to it when input is empty, keeping message[0] byte-for-byte
 /// stable.
+///
+/// Keyed by conversation (#1077): a single process-wide slot let a concurrent conversation in
+/// another pane overwrite this one's context between its write and its next tool-result
+/// request. Most-recently-written last; bounded by [`MAX_CONVERSATION_SYSTEM_CTXS`] (oldest
+/// evicted) and cleared by [`forget_conversation_context`] when a conversation is removed.
 static CONVERSATION_SYSTEM_CTX: std::sync::Mutex<
-    Option<(crate::ai::agent::conversation::AIConversationId, Vec<AIAgentContext>)>,
-> = std::sync::Mutex::new(None);
+    Vec<(
+        crate::ai::agent::conversation::AIConversationId,
+        Vec<AIAgentContext>,
+    )>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Upper bound on remembered conversations, so conversations that end without being removed
+/// cannot grow the cache without limit.
+const MAX_CONVERSATION_SYSTEM_CTXS: usize = 64;
+
+fn store_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    ctx: &[AIAgentContext],
+) {
+    let mut cache = CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    cache.retain(|(id, _)| *id != conversation_id);
+    if cache.len() >= MAX_CONVERSATION_SYSTEM_CTXS {
+        cache.remove(0);
+    }
+    cache.push((conversation_id, ctx.to_vec()));
+}
+
+fn lookup_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> Option<Vec<AIAgentContext>> {
+    CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(id, _)| *id == conversation_id)
+        .map(|(_, ctx)| ctx.clone())
+}
+
+/// Drops the context remembered for `conversation_id`; called when the conversation is
+/// removed from memory.
+pub(crate) fn forget_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) {
+    CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|(id, _)| *id != conversation_id);
+}
 
 /// Records `ctx` as the context to use for `conversation_id`'s next request that carries
 /// no input context of its own (a BYOP tool-result round trip: the result is committed to
@@ -132,9 +180,7 @@ pub(crate) fn remember_conversation_context(
     if ctx.is_empty() {
         return;
     }
-    *CONVERSATION_SYSTEM_CTX
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some((conversation_id, ctx.to_vec()));
+    store_conversation_context(conversation_id, ctx);
 }
 
 /// The head/tail cut a summarization request was actually built with.
@@ -286,12 +332,8 @@ fn turn_listed_skills(params: &RequestParams) -> Vec<SkillDescriptor> {
     let Some(id) = params.byop_conversation_id else {
         return Vec::new();
     };
-    CONVERSATION_SYSTEM_CTX
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-        .filter(|(cached_id, _)| *cached_id == id)
-        .map(|(_, ctx)| collect(ctx))
+    lookup_conversation_context(id)
+        .map(|ctx| collect(&ctx))
         .unwrap_or_default()
 }
 
@@ -2129,19 +2171,12 @@ fn build_chat_request_for_model(
     // values and breaking the prompt cache.
     let input_ctx = latest_input_context(&params.input);
     let fallback_ctx: Option<Vec<AIAgentContext>> = if input_ctx.is_empty() {
-        params.byop_conversation_id.and_then(|id| {
-            CONVERSATION_SYSTEM_CTX
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .filter(|(cached_id, _)| *cached_id == id)
-                .map(|(_, ctx)| ctx.clone())
-        })
+        params
+            .byop_conversation_id
+            .and_then(lookup_conversation_context)
     } else {
         if let Some(id) = params.byop_conversation_id {
-            *CONVERSATION_SYSTEM_CTX
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some((id, input_ctx.to_vec()));
+            store_conversation_context(id, input_ctx);
         }
         None
     };
@@ -6527,12 +6562,7 @@ fn wire_skills_env(params: &RequestParams) -> (Vec<String>, Vec<(String, String)
     let ctx: &[AIAgentContext] = if !input_ctx.is_empty() {
         input_ctx
     } else if let Some(id) = params.byop_conversation_id {
-        fallback = CONVERSATION_SYSTEM_CTX
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .filter(|(cid, _)| *cid == id)
-            .map(|(_, c)| c.clone());
+        fallback = lookup_conversation_context(id);
         fallback.as_deref().unwrap_or(&[])
     } else {
         &[]
@@ -15130,6 +15160,41 @@ mod plan_mode_round_trip_tests {
             dispatch_refusal(&none_listed, plan_mode, &offered, "read_skill").is_some(),
             "a withheld read_skill must be refused, not dispatched"
         );
+    }
+
+    /// #1077: two conversations each keep their own remembered context, and forgetting one
+    /// leaves the other. The old single slot returned `None` for the first after the second wrote.
+    #[test]
+    fn remembered_context_is_per_conversation_and_forgettable() {
+        let a = crate::ai::agent::conversation::AIConversationId::new();
+        let b = crate::ai::agent::conversation::AIConversationId::new();
+        remember_conversation_context(a, &listed_skill_context());
+        remember_conversation_context(b, &[AIAgentContext::Skills { skills: vec![] }]);
+        let a_ctx = lookup_conversation_context(a).expect("a keeps its context");
+        assert!(matches!(&a_ctx[0], AIAgentContext::Skills { skills } if skills.len() == 1));
+        let b_ctx = lookup_conversation_context(b).expect("b has its own context");
+        assert!(matches!(&b_ctx[0], AIAgentContext::Skills { skills } if skills.is_empty()));
+        forget_conversation_context(a);
+        assert!(lookup_conversation_context(a).is_none());
+        assert!(lookup_conversation_context(b).is_some());
+        forget_conversation_context(b);
+    }
+
+    /// The cache is bounded: the oldest entry is evicted past the cap.
+    #[test]
+    fn remembered_context_cache_is_bounded() {
+        let first = crate::ai::agent::conversation::AIConversationId::new();
+        remember_conversation_context(first, &listed_skill_context());
+        let others: Vec<_> = (0..MAX_CONVERSATION_SYSTEM_CTXS)
+            .map(|_| crate::ai::agent::conversation::AIConversationId::new())
+            .collect();
+        for id in &others {
+            remember_conversation_context(*id, &listed_skill_context());
+        }
+        assert!(lookup_conversation_context(first).is_none());
+        for id in others {
+            forget_conversation_context(id);
+        }
     }
 
     /// The remembered context is what a real tool-result turn reads (the controller remembers
