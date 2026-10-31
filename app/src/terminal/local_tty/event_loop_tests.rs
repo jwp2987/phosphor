@@ -1,7 +1,7 @@
 //! Tests for PTY event loop setup (#882).
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use super::*;
 use crate::terminal::SizeInfo;
@@ -23,10 +23,30 @@ struct FakePty {
 #[derive(Default)]
 struct FakeReader {
     errno: Option<i32>,
+    /// When set, the reader hands out `flood.chunk` bytes per read for `flood.reads` reads without
+    /// ever reporting `WouldBlock`, like a `yes` that outpaces the parser, then `WouldBlock`.
+    flood: Option<Flood>,
+    /// How many reads have been made.
+    reads: Arc<AtomicUsize>,
+}
+
+struct Flood {
+    chunk: usize,
+    reads: usize,
 }
 
 impl io::Read for FakeReader {
-    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(flood) = &mut self.flood {
+            if flood.reads == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            flood.reads -= 1;
+            let n = flood.chunk.min(buf.len());
+            buf[..n].fill(b'x');
+            return Ok(n);
+        }
         match self.errno {
             Some(errno) => Err(io::Error::from_raw_os_error(errno)),
             None => Ok(0),
@@ -36,10 +56,25 @@ impl io::Read for FakeReader {
 
 /// A pty writer that records what the event loop writes.
 #[derive(Clone, Default)]
-struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+struct CaptureWriter(Arc<Mutex<Vec<u8>>>, Option<WriteProbe>);
+
+/// Records how many reads had been made when the first write happened.
+#[derive(Clone)]
+struct WriteProbe {
+    reads: Arc<AtomicUsize>,
+    reads_at_first_write: Arc<AtomicUsize>,
+}
 
 impl io::Write for CaptureWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Some(probe) = &self.1 {
+            let _ = probe.reads_at_first_write.compare_exchange(
+                usize::MAX,
+                probe.reads.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
         self.0.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -772,4 +807,167 @@ fn user_write_age_is_taken_once_and_replies_do_not_start_it() {
         Some(Duration::from_millis(30))
     );
     assert_eq!(state.take_user_write_age(later), None);
+}
+
+/// An event loop over a flooding pty, with the sending half of its channel, the number of reads
+/// made, the number of reads made when the first byte was written to the pty, and the bytes
+/// written.
+fn flood_harness(
+    chunk: usize,
+    reads: usize,
+) -> (
+    EventLoop<FakePty>,
+    mio_channel::Sender<Message>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<u8>>>,
+) {
+    let (mut pty, _) = FakePty::new(None);
+    pty.reader.flood = Some(Flood { chunk, reads });
+    let read_count = pty.reader.reads.clone();
+    let at_first_write = Arc::new(AtomicUsize::new(usize::MAX));
+    pty.writer.1 = Some(WriteProbe {
+        reads: read_count.clone(),
+        reads_at_first_write: at_first_write.clone(),
+    });
+    let written = pty.writer.0.clone();
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    (event_loop, tx, read_count, at_first_write, written)
+}
+
+/// #1132: typed bytes queued while the pty floods output are written between read passes, not
+/// after the flood ends. On the old loop the channel was drained only after `poll` reported it,
+/// which a never-ending flood never returns to, so the input is not written at all by this
+/// `service_io` call and the `written` assertion fails.
+#[test]
+fn input_queued_during_a_flood_is_written_before_the_flood_ends() {
+    const FLOOD_READS: usize = 400;
+    let (mut event_loop, tx, reads, at_first_write, written) = flood_harness(0x4000, FLOOD_READS);
+    tx.send(Message::Input(Cow::Borrowed(b"q"))).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    let result = event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+    assert!(matches!(result, ChannelResult::Continue));
+
+    assert_eq!(&*written.lock().unwrap(), b"q");
+    assert!(
+        at_first_write.load(Ordering::SeqCst) <= 8,
+        "the input was written after {} of {FLOOD_READS} reads",
+        at_first_write.load(Ordering::SeqCst)
+    );
+    // Reading carried on to the end of the flood: nothing broke out early.
+    assert!(reads.load(Ordering::SeqCst) > FLOOD_READS);
+    assert!(!can_read);
+}
+
+/// Several inputs queued during a flood are written in the order they were sent.
+#[test]
+fn inputs_during_a_flood_keep_their_order() {
+    let (mut event_loop, tx, _, _, written) = flood_harness(0x4000, 200);
+    for part in [&b"a"[..], b"b", b"c"] {
+        tx.send(Message::Input(Cow::Owned(part.to_vec()))).unwrap();
+    }
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+    assert_eq!(&*written.lock().unwrap(), b"abc");
+}
+
+/// #1132/#1135: a shutdown message queued during a flood stops the pass at once, instead of
+/// after the flood, and tells the caller to terminate. (A flood of a million reads would take
+/// minutes if the pass did not stop.)
+#[test]
+fn shutdown_during_a_flood_ends_the_pass_promptly() {
+    const FLOOD_READS: usize = 1_000_000;
+    let (mut event_loop, tx, reads, _, _) = flood_harness(0x4000, FLOOD_READS);
+    tx.send(Message::Shutdown).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    let result = event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+    assert!(matches!(
+        result,
+        ChannelResult::TerminateLoop {
+            child_exited: false
+        }
+    ));
+    assert!(reads.load(Ordering::SeqCst) < 100);
+}
+
+/// Parses `input` in slices of `slice_len` and returns what the active block shows and the
+/// replies queued for the pty.
+fn parse_in_slices(input: &[u8], slice_len: usize) -> (String, Vec<u8>) {
+    let mut model = TerminalModel::mock(None, None);
+    let ledger = model.reply_ledger();
+    let mut state = State::default();
+    for slice in input.chunks(slice_len) {
+        parse_slice(&mut state, &mut model, &ledger, slice);
+    }
+    (
+        model.block_list().active_block().output_to_string(),
+        drain(&mut state).concat(),
+    )
+}
+
+/// Output is identical whether the parser sees the bytes in one call or in slices, including
+/// slices that cut escape sequences and multi-byte characters, and the replies it generates are
+/// the same bytes (#1135).
+#[test]
+fn slice_parsing_matches_one_call() {
+    let mut input = Vec::new();
+    for i in 0..300 {
+        input.extend_from_slice(
+            format!("line {i} \u{e9}\u{4e16}\u{754c} \x1b[31mred\x1b[0m \x1b[c\r\n").as_bytes(),
+        );
+    }
+    let whole = parse_in_slices(&input, input.len());
+    assert!(
+        !whole.1.is_empty(),
+        "the device-attributes queries are answered"
+    );
+    for slice_len in [1usize, 7, 64, PARSE_SLICE] {
+        assert_eq!(
+            parse_in_slices(&input, slice_len),
+            whole,
+            "slice length {slice_len}"
+        );
+    }
+}
+
+/// A Ctrl-C typed during a flood reaches the pty as an ETX byte through the same queue as any
+/// other key (only a pending ssh connect uses a direct SIGINT), so it must be written within one
+/// read pass, along with the discard-queued-input message sent before it.
+#[test]
+fn etx_during_a_flood_is_written_within_one_read_pass() {
+    let (mut event_loop, tx, _, at_first_write, written) = flood_harness(0x4000, 1_000);
+    tx.send(Message::DiscardQueuedInput).unwrap();
+    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+
+    assert_eq!(&*written.lock().unwrap(), b"\x03");
+    // One pass reads at most MAX_LOCKED_READ bytes: four 16 KB reads.
+    assert!(at_first_write.load(Ordering::SeqCst) <= 4);
 }

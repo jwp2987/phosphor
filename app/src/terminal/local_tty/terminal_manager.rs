@@ -9,7 +9,10 @@ use anyhow::Context as _;
 use async_broadcast::InactiveReceiver;
 use std::any::Any;
 use std::sync::mpsc::{SendError, SyncSender};
-use std::{collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, thread::JoinHandle};
+use std::{
+    collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, thread::JoinHandle,
+    time::Duration,
+};
 use warp_core::SessionId;
 
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
@@ -162,6 +165,40 @@ impl<S: 'static> TerminalManagerTrait for TuiTerminalManager<S> {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
+    }
+}
+
+/// How long closing a tab waits for the PTY reader thread before handing the join to a
+/// background thread.
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Joins the PTY reader thread, waiting at most `timeout` (`None`: as long as it takes). On
+/// timeout the join continues on a background thread so the reader is still collected.
+fn join_event_loop(join_handle: JoinHandle<()>, timeout: Option<Duration>) {
+    let Some(timeout) = timeout else {
+        if let Err(e) = join_handle.join() {
+            log::error!("Failed to join event loop handle {e:?}");
+        }
+        return;
+    };
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let reaper = std::thread::Builder::new()
+        .name("PTY reaper".into())
+        .spawn(move || {
+            if let Err(e) = join_handle.join() {
+                log::error!("Failed to join event loop handle {e:?}");
+            }
+            let _ = done_tx.send(());
+        });
+    match reaper {
+        Ok(_) => {
+            if done_rx.recv_timeout(timeout).is_err() {
+                log::info!("PTY reader still busy after {timeout:?}; joining it in the background");
+            }
+        }
+        // The handle went down with the failed closure, which detaches the reader: it still
+        // exits on its own after the `Shutdown` that was sent.
+        Err(e) => log::error!("Failed to spawn the PTY reaper thread: {e:?}"),
     }
 }
 
@@ -588,8 +625,18 @@ impl<S> TerminalManager<S> {
     }
 
     /// Sends a shutdown message to the PTY event loop and waits for it to
-    /// process that event.
+    /// process that event, but only up to `SHUTDOWN_JOIN_TIMEOUT`.
+    ///
+    /// This runs on the UI thread when a tab closes. The reader drains its channel between read
+    /// passes, so the wait is normally short, but a reader stuck in a long parse or write must
+    /// not freeze the UI: past the timeout the join moves to a short-lived "PTY reaper" thread,
+    /// which still collects the reader (and so the shell it kills) when it finishes.
     fn shutdown_event_loop(&mut self) {
+        self.shutdown_event_loop_within(Some(SHUTDOWN_JOIN_TIMEOUT));
+    }
+
+    /// As `shutdown_event_loop`, with `None` waiting for the reader however long it takes.
+    fn shutdown_event_loop_within(&mut self, timeout: Option<Duration>) {
         let shutdown_res = self.event_loop_tx.lock().send(Message::Shutdown);
         // Happens normally if the event loop has already been terminated (so the channel is now gone).
         if let Err(e) = shutdown_res {
@@ -597,9 +644,7 @@ impl<S> TerminalManager<S> {
         }
 
         match self.event_loop_handle.take() { Some(join_handle) => {
-            if let Err(e) = join_handle.join() {
-                log::error!("Failed to join event loop handle {e:?}");
-            }
+            join_event_loop(join_handle, timeout);
         } _ => {
             log::error!("No event loop handle to join when dropping terminal manager.")
         }}
@@ -1243,7 +1288,7 @@ pub fn shutdown_all_pty_event_loops(ctx: &mut AppContext) {
                 .as_any_mut()
                 .downcast_mut::<TerminalManager<TerminalView>>()
             {
-                manager.shutdown_event_loop();
+                manager.shutdown_event_loop_within(None);
             }
         })
     })
@@ -1356,3 +1401,7 @@ impl TerminalSurfaceInit {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_manager_tests.rs"]
+mod tests;
