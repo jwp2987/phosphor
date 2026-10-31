@@ -21746,13 +21746,12 @@ impl TerminalView {
             self.is_selecting = false;
             self.block_text_selection_start_position = None;
 
-            let selected_text = {
-                let semantic_selection = SemanticSelection::as_ref(ctx);
-                self.model
-                    .lock()
-                    .selection_to_string(semantic_selection, false, ctx)
-                    // It doesn't make sense to allow empty text as AI context.
-                    .filter(|text| !text.is_empty())
+            // Only test for a selection here; materializing the selected string (potentially
+            // many MB under the model lock) is left to the copy path, and only when a
+            // copy-on-select setting actually needs it.
+            let has_selection = {
+                let model = self.model.lock();
+                self.terminal_is_selecting(&model, ctx)
             };
 
             // The text selection changed, so clear any previously attached context text.
@@ -21762,7 +21761,7 @@ impl TerminalView {
 
             // A text selection might be a byproduct of a block selection.
             // If there's no renderable text selection, we should clear the text selection.
-            if selected_text.is_none() {
+            if !has_selection {
                 self.clear_selected_text(ctx);
             } else {
                 self.maybe_copy_selection_to_clipboard(ctx);
@@ -22060,6 +22059,11 @@ impl TerminalView {
     }
 
     fn maybe_copy_selection_to_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
+        // Building the selected string can be very expensive for large selections, so skip it
+        // entirely when neither copy-on-select nor the Linux primary selection will use it.
+        if !SelectionSettings::as_ref(ctx).copy_on_select_would_write() {
+            return;
+        }
         let selection_settings = SelectionSettings::handle(ctx);
         let semantic_selection = SemanticSelection::as_ref(ctx);
         let model = self.model.lock();

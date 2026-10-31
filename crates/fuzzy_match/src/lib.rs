@@ -52,8 +52,17 @@
 //! - `*` - Matches zero or more characters
 //! - `?` - Matches exactly one character
 
+use std::sync::LazyLock;
+
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+
+// Shared matchers. `SkimMatcherV2` keeps its scratch buffers in per-thread caches, so one
+// instance is safe to share across threads and, unlike a fresh matcher per call, reuses those
+// allocations from one candidate to the next.
+static SMART_CASE_MATCHER: LazyLock<SkimMatcherV2> = LazyLock::new(SkimMatcherV2::default);
+static IGNORE_CASE_MATCHER: LazyLock<SkimMatcherV2> =
+    LazyLock::new(|| SkimMatcherV2::default().ignore_case());
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct FuzzyMatchResult {
@@ -79,14 +88,14 @@ impl FuzzyMatchResult {
 /// Returns struct that contains the score of the match and a vector
 /// of matching byte indices.
 pub fn match_indices(text: &str, query: &str) -> Option<FuzzyMatchResult> {
-    match_internal(text, query, SkimMatcherV2::default())
+    match_internal(text, query, &SMART_CASE_MATCHER)
 }
 
 /// Performs a case insensitive fuzzy matching algorithm on text and query strings.
 /// Returns struct that contains the score of the match and a vector
 /// of matching byte indices.
 pub fn match_indices_case_insensitive(text: &str, query: &str) -> Option<FuzzyMatchResult> {
-    match_internal(text, query, SkimMatcherV2::default().ignore_case())
+    match_internal(text, query, &IGNORE_CASE_MATCHER)
 }
 
 /// Performs a case insensitive fuzzy matching algorithm on text and query strings,
@@ -118,14 +127,10 @@ pub fn match_indices_case_insensitive_ignore_spaces(
     }
 
     // Perform the fuzzy match with the space-stripped query
-    match_internal(
-        text,
-        &query_no_spaces,
-        SkimMatcherV2::default().ignore_case(),
-    )
+    match_internal(text, &query_no_spaces, &IGNORE_CASE_MATCHER)
 }
 
-fn match_internal(text: &str, query: &str, matcher: SkimMatcherV2) -> Option<FuzzyMatchResult> {
+fn match_internal(text: &str, query: &str, matcher: &SkimMatcherV2) -> Option<FuzzyMatchResult> {
     matcher
         // The fuzzy_indices API returns char indices, so we don't need to manually convert.
         .fuzzy_indices(text, query)

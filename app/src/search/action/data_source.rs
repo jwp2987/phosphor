@@ -54,6 +54,7 @@ impl CommandBindingDataSource {
 
         let searcher = Box::new(FuzzyActionSearcher {
             all_bindings: Default::default(),
+            searchable: Default::default(),
         });
         Self { searcher }
     }
@@ -141,56 +142,78 @@ trait ActionSearcher {
 
 struct FuzzyActionSearcher {
     all_bindings: HashMap<BindingId, Arc<CommandBinding>>,
+    /// Per-binding searchable strings, rebuilt in [`ActionSearcher::build_index`] so a query
+    /// doesn't re-lowercase and re-allocate them for every binding on every keystroke.
+    searchable: HashMap<BindingId, SearchableBinding>,
+}
+
+/// The string a binding is fuzzy-matched against, and the length of the part of it that is the
+/// displayed description.
+struct SearchableBinding {
+    text: String,
+    description_char_len: usize,
+}
+
+impl SearchableBinding {
+    fn new(binding: &CommandBinding) -> Self {
+        // Binding descriptions are almost always upper case. If a user searches with
+        // lowercase text, the fuzzy matcher will weight this match lower because the case
+        // between the search term and the description differ. As a result, we lowercase
+        // both the search term and the description to ensure that we are matching the two
+        // with the same casing.
+        //
+        // Zap: append binding.name (the action identifier, e.g.
+        // `workspace:show_theme_chooser`) to the searchable string,
+        // replacing `:` and `_` with spaces, to aid subsequence
+        // matching. This way a zh-CN user typing "theme" can still
+        // match "Open theme chooser".
+        let description = binding.description.in_context(DescriptionContext::Default);
+        let mut text = description.to_lowercase();
+        let name_tokens = binding.name.replace([':', '_'], " ").to_lowercase();
+        if !name_tokens.is_empty() {
+            text.push(' ');
+            text.push_str(&name_tokens);
+        }
+        Self {
+            text,
+            description_char_len: description.chars().count(),
+        }
+    }
 }
 
 impl ActionSearcher for FuzzyActionSearcher {
     fn search(&self, search_term: &str) -> anyhow::Result<Vec<QueryResult<SearcherAction>>> {
+        let search_term_lower = search_term.to_lowercase();
         Ok(self
             .all_bindings
             .values()
-            .filter_map(move |binding| {
+            .filter_map(|binding| {
                 if is_excluded_binding(binding) {
                     return None;
                 }
 
-                // Binding descriptions are almost always upper case. If a user searches with
-                // lowercase text, the fuzzy matcher will weight this match lower because the case
-                // between the search term and the description differ. As a result, we lowercase
-                // both the search term and the description to ensure that we are matching the two
-                // with the same casing.
-                //
-                // Zap: append binding.name (the action identifier, e.g.
-                // `workspace:show_theme_chooser`) to the searchable string,
-                // replacing `:` and `_` with spaces, to aid subsequence
-                // matching. This way a zh-CN user typing "theme" can still
-                // match "Open theme chooser".
-                let mut searchable = binding
-                    .description
-                    .in_context(DescriptionContext::Default)
-                    .to_lowercase();
-                let name_tokens = binding.name.replace([':', '_'], " ").to_lowercase();
-                if !name_tokens.is_empty() {
-                    searchable.push(' ');
-                    searchable.push_str(&name_tokens);
-                }
-                let description_char_len = binding
-                    .description
-                    .in_context(DescriptionContext::Default)
-                    .chars()
-                    .count();
-                match_indices_case_insensitive(
-                    searchable.as_str(),
-                    search_term.to_lowercase().as_str(),
-                )
-                .map(|mut result| {
-                    // Highlight rendering targets the description; indices
-                    // that land in the appended binding.name section would be
-                    // out of range and draw in the wrong place, so trim them out.
-                    result
-                        .matched_indices
-                        .retain(|&idx| idx < description_char_len);
-                    (result, binding)
-                })
+                // The lowercased description plus binding-name tokens is precomputed once per
+                // binding set in `build_index`; fall back to computing it for any binding that
+                // was inserted without a rebuild.
+                let computed;
+                let searchable = match self.searchable.get(&binding.id) {
+                    Some(searchable) => searchable,
+                    None => {
+                        computed = SearchableBinding::new(binding);
+                        &computed
+                    }
+                };
+                let description_char_len = searchable.description_char_len;
+                match_indices_case_insensitive(searchable.text.as_str(), search_term_lower.as_str())
+                    .map(|mut result| {
+                        // Highlight rendering targets the description; indices
+                        // that land in the appended binding.name section would be
+                        // out of range and draw in the wrong place, so trim them out.
+                        result
+                            .matched_indices
+                            .retain(|&idx| idx < description_char_len);
+                        (result, binding)
+                    })
             })
             .map(|(match_result, binding)| {
                 MatchedBinding::new_with_query(match_result, binding.clone(), search_term).into()
@@ -198,7 +221,13 @@ impl ActionSearcher for FuzzyActionSearcher {
             .collect())
     }
 
-    fn build_index(&mut self) {}
+    fn build_index(&mut self) {
+        self.searchable = self
+            .all_bindings
+            .iter()
+            .map(|(id, binding)| (*id, SearchableBinding::new(binding)))
+            .collect();
+    }
 
     fn bindings(&self) -> &HashMap<BindingId, Arc<CommandBinding>> {
         &self.all_bindings
@@ -338,3 +367,7 @@ mod full_text_searcher {
 fn is_excluded_binding(binding: &CommandBinding) -> bool {
     binding.name == *"workspace:search_drive"
 }
+
+#[cfg(test)]
+#[path = "data_source_tests.rs"]
+mod tests;

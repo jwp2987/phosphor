@@ -175,6 +175,13 @@ impl DataSourceStore {
         });
     }
 
+    /// Re-snapshots the open sessions that the Sessions source searches. See
+    /// [`navigation::DataSource::refresh_sessions`].
+    pub fn refresh_sessions(&self, ctx: &mut ModelContext<Self>) {
+        self.sessions_data_source
+            .update(ctx, |data_source, ctx| data_source.refresh_sessions(ctx));
+    }
+
     /// Resets the [`CommandPaletteMixer`] to the set of data sources relevant for the Ctrl+Tab
     /// palette, which shows tabs sorted by MRU order.
     pub fn reset_ctrl_tab_mixer(
