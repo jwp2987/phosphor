@@ -11330,6 +11330,18 @@ impl TerminalView {
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;
         }
+        // The setup is over (`Bootstrapped`) but the keys held behind it are delivered only at the
+        // first prompt (`Precmd`), a few ms later: a key typed in between passes the hold below
+        // and would overtake them, reordering the command line (#1222). Deliver them first, in
+        // order, then this key.
+        if setup_held_keys_go_before(
+            !self.subshell_setup_held_bytes.is_empty(),
+            self.powershell_setup_hold == PowerShellSetupHold::Off,
+            is_abort_key(&bytes),
+            self.subshell_bootstrap_announced_age(),
+        ) {
+            self.release_subshell_setup_held_bytes(ctx);
+        }
         // Not while the shell is asking for something: a visible unterminated line (`Password:`,
         // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
         // arrive late at the wrong place. Bytes already held stay held (they were typed for the
@@ -33739,6 +33751,21 @@ fn subshell_setup_should_hold_typed_bytes(
     abort_key: bool,
 ) -> bool {
     !abort_key && announced_age.is_some_and(|age| age < SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+}
+
+/// Whether the keys held through a subshell setup must be delivered before the key being written
+/// now (#1222). True once the setup is over -- no announcement governs input any more
+/// (`announced_age` is `None`: the `Bootstrapped` hook arrived, or nothing was announced) -- while
+/// keys are still held, because they are released only at the first prompt after it. Not for a
+/// PowerShell setup (its keys go out through the editor, #1048) and not for an abort key, which
+/// has its own ordering (the abort first, then what was held).
+fn setup_held_keys_go_before(
+    keys_held: bool,
+    powershell_hold_off: bool,
+    abort_key: bool,
+    announced_age: Option<Duration>,
+) -> bool {
+    keys_held && powershell_hold_off && !abort_key && announced_age.is_none()
 }
 
 /// Whether the hold-limit timer of the setup announced at `timer_announced_at` delivers the held

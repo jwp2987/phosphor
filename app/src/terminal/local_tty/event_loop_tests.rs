@@ -992,3 +992,68 @@ fn etx_during_a_flood_is_written_within_one_read_pass() {
     // One pass reads at most MAX_LOCKED_READ bytes: four 16 KB reads.
     assert!(at_first_write.load(Ordering::SeqCst) <= 4);
 }
+
+/// A keystroke waiting in the channel ends the read pass after the read in progress, not after
+/// MAX_LOCKED_READ bytes more: the pty reader parses ~16 KB in a few ms, so a whole 64 KB pass
+/// was the longest a Ctrl-C could wait behind a flood. On the old loop the ETX is written after
+/// four 16 KB reads (a full pass), so `at_first_write == 1` fails.
+#[test]
+fn input_waiting_during_a_flood_ends_the_pass_after_one_read() {
+    let (mut event_loop, tx, reads, at_first_write, written) = flood_harness(0x4000, 1_000);
+    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+
+    assert_eq!(&*written.lock().unwrap(), b"\x03");
+    assert_eq!(at_first_write.load(Ordering::SeqCst), 1);
+    // The flood was still read to its end afterwards: ending the pass early drops no output.
+    assert!(reads.load(Ordering::SeqCst) > 1_000);
+    assert!(!can_read);
+}
+
+/// Output already read while the UI holds the terminal model lock (a paint) is parsed once the
+/// lock is free; the reader must wait for it, not spin on `read` + `try_lock` until then. On the
+/// old loop a `WouldBlock` with bytes buffered `continue`d straight back to `read`, so a 100 ms
+/// hold cost thousands of reads (a whole core) and `reads < 10` fails.
+#[test]
+fn a_reader_with_buffered_output_waits_for_the_model_lock_instead_of_spinning() {
+    let (mut pty, _) = FakePty::new(None);
+    // One three-byte echo, then `WouldBlock`.
+    pty.reader.flood = Some(Flood { chunk: 3, reads: 1 });
+    let reads = pty.reader.reads.clone();
+    let (_tx, rx) = mio_channel::channel::<Message>();
+    let terminal = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+    let mut event_loop = EventLoop::new(
+        terminal.clone(),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+
+    // The "UI thread" takes the lock and holds it for a while.
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = terminal.lock();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+    });
+    locked_rx.recv().unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+    holder.join().unwrap();
+
+    let reads = reads.load(Ordering::SeqCst);
+    assert!(reads < 10, "the reader made {reads} reads while it waited");
+    assert!(!can_read);
+}

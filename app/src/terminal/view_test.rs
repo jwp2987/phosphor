@@ -15460,6 +15460,33 @@ fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshe
     ));
 }
 
+/// #1222: between the `Bootstrapped` hook (the announcement stops applying) and the first prompt
+/// (where the held keys are released) a key typed now used to pass the hold and be written ahead of
+/// the keys held earlier, reordering the command line (`s/tmdate +%s%N ... /home/winterp-perf`).
+/// The held keys must go first. On the old code the write path had no such rule, so a key typed in
+/// that gap was written first.
+#[test]
+fn held_setup_keys_are_delivered_before_a_key_typed_after_the_setup_finished() {
+    let young = Some(Duration::from_millis(1500));
+    // Setup over (no announcement applies), keys held, an ordinary key: held keys first.
+    assert!(setup_held_keys_go_before(true, true, false, None));
+    // Setup still announced: the hold keeps queueing behind them, nothing to deliver yet.
+    assert!(!setup_held_keys_go_before(true, true, false, young));
+    // The hold limit has passed (announcement still recorded): the timer releases, not this key.
+    assert!(!setup_held_keys_go_before(
+        true,
+        true,
+        false,
+        Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
+    ));
+    // Nothing held: nothing to deliver.
+    assert!(!setup_held_keys_go_before(false, true, false, None));
+    // Abort keys have their own order (the abort first, then what was held).
+    assert!(!setup_held_keys_go_before(true, true, true, None));
+    // PowerShell delivers through the editor at its own prompt.
+    assert!(!setup_held_keys_go_before(true, false, false, None));
+}
+
 /// #1014 (Mac, third stalled subshell in a row): the 90 s hold-limit timer of the first setup
 /// fired during the third setup's stall, released the keys typed so far and cleared the third
 /// announcement, so the rest of the line went straight to the tty and ran inside the hidden
