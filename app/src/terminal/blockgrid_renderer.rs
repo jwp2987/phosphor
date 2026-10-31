@@ -24,7 +24,9 @@ use super::model::image_map::StoredImageMetadata;
 use super::model::SecretHandle;
 
 pub struct GridRenderParams {
-    pub warp_theme: WarpTheme,
+    /// Shared with `Appearance` (see `Appearance::shared_theme`) so building the params each
+    /// frame doesn't clone the theme.
+    pub warp_theme: std::sync::Arc<WarpTheme>,
     pub font_family: FamilyId,
     pub font_size: f32,
     pub font_weight: Weight,

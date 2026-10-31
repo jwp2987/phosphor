@@ -44,7 +44,7 @@ impl BlockGridElement {
             block_grid: block_grid.clone(),
             block_grid_params: BlockGridParams {
                 grid_render_params: GridRenderParams {
-                    warp_theme: theme.clone(),
+                    warp_theme: appearance.shared_theme(),
                     font_family: appearance.monospace_font_family(),
                     font_size: appearance.monospace_font_size(),
                     font_weight: appearance.monospace_font_weight(),

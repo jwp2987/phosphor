@@ -131,7 +131,7 @@ impl AltScreenElement {
             pane_state: terminal_view_render_context.pane_state,
             active_session_state: terminal_view_render_context.active_session_state,
             grid_render_params: GridRenderParams {
-                warp_theme: appearance.theme().clone(),
+                warp_theme: appearance.shared_theme(),
                 font_family: appearance.monospace_font_family(),
                 font_size: appearance.monospace_font_size(),
                 font_weight: appearance.monospace_font_weight(),
