@@ -338,3 +338,138 @@ fn corpus_against_the_current_procedure() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Stage 2: the corpus against `util::routing::route` (#1234).
+// ---------------------------------------------------------------------------------------------
+
+use crate::routing_corpus::Shell;
+use crate::util::routing::{
+    self, Route, RoutingContext, ShellFamily, Surface as RoutingSurface,
+    Typeahead as RoutingTypeahead,
+};
+
+/// The facts the app hands `route` at the keystroke (the parse has landed, the session has not
+/// been asked about the head) or at Enter (no parse, the session's answer about the head).
+fn routing_context(case: &Case, at_enter: bool) -> RoutingContext {
+    RoutingContext {
+        surface: if in_conversation(case) {
+            RoutingSurface::AgentConversation
+        } else {
+            RoutingSurface::PlainTerminal
+        },
+        shell: match case.shell {
+            Shell::Posix => ShellFamily::Posix,
+            Shell::Fish => ShellFamily::Fish,
+            Shell::PowerShell => ShellFamily::PowerShell,
+            Shell::Nu => ShellFamily::Nu,
+        },
+        head_known_to_shell: if at_enter {
+            match case.head {
+                Head::Installed => Some(true),
+                Head::Absent => Some(false),
+                Head::Unknown => None,
+            }
+        } else {
+            None
+        },
+        commands_fully_loaded: !at_enter && case.head != Head::Unknown,
+        command_data_current: !at_enter,
+        is_agent_follow_up: in_conversation(case),
+        ran_before_exactly: case.ran_before,
+        denylisted: false,
+        typeahead: match case.typeahead {
+            Typeahead::None => RoutingTypeahead::None,
+            Typeahead::Running => RoutingTypeahead::Running,
+        },
+    }
+}
+
+fn route_matches(expect: Expect, route: Route) -> bool {
+    match expect {
+        Expect::Shell => route == Route::Shell,
+        Expect::Agent => route == Route::Agent,
+        Expect::Model => route == Route::Undecided,
+    }
+}
+
+/// Stage 2 (#1234): every case routes as expected at the keystroke and at Enter, and a case the
+/// classifier must decide is left undecided on both.
+#[test]
+fn corpus_against_the_routing_procedure() {
+    let mut failures = Vec::new();
+    let cases = all_cases();
+    for case in &cases {
+        for at_enter in [false, true] {
+            let input = snapshot(case, !at_enter);
+            let decision = routing::route(&input, &routing_context(case, at_enter));
+            if !route_matches(case.expect, decision.route) {
+                failures.push(format!(
+                    "{}\n    {}: {:?} by {}",
+                    describe(case),
+                    if at_enter { "Enter" } else { "keystroke" },
+                    decision.route,
+                    decision.rule
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} cases misroute:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
+/// The procedure never waits: a decision that is not `Undecided` is final, and the only
+/// `Undecided` lines are the ones the corpus marks for the classifier.
+#[test]
+fn undecided_is_reserved_for_the_classifier() {
+    for case in all_cases() {
+        if case.expect == Expect::Model {
+            continue;
+        }
+        let decision = routing::route(&snapshot(&case, true), &routing_context(&case, false));
+        assert_ne!(
+            decision.route,
+            Route::Undecided,
+            "{} would wait for a verdict",
+            describe(&case)
+        );
+    }
+}
+
+/// The rule names are stable identifiers for the debug log.
+#[test]
+fn every_rule_names_itself() {
+    use routing::Rule;
+    for rule in [
+        Rule::Empty,
+        Rule::Oversized,
+        Rule::Denylist,
+        Rule::RunningTypeahead,
+        Rule::SlashSpelling,
+        Rule::LoneWord,
+        Rule::FollowUpWord,
+        Rule::CommandShape,
+        Rule::WrapperChain,
+        Rule::ShellSyntax,
+        Rule::RequestShape,
+        Rule::SentenceShape,
+        Rule::OneOffWord,
+        Rule::RanBefore,
+        Rule::NoEvidenceInConversation,
+        Rule::UnknownHeadInConversation,
+        Rule::EvidenceInConversation,
+        Rule::QuestionHead,
+        Rule::InstalledHead,
+        Rule::EnglishHeadNotInstalled,
+        Rule::ProseWithUnknownHead,
+        Rule::AbsentHeadWithProse,
+        Rule::Model,
+    ] {
+        assert!(!rule.to_string().is_empty(), "{rule:?}");
+    }
+}

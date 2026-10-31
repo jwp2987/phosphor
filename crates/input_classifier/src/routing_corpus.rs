@@ -717,7 +717,10 @@ pub(crate) const CASES: &[Case] = &[
     Case::prose("frobnicate which tests can fail", "#833")
         .v1_xfail("#833: only Enter has the unknown-head prose rule; the keystroke path has none"),
     Case::prose("explain where my config lives", "#833"),
-    Case::model("tell Josh about outages", "#833 (one signal only)").head(Head::Absent),
+    Case::prose(
+        "tell Josh about outages",
+        "#1234 (request opener, not installed)",
+    ),
     // -- #834: prose headed by an installed command reads as a request.
     Case::cmd("help me", "#834").expect(Expect::Agent),
     Case::cmd("watch the logs for errors", "#834").expect(Expect::Agent),
@@ -736,9 +739,8 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("ls > listing.txt", "#808"),
     Case::cmd(
         "export data > backup.csv",
-        "#808 (prose before a bare redirect)",
-    )
-    .expect(Expect::Model),
+        "#808 / #964 (the pre-filter leaves it; installed `export` runs it)",
+    ),
     // -- #897 / #906: real commands with English arguments stay commands.
     Case::cmd("grep -rn this src", "#897"),
     Case::cmd("git commit -m the fix", "#897"),

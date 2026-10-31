@@ -6,11 +6,15 @@
 //! input contents are an AI query or shell command, which is then used to update the input mode.
 
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use futures::stream::AbortHandle;
+use input_classifier::util::routing::{
+    self as routing, Decision, Route, RoutingContext, ShellFamily, Surface as RoutingSurface,
+    Typeahead as RoutingTypeahead,
+};
 use input_classifier::util::{is_agent_follow_up_input, is_one_off_natural_language_word};
 use instant::Instant;
 use parking_lot::FairMutex;
@@ -34,12 +38,14 @@ use crate::terminal::cli_agent_sessions::{
 };
 use crate::PrivacySettings;
 use warp_completer::completer::CompletionContext;
+use warp_terminal::shell::ShellType;
 
 use crate::{
     input_classifier::InputClassifierModel,
     report_if_error, send_telemetry_from_ctx,
     settings::{AISettings, AISettingsChangedEvent, InputBoxType, InputSettings},
     terminal::{
+        history::RanBefore,
         input::decorations::ParsedTokensSnapshot,
         model::{rich_content::RichContentType, session::SessionId},
         History, HistoryEntry, TerminalModel,
@@ -264,6 +270,63 @@ fn history_close_match_allowed(
 ) -> bool {
     !(in_active_agent_view
         && input_classifier::util::lacks_command_evidence_in_agent_conversation(snapshot))
+}
+
+/// The #1234 decision procedure (`input_classifier::util::routing::route`) is the default.
+/// `PHOSPHOR_ROUTING_V1=1` keeps the rule set it replaced (the pre-filter, the typeahead rule and
+/// the Enter-time settle as separate steps), to rule the redesign in or out when a line routes
+/// unexpectedly. Read once.
+fn routing_v2_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PHOSPHOR_ROUTING_V1")
+            .ok()
+            .as_deref()
+            .is_none_or(|flag| flag == "0")
+    })
+}
+
+/// What the view knows about the session a buffer is typed into, for routing (#1234). Cheap to
+/// build on every keystroke: nothing here walks the session's command list.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RoutingSessionFacts {
+    pub shell: ShellFamily,
+}
+
+/// The syntax family routing reasons about for a session's shell.
+pub fn shell_family(shell_type: ShellType) -> ShellFamily {
+    match shell_type {
+        ShellType::Bash | ShellType::Zsh => ShellFamily::Posix,
+        ShellType::Fish => ShellFamily::Fish,
+        ShellType::PowerShell => ShellFamily::PowerShell,
+        ShellType::Nu => ShellFamily::Nu,
+    }
+}
+
+/// The deciding rule, at debug level (#1234): route, rule, surface and the first word only, since
+/// the rest of the buffer may hold a secret.
+fn log_routing_decision(
+    stage: &str,
+    surface: RoutingSurface,
+    buffer_text: &str,
+    decision: &Decision,
+) {
+    if log::log_enabled!(target: "phosphor::routing", log::Level::Debug) {
+        let head: String = buffer_text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(32)
+            .collect();
+        log::debug!(
+            target: "phosphor::routing",
+            "{stage}: {:?} by {} ({surface:?}, head {head:?}, {} bytes)",
+            decision.route,
+            decision.rule,
+            buffer_text.len()
+        );
+    }
 }
 
 impl BlocklistAIInputModel {
@@ -1033,10 +1096,51 @@ impl BlocklistAIInputModel {
         head_unknown_to_shell: bool,
         head_known_to_shell: bool,
         ran_before_exactly: bool,
+        shell: ShellFamily,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         if !self.detection_pending_for_buffer_text(&input.buffer_text, ctx) {
             return false;
+        }
+        if routing_v2_enabled() {
+            // #1234: the one procedure, with the session's own answer about the head in place of
+            // the parse that has not landed. Undecided keeps the live type, as before: the Enter
+            // then waits its budget for the verdict or submits on the inherited type.
+            let surface = self.routing_surface(ctx);
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            let denylisted = self.is_first_word_denylisted(&input.buffer_text, ctx);
+            let decision = routing::route(
+                input,
+                &RoutingContext {
+                    surface,
+                    shell,
+                    head_known_to_shell: if head_known_to_shell {
+                        Some(true)
+                    } else if head_unknown_to_shell {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    commands_fully_loaded: false,
+                    command_data_current: false,
+                    is_agent_follow_up: self.is_agent_follow_up(),
+                    ran_before_exactly,
+                    denylisted,
+                    typeahead,
+                },
+            );
+            log_routing_decision("enter", surface, &input.buffer_text, &decision);
+            return match decision.route {
+                Route::Shell => {
+                    self.settle_with_route(InputType::Shell, &input.buffer_text, ctx);
+                    true
+                }
+                Route::Agent => {
+                    self.settle_with_route(InputType::AI, &input.buffer_text, ctx);
+                    false
+                }
+                Route::Undecided => false,
+            };
         }
         // #1185: classified without a trailing comment. #1183: in an agent conversation a line
         // with no positive evidence of being a command is not decided Shell here, and an
@@ -1114,6 +1218,50 @@ impl BlocklistAIInputModel {
         self.drop_typeahead_prefix_unless_leading(buffer_text);
         self.typeahead_prefix.is_none()
             && input_classifier::util::reads_as_prose_with_unknown_head(buffer_text)
+    }
+
+    /// The surface routing reasons about (#1234).
+    fn routing_surface(&self, app: &AppContext) -> RoutingSurface {
+        if self.in_active_agent_view(app) {
+            RoutingSurface::AgentConversation
+        } else {
+            RoutingSurface::PlainTerminal
+        }
+    }
+
+    /// The buffer's typeahead provenance for routing (#886, #933), reconciled with the buffer
+    /// first.
+    fn typeahead_for_routing(&mut self, buffer_text: &str) -> RoutingTypeahead {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+        match (self.typeahead_prefix.is_some(), self.typeahead_young) {
+            (false, true | false) => RoutingTypeahead::None,
+            (true, true) => RoutingTypeahead::Young,
+            (true, false) => RoutingTypeahead::Running,
+        }
+    }
+
+    /// Whether the last visible block is an agent block, so the buffer is a follow-up to it.
+    fn is_agent_follow_up(&self) -> bool {
+        let model = self.model.lock();
+        let block_list = model.block_list();
+        let block_index = block_list.last_non_hidden_block_by_index();
+        match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
+            Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
+            None => false,
+        }
+    }
+
+    /// Applies a route the procedure decided for `buffer_text` and settles its detection: the
+    /// verdict in flight, if any, is superseded.
+    fn settle_with_route(
+        &mut self,
+        input_type: InputType,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.abort_in_progress_detection();
+        self.apply_autodetected_input_type(input_type, ctx);
+        self.settle_detection(buffer_text, ctx);
     }
 
     /// Whether the first word of `buffer_text` is in the user's autodetection denylist.
@@ -1341,6 +1489,25 @@ impl BlocklistAIInputModel {
         session_id: Option<SessionId>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.detect_and_set_input_type_with_facts(
+            input,
+            completion_context,
+            session_id,
+            RoutingSessionFacts::default(),
+            ctx,
+        );
+    }
+
+    /// [`Self::detect_and_set_input_type`] with what the view knows about the session (#1234):
+    /// the shell's syntax family. A caller without a session passes the default.
+    pub fn detect_and_set_input_type_with_facts<C: CompletionContext + Clone + Send + 'static>(
+        &mut self,
+        input: ParsedTokensSnapshot,
+        completion_context: C,
+        session_id: Option<SessionId>,
+        facts: RoutingSessionFacts,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // Abort the last autodetect handle if exists.
         self.abort_in_progress_detection();
 
@@ -1415,26 +1582,74 @@ impl BlocklistAIInputModel {
         let classify_snapshot =
             input_classifier::util::strip_trailing_comment(&input).into_owned();
         let in_active_agent_view = self.in_active_agent_view(ctx);
-        if input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)
-            && !(in_active_agent_view
-                && input_classifier::util::lacks_command_evidence_in_agent_conversation(
-                    &classify_snapshot,
-                ))
-        {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text, ctx);
-            return;
-        }
+        // Determine if the input is a follow-up to an AI block.
+        let is_agent_follow_up = self.is_agent_follow_up();
 
-        // #886: text the shell handed back as typeahead was typed at the shell. A burst that the
-        // tty split or merged leaves pieces with no recognisable head (`ho b199 >> ~/blk.txt`,
-        // `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose, and an AI verdict
-        // here is the mode the rest of the burst is then typed into. Only a buffer with no prose
-        // evidence anywhere is decided here; anything that could be a question falls through.
-        if self.is_shell_typeahead(&input.buffer_text) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text, ctx);
-            return;
+        if routing_v2_enabled() {
+            // #1234: the one procedure decides every clear case here, synchronously; only an
+            // undecided line goes on to the history matcher and the classifier below. The exact
+            // history lookup is O(1) through the command index (#1203); the session is not asked
+            // about the head on the keystroke path, where the completer's description and a
+            // complete command index say what it would.
+            let surface = if in_active_agent_view {
+                RoutingSurface::AgentConversation
+            } else {
+                RoutingSurface::PlainTerminal
+            };
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            let ran_before_exactly = session_id.is_some_and(|session_id| {
+                History::as_ref(ctx).ran_before(session_id, input.buffer_text.trim())
+                    == RanBefore::Succeeded
+            });
+            let decision = routing::route(
+                &input,
+                &RoutingContext {
+                    surface,
+                    shell: facts.shell,
+                    head_known_to_shell: None,
+                    commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                    command_data_current: completion_context.top_level_command_data_is_current(),
+                    is_agent_follow_up,
+                    ran_before_exactly,
+                    denylisted: false,
+                    typeahead,
+                },
+            );
+            log_routing_decision("keystroke", surface, &input.buffer_text, &decision);
+            match decision.route {
+                Route::Shell => {
+                    self.settle_with_route(InputType::Shell, &input.buffer_text, ctx);
+                    return;
+                }
+                Route::Agent => {
+                    self.settle_with_route(InputType::AI, &input.buffer_text, ctx);
+                    return;
+                }
+                Route::Undecided => {}
+            }
+        } else {
+            if input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)
+                && !(in_active_agent_view
+                    && input_classifier::util::lacks_command_evidence_in_agent_conversation(
+                        &classify_snapshot,
+                    ))
+            {
+                self.apply_autodetected_input_type(InputType::Shell, ctx);
+                self.settle_detection(&input.buffer_text, ctx);
+                return;
+            }
+
+            // #886: text the shell handed back as typeahead was typed at the shell. A burst that
+            // the tty split or merged leaves pieces with no recognisable head (`ho b199 >>
+            // ~/blk.txt`, `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose,
+            // and an AI verdict here is the mode the rest of the burst is then typed into. Only a
+            // buffer with no prose evidence anywhere is decided here; anything that could be a
+            // question falls through.
+            if self.is_shell_typeahead(&input.buffer_text) {
+                self.apply_autodetected_input_type(InputType::Shell, ctx);
+                self.settle_detection(&input.buffer_text, ctx);
+                return;
+            }
         }
 
         // If we have a session, snapshot its command history (shared `Arc`s, oldest-first: no
@@ -1463,17 +1678,6 @@ impl BlocklistAIInputModel {
         let shortcut_input_type = self.non_autodetected_input_type;
 
         let is_udi_enabled = InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
-
-        // Determine if the input is a follow-up to an AI block.
-        let is_agent_follow_up = {
-            let model = self.model.lock();
-            let block_list = model.block_list();
-            let block_index = block_list.last_non_hidden_block_by_index();
-            match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
-                Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
-                _ => false,
-            }
-        };
 
         // #1183: in an agent conversation, a line with no positive command evidence is never
         // decided Shell by the history close-match below (`make commit port` is a close match of
