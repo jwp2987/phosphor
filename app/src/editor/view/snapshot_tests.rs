@@ -84,3 +84,31 @@ fn test_empty_row_yields_no_runs() {
     assert_eq!(line, "");
     assert!(runs.is_empty());
 }
+
+// #1191: a large buffer lays out only the viewport, the ends and the cursor, with margins.
+#[test]
+fn test_small_buffer_lays_out_every_row() {
+    assert!(large_buffer_real_rows(LARGE_BUFFER_ROWS - 1, 0..30, &[5]).is_none());
+    // No window: every row is real.
+    assert!(row_is_laid_out(None, 12345));
+}
+
+#[test]
+fn test_large_buffer_windows_viewport_cursor_and_ends() {
+    let total = 13_000;
+    let ranges = large_buffer_real_rows(total, 5_000..5_030, &[9_000]).unwrap();
+    let real = |row: u32| row_is_laid_out(Some(&ranges), row);
+
+    // Viewport and its margin.
+    assert!(real(5_000) && real(5_029));
+    assert!(real(5_000 - OFFSCREEN_ROW_MARGIN) && real(5_030 + OFFSCREEN_ROW_MARGIN - 1));
+    // The cursor and its margin.
+    assert!(real(9_000) && real(9_000 + OFFSCREEN_ROW_MARGIN - 1));
+    // The first and last rows (the left notch row, Ctrl-Home / Ctrl-End).
+    assert!(real(0) && real(total - 1));
+    // Far from all of them: a placeholder, not a layout. The old code laid out all 13,000 rows.
+    assert!(!real(2_000) && !real(7_000) && !real(12_000 - 200));
+
+    let laid_out = (0..total).filter(|row| real(*row)).count();
+    assert!(laid_out < 1_500, "laid out {laid_out} of {total} rows");
+}
