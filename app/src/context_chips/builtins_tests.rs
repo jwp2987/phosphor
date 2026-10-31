@@ -166,3 +166,81 @@ fn test_shell_specific_chip_commands_fall_back_to_bash_for_nu() {
     let git = super::shell_git_branch();
     assert!(git.command().for_shell(ShellType::Nu).is_some());
 }
+
+#[test]
+fn direct_powershell_invocation_recognises_the_per_prompt_chip_commands() {
+    use crate::terminal::shell::ShellType;
+
+    // The chips' own PowerShell text maps to the program they wrap (#1230).
+    let line_changes = super::shell_git_line_changes();
+    let line_changes_command = line_changes
+        .command()
+        .for_shell(ShellType::PowerShell)
+        .expect("the git line-changes chip supports PowerShell");
+    let direct = super::direct_powershell_invocation(line_changes_command)
+        .expect("the git diff-stat chip command is a single program");
+    assert_eq!(direct.program, "git");
+    assert_eq!(
+        direct.args,
+        [
+            "-c",
+            "diff.autoRefreshIndex=false",
+            "diff",
+            "--shortstat",
+            "HEAD"
+        ]
+    );
+    assert_eq!(direct.env, [("GIT_OPTIONAL_LOCKS", "0")]);
+
+    let kubernetes = super::kubernetes_current_context();
+    let kubernetes_command = kubernetes
+        .command()
+        .for_shell(ShellType::PowerShell)
+        .expect("the kubernetes chip supports PowerShell");
+    let direct = super::direct_powershell_invocation(kubernetes_command)
+        .expect("the kubectl chip command is a single program");
+    assert_eq!(direct.program, "kubectl");
+    assert_eq!(direct.args, ["config", "current-context"]);
+    assert!(direct.env.is_empty());
+}
+
+#[test]
+fn the_powershell_diff_stat_chip_text_is_unchanged() {
+    use crate::terminal::shell::ShellType;
+
+    // The direct-run recogniser compares against this text, so it must not drift from what
+    // `safe_git_powershell` always produced for the chip.
+    let generator = super::shell_git_line_changes();
+    let command = generator
+        .command()
+        .for_shell(ShellType::PowerShell)
+        .expect("PowerShell supported");
+    assert_eq!(
+        command,
+        super::safe_git_powershell("git -c diff.autoRefreshIndex=false diff --shortstat HEAD")
+    );
+}
+
+#[test]
+fn direct_powershell_invocation_leaves_every_other_command_to_the_shell() {
+    for command in [
+        "git status",
+        "kubectl config current-context; rm -rf x",
+        "kubectl config get-contexts",
+        // Anything that only looks like the chip command: wrapper missing, extra statements.
+        "git -c diff.autoRefreshIndex=false diff --shortstat HEAD",
+        "",
+    ] {
+        assert!(
+            super::direct_powershell_invocation(command).is_none(),
+            "{command:?} must still run in PowerShell"
+        );
+    }
+    // The other git chips have logic around the git calls and stay in PowerShell.
+    let other = super::shell_other_git_branches();
+    let text = other
+        .command()
+        .for_shell(crate::terminal::shell::ShellType::PowerShell)
+        .unwrap();
+    assert!(super::direct_powershell_invocation(text).is_none());
+}

@@ -244,20 +244,68 @@ pub fn shell_git_line_changes() -> ShellCommandGenerator {
         (ShellType::Bash, GIT_COMMAND.to_string()),
         (ShellType::Zsh, GIT_COMMAND.to_string()),
         (ShellType::Fish, GIT_COMMAND.to_string()),
-        (
-            ShellType::PowerShell,
-            safe_git_powershell("git -c diff.autoRefreshIndex=false diff --shortstat HEAD"),
-        ),
+        (ShellType::PowerShell, pwsh_git_line_changes_command()),
     ]);
 
     ShellCommandGenerator::new(command, Some(vec!["git".to_owned()]))
 }
 
+/// The program and arguments of the git diff-stat chip command.
+const GIT_LINE_CHANGES_ARGS: &[&str] = &[
+    "-c",
+    "diff.autoRefreshIndex=false",
+    "diff",
+    "--shortstat",
+    "HEAD",
+];
+
+/// The program and arguments of the Kubernetes context chip command.
+const KUBECTL_CURRENT_CONTEXT_COMMAND: &str = "kubectl config current-context";
+
+fn pwsh_git_line_changes_command() -> String {
+    safe_git_powershell(&format!("git {}", GIT_LINE_CHANGES_ARGS.join(" ")))
+}
+
 pub fn kubernetes_current_context() -> ShellCommandGenerator {
     ShellCommandGenerator::new(
-        ShellCommand::portable("kubectl config current-context"),
+        ShellCommand::portable(KUBECTL_CURRENT_CONTEXT_COMMAND),
         Some(vec!["kubectl".to_owned()]),
     )
+}
+
+/// A chip command that is one external program with fixed arguments, so it can be run without
+/// a shell.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DirectInvocation {
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+    /// Variables the shell command sets for the program (and puts back afterwards).
+    pub env: &'static [(&'static str, &'static str)],
+}
+
+/// Recognises the PowerShell chip commands that run on every prompt and are only a single
+/// external program, so the local executor can start that program itself instead of a
+/// `pwsh -NoProfile` process (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux
+/// and several times that on Windows, where bash costs 3 ms. Matches the exact text the chips
+/// above generate, nothing else: any other command still goes through pwsh.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectInvocation> {
+    if command == pwsh_git_line_changes_command() {
+        return Some(DirectInvocation {
+            program: "git",
+            args: GIT_LINE_CHANGES_ARGS,
+            env: &[("GIT_OPTIONAL_LOCKS", "0")],
+        });
+    }
+    if command == KUBECTL_CURRENT_CONTEXT_COMMAND {
+        return Some(DirectInvocation {
+            program: "kubectl",
+            args: &["config", "current-context"],
+            env: &[],
+        });
+    }
+    None
 }
 
 /// Generator function that shows the current svn "branch".

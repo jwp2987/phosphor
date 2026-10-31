@@ -880,3 +880,27 @@ fn git_corrections_skipped_only_for_existing_dirs_outside_a_repo() {
     // Paths we can't inspect fall back to running git.
     assert!(!super::local_dir_is_outside_git_repo(&tmp.path().join("missing")));
 }
+
+#[test]
+fn deferred_name_enumeration_is_redundant_only_for_a_local_powershell_session() {
+    App::test((), |_app| async move {
+        // #1230: a local PowerShell session would start two `pwsh -NoProfile` processes to list
+        // what the Bootstrapped hook already carried.
+        let local = |shell_type| {
+            let info = SessionInfo::new_for_test().with_shell_type(shell_type);
+            Session::new(
+                info,
+                Arc::new(super::command_executor::LocalCommandExecutor::new(None, shell_type)),
+            )
+        };
+        assert!(local(ShellType::PowerShell).deferred_name_enumeration_is_redundant());
+        assert!(!local(ShellType::Bash).deferred_name_enumeration_is_redundant());
+
+        // Any other executor (in-band, remote, ...) keeps the enumeration.
+        let session = session_for_shell(
+            ShellType::PowerShell,
+            RecordingCommandExecutor::succeeding(""),
+        );
+        assert!(!session.deferred_name_enumeration_is_redundant());
+    });
+}
