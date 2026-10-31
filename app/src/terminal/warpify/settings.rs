@@ -264,8 +264,13 @@ lazy_static! {
 
     /// These are known compatible subshell commands
     static ref SUBSHELL_COMMAND_REGEXES: Vec<Regex> = vec![
-        // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents
-        Regex::new(r"^/?([\w\.-]+/)*(bash|zsh|fish)$").expect("Direct shell regex invalid"),
+        // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents,
+        // each optionally followed by flags that leave the shell interactive and keep its rc
+        // files: "-i", "-l", "-il"/"-li", "--login", "--interactive" (#1101). Anything else is
+        // rejected by the trailing anchor: "-c <cmd>" and "<script>" run and exit, and
+        // "--norc"/"--noprofile"/"-f" are unmanaged by design, as is "--version"/"--help".
+        // A leading `VAR=x`/`env` prefix is already stripped by the caller (#1098).
+        Regex::new(r"^/?([\w\.-]+/)*(bash|zsh|fish)(\s+(-i|-l|-il|-li|--login|--interactive))*$").expect("Direct shell regex invalid"),
 
         // Matches "docker run [whatever args] bash", plus zsh/fish/pwsh/powershell equivalents.
         // Optionally allows single or double quotes around the shell name. The container

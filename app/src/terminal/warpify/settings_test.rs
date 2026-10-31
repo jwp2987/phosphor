@@ -627,3 +627,73 @@ fn test_env_prefixed_subshell_detection_fail() {
         )
     });
 }
+
+/// #1101: a bare shell followed by only interactive-keeping flags is still an interactive
+/// subshell, with or without a leading environment prefix.
+#[test]
+fn test_shell_with_interactive_flags_subshell_detection_success() {
+    [
+        "zsh -i",
+        "zsh -l",
+        "zsh -il",
+        "bash -li",
+        "bash -l",
+        "bash --login",
+        "bash -i -l",
+        "bash --login --interactive",
+        "fish -l",
+        "fish --login",
+        "fish -i",
+        "fish --interactive",
+        "/bin/zsh -i",
+        "./bin/bash --login",
+        "ZDOTDIR=/tmp/z zsh -i",
+        "env -i HOME=/tmp bash -l",
+        "A=1 B=2 fish --login",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
+/// Commands that merely start with a shell name, or pass flags that run one command, load a
+/// script or deliberately skip the rc files (unmanaged by design), are not interactive subshells.
+#[test]
+fn test_shell_with_other_args_subshell_detection_fail() {
+    [
+        "zsh -c 'x'",
+        "zsh -ic 'x'",
+        "bash -c ls",
+        "bash -lc 'ls'",
+        "bash script.sh",
+        "bash -i script.sh",
+        "zsh -i -c 'x'",
+        "fish --version",
+        "fish --help",
+        "fish -c 'echo hi'",
+        "bash --norc",
+        "bash --noprofile --norc",
+        "zsh -f",
+        "zsh -i -f",
+        "bash --login --norc",
+        "bash -x",
+        "bash -i;ls",
+        "bash -lx",
+        "ZDOTDIR=x zsh -c 'x'",
+        "bashful -i",
+        "zsh -ilx",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            !WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} accidentally matched",
+            *cmd
+        )
+    });
+}
