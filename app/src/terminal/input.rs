@@ -9344,8 +9344,6 @@ impl Input {
                 });
 
                 let is_alias_expansion_enabled = self.should_expand_aliases(ctx);
-                let session_context = self.completion_session_context(ctx);
-
                 self.editor.read(ctx, |editor, editor_ctx| {
                     let last_action = editor.get_last_action(editor_ctx);
                     if Some(PlainTextEditorViewAction::Space) == last_action
@@ -9361,6 +9359,8 @@ impl Input {
                         && *edit_origin == EditOrigin::UserTyped
                     {
                         let buffer_text = editor.buffer_text(ctx);
+                        // Built only here: every edit used to pay for it (#1133).
+                        let session_context = self.completion_session_context(ctx);
                         let should_enable = self.should_enable_ai_context(
                             &buffer_text,
                             cursor_position.as_usize(),

@@ -1,12 +1,17 @@
+use pathfinder_color::ColorU;
 use settings::Setting as _;
+use string_offset::ByteOffset;
 use warpui::{text_layout::TextStyle, App, SingletonEntity as _};
 
 use crate::{
     appearance::Appearance,
+    editor::TextRun,
     settings::InputSettings,
     terminal::{
         input::{
-            decorations::{InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS},
+            decorations::{
+                DecorationSet, InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS,
+            },
             tests::{
                 add_window_with_bootstrapped_terminal, initialize_app,
                 simulate_directory_for_completion,
@@ -267,4 +272,117 @@ fn test_superseded_decoration_job_is_cancelled() {
             assert!(input.decorations_future_handle.is_none());
         });
     });
+}
+
+fn range(start: usize, end: usize) -> std::ops::Range<ByteOffset> {
+    ByteOffset::from(start)..ByteOffset::from(end)
+}
+
+fn run(text: &str, start: usize, style: TextStyle) -> TextRun {
+    TextRun::new(text.to_string(), style, range(start, start + text.len()))
+}
+
+fn syntax_style(color: ColorU) -> TextStyle {
+    TextStyle {
+        syntax_color: Some(color),
+        ..Default::default()
+    }
+}
+
+const GREEN: ColorU = ColorU {
+    r: 0,
+    g: 255,
+    b: 0,
+    a: 255,
+};
+const RED: ColorU = ColorU {
+    r: 255,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+
+/// #1133: a parse whose decorations already sit in the buffer must compare equal to the
+/// buffer's own style runs, so `apply_decorations` leaves the editor alone.
+#[test]
+fn test_decoration_set_equals_buffer_runs_when_unchanged() {
+    // "echo hi": `echo` is a highlighted command, the rest is plain.
+    let desired = DecorationSet::new(vec![(range(0, 4), GREEN)], vec![]);
+    let current = DecorationSet::from_text_runs(
+        vec![
+            run("echo", 0, syntax_style(GREEN)),
+            run(" hi", 4, TextStyle::default()),
+        ]
+        .into_iter(),
+    );
+    assert_eq!(desired, current);
+}
+
+/// Styles other than syntax color / error underline are not decorations; a run differing
+/// only in them must not force a re-apply.
+#[test]
+fn test_decoration_set_ignores_non_decoration_styles() {
+    let slash_prefix = TextStyle {
+        foreground_color: Some(RED),
+        ..Default::default()
+    };
+    let current = DecorationSet::from_text_runs(vec![run("/cmd", 0, slash_prefix)].into_iter());
+    assert_eq!(current, DecorationSet::default());
+}
+
+/// Anything that changes what would be drawn must compare unequal: a changed range (the
+/// token grew), a changed color (theme switch), a missing or extra error underline.
+#[test]
+fn test_decoration_set_detects_every_visible_difference() {
+    let applied = DecorationSet::from_text_runs(
+        vec![
+            run("ech", 0, syntax_style(GREEN)),
+            run("o", 3, TextStyle::default()),
+        ]
+        .into_iter(),
+    );
+    // Token grew by one character.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 4), GREEN)], vec![])
+    );
+    // Same range, new theme color.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 3), RED)], vec![])
+    );
+    // Same syntax but now also underlined as an error.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 3), GREEN)], vec![(range(0, 3), RED)])
+    );
+    // Decoration disabled (e.g. syntax highlighting turned off) while the buffer still has it.
+    assert_ne!(applied, DecorationSet::default());
+}
+
+/// Stale-result guard: the comparison is against the styles the buffer has *now*, so after an
+/// edit drops styles (undo, a clear) the recomputed set differs and is re-applied rather than
+/// skipped.
+#[test]
+fn test_decoration_set_compares_against_current_buffer_not_history() {
+    let desired = DecorationSet::new(vec![(range(0, 4), GREEN)], vec![]);
+    let cleared =
+        DecorationSet::from_text_runs(vec![run("echo ", 0, TextStyle::default())].into_iter());
+    assert_ne!(desired, cleared);
+}
+
+/// The buffer reports adjacent same-styled fragments as one run and the parse reports one
+/// range per token; touching same-color ranges and empty ranges normalize identically.
+#[test]
+fn test_decoration_set_normalizes_touching_and_empty_ranges() {
+    let a = DecorationSet::new(
+        vec![
+            (range(0, 2), GREEN),
+            (range(2, 5), GREEN),
+            (range(7, 7), RED),
+        ],
+        vec![],
+    );
+    let b = DecorationSet::new(vec![(range(0, 5), GREEN)], vec![]);
+    assert_eq!(a, b);
 }

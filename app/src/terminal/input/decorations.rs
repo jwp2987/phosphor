@@ -2,7 +2,6 @@
 //! applying syntax highlighting and error underlining.
 
 use std::{
-    collections::HashMap,
     ops::Range,
     sync::{
         Arc,
@@ -10,6 +9,7 @@ use std::{
     },
 };
 
+use pathfinder_color::ColorU;
 use settings::Setting as _;
 use string_offset::{ByteOffset, CharOffset};
 use warp_core::features::FeatureFlag;
@@ -18,7 +18,7 @@ use warpui::{AppContext, SingletonEntity, ViewContext};
 use crate::{
     appearance::Appearance,
     completer::{EmptyCompletionContext, SessionContext},
-    editor::TextStyleOperation,
+    editor::{TextRun, TextStyleOperation},
     settings::InputSettings,
     themes::theme::{AnsiColorIdentifier, AnsiColors},
 };
@@ -419,6 +419,12 @@ impl Input {
 
     /// Applies error underlining and/or syntax highlighting as appropriate,
     /// using the result of the last parse operation.
+    ///
+    /// Every style edit relayouts the editor and requests a frame, so when the buffer already
+    /// carries exactly the decorations this parse calls for (typing a character usually leaves
+    /// most tokens' styling unchanged) nothing is touched (#1133). The comparison reads the
+    /// styles actually present in the buffer rather than remembering what was applied last, so
+    /// edits, undo and theme changes can never leave it comparing against stale state.
     fn apply_decorations(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(parsed_tokens_snapshot) = &self.last_parsed_tokens else {
             return;
@@ -432,18 +438,23 @@ impl Input {
             return;
         }
 
-        // Clear all decorations before applying the updated ones.
-        self.clear_decorations(ctx);
-
         let theme = Appearance::as_ref(ctx).theme();
         let terminal_colors_normal = theme.terminal_colors().normal;
 
-        if self.should_show_syntax_highlighting(ctx) {
-            self.apply_colors_syntax_highlighting_all_tokens(terminal_colors_normal, ctx);
+        let desired = DecorationSet::for_tokens(
+            parsed_tokens_snapshot,
+            self.should_show_syntax_highlighting(ctx),
+            self.should_show_error_underlining(ctx),
+            &terminal_colors_normal,
+        );
+        let current = DecorationSet::from_text_runs(self.editor.as_ref(ctx).text_style_runs(ctx));
+        if desired == current {
+            return;
         }
-        if self.should_show_error_underlining(ctx) {
-            self.apply_colors_error_underlining_all_tokens(terminal_colors_normal, ctx);
-        }
+
+        // Clear all decorations before applying the updated ones.
+        self.clear_decorations(ctx);
+        self.apply_decoration_set(desired, ctx);
     }
 
     /// Removes decorations (error underlining, syntax highlighting, and background colors) from the input buffer.
@@ -457,86 +468,126 @@ impl Input {
         });
     }
 
-    /// Applies error underlining appropriately to all given tokens, given the
-    /// parsed tokens data.
-    ///
-    /// This does not unset any existing error underline decorations in the
+    /// Applies the given decorations. This does not unset any existing decorations in the
     /// editor buffer.
-    fn apply_colors_error_underlining_all_tokens(
-        &mut self,
-        terminal_colors_normal: AnsiColors,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(parsed_tokens_snapshot) = &self.last_parsed_tokens else {
-            return;
-        };
-
-        let mut ranges = vec![];
-        for token_data in &parsed_tokens_snapshot.parsed_tokens {
-            if token_data.token_description.is_none()
-                && token_data.token_index == 0
-                && valid_command_for_error_underline(&token_data.token.item)
-            {
-                ranges.push(
-                    ByteOffset::from(token_data.token.span.start())
-                        ..ByteOffset::from(token_data.token.span.end()),
-                );
-            }
-        }
-
-        if !ranges.is_empty() {
+    fn apply_decoration_set(&mut self, set: DecorationSet, ctx: &mut ViewContext<Self>) {
+        if !set.error_underline.is_empty() {
+            // Error underlines are all one color, so this is a single edit.
+            let color = set.error_underline[0].1;
+            let ranges: Vec<_> = set.error_underline.into_iter().map(|(r, _)| r).collect();
             self.editor.update(ctx, |editor, ctx| {
                 editor.update_buffer_styles(
                     ranges,
-                    TextStyleOperation::default().set_error_underline_color(
-                        AnsiColorIdentifier::Red
-                            .to_ansi_color(&terminal_colors_normal)
-                            .into(),
-                    ),
+                    TextStyleOperation::default().set_error_underline_color(color),
+                    ctx,
+                )
+            });
+        }
+
+        // One edit per distinct syntax color.
+        let mut by_color: Vec<(ColorU, Vec<Range<ByteOffset>>)> = vec![];
+        for (range, color) in set.syntax {
+            match by_color.iter_mut().find(|(c, _)| *c == color) {
+                Some((_, ranges)) => ranges.push(range),
+                None => by_color.push((color, vec![range])),
+            }
+        }
+        for (color, ranges) in by_color {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.update_buffer_styles(
+                    ranges,
+                    TextStyleOperation::default().set_syntax_color(color),
                     ctx,
                 )
             });
         }
     }
+}
 
-    /// Applies syntax highlighting colors appropriately to all given tokens,
-    /// given the parsed tokens data.
-    ///
-    /// This does not unset any existing syntax highlighting decorations in the
-    /// editor buffer.
-    fn apply_colors_syntax_highlighting_all_tokens(
-        &mut self,
-        terminal_colors_normal: AnsiColors,
-        ctx: &mut ViewContext<Input>,
-    ) {
-        let Some(parsed_tokens_snapshot) = &self.last_parsed_tokens else {
-            return;
-        };
+/// The decorations (syntax colors and error underlines) of an input buffer, as sorted,
+/// non-empty byte ranges with touching same-colored ranges merged. The same normal form is
+/// built from a fresh parse and from the styles actually in the editor buffer, so two sets are
+/// equal exactly when applying one would change nothing visible.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct DecorationSet {
+    pub(super) syntax: Vec<(Range<ByteOffset>, ColorU)>,
+    pub(super) error_underline: Vec<(Range<ByteOffset>, ColorU)>,
+}
 
-        let mut ranges: HashMap<SuggestionTypeName, Vec<Range<ByteOffset>>> = HashMap::new();
-        for token_data in &parsed_tokens_snapshot.parsed_tokens {
+fn normalize_ranges(
+    mut ranges: Vec<(Range<ByteOffset>, ColorU)>,
+) -> Vec<(Range<ByteOffset>, ColorU)> {
+    ranges.retain(|(r, _)| r.start < r.end);
+    ranges.sort_by_key(|(r, _)| r.start);
+    let mut merged: Vec<(Range<ByteOffset>, ColorU)> = Vec::with_capacity(ranges.len());
+    for (range, color) in ranges {
+        match merged.last_mut() {
+            Some((last, last_color)) if last.end == range.start && *last_color == color => {
+                last.end = range.end;
+            }
+            _ => merged.push((range, color)),
+        }
+    }
+    merged
+}
+
+impl DecorationSet {
+    pub(super) fn new(
+        syntax: Vec<(Range<ByteOffset>, ColorU)>,
+        error_underline: Vec<(Range<ByteOffset>, ColorU)>,
+    ) -> Self {
+        Self {
+            syntax: normalize_ranges(syntax),
+            error_underline: normalize_ranges(error_underline),
+        }
+    }
+
+    /// The decorations a parse calls for, given which kinds are enabled and the theme colors.
+    pub(super) fn for_tokens(
+        snapshot: &ParsedTokensSnapshot,
+        show_syntax: bool,
+        show_error_underline: bool,
+        terminal_colors_normal: &AnsiColors,
+    ) -> Self {
+        let mut syntax = vec![];
+        let mut error_underline = vec![];
+        for token_data in &snapshot.parsed_tokens {
+            let range = ByteOffset::from(token_data.token.span.start())
+                ..ByteOffset::from(token_data.token.span.end());
             if let Some(description) = &token_data.token_description {
-                let suggestion_type = description.suggestion_type;
-                let range = ByteOffset::from(token_data.token.span.start())
-                    ..ByteOffset::from(token_data.token.span.end());
-                ranges
-                    .entry(suggestion_type.to_name())
-                    .or_default()
-                    .push(range);
+                if show_syntax {
+                    let color: AnsiColorIdentifier = description.suggestion_type.to_name().into();
+                    syntax.push((range, color.to_ansi_color(terminal_colors_normal).into()));
+                }
+            } else if show_error_underline
+                && token_data.token_index == 0
+                && valid_command_for_error_underline(&token_data.token.item)
+            {
+                error_underline.push((
+                    range,
+                    AnsiColorIdentifier::Red
+                        .to_ansi_color(terminal_colors_normal)
+                        .into(),
+                ));
             }
         }
+        Self::new(syntax, error_underline)
+    }
 
-        for (suggestion_type, ranges) in ranges {
-            let color: AnsiColorIdentifier = suggestion_type.into();
-            self.editor.update(ctx, |editor, ctx| {
-                editor.update_buffer_styles(
-                    ranges,
-                    TextStyleOperation::default()
-                        .set_syntax_color(color.to_ansi_color(&terminal_colors_normal).into()),
-                    ctx,
-                )
-            });
+    /// The decorations currently present in the buffer, read from its style runs.
+    pub(super) fn from_text_runs(runs: impl Iterator<Item = TextRun>) -> Self {
+        let mut syntax = vec![];
+        let mut error_underline = vec![];
+        for run in runs {
+            let style = run.text_style();
+            if let Some(color) = style.syntax_color {
+                syntax.push((run.byte_range().clone(), color));
+            }
+            if let Some(color) = style.error_underline_color {
+                error_underline.push((run.byte_range().clone(), color));
+            }
         }
+        Self::new(syntax, error_underline)
     }
 }
 
