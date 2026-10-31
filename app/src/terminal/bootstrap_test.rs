@@ -3567,3 +3567,200 @@ fn bootstrap_for_session_rewrites_only_bash_over_ssh_that_asked_for_it() {
         script
     );
 }
+
+// ---- #1226: counted read for local bash/zsh tabs and sudo/su subshells ----
+
+fn zsh_here_document_script() -> &'static [u8] {
+    b" setopt x\n read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR\n body1\n body2\nEOM\n"
+}
+
+#[test]
+fn zsh_counted_read_keeps_the_eval_on_the_command_line_after_the_read() {
+    // The zsh script runs the body from the same line as the `read`, so the rewritten command
+    // line reads the body first and then runs what followed the `read`.
+    let (rewritten, prefix_len) = counted_read_rewrite(zsh_here_document_script(), ShellType::Zsh)
+        .expect("zsh here-document");
+    assert_eq!(
+        decode_script(&rewritten),
+        " setopt x\n command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR\r body1\n body2\n"
+    );
+    // The prefix ends with the CR of the command line; the body follows it.
+    assert_eq!(rewritten[prefix_len - 1], b'\r');
+    assert_eq!(&rewritten[prefix_len..], b" body1\n body2\n");
+}
+
+#[test]
+fn counted_read_rewrite_only_handles_bash_and_zsh_scripts_it_recognises() {
+    assert_eq!(
+        counted_read_rewrite(zsh_here_document_script(), ShellType::Fish),
+        None
+    );
+    // The zsh marker is not the bash marker and the other way round.
+    assert_eq!(
+        counted_read_rewrite(zsh_here_document_script(), ShellType::Bash),
+        None
+    );
+    assert_eq!(counted_read_rewrite(b"echo hi\n", ShellType::Zsh), None);
+    // The `read` line without a newline after it, or an unterminated here-document: unchanged.
+    assert_eq!(
+        counted_read_rewrite(
+            b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval x",
+            ShellType::Zsh
+        ),
+        None
+    );
+    assert_eq!(
+        counted_read_rewrite(
+            b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval x\n body\n",
+            ShellType::Zsh
+        ),
+        None
+    );
+}
+
+#[test]
+fn zsh_counted_read_applies_to_the_bundled_zsh_script() {
+    // Guards the markers against edits to zsh.sh, and the byte count against the body that follows.
+    let script = script_for_shell(ShellType::Zsh, &crate::ASSETS);
+    let (rewritten, prefix_len) = counted_read_rewrite(&script, ShellType::Zsh)
+        .expect("zsh.sh must keep the here-document that counted_read_rewrite rewrites");
+    let text = decode_script(&rewritten);
+    assert!(!text.contains("<< 'EOM'"));
+    let count: usize = text
+        .split("head -c ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .and_then(|n| n.parse().ok())
+        .expect("a byte count");
+    // The zsh script ends with the body: the here-document is its last construct.
+    assert_eq!(rewritten.len() - prefix_len, count);
+    // Everything the original line ran after the `read` still runs, after the body is read.
+    let command = decode_script(&rewritten[..prefix_len]);
+    let command = command.rsplit('\n').next().unwrap();
+    assert!(command.contains(
+        "command -p stty echo; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR;"
+    ));
+    assert!(command.ends_with(
+        "unset WARP_RESTORE_PRINT_EXIT_VALUE WARP_RESTORE_PIPE_FAIL WARP_RESTORE_NOUNSET\r"
+    ));
+}
+
+#[test]
+fn bundled_bootstrap_bodies_are_safe_to_read_through_a_cooked_tty() {
+    // While `head` reads the body the tty is cooked: a control character would act on the tty
+    // (^C, ^Z, ^D, ^\ ...), and a line over the canonical limit is cut (#962; the subshell limit
+    // is the smaller 1024 of macOS). Tab and newline are fine.
+    for shell_type in [ShellType::Bash, ShellType::Zsh] {
+        let script = script_for_shell(shell_type, &crate::ASSETS);
+        // 1024 is the canonical line limit on macOS (see MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES).
+        assert!(
+            script.split(|b| *b == b'\n').all(|line| line.len() < 1024),
+            "{shell_type:?}: a line of 1024 bytes or more"
+        );
+        assert!(
+            !script
+                .iter()
+                .any(|b| (*b < 0x20 && *b != b'\n' && *b != b'\t') || *b == 0x7f),
+            "{shell_type:?} carries a control character"
+        );
+    }
+}
+
+#[test]
+fn local_counted_bootstrap_is_on_unless_switched_off() {
+    assert!(local_counted_bootstrap_enabled_from_env(None));
+    assert!(local_counted_bootstrap_enabled_from_env(Some("1")));
+    assert!(!local_counted_bootstrap_enabled_from_env(Some("0")));
+    assert!(!local_counted_bootstrap_enabled_from_env(Some(" off ")));
+}
+
+fn subshell_of(command: &str) -> SessionInfo {
+    let mut info = SessionInfo::new_for_test();
+    info.subshell_info = Some(
+        crate::terminal::model::terminal_model::SubshellInitializationInfo {
+            spawning_command: command.to_owned(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: None,
+        },
+    );
+    info
+}
+
+#[cfg(unix)]
+#[test]
+fn local_counted_bootstrap_applies_to_local_bash_zsh_and_host_subshells_only() {
+    let local = SessionInfo::new_for_test();
+    assert!(local_counted_bootstrap_applies(ShellType::Bash, &local));
+    assert!(local_counted_bootstrap_applies(ShellType::Zsh, &local));
+    // Other shells keep their own way in (fish and pwsh source a file).
+    assert!(!local_counted_bootstrap_applies(ShellType::Fish, &local));
+    assert!(!local_counted_bootstrap_applies(
+        ShellType::PowerShell,
+        &local
+    ));
+
+    // The host's own privilege-changing subshells; env prefixes and paths are looked through.
+    for command in [
+        "sudo -s",
+        "su -",
+        "ksu",
+        "doas -s",
+        "FOO=1 sudo -i",
+        "/usr/bin/sudo -s",
+    ] {
+        assert!(
+            local_counted_bootstrap_applies(ShellType::Bash, &subshell_of(command)),
+            "{command}"
+        );
+    }
+    // Subshells whose filesystem or tty may not be this host's keep the typed form.
+    for command in [
+        "docker exec -it c bash",
+        "kubectl exec -it pod -- bash",
+        "nix-shell",
+        "ssh host",
+        "poetry shell",
+        "",
+    ] {
+        assert!(
+            !local_counted_bootstrap_applies(ShellType::Bash, &subshell_of(command)),
+            "{command}"
+        );
+    }
+    // A sudo subshell that is really an ssh one.
+    let mut ssh_sudo = subshell_of("sudo -s");
+    ssh_sudo.subshell_info.as_mut().unwrap().ssh_connection_info = Some(Default::default());
+    assert!(!local_counted_bootstrap_applies(ShellType::Bash, &ssh_sudo));
+
+    // An ssh session is the business of `bootstrap_for_session`.
+    let ssh = SessionInfo::new_for_test().with_ssh_socket_path(std::path::PathBuf::from("/tmp/s"));
+    assert!(!local_counted_bootstrap_applies(ShellType::Bash, &ssh));
+}
+
+#[test]
+fn counted_subshell_chunks_pace_the_prefix_and_send_the_body_as_one_write() {
+    let mut script = vec![b'a'; SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 2 + 100];
+    let prefix_len = script.len();
+    script.resize(prefix_len + SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 5, b'b');
+    let chunks = counted_subshell_bootstrap_chunks(&script, prefix_len);
+    // 3 paced prefix chunks, then the whole body.
+    assert_eq!(chunks.len(), 4);
+    assert!(
+        chunks[..3]
+            .iter()
+            .all(|c| c.len() <= SUBSHELL_BOOTSTRAP_CHUNK_SIZE && c.iter().all(|b| *b == b'a'))
+    );
+    assert_eq!(chunks[3].len(), SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 5);
+    assert_eq!(chunks.concat(), script);
+    // Nothing after the prefix: no empty body write.
+    assert_eq!(
+        counted_subshell_bootstrap_chunks(b"abc", 3),
+        vec![b"abc".to_vec()]
+    );
+    assert_eq!(
+        counted_subshell_bootstrap_chunks(b"abc", 99),
+        vec![b"abc".to_vec()]
+    );
+}

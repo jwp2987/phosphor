@@ -150,21 +150,63 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Only valid for a shell that is known to have a `head` with `-c`, because a failing `head`
 /// would leave the body to be executed as commands: see `SSHValue::raw_bootstrap`.
 pub fn bash_counted_read_bootstrap(script: &[u8]) -> Option<Vec<u8>> {
-    let open = find_subslice(script, BASH_BOOTSTRAP_HEREDOC_OPEN)?;
-    let body_start = open + BASH_BOOTSTRAP_HEREDOC_OPEN.len();
+    counted_read_rewrite(script, ShellType::Bash).map(|(rewritten, _)| rewritten)
+}
+
+/// The line of the zsh bootstrap (`zsh.sh`) that opens the here-document holding `zsh_body.sh`.
+/// Unlike bash, the `eval` of the body and the restore of the options the script changed are on
+/// the same line, after the `read`.
+const ZSH_BOOTSTRAP_HEREDOC_OPEN: &[u8] = b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; ";
+
+/// #1226: [`bash_counted_read_bootstrap`] for either shell, also returning how many leading bytes
+/// of the result end with the counted-read command line (its CR): everything after that is the
+/// raw body (and, for bash, the lines that follow it), which the shell does not see until `head`
+/// reads it.
+///
+/// zsh: the command is `stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo; <the rest of the
+/// original line>`, so the `eval` still runs after the body has been read. The hook sequence and
+/// the `Bootstrapped` value are the same as the here-document's (replayed through a pty).
+pub(crate) fn counted_read_rewrite(
+    script: &[u8],
+    shell_type: ShellType,
+) -> Option<(Vec<u8>, usize)> {
+    let (open_marker, rest_of_line) = match shell_type {
+        ShellType::Bash => (BASH_BOOTSTRAP_HEREDOC_OPEN, false),
+        ShellType::Zsh => (ZSH_BOOTSTRAP_HEREDOC_OPEN, true),
+        _ => return None,
+    };
+    let open = find_subslice(script, open_marker)?;
+    let mut body_start = open + open_marker.len();
+    // zsh: what follows the here-document marker on the same line is a command that has to run
+    // after the body has been read.
+    let after_read: &[u8] = if rest_of_line {
+        let line_end = body_start + script[body_start..].iter().position(|b| *b == b'\n')?;
+        let rest = &script[body_start..line_end];
+        body_start = line_end + 1;
+        rest
+    } else {
+        &[]
+    };
     let close = body_start + find_subslice(&script[body_start..], BASH_BOOTSTRAP_HEREDOC_CLOSE)?;
     // The body keeps its final newline, exactly as `read -d ''` read it.
     let body = &script[body_start..=close];
-    let command = format!(
-        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c {}); command -p stty echo\r",
+    let mut command = format!(
+        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c {}); command -p stty echo",
         body.len()
-    );
+    )
+    .into_bytes();
+    if rest_of_line {
+        command.extend_from_slice(b"; ");
+        command.extend_from_slice(after_read);
+    }
+    command.push(b'\r');
     let mut rewritten = Vec::with_capacity(script.len() + command.len());
     rewritten.extend_from_slice(&script[..open]);
-    rewritten.extend_from_slice(command.as_bytes());
+    rewritten.extend_from_slice(&command);
+    let prefix_len = rewritten.len();
     rewritten.extend_from_slice(body);
     rewritten.extend_from_slice(&script[close + BASH_BOOTSTRAP_HEREDOC_CLOSE.len()..]);
-    Some(rewritten)
+    Some((rewritten, prefix_len))
 }
 
 /// Whether the counted-read bootstrap is allowed. On by default;
@@ -205,6 +247,110 @@ pub fn bootstrap_for_session(
         Some(rewritten) => Cow::Owned(rewritten),
         None => script,
     }
+}
+
+/// Whether a local bash or zsh may be handed the bootstrap as a counted raw read (#1226). On by
+/// default; `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` types the here-document into the shell again.
+pub(crate) fn local_counted_bootstrap_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// Whether this machine has the two programs the counted read runs through `command -p` (the
+/// system default PATH): `stty` and a `head` that takes `-c`. Both are POSIX tools that every
+/// Linux and macOS install has; the check is on the files so that a stripped-down system keeps the
+/// here-document, since a failing `head` would leave the body to run as commands.
+#[cfg(unix)]
+fn system_has_stty_and_head() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let found = |name: &str| {
+            ["/usr/bin", "/bin"]
+                .iter()
+                .any(|dir| std::path::Path::new(dir).join(name).is_file())
+        };
+        found("stty") && found("head")
+    })
+}
+
+#[cfg(not(unix))]
+fn system_has_stty_and_head() -> bool {
+    false
+}
+
+/// The commands whose subshells run on this host's own filesystem and tty, and that are known to
+/// start the shell through a pty of their own (`sudo -s`, `su`, `ksu`, `doas`).
+const LOCAL_COUNTED_SUBSHELL_COMMANDS: &[&str] = &["sudo", "su", "ksu", "doas"];
+
+/// Whether `session_info` describes a session whose bootstrap can go in as a counted read (#1226):
+/// a local bash or zsh on this machine, or a `sudo`/`su`/`ksu`/`doas` subshell of one, that is not
+/// reached through ssh, a container, WSL or MSYS2.
+#[cfg(feature = "local_fs")]
+pub(crate) fn local_counted_bootstrap_applies(
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> bool {
+    use super::ShellLaunchData;
+
+    if !matches!(shell_type, ShellType::Bash | ShellType::Zsh)
+        || session_info.session_type != BootstrapSessionType::Local
+        || session_info.is_legacy_ssh_session != IsLegacySSHSession::No
+        || session_info.tmux_control_mode
+        || session_info.wsl_name.is_some()
+        || is_container_subshell(session_info)
+        || !matches!(
+            session_info.launch_data,
+            None | Some(ShellLaunchData::Executable { .. })
+        )
+    {
+        return false;
+    }
+    if let Some(subshell) = session_info.subshell_info.as_ref() {
+        let command = super::warpify::subshell_display_name(&subshell.spawning_command)
+            .and_then(|name| name.rsplit('/').next());
+        if subshell.ssh_connection_info.is_some()
+            || !command.is_some_and(|name| LOCAL_COUNTED_SUBSHELL_COMMANDS.contains(&name))
+        {
+            return false;
+        }
+    }
+    system_has_stty_and_head()
+        && local_counted_bootstrap_enabled_from_env(
+            std::env::var("PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP")
+                .ok()
+                .as_deref(),
+        )
+}
+
+/// The counted-read form of `script` for a local session that can take it
+/// ([`local_counted_bootstrap_applies`]), with the length of its leading part that ends with the
+/// command line; `None` keeps the here-document.
+#[cfg(feature = "local_fs")]
+pub fn local_counted_bootstrap(
+    script: &[u8],
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> Option<(Vec<u8>, usize)> {
+    if !local_counted_bootstrap_applies(shell_type, session_info) {
+        return None;
+    }
+    counted_read_rewrite(script, shell_type)
+}
+
+/// The paced writes for a counted-read bootstrap typed into a subshell: what comes before the
+/// raw body goes out in the same [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] pieces as before, so a shell
+/// that has not started reading yet is never handed more than its tty input queue holds (#960),
+/// and the body follows as one write. Once `stty -echo` has run, the tty echoes nothing, so a
+/// user-space pty relay (`sudo -i`) cannot be left blocked writing into a full inner tty while the
+/// inner shell blocks writing an echo the relay is not reading; `head` drains the body at the
+/// speed it arrives. (Through a blocking relay: the 52 KB unpaced here-document hangs, the
+/// paced one takes 746 ms, this takes 222 ms.)
+pub(crate) fn counted_subshell_bootstrap_chunks(script: &[u8], prefix_len: usize) -> Vec<Vec<u8>> {
+    let prefix_len = prefix_len.min(script.len());
+    let mut chunks = subshell_bootstrap_chunks(&script[..prefix_len]);
+    if prefix_len < script.len() {
+        chunks.push(script[prefix_len..].to_vec());
+    }
+    chunks
 }
 
 /// Returns the bootstrap script that should be used when initializing a shell

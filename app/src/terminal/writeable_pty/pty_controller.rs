@@ -1151,11 +1151,24 @@ impl<T: EventLoopSender> PtyController<T> {
             // bytes paced in 2KB writes finish in about a second. Pacing keeps the relay's pending
             // write below what the inner tty can queue. No bracketed paste here: the shell is a
             // line-editing bash/zsh that already receives this script raw.
+            //
+            // #1226: for a `sudo`/`su`/`ksu`/`doas` subshell of a local bash or zsh the body of the
+            // script goes in as a counted raw read instead (see
+            // `bootstrap::counted_subshell_bootstrap_chunks`): about 26 paced chunks, 650 ms of
+            // pure pacing, become the few chunks before the body plus one write (746 -> 222 ms
+            // from `InitShell` to `Bootstrapped` through a blocking pty relay).
             const SUBSHELL_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(25);
-            for (index, chunk) in bootstrap::subshell_bootstrap_chunks(&bootstrap)
-                .into_iter()
-                .enumerate()
-            {
+            let chunks = match bootstrap::local_counted_bootstrap(
+                &bootstrap,
+                shell_type,
+                pending_session_info,
+            ) {
+                Some((counted, prefix_len)) => {
+                    bootstrap::counted_subshell_bootstrap_chunks(&counted, prefix_len)
+                }
+                None => bootstrap::subshell_bootstrap_chunks(&bootstrap),
+            };
+            for (index, chunk) in chunks.into_iter().enumerate() {
                 if index == 0 {
                     self.write_bytes(chunk, ctx);
                     continue;
@@ -1170,6 +1183,18 @@ impl<T: EventLoopSender> PtyController<T> {
             // bootstrap that way, not typed through its line editor.
             let bootstrap =
                 bootstrap::bootstrap_for_session(bootstrap, shell_type, pending_session_info);
+            // #1226: the same for a local bash or zsh tab (the bootstrap is read by one `head -c`
+            // instead of typed through the line editor: 174 -> 128 ms for bash, 92 -> 59 ms for
+            // zsh, InitShell to Bootstrapped). `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` types it as
+            // before.
+            let bootstrap = match bootstrap::local_counted_bootstrap(
+                &bootstrap,
+                shell_type,
+                pending_session_info,
+            ) {
+                Some((counted, _)) => Cow::Owned(counted),
+                None => bootstrap,
+            };
             self.write_bytes(bootstrap, ctx);
         }
     }
