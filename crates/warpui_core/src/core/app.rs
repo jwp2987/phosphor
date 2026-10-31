@@ -1784,7 +1784,7 @@ impl AppContext {
         arg: &dyn Any,
     ) {
         if let Some((name, mut handlers)) = self.global_actions.remove_entry(name) {
-            if matches!(name, "workspace:save_app" | "root_view:update_quake_mode_state") {
+            if matches!(name.as_str(), "workspace:save_app" | "root_view:update_quake_mode_state") {
                 log::debug!("dispatching global action for {}", &name);
             } else {
                 log::info!("dispatching global action for {}", &name);
