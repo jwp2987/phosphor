@@ -17244,6 +17244,11 @@ fn ssh_prompt_arrival_ends_drop_through() {
             view.model
                 .lock()
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
+            // #1123 (b4901490d): an Enter within 400 ms of the last dropped key belongs to that
+            // dropped line, so a prompt answer is an Enter a person types after reading the
+            // prompt, not in the same instant as the blind letters.
+            view.ssh_last_dropped_key_at =
+                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_drop_line_through_enter);
         });
