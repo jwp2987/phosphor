@@ -517,3 +517,23 @@ fn test_feature_flag_arg_is_valid_with_no_whitespace_before_arg() {
         assert!(is_valid);
     });
 }
+
+/// #1130: a generator arg on a warpified remote session fails open instead of running the
+/// generator (a remote command) for every candidate on every keystroke.
+#[test]
+fn test_generator_arg_is_valid_on_a_warpified_remote_session() {
+    App::test((), |app| async move {
+        let _flag = FeatureFlag::ValidateAutosuggestions.override_enabled(true);
+        let ctx = session_context_of_type(
+            BootstrapSessionType::WarpifiedRemote,
+            TypedPathBuf::from(REMOTE_CWD),
+            &app,
+        );
+        let arg = ParsedExpression::new(
+            Expression::ValidatableArgument(vec![ArgType::Generator("units".into())]),
+            ParsedToken::new("nginx".to_string()),
+        )
+        .spanned((15, 20));
+        assert!(is_arg_valid("systemctl status nginx", &arg, &ctx, None).await);
+    });
+}
