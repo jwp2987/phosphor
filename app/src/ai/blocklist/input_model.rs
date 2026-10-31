@@ -6,6 +6,7 @@
 //! input contents are an AI query or shell command, which is then used to update the input mode.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use futures::stream::AbortHandle;
@@ -1012,9 +1013,12 @@ impl BlocklistAIInputModel {
     }
 
     /// Abandons the pending detection outright: the classifier will never answer for the
-    /// current buffer (it is over the background-job size cap, #1036), so Enter must not wait
-    /// for a verdict. Whatever the input type is now stands.
+    /// current buffer (it is over the background-job size cap, #1036) or is late (#1158), so
+    /// Enter must not wait for a verdict. Whatever the input type is now stands.
     pub fn abandon_pending_detection(&mut self) {
+        // A verdict still in flight (#1158: a late one) must not land after the submit and set
+        // the input type the next command is typed into.
+        self.abort_in_progress_detection();
         self.pending_detection_buffer = None;
     }
 
@@ -1801,6 +1805,39 @@ pub fn should_wait_for_verdict_before_submit(
         && verdict_pending
         && provenance == EnterProvenance::Classifiable
         && !gave_up_on_this_text
+}
+
+/// The longest an Enter waits for the verdict of the detection requested for its text (#1158).
+///
+/// 20 ms = the 10 ms input-background debounce (an Enter within it of the last edit, i.e. a paste
+/// or burst, has no job running yet) plus at most 10 ms of local classifier compute (parse
+/// without generators, alias expansion, history match, model). Past it the classifier is late and
+/// the Enter decides on the Enter-time rules that already ran (known head, history, syntax,
+/// request shape) instead of holding: it is never kept in the editor and never waits on I/O. It
+/// used to be 5 s, on a verdict that waited for remote completion generators (0.8-3.8 s).
+pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(20);
+
+/// What a waiting Enter does at each poll (#1158).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnterVerdictWait {
+    /// The verdict for the exact buffer text has landed: submit on it.
+    Submit,
+    /// Within the budget: poll again.
+    Wait,
+    /// The verdict is late: abandon it and submit on the Enter-time rules.
+    SubmitWithoutVerdict,
+}
+
+/// Decides [`EnterVerdictWait`] from whether the verdict is still pending and how long the Enter
+/// has waited. Never "keep in editor": a late verdict is no reason to swallow the Enter.
+pub fn enter_verdict_wait_decision(verdict_pending: bool, waited: Duration) -> EnterVerdictWait {
+    if !verdict_pending {
+        EnterVerdictWait::Submit
+    } else if waited >= ENTER_VERDICT_BUDGET {
+        EnterVerdictWait::SubmitWithoutVerdict
+    } else {
+        EnterVerdictWait::Wait
+    }
 }
 
 fn shell_history_candidates<'a>(

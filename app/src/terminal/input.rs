@@ -29,8 +29,10 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
-use crate::ai::blocklist::input_model::{EnterProvenance, should_wait_for_verdict_before_submit};
-use crate::terminal::model::typeahead_handoff::{YoungSubmit, young_submit_decision};
+use crate::ai::blocklist::input_model::{
+    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision,
+    should_wait_for_verdict_before_submit,
+};
 use instant::Instant;
 use warpui::r#async::Timer;
 use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
@@ -448,6 +450,27 @@ const AGENT_MODE_HINT_KEYS: &[&str] = &[
     "terminal-input-agent-hint-optimize-docker",
     "terminal-input-agent-hint-ab-testing",
 ];
+
+/// Logs (INFO, at most once a second) that an Enter went ahead without its classification verdict
+/// (#1158). Never the buffer text, only its length.
+fn log_late_enter_verdict(text: &str, waited: std::time::Duration) {
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicU64;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    static LAST_LOGGED_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST_LOGGED_MS.load(Ordering::Relaxed);
+    if last != 0 && now_ms.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_LOGGED_MS.store(now_ms, Ordering::Relaxed);
+    log::info!(
+        "Enter submitted without its input-type verdict: late after {} ms (budget {} ms, {} chars)",
+        waited.as_millis(),
+        crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET.as_millis(),
+        text.chars().count()
+    );
+}
 
 fn get_agent_mode_new_conversation_hint_key() -> &'static str {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1868,9 +1891,6 @@ pub struct Input {
     awaiting_multiline_submit_confirmation: bool,
     /// The user confirmed: the next shell submission skips the multi-line check.
     multiline_submit_confirmed: bool,
-    /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
-    /// Enter again submits it as the rules decide.
-    verdict_wait_gave_up_on: Option<String>,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
     /// The editor's text boundary at an Enter deferred behind the typeahead hand-off (#1016).
@@ -3624,7 +3644,6 @@ impl Input {
             shell_command_submit_pending: false,
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
-            verdict_wait_gave_up_on: None,
             verdict_wait: None,
             handoff_enter_mark: None,
             after_enter_replay: Vec::new(),
@@ -13078,8 +13097,10 @@ impl Input {
     /// submitting on the inherited input type: prose must never
     /// be run by the shell because Enter beat the classifier. Typeahead for a running command
     /// keeps its shell rules; typeahead that began right after a command is classified like
-    /// anything typed. If no verdict comes (the classifier cannot answer), the text stays in the
-    /// editor unsubmitted, and a second Enter submits it as the rules decide.
+    /// anything typed. The wait is bounded by `ENTER_VERDICT_BUDGET` (#1158); if the verdict is
+    /// late the Enter submits on the Enter-time rules above and the late verdict is dropped. It is
+    /// never kept in the editor, and never waits on remote I/O (the classification parse runs no
+    /// generators).
     fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // #1016: an Enter is already waiting. This one belongs to the line typed after it: it
         // queues behind that Enter (after the text typed before it), and never submits the
@@ -13121,9 +13142,8 @@ impl Input {
             self.buffer_is_slash_command(ctx),
             model.is_detection_pending_for(&text, ctx),
             provenance,
-            self.verdict_wait_gave_up_on.as_deref() == Some(text.as_str()),
+            false,
         ) {
-            self.verdict_wait_gave_up_on = None;
             return false;
         }
         self.ai_input_model
@@ -13195,8 +13215,17 @@ impl Input {
             .ai_input_model
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
-        match young_submit_decision(true, pending, started.elapsed()) {
-            YoungSubmit::Submit => {
+        let waited = started.elapsed();
+        match enter_verdict_wait_decision(pending, waited) {
+            decision @ (EnterVerdictWait::Submit | EnterVerdictWait::SubmitWithoutVerdict) => {
+                if decision == EnterVerdictWait::SubmitWithoutVerdict {
+                    log_late_enter_verdict(&text, waited);
+                    // The parse may have landed since the Enter: decide on everything known now,
+                    // then drop the verdict so it cannot land after the submit.
+                    self.settle_pending_input_detection_for_submit(ctx);
+                    self.ai_input_model
+                        .update(ctx, |model, _| model.abandon_pending_detection());
+                }
                 let queued = self
                     .verdict_wait
                     .take()
@@ -13219,24 +13248,11 @@ impl Input {
                     ctx.emit(Event::ReplayAfterDeferredEnter);
                 }
             }
-            YoungSubmit::Wait => {
+            EnterVerdictWait::Wait => {
                 ctx.spawn(
-                    Timer::after(std::time::Duration::from_millis(10)),
+                    Timer::after(std::time::Duration::from_millis(2)),
                     move |me, _, ctx| me.wait_for_verdict_then_enter(text, started, ctx),
                 );
-            }
-            YoungSubmit::KeepInEditor => {
-                // Everything typed behind the Enter that gave up stays in the editor, in order
-                // (a queued Enter has nothing to submit yet).
-                let rest = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued_text())
-                    .unwrap_or_default();
-                self.verdict_wait_gave_up_on = Some(format!("{text}{rest}"));
-                if !rest.is_empty() {
-                    self.system_insert(&rest, ctx);
-                }
             }
         }
     }

@@ -245,8 +245,9 @@ pub struct SessionContext {
     workflow_aliases: HashMap<String, String>,
 
     /// When set, `generator_context()` is `None`: no completion generator or alias command is
-    /// ever run. Used for highlighting/input detection on non-local sessions, where every
-    /// generator is a command on the shared ssh connection (#1130).
+    /// ever run. Used for the input-type classification parse (#1158); fix/1130 also uses it for
+    /// highlighting on non-local sessions, where every generator is a command on the shared ssh
+    /// connection.
     generators_disabled: bool,
 }
 
@@ -259,6 +260,16 @@ impl SessionContext {
         if !self.session.is_local() {
             self.generators_disabled = true;
         }
+        self
+    }
+
+    /// A context for the input-type classification parse, on every session (#1158). The verdict
+    /// Enter may be waiting on must come from local signals only (command word, aliases,
+    /// history, syntax): a generator is a process spawn locally and a command on the shared ssh
+    /// connection remotely, seconds for `systemctl`, and classification must be fast and
+    /// deterministic whichever session the line is typed in.
+    pub fn for_classification(mut self) -> Self {
+        self.generators_disabled = true;
         self
     }
 
