@@ -855,8 +855,55 @@ fn establish_connection_with_deadline(
     };
     wal_result.context("Failed to enable WAL")?;
     conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
+    if !read_only {
+        apply_wal_durability_pragmas(&mut conn);
+    }
 
     Ok(conn)
+}
+
+#[derive(diesel::QueryableByName)]
+struct JournalModeRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
+}
+
+/// Relaxes the writer connection's fsync policy and caps WAL growth. Only does
+/// anything when the database really is in WAL mode; in any other journal mode
+/// `synchronous=NORMAL` is NOT crash-safe, so it is skipped there.
+///
+/// Durability trade-off: SQLite's default `synchronous=FULL` fsyncs the WAL on
+/// every commit (about 0.5 ms median, p95 2 ms on NVMe, far more on slow or
+/// encrypted disks), and the writer commits once per event. With `NORMAL` in
+/// WAL mode a commit is written to the OS but not fsynced; the WAL is synced
+/// at checkpoints. That is safe against an application crash or SIGKILL (the
+/// written frames live in the OS page cache and survive process death). Only an
+/// OS crash or power loss can drop the last few commits, and it can never
+/// corrupt the database: WAL frames carry checksums, so a torn tail is simply
+/// discarded on recovery. Everything stored here (history, blocks, layout,
+/// conversations) tolerates losing the final moments, and the clean-quit path
+/// still ends in `wal_checkpoint(TRUNCATE)`, which syncs the database file.
+///
+/// `journal_size_limit` makes the WAL file shrink back to 8 MB after a
+/// checkpoint instead of staying at the size of its largest spike (one block
+/// write can be several MB).
+fn apply_wal_durability_pragmas(conn: &mut SqliteConnection) {
+    let in_wal_mode = diesel::sql_query("PRAGMA journal_mode")
+        .get_result::<JournalModeRow>(conn)
+        .map(|row| row.journal_mode.eq_ignore_ascii_case("wal"))
+        .unwrap_or(false);
+    if !in_wal_mode {
+        log::warn!("SQLite is not in WAL mode; leaving synchronous at its default");
+        return;
+    }
+    if let Err(err) = conn.batch_execute(
+        r#"
+        PRAGMA synchronous=NORMAL;
+        PRAGMA journal_size_limit=8388608;
+    "#,
+    ) {
+        log::warn!("Failed to relax SQLite synchronous mode: {err:#}");
+    }
 }
 
 /// Opens a standalone read-write SQLite database that holds only the
@@ -917,6 +964,33 @@ pub fn establish_codebase_index_connection(database_url: &str) -> Result<SqliteC
     Ok(conn)
 }
 
+/// The log level for a message SQLite reports through its log hook.
+///
+/// `err_code` is an extended error code (https://www.sqlite.org/rescode.html#primary_result_codes_versus_extended_result_codes).
+/// In general, the least-significant byte of an extended error code is the primary error
+/// code it belongs to. Each primary error code can also be used where an extended error
+/// code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
+fn sqlite_log_level(err_code: i32) -> log::Level {
+    let primary_error_code = err_code & 0xFF;
+    match (primary_error_code, err_code) {
+        // This usually means that a schema change invalidated a prepared statement.
+        (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
+        // The WAL was replayed on open because the previous process did not shut down
+        // cleanly (killed, crashed, power loss). Recovery is routine and keeps the data
+        // (#1155), so it is informational.
+        (_, sqlite3::SQLITE_NOTICE_RECOVER_WAL) => log::Level::Info,
+        // These are used with sqlite3_log, in extensions.
+        (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
+        // According to the docs, this error means that the database file was moved (or deleted),
+        // so SQLite can't safely modify it and the rollback journal:
+        //     https://www.sqlite.org/rescode.html#readonly_dbmoved
+        // This is mostly outside of Zap's control (e.g. the user or some system program is
+        // moving around files in the user data directory), so downgrade to a warning.
+        (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
+        _ => log::Level::Error,
+    }
+}
+
 /// Set up SQLite [error logging](https://www.sqlite.org/errlog.html)
 ///
 /// ## Safety
@@ -933,19 +1007,7 @@ unsafe fn init_logging() { unsafe {
         // code it belongs to. Each primary error code can also be used where an extended error
         // code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
         let primary_error_code = err_code & 0xFF;
-        let level = match (primary_error_code, err_code) {
-            // This usually means that a schema change invalidated a prepared statement.
-            (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
-            // These are used with sqlite3_log, in extensions.
-            (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
-            // According to the docs, this error means that the database file was moved (or deleted),
-            // so SQLite can't safely modify it and the rollback journal:
-            //     https://www.sqlite.org/rescode.html#readonly_dbmoved
-            // This is mostly outside of Zap's control (e.g. the user or some system program is
-            // moving around files in the user data directory), so downgrade to a warning.
-            (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
-            _ => log::Level::Error,
-        };
+        let level = sqlite_log_level(err_code);
 
         // Safety: the message pointer came from the SQLite library, which promises that it's a
         // valid C string pointer.
@@ -1943,6 +2005,18 @@ fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
     setup_database(path)
 }
 
+/// Startup GC: deletes `blocks` rows of panes that are not in the saved session and
+/// started more than `ORPHAN_BLOCK_MIN_AGE` ago. Failure is logged and ignored; it is
+/// housekeeping and must never keep the writer from starting.
+fn gc_orphaned_blocks(conn: &mut SqliteConnection) {
+    let cutoff = (Utc::now() - super::block_list::ORPHAN_BLOCK_MIN_AGE).naive_utc();
+    match super::block_list::delete_orphaned_blocks(conn, cutoff) {
+        Ok(0) => {}
+        Ok(deleted) => log::info!("Removed {deleted} orphaned terminal blocks older than 7 days"),
+        Err(err) => log::warn!("Failed to remove orphaned terminal blocks: {err:#}"),
+    }
+}
+
 fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<WriterHandles> {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_SIZE);
     // `None` while paused: the connection is closed before the file is removed.
@@ -1973,6 +2047,11 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             let mut retry_deadline: Option<std::time::Instant> = None;
             // #971: non-snapshot events blocked by a lock, replayed in order.
             let mut retry_queue = RetryQueue::default();
+            // Reclaim blocks of long-gone panes once per launch (#1155). Done here, on the
+            // writer thread, so the main thread never waits on it.
+            if let Some(conn) = current_conn.as_mut() {
+                gc_orphaned_blocks(conn);
+            }
             loop {
                 // Whether this iteration is a retry of the pending snapshot.
                 let mut timed_out = false;

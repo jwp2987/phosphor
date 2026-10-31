@@ -350,6 +350,32 @@ pub(super) fn delete_blocks(conn: &mut SqliteConnection, pane_id: Vec<u8>) -> Re
     })
 }
 
+/// How old an unreferenced block must be before the startup GC may delete it.
+/// The floor keeps the GC from racing a pane that was just created (its blocks
+/// land before the next session snapshot) or a second live instance.
+pub(super) const ORPHAN_BLOCK_MIN_AGE: chrono::Duration = chrono::Duration::days(7);
+
+/// Deletes `blocks` rows whose pane no longer exists in `terminal_panes` and that
+/// started before `older_than` (UTC, as stored). Such rows are unreachable: restore
+/// reads blocks through the panes of the saved session, and the only other deleters
+/// are an explicit pane close and the per-pane cap, so sessions that ended by quit
+/// or crash leave their blocks behind forever (#1155). Rows with no `start_ts` are
+/// kept. Returns the number of rows deleted.
+pub(super) fn delete_orphaned_blocks(
+    conn: &mut SqliteConnection,
+    older_than: NaiveDateTime,
+) -> Result<usize, Error> {
+    use schema::{blocks, terminal_panes};
+    diesel::delete(
+        blocks::table
+            .filter(
+                blocks::pane_leaf_uuid.ne_all(terminal_panes::table.select(terminal_panes::uuid)),
+            )
+            .filter(blocks::start_ts.lt(older_than)),
+    )
+    .execute(conn)
+}
+
 pub(super) fn update_block_agent_view_visibility(
     conn: &mut SqliteConnection,
     target_block_id: &str,

@@ -132,6 +132,11 @@ impl PublicPreferences {
         self.0.reload_from_disk_deferred()
     }
 
+    /// Blocks until background settings writes are on disk (call on quit).
+    pub fn flush_pending_writes(&self) {
+        self.0.flush_pending_writes()
+    }
+
     /// Restores the settings file from memory if it is still missing. Returns whether it did.
     pub fn restore_if_still_deleted(&self) -> bool {
         self.0.restore_if_still_deleted()

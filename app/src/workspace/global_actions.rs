@@ -214,8 +214,17 @@ fn save_app_snapshot_now(ctx: &mut AppContext) {
     let app_state = get_app_state(ctx);
     let event = ModelEvent::Snapshot(app_state);
 
-    if let Err(err) = model_event_sender.send(event) {
-        log::error!("Error trying to send model event {err:?}");
+    // Never block the UI thread on a full writer channel (#1155). A newer snapshot always
+    // follows the next state change, and the writer drops all but the latest snapshot
+    // anyway, so a snapshot that does not fit is safe to skip.
+    match model_event_sender.try_send(event) {
+        Ok(()) => {}
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            log::debug!("SQLite writer channel is full; skipping this session snapshot");
+        }
+        Err(err @ std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            log::error!("Error trying to send model event {err:?}");
+        }
     }
 }
 

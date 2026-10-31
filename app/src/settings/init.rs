@@ -480,6 +480,8 @@ fn handle_warp_config_change(
             return;
         }
         Ok(user_preferences::ReloadOutcome::Reloaded) => {}
+        // Our own background write echoing back: the settings in memory are already current.
+        Ok(user_preferences::ReloadOutcome::OwnWrite) => return,
         Err(err) => {
             report_settings_reload_failure(&err, ctx);
             return;
@@ -599,6 +601,8 @@ pub fn init_public_user_preferences() -> (user_preferences::Model, Option<user_p
                     user_preferences::toml_backed::TomlBackedUserPreferences::new(
                         super::user_preferences_toml_file_path(),
                     );
+                // Settings writes run off the UI thread; flushed on quit (#1155).
+                let prefs = prefs.with_background_writer();
                 if let Some(err) = &parse_error {
                     log::warn!("Settings file has syntax errors and could not be parsed: {err}");
                 }

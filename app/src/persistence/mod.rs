@@ -231,6 +231,62 @@ impl Drop for PersistenceWriter {
     }
 }
 
+/// Hands `event` to the writer thread without ever blocking the caller.
+///
+/// The channel is bounded, and `SyncSender::send` parks the calling thread while
+/// it is full, which on the main thread freezes the UI behind a wedged writer
+/// (#1155). When the channel is full the event is returned so the caller can
+/// deliver it off-thread; a disconnected writer is an error. Nothing is dropped.
+pub fn try_send_or_defer(
+    sender: &SyncSender<ModelEvent>,
+    event: ModelEvent,
+) -> Result<Option<ModelEvent>, std::sync::mpsc::SendError<ModelEvent>> {
+    match sender.try_send(event) {
+        Ok(()) => Ok(None),
+        Err(std::sync::mpsc::TrySendError::Full(event)) => Ok(Some(event)),
+        Err(std::sync::mpsc::TrySendError::Disconnected(event)) => {
+            Err(std::sync::mpsc::SendError(event))
+        }
+    }
+}
+
+/// Sends `event` with `try_send` and, only if the channel is full, completes the
+/// (blocking) send on a short-lived background thread. Never blocks the caller and
+/// never drops a write; use it for events that are not superseded by a later one.
+/// Events deferred this way can reach the writer after later `try_send`s, so it
+/// is only for events whose relative order does not matter.
+pub fn send_model_event_nonblocking(
+    sender: &SyncSender<ModelEvent>,
+    event: ModelEvent,
+) -> Result<(), std::sync::mpsc::SendError<ModelEvent>> {
+    let Some(event) = try_send_or_defer(sender, event)? else {
+        return Ok(());
+    };
+    log::warn!("SQLite writer channel is full; sending the model event on a background thread");
+    let sender = sender.clone();
+    let pending = Arc::new(std::sync::Mutex::new(Some(event)));
+    let thread_pending = pending.clone();
+    let thread_sender = sender.clone();
+    let spawned = std::thread::Builder::new()
+        .name("SQLite deferred send".to_owned())
+        .spawn(move || {
+            let event = thread_pending.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(event) = event
+                && let Err(err) = thread_sender.send(event)
+            {
+                log::warn!("Deferred SQLite writer send failed: {err:?}");
+            }
+        });
+    if spawned.is_err() {
+        // Could not start a thread: fall back to the blocking send rather than lose the write.
+        let event = pending.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(event) = event {
+            return sender.send(event);
+        }
+    }
+    Ok(())
+}
+
 impl Entity for PersistenceWriter {
     type Event = ();
 }
@@ -570,3 +626,7 @@ pub enum ModelEvent {
         title: String,
     },
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

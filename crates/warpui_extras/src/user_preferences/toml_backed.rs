@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use sha2::{Digest, Sha256};
 use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table, Value};
 
+use super::background_writer::{BackgroundWriter, FailureFn, WriteFn, WRITE_DEBOUNCE};
 use super::Error;
 
 /// A settings file write (temp file + fsync + rename) slower than this is a visible stall (#1146).
@@ -141,6 +142,11 @@ pub struct TomlBackedUserPreferences {
     /// Whether the last write to the file failed, so a failure is reported
     /// once rather than on every subsequent setting change (#862).
     save_failing: Cell<bool>,
+
+    /// When set, writes are rendered here and written by a coalescing background
+    /// thread instead of inline (#1155). Off by default so the store stays
+    /// synchronous for callers and tests that read the file right after a write.
+    background: Option<BackgroundWriter>,
 }
 
 impl TomlBackedUserPreferences {
@@ -174,9 +180,54 @@ impl TomlBackedUserPreferences {
                 write_inhibited: Cell::new(write_inhibited),
                 write_inhibited_keys: RefCell::new(HashSet::new()),
                 save_failing: Cell::new(false),
+                background: None,
             },
             error,
         )
+    }
+
+    /// Moves this store's file writes onto a background thread (#1155).
+    ///
+    /// The document is still rendered on the calling thread (microseconds); the atomic
+    /// temp + fsync + rename happens on a thread that writes only the newest rendering,
+    /// at most once per [`WRITE_DEBOUNCE`]. A failed write is reported asynchronously
+    /// through the same channel as before (#862) instead of as the setter's `Result`.
+    /// Call [`flush_pending`](Self::flush_pending) on quit. The watcher's echo of our own
+    /// writes is recognised by content and not reloaded.
+    pub fn with_background_writer(self) -> Self {
+        self.with_background_writer_debounce(WRITE_DEBOUNCE)
+    }
+
+    fn with_background_writer_debounce(mut self, debounce: std::time::Duration) -> Self {
+        let path = self.file_path.clone();
+        let write: WriteFn =
+            std::sync::Arc::new(|path, data| crate::atomic_file::write(path, data));
+        let failure_path = path.clone();
+        let on_failure: FailureFn = std::sync::Arc::new(move |message| {
+            report_save_failure(SaveFailure {
+                path: failure_path.clone(),
+                message,
+                kind: SaveFailureKind::SaveFailed,
+            });
+        });
+        match BackgroundWriter::new(path, debounce, write, on_failure) {
+            Ok(writer) => self.background = Some(writer),
+            Err(err) => log::warn!(
+                "Could not start the settings writer thread ({err}); writing settings inline"
+            ),
+        }
+        self
+    }
+
+    /// Blocks until every change made so far is on disk. A no-op unless
+    /// [`with_background_writer`](Self::with_background_writer) was used.
+    pub fn flush_pending(&self) -> Result<(), Error> {
+        match &self.background {
+            Some(writer) => writer
+                .flush()
+                .map_err(|message| Error::Unknown(anyhow::anyhow!(message))),
+            None => Ok(()),
+        }
     }
 
     /// Loads the TOML document from disk, or returns an empty document if
@@ -269,7 +320,7 @@ impl TomlBackedUserPreferences {
                 return Ok(());
             }
         }
-        self.load_and_apply()
+        self.load_and_apply_unless_own_write().map(|_| ())
     }
 
     /// Like [`reload_from_disk`](Self::reload_from_disk) but never sleeps. If the
@@ -281,8 +332,32 @@ impl TomlBackedUserPreferences {
         if self.is_restore_candidate() {
             return Ok(super::ReloadOutcome::DeletionPending);
         }
-        self.load_and_apply()
-            .map(|()| super::ReloadOutcome::Reloaded)
+        self.load_and_apply_unless_own_write().map(|reloaded| {
+            if reloaded {
+                super::ReloadOutcome::Reloaded
+            } else {
+                super::ReloadOutcome::OwnWrite
+            }
+        })
+    }
+
+    /// Reloads from disk unless the file holds exactly what this store's background
+    /// writer wrote: the watcher reports our own writes too, and reloading an older
+    /// write over newer in-memory settings would revert them. Returns whether it reloaded.
+    ///
+    /// A file that is *not* ours was changed by someone else, and the reload replaces the
+    /// in-memory document with it; a write still pending was rendered from the document
+    /// being replaced and would undo their edit, so it is discarded first.
+    fn load_and_apply_unless_own_write(&self) -> Result<bool, Error> {
+        if let Some(writer) = &self.background {
+            if let Ok(contents) = std::fs::read(&self.file_path) {
+                if writer.is_recent_write(&contents) {
+                    return Ok(false);
+                }
+            }
+            writer.discard_pending();
+        }
+        self.load_and_apply().map(|()| true)
     }
 
     /// Restores the settings file from the in-memory settings if it is still
@@ -303,7 +378,7 @@ impl TomlBackedUserPreferences {
         );
         // A failure is logged and reported to the user by `flush`; the
         // in-memory settings stay intact either way.
-        if self.flush().is_ok() {
+        if self.flush().and_then(|()| self.flush_pending()).is_ok() {
             report_save_failure(SaveFailure {
                 path: self.file_path.clone(),
                 message: String::new(),
@@ -418,8 +493,16 @@ impl TomlBackedUserPreferences {
         // `crate::atomic_file`).
         let write_start = std::time::Instant::now();
         let data = self.document.borrow().to_string();
+        let data = match &self.background {
+            Some(writer) => match writer.queue(data) {
+                Ok(()) => return Ok(()),
+                // The writer thread is gone: write inline rather than lose the change.
+                Err(data) => data,
+            },
+            None => data,
+        };
         let written = crate::atomic_file::write(&self.file_path, data);
-        // #1146: the fsync here runs on whichever thread saved the setting.
+        // #1146: an inline write (no background writer) fsyncs on the thread that saved the setting.
         SLOW_SETTINGS_WRITE.finish(write_start, || format!("path={}", self.file_path.display()));
         match written {
             Ok(()) => {
@@ -811,6 +894,12 @@ impl super::UserPreferences for TomlBackedUserPreferences {
 
     fn remove_value(&self, key: &str) -> Result<(), Error> {
         self.remove_value_with_hierarchy(key, None)
+    }
+
+    fn flush_pending_writes(&self) {
+        if let Err(err) = self.flush_pending() {
+            log::warn!("Could not flush pending settings writes: {err}");
+        }
     }
 
     fn inhibit_writes_for_key(&self, key: &str, hierarchy: Option<&str>) {

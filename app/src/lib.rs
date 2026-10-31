@@ -2483,6 +2483,14 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
     }
 
     fn terminate_persistence_writer(&mut self) {
+        // Settings changes are written by a background thread (#1155); make sure the last
+        // one is on disk before the process goes away.
+        if self
+            .ctx
+            .has_singleton_model::<::settings::PublicPreferences>()
+        {
+            ::settings::PublicPreferences::as_ref(self.ctx).flush_pending_writes();
+        }
         // Unbounded on purpose: this drains queued writes and checkpoints the WAL, and
         // abandoning it loses the last app state. The SIGTERM path's 5s watchdog still
         // bounds it there.
