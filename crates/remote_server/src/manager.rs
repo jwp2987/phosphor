@@ -687,6 +687,7 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::ClientRequestFailed { session_id, .. }
             | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { session_id, .. }
             | RemoteServerManagerEvent::CodebaseIndexMutationFailed { session_id, .. }
+            | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id }
             | RemoteServerManagerEvent::ServerMessageDecodingError { session_id } => {
                 Some(*session_id)
             }
