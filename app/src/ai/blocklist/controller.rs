@@ -1176,6 +1176,15 @@ impl BlocklistAIController {
     /// request's end (`deferred_monitored_completions`): the model's reply may end on the stale
     /// "still running" snapshot, and `BlockCompleted` does not fire twice. Returns whether a
     /// request was sent.
+    /// Records that `block_id`'s completion is already carried by a request (the take-over
+    /// auto-resume `on_user_block_completed` sends with the block as context), so the monitored
+    /// completion of the same block is dropped (`already_followed_up`) instead of being held
+    /// behind that resume and reported a second time when it ends.
+    pub(crate) fn note_block_reported(&mut self, block_id: &BlockId) {
+        self.monitored_completion_follow_ups
+            .insert(block_id.clone());
+    }
+
     pub(crate) fn follow_up_on_monitored_command_completed(
         &mut self,
         conversation_id: AIConversationId,

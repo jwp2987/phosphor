@@ -14215,6 +14215,9 @@ impl TerminalView {
             };
 
             self.ai_controller.update(ctx, |controller, ctx| {
+                // This resume carries the block: the monitored-completion hook that follows must
+                // not hold it behind this request and report it again at the end (#1178).
+                controller.note_block_reported(block_id);
                 controller.resume_conversation(
                     conversation_id,
                     /*is_auto_resume_after_error*/ false,
