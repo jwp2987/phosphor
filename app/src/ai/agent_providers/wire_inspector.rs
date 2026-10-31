@@ -82,7 +82,9 @@ pub struct WireInspectorView {
     /// Last `wire_log::generation()` we rendered, so the refresh tick only
     /// repaints when new traffic actually landed.
     last_generation: u64,
-    /// Keeps the self-rescheduling refresh timer alive (dropping it aborts it).
+    /// Keeps the self-rescheduling refresh timer alive (dropping it aborts it). `None`
+    /// while the window is closed: the workspace builds this view eagerly, and a timer
+    /// left running here woke the UI thread every 400 ms for the whole session.
     _refresh_handle: Option<SpawnedFutureHandle>,
 }
 
@@ -148,8 +150,6 @@ impl WireInspectorView {
                 .on_click(|ctx| ctx.dispatch_typed_action(WireInspectorAction::ToggleCapture))
         });
 
-        let refresh_handle = Self::spawn_refresh_tick(ctx);
-
         Self {
             search_editor,
             search: String::new(),
@@ -160,8 +160,20 @@ impl WireInspectorView {
             copy_button,
             capture_button,
             last_generation: wire_log::generation(),
-            _refresh_handle: Some(refresh_handle),
+            _refresh_handle: None,
         }
+    }
+
+    /// Start the live refresh; called when the window opens.
+    pub fn start_refresh(&mut self, ctx: &mut ViewContext<Self>) {
+        if self._refresh_handle.is_none() {
+            self._refresh_handle = Some(Self::spawn_refresh_tick(ctx));
+        }
+    }
+
+    /// Stop the live refresh (aborts the pending timer); called when the window closes.
+    pub fn stop_refresh(&mut self) {
+        self._refresh_handle = None;
     }
 
     /// Spawn a one-shot timer; on fire it repaints (if new traffic arrived) and
@@ -565,7 +577,6 @@ impl WireInspectorView {
 
 pub struct WireInspectorModal {
     modal: ViewHandle<Modal<WireInspectorView>>,
-    #[allow(dead_code)]
     view: ViewHandle<WireInspectorView>,
 }
 
@@ -590,6 +601,17 @@ impl WireInspectorModal {
 
     fn handle_close(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.emit(WireInspectorModalEvent::Close);
+    }
+
+    /// Run the inspector's live-refresh timer only while the window is open.
+    pub fn set_open(&mut self, open: bool, ctx: &mut ViewContext<Self>) {
+        self.view.update(ctx, |view, ctx| {
+            if open {
+                view.start_refresh(ctx);
+            } else {
+                view.stop_refresh();
+            }
+        });
     }
 }
 
