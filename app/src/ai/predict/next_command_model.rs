@@ -1069,7 +1069,13 @@ fn scan_history_for_autosuggestions<'a>(
             }
             visited += 1;
         }
-        if !entry.command.starts_with(buffer_text) || excluded_commands.contains(&entry.command) {
+        // #1284: an entry equal to the buffer has nothing to suggest. Kept, it is the newest match
+        // as soon as the bare prefix has run once (a single missed accept), and its empty suffix
+        // shadowed every longer command for the rest of the session.
+        if !entry.command.starts_with(buffer_text)
+            || entry.command == buffer_text
+            || excluded_commands.contains(&entry.command)
+        {
             continue;
         }
         let same_dir = entry

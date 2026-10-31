@@ -644,3 +644,40 @@ fn similar_history_context_cache_reuses_result_per_block_until_ttl() {
     );
     assert_eq!(calls.get(), 5);
 }
+
+/// #1284: once the bare prefix has been run (one missed accept is enough), it is the newest
+/// entry that starts with the buffer. It must not shadow the longer commands: its empty suffix
+/// switched the history ghost off for the rest of the session.
+#[test]
+fn test_autosuggestion_from_history_skips_the_entry_equal_to_the_buffer() {
+    let history_entries = [
+        HistoryEntry::command_only("echo seedghost_alpha1"),
+        HistoryEntry::command_only("echo seedghost_alpha3"),
+        // Run bare after a missed accept; every later cycle appends another.
+        HistoryEntry::command_only("echo seedghost_alp"),
+        HistoryEntry::command_only("echo seedghost_alp"),
+    ]
+    .map(Arc::new);
+
+    let found = find_potential_autosuggestions_from_history(
+        history_entries.iter(),
+        "echo seedghost_alp",
+        None,
+        &HashSet::new(),
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert_eq!(
+        commands(found),
+        vec!["echo seedghost_alpha3", "echo seedghost_alpha1"]
+    );
+
+    // Only the bare prefix in history: nothing to suggest.
+    let only_bare = find_potential_autosuggestions_from_history(
+        history_entries[2..].iter(),
+        "echo seedghost_alp",
+        None,
+        &HashSet::new(),
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert!(only_bare.is_empty());
+}

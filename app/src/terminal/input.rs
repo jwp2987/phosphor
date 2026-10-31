@@ -9039,6 +9039,8 @@ impl Input {
                                         .next_command
                                         .command
                                         .starts_with(&buffer_text)
+                                        // #1284: the bare prefix has no suffix to offer.
+                                        && history_context.next_command.command != buffer_text
                                         && !ignored_suggestions
                                             .contains(&history_context.next_command.command)
                                     {
