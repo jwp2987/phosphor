@@ -98,6 +98,10 @@ impl CommandExecutor for RemoteServerCommandExecutor {
         }
     }
 
+    // `cancel_active_commands` is deliberately NOT overridden: it is session-global and would
+    // also kill unrelated probes (#616). Cancellation is per request instead: dropping the
+    // `execute_command` future drops `RemoteServerClient::run_command`, which sends an `Abort`
+    // for that request so the server kills the command (#1128).
     fn as_any(&self) -> &dyn Any {
         self
     }

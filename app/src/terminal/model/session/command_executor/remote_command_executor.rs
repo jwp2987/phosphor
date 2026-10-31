@@ -103,6 +103,8 @@ impl CommandExecutor for RemoteCommandExecutor {
         };
 
         command.args(ssh_args);
+        // A superseded generator is cancelled by dropping this future; `kill_on_drop` then kills
+        // the local ssh client, closing its channel on the shared connection (#1128).
         command
             .kill_on_drop(true)
             .output()
