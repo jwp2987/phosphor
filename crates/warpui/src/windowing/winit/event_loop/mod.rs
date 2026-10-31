@@ -10,7 +10,7 @@ use std::mem::ManuallyDrop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::notification::RequestPermissionsOutcome;
 
-use draw_retry::{is_slow_frame, DrawRetryState, RateLimitedSummary};
+use draw_retry::{is_slow_frame, DrawRetryState, MinimizedRedrawGate, RateLimitedSummary};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::AbortHandle;
 use instant::{Duration, Instant};
@@ -183,6 +183,8 @@ struct WindowState {
     /// When set, a frame was skipped for a transient reason and a redraw must be requested once
     /// this instant passes. Serviced at the top of [`EventLoop::handle_event`].
     redraw_retry_at: Option<Instant>,
+    /// Skips redraws while the window is minimized; see [`MinimizedRedrawGate`].
+    minimized_gate: MinimizedRedrawGate,
     /// For touch events, stores whether soft keyboard was requested during LeftMouseDown.
     /// This is needed because touch keyboard updates are deferred to LeftMouseUp, but the
     /// UI element only requests the keyboard during LeftMouseDown.
@@ -207,6 +209,7 @@ impl WindowState {
             momentum_scroll_abort: None,
             draw_retry: DrawRetryState::default(),
             redraw_retry_at: None,
+            minimized_gate: MinimizedRedrawGate::default(),
             #[cfg(target_family = "wasm")]
             pending_soft_keyboard_request: false,
         }
@@ -1160,6 +1163,15 @@ impl EventLoop {
 
         let window = downcast_window(window.as_ref());
 
+        // A minimized window cannot show a frame: skip the scene build, the texture acquire and
+        // the retry timer. The next event after it is restored requests the redraw again.
+        if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+            if state.minimized_gate.should_skip_redraw(window.is_minimized()) {
+                state.redraw_retry_at = None;
+                return;
+            }
+        }
+
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if crate::windowing::winit::linux::take_encountered_bad_match_from_dri3_fence_from_fd() {
             log::warn!("Encountered a DRI3FenceFromFd error, forcing use of the NVIDIA GPU and recreating resources...");
@@ -1300,6 +1312,13 @@ impl EventLoop {
         else {
             return;
         };
+
+        if window_state
+            .minimized_gate
+            .redraw_due_on_event(downcast_window(window.as_ref()).is_minimized())
+        {
+            downcast_window(window.as_ref()).request_redraw_keeping_scene();
+        }
 
         match event {
             ConvertedEvent::Event(event) => {
