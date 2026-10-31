@@ -368,6 +368,10 @@ impl AltScreen {
         self.grid_handler.clear_marked_text();
     }
 
+    pub(super) fn has_marked_text(&self) -> bool {
+        self.grid_handler.marked_text().is_some()
+    }
+
     pub fn inferred_bg_color(&self) -> Option<ColorU> {
         self.bg_color_sampler
             .lock()

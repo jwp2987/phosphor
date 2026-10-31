@@ -3186,6 +3186,10 @@ impl Block {
         }
         self.output_grid.clear_marked_text();
     }
+
+    pub(super) fn has_marked_text(&self) -> bool {
+        self.output_grid.has_marked_text()
+    }
 }
 
 /// Used in the ansi::Handler implementation for Block below. Performs

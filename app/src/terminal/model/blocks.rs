@@ -4542,6 +4542,10 @@ impl BlockList {
         active_block.clear_marked_text();
     }
 
+    pub(in crate::terminal) fn has_marked_text(&self) -> bool {
+        self.active_block().has_marked_text()
+    }
+
     pub fn last_non_hidden_ai_block_handle(&self, app: &AppContext) -> Option<ViewHandle<AIBlock>> {
         let rich_content_view_id = self
             .last_non_hidden_rich_content_block_after_block(None)?

@@ -3457,3 +3457,25 @@ fn running_multiline_command_title_does_not_replace_a_custom_title() {
         Some("sleep 5\u{2026}")
     );
 }
+
+#[test]
+fn test_clear_marked_text_is_noop_without_marked_text() {
+    let _ime = FeatureFlag::ImeMarkedText.override_enabled(true);
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.enter_alt_screen(true);
+    assert!(terminal.alt_screen_active);
+
+    let before = terminal.alt_screen().grid_handler().content_generation();
+    assert!(!terminal.has_marked_text());
+    assert!(!terminal.clear_marked_text());
+    assert_eq!(
+        terminal.alt_screen().grid_handler().content_generation(),
+        before,
+        "clearing with nothing marked must not invalidate the grid"
+    );
+
+    terminal.set_marked_text("あ", &(0..1));
+    assert!(terminal.has_marked_text());
+    assert!(terminal.clear_marked_text());
+    assert!(!terminal.has_marked_text());
+}
