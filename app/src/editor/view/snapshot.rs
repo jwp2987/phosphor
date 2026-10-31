@@ -809,6 +809,25 @@ pub(crate) const LARGE_BUFFER_ROWS: u32 = 2000;
 /// so paging and cursor moves land on real layouts. At least this, and four viewports.
 pub(crate) const OFFSCREEN_ROW_MARGIN: u32 = 300;
 
+/// Whether a `PHOSPHOR_EDITOR_FULL_LAYOUT` value forces the full layout of every row (the
+/// kill switch for the windowed layout, #1191): `1`, `true`, `yes` or `on`, any case.
+pub(crate) fn full_layout_flag_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// `PHOSPHOR_EDITOR_FULL_LAYOUT=1` turns the windowed layout off. Read once.
+pub(crate) fn editor_full_layout_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| {
+        full_layout_flag_enabled(std::env::var("PHOSPHOR_EDITOR_FULL_LAYOUT").ok().as_deref())
+    })
+}
+
 /// Whether `row` gets a real layout: always when `real_rows` is `None`.
 fn row_is_laid_out(real_rows: Option<&[Range<u32>]>, row: u32) -> bool {
     real_rows.is_none_or(|ranges| ranges.iter().any(|range| range.contains(&row)))

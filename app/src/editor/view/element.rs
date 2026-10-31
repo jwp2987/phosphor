@@ -3,7 +3,8 @@ use super::super::soft_wrap::{
 };
 use super::model::MarkedTextState;
 use super::snapshot::{
-    LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, large_buffer_real_rows, rows_cannot_wrap,
+    LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, editor_full_layout_forced,
+    large_buffer_real_rows, rows_cannot_wrap,
 };
 use super::{
     position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
@@ -1444,6 +1445,7 @@ impl EditorElement {
         const MAX_WINDOWED_SELECTIONS: usize = 8;
 
         if !self.soft_wrap
+            || editor_full_layout_forced()
             || total_rows < LARGE_BUFFER_ROWS
             || visible.end == u32::MAX
             || !self.remote_selections_data.is_empty()

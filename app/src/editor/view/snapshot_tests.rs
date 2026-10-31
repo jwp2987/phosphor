@@ -149,3 +149,15 @@ fn test_rows_cannot_wrap_needs_a_proof_that_every_row_fits() {
     assert!(!rows_cannot_wrap(1, true, true, 13., f32::INFINITY));
     assert!(!rows_cannot_wrap(1, true, true, f32::NAN, 1300.));
 }
+
+#[test]
+fn test_full_layout_flag_parse() {
+    assert!(!full_layout_flag_enabled(None));
+    assert!(!full_layout_flag_enabled(Some("")));
+    assert!(!full_layout_flag_enabled(Some("0")));
+    assert!(!full_layout_flag_enabled(Some("off")));
+    assert!(full_layout_flag_enabled(Some("1")));
+    assert!(full_layout_flag_enabled(Some(" TRUE ")));
+    assert!(full_layout_flag_enabled(Some("On")));
+    assert!(full_layout_flag_enabled(Some("yes")));
+}
