@@ -820,12 +820,14 @@ impl BlockGrid {
         self.grid_handler_mut().clear_filter();
     }
 
+    /// Heap used by the grid's cells: the live grid storage plus flat storage (where a finished
+    /// grid's content lives once `MaximizeFlatStorage` compacts it).
     pub fn estimated_heap_usage_bytes(&self) -> usize {
-        self.grid_storage().estimated_heap_usage_bytes()
+        self.grid_storage().estimated_heap_usage_bytes() + self.flat_storage_bytes()
     }
 
     pub fn estimated_memory_usage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.grid_storage().estimated_heap_usage_bytes()
+        std::mem::size_of::<Self>() + self.estimated_heap_usage_bytes()
     }
 
     pub fn flat_storage_lines(&self) -> usize {

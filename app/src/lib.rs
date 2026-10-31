@@ -3177,6 +3177,14 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // runtime, without a rebuild, with `ZAP_DISABLED_FEATURES=typeahead_handoff` (below).
     flags.insert(FeatureFlag::TypeaheadHandoff);
 
+    // Finished blocks are compacted into flat storage (#1152). `GridHandler::finish` is the
+    // only reader: without the flag a finished grid keeps up to a screen of 24-byte cells,
+    // blanks included, per block (~240 KB at 50x200 for a screenful of output). Upstream
+    // received this flag from server-delivered flags, which this fork dropped, so it was
+    // silently dark. Default ON on every channel; the runtime opt-out is
+    // `ZAP_DISABLED_FEATURES=maximize_flat_storage`.
+    flags.insert(FeatureFlag::MaximizeFlatStorage);
+
     let extra_flags: &[FeatureFlag] = &[
         #[cfg(feature = "autoupdate")]
         FeatureFlag::Autoupdate,
@@ -3607,8 +3615,10 @@ fn apply_feature_env_overrides(
 }
 
 /// Default-on flags that `ZAP_DISABLED_FEATURES` can switch back off, by name.
-const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] =
-    &[("typeahead_handoff", FeatureFlag::TypeaheadHandoff)];
+const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] = &[
+    ("typeahead_handoff", FeatureFlag::TypeaheadHandoff),
+    ("maximize_flat_storage", FeatureFlag::MaximizeFlatStorage),
+];
 
 /// The flags a `ZAP_DISABLED_FEATURES` value disables: comma- or whitespace-separated names from
 /// `DISABLEABLE_FEATURES`, with `-` accepted for `_`. Unknown names disable nothing and are
