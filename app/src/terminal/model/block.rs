@@ -1311,6 +1311,10 @@ impl Block {
     pub fn start(&mut self) {
         if self.start_ts.is_none() {
             self.start_ts = Some(Local::now());
+            // A ^C typed at the prompt (to clear a line) was recorded on this block before it had
+            // a command; it did not interrupt the command that starts now (#1178). A later
+            // `start` (preexec of an already started block) keeps a ^C typed after the Enter.
+            self.interrupted_by_ctrl_c = false;
         }
 
         self.header_grid.start_command_grid();
