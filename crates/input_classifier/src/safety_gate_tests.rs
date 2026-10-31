@@ -1018,12 +1018,13 @@ fn test_plain_terminal_keeps_command_headed_lines_in_the_shell() {
 }
 
 /// The completion spec is the evidence when it is loaded: a first argument it describes as a
-/// subcommand makes `make commit port` a command line; a flag description does too.
+/// subcommand makes `mytool deploy now` a command line. (`make commit port` is no longer an
+/// example: ccb537046, #1183, deliberately checks make targets before the spec description.)
 #[test]
 fn test_agent_conversation_trusts_spec_described_subcommands() {
     futures::executor::block_on(async move {
         for (buffer, described_index, kind) in [
-            ("make commit port", 1, SuggestionType::Subcommand),
+            ("mytool ship it", 1, SuggestionType::Subcommand),
             ("mytool deploy now", 1, SuggestionType::Subcommand),
         ] {
             let mut snapshot = snapshot_head_known(buffer);
