@@ -954,7 +954,7 @@ impl BlocklistAIInputModel {
             {
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::AI, ctx);
-                self.settle_detection(&input.buffer_text);
+                self.settle_detection(&input.buffer_text, ctx);
             } else if self.input_config.input_type == InputType::AI
                 && head_known_to_shell
                 && !input.buffer_text.trim().contains('\n')
@@ -966,7 +966,7 @@ impl BlocklistAIInputModel {
                 // classifier verdict.
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::Shell, ctx);
-                self.settle_detection(&input.buffer_text);
+                self.settle_detection(&input.buffer_text, ctx);
                 return true;
             }
             return false;
@@ -975,7 +975,7 @@ impl BlocklistAIInputModel {
         // later is no longer requested and is dropped by the view.
         self.abort_in_progress_detection();
         self.apply_autodetected_input_type(InputType::Shell, ctx);
-        self.settle_detection(&input.buffer_text);
+        self.settle_detection(&input.buffer_text, ctx);
         true
     }
 
@@ -1024,9 +1024,13 @@ impl BlocklistAIInputModel {
 
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
     /// verdict for that text.
-    fn settle_detection(&mut self, buffer_text: &str) {
+    ///
+    /// #1181: notifies observers when a pending detection settles, so an Enter deferred behind
+    /// the verdict is released by the verdict landing instead of waiting for its next timer tick.
+    fn settle_detection(&mut self, buffer_text: &str, ctx: &mut ModelContext<Self>) {
         if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
             self.pending_detection_buffer = None;
+            ctx.notify();
         }
     }
 
@@ -1218,20 +1222,20 @@ impl BlocklistAIInputModel {
 
         // If the input mode is locked, there's no point in running autodetection.
         if !self.should_run_input_autodetection(ctx) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
         // #851: the agent is streaming and the input is its steer box; keep it AI.
         if self.is_steering_running_agent(ctx) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
         // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
         // for only; new text is classified (#833).
         if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
         if self
@@ -1247,7 +1251,7 @@ impl BlocklistAIInputModel {
         // (`$(..)`, `;`, `>`) on Enter, and forcing AI would send it all to the model. Leave
         // whatever type the user is in.
         if exceeds_autodetect_limit(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
@@ -1257,7 +1261,7 @@ impl BlocklistAIInputModel {
             //
             // We don't know enough (anything) to be able to change the input type one way or
             // another.
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         };
 
@@ -1270,7 +1274,7 @@ impl BlocklistAIInputModel {
         // Early return if the first token is included in the denylist. No need to parse history.
         if denylist.contains(&first_token_str.as_str()) {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
@@ -1283,7 +1287,7 @@ impl BlocklistAIInputModel {
         // `input_classifier::util::is_unambiguous_shell_command`.
         if input_classifier::util::is_unambiguous_shell_command(&input) {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
@@ -1294,7 +1298,7 @@ impl BlocklistAIInputModel {
         // evidence anywhere is decided here; anything that could be a question falls through.
         if self.is_shell_typeahead(&input.buffer_text) {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
@@ -1448,7 +1452,7 @@ impl BlocklistAIInputModel {
                     // is not locked, and we should abort the autodetect future if the input is locked, but
                     // we do it anyway out of an abundance of caution.
                     if !me.should_run_input_autodetection(ctx) {
-                        me.settle_detection(&other_buffer_cloned);
+                        me.settle_detection(&other_buffer_cloned, ctx);
                         return;
                     }
                     // If the autodetect abort handle is none, it means we aborted autodetection.
@@ -1464,7 +1468,7 @@ impl BlocklistAIInputModel {
                     }
                     me.autodetect_abort_handle = None;
                     me.apply_autodetected_input_type(new_input_type, ctx);
-                    me.settle_detection(&other_buffer_cloned);
+                    me.settle_detection(&other_buffer_cloned, ctx);
                     if current_input_type != new_input_type {
                         let buffer_length = other_buffer_cloned.len();
                         let input_buffer_text_for_telemetry = should_collect_ai_ugc_telemetry(

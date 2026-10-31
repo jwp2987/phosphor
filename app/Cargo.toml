@@ -283,6 +283,7 @@ objc2-foundation = { workspace = true, features = [
 ] }
 permissions = "0.4.1"
 pprof = { workspace = true, optional = true, features = ["frame-pointer"] }
+prevent_sleep.workspace = true
 security-framework-sys = "2.0.0"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
