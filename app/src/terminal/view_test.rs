@@ -7689,6 +7689,8 @@ fn typing_after_the_user_takes_over_an_agent_command_reaches_the_pty() {
         let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .block_list_mut()
@@ -7722,6 +7724,8 @@ fn typing_during_a_user_owned_long_command_still_reaches_the_pty() {
         });
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("sleep 100000", "");
@@ -7744,6 +7748,8 @@ fn typing_at_a_prompt_of_an_agent_driven_command_reaches_the_pty() {
         let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .process_bytes(b"[sudo] password for me: ".as_slice());
