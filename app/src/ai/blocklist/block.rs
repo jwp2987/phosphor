@@ -235,6 +235,10 @@ const DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT: &str = "PendingAIRequestedEdits"
 const AUTO_EXPAND_REQUESTED_COMMAND_DELAY: std::time::Duration =
     std::time::Duration::from_millis(3000);
 
+/// How often a block in a hidden tab re-renders for streamed output; see
+/// [`AIBlock::notify_output_updated`].
+const HIDDEN_OUTPUT_RENDER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub const RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID: &str =
     "ai_block:rich_content_secret_first_char_position";
 
@@ -963,6 +967,10 @@ pub struct AIBlock {
     time_to_first_token: OnceCell<Duration>,
     time_to_last_token: Option<Duration>,
 
+    /// Whether a re-render for streamed output is already scheduled while this block's tab is
+    /// hidden; see [`Self::notify_output_updated`].
+    hidden_output_render_pending: bool,
+
     /// The number of blocks that were attached as context to this AI block's query.
     num_attached_context_blocks: usize,
 
@@ -1420,6 +1428,7 @@ impl AIBlock {
             state_handles: Default::default(),
             time_to_first_token: OnceCell::new(),
             time_to_last_token: None,
+            hidden_output_render_pending: false,
             num_attached_context_blocks,
             has_attached_context_selected_text,
             finish_reason: None,
@@ -1892,7 +1901,28 @@ impl AIBlock {
             }
         }
         ctx.emit(AIBlockEvent::AIOutputUpdated);
-        ctx.notify();
+        self.notify_output_updated(ctx);
+    }
+
+    /// Re-renders this block for new output. A block whose tab is hidden is re-rendered at most
+    /// once per [`HIDDEN_OUTPUT_RENDER_INTERVAL`] rather than once per streamed delta: nothing
+    /// shows it until its tab does, and a hidden view's notify is re-rendered eagerly all the same
+    /// (`Presenter::render_unmounted_updates`, #805), which for a streaming block is a markdown
+    /// relayout per delta on the main thread (#1282). The tab, when shown, lays out the element
+    /// from the last of these renders, at most that interval behind.
+    fn notify_output_updated(&mut self, ctx: &mut ViewContext<Self>) {
+        if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+            ctx.notify();
+            return;
+        }
+        if self.hidden_output_render_pending {
+            return;
+        }
+        self.hidden_output_render_pending = true;
+        ctx.spawn(Timer::after(HIDDEN_OUTPUT_RENDER_INTERVAL), |me, _, ctx| {
+            me.hidden_output_render_pending = false;
+            ctx.notify();
+        });
     }
 
     fn handle_updated_output(&mut self, output: &AIAgentOutput, ctx: &mut ViewContext<Self>) {

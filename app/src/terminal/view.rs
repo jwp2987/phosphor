@@ -12370,6 +12370,30 @@ impl TerminalView {
         });
     }
 
+    /// A rich-content child (an AI block) re-rendered itself with new output. The block list
+    /// re-measures it in layout from the dirty mark the caller set, so this view's own tree only
+    /// needs rebuilding when one of its render inputs changed (`wakeup_redraw`); otherwise a
+    /// layout and paint of the existing tree shows the new output. A view the last layout did
+    /// not visit (a hidden tab) needs no frame at all: showing the tab lays it out (#1282).
+    fn redraw_for_rich_content_update(&mut self, ctx: &mut ViewContext<Self>) {
+        let redraw = {
+            let model = self.model.lock();
+            wakeup_redraw::decide(
+                self.last_rendered_fingerprint.get(),
+                self.render_fingerprint(&model, ctx),
+            )
+        };
+        match redraw {
+            WakeupRedraw::Full => ctx.notify(),
+            WakeupRedraw::Relayout | WakeupRedraw::PaintOnly => {
+                if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+                    let window_id = ctx.window_id();
+                    ctx.request_redraw(window_id);
+                }
+            }
+        }
+    }
+
     /// After a paint-only wakeup, checks once the output has settled whether that paint changed a
     /// render input, and re-renders if so. The agent footer paints with the background color
     /// sampled during the alt screen's paint, so the color a full-screen program settles on is
@@ -24964,7 +24988,7 @@ impl TerminalView {
                     .lock()
                     .block_list_mut()
                     .mark_rich_content_dirty(block.id());
-                ctx.notify();
+                self.redraw_for_rich_content_update(ctx);
             }
             AIBlockEvent::OpenCitation(citation) => match citation {
                 AIAgentCitation::WarpDriveObject { uid } => {

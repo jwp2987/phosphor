@@ -3255,6 +3255,21 @@ impl AppContext {
         // handled on the next call to `update_windows`.
         for iter in 1..=3 {
             let invalidation = self.take_all_invalidations_for_window(window_id);
+            // `RUST_LOG=warpui::frame_cause=debug` names what asked for this frame.
+            if log::log_enabled!(target: "warpui::frame_cause", log::Level::Debug) {
+                let updated: Vec<&str> = invalidation
+                    .updated
+                    .iter()
+                    .map(|view_id| self.view_name(window_id, *view_id).unwrap_or("?"))
+                    .collect();
+                log::debug!(
+                    target: "warpui::frame_cause",
+                    "frame {iter}: updated={updated:?} removed={} redraw={} paint_only={}",
+                    invalidation.removed.len(),
+                    invalidation.redraw_requested,
+                    invalidation.paint_only_redraw_requested
+                );
+            }
 
             // Always build the scene at least once, even if there
             // are no updated views.
