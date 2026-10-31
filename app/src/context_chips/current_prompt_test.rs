@@ -982,6 +982,113 @@ fn test_git_status_change_updates_branch_status_chip_value() {
     });
 }
 
+/// #1167: counts the shell commands a chip with an on-click generator (`GitBranchStatus`:
+/// status command + branch-list command) spawns across prompt updates.
+///
+/// Before the fix every fetch spawned both commands (so a new block with unchanged output cost
+/// 2 spawns) and a repeated update for the same block restarted everything again.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_unchanged_chip_refetch_does_not_respawn_on_click_command() {
+    App::test((), |mut app| async move {
+        let session_id = SessionId::from(1167);
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::GitBranchStatus],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_| History::new(vec![]));
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(AuthManager::new_for_test);
+        app.add_singleton_model(|_| crate::settings::manager::SettingsManager::default());
+        crate::settings::InputSettings::register(&mut app);
+        app.update(crate::settings::AISettings::register_and_subscribe_to_events);
+        app.add_singleton_model(crate::workspaces::user_workspaces::UserWorkspaces::default_mock);
+        #[cfg(windows)]
+        app.add_singleton_model(SystemInfo::new);
+        app.update(|ctx| {
+            crate::settings::InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .input_box_type
+                    .set_value(crate::settings::InputBoxType::Classic, ctx);
+            });
+        });
+
+        let executor = Arc::new(RecordingCommandExecutor::default());
+        let sessions = app.add_model(|ctx| {
+            let mut sessions = Sessions::new_for_test().with_command_executor(executor.clone());
+            sessions.initialize_bootstrapped_session(
+                SessionInfo::new_for_test().with_id(session_id),
+                "test command".to_string(),
+                vec![],
+                None,
+                ctx,
+            );
+            sessions
+        });
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+        executor.clear();
+
+        let context = || PromptContext {
+            active_block_metadata: BlockMetadata::new(Some(session_id), Some("/a".to_string())),
+            environment: Environment::default(),
+        };
+        // Runs one prompt update and waits for the chip's commands, including the on-click
+        // command that is spawned from the main command's completion.
+        async fn settle(
+            app: &mut App,
+            current_prompt: &warpui::ModelHandle<CurrentPrompt>,
+            block_id: &str,
+            context: PromptContext,
+        ) {
+            current_prompt
+                .update(app, |cp, ctx| {
+                    cp.apply_context(block_id.to_string(), context, ctx);
+                    cp.await_generators(ctx)
+                })
+                .await;
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(50)).await;
+            current_prompt
+                .update(app, |cp, ctx| cp.await_generators(ctx))
+                .await;
+        }
+
+        // First prompt: the status command and the branch-list command both run.
+        settle(&mut app, &current_prompt, "block-1", context()).await;
+        assert_eq!(executor.commands.lock().len(), 2, "status + branch list");
+
+        // New block, same inputs, same output: the status is re-read (diff/ahead-behind can
+        // move) but the unchanged answer must not trigger another branch-list spawn.
+        settle(&mut app, &current_prompt, "block-2", context()).await;
+        assert_eq!(
+            executor.commands.lock().len(),
+            3,
+            "an unchanged refetch must not re-run the on-click command"
+        );
+
+        // The same block reporting the same context again changes no input: nothing restarts.
+        settle(&mut app, &current_prompt, "block-2", context()).await;
+        assert_eq!(
+            executor.commands.lock().len(),
+            3,
+            "a repeated update for the same block must not spawn anything"
+        );
+    });
+}
+
 /// #1166: the branch chip must follow the branch the shell reported in precmd immediately,
 /// instead of waiting for the git-status refresh, and the refresh must then take over.
 #[cfg(feature = "local_fs")]

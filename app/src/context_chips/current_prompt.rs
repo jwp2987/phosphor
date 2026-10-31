@@ -46,7 +46,7 @@ use crate::context_chips::display_chip::{GitBranchTrackingStatus, GitLineChanges
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use warpui::WeakModelHandle;
 use warpui::{
     r#async::{SpawnedFutureHandle, Timer},
@@ -59,6 +59,10 @@ use warpui::{Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 mod tests;
 
 const PROMPT_DEBOUNCE_PERIOD: Duration = Duration::from_millis(50);
+/// How long a chip's on-click values (the branch list behind the branch chips) are reused
+/// when a refetch of the chip's main value comes back unchanged. The list can change without
+/// the current value changing (a branch created or deleted), so it is not reused forever.
+const ON_CLICK_VALUES_MAX_AGE: Duration = Duration::from_secs(60);
 const PROMPT_DEBOUNCE_PERIOD_KEY: &str = "PromptDebouncePeriod";
 type ChipFingerprint = u64;
 
@@ -81,6 +85,8 @@ enum ChipUpdateStatus {
 pub struct ChipState {
     last_computed_value: Option<ChipValue>,
     last_on_click_values: Option<Vec<String>>,
+    /// When `last_on_click_values` was last computed.
+    last_on_click_at: Option<Instant>,
     last_fingerprint: Option<ChipFingerprint>,
     /// The fingerprint from the last fetch that failed. When the current fingerprint matches,
     /// chips with `suppress_on_failure` skip re-execution.
@@ -148,6 +154,7 @@ impl ChipState {
     fn clear_cache(&mut self) {
         self.last_computed_value = None;
         self.last_on_click_values = None;
+        self.last_on_click_at = None;
         self.last_fingerprint = None;
         self.last_failure_fingerprint = None;
         self.availability = ChipAvailability::Enabled;
@@ -168,6 +175,8 @@ pub struct CurrentPrompt {
     separator: WarpPromptSeparator,
 
     latest_context: Option<PromptContext>,
+    /// Identity of the last context passed to `apply_context`; see [`PromptContextKey`].
+    latest_context_key: Option<PromptContextKey>,
     sessions: ModelHandle<Sessions>,
     prompt_chip_logger: PromptChipLogger,
     update_tx: async_channel::Sender<()>,
@@ -190,6 +199,20 @@ pub struct CurrentPrompt {
     /// parameter, which bundles this with the model events subscription so the two can't
     /// disagree.
     terminal_model: Option<Weak<FairMutex<TerminalModel>>>,
+}
+
+/// What identifies one prompt-context update: the block it belongs to plus every context value a
+/// chip input can read. Equal keys mean "nothing a chip depends on has changed".
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PromptContextKey {
+    block_id: String,
+    session_id: Option<crate::terminal::model::session::SessionId>,
+    working_directory: Option<String>,
+    git_branch: Option<String>,
+    python_virtualenv: Option<String>,
+    conda_environment: Option<String>,
+    node_version: Option<String>,
+    external_commands_loaded: bool,
 }
 
 /// Context about the current terminal session, needed to update the prompt.
@@ -284,6 +307,7 @@ impl CurrentPrompt {
             renderable_chips: Default::default(),
             sessions,
             latest_context: None,
+            latest_context_key: None,
             prompt_chip_logger: PromptChipLogger::default(),
             update_tx,
             agent_view_controller: None,
@@ -430,6 +454,7 @@ impl CurrentPrompt {
         };
         if let Some(state) = self.states.get_mut(chip_kind) {
             state.last_on_click_values = filter_values;
+            state.last_on_click_at = state.last_on_click_values.is_some().then(Instant::now);
             let _ = self.update_tx.try_send(());
         }
     }
@@ -820,7 +845,7 @@ impl CurrentPrompt {
                         .await;
                         (value, timed_out, chip_kind, exec_ctx, chip_title)
                     },
-                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), _ctx| {
+                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), ctx| {
                         logger.log_shell_command(&ChipCommandLogEntry {
                             chip_kind: &chip_kind,
                             chip_title: &chip_title,
@@ -881,8 +906,18 @@ impl CurrentPrompt {
                                 }
                             }
                         }
-                        me.update_chip_value(&chip_kind, output.map(ChipValue::Text));
+                        let output = output.map(ChipValue::Text);
+                        let value_changed = me.chip_value_differs(&chip_kind, output.as_ref());
+                        me.update_chip_value(&chip_kind, output);
                         me.set_chip_update_status(&chip_kind, status);
+                        // Run once the main value is in, and only if it moved (or the list
+                        // is missing/stale): this used to be a second shell spawn per fetch.
+                        me.refresh_on_click_values_if_needed(
+                            &chip_kind,
+                            on_click_generator,
+                            value_changed,
+                            ctx,
+                        );
                     },
                 );
 
@@ -891,14 +926,50 @@ impl CurrentPrompt {
             PromptGenerator::Contextual { from_context_fn } => {
                 self.set_chip_update_status(chip_kind, ChipUpdateStatus::Loading);
                 let value = self.with_generator_context(ctx, from_context_fn);
+                let value_changed = self.chip_value_differs(chip_kind, value.as_ref());
                 self.update_chip_value(chip_kind, value);
                 self.set_chip_update_status(chip_kind, ChipUpdateStatus::Ready);
+                self.refresh_on_click_values_if_needed(
+                    chip_kind,
+                    on_click_generator,
+                    value_changed,
+                    ctx,
+                );
             }
         }
+    }
 
-        if let Some(on_click_gen) = on_click_generator {
-            self.refresh_on_click_values(chip_kind, on_click_gen, ctx);
+    /// Whether `value` differs from what the chip currently holds.
+    fn chip_value_differs(&self, chip_kind: &ContextChipKind, value: Option<&ChipValue>) -> bool {
+        self.states
+            .get(chip_kind)
+            .is_none_or(|state| state.last_computed_value.as_ref() != value)
+    }
+
+    /// Runs the chip's on-click generator after a fetch of its main value, unless that fetch
+    /// changed nothing and the on-click values are still fresh. Each on-click run is a second
+    /// shell command per chip fetch (#1167), so it is skipped when its answer cannot have moved.
+    fn refresh_on_click_values_if_needed(
+        &mut self,
+        chip_kind: &ContextChipKind,
+        on_click_generator: Option<PromptGenerator>,
+        value_changed: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(on_click_generator) = on_click_generator else {
+            return;
+        };
+        let still_fresh = self.states.get(chip_kind).is_some_and(|state| {
+            state.last_on_click_values.is_some()
+                && state
+                    .last_on_click_at
+                    .is_some_and(|at| at.elapsed() < ON_CLICK_VALUES_MAX_AGE)
+        });
+        if !value_changed && still_fresh {
+            log::debug!("[chips] {chip_kind:?}: value unchanged, reusing on-click values");
+            return;
         }
+        self.refresh_on_click_values(chip_kind, on_click_generator, ctx);
     }
 
     /// Run only the on-click generator for the given chip, updating the
@@ -1413,14 +1484,62 @@ impl CurrentPrompt {
     /// Update the prompt context to reflect a new active block. This should be called from the
     /// parent terminal whenever a new set of block metadata is received.
     pub fn update_context(&mut self, active_block: &Block, ctx: &mut ModelContext<Self>) {
+        self.apply_context(
+            active_block.id().to_string(),
+            PromptContext {
+                active_block_metadata: active_block.metadata(),
+                environment: Environment::from_block(active_block),
+            },
+            ctx,
+        );
+    }
+
+    /// The body of [`Self::update_context`], split out so it can be driven without a `Block`.
+    ///
+    /// A repeat of the exact same context for the same block (same cwd, session and
+    /// environment: the terminal re-sends block metadata several times per prompt) changes no
+    /// chip input, so it must not abort every in-flight chip command and spawn them all again
+    /// (#1167). A new block always refreshes, so state that no input tracks (diff stats,
+    /// ahead/behind) is still re-read once per prompt.
+    fn apply_context(
+        &mut self,
+        block_id: String,
+        context: PromptContext,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let session_has_changed = match &self.latest_context {
-            Some(ctx) => ctx.active_block_metadata.session_id() != active_block.session_id(),
+            Some(previous) => {
+                previous.active_block_metadata.session_id()
+                    != context.active_block_metadata.session_id()
+            }
             None => true,
         };
-        self.latest_context = Some(PromptContext {
-            active_block_metadata: active_block.metadata(),
-            environment: Environment::from_block(active_block),
-        });
+        let key = PromptContextKey {
+            block_id,
+            session_id: context.active_block_metadata.session_id(),
+            working_directory: context
+                .active_block_metadata
+                .current_working_directory()
+                .map(|dir| dir.to_string()),
+            git_branch: context.environment.git_branch().cloned(),
+            python_virtualenv: context.environment.python_virtualenv().cloned(),
+            conda_environment: context.environment.conda_environment().cloned(),
+            node_version: context.environment.node_version().cloned(),
+            // Chip availability depends on which executables the session has found; a load
+            // that completes mid-prompt must still restart the chips.
+            external_commands_loaded: context
+                .active_block_metadata
+                .session_id()
+                .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+                .is_some_and(|session| session.has_loaded_external_commands()),
+        };
+        let unchanged = self.latest_context_key.as_ref() == Some(&key);
+        self.latest_context_key = Some(key);
+        self.latest_context = Some(context);
+        if unchanged && !session_has_changed && !self.states.is_empty() && self.active(ctx) {
+            log::debug!("[chips] update_context: same block and inputs, not restarting chips");
+            return;
+        }
         if session_has_changed {
             self.update_states_with_new_context_and_session(ctx);
         } else {
