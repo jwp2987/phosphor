@@ -11496,7 +11496,19 @@ impl TerminalView {
     fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
         let disposition = self.model.lock().typeahead_handoff_mut().on_report();
         match disposition {
-            ReportDisposition::InsertLegacy => self.handle_typeahead_event(ctx),
+            ReportDisposition::InsertLegacy => {
+                self.handle_typeahead_event(ctx);
+                // #1104: bytes written behind the request this report answers are still in the
+                // shell's line; ask for them with one more request.
+                if self.model.lock().typeahead_handoff().drain_pending() {
+                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
+                }
+            }
+            ReportDisposition::InsertKeepDeferred => {
+                self.insert_typeahead_from_handoff(ctx);
+                self.arm_uncovered_deferral_timer(ctx);
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
             ReportDisposition::Insert | ReportDisposition::InsertYoung => {
                 self.insert_typeahead_from_handoff(ctx);
                 if disposition == ReportDisposition::InsertYoung {
@@ -11532,6 +11544,32 @@ impl TerminalView {
                 }
             }
             ReportDisposition::Stash => {}
+        }
+    }
+
+    /// Starts the patience timer of an Enter deferred behind a report that covers untracked
+    /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
+    /// ate the request) and the Enter runs rather than wait forever.
+    fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .take_uncovered_deferral_started();
+        if let Some(id) = id {
+            ctx.spawn(
+                Timer::after(UNCOVERED_REPORT_PATIENCE),
+                move |me, _, ctx| {
+                    let released = me
+                        .model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .give_up_uncovered_deferral(id);
+                    if released {
+                        me.run_deferred_enter(false, ctx);
+                    }
+                },
+            );
         }
     }
 
@@ -25823,6 +25861,7 @@ impl TerminalView {
                 self.register_cli_agent_listener_without_session_start_event(*agent, ctx);
             }
             InputEvent::TypeaheadHandoffEnterDeferred => {
+                self.arm_uncovered_deferral_timer(ctx);
                 if ctx.is_self_or_child_focused() {
                     self.focus_terminal(ctx);
                 }
@@ -33289,6 +33328,10 @@ fn choice_block_owns_input(
 /// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
 /// holding keys while it waits for the remote session to register (#983).
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
+/// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
+/// (#1104) before it runs as it did without the deferral. Reports normally take milliseconds;
+/// this only bounds a request a program ate.
+const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.

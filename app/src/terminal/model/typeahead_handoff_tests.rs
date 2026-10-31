@@ -1238,3 +1238,130 @@ fn the_handoffs_own_request_covers_untracked_bytes_written_before_it() {
     handoff.on_report();
     assert!(!handoff.editor_text_precedes_report());
 }
+
+/// #1104: a report answers a request written before untracked bytes: those bytes stay in the
+/// shell's line, so one more request is due behind them, once, and its report covers them.
+#[test]
+fn a_report_that_missed_untracked_bytes_is_followed_by_one_more_request() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    assert!(handoff.drain_pending());
+    // Not at a prompt, or no way to ask: no request, and nothing is recorded.
+    assert!(!handoff.drain_request_due(false, true));
+    assert!(!handoff.drain_request_due(true, false));
+    assert!(handoff.drain_request_due(true, true));
+    assert!(!handoff.drain_pending());
+    assert!(
+        !handoff.drain_request_due(true, true),
+        "one request per uncovered stretch"
+    );
+    assert!(handoff.editor_text_precedes_report());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertLegacy);
+    assert!(!handoff.editor_text_precedes_report());
+
+    // Nothing untracked, nothing to drain.
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.on_report();
+    assert!(!handoff.drain_pending());
+    assert!(!handoff.drain_request_due(true, true));
+}
+
+/// #1104: queued commands (an agent's) are held while untracked bytes in the shell's line have
+/// no request behind them, and released once one is written.
+#[test]
+fn queued_commands_are_held_behind_uncovered_untracked_bytes() {
+    let mut handoff = TypeaheadHandoff::default();
+    assert!(!handoff.holds_queued_writes());
+    handoff.note_untracked_line_bytes();
+    assert!(handoff.holds_queued_writes());
+    handoff.on_legacy_request_written();
+    assert!(!handoff.holds_queued_writes());
+
+    // A request that was already outstanding does not cover bytes typed behind it.
+    let mut handoff = awaiting_report();
+    handoff.note_untracked_line_bytes();
+    assert!(handoff.holds_queued_writes());
+}
+
+/// #1104: an Enter in the editor while a report is outstanding that does not cover the untracked
+/// bytes in the shell's line is deferred, kept deferred past that report, and runs on the report
+/// of a request written behind the bytes. Submitting at once wrote the kill prefix and the
+/// command behind the request, so the line ran without its head.
+#[test]
+fn enter_waits_for_a_report_that_covers_untracked_bytes() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    assert!(handoff.defer_enter());
+    assert!(handoff.holds_keys_behind_deferred_enter());
+    let id = handoff
+        .take_uncovered_deferral_started()
+        .expect("a patience timer is armed");
+    assert_eq!(handoff.take_uncovered_deferral_started(), None);
+
+    // The first report missed the bytes: insert it, keep the Enter deferred, ask again.
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertKeepDeferred);
+    assert!(handoff.holds_keys_behind_deferred_enter());
+    assert!(handoff.take_uncovered_deferral_started().is_some());
+    assert_eq!(
+        handoff.on_line_editor_active(false, true),
+        ActiveDecision::Drain,
+        "not at a prompt: no request yet"
+    );
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+    assert!(handoff.deferred_submit_pending());
+    // The timer armed for the first deferral is void now.
+    assert!(!handoff.give_up_uncovered_deferral(id));
+}
+
+/// #1104: when the request behind the bytes is already outstanding, its report ends the
+/// deferral; the one before it only inserts.
+#[test]
+fn enter_deferred_behind_a_covering_request_runs_on_its_report() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    handoff.on_legacy_request_written();
+    assert!(handoff.defer_enter());
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertKeepDeferred);
+    // Already covered: no further request.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Drain
+    );
+    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
+}
+
+/// #1104: no request outstanding, or no untracked bytes: the Enter is not deferred, as before.
+#[test]
+fn enter_is_not_deferred_without_an_uncovered_report() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_untracked_line_bytes();
+    assert!(!handoff.defer_enter(), "no request is outstanding");
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    assert!(!handoff.defer_enter(), "nothing untracked is in the line");
+}
+
+/// #1104: a request a program ate never reports; the deferred Enter gives up when its timer
+/// fires, once, and only for the deferral that armed it.
+#[test]
+fn a_deferral_whose_report_never_comes_is_given_up() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_legacy_request_written();
+    handoff.note_untracked_line_bytes();
+    assert!(handoff.defer_enter());
+    let id = handoff.take_uncovered_deferral_started().unwrap();
+    assert!(!handoff.give_up_uncovered_deferral(id + 1));
+    assert!(handoff.give_up_uncovered_deferral(id));
+    assert!(handoff.deferred_submit_pending());
+    assert!(!handoff.editor_text_precedes_report());
+    assert!(!handoff.give_up_uncovered_deferral(id));
+}
