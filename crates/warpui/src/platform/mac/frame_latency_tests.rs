@@ -48,3 +48,22 @@ fn slow_frames_inside_window_are_folded_into_next_summary() {
     // The counters reset after a report.
     assert!(limiter.record(WARN_INTERVAL_MS + 11, Some(70), 0).is_none());
 }
+
+#[test]
+fn deferred_draw_rearms_until_cap() {
+    assert!(should_rearm_deferred_draw(0));
+    assert!(should_rearm_deferred_draw(MAX_CONSECUTIVE_REARMS - 1));
+    assert!(!should_rearm_deferred_draw(MAX_CONSECUTIVE_REARMS));
+}
+
+#[test]
+fn deferral_streak_rearms_then_stops_and_resets_after_a_draw() {
+    note_draw_ran();
+    for _ in 0..MAX_CONSECUTIVE_REARMS {
+        assert!(note_deferred_draw());
+    }
+    assert!(!note_deferred_draw());
+    note_draw_ran();
+    assert!(note_deferred_draw());
+    note_draw_ran();
+}

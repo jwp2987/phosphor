@@ -36,6 +36,7 @@ use warpui_core::windowing::WindowCallbacks;
 use warpui_core::{DisplayId, DisplayIdx, Event, OptionalPlatformWindow, Scene, WindowId};
 
 use super::delegate::DispatchDelegate;
+use super::frame_latency;
 use super::rendering::{self, Device, RendererManager, is_integrated_gpu};
 use super::{RectFExt as _, app};
 
@@ -1411,8 +1412,17 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             "Tried to update window's backing CAMetalDrawable but app was already mutably borrowed!\nStack trace:\n{:#}",
             std::backtrace::Backtrace::force_capture()
         );
+        // The draw was dropped, not done: ask for another pass on the next runloop turn so the
+        // window does not stay stale until some unrelated event arrives. `setNeedsDisplayAsync`
+        // dispatches asynchronously, so this is at most one retry per turn; the streak is capped
+        // in case the borrow is somehow held persistently.
+        if frame_latency::note_deferred_draw() {
+            // SAFETY: `this` is the WarpHostView invoking its layer delegate.
+            unsafe { get_window_state(this) }.schedule_redraw();
+        }
         return;
     }
+    frame_latency::note_draw_ran();
 
     unsafe {
         let window = get_window_state(this);
