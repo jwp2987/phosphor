@@ -12333,6 +12333,20 @@ impl TerminalView {
                 // Need to re-render both the alt screen and the blocklist on keypresses.
                 ctx.notify();
             }
+            WakeupRedraw::Relayout | WakeupRedraw::PaintOnly
+                if !ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) =>
+            {
+                // The element tree is current (that is what these two decisions mean) and this
+                // view is not in the window's tree, e.g. a hidden tab: a frame would show nothing
+                // new. Asking for one made every chunk of a hidden tab's output cost a
+                // full-window layout and paint (#1256, the regression #805 fixed for `Full`,
+                // whose `notify` the presenter absorbs). Layout and paint read the model
+                // when the view is next shown, and showing it asks for a frame. The footer views
+                // still follow their own inputs, so a change made while hidden is not missed.
+                if self.last_footer_fingerprint != Some(footer) {
+                    self.notify_use_agent_footer(footer, ctx);
+                }
+            }
             WakeupRedraw::Relayout => {
                 if self.last_footer_fingerprint != Some(footer) {
                     self.notify_use_agent_footer(footer, ctx);

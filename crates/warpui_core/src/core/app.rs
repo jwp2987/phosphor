@@ -3369,6 +3369,22 @@ impl AppContext {
             .paint_only_redraw_requested = true;
     }
 
+    /// Whether `view_id` is in `window_id`'s element tree as of the last frame, so a frame
+    /// built now could show a change to it. False only when the last layout is current and did
+    /// not visit the view (a hidden tab's views). Answers true whenever that is unknown (no
+    /// presenter, no layout yet, the last frame skipped layout, the presenter is borrowed), so a
+    /// caller that skips work for unreachable views only ever skips it for a view that is really
+    /// off screen.
+    pub fn is_view_reachable(&self, window_id: WindowId, view_id: EntityId) -> bool {
+        let Some(presenter) = self.presenter(window_id) else {
+            return true;
+        };
+        let Ok(presenter) = presenter.try_borrow() else {
+            return true;
+        };
+        !presenter.layout_is_current() || presenter.is_view_reachable(view_id)
+    }
+
     /// Asks `window_id` for a frame that lays out and paints the existing element tree without
     /// re-rendering any view (what a window resize or a loaded asset asks for). For a view whose
     /// element reads its content at layout and paint time, this is how new content reaches the
