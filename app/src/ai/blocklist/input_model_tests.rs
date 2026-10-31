@@ -1705,3 +1705,51 @@ fn a_verdict_wakes_observers_only_when_something_asked_whether_it_is_pending() {
         });
     });
 }
+
+struct NotifyCounter(usize);
+impl warpui::Entity for NotifyCounter {
+    type Event = ();
+}
+
+fn count_notifies(
+    app: &mut App,
+    model: &ModelHandle<BlocklistAIInputModel>,
+) -> ModelHandle<NotifyCounter> {
+    app.add_model(|ctx: &mut warpui::ModelContext<NotifyCounter>| {
+        ctx.observe(model, |me, _, _| me.0 += 1);
+        NotifyCounter(0)
+    })
+}
+
+#[test]
+fn a_verdict_that_changes_the_input_type_notifies_even_with_no_waiter() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        // Starts as AI; the #808 pre-filter settles this command as Shell.
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let counter = count_notifies(&mut app, &input_model);
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::Shell);
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        assert!(
+            counter.read(&app, |c, _| c.0) >= 1,
+            "a flip AI -> Shell must re-render observers"
+        );
+    });
+}
+
+#[test]
+fn a_verdict_that_changes_nothing_does_not_notify_without_a_waiter() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        // Already Shell: the same verdict changes nothing visible.
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let counter = count_notifies(&mut app, &input_model);
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        assert_eq!(counter.read(&app, |c, _| c.0), 0);
+    });
+}

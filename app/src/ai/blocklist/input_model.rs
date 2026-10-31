@@ -183,6 +183,12 @@ pub struct BlocklistAIInputModel {
     /// view after every keystroke's verdict, an extra frame per key with nothing visible changed.
     settle_wake_wanted: AtomicBool,
 
+    /// The input config when the pending detection was requested. A verdict that left a
+    /// different config (type or lock) changed what views render, so settling notifies even
+    /// when nobody waits: not every view that draws the mode (placeholder, colouring, icon)
+    /// is told by `InputTypeChanged` alone.
+    config_when_requested: InputConfig,
+
     /// Incremented for every spawned classification task, so a task that completed just before
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
     detection_generation: u64,
@@ -277,6 +283,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             settle_wake_wanted: AtomicBool::new(false),
+            config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
@@ -489,6 +496,7 @@ impl BlocklistAIInputModel {
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
             settle_wake_wanted: AtomicBool::new(false),
+            config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
@@ -821,6 +829,7 @@ impl BlocklistAIInputModel {
         }
         self.drop_typeahead_prefix_unless_leading(&buffer_text);
         self.pending_detection_buffer = Some(buffer_text);
+        self.config_when_requested = self.input_config;
     }
 
     /// Whether submitting `buffer_text` right now would race an unfinished input-type detection
@@ -1113,8 +1122,12 @@ impl BlocklistAIInputModel {
         if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
             self.pending_detection_buffer = None;
             // Only wake observers when someone is waiting on the verdict (an Enter deferred
-            // behind it); otherwise nothing they render has changed.
-            if self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed) {
+            // behind it) or the verdict changed the input config; otherwise nothing they
+            // render has changed.
+            let waiter = self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed);
+            let verdict_changed_config = self.input_config != self.config_when_requested;
+            self.config_when_requested = self.input_config;
+            if waiter || verdict_changed_config {
                 ctx.notify();
             }
         }
