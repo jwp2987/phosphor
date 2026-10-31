@@ -589,6 +589,14 @@ function warp_escape_json
     # byte as U+FFFD (see `handle_decoded_data` in app/src/terminal/model/ansi/mod.rs).
     #
     # We also use 'command sed' to ensure that we aren't accidentally executing a function named 'sed'
+    #
+    # Phosphor (#1170): a value made only of characters that need no escaping (letters, digits,
+    # space and . _ / @ + : , = % ~ ( ) -) is printed as is, with no sed/tr fork. Preexec and Precmd
+    # escape five values per command, and each used to cost two processes.
+    if test (count $argv) -eq 1; and not string match -qr '[^[:alnum:] ._/@+:,=%~()-]' -- $argv[1]
+        builtin printf '%s' $argv[1]
+        return
+    end
     string join \n $argv | LC_ALL=C command sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | LC_ALL=C command tr -d '\n'
 end
 

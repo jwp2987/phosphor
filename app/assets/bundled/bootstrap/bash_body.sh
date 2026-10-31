@@ -366,7 +366,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end
         else
-          local truncated_command=$(warp_escape_json "$BASH_COMMAND")
+          local truncated_command
+          __warp_ej_var truncated_command "$BASH_COMMAND"
           warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$truncated_command\", \"session_id\": ${WARP_SESSION_ID:-}}}"
         fi
         warp_maybe_send_reset_grid_osc
@@ -697,7 +698,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
             escaped_pwd=$(warp_escape_json "$(builtin pwd -P)")
           else
-            escaped_pwd=$(warp_escape_json "$PWD")
+            __warp_ej_var escaped_pwd "$PWD"
           fi
         fi
 
@@ -715,11 +716,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # user's rcfiles and have a fully-populated PATH.
         if [[ -n "${WARP_BOOTSTRAPPED:-}" ]]; then
           if [[ -n "${VIRTUAL_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
-              escaped_virtual_env=$(warp_escape_json "$VIRTUAL_ENV")
+              __warp_ej_var escaped_virtual_env "$VIRTUAL_ENV"
           fi
 
           if [[ -n "${CONDA_DEFAULT_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
-              escaped_conda_env=$(warp_escape_json "$CONDA_DEFAULT_ENV")
+              __warp_ej_var escaped_conda_env "$CONDA_DEFAULT_ENV"
           fi
 
           # Get the Node.js version, but only when the Node.js Version chip is enabled.
@@ -788,8 +789,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
           fi
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
-            escaped_git_head=$(warp_escape_json "$git_head")
-            escaped_git_branch=$(warp_escape_json "$git_branch")
+            __warp_ej_var escaped_git_head "$git_head"
+            __warp_ej_var escaped_git_branch "$git_branch"
           fi
         fi
 
@@ -896,6 +897,29 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             *) printf '%s' "$__warp_ej"; return ;;
         esac
         LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
+    }
+
+    # Phosphor (#1170): warp_escape_json NAME VALUE, but assigns the escaped VALUE to the variable NAME
+    # instead of printing it. `$(warp_escape_json ...)` forks a subshell on every call even when the
+    # value needs no escaping, and Preexec/Precmd call it 5 times per command. A value of safe
+    # characters is kept as is; one with quotes, backslashes, tabs, newlines or carriage returns is
+    # escaped with parameter substitutions; anything else (other control characters, DEL) takes the
+    # sed path in warp_escape_json, so the result is always exactly what warp_escape_json prints.
+    __warp_ej_var () {
+        local __v=${2-}
+        case $__v in
+            *[![:alnum:]\ ._/@+:,=%~\(\)-]*)
+                __v=${__v//\\/\\\\}
+                __v=${__v//\"/\\\"}
+                __v=${__v//$'\t'/\\t}
+                __v=${__v//$'\n'/\\n}
+                __v=${__v//$'\r'/\\r}
+                if [[ $__v == *[[:cntrl:]]* ]]; then
+                    __v=$(warp_escape_json "${2-}")
+                fi
+                ;;
+        esac
+        builtin printf -v "$1" '%s' "$__v"
     }
 
     # Turns out that the processed prompt is a complicated data structure that includes lots of 
