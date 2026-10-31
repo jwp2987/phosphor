@@ -39,7 +39,7 @@ use warpui::text_layout::{Line, StyleAndFont, TextStyle, DEFAULT_TOP_BOTTOM_RATI
 use warpui::units::{IntoLines as _, Lines, Pixels};
 use warpui::{AppContext, Element, EntityId, PaintContext, Scene, SingletonEntity};
 
-pub use self::cell_glyph_cache::CellGlyphCache;
+pub use self::cell_glyph_cache::{CellGlyphCache, SharedCellGlyphCache};
 use self::cell_type::{CellType, IsFocused, Secret};
 
 use super::block_filter::{BLOCK_FILTER_DOTTED_LINE_DASH, BLOCK_FILTER_DOTTED_LINE_WIDTH};
@@ -1770,7 +1770,14 @@ fn render_cell_glyph(
     let font_id = font_id_cache.font_ids[font_style as usize]
         .get_or_insert_with(|| ctx.font_cache.select_font(font_family, properties));
 
+    // Handle special unicode characters that will look better with native
+    // rendering instead of using glyphs from the font.
+    let native_glyph = native_glyph_for_cell(cell);
+
     let glyph_and_font = match cell_content {
+        // Natively rendered cells never use the font glyph, so don't look one up (which for a
+        // character the primary font lacks would walk the fallback fonts).
+        _ if native_glyph.is_some() => None,
         // Special-case whitespace, which doesn't need rendering.  We
         // explicitly check these two chars instead of using
         // `char::is_whitespace` for performance reasons.
@@ -1800,9 +1807,7 @@ fn render_cell_glyph(
 
     let origin = grid_origin + glyph_offset + baseline_position;
 
-    // Handle special unicode characters that will look better with native
-    // rendering instead of using glyphs from the font.
-    match native_glyph_for_cell(cell) {
+    match native_glyph {
         Some(glyph_type) => {
             native_glyphs_to_render.push(NativeGlyph {
                 cell_bounds: RectF::new(grid_origin + glyph_offset, cell_size),

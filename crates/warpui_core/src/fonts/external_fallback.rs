@@ -118,6 +118,8 @@ impl Cache {
         self.font_fallback_cache
             .loaded_fallback_families
             .insert(external_family.name, family_id);
+        // Registered after the family loaded; negative fallback results from in between are stale.
+        self.bump_glyph_epoch();
         Ok(family_id)
     }
 
@@ -126,6 +128,7 @@ impl Cache {
         fallback_font_fn: Box<dyn Fn(char) -> Option<ExternalFontFamily> + Send + Sync>,
     ) {
         self.font_fallback_cache.fallback_font_fn = Some(fallback_font_fn);
+        self.bump_glyph_epoch();
     }
 
     fn app_fallback_family_for_char(&self, ch: char) -> Option<ExternalFontFamily> {

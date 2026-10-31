@@ -1,6 +1,8 @@
 use crate::settings::EnforceMinimumContrast;
 use crate::terminal::color;
-use crate::terminal::grid_renderer::{render_cursor, render_grid, CellGlyphCache};
+use crate::terminal::grid_renderer::{
+    render_cursor, render_grid, CellGlyphCache, SharedCellGlyphCache,
+};
 use crate::terminal::model::blockgrid::{BlockGrid, CursorDisplayPoint};
 use crate::terminal::model::grid::grid_handler::Link;
 use crate::terminal::model::index::Point;
@@ -133,7 +135,7 @@ impl BlockGrid {
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
-        let mut glyphs = CellGlyphCache::default();
+        let mut glyphs = SharedCellGlyphCache::acquire();
         self.draw(
             grid_origin,
             origin,

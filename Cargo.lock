@@ -15740,6 +15740,7 @@ dependencies = [
  "rand 0.8.6",
  "resvg",
  "rust-embed 8.11.0",
+ "rustc-hash 2.1.2",
  "serde",
  "signal-hook",
  "sum_tree",

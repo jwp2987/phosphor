@@ -415,6 +415,8 @@ pub struct FontDB {
     font_kit_rasterizer: crate::fonts::font_kit::Rasterizer,
     #[cfg(not(feature = "fontkit-rasterizer"))]
     swash_cache: RwLock<cosmic_text::SwashCache>,
+    #[cfg(not(feature = "fontkit-rasterizer"))]
+    raster_bounds_memo: swash_rasterizer::RasterBoundsMemo,
 }
 
 impl FontDB {
@@ -425,6 +427,8 @@ impl FontDB {
             font_kit_rasterizer: crate::fonts::font_kit::Rasterizer::new(),
             #[cfg(not(feature = "fontkit-rasterizer"))]
             swash_cache: RwLock::new(cosmic_text::SwashCache::new()),
+            #[cfg(not(feature = "fontkit-rasterizer"))]
+            raster_bounds_memo: Default::default(),
         };
         // Warm-up is added for Windows only: PR #62 wired up locale-aware CJK
         // fallback only on the Windows path, and that regression

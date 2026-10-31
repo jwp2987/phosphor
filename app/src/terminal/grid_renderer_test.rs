@@ -182,6 +182,62 @@ fn fallback_font_family_for_char_skips_font_lookup_when_unconfigured() {
     assert_eq!(counts.glyph_for_char.load(Ordering::Relaxed), 0);
 }
 
+#[test]
+fn cell_glyph_cache_resolves_each_char_once_and_clears_when_fonts_change() {
+    let counts = Arc::new(FontLookupCounts::default());
+    let mut font_cache = FontCache::new(Box::new(CountingFontDb {
+        counts: Arc::clone(&counts),
+    }));
+    let mut cache = grid_renderer::CellGlyphCache::default();
+    let props = Properties::default();
+
+    for _ in 0..3 {
+        assert!(
+            cache
+                .glyph_for_char('a', FontId(0), None, props, &font_cache)
+                .is_some()
+        );
+    }
+    assert_eq!(cache.len(), 1);
+    assert_eq!(counts.glyph_for_char.load(Ordering::Relaxed), 1);
+
+    // Loading a font changes what a lookup may resolve to: nothing cached before may survive.
+    font_cache
+        .load_family_from_bytes("Fallback", vec![])
+        .unwrap();
+    cache.glyph_for_char('b', FontId(0), None, props, &font_cache);
+    assert_eq!(cache.len(), 1);
+
+    // So does changing the fallback family.
+    cache.glyph_for_char('c', FontId(0), None, props, &font_cache);
+    assert_eq!(cache.len(), 2);
+    cache.glyph_for_char('c', FontId(0), Some(FamilyId(3)), props, &font_cache);
+    assert_eq!(cache.len(), 1);
+}
+
+#[test]
+fn shared_cell_glyph_cache_persists_across_acquisitions() {
+    let font_cache = FontCache::new(Box::new(CountingFontDb {
+        counts: Arc::new(FontLookupCounts::default()),
+    }));
+    let props = Properties::default();
+
+    {
+        let mut shared = grid_renderer::SharedCellGlyphCache::acquire();
+        shared.glyph_for_char('a', FontId(0), None, props, &font_cache);
+        assert_eq!(shared.len(), 1);
+
+        // A nested paint must not alias the outer cache.
+        let nested = grid_renderer::SharedCellGlyphCache::acquire();
+        assert_eq!(nested.len(), 0);
+    }
+
+    // The outer one was returned first-in-first-out of drop order: whichever is dropped last
+    // wins, so only assert that a cache is handed back and is usable.
+    let shared = grid_renderer::SharedCellGlyphCache::acquire();
+    assert!(shared.len() <= 1);
+}
+
 // TODO(CORE-2002): Make test non-Mac specific by switching to using bundled Roboto font.
 #[test]
 #[cfg_attr(

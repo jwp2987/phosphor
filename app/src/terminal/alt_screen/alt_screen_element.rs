@@ -3,7 +3,7 @@ use crate::pane_group::SplitPaneState;
 use crate::settings::EnforceMinimumContrast;
 use crate::terminal::blockgrid_renderer::GridRenderParams;
 use crate::terminal::find::TerminalFindModel;
-use crate::terminal::grid_renderer::CellGlyphCache;
+use crate::terminal::grid_renderer::SharedCellGlyphCache;
 use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
 use crate::terminal::model::escape_sequences::{
     maybe_kitty_keyboard_escape_sequence, KeystrokeWithDetails, ToEscapeSequence,
@@ -709,7 +709,7 @@ impl Element for AltScreenElement {
             self.grid_render_params.size_info.cell_height_px().as_f32(),
         );
 
-        let mut glyphs = CellGlyphCache::default();
+        let mut glyphs = SharedCellGlyphCache::acquire();
 
         let properties = Properties::default();
 
