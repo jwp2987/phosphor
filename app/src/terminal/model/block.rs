@@ -2475,6 +2475,14 @@ impl Block {
             .contents_to_string_with_secrets_unobfuscated(false, None)
     }
 
+    /// Like [`Self::output_with_secrets_unobfuscated`] but only the leading rows needed for
+    /// `min_bytes` of text; the bool is whether later rows were left out. Bounded cost, for
+    /// callers on the agent path that cap the output anyway (#1190).
+    pub fn output_head_with_secrets_unobfuscated(&self, min_bytes: usize) -> (String, bool) {
+        self.output_grid()
+            .head_contents_with_secrets_unobfuscated(min_bytes)
+    }
+
     /// Returns an iterator over all grids in the block.
     pub fn all_grids_iter(&self) -> impl Iterator<Item = &BlockGrid> {
         [
