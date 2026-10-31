@@ -8598,7 +8598,12 @@ pub async fn generate_byop_output(
     };
 
     // Dropping the stream on cancellation also drops the in-flight HTTP request.
-    Ok(Box::pin(stream.take_until(cancellation_rx)))
+    // Merge bursts of text/reasoning chunks so the main thread does at most ~30 streaming
+    // updates a second regardless of the provider's chunk rate (#1204).
+    Ok(super::append_coalesce::coalesce_append_events(
+        stream.take_until(cancellation_rx),
+        super::append_coalesce::APPEND_COALESCE_WINDOW,
+    ))
 }
 
 /// Sends a short, non-tool request with an independent BYOP config, having the model
