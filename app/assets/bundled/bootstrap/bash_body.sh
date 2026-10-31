@@ -133,8 +133,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         __warp_hex_encode_to "${1-}"
         encoded_message=$__warp_hex
-        # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
-        # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
+        __warp_emit_hex_message
+    }
+
+    # Sends $encoded_message (already hex-encoded) the way warp_send_json_message does.
+    # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
+    # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
+    __warp_emit_hex_message () {
         if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
           __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$encoded_message$OSC_END"
         else
@@ -368,7 +373,19 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         else
           local truncated_command
           __warp_ej_var truncated_command "$BASH_COMMAND"
-          warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$truncated_command\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+          # Phosphor (#1283): the hex encoding is a shell loop, ~4 us a byte, and the fixed
+          # text around the command is most of this message. Hex digits of a concatenation are the
+          # concatenation of the hex digits, so the head and tail are encoded once per session id.
+          if [[ -z ${__warp_preexec_hex_head:-} || ${__warp_preexec_hex_sid-} != "${WARP_SESSION_ID:-}" ]]; then
+            __warp_hex_encode_to "{\"hook\": \"Preexec\", \"value\": {\"command\": \""
+            __warp_preexec_hex_head=$__warp_hex
+            __warp_hex_encode_to "\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+            __warp_preexec_hex_tail=$__warp_hex
+            __warp_preexec_hex_sid=${WARP_SESSION_ID:-}
+          fi
+          __warp_hex_encode_to "$truncated_command"
+          encoded_message=$__warp_preexec_hex_head$__warp_hex$__warp_preexec_hex_tail
+          __warp_emit_hex_message
         fi
         warp_maybe_send_reset_grid_osc
 

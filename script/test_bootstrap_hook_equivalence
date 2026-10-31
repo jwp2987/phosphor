@@ -581,8 +581,32 @@ def fish_prompt_runs():
         shutil.rmtree(base, ignore_errors=True)
 
 
+
+def preexec_hex_tests():
+    """#1283: the Preexec message is hex-encoded as a cached head + the command + a cached tail;
+    the app must decode exactly the command (and the session id) the shell ran, first and later."""
+    if not SHELLS["bash"]:
+        return
+    print("bash Preexec payload (%s)" % SHELLS["bash"])
+    base = tempfile.mkdtemp(prefix="phosphor-1283-pe-")
+    try:
+        os.makedirs(os.path.join(base, "home"))
+        sh = Shell("bash", os.path.join(base, "home"), base, "/usr/local/bin:/usr/bin:/bin")
+        check(not sh.broken, "bootstraps")
+        cmds = ["echo hi", 'echo "q\\"uote" \'it\' \\\\', "echo é❯ \U0001f41a", "echo a'b'c", "echo " + "x" * 700, "true", "echo tab\\there"]
+        for c in cmds:
+            hooks = sh.cycle(c.encode())
+            pre = [v for h, v in hooks if h == "Preexec"]
+            check(len(pre) == 1 and pre[0].get("command") == c and pre[0].get("session_id") == 4242,
+                  "Preexec carries %r" % c[:40], repr(pre)[:200])
+        sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 table_tests()
 history_tests()
+preexec_hex_tests()
 for kind in ("bash", "zsh", "fish"):
     if SHELLS[kind]:
         e2e(kind)
