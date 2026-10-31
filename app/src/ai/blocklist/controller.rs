@@ -4717,6 +4717,14 @@ impl BlocklistAIController {
                 // compaction is deferred to that step's tool results, which then go out with
                 // the automatic summary (`send_follow_up_for_conversation`, #1059). The
                 // policy itself is `byop_compaction::plan_after_stream_finished` (#959).
+                let turn_produced_output = BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| {
+                        crate::ai::byop_compaction::turn_has_visible_output(
+                            conversation.all_tasks().flat_map(|task| task.messages()),
+                            |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
+                        )
+                    });
                 let finished_stream = match summarize_overflow {
                     Some(overflow) => crate::ai::byop_compaction::FinishedStream::Summary {
                         auto: overflow,
@@ -4819,6 +4827,25 @@ impl BlocklistAIController {
                 let resume_after_auto_compaction = plan.resume_with_continue_message;
                 let auto_compaction_decision = plan.decision;
 
+                // The reply to the post-compaction continue message: a reasoning-only or
+                // blank one would end the turn with nothing shown (#1102). Retry the continue
+                // once, then say so. A compaction decided on this same turn supersedes it (its
+                // own summary and continue follow); a summary stream is never a reply.
+                let continue_reply = if summarize_overflow.is_none() {
+                    self.update_compaction_turn_state(conversation_id, |state| {
+                        state.on_continue_reply(turn_produced_output)
+                    })
+                } else {
+                    crate::ai::byop_compaction::ContinueReplyAction::None
+                };
+                let continue_reply = if auto_compaction_decision
+                    == crate::ai::byop_compaction::AutoCompactionDecision::None
+                {
+                    continue_reply
+                } else {
+                    crate::ai::byop_compaction::ContinueReplyAction::None
+                };
+
                 if auto_compaction_decision
                     == crate::ai::byop_compaction::AutoCompactionDecision::GiveUp
                 {
@@ -4829,6 +4856,24 @@ impl BlocklistAIController {
                             RenderableAIError::ContextWindowExceeded(
                                 "The conversation is still over the model's context window after automatic compaction. Start a new conversation, use a larger-context model, or reduce the amount of data read in one task.".to_owned(),
                             ),
+                            /*recovery_pending*/ false,
+                            stream_id,
+                            conversation_id,
+                            self.terminal_view_id,
+                            ctx,
+                        );
+                    });
+                } else if continue_reply == crate::ai::byop_compaction::ContinueReplyAction::Fail {
+                    log::warn!(
+                        "[byop-compaction] the model's reply to the continue message was empty twice; ending the turn with a notice"
+                    );
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.mark_response_stream_completed_with_error(
+                            RenderableAIError::Other {
+                                error_message: "The model returned an empty reply after the conversation was compacted, so the task stopped. Send a message (for example \"continue\") to resume it.".to_owned(),
+                                will_attempt_resume: false,
+                                waiting_for_network: false,
+                            },
                             /*recovery_pending*/ false,
                             stream_id,
                             conversation_id,
@@ -4866,13 +4911,22 @@ impl BlocklistAIController {
                     );
                 }
 
-                if resume_after_auto_compaction {
+                if resume_after_auto_compaction
+                    || continue_reply == crate::ai::byop_compaction::ContinueReplyAction::Retry
+                {
                     // Opencode `compaction.ts:533-537`: after an automatic summary, a
                     // synthetic user message tells the model to carry on. The request is
                     // built from the compacted history (summary + kept tail), so the task
                     // continues instead of ending on the summary text. Sent as
                     // agent-initiated so it doesn't reset the one-compaction-per-turn cap.
-                    log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                    if resume_after_auto_compaction {
+                        log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                    } else {
+                        log::info!("[byop-compaction] empty reply to the continue message; sending it once more");
+                    }
+                    self.update_compaction_turn_state(conversation_id, |state| {
+                        state.on_continue_sent()
+                    });
                     self.send_user_query_in_conversation_internal(
                         crate::ai::byop_compaction::prompt::build_continue_message(false),
                         conversation_id,

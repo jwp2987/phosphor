@@ -2588,3 +2588,62 @@ fn a_recent_turn_with_a_pdf_stays_in_the_tail() {
         "only the older turn (and its PDF) is summarized; u2 and its PDF are kept: {summarizable}"
     );
 }
+
+// -- empty reply to the continue message (#1102) -------------------------
+
+/// A reasoning-only or blank reply shows the user nothing; text or a tool call does.
+#[test]
+fn turn_has_visible_output_ignores_blank_and_reasoning_only_replies() {
+    use super::overflow::turn_has_visible_output;
+
+    let mut blank = agent_output("a-blank", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(a)) = blank.message.as_mut() {
+        a.text = " \n".to_owned();
+    }
+    let msgs = vec![
+        agent_output("a-old", "root", "r1", 1),
+        blank,
+        agent_output("a-new", "root", "r2", 4),
+        tool_call("t-new", "root", "r2", 5),
+    ];
+    assert!(turn_has_visible_output(&msgs, |id| id == "a-new"));
+    assert!(turn_has_visible_output(&msgs, |id| id == "t-new"));
+    // Only a blank message from this stream (the old output belongs to an earlier turn).
+    assert!(!turn_has_visible_output(&msgs, |id| id == "a-blank"));
+    assert!(!turn_has_visible_output(&msgs, |_| false));
+}
+
+/// An empty reply to the continue message is retried once, then fails visibly; a reply with
+/// output (or one that is not a continue reply) is left alone, and the bound resets.
+#[test]
+fn an_empty_continue_reply_retries_once_then_fails() {
+    use super::{ContinueReplyAction as A, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    // Not a reply to a continue message: nothing, however empty.
+    assert_eq!(state.on_continue_reply(false), A::None);
+    assert!(state.is_idle());
+
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Fail);
+    assert!(state.is_idle(), "the failure leaves nothing behind");
+
+    // A reply with output clears the bound: the next empty one is retried again.
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(true), A::None);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+}
+
+/// A new user turn forgets a pending continue, so an unrelated empty reply is not retried.
+#[test]
+fn a_new_user_turn_drops_the_pending_continue() {
+    use super::{ContinueReplyAction as A, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_continue_sent();
+    state.on_new_user_turn();
+    assert_eq!(state.on_continue_reply(false), A::None);
+}

@@ -226,3 +226,20 @@ pub fn turn_has_tool_calls<'a>(
         .into_iter()
         .any(|m| is_new(&m.id) && matches!(m.message, Some(api::message::Message::ToolCall(_))))
 }
+
+/// Whether the turn that just finished shows the user anything: a tool call, or an
+/// `AgentOutput` with non-blank text (any message `is_new` accepts). A reasoning-only reply is
+/// not visible output (#1102).
+pub fn turn_has_visible_output<'a>(
+    messages: impl IntoIterator<Item = &'a api::Message>,
+    is_new: impl Fn(&str) -> bool,
+) -> bool {
+    messages.into_iter().any(|m| {
+        is_new(&m.id)
+            && match &m.message {
+                Some(api::message::Message::ToolCall(_)) => true,
+                Some(api::message::Message::AgentOutput(a)) => !a.text.trim().is_empty(),
+                _ => false,
+            }
+    })
+}
