@@ -12899,6 +12899,9 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::input_order::log_hop("enter_begin", || {
+            format!("deferred={}", self.running_deferred_enter)
+        });
         if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
             // If the @ context menu is open, Enter selects the highlighted item
             // instead of submitting the CLI agent input.
@@ -13297,9 +13300,17 @@ impl Input {
                 return;
             }
             warpui::input_order::log_submit(&command);
+            let submit_started = Instant::now();
             // Read how this submit is routed before the submit resets the input config (#835).
             let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
-            if !self.try_execute_command(&command, ctx) {
+            let executed = self.try_execute_command(&command, ctx);
+            warpui::input_order::log_hop("try_execute_done", || {
+                format!(
+                    "executed={executed} took_ms={:.1}",
+                    submit_started.elapsed().as_secs_f64() * 1000.
+                )
+            });
+            if !executed {
                 return;
             }
             self.last_enter_submitted_shell_command = true;
@@ -13351,11 +13362,16 @@ impl Input {
             self.model.lock().set_is_input_dirty(false);
         }
 
-        AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-            // Don't show the quota banner once a user has run a command or AI query.
-            ai_settings.mark_quota_banner_as_dismissed(ctx);
-            ctx.notify();
-        });
+        // #1203: only when a banner is actually waiting. The update below writes a setting and
+        // notifies every observer of AISettings, on the UI thread, before the effects queued by
+        // the submit (the pty write among them) are delivered.
+        if AISettings::as_ref(ctx).quota_banner_needs_dismissal() {
+            AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                // Don't show the quota banner once a user has run a command or AI query.
+                ai_settings.mark_quota_banner_as_dismissed(ctx);
+                ctx.notify();
+            });
+        }
     }
 
     /// Runs Enter as a shell command: for this one submit the input is locked to shell, in
@@ -13508,6 +13524,7 @@ impl Input {
         let Some(text) = self.verdict_needed_before_submit(ctx) else {
             return false;
         };
+        warpui::input_order::log_hop("verdict_wait_start", String::new);
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
         let since = Instant::now();
@@ -13926,7 +13943,16 @@ impl Input {
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
         let waited = started.elapsed();
-        match enter_verdict_wait_decision(pending, waited) {
+        let decision = enter_verdict_wait_decision(pending, waited);
+        if decision != EnterVerdictWait::Wait {
+            warpui::input_order::log_hop("verdict_wait_end", || {
+                format!(
+                    "decision={decision:?} waited_ms={:.1}",
+                    waited.as_secs_f64() * 1000.
+                )
+            });
+        }
+        match decision {
             decision @ (EnterVerdictWait::Submit | EnterVerdictWait::SubmitWithoutVerdict) => {
                 if decision == EnterVerdictWait::SubmitWithoutVerdict {
                     log_late_enter_verdict(&text, waited);

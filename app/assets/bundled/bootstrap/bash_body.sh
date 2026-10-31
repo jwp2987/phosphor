@@ -1010,16 +1010,18 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
     }
 
-    # Phosphor (#1170): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
+    # Phosphor (#1170, #1203): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
     # runs three times per command (Preexec, CommandFinished, Precmd) and the `printf | od | tr`
     # pipeline above costs a subshell and two processes each time, 2.5-5 ms in all. Under LC_ALL=C
     # the string is indexed byte by byte, so the output is the same bytes `od` prints. Bash 3.2's
     # printf sign-extends a byte >= 0x80 to ffffffXX, hence the `${__c: -2}`. A long message (the
-    # Bootstrapped hook is tens of KB) goes to `od`, which beats a shell loop at that size.
+    # Bootstrapped hook is tens of KB) goes to `od`, which beats a shell loop at that size: measured in
+    # bash 5.3 the loop costs 0.27 ms for 64 bytes, 1 ms for 256, 2.4 ms for 512 and 10 ms for 2000,
+    # while the od pipeline costs 2.3-3.6 ms at any size, so the crossover is near 512 bytes.
     __warp_hex_encode_to () {
       local LC_ALL=C __s=${1-} __i __c
       __warp_hex=
-      if (( ${#__s} > 2048 )); then
+      if (( ${#__s} > 512 )); then
         __warp_hex=$(warp_hex_encode_string "$__s")
         return 0
       fi

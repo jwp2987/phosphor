@@ -1250,6 +1250,7 @@ impl<T: EventLoopSender> PtyController<T> {
             self.hold_command_behind_unreported_user_line(command, shell_type, source, None, ctx);
             return StartCommandOutcome::Accepted;
         }
+        warpui::input_order::log_hop("write_command", String::new);
         let is_editor_command = matches!(source, CommandExecutionSource::User);
         let mut engages_typeahead_handoff = false;
         let mut handoff_held_bytes: Vec<u8> = Vec::new();

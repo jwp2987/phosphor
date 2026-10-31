@@ -823,6 +823,67 @@ fn test_mark_quota_banner_as_dismissed() {
 }
 
 #[test]
+fn quota_banner_dismissal_is_a_no_op_when_nothing_needs_it() {
+    // #1203: Enter calls mark_quota_banner_as_dismissed on every submit; with nothing to
+    // dismiss it must not write the setting (a preferences-backend read/write on the UI thread).
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let now = Utc::now();
+        let cycle = |days: i64, dismissed: bool| CycleInfo {
+            end_date: now + chrono::Duration::days(days),
+            was_quota_exceeded: true,
+            banner_state: BannerState { dismissed },
+        };
+
+        // No quota data at all.
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert!(!settings.quota_banner_needs_dismissal());
+        });
+
+        // Only a future cycle and an already dismissed one: nothing to do.
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_request_quota_info
+                .set_value(
+                    AIRequestQuotaInfo {
+                        cycle_history: vec![cycle(-30, true), cycle(15, false)],
+                    },
+                    ctx,
+                )
+                .unwrap();
+        });
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert!(!settings.quota_banner_needs_dismissal());
+        });
+
+        // An expired cycle that was not dismissed does need it, and then does not.
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_request_quota_info
+                .set_value(
+                    AIRequestQuotaInfo {
+                        cycle_history: vec![cycle(-30, false), cycle(15, false)],
+                    },
+                    ctx,
+                )
+                .unwrap();
+        });
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert!(settings.quota_banner_needs_dismissal());
+        });
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings.mark_quota_banner_as_dismissed(ctx);
+        });
+        AISettings::handle(&app).read(&app, |settings, _| {
+            assert!(!settings.quota_banner_needs_dismissal());
+            let history = &settings.ai_request_quota_info.cycle_history;
+            assert!(history[0].banner_state.dismissed);
+            assert!(!history[1].banner_state.dismissed);
+        });
+    });
+}
+
+#[test]
 fn extra_headers_backward_compat() {
     let toml_str = r#"
         id = "test-id"

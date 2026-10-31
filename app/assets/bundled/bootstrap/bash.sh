@@ -255,6 +255,28 @@
          return 1
      }
 
+ #### Phosphor (#1203): sets __bp_history1 to what `history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'` printed
+ #### (command substitution drops trailing newlines; `${ ...; }` does too), without forking. Bash 5.3+.
+     __bp_history1_strip() {
+         local __bp_h=$__bp_history1 __bp_sp __bp_rest __bp_dg
+         __bp_sp=${__bp_h%%[0-9]*}
+         case $__bp_sp in
+             *[!\ ]*) return ;;
+         esac
+         __bp_rest=${__bp_h#"$__bp_sp"}
+         __bp_dg=${__bp_rest%%[!0-9]*}
+         [[ -n $__bp_dg ]] || return
+         __bp_rest=${__bp_rest#"$__bp_dg"}
+         case $__bp_rest in
+             [\*\ ]\ *) __bp_history1=${__bp_rest#??} ;;
+         esac
+     }
+     __bp_history1_nofork() {
+         __bp_history1=
+         eval '__bp_history1=${ HISTTIMEFORMAT= builtin history 1; }'
+         __bp_history1_strip
+     }
+
      # This function is installed as the DEBUG trap.  It is invoked before each
      # interactive prompt display.  Its purpose is to inspect the current
      # environment to attempt to detect if the current command is being invoked
@@ -336,10 +358,20 @@
          fi
 
          local this_command
-         this_command=$(
-             export LC_ALL=C
-             HISTTIMEFORMAT='' builtin history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'
-         )
+ #### Phosphor (#1203): `$(history 1 | sed ...)` is a subshell plus two processes on every command,
+ #### before the command runs (the tab title and any user preexec read its result). Bash 5.3 can run
+ #### `history 1` in a `${ ...; }` function substitution, which does not fork, and the sed becomes
+ #### parameter expansions that strip exactly what `1 s/^ *[0-9][0-9]*[* ] //` stripped; every other
+ #### bash keeps the original pipeline.
+         if ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+             __bp_history1_nofork
+             this_command=$__bp_history1
+         else
+             this_command=$(
+                 export LC_ALL=C
+                 HISTTIMEFORMAT='' builtin history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'
+             )
+         fi
 
          # Sanity check to make sure we have something to invoke our function with.
          if [[ -z "$this_command" ]]; then
