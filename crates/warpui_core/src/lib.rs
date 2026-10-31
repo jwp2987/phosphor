@@ -52,7 +52,7 @@ pub use pathfinder_geometry as geometry;
 pub use presenter::{
     AfterLayoutContext, EventContext, LayoutContext, PaintContext, Presenter, SizeConstraint,
 };
-pub use scene::{ClipBounds, Scene};
+pub use scene::{ClipBounds, LayerInsertionPoint, Scene};
 pub use zoom::ZoomFactor;
 
 use pathfinder_color::ColorU;

@@ -422,6 +422,18 @@ impl CornerRadius {
     }
 }
 
+/// Where in a layer the next primitive would be recorded. Taken with [`Scene::insertion_point`]
+/// while painting; [`Scene::splice_at`] later inserts primitives painted elsewhere there, so they
+/// end up ordered exactly as if they had been painted at that moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerInsertionPoint {
+    z_index: ZIndex,
+    rects: usize,
+    images: usize,
+    glyphs: usize,
+    icons: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Newtype to encapsulate a Z index, which actually represents a layer index in the list of layers
 pub enum ZIndex {
@@ -746,6 +758,54 @@ impl Scene {
             fade: None,
         });
         layer.glyphs.last_mut().unwrap()
+    }
+
+    /// An empty scene with this scene's scale and rendering config, to paint primitives into
+    /// that are later inserted with [`Self::splice_at`].
+    pub fn scratch(&self) -> Scene {
+        Scene::new(self.scale_factor, self.rendering_config)
+    }
+
+    /// Where in the active layer the next primitive would go.
+    pub fn insertion_point(&mut self) -> LayerInsertionPoint {
+        let z_index = self.z_index();
+        let layer = self.active_layer();
+        LayerInsertionPoint {
+            z_index,
+            rects: layer.rects.len(),
+            images: layer.images.len(),
+            glyphs: layer.glyphs.len(),
+            icons: layer.icons.len(),
+        }
+    }
+
+    /// Inserts the base layer of `painted` (a [`Self::scratch`] scene) at `point`, as if its
+    /// primitives had been recorded there. An insertion moves every point recorded later in the
+    /// same layer, so splice in reverse order of recording. Layers `painted` started beyond its
+    /// base layer are not carried over.
+    pub fn splice_at(&mut self, point: LayerInsertionPoint, painted: Scene) {
+        let Scene {
+            layers,
+            overlay_layers,
+            ..
+        } = painted;
+        let mut layers = layers.into_vec();
+        debug_assert!(
+            layers.len() == 1 && overlay_layers.is_empty(),
+            "a spliced scene must not start layers of its own"
+        );
+        let base = layers.swap_remove(0);
+        let layer = match point.z_index {
+            ZIndex::Normal(index) => &mut self.layers[index],
+            ZIndex::Overlay(index) => &mut self.overlay_layers[index],
+        };
+        drop(layer.rects.splice(point.rects..point.rects, base.rects));
+        drop(layer.images.splice(point.images..point.images, base.images));
+        drop(layer.glyphs.splice(point.glyphs..point.glyphs, base.glyphs));
+        drop(layer.icons.splice(point.icons..point.icons, base.icons));
+        for hit_rect in base.hit_map.iter() {
+            layer.hit_map.insert(*hit_rect);
+        }
     }
 
     /// Get an iterator over all layers in order, from bottom to top

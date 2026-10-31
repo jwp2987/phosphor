@@ -143,3 +143,92 @@ fn capacity_hints_reserve_each_layer_up_front() {
     fresh.start_layer(ClipBounds::None);
     assert_eq!(fresh.layer_count(), 4);
 }
+
+fn paint_first_part(scene: &mut Scene) {
+    scene
+        .draw_rect_with_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+        .with_background(Fill::Solid(ColorU::new(1, 1, 1, 255)));
+    scene.draw_glyph(vec2f(1., 1.), 1, FontId(0), 12., ColorU::black());
+}
+
+fn paint_deferred_part(scene: &mut Scene) {
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(20., 0.), vec2f(5., 5.)))
+        .with_background(Fill::Solid(ColorU::new(2, 2, 2, 255)));
+    scene.draw_rect_with_hit_recording(RectF::new(vec2f(30., 0.), vec2f(5., 5.)));
+    for i in 0..3 {
+        scene.draw_glyph(vec2f(20. + i as f32, 1.), 10 + i, FontId(1), 12., ColorU::black());
+    }
+}
+
+fn paint_last_part(scene: &mut Scene) {
+    scene.draw_rect_with_hit_recording(RectF::new(vec2f(40., 0.), vec2f(1., 1.)));
+    scene.draw_glyph(vec2f(40., 1.), 99, FontId(0), 12., ColorU::black());
+}
+
+fn colors(scene: &Scene) -> Vec<Vec<Fill>> {
+    scene
+        .layers()
+        .map(|layer| layer.rects.iter().map(|rect| rect.background).collect())
+        .collect()
+}
+
+/// Painting the middle part later into a scratch scene and splicing it at the recorded point
+/// records the same primitives, in the same order, as painting everything directly.
+#[test]
+fn splice_at_orders_deferred_primitives_as_if_painted_in_place() {
+    let mut direct = Scene::new(1., rendering::Config::default());
+    paint_first_part(&mut direct);
+    paint_deferred_part(&mut direct);
+    paint_last_part(&mut direct);
+
+    let mut deferred = Scene::new(1., rendering::Config::default());
+    paint_first_part(&mut deferred);
+    let point = deferred.insertion_point();
+    paint_last_part(&mut deferred);
+
+    let mut scratch = deferred.scratch();
+    paint_deferred_part(&mut scratch);
+    deferred.splice_at(point, scratch);
+
+    assert_eq!(primitives(&direct), primitives(&deferred));
+    assert_eq!(colors(&direct), colors(&deferred));
+    assert_eq!(
+        direct.layers.first().hit_map.size(),
+        deferred.layers.first().hit_map.size()
+    );
+}
+
+/// Two deferred parts in one layer, and one inside a started layer: splicing in reverse order of
+/// recording keeps every earlier point valid.
+#[test]
+fn splice_at_in_reverse_order_handles_several_points_and_sub_layers() {
+    let mut direct = Scene::new(1., rendering::Config::default());
+    paint_first_part(&mut direct);
+    paint_deferred_part(&mut direct);
+    paint_last_part(&mut direct);
+    paint_deferred_part(&mut direct);
+    direct.start_layer(ClipBounds::None);
+    paint_deferred_part(&mut direct);
+    paint_last_part(&mut direct);
+    direct.stop_layer();
+
+    let mut deferred = Scene::new(1., rendering::Config::default());
+    paint_first_part(&mut deferred);
+    let first = deferred.insertion_point();
+    paint_last_part(&mut deferred);
+    let second = deferred.insertion_point();
+    deferred.start_layer(ClipBounds::None);
+    let third = deferred.insertion_point();
+    paint_last_part(&mut deferred);
+    deferred.stop_layer();
+
+    for point in [third, second, first] {
+        let mut scratch = deferred.scratch();
+        paint_deferred_part(&mut scratch);
+        deferred.splice_at(point, scratch);
+    }
+
+    assert_eq!(primitives(&direct), primitives(&deferred));
+    assert_eq!(colors(&direct), colors(&deferred));
+}
