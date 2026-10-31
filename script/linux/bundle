@@ -222,6 +222,12 @@ fi
 # Artifact-specific configuration
 if [[ "$ARTIFACT" == "cli" ]]; then
   FEATURES="$FEATURES,standalone"
+  # musl's malloc is slow under the remote server's multithreaded small-object churn (#1157).
+  # The feature is a no-op off musl (alloc.rs gates on target_env), so only the static musl
+  # tarball downloaded onto ssh hosts gets mimalloc.
+  if [[ "${BUILD_TARGET:-}" == *-musl ]]; then
+    FEATURES="$FEATURES,mimalloc"
+  fi
 elif [[ "$ARTIFACT" == "app" ]]; then
   FEATURES="$FEATURES,gui,nld_improvements"
 fi
