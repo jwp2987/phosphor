@@ -2301,3 +2301,43 @@ fn a_queued_lrc_prompt_waits_for_the_follow_up_of_a_finished_monitored_command()
         assert_eq!(queue_len(&app, conversation_id), 0);
     });
 }
+
+/// #1264: a report of a finished monitored command that is held or in flight parks the rows for
+/// that report's own turn end, whatever the turn status and the event order say; without one the
+/// legacy delivery stands.
+#[test]
+fn queued_rows_wait_while_a_completion_report_is_outstanding() {
+    use super::{SubagentFinishedQueueDelivery, subagent_finished_queue_delivery};
+    for turn_in_progress in [false, true] {
+        assert!(matches!(
+            subagent_finished_queue_delivery(
+                false, /* has_active_subagent */
+                true,  /* completion_report_outstanding */
+                None,
+                false, /* conversation_cancelled */
+                turn_in_progress,
+                false, /* auto_resumed_on_block_completion */
+                Some(FinishReason::Complete),
+            ),
+            SubagentFinishedQueueDelivery::Nothing
+        ));
+    }
+    assert!(matches!(
+        subagent_finished_queue_delivery(
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            Some(FinishReason::Complete),
+        ),
+        SubagentFinishedQueueDelivery::SendLrcRows
+    ));
+    // An active subagent still hands the rows to the handoff retry, which asks the controller
+    // itself before sending.
+    assert!(matches!(
+        subagent_finished_queue_delivery(true, true, None, false, true, false, None),
+        SubagentFinishedQueueDelivery::SendLrcRows
+    ));
+}
