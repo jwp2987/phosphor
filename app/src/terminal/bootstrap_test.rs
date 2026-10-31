@@ -3517,11 +3517,16 @@ fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
         .and_then(|n| n.parse().ok())
         .expect("a byte count");
     let command_end = text.find("command -p stty echo\r").unwrap() + "command -p stty echo\r".len();
+    // Whatever followed the terminator line in the original (here the raw file, so two comment
+    // lines before `stty sane`; `script_for_shell` would have trimmed them) now follows the body
+    // directly, in place of the `EOM` line.
+    let after_terminator =
+        &script[script.find("\nEOM\n").expect("the EOM terminator") + "\nEOM\n".len()..];
     let tail_start = text
-        .find("\n stty sane\n")
-        .expect("the stty sane line after the body");
+        .find(after_terminator)
+        .expect("the lines after the terminator follow the body");
     // The body runs from the end of the command to the newline that ended its last line.
-    assert_eq!(tail_start + 1 - command_end, count);
+    assert_eq!(tail_start - command_end, count);
     assert!(!text.contains("<< 'EOM'"));
 }
 

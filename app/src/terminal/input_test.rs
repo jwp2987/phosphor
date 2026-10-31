@@ -10761,13 +10761,12 @@ fn test_keys_typed_behind_waiting_enter_pressed_mid_line_queue_behind_it() {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(line, ctx);
         });
-        // Cursor after `is it`, moved once the insert's events have settled, as the other
-        // cursor tests do.
+        // Cursor after `is it`, placed by byte offset once the insert's events have settled: in
+        // the agent-mode input `move_left` depends on a display map no test lays out (#1229), the
+        // way Tab completion's `before_cursor_text` does not.
         let editor = input.read(&app, |input, _| input.editor().clone());
         editor.update(&mut app, |editor, ctx| {
-            for _ in 0..5 {
-                editor.move_left(/* stop at line start */ false, ctx);
-            }
+            editor.select_ranges_by_byte_offset([ByteOffset::from(5)..ByteOffset::from(5)], ctx);
         });
         editor.read(&app, |editor, ctx| {
             assert_eq!(
