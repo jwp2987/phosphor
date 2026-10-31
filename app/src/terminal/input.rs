@@ -1549,6 +1549,9 @@ pub struct AutoSuggestionResult {
     pub buffer_text: String,
     /// Generated autosuggestion result.
     pub autosuggestion_result: Option<String>,
+    /// `Input::input_generation` when the request started; `None` when the requester has no
+    /// generation to check.
+    pub generation: Option<u64>,
 }
 
 /// Views that call into the autosuggestion generation logic must implement the Autosuggester
@@ -1731,6 +1734,15 @@ pub struct Input {
     /// (e.g. new input), we simply abort the existing run. The same applies to the
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
+    /// Bumped whenever a pending async result (completion, autosuggestion, next-command
+    /// suggestion, AI query prediction) can no longer be applied: Esc, submit, buffer
+    /// clear/replace, block completion, input-mode switch. Requests capture it when they start
+    /// and their result handlers drop results from an older generation. Aborting a future does
+    /// not stop a result already queued for delivery, and the buffer-text check alone cannot
+    /// tell a stale result from a valid one when the text happens to match (#1165).
+    input_generation: u64,
+    /// `input_generation` when the last next-command suggestion was requested from this input.
+    next_command_request_generation: u64,
     decorations_future_handle: Option<SpawnedFutureHandle>,
     /// Cooperative cancel flag of the in-flight decoration/detection job (#1031).
     decorations_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -3488,6 +3500,8 @@ impl Input {
             match event {
                 BlocklistAIInputEvent::InputTypeChanged { .. }
                 | BlocklistAIInputEvent::LockChanged { .. } => {
+                    // Results requested under the other input mode no longer apply.
+                    me.bump_input_generation();
                     // Close slash command menu if we're now in locked shell mode
                     if me.is_locked_in_shell_mode(ctx)
                         && me.suggestions_mode_model.as_ref(ctx).is_slash_commands()
@@ -3590,6 +3604,8 @@ impl Input {
             decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
+            input_generation: 0,
+            next_command_request_generation: 0,
             menu_positioning_provider,
             universal_developer_input_button_bar,
             terminal_input_message_bar,
@@ -5725,6 +5741,10 @@ impl Input {
     ) {
         match event {
             NextCommandModelEvent::NextCommandSuggestionReady => {
+                // Requested before an Esc / submit / clear / block completion since.
+                if self.is_stale_generation(self.next_command_request_generation) {
+                    return;
+                }
                 let NextCommandSuggestionState::Ready { is_from_cycle, .. } =
                     self.next_command_model.as_ref(ctx).get_state()
                 else {
@@ -6027,6 +6047,7 @@ impl Input {
             &self.model,
         ));
         let previous_result = self.last_intelligent_autosuggestion_result.take();
+        self.next_command_request_generation = self.input_generation;
         self.next_command_model.update(ctx, |model, ctx| {
             model.generate_next_command_suggestion(
                 block_completed,
@@ -7957,6 +7978,7 @@ impl Input {
     }
 
     pub fn clear_buffer_and_reset_undo_stack(&mut self, ctx: &mut ViewContext<Self>) {
+        self.bump_input_generation();
         self.clear_cached_hint_text();
         self.editor.update(ctx, |view, ctx| {
             view.clear_buffer_and_reset_undo_stack(ctx);
@@ -7964,6 +7986,7 @@ impl Input {
     }
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
+        self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {
             view.set_buffer_text(content, ctx);
         });
@@ -8318,7 +8341,18 @@ impl Input {
         }
     }
 
+    /// Invalidates every pending async completion/suggestion result. Results already queued
+    /// for delivery are dropped by the generation check in their handlers (#1165).
+    fn bump_input_generation(&mut self) {
+        self.input_generation = self.input_generation.wrapping_add(1);
+    }
+
     fn editor_escape(&mut self, ctx: &mut ViewContext<Self>) {
+        // Esc cancels a pending completion: abort it and drop a result already queued.
+        self.bump_input_generation();
+        if let Some(abort_handle) = self.completions_abort_handle.take() {
+            abort_handle.abort();
+        }
         let vim_mode = self.editor.as_ref(ctx).vim_mode(ctx);
         let has_attached_context = {
             let context_model = self.ai_context_model.as_ref(ctx);
@@ -8654,6 +8688,7 @@ impl Input {
             if let Some(last_user_block_completed) =
                 completer_data.last_user_block_completed.clone()
             {
+                self.next_command_request_generation = self.input_generation;
                 self.next_command_model.update(ctx, |model, ctx| {
                     model.generate_next_command_suggestion_with_prefix(
                         Some(buffer_text),
@@ -8722,6 +8757,7 @@ impl Input {
                             .clone(),
                     )
                 });
+        let generation = self.input_generation;
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
@@ -8778,6 +8814,7 @@ impl Input {
                                     .await
                                     {
                                         return AutoSuggestionResult {
+                                            generation: Some(generation),
                                             buffer_text,
                                             autosuggestion_result: Some(
                                                 most_likely_next_command.clone(),
@@ -8804,6 +8841,7 @@ impl Input {
                             .await
                         {
                             return AutoSuggestionResult {
+                                generation: Some(generation),
                                 buffer_text,
                                 autosuggestion_result: Some(
                                     reverse_chronological_command.command.clone(),
@@ -8817,12 +8855,14 @@ impl Input {
                     // it yields a ghost fragment such as `-E` for the last line (#1013).
                     if !completer_autosuggestion_allowed(&buffer_text) {
                         return AutoSuggestionResult {
+                            generation: Some(generation),
                             buffer_text,
                             autosuggestion_result: None,
                         };
                     }
                     let Some(completion_context) = completion_context else {
                         return AutoSuggestionResult {
+                            generation: Some(generation),
                             buffer_text,
                             autosuggestion_result: None,
                         };
@@ -8859,6 +8899,7 @@ impl Input {
                     });
 
                     AutoSuggestionResult {
+                        generation: Some(generation),
                         buffer_text,
                         autosuggestion_result: autosuggestion,
                     }
@@ -11426,10 +11467,10 @@ impl Input {
             _ => CompletionsFallbackStrategy::None,
         };
 
-        if self.is_completions_while_typing_turned_on(ctx) {
-            if let Some(last_abort_handle) = self.completions_abort_handle.take() {
-                last_abort_handle.abort();
-            }
+        // Always supersede the previous run, not only when completions-while-typing is on: its
+        // result would be dropped anyway, but its work (and remote commands) would keep running.
+        if let Some(last_abort_handle) = self.completions_abort_handle.take() {
+            last_abort_handle.abort();
         }
 
         let input_type = self.ai_input_model.as_ref(ctx).input_type();
@@ -11467,6 +11508,7 @@ impl Input {
         };
 
         let completion_session = completion_context.session.clone();
+        let generation = self.input_generation;
 
         let abort_handle = ctx
             .spawn_abortable(
@@ -11513,8 +11555,9 @@ impl Input {
 
                     (suggestions, completions_trigger, editor_snapshot)
                 },
-                |input, (suggestions, completions_trigger, editor_model), ctx| {
-                    input.handle_completion_suggestions_results(
+                move |input, (suggestions, completions_trigger, editor_model), ctx| {
+                    input.deliver_completion_suggestions_results(
+                        generation,
                         suggestions,
                         completions_trigger,
                         editor_model,
@@ -11541,6 +11584,7 @@ impl Input {
             self.suggestions_mode_model.update(ctx, |m, ctx| {
                 m.set_dynamic_enum_status(DynamicEnumSuggestionStatus::Pending, ctx);
             });
+            let generation = self.input_generation;
             let abort_handle = ctx
                 .spawn(
                     async move {
@@ -11553,7 +11597,12 @@ impl Input {
                         (variants, editor_snapshot)
                     },
                     move |input, (variants, editor_model), ctx| {
-                        input.handle_enum_completion_results(variants, editor_model, ctx);
+                        input.deliver_enum_completion_results(
+                            generation,
+                            variants,
+                            editor_model,
+                            ctx,
+                        );
                     },
                 )
                 .abort_handle();
@@ -11561,6 +11610,46 @@ impl Input {
             self.completions_abort_handle = Some(abort_handle);
             ctx.notify();
         }
+    }
+
+    /// Whether a result requested under `generation` was invalidated since (#1165).
+    fn is_stale_generation(&self, generation: u64) -> bool {
+        generation != self.input_generation
+    }
+
+    /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
+    /// Esc, submit, clear or block completion happened since the request started.
+    fn deliver_completion_suggestions_results(
+        &mut self,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_stale_generation(generation) {
+            return;
+        }
+        self.handle_completion_suggestions_results(
+            results,
+            completions_trigger,
+            editor_snapshot_when_completer_was_ran,
+            ctx,
+        );
+    }
+
+    /// Same as [`Self::deliver_completion_suggestions_results`] for dynamic enum results.
+    fn deliver_enum_completion_results(
+        &mut self,
+        generation: u64,
+        results: anyhow::Result<Vec<String>>,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_stale_generation(generation) {
+            return;
+        }
+        self.handle_enum_completion_results(results, editor_snapshot_when_completer_was_ran, ctx);
     }
 
     /// When the command finishes running, update the input suggestions menu with the suggestions.
@@ -13808,12 +13897,15 @@ impl Input {
             return;
         };
 
+        let generation = self.input_generation;
         self.predict_am_queries_future_handle = Some(ctx.spawn(
             async move { crate::ai::agent_providers::active_ai::nld_predict::run(rendered).await },
             move |me: &mut Self, maybe_suggestion: Option<String>, ctx: &mut ViewContext<Self>| {
                 // Only set the autosuggestion if the input buffer hasn't changed, since we made the original request
                 // i.e. verify the suggestion is still relevant.
-                if am_query_input_buffer != me.editor.as_ref(ctx).buffer_text(ctx) {
+                if me.is_stale_generation(generation)
+                    || am_query_input_buffer != me.editor.as_ref(ctx).buffer_text(ctx)
+                {
                     return;
                 }
 
@@ -14267,6 +14359,7 @@ impl Input {
         zero_state_prompt_suggestion_type: Option<ZeroStatePromptSuggestionType>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.bump_input_generation();
         // A command (or any other action) awaiting the user's approve/reject decision must be
         // resolved via its own card first. Without this, submitting here would fall through to
         // the ordinary "a follow-up interrupts whatever's in flight" behavior
@@ -14801,6 +14894,8 @@ impl Input {
         if let Some(session_id) = self.active_block_session_id() {
             crate::completer::invalidate_shared_directory_cache(session_id);
         }
+        // The buffer is reinitialized below and the session may have changed (bootstrap blocks).
+        self.bump_input_generation();
         // We clear the input box after executing a command here instead of where we
         // execute a command to avoid the input box flashing when its contents are
         // cleared. For the multiline input box case, this also caused contents to go
@@ -15016,6 +15111,8 @@ impl Input {
     ) {
         start_trace!("command_execution:start");
 
+        // Drop any result already queued: it must not land in the buffer of the next prompt.
+        self.bump_input_generation();
         // Abort running completions since we're about to execute a command.
         if let Some(abort_handle) = self.completions_abort_handle.take() {
             abort_handle.abort();
@@ -16146,6 +16243,12 @@ impl Autosuggester for Input {
         result: AutoSuggestionResult,
         ctx: &mut ViewContext<Self>,
     ) {
+        if result
+            .generation
+            .is_some_and(|g| self.is_stale_generation(g))
+        {
+            return;
+        }
         let buffer_text = result.buffer_text;
         if self.editor.as_ref(ctx).buffer_text(ctx) != buffer_text {
             return;
