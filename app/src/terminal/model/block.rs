@@ -667,15 +667,45 @@ impl From<&Block> for BlockType {
                     // itself.
                     let index = block.block_index;
                     let id = block.id().clone();
+                    // The with-output block is built on the metadata-only one, so the command
+                    // (about 60 ms to serialize when it is 1 MB) is serialized once, not twice.
+                    // The block is finished, so both reads see the same command either way.
+                    let without_output = lazy_block_field!(id, |block: &Block| Arc::new(
+                        SerializedBlock::from_block_without_output(block)
+                    ));
+                    let with_output = {
+                        let id = id.clone();
+                        let without_output = without_output.clone();
+                        Lazy::deferred(move |block_list: &BlockList| {
+                            match block_list.block_with_id(&id) {
+                                Some(block) => {
+                                    Arc::new(SerializedBlock::from_block_reusing_metadata(
+                                        block,
+                                        without_output.get(block_list),
+                                    ))
+                                }
+                                None => {
+                                    report_error!(
+                                        "Tried to lazily compute a UserBlockCompleted field for a block that no longer exists",
+                                        extra: {
+                                            "block_id" => ?id,
+                                            "compute_call" => "serialized_block",
+                                        }
+                                    );
+                                    debug_assert!(
+                                        false,
+                                        "The block should always exist for lazy computation"
+                                    );
+                                    Default::default()
+                                }
+                            }
+                        })
+                    };
                     BlockType::User(UserBlockCompleted::new(
                         index,
                         block.event_proxy.eviction_stamp(),
-                        lazy_block_field!(id, |block: &Block| Arc::new(SerializedBlock::from(
-                            block
-                        ))),
-                        lazy_block_field!(id, |block: &Block| Arc::new(
-                            SerializedBlock::from_block_without_output(block)
-                        )),
+                        with_output,
+                        without_output,
                         lazy_block_field!(id, Block::command_to_string),
                         lazy_block_field!(id, Block::compute_command_with_obfuscated_secrets),
                         lazy_block_field!(id, Block::compute_output_truncated),

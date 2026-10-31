@@ -295,18 +295,38 @@ impl SerializedBlock {
         }
     }
 
+    /// The full block (with output), built on top of an already-serialized
+    /// [`Self::from_block_without_output`] of the same block. Everything but the output is
+    /// copied from `metadata_only` instead of being read from the grids again; at block finish
+    /// that skips serializing the command a second time (about 60 ms for a 1 MB command).
+    pub fn from_block_reusing_metadata(block: &Block, metadata_only: &SerializedBlock) -> Self {
+        Self::with_output(metadata_only, Self::stylized_output_of(block))
+    }
+
+    /// `metadata_only` with `stylized_output` replaced by `stylized_output`.
+    fn with_output(metadata_only: &SerializedBlock, stylized_output: Vec<u8>) -> Self {
+        Self {
+            stylized_output,
+            ..metadata_only.clone()
+        }
+    }
+
+    fn stylized_output_of(block: &Block) -> Vec<u8> {
+        block
+            .output_grid()
+            .contents_to_string_with_secrets_unobfuscated(
+                true, /*include_escape_sequences*/
+                Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
+            )
+            .into_bytes()
+    }
+
     fn from_block(block: &Block, include_output: bool) -> Self {
         let stylized_command = block
             .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
             .into_bytes();
         let stylized_output = if include_output {
-            block
-                .output_grid()
-                .contents_to_string_with_secrets_unobfuscated(
-                    true, /*include_escape_sequences*/
-                    Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
-                )
-                .into_bytes()
+            Self::stylized_output_of(block)
         } else {
             Vec::new()
         };
