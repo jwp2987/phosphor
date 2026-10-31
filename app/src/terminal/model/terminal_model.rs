@@ -3812,10 +3812,18 @@ impl ansi::Handler for TerminalModel {
     fn input_buffer(&mut self, mut data: InputBufferValue) {
         // Drop the residue of query replies this app wrote that the line editor took for typed
         // text (#921), before the report becomes typeahead.
+        let reported_len = data.buffer.chars().count();
         data.buffer = self
             .reply_ledger
             .lock()
             .filter_report(std::mem::take(&mut data.buffer));
+        // #1162: the shell's report, as the shell sent it and after the reply-residue filter.
+        warpui::input_order::log_hop("input_report", || {
+            format!(
+                "reported_chars={reported_len} kept_chars={}",
+                data.buffer.chars().count()
+            )
+        });
         delegate!(self.input_buffer(data));
     }
 
