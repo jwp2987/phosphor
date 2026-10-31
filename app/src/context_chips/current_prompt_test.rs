@@ -55,8 +55,8 @@ use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::{
-    effective_poll_interval, poll_decision, ActiveChipSurfaces, ChipUpdateStatus, CurrentPrompt,
-    PollDecision, PromptContext, BACKGROUND_RECHECK_DELAY, REMOTE_POLL_INTERVAL,
+    effective_poll_interval, poll_decision, ActiveChipSurfaces, ChipState, ChipUpdateStatus,
+    CurrentPrompt, PollDecision, PromptContext, BACKGROUND_RECHECK_DELAY, REMOTE_POLL_INTERVAL,
     TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
 };
 use std::time::Duration;
@@ -247,6 +247,54 @@ fn test_fingerprint_skips_contextual_chip_recompute_when_context_is_unchanged() 
                 state.last_computed_value.as_ref().and_then(|v| v.as_text()),
                 Some("/tmp/project")
             ));
+        });
+    });
+}
+
+#[test]
+fn test_typing_only_reports_a_change_when_a_chip_starts_or_stops_rendering() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::KubernetesContext],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, _| {
+            let aliases = Default::default();
+            current_prompt.states.insert(
+                ContextChipKind::KubernetesContext,
+                ChipState::new(&ContextChipKind::KubernetesContext),
+            );
+
+            // Typing a command the kubernetes chip does not care about changes nothing, so the
+            // prompt has no reason to rebuild itself.
+            assert!(!current_prompt.refresh_should_render("l", &aliases));
+            assert!(!current_prompt.refresh_should_render("ls -la", &aliases));
+
+            // The chip appears once the command is a kubernetes one, and only then.
+            assert!(current_prompt.refresh_should_render("kubectl get pods", &aliases));
+            assert!(!current_prompt.refresh_should_render("kubectl get pods -A", &aliases));
+
+            // And disappears again when the command changes.
+            assert!(current_prompt.refresh_should_render("ls", &aliases));
+            assert!(!current_prompt.refresh_should_render("ls -la", &aliases));
         });
     });
 }

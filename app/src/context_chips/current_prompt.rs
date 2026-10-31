@@ -424,17 +424,35 @@ impl CurrentPrompt {
 
                     if let Some(session) = session {
                         let buffer_text = editor.as_ref(ctx).buffer_text(ctx);
-                        for (kind, state) in me.states.iter_mut() {
-                            state.should_render =
-                                kind.should_render(&buffer_text, session.aliases());
+                        // Only a chip appearing or disappearing changes what the prompt shows.
+                        // Notifying on every editor event made each keystroke rebuild the chip
+                        // snapshot (a deep clone of every chip's values, including the git
+                        // branch list) in each of the prompt's observers, for no visible change.
+                        if me.refresh_should_render(&buffer_text, session.aliases()) {
+                            ctx.notify();
                         }
-                        ctx.notify();
                     }
                 }
             }
         });
 
         self.update_states_with_new_context(ctx);
+    }
+
+    /// Recomputes whether each chip should render for the command in the input, and returns whether
+    /// that changed for any chip.
+    fn refresh_should_render(
+        &mut self,
+        buffer_text: &str,
+        aliases: &HashMap<smol_str::SmolStr, String>,
+    ) -> bool {
+        let mut changed = false;
+        for (kind, state) in self.states.iter_mut() {
+            let should_render = kind.should_render(buffer_text, aliases);
+            changed |= state.should_render != should_render;
+            state.should_render = should_render;
+        }
+        changed
     }
 
     pub fn snapshot(&self) -> HashMap<ContextChipKind, Option<ChipValue>> {
