@@ -127,3 +127,43 @@ fn apply_result_limit_passes_non_success_results_through_unchanged() {
         FileGlobV2Result::Cancelled
     ));
 }
+
+/// A list cut to the limit says so in the result. The JSON layer's marker compares the list
+/// against its own cap, which an executor-truncated list never exceeds, so this is the only
+/// place the model learns that files were left out. Fails on the old code: `warnings` is `None`.
+#[test]
+fn apply_result_limit_reports_the_truncation_in_the_warnings() {
+    let result = FileGlobV2Result::Success {
+        matched_files: glob_matches(5),
+        warnings: Some("permission denied: /root".to_owned()),
+    };
+    let FileGlobV2Result::Success {
+        matched_files,
+        warnings,
+    } = apply_result_limit(result, Some(2))
+    else {
+        panic!("a success result stays a success result");
+    };
+    assert_eq!(matched_files.len(), 2);
+    let warnings = warnings.expect("the truncation is reported");
+    assert!(
+        warnings.contains("first 2 of 5 matching files"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("permission denied: /root"),
+        "the stderr warning is kept: {warnings}"
+    );
+}
+
+#[test]
+fn apply_result_limit_adds_no_warning_when_nothing_was_cut() {
+    let result = FileGlobV2Result::Success {
+        matched_files: glob_matches(2),
+        warnings: None,
+    };
+    let FileGlobV2Result::Success { warnings, .. } = apply_result_limit(result, Some(2)) else {
+        panic!("a success result stays a success result");
+    };
+    assert_eq!(warnings, None);
+}
