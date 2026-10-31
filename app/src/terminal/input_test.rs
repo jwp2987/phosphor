@@ -11426,7 +11426,9 @@ fn deliver_tab_result(
 }
 
 /// #1165: Tab, then an Enter before the result: the Enter holds, and a single match is applied
-/// and the COMPLETED line submitted, once, leaving the next buffer empty.
+/// and the COMPLETED line submitted, once. A submit does not clear the editor (the terminal view
+/// does that on `BlockCompleted`, see `try_execute_command_from_source`), so "nothing replays
+/// into the next prompt" is asserted as: the buffer still holds exactly the submitted line.
 #[test]
 fn test_tab_then_enter_single_match_submits_completed_line() {
     App::test((), |mut app| async move {
@@ -11453,9 +11455,10 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
         assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
         input.read(&app, |input, ctx| {
             assert!(input.verdict_wait.is_none());
-            assert!(
-                input.buffer_text(ctx).is_empty(),
-                "the next buffer is empty"
+            assert_eq!(
+                input.buffer_text(ctx).trim_end(),
+                "git checkout feature",
+                "the buffer holds exactly the submitted line"
             );
             assert!(input.after_enter_replay_for_test().is_empty());
         });
@@ -11464,7 +11467,7 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
         deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
         assert_eq!(executed.borrow().len(), 1);
         input.read(&app, |input, ctx| {
-            assert!(input.buffer_text(ctx).is_empty())
+            assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
         });
     });
 }
@@ -11486,7 +11489,7 @@ fn test_tab_then_enter_multiple_matches_submits_visible_text() {
         assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
         input.read(&app, |input, ctx| {
             assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
-            assert!(input.buffer_text(ctx).is_empty());
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
         });
     });
 }
@@ -11508,7 +11511,8 @@ fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
         deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
         assert_eq!(executed.borrow().len(), 1);
         input.read(&app, |input, ctx| {
-            assert!(input.buffer_text(ctx).is_empty())
+            // The late result was dropped: it did not complete the submitted line.
+            assert_eq!(input.buffer_text(ctx), "git checkout fe");
         });
     });
 }
@@ -11533,7 +11537,8 @@ fn test_tab_then_enter_keys_typed_during_hold_replay_after_submit() {
                 input.after_enter_replay_for_test(),
                 [AfterEnterInput::Text("ls".to_string())]
             );
-            assert!(input.buffer_text(ctx).is_empty());
+            // Never in the old buffer: only the submitted line remains.
+            assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
         });
     });
 }
