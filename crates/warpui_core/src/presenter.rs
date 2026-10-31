@@ -200,8 +200,8 @@ impl PositionCache {
     /// cached until it's explicitly cleared.
     pub fn cache_position_indefinitely(&mut self, position_id: String, bounds: RectF) {
         if let Some(last) = self.pending_positions.last_mut() {
-            last.insert(position_id.clone(), bounds);
-            self.single_frame_positions.remove(&position_id);
+            self.single_frame_positions.remove(position_id.as_str());
+            last.insert(position_id, bounds);
         }
     }
 

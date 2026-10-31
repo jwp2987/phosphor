@@ -62,6 +62,9 @@ pub enum TextAlignment {
     Right,
 }
 
+/// Two generations of laid-out text keyed by everything that affects the layout. The keys hash
+/// the whole text, so the hasher is Fx, not SipHash: every cached line on screen is looked up
+/// once per layout pass.
 struct TextCache<T> {
     prev_frame: Mutex<FxHashMap<CacheKeyValue, Arc<T>>>,
     curr_frame: RwLock<FxHashMap<CacheKeyValue, Arc<T>>>,

@@ -755,3 +755,31 @@ fn test_elided_middle_noop_when_fully_laid_out() {
     let frame = TextFrame::mock_with_positions("abcd", 10.).with_elided_middle(2, 4, 4);
     assert_eq!(frame.lines().last().unwrap().end_index(), 4);
 }
+
+/// The two-generation cache keeps an entry that was fetched in the previous frame, drops one that
+/// was not, and answers a lookup through a borrowed key for an entry inserted by value.
+#[test]
+fn text_cache_keeps_entries_fetched_within_two_frames() {
+    let cache: TextCache<u32> = TextCache::new();
+    let key = |text: &str| CacheKeyValue {
+        text: text.to_owned(),
+        font_size: 12.0.into(),
+        line_height_ratio: 1.2.into(),
+        fixed_width_tab_size: None,
+        style_runs: Default::default(),
+        max_width: f32::MAX.into(),
+        max_height: None,
+        alignment: TextAlignment::Left,
+        first_line_head_indent: None,
+        clip_config: None,
+    };
+    cache.insert(key("kept"), Arc::new(1));
+    cache.insert(key("dropped"), Arc::new(2));
+
+    cache.finish_frame();
+    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
+
+    cache.finish_frame();
+    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
+    assert_eq!(cache.get(&key("dropped") as &dyn CacheKey), None);
+}
