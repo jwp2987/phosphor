@@ -3687,6 +3687,36 @@ impl BlockList {
         self.create_warp_input_block();
     }
 
+    /// Replaces the hidden bootstrap block left active by an `InitShell` whose bootstrap was
+    /// abandoned (#1014/#1119) with an ordinary user block, so the shell's output is drawn.
+    /// Output written to a `WarpInput` block is discarded and it is never shown, and nothing
+    /// else would move the pane off it: no `Precmd` arrives from a shell that never finished
+    /// setting up. The new block is started like one the editor sent bytes to. Returns whether
+    /// the block was replaced.
+    pub fn replace_stalled_bootstrap_block(&mut self) -> bool {
+        let active = self.active_block();
+        if active.is_for_in_band_command
+            || !matches!(
+                active.bootstrap_stage(),
+                BootstrapStage::WarpInput | BootstrapStage::ScriptExecution
+            )
+        {
+            return false;
+        }
+        self.finish_background_block();
+        self.active_block_mut().finish(0);
+        self.update_active_block_height();
+        self.create_new_block(
+            BlockId::new(),
+            BootstrapStage::PostBootstrapPrecmd,
+            None,
+            None,
+        );
+        self.start_active_block();
+        self.update_active_block_height();
+        true
+    }
+
     /// Starts the active block and resets block-to-block state. For local sessions, this is called
     /// from the input editor when it sends user bytes to the pty (usually the
     /// next command to run, but also ctrl-d). Once we've written to the pty on
