@@ -153,6 +153,25 @@ impl InputConfig {
 }
 
 /// Terminal pane-scoped model responsible for managing AI input state.
+/// An `AtomicBool` that the model's `Clone` derive can copy: a clone starts with the flag's
+/// current value instead of sharing it.
+#[derive(Default)]
+struct WakeFlag(AtomicBool);
+
+impl Clone for WakeFlag {
+    fn clone(&self) -> Self {
+        Self(AtomicBool::new(self.0.load(AtomicOrdering::Relaxed)))
+    }
+}
+
+impl std::ops::Deref for WakeFlag {
+    type Target = AtomicBool;
+
+    fn deref(&self) -> &AtomicBool {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub struct BlocklistAIInputModel {
     input_config: InputConfig,
@@ -181,7 +200,7 @@ pub struct BlocklistAIInputModel {
     /// may be) held behind the verdict. Only then does settling a detection notify observers
     /// (#1181): an unconditional notify re-rendered the message bars, status bar and terminal
     /// view after every keystroke's verdict, an extra frame per key with nothing visible changed.
-    settle_wake_wanted: AtomicBool,
+    settle_wake_wanted: WakeFlag,
 
     /// The input config when the pending detection was requested. A verdict that left a
     /// different config (type or lock) changed what views render, so settling notifies even
@@ -282,7 +301,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
-            settle_wake_wanted: AtomicBool::new(false),
+            settle_wake_wanted: WakeFlag::default(),
             config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
@@ -495,7 +514,7 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
-            settle_wake_wanted: AtomicBool::new(false),
+            settle_wake_wanted: WakeFlag::default(),
             config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
