@@ -5,7 +5,7 @@ members = [
 ]
 resolver = "2"
 # Vendored crates that declare their own [workspace] (#864).
-exclude = ["lib/cosmic-text"]
+exclude = ["lib/cosmic-text", "lib/arboard"]
 
 # Include all members except serve-wasm (since it's a helper helper for serving
 # wasm binaries and not something we want to regularly compile or run
@@ -687,6 +687,10 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 # and the re-pin procedure are in lib/rust-genai/CHANGES-PHOSPHOR.md and
 # lib/rust-genai/UPSTREAM.md.
 genai = { path = "lib/rust-genai" }
+
+# Vendored arboard 3.6.1 with a progress-scaled X11 clipboard read timeout (#1255); provenance and
+# license in lib/arboard/CHANGES-PHOSPHOR.md.
+arboard = { path = "lib/arboard" }
 
 # The multi-agent proto API is pinned directly to upstream `warpdotdev` (see the
 # dependency above), so there is no longer a fork to redirect to and the former
