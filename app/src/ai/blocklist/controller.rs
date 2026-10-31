@@ -296,6 +296,14 @@ impl SessionContext {
         }
     }
 
+    /// This context with its working directory replaced (e.g. a remote session whose cwd is a
+    /// path on the other host).
+    #[cfg(test)]
+    pub fn with_cwd_for_test(mut self, cwd: &str) -> Self {
+        self.current_working_directory = Some(cwd.to_owned());
+        self
+    }
+
     /// A legacy-SSH session: the user typed `ssh host` into the PTY rather than using the
     /// remote-server extension.
     ///

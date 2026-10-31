@@ -543,7 +543,10 @@ impl RequestParams {
         let codebase_context_enabled = BlocklistAIPermissions::as_ref(app)
             .get_codebase_context_enabled(app, terminal_view_id);
         let codebase_symbols = std::sync::Arc::new(if codebase_context_enabled {
-            crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(app)
+            crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(
+                app,
+                &session_context,
+            )
         } else {
             Vec::new()
         });
@@ -554,6 +557,7 @@ impl RequestParams {
             crate::ai::agent_providers::tools::get_relevant_files_runtime::collect_relevant_files_snapshot(
                 app,
                 terminal_view_id,
+                &session_context,
             )
             .map(std::sync::Arc::new)
         } else {
