@@ -38,18 +38,18 @@ struct RectVertexShaderInput {
 struct RectVertexShaderOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) background_start: vec2<f32>,
-    @location(1) background_start_color: vec4<f32>,
+    @location(1) @interpolate(flat) background_start_color: vec4<f32>,
     @location(2) background_end: vec2<f32>,
-    @location(3) background_end_color: vec4<f32>,
-    @location(4) border_width: vec4<f32>,
+    @location(3) @interpolate(flat) background_end_color: vec4<f32>,
+    @location(4) @interpolate(flat) border_width: vec4<f32>,
     @location(5) border_start: vec2<f32>,
     @location(6) border_start_color: vec4<f32>,
     @location(7) border_end: vec2<f32>,
     @location(8) border_end_color: vec4<f32>,
     @location(9) rect_corner: vec2<f32>,
     @location(10) rect_center: vec2<f32>,
-    @location(11) corner_radius: vec4<f32>,
-    @location(12) drop_shadow_data: vec2<f32>,
+    @location(11) @interpolate(flat) corner_radius: vec4<f32>,
+    @location(12) @interpolate(flat) drop_shadow_data: vec2<f32>,
     @location(13) dashed_border_data: vec3<f32>,
 };
 
@@ -83,8 +83,21 @@ fn vs_main(
     return out;
 }
 
+// Whether a rect with a single flat color, square corners, no border and no shadow skips the
+// general code below (#1225). That code evaluates two gradients, two rounded-rect distance
+// fields and the border masks for every pixel, which is what a software rasterizer (WARP, the
+// only "GPU" of a VM) spends most of a frame on: the big backgrounds are all solid. The early
+// return is the general path's own result for these inputs, written out: no border means the
+// border alpha is 0, so the blend reduces to `rgb * a / (a + EPSILON)`. The Rust side replaces
+// this line when `PHOSPHOR_RECT_FAST_PATH=0` is set, to compare the two.
+const SOLID_FAST_PATH: bool = true;
+
 @fragment
 fn rect_fs_main(in: RectVertexShaderOutput) -> @location(0) vec4<f32> {
+    if SOLID_FAST_PATH && all(in.corner_radius == vec4<f32>(0.0)) && all(in.border_width == vec4<f32>(0.0)) && in.drop_shadow_data.x <= 0.0 && all(in.background_start_color == in.background_end_color) {
+        let solid_alpha: f32 = in.background_start_color.a;
+        return vec4<f32>(in.background_start_color.rgb * solid_alpha / (solid_alpha + EPSILON), solid_alpha);
+    }
     var background_color: vec4<f32> = derive_color(
         in.position.xy,
         in.background_start,
