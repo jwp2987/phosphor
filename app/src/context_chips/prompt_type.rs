@@ -113,7 +113,7 @@ impl PromptType {
     }
 
     pub fn chips(&self, ctx: &AppContext) -> Vec<ChipResult> {
-        self.snapshot(ctx).chips().clone()
+        self.snapshot(ctx).into_chips()
     }
 
     pub fn agent_view_chips(&self, ctx: &AppContext) -> Vec<ChipResult> {

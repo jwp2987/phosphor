@@ -83,6 +83,12 @@ impl PromptSnapshot {
         &self.chips
     }
 
+    /// The chips, by value: for callers that only need the chips of a snapshot they just built, so
+    /// that they do not clone every chip value a second time.
+    pub(crate) fn into_chips(self) -> Vec<ChipResult> {
+        self.chips
+    }
+
     pub(super) fn same_line_prompt_enabled(&self) -> bool {
         self.same_line_prompt_enabled
     }

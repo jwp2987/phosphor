@@ -17,6 +17,7 @@ use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
+use std::sync::Arc;
 use std::{
     cmp::{min, Ordering},
     mem,
@@ -533,7 +534,7 @@ pub struct GridHandler {
 
     pub(super) secrets: SecretMap,
     /// Given a plaintext, this map returns all secrets with the same plaintext.
-    secrets_in_plaintext: HashMap<String, HashSet<SecretHandle>>,
+    secrets_in_plaintext: HashMap<Arc<str>, HashSet<SecretHandle>>,
     secret_obfuscation_mode: ObfuscateSecrets,
     /// Determines whether all bytes have been processed to detect secrets.
     all_bytes_scanned_for_secrets: bool,
@@ -1843,6 +1844,21 @@ impl GridHandler {
         let end = range.end.wrapping_sub(self.columns(), 1);
 
         Some(start..=end)
+    }
+
+    /// Moves the dirty cells range up by `rows`, to follow its rows when that many rows are
+    /// truncated from the front of the grid. A bound that is within the truncated rows moves to the
+    /// top of the grid.
+    pub(super) fn shift_dirty_cells_range_up(&mut self, rows: usize) {
+        let shift = |point: Point| {
+            if point.row < rows {
+                Point::new(0, 0)
+            } else {
+                Point::new(point.row - rows, point.col)
+            }
+        };
+        let dirty_cells_range = &mut self.ansi_handler_state.dirty_cells_range;
+        *dirty_cells_range = shift(dirty_cells_range.start)..shift(dirty_cells_range.end);
     }
 
     /// Updates the dirty cells range based on the current cursor position.

@@ -403,3 +403,113 @@ fn test_bytes_processed_for_secrets_after_turning_redaction_on_then_off() {
     grid_handler.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
     assert!(!grid_handler.all_bytes_scanned_for_secrets());
 }
+
+/// Prints the lines `KEY<n>` for each `n` in `lines` into the grid, handing it the bytes in chunks
+/// of `lines_per_chunk` lines (each chunk ends in `on_finish_byte_processing`, like a read from the
+/// pty). Every line is followed by a newline except `last_line`, so that the grid ends with the
+/// cursor on it.
+fn print_numbered_keys(
+    grid_handler: &mut GridHandler,
+    lines: std::ops::Range<usize>,
+    lines_per_chunk: usize,
+    last_line: usize,
+) {
+    for (index, line) in lines.clone().enumerate() {
+        grid_handler.input_at_cursor(&format!("KEY{line}"));
+        if line != last_line {
+            let _ = grid_handler.linefeed();
+            grid_handler.carriage_return();
+        }
+        if (index + 1) % lines_per_chunk == 0 || line + 1 == lines.end {
+            grid_handler.on_finish_byte_processing(&ansi::ProcessorInput::new(&[]));
+        }
+    }
+}
+
+/// The text under the secret at `row`, column 0, if there is one.
+fn secret_text_at_row(grid_handler: &GridHandler, row: usize) -> Option<String> {
+    let (_, secret) = grid_handler.secret_at_original_point(Point::new(row, 0))?;
+    Some(grid_handler.generate_secret_plaintext(secret.range()))
+}
+
+#[serial]
+#[test]
+fn test_secrets_are_found_on_lines_that_scroll_by_in_one_chunk_once_scrollback_is_full() {
+    crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
+        [&Regex::new("KEY[0-9]+").expect("Should be able to construct regex")],
+        std::iter::empty(), // No enterprise secrets
+    );
+
+    let mut blockgrid = empty_blockgrid(3, 10, 4, ObfuscateSecrets::Yes);
+    let grid_handler = blockgrid.grid_handler_mut();
+
+    // Fill the scrollback first, so that it is dropping rows from its front.
+    print_numbered_keys(grid_handler, 0..20, 1, 39);
+    assert!(grid_handler.num_lines_truncated() > 0);
+
+    // Then the last 20 lines arrive in a single chunk. Only the last few rows are kept, and once
+    // the scrollback is full the cursor point stops moving, so the dirty range used to collapse to
+    // the cursor row and every line that had scrolled by in the chunk went unscanned.
+    print_numbered_keys(grid_handler, 20..40, 20, 39);
+
+    assert!(grid_handler.num_lines_truncated() > 0);
+    let total_rows = grid_handler.total_rows();
+    for row in 0..total_rows {
+        assert_eq!(
+            secret_text_at_row(grid_handler, row),
+            Some(format!("KEY{}", 40 - total_rows + row)),
+            "row {row} should have its own secret"
+        );
+    }
+    assert_eq!(grid_handler.secrets.len(), total_rows);
+}
+
+#[serial]
+#[test]
+fn test_secrets_keep_pointing_at_their_text_when_rows_are_truncated_from_the_front() {
+    crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
+        [&Regex::new("KEY[0-9]+").expect("Should be able to construct regex")],
+        std::iter::empty(), // No enterprise secrets
+    );
+
+    let mut blockgrid = empty_blockgrid(3, 10, 4, ObfuscateSecrets::Yes);
+    let grid_handler = blockgrid.grid_handler_mut();
+
+    // One line per chunk: each scan sees the grid after it has dropped another row from the front,
+    // so the secrets found by earlier scans have to move up with their rows.
+    print_numbered_keys(grid_handler, 0..40, 1, 39);
+
+    assert!(grid_handler.num_lines_truncated() > 0);
+    let total_rows = grid_handler.total_rows();
+    for row in 0..total_rows {
+        assert_eq!(
+            secret_text_at_row(grid_handler, row),
+            Some(format!("KEY{}", 40 - total_rows + row)),
+            "the secret at row {row} should be on that row's text"
+        );
+    }
+    assert_eq!(
+        secret_ranges(grid_handler).first(),
+        Some(&(Point::new(0, 0)..=Point::new(0, 2 + (40 - total_rows).to_string().len())))
+    );
+}
+
+#[serial]
+#[test]
+fn test_secrets_in_dropped_rows_are_forgotten() {
+    crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
+        [&Regex::new("KEY[0-9]+").expect("Should be able to construct regex")],
+        std::iter::empty(), // No enterprise secrets
+    );
+
+    let mut blockgrid = empty_blockgrid(3, 10, 4, ObfuscateSecrets::Yes);
+    let grid_handler = blockgrid.grid_handler_mut();
+
+    print_numbered_keys(grid_handler, 0..200, 1, 199);
+
+    // Neither the secret map nor the plaintext index keeps anything for the 190-odd rows that were
+    // dropped.
+    let total_rows = grid_handler.total_rows();
+    assert_eq!(grid_handler.secrets.len(), total_rows);
+    assert_eq!(grid_handler.secrets_in_plaintext.len(), total_rows);
+}
