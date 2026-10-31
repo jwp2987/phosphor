@@ -302,3 +302,67 @@ fn process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_
     // `[]` and whitespace-only rows are dropped; the rest come back oldest-first.
     assert_eq!(texts, vec!["older prompt", "newer prompt"]);
 }
+
+/// Inserts a block row for `pane` that started at `start_ts` (or never, for `None`).
+fn insert_block(conn: &mut SqliteConnection, pane: &[u8], start_ts: Option<chrono::NaiveDateTime>) {
+    use crate::persistence::schema::blocks;
+    diesel::insert_into(blocks::table)
+        .values((
+            blocks::pane_leaf_uuid.eq(pane.to_vec()),
+            blocks::stylized_command.eq(b"ls".to_vec()),
+            blocks::stylized_output.eq(b"out".to_vec()),
+            blocks::exit_code.eq(0),
+            blocks::did_execute.eq(true),
+            blocks::honor_ps1.eq(false),
+            blocks::is_background.eq(false),
+            blocks::block_id.eq(uuid::Uuid::new_v4().to_string()),
+            blocks::start_ts.eq(start_ts),
+        ))
+        .execute(conn)
+        .expect("block should insert");
+}
+
+fn block_panes(conn: &mut SqliteConnection) -> Vec<(Vec<u8>, Option<chrono::NaiveDateTime>)> {
+    use crate::persistence::schema::blocks;
+    blocks::table
+        .select((blocks::pane_leaf_uuid, blocks::start_ts))
+        .order(blocks::id.asc())
+        .load(conn)
+        .expect("blocks should load")
+}
+
+/// #1155: only blocks that are unreferenced by `terminal_panes` AND older than the
+/// cutoff are deleted. Foreign keys are off on this in-memory connection, so a pane
+/// row can be inserted without its parent pane node.
+#[test]
+fn delete_orphaned_blocks_removes_only_old_unreferenced_blocks() {
+    use crate::persistence::schema::terminal_panes;
+    let mut conn = test_connection();
+    let now = chrono::Utc::now().naive_utc();
+    let old = now - chrono::Duration::days(30);
+    let cutoff = now - chrono::Duration::days(7);
+    let live_pane = vec![1u8; 16];
+    let dead_pane = vec![2u8; 16];
+    diesel::insert_into(terminal_panes::table)
+        .values((
+            terminal_panes::id.eq(1),
+            terminal_panes::uuid.eq(live_pane.clone()),
+        ))
+        .execute(&mut conn)
+        .expect("pane should insert");
+
+    insert_block(&mut conn, &live_pane, Some(old)); // referenced, old: kept
+    insert_block(&mut conn, &dead_pane, Some(old)); // orphan, old: deleted
+    insert_block(&mut conn, &dead_pane, Some(old)); // orphan, old: deleted
+    insert_block(&mut conn, &dead_pane, Some(now)); // orphan, recent: kept
+    insert_block(&mut conn, &dead_pane, None); // orphan, no timestamp: kept
+
+    let deleted = super::delete_orphaned_blocks(&mut conn, cutoff).expect("gc should run");
+
+    assert_eq!(deleted, 2);
+    let remaining = block_panes(&mut conn);
+    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining[0], (live_pane, Some(old)));
+    assert_eq!(remaining[1], (dead_pane.clone(), Some(now)));
+    assert_eq!(remaining[2], (dead_pane, None));
+}

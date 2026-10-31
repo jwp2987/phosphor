@@ -1990,6 +1990,18 @@ fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
     setup_database(path)
 }
 
+/// Startup GC: deletes `blocks` rows of panes that are not in the saved session and
+/// started more than `ORPHAN_BLOCK_MIN_AGE` ago. Failure is logged and ignored; it is
+/// housekeeping and must never keep the writer from starting.
+fn gc_orphaned_blocks(conn: &mut SqliteConnection) {
+    let cutoff = (Utc::now() - super::block_list::ORPHAN_BLOCK_MIN_AGE).naive_utc();
+    match super::block_list::delete_orphaned_blocks(conn, cutoff) {
+        Ok(0) => {}
+        Ok(deleted) => log::info!("Removed {deleted} orphaned terminal blocks older than 7 days"),
+        Err(err) => log::warn!("Failed to remove orphaned terminal blocks: {err:#}"),
+    }
+}
+
 fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<WriterHandles> {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_SIZE);
     // `None` while paused: the connection is closed before the file is removed.
@@ -2020,6 +2032,11 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             let mut retry_deadline: Option<std::time::Instant> = None;
             // #971: non-snapshot events blocked by a lock, replayed in order.
             let mut retry_queue = RetryQueue::default();
+            // Reclaim blocks of long-gone panes once per launch (#1155). Done here, on the
+            // writer thread, so the main thread never waits on it.
+            if let Some(conn) = current_conn.as_mut() {
+                gc_orphaned_blocks(conn);
+            }
             loop {
                 // Whether this iteration is a retry of the pending snapshot.
                 let mut timed_out = false;
