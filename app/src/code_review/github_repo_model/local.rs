@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use settings::Setting as _;
 use warpui::r#async::SpawnedFutureHandle;
+use warpui::windowing::WindowManager;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity as _};
 
 use super::GitHubRepoEvent;
@@ -21,14 +22,15 @@ const GITHUB_INFO_PERIODIC_REFRESH: Duration = Duration::from_secs(60);
 const REPOSITORY_INFO_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// While no window of the app is active the periodic refresh is skipped; this is how often it
 /// re-checks, so the refresh happens within this long of the app coming back to the foreground.
-const INACTIVE_RECHECK_DELAY: Duration = Duration::from_secs(5);
 
-/// What a due periodic-refresh tick does: `(run_refresh_now, delay_until_next_tick)`.
-fn periodic_refresh_plan(app_active: bool) -> (bool, Duration) {
+/// What a due periodic-refresh tick does: `(run_refresh_now, delay_until_next_tick)`. `None` means
+/// park: no timer is armed while the app has no active window, and the window regaining focus
+/// restarts the poll (an idle, unfocused app costs zero wakeups from this model).
+fn periodic_refresh_plan(app_active: bool) -> (bool, Option<Duration>) {
     if app_active {
-        (true, GITHUB_INFO_PERIODIC_REFRESH)
+        (true, Some(GITHUB_INFO_PERIODIC_REFRESH))
     } else {
-        (false, INACTIVE_RECHECK_DELAY)
+        (false, None)
     }
 }
 
@@ -81,6 +83,8 @@ pub struct LocalGitHubRepoModel {
     /// Handle for the pending periodic-refresh tick. Aborted in `Drop` so
     /// the timer doesn't outlive the model.
     periodic_refresh_handle: Option<SpawnedFutureHandle>,
+    /// The periodic refresh is waiting for the app to become active (no timer is armed).
+    periodic_refresh_parked: bool,
 }
 
 impl Entity for LocalGitHubRepoModel {
@@ -137,7 +141,18 @@ impl LocalGitHubRepoModel {
             refreshing_pr_info_abort_handle: None,
             repository_info_abort_handle: None,
             periodic_refresh_handle: None,
+            periodic_refresh_parked: false,
         };
+
+        // A parked periodic refresh restarts, and refreshes at once, when a window becomes active.
+        ctx.subscribe_to_model(&WindowManager::handle(ctx), |me, _, ctx| {
+            if me.periodic_refresh_parked && ctx.windows().state().active_window.is_some() {
+                me.periodic_refresh_parked = false;
+                me.refresh_pr_info(ctx);
+                me.refresh_repository_info(ctx);
+                me.schedule_periodic_refresh(ctx);
+            }
+        });
 
         // Schedule periodic refresh of PR info and repository info.
         // This is necessary to recover from transient `gh` command failures.
@@ -156,8 +171,8 @@ impl LocalGitHubRepoModel {
     /// Schedules a periodic timer that refreshes PR info and repository info.
     ///
     /// Each `gh` call is two child processes plus network, so ticks are skipped while no window
-    /// of the app is active (nobody can see the result); the first re-check after the app is
-    /// active again runs the refresh.
+    /// of the app is active (nobody can see the result); the poll is then parked (no timer)
+    /// until a window becomes active again, which runs the refresh at once.
     fn schedule_periodic_refresh(&mut self, ctx: &mut ModelContext<Self>) {
         self.schedule_periodic_refresh_after(GITHUB_INFO_PERIODIC_REFRESH, ctx);
     }
@@ -174,7 +189,13 @@ impl LocalGitHubRepoModel {
                     me.refresh_pr_info(ctx);
                     me.refresh_repository_info(ctx);
                 }
-                me.schedule_periodic_refresh_after(next_delay, ctx);
+                match next_delay {
+                    Some(delay) => me.schedule_periodic_refresh_after(delay, ctx),
+                    None => {
+                        me.periodic_refresh_handle = None;
+                        me.periodic_refresh_parked = true;
+                    }
+                }
             },
         );
         self.periodic_refresh_handle = Some(handle);
@@ -405,6 +426,7 @@ impl LocalGitHubRepoModel {
             refreshing_pr_info_abort_handle: None,
             repository_info_abort_handle: None,
             periodic_refresh_handle: None,
+            periodic_refresh_parked: false,
         }
     }
 
