@@ -7689,6 +7689,8 @@ fn typing_after_the_user_takes_over_an_agent_command_reaches_the_pty() {
         let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .block_list_mut()
@@ -7722,6 +7724,8 @@ fn typing_during_a_user_owned_long_command_still_reaches_the_pty() {
         });
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .simulate_long_running_block("sleep 100000", "");
@@ -7744,6 +7748,8 @@ fn typing_at_a_prompt_of_an_agent_driven_command_reaches_the_pty() {
         let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
 
         terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
             view.model
                 .lock()
                 .process_bytes(b"[sudo] password for me: ".as_slice());
@@ -17238,6 +17244,11 @@ fn ssh_prompt_arrival_ends_drop_through() {
             view.model
                 .lock()
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
+            // #1123 (b4901490d): an Enter within 400 ms of the last dropped key belongs to that
+            // dropped line, so a prompt answer is an Enter a person types after reading the
+            // prompt, not in the same instant as the blind letters.
+            view.ssh_last_dropped_key_at =
+                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_drop_line_through_enter);
         });
@@ -18775,8 +18786,10 @@ fn ssh_enter_just_after_dropped_letters_is_dropped_with_them_after_a_flag_reset(
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("exit", ctx);
             assert!(view.ssh_drop_line_through_enter);
-            // The flag is reset by something other than the line's Enter.
+            // The flag is reset by something other than the line's Enter, with the gate released
+            // (a prompt-shaped line ended the drop); the next line is typed after the release.
             view.ssh_drop_line_through_enter = false;
+            release_ssh_gate_for_test(view);
             // The editor's Enter (empty buffer) is vetoed, not executed.
             submit_command(view, "", ctx);
             assert!(

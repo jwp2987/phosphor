@@ -1091,10 +1091,12 @@ fn test_trailing_comment_is_not_classified() {
                 InputType::Shell,
                 "{buffer:?}"
             );
+            // In an agent conversation the head must be a known command (#1183), or the line is
+            // routed to the agent for lack of command evidence whatever its comment says.
             assert_eq!(
                 route(
                     HashMeansProse,
-                    snapshot_without_descriptions(buffer),
+                    snapshot_head_known(buffer),
                     &agent_context()
                 )
                 .await,

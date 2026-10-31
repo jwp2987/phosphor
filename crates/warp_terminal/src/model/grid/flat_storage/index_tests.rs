@@ -393,9 +393,12 @@ fn random_content(rng: &mut impl rand::Rng, graphemes: usize) -> String {
         "\n",
         "\n",
     ];
-    (0..graphemes)
+    // `from_content_using_rows` requires any partially filled final row to end in a newline.
+    let mut content: String = (0..graphemes)
         .map(|_| POOL[rng.gen_range(0..POOL.len())])
-        .collect()
+        .collect();
+    content.push('\n');
+    content
 }
 
 /// #1150: the per-row fast path in `Index::rebuild` must produce exactly the index the
@@ -438,10 +441,12 @@ fn test_rebuild_fast_path_matches_slow_path() {
 
 #[test]
 fn test_rebuild_fast_path_skips_rows_that_need_reflow() {
-    // 1: abcdef\n (too wide for 4)   2: ab\n (fits)   3: a<wide> (no trailing newline)
-    let storage = FlatStorage::from_content_using_rows("abcdef\nab\na\u{4e16}", 8, None);
-    let mut probe = Index::new(4, None);
-    assert!(!probe.try_copy_unchanged_row(&storage.index, 0));
-    assert!(probe.try_copy_unchanged_row(&storage.index, 1));
-    assert!(!probe.try_copy_unchanged_row(&storage.index, 2));
+    // Built at 3 columns: rows are `abc` (soft wrap), `def\n` (3 cells), `ab\n`, and `a<wide>`
+    // (full row, soft wrap, no trailing newline). Probed at 2 columns.
+    let storage = FlatStorage::from_content_using_rows("abcdef\nab\na\u{4e16}", 3, None);
+    let mut probe = Index::new(2, None);
+    assert!(!probe.try_copy_unchanged_row(&storage.index, 0)); // soft-wrapped
+    assert!(!probe.try_copy_unchanged_row(&storage.index, 1)); // 3 cells > 2 columns
+    assert!(probe.try_copy_unchanged_row(&storage.index, 2)); // fits
+    assert!(!probe.try_copy_unchanged_row(&storage.index, 3)); // no trailing newline
 }

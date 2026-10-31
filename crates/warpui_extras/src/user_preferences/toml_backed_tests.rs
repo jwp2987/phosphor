@@ -1170,11 +1170,13 @@ fn test_background_write_failure_is_reported_asynchronously() {
     use super::super::UserPreferences;
 
     let dir = tempfile::tempdir().unwrap();
-    // The parent "directory" is a regular file, so the write cannot succeed.
+    // The parent "directory" becomes a regular file only after the store has loaded: loading a
+    // path under a file fails with ENOTDIR (not NotFound), which inhibits writes outright and
+    // would fail the setter synchronously instead of exercising the background write.
     let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, "x").unwrap();
     let file_path = blocker.join("settings.toml");
     let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    std::fs::write(&blocker, "x").unwrap();
     let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
 
     assert!(prefs.write_value("zoom", "1".to_string()).is_ok());

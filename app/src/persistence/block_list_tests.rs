@@ -332,12 +332,15 @@ fn block_panes(conn: &mut SqliteConnection) -> Vec<(Vec<u8>, Option<chrono::Naiv
 }
 
 /// #1155: only blocks that are unreferenced by `terminal_panes` AND older than the
-/// cutoff are deleted. Foreign keys are off on this in-memory connection, so a pane
-/// row can be inserted without its parent pane node.
+/// cutoff are deleted. Foreign keys are switched off below (the migrations leave them on), so
+/// a pane row can be inserted without its parent pane node and an orphan block can exist.
 #[test]
 fn delete_orphaned_blocks_removes_only_old_unreferenced_blocks() {
     use crate::persistence::schema::terminal_panes;
     let mut conn = test_connection();
+    diesel::sql_query("PRAGMA foreign_keys = OFF")
+        .execute(&mut conn)
+        .expect("pragma should run");
     let now = chrono::Utc::now().naive_utc();
     let old = now - chrono::Duration::days(30);
     let cutoff = now - chrono::Duration::days(7);
