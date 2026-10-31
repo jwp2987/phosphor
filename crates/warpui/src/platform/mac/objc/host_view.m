@@ -1,6 +1,8 @@
 #import "host_view.h"
 
 #import <Metal/Metal.h>
+#import <os/signpost.h>
+#import <stdatomic.h>
 
 void warp_view_did_change_backing_properties(WarpHostView *, BOOL);
 void warp_view_set_frame_size(WarpHostView *, NSSize, BOOL);
@@ -16,6 +18,50 @@ NSRect warp_ime_position(WarpHostView *, NSRect *);
 id warp_get_accessibility_contents(WarpHostView *);
 void warp_marked_text_updated(WarpHostView *, NSString *, NSRange);
 void warp_marked_text_cleared(WarpHostView *);
+void warp_frame_presented(uint64_t, uint64_t, BOOL);
+
+// Draw-latency instrumentation (#1148). Intervals/events show up in Instruments under
+// "Points of Interest": keyDown -> displayLayer -> nextDrawable -> presented.
+static os_log_t warpDrawLog(void) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      log = os_log_create("dev.phosphor.draw", "PointsOfInterest");
+    });
+    return log;
+}
+
+// Same clock as MTLDrawable.presentedTime (mach absolute time, in seconds), as nanoseconds.
+static uint64_t warpNowNs(void) {
+    return (uint64_t)(CACurrentMediaTime() * 1e9);
+}
+
+// Time of the earliest key press that has not yet been attached to a frame (0 = none). Written on
+// the main thread; a stale value (no frame followed the key) is overwritten after 500 ms.
+static _Atomic uint64_t warpPendingKeyNs = 0;
+
+// Called on the main thread, after nextDrawable and before the drawable is presented. Attaches the
+// pending key press (if any) to this frame and reports key -> presented latency from the
+// drawable's presented handler. `waitNs` is how long nextDrawable blocked.
+void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
+    uint64_t keyNs = atomic_exchange(&warpPendingKeyNs, 0);
+    os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "nextDrawable", "wait_us=%llu",
+                           waitNs / 1000);
+    if (@available(macOS 10.15.4, *)) {
+        if ([drawable respondsToSelector:@selector(addPresentedHandler:)]) {
+            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+              CFTimeInterval presentedTime = presented.presentedTime;
+              uint64_t presentedNs = (uint64_t)(presentedTime * 1e9);
+              BOOL wasPresented = presentedTime > 0;
+              uint64_t keyToPresentedNs =
+                  (wasPresented && keyNs > 0 && presentedNs > keyNs) ? presentedNs - keyNs : 0;
+              os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "presented",
+                                     "key_to_presented_us=%llu", keyToPresentedNs / 1000);
+              warp_frame_presented(keyToPresentedNs, waitNs, wasPresented);
+            }];
+        }
+    }
+}
 
 @implementation NSPasteboard (Warp)
 
@@ -146,7 +192,9 @@ void warp_marked_text_cleared(WarpHostView *);
 
 - (void)displayLayer:(CALayer *)layer {
     if (!testMode && self.readyForWarp) {
+        os_signpost_interval_begin(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
         warp_update_layer(self);
+        os_signpost_interval_end(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
     }
 }
 
@@ -163,6 +211,13 @@ void warp_marked_text_cleared(WarpHostView *);
 }
 
 - (BOOL)keyDownImpl:(NSEvent *)event {
+    uint64_t keyNowNs = warpNowNs();
+    uint64_t pendingKeyNs = atomic_load(&warpPendingKeyNs);
+    if (pendingKeyNs == 0 || keyNowNs - pendingKeyNs > 500000000ull) {
+        atomic_store(&warpPendingKeyNs, keyNowNs);
+    }
+    os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "keyDown");
+
     BOOL wasComposing = [self hasMarkedText];
     [textToInsert setString:@""];
     imeTouchedMarkedTextDuringInterpret = NO;

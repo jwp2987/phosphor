@@ -5,6 +5,7 @@ use std::io::Write;
 use std::mem;
 use std::ptr::NonNull;
 use std::sync::Once;
+use std::time::Instant;
 
 use dispatch2::DispatchData;
 use objc2::rc::Retained;
@@ -33,6 +34,12 @@ use crate::platform::mac::rendering::renderer::Device;
 use crate::platform::mac::window::WindowState;
 use crate::rendering::atlas::{AllocatedRegion, TextureId};
 use crate::rendering::{GlyphCache, GlyphRasterBoundsFn, RasterizeGlyphFn, get_best_dash_gap};
+
+unsafe extern "C" {
+    /// Implemented in `objc/host_view.m`: attaches the pending key press to this frame and
+    /// reports key -> presented latency once the drawable reaches the screen.
+    fn warp_frame_track_drawable(drawable: *mut c_void, wait_ns: u64);
+}
 
 const METAL_LIB_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
 static WRITE_LIB_TO_FILE: Once = Once::new();
@@ -1065,9 +1072,16 @@ impl super::super::Renderer for Renderer {
 
         let metal_layer = window.metal_layer();
         let presents_with_transaction = metal_layer.presentsWithTransaction();
+        let drawable_wait_start = Instant::now();
         let drawable = metal_layer
             .nextDrawable()
             .expect("CAMetalLayer with allowsNextDrawableTimeout disabled always vends a drawable");
+        let drawable_wait_ns = drawable_wait_start.elapsed().as_nanos() as u64;
+        // SAFETY: `drawable` is a live CAMetalDrawable (an `id<MTLDrawable>`); the ObjC side only
+        // adds a presented handler to it and does not retain it past the call.
+        unsafe {
+            warp_frame_track_drawable(Retained::as_ptr(&drawable) as *mut c_void, drawable_wait_ns)
+        };
 
         let ctx = &MetalDrawContext {
             device: metal_device,

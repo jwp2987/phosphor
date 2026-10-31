@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod delegate;
 mod event;
 pub(crate) mod fonts;
+mod frame_latency;
 mod geometry;
 mod keycode;
 mod menus;
