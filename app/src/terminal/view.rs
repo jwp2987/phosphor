@@ -515,6 +515,9 @@ use crate::terminal::view::inline_banner::{
     VimModeBannerState,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
+use crate::terminal::view::ssh_typeahead::{
+    burst_continues, HeldInput, SshTypeahead, SshTypeaheadPush,
+};
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::ShellHost;
 use crate::terminal::{
@@ -742,10 +745,6 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
-/// An Enter this soon after the last dropped key of an ssh connect is part of the same typed
-/// line (#1123): a typed-ahead `exit` + Enter arrives within tens of milliseconds, a human
-/// answering a prompt much later.
-const SSH_DROPPED_LINE_ENTER_WINDOW: Duration = Duration::from_millis(400);
 /// How long after an ssh command starts the silent connect phase (nothing printed yet, so no
 /// prompt can be waiting) drops typing instead of writing it to the tty, where it would be
 /// split between ssh, the remote tty and the injected bootstrap (#983). Later than this the
@@ -2874,20 +2873,22 @@ pub struct TerminalView {
     /// command (before the shell's preexec hook can say anything) and held until the remote
     /// session is ready, the connect shows the user a prompt, or the ceiling passes.
     ssh_connect_gate: Option<SshConnectGate>,
-    /// Line-atomic dropping (#983): set once the gate dropped any printable key or paste of the
-    /// current line. While set, every further typed key is dropped through and including the
-    /// next Enter even after the gate released, so a line typed across the release is never
-    /// split (head dropped, tail run on the remote). Ends at: the Enter that is dropped, a
-    /// Ctrl-C/D/Z or Ctrl-U, visible prompt text arriving (a prompt is a new line context, so
-    /// a typed `yes` + Enter answer is not eaten), a failed ssh block, and any new command.
-    ssh_drop_line_through_enter: bool,
-    /// #1123/#1127: when the last printable key or paste of a line was dropped during an ssh
-    /// connect. An Enter within `SSH_DROPPED_LINE_ENTER_WINDOW` of it ends that same line even
-    /// if `ssh_drop_line_through_enter` was reset in between (a pre-bootstrap shell prompt looks
-    /// like a password prompt and resets it), so a fast `exit` + Enter is never split into
-    /// dropped letters and a delivered Enter. Cleared by any Enter, interrupt, Ctrl-U or new
-    /// command.
-    ssh_last_dropped_key_at: Option<Instant>,
+    /// #1292: set from the first key held during an ssh connect until the held keys are
+    /// delivered, discarded or turned into editor text. While set EVERY key is held, also in the
+    /// stretches where the gate itself would let keys through (a banner printed before the
+    /// remote shell is up), so the held keys are never overtaken by later ones.
+    ssh_typeahead_holding: bool,
+    /// The keys held while the ssh connect is in flight (#1292), exactly as typed.
+    ssh_typeahead: SshTypeahead,
+    /// When the last key was held; a prompt that appears mid-burst discards the burst's tail too.
+    ssh_typeahead_last_key_at: Option<Instant>,
+    /// A prompt arrived while the user was still typing a burst: keys that follow within
+    /// `SSH_TYPEAHEAD_BURST_GAP` are discarded with it instead of being answered into the prompt.
+    ssh_typeahead_discard_burst: bool,
+    /// A held paste whose text the paste handler has still to store.
+    ssh_paste_to_hold: bool,
+    /// The poll that delivers or discards held keys is scheduled.
+    ssh_typeahead_poll_armed: bool,
     /// Whether the "interrupt held" notice was shown for the current connect window before
     /// the remote session was announced (#1001).
     ssh_interrupt_held_gate_notified: bool,
@@ -2896,10 +2897,6 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
-    /// #1113: printable text of lines dropped during an ssh connect (lines joined by `\n`). It is
-    /// shown in the input editor, unexecuted, once the line has ended and the editor is back, so
-    /// no typed key vanishes and none can run on the wrong host.
-    ssh_held_typing: SshHeldTyping,
     /// #1181: whether the young line's deferred Enter has been released (or none waits). The
     /// verdict observer and the backstop timer both release it; whichever runs first sets this
     /// and the other finds nothing to do.
@@ -2907,8 +2904,8 @@ pub struct TerminalView {
     /// Identifies the young line's current wait (#1206); a backstop tick armed for an earlier one
     /// must not decide for it.
     young_enter_wait_id: u64,
-    /// The remote shell's first prompt was seen in this connect: the only point where held text
-    /// may be shown (#1113). A failed or prompt-less end of the ssh block discards it instead.
+    /// The remote shell's first prompt was seen in this connect: the point where held keys are
+    /// handed to it (#1292). Without it the connect failed and they become editor text.
     ssh_remote_prompt_seen: bool,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
@@ -4661,12 +4658,15 @@ impl TerminalView {
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
-            ssh_drop_line_through_enter: false,
-            ssh_last_dropped_key_at: None,
+            ssh_typeahead_holding: false,
+            ssh_typeahead: SshTypeahead::default(),
+            ssh_typeahead_last_key_at: None,
+            ssh_typeahead_discard_burst: false,
+            ssh_paste_to_hold: false,
+            ssh_typeahead_poll_armed: false,
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
-            ssh_held_typing: SshHeldTyping::default(),
             young_enter_released: true,
             young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
@@ -10128,6 +10128,14 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // #1292: during an ssh connect these are held with the typed keys, in order, not written
+        // into the bootstrap. Abort keys always pass.
+        if !is_abort_key(bytes)
+            && let Ok(sequence) = std::str::from_utf8(bytes)
+            && self.hold_input_during_ssh_connect(Some(sequence), true, ctx)
+        {
+            return;
+        }
         // #1179: arrows, Home/End, Page keys etc. never reach an agent-driven command's pty (the
         // bytes would be read as typeahead by the shell after it ends and then wiped). Ctrl-C /
         // Ctrl-D keep their own route to the command.
@@ -10262,9 +10270,9 @@ impl TerminalView {
                 self.note_ssh_interrupt_held(ctx);
                 return;
             }
-            self.ssh_drop_line_through_enter = false;
-            self.ssh_last_dropped_key_at = None;
-            self.ssh_held_typing = SshHeldTyping::default();
+            // The interrupt passes straight through; what was typed before it is stale, as the
+            // tty's own input flush on ^C would make it.
+            self.reset_ssh_typeahead();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
@@ -10334,7 +10342,7 @@ impl TerminalView {
     /// cannot form a command line, and dropping them would also eat the keys the setup dialog
     /// itself consumes. `keydown_on_terminal` / `typed_characters_on_terminal` exempt the
     /// interrupt bytes (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so the user can always abort a hung
-    /// connect. Only printable runs, Enter and pastes are dropped (#983).
+    /// connect. Only printable runs, Enter and pastes are held (#983, #1292).
     ///
     /// True while the SSH remote-server setup owns the session: the
     /// install/continue dialog is up, or the check/install/connect is in
@@ -10343,13 +10351,26 @@ impl TerminalView {
     /// user types now lands in the middle of that script. A stray Enter also
     /// completes a block, which advances the bootstrap stage machine early
     /// (the `next_stage` error storm and the pane stuck at "Starting
-    /// shell...", #917). Keystrokes are therefore dropped rather than
-    /// queued -- replaying a queued Enter into a half-bootstrapped shell is
-    /// exactly the corruption being avoided -- and focus is handed back to
-    /// the dialog so the next key drives it.
+    /// shell...", #917). Keystrokes are therefore never written to the pty
+    /// then: from the Enter on `ssh` until the remote shell shows its first
+    /// prompt they are HELD, exactly as typed, and replayed to the remote
+    /// shell once it is ready (#1292). Only while the setup DIALOG is up are
+    /// keys dropped, with focus handed back to the dialog so the next key
+    /// drives it.
     fn swallow_input_during_ssh_setup(
         &mut self,
         characters: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.hold_input_during_ssh_connect(characters, false, ctx)
+    }
+
+    /// `control_sequence` marks an escape sequence (arrows, Tab, ...): held like typing, but
+    /// never swallowed while the setup dialog is up, which consumes those keys itself.
+    fn hold_input_during_ssh_connect(
+        &mut self,
+        characters: Option<&str>,
+        control_sequence: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         // The dialog only owns input while it belongs to the pending session. A choice block left
@@ -10409,197 +10430,216 @@ impl TerminalView {
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
         let gate_drops =
             dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        // Line-atomic dropping (#983). `characters` is None for a paste. Enter ends a line;
-        // anything printable (or a paste) belongs to it.
-        let is_enter = matches!(characters, Some("\r" | "\n" | "\r\n"));
-        let is_printable = characters.is_none_or(|c| c.chars().any(|ch| !ch.is_control()));
-        if !gate_drops && self.ssh_drop_line_through_enter {
-            // Visible prompt text (host key, password) arrived and the gate opened because of
-            // it: that is a new line context, so the user's answer must not be eaten by a line
-            // that was dropped blind before the prompt existed. Ctrl-U clears the line.
-            // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its
-            // row: "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also
-            // visible text and opens the gate, but must not end the drop-through: the tail
-            // typed during the banner would otherwise run remotely.
-            let prompt_arrived =
-                self.ssh_connect_gate.as_ref().is_some_and(|g| {
-                    g.output_seen && !g.block_done && !g.managed && !g.saw_pending
-                }) && self.active_output_ends_in_unterminated_text();
-            if prompt_arrived || characters == Some("\u{15}") {
-                self.ssh_drop_line_through_enter = false;
-                if characters == Some("\u{15}") {
-                    self.ssh_last_dropped_key_at = None;
+        let now = Instant::now();
+        // A host-key / password prompt appeared while keys were held: what was typed before it
+        // existed may be a password, so it is discarded, never shown or delivered (#1113).
+        if self.ssh_typeahead_holding && !gate_drops {
+            self.discard_ssh_typeahead_on_prompt(ctx);
+        }
+        // The rest of a typing burst that the prompt cut in two goes with the head: its tail
+        // must not be answered into the prompt (or typed into the editor) on its own.
+        if self.ssh_typeahead_discard_burst {
+            if !gate_drops && burst_continues(self.ssh_typeahead_last_key_at, now) {
+                self.ssh_typeahead_last_key_at = Some(now);
+                if matches!(characters, Some("\r" | "\n" | "\r\n")) {
+                    self.ssh_typeahead_discard_burst = false;
+                    self.ssh_typeahead_last_key_at = None;
                 }
-                // Text typed blind before a prompt exists (possibly a password) must not be
-                // shown later; Ctrl-U is the user erasing the line.
-                self.discard_ssh_held_typing(prompt_arrived, ctx);
+                return true;
             }
+            self.ssh_typeahead_discard_burst = false;
         }
         self.log_ssh_drop_state(if gate_drops {
-            "key_gate_drops"
+            "key_gate_holds"
         } else {
             "key_gate_open"
         });
-        // #1113: keep the line being dropped (edited as the user edits it) so it can be shown,
-        // never run, once it is over. Not for the setup dialog, which owns its own keys.
-        if !dialog_up && (gate_drops || self.ssh_drop_line_through_enter) {
-            self.discard_ssh_held_if_output_changed(ctx);
-            let discarded = self.ssh_held_typing.key(characters) == SshHeldKey::DiscardedLine;
-            if self.ssh_held_typing != SshHeldTyping::default() {
-                self.ssh_held_typing.output_mark = Some(self.ssh_output_mark());
+        if dialog_up {
+            if control_sequence {
+                return false;
             }
-            if discarded {
-                self.show_ssh_typing_toast(
-                    "A line with pasted or special keys typed while the SSH session connected was discarded",
-                    ctx,
-                );
-            }
-        }
-        if is_printable && (gate_drops || self.ssh_drop_line_through_enter) && !dialog_up {
-            self.ssh_last_dropped_key_at = Some(Instant::now());
-        }
-        if !gate_drops
-            && !self.ssh_drop_line_through_enter
-            && is_enter
-            && ssh_enter_follows_dropped_line(self.ssh_last_dropped_key_at, Instant::now())
-        {
-            // #1123: the line's letters were dropped but the drop-through flag was reset before
-            // its Enter arrived (a prompt-shaped line ended the drop). The Enter belongs to the
-            // dropped line: dropped with it, never delivered alone.
-            self.ssh_last_dropped_key_at = None;
-            self.ssh_setup_drop_notified = false;
-            self.drop_ssh_held_typing_with_notice(ctx);
-            return true;
-        }
-        if !gate_drops && self.ssh_drop_line_through_enter {
-            if is_enter {
-                self.ssh_drop_line_through_enter = false;
-                self.ssh_last_dropped_key_at = None;
-                self.ssh_setup_drop_notified = false;
-                // #1113: the dropped line is complete: show it, unexecuted.
-                self.flush_ssh_held_typing(ctx);
+            // The setup dialog owns the keyboard (#917): keys are for it, not for the remote
+            // shell, so they are dropped and focus goes back to the dialog.
+            self.redetermine_global_focus(ctx);
+            if !self.ssh_setup_drop_notified {
+                self.ssh_setup_drop_notified = true;
+                self.show_ssh_typing_toast("Typing is ignored while the SSH setup prompt is open", ctx);
             }
             return true;
         }
-        if !gate_drops {
+        if !gate_drops && !self.ssh_typeahead_holding {
             self.ssh_setup_drop_notified = false;
             return false;
         }
-        if is_enter {
-            // The dropped Enter ends the line: what is typed next is a new one.
-            self.ssh_drop_line_through_enter = false;
-            self.ssh_last_dropped_key_at = None;
-        } else if is_printable {
-            self.ssh_drop_line_through_enter = true;
+        // #1292: hold the key. Once anything is held every later key is held too, even where the
+        // gate alone would let it through (a banner before the remote shell is up), so order is
+        // kept; the held keys go to the remote shell once it shows its first prompt.
+        self.ssh_typeahead_holding = true;
+        self.ssh_typeahead_last_key_at = Some(now);
+        match characters {
+            Some(chars) => {
+                let input = if control_sequence {
+                    HeldInput::Seq(chars.to_owned())
+                } else {
+                    HeldInput::from_chars(chars)
+                };
+                let outcome = self.ssh_typeahead.push(input);
+                self.note_ssh_typeahead_outcome(&outcome, ctx);
+            }
+            // The paste handler stores the text; only it has the clipboard.
+            None => self.ssh_paste_to_hold = true,
         }
-        if dialog_up {
-            self.redetermine_global_focus(ctx);
+        self.arm_ssh_typeahead_poll(ctx);
+        true
+    }
+
+    /// Tells the user once that the held keys were too many to keep (#1292).
+    fn note_ssh_typeahead_outcome(&mut self, outcome: &SshTypeaheadPush, ctx: &mut ViewContext<Self>) {
+        if *outcome == SshTypeaheadPush::Overflowed {
+            self.show_ssh_typing_toast(
+                "Too much text was typed while the SSH session connected; it was discarded, not run",
+                ctx,
+            );
         }
-        if !self.ssh_setup_drop_notified {
-            self.ssh_setup_drop_notified = true;
-            let window_id = ctx.window_id();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                let toast = DismissibleToast::new(
-                    if dialog_up {
-                        "Typing is ignored while the SSH setup prompt is open".to_string()
-                    } else {
-                        "Typing is ignored while the SSH session connects".to_string()
-                    },
-                    ToastFlavor::Default,
-                );
-                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-            });
+    }
+
+    /// Holds the text of a paste that arrived during an ssh connect (#1292), as typing is held.
+    fn hold_ssh_paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
+        let shell_dialect = Some(self.shell_dialect_from_app(ctx));
+        let copied = if middle_click {
+            TerminalView::middle_click_paste_content(shell_dialect, ctx)
+        } else {
+            clipboard_content_with_escaped_paths(
+                ctx.clipboard().read_text_and_paths(),
+                shell_dialect,
+                false,
+            )
+        };
+        if copied.is_empty() {
+            return;
+        }
+        let outcome = self.ssh_typeahead.push(HeldInput::Paste(copied));
+        self.note_ssh_typeahead_outcome(&outcome, ctx);
+    }
+
+    /// True while a host-key / password / 2FA prompt is showing before any remote session exists:
+    /// visible text ending mid-line on an unmanaged connect. Keys then belong to ssh (#983).
+    fn ssh_prompt_has_arrived(&mut self) -> bool {
+        if self.ssh_connect_gate_drops_keys() {
+            return false;
+        }
+        // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its row:
+        // "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also visible text
+        // and opens the gate, but is not a prompt.
+        self.ssh_connect_gate
+            .as_ref()
+            .is_some_and(|g| g.output_seen && !g.block_done && !g.managed && !g.saw_pending)
+            && self.active_output_ends_in_unterminated_text()
+    }
+
+    /// Discards the held keys when a prompt has arrived (they may be a password typed blind).
+    /// The notice does not echo them.
+    fn discard_ssh_typeahead_on_prompt(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.ssh_typeahead_holding || !self.ssh_prompt_has_arrived() {
+            return false;
+        }
+        let had_keys = !self.ssh_typeahead.is_empty();
+        let mid_burst = burst_continues(self.ssh_typeahead_last_key_at, Instant::now());
+        self.reset_ssh_typeahead();
+        self.ssh_typeahead_discard_burst = had_keys && mid_burst;
+        if had_keys {
+            self.show_ssh_typing_toast("Text typed before the SSH prompt appeared was discarded", ctx);
         }
         true
     }
 
-    /// #1113: shows the line dropped during an ssh connect in the input editor, UNEXECUTED, in
-    /// front of whatever the editor holds. Waits while a running command hides the editor.
-    fn flush_ssh_held_typing(&mut self, ctx: &mut ViewContext<Self>) {
-        warpui::profiling::zone!("typeahead_handoff");
-        self.discard_ssh_held_if_output_changed(ctx);
-        if self.ssh_held_typing.text.is_empty() || self.ssh_held_typing.tainted {
-            self.ssh_held_typing = SshHeldTyping::default();
+    /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
+    fn reset_ssh_typeahead(&mut self) {
+        self.ssh_typeahead.clear();
+        self.ssh_typeahead_holding = false;
+        self.ssh_typeahead_last_key_at = None;
+        self.ssh_typeahead_discard_burst = false;
+        self.ssh_paste_to_hold = false;
+    }
+
+    /// Schedules the poll that delivers the held keys once the connect is over; the gate also
+    /// releases on timers, not only on events.
+    fn arm_ssh_typeahead_poll(&mut self, ctx: &mut ViewContext<Self>) {
+        const SSH_TYPEAHEAD_POLL: Duration = Duration::from_millis(100);
+        if self.ssh_typeahead_poll_armed {
             return;
         }
-        // Only after the remote shell's first prompt. A failed connect, or an ssh block that
-        // ended without one, means the text was typed for a session that never came up.
-        if !self.ssh_remote_prompt_seen {
-            self.drop_ssh_held_typing_with_notice(ctx);
-            return;
-        }
-        if self.is_long_running() {
-            return;
-        }
-        // Never concatenated with anything: only into an EMPTY editor.
-        if !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
-            self.drop_ssh_held_typing_with_notice(ctx);
-            return;
-        }
-        let held = std::mem::take(&mut self.ssh_held_typing);
-        self.input.update(ctx, |input, ctx| {
-            input.replace_buffer_content(&held.text, ctx)
+        self.ssh_typeahead_poll_armed = true;
+        ctx.spawn(Timer::after(SSH_TYPEAHEAD_POLL), move |me, _, ctx| {
+            me.poll_ssh_typeahead(true, ctx);
         });
-        self.show_ssh_typing_toast(
-            if held.superseded {
-                "Earlier lines typed while the SSH session connected were not run; the last one is in the input, press Enter to run it"
-            } else {
-                "Text typed while the SSH session connected is in the input; press Enter to run it"
-            },
-            ctx,
-        );
     }
 
-    /// Discards the held text; the notice does not echo it.
-    fn drop_ssh_held_typing_with_notice(&mut self, ctx: &mut ViewContext<Self>) {
-        self.ssh_held_typing = SshHeldTyping::default();
-        self.show_ssh_typing_toast(
-            "Text typed while the SSH session connected was discarded, not run",
-            ctx,
-        );
-    }
-
-    /// The ssh block's output so far, as (block, visible length): a change means new output.
-    fn ssh_output_mark(&self) -> (BlockId, usize) {
-        let model = self.model.lock();
-        let len = model
-            .block_list()
-            .active_block()
-            .output_grid()
-            .contents_to_string(false, None)
-            .len();
-        (model.active_block_id().clone(), len)
-    }
-
-    /// #1113: held text is only ever shown if NO output arrived after it was typed: a banner, a
-    /// prompt or anything else may mean it was typed into a password prompt. Any change of the
-    /// output since the last held key discards it, with a notice that does not echo it.
-    fn discard_ssh_held_if_output_changed(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some((block, len)) = self.ssh_held_typing.output_mark.clone() else {
-            return;
-        };
-        let (now_block, now_len) = self.ssh_output_mark();
-        if now_block == block && now_len != len {
-            self.ssh_held_typing = SshHeldTyping::default();
-            self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was discarded because output appeared",
-                ctx,
-            );
+    /// Delivers or discards the held keys if the connect is over, else keeps waiting.
+    fn poll_ssh_typeahead(&mut self, chain: bool, ctx: &mut ViewContext<Self>) {
+        if chain {
+            self.ssh_typeahead_poll_armed = false;
         }
-    }
-
-    /// Drops the held text with a notice (a prompt arrived: it may be a password).
-    fn discard_ssh_held_typing(&mut self, notify: bool, ctx: &mut ViewContext<Self>) {
-        if self.ssh_held_typing == SshHeldTyping::default() {
+        if !self.ssh_typeahead_holding {
             return;
         }
-        self.ssh_held_typing = SshHeldTyping::default();
-        if notify {
+        self.refresh_ssh_connect_gate();
+        if self.discard_ssh_typeahead_on_prompt(ctx) {
+            return;
+        }
+        if self.ssh_connect_gate.is_none() {
+            self.finish_ssh_typeahead(ctx);
+        } else {
+            self.arm_ssh_typeahead_poll(ctx);
+        }
+    }
+
+    /// The connect is over (#1292). With the remote shell at its first prompt the held keys are
+    /// delivered to it, exactly as if typed there now. Otherwise the connect failed or ended
+    /// without a remote shell and the keys were typed for a session that never came up: they are
+    /// shown in the input editor as text, never run, so nothing executes on the wrong host.
+    fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff");
+        self.ssh_typeahead_holding = false;
+        self.ssh_typeahead_last_key_at = None;
+        self.ssh_paste_to_hold = false;
+        if self.ssh_typeahead.is_empty() {
+            self.ssh_typeahead.clear();
+            return;
+        }
+        if self.ssh_remote_prompt_seen {
+            let held = self.ssh_typeahead.take();
+            self.ssh_typeahead.clear();
+            self.log_ssh_typeahead_delivery(held.len());
+            for input in held {
+                match input {
+                    HeldInput::Typed(text) => self.typed_characters_on_terminal(&text, ctx),
+                    HeldInput::Key(key) => self.keydown_on_terminal(&key, ctx),
+                    HeldInput::Paste(text) => self.deliver_paste_text(&text, ctx),
+                    HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
+                }
+            }
+            return;
+        }
+        let text = self.ssh_typeahead.unexecuted_text();
+        self.ssh_typeahead.clear();
+        if text.is_empty() {
+            return;
+        }
+        // Never concatenated with anything: only into an EMPTY editor that is showing.
+        if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
             self.show_ssh_typing_toast(
-                "Text typed before the SSH prompt appeared was discarded",
+                "Text typed while the SSH session connected was discarded, not run",
                 ctx,
             );
+            return;
         }
+        self.input
+            .update(ctx, |input, ctx| input.replace_buffer_content(&text, ctx));
+        self.show_ssh_typing_toast(
+            "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
+            ctx,
+        );
     }
 
     fn show_ssh_typing_toast(&self, message: &str, ctx: &mut ViewContext<Self>) {
@@ -10620,10 +10660,20 @@ impl TerminalView {
         if warpui::input_order::enabled() {
             log::debug!(
                 target: warpui::input_order::TARGET,
-                "ssh_drop {what} drop_through={} held_len={} gate_armed={}",
-                self.ssh_drop_line_through_enter,
-                self.ssh_held_typing.text.chars().count(),
+                "ssh_drop {what} holding={} held_bytes={} gate_armed={}",
+                self.ssh_typeahead_holding,
+                self.ssh_typeahead.len_bytes(),
                 self.ssh_connect_gate.is_some()
+            );
+        }
+    }
+
+    /// Counts only, never the held keys.
+    fn log_ssh_typeahead_delivery(&self, inputs: usize) {
+        if warpui::input_order::enabled() {
+            log::debug!(
+                target: warpui::input_order::TARGET,
+                "ssh_typeahead deliver inputs={inputs}"
             );
         }
     }
@@ -10632,9 +10682,7 @@ impl TerminalView {
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
-        self.ssh_drop_line_through_enter = false;
-        self.ssh_last_dropped_key_at = None;
-        self.ssh_held_typing = SshHeldTyping::default();
+        self.reset_ssh_typeahead();
         self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
         if parse_interactive_ssh_command(command).is_some() {
@@ -10817,9 +10865,8 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
-            // Deliberately no change to `ssh_drop_line_through_enter`, whatever ssh did: a line
-            // with a dropped head is dropped through its Enter, also at the local prompt a
-            // failed ssh leaves behind (#983).
+            // Deliberately no change to the held keys, whatever ssh did: `poll_ssh_typeahead`
+            // delivers them to the remote shell, or shows them unexecuted if ssh failed (#1292).
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -11022,9 +11069,9 @@ impl TerminalView {
                 self.note_ssh_interrupt_held(ctx);
                 return;
             }
-            self.ssh_drop_line_through_enter = false;
-            self.ssh_last_dropped_key_at = None;
-            self.ssh_held_typing = SshHeldTyping::default();
+            // The interrupt passes straight through; what was typed before it is stale, as the
+            // tty's own input flush on ^C would make it.
+            self.reset_ssh_typeahead();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
@@ -14796,17 +14843,17 @@ impl TerminalView {
                 gate.first_prompt_seen = true;
                 self.ssh_remote_prompt_seen = true;
             }
-            // Before the gate can release in this very refresh.
-            self.discard_ssh_held_if_output_changed(ctx);
+            // A prompt that arrived discards the held keys before the gate can release in this
+            // very refresh (they may be a password typed blind).
+            self.discard_ssh_typeahead_on_prompt(ctx);
             self.refresh_ssh_connect_gate();
         }
-        // #1113: the dropped line is shown once the connect is over and the editor is back (a
-        // line still being typed is flushed by its Enter instead).
-        if self.ssh_held_typing != SshHeldTyping::default()
-            && self.ssh_connect_gate.is_none()
-            && !self.ssh_drop_line_through_enter
-        {
-            self.flush_ssh_held_typing(ctx);
+        // #1292: the held keys go out once the connect is over. Deferred a moment so the editor
+        // has handled this same event (the remote shell's first prompt) before they arrive.
+        if self.ssh_typeahead_holding && self.ssh_connect_gate.is_none() {
+            ctx.spawn(Timer::after(Duration::from_millis(1)), move |me, _, ctx| {
+                me.poll_ssh_typeahead(false, ctx);
+            });
         }
         match event {
             ModelEvent::TerminalClear => {
@@ -20467,28 +20514,51 @@ impl TerminalView {
         active_block.is_agent_requested_command() && active_block.is_agent_driving_command()
     }
 
+    /// Whether a paste goes into the input editor (else to the pty), and whether the pty paste
+    /// is bracketed.
+    fn paste_routing(&self, agent_owns_pty: bool, ctx: &mut ViewContext<Self>) -> (bool, bool) {
+        let mut model = self.model.lock();
+        (
+            // If the block list isn't bootstrapped yet, there could be something in the .rc file waiting for input,
+            // and we want the paste to go there if the editor isn't focused.
+            (self.is_input_box_visible(&model, ctx)
+                && (self.input.as_ref(ctx).editor().is_focused(ctx)
+                    || model.block_list().is_bootstrapped())
+                && !(FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && model.typeahead_handoff().routes_keys_to_pty()))
+                || agent_owns_pty,
+            model.needs_bracketed_paste(),
+        )
+    }
+
+    /// Delivers pasted text that was held during an ssh connect (#1292), to wherever a paste
+    /// made now would go.
+    fn deliver_paste_text(&mut self, copied: &str, ctx: &mut ViewContext<Self>) {
+        let agent_owns_pty = self.agent_owns_command_pty();
+        let (should_paste_in_input, needs_bracketed_paste) =
+            self.paste_routing(agent_owns_pty, ctx);
+        if should_paste_in_input {
+            self.input.update(ctx, |input, ctx| {
+                input.system_insert(copied, ctx);
+            });
+        } else {
+            self.write_user_bytes_to_pty(paste_bytes_for_pty(copied, needs_bracketed_paste), ctx);
+        }
+    }
+
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
-        // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
+        // A paste is typed text: it is held exactly when typing would be (#1292).
         if self.swallow_input_during_ssh_setup(None, ctx) {
+            if std::mem::take(&mut self.ssh_paste_to_hold) {
+                self.hold_ssh_paste(middle_click, ctx);
+            }
             return;
         }
         // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
         // the agent's input, exactly as typed characters are. Computed before the model lock.
         let agent_owns_pty = self.agent_owns_command_pty();
-        let (should_paste_in_input, needs_bracketed_paste) = {
-            let mut model = self.model.lock();
-            (
-                // If the block list isn't bootstrapped yet, there could be something in the .rc file waiting for input,
-                // and we want the paste to go there if the editor isn't focused.
-                (self.is_input_box_visible(&model, ctx)
-                    && (self.input.as_ref(ctx).editor().is_focused(ctx)
-                        || model.block_list().is_bootstrapped())
-                    && !(FeatureFlag::TypeaheadHandoff.is_enabled()
-                        && model.typeahead_handoff().routes_keys_to_pty()))
-                    || agent_owns_pty,
-                model.needs_bracketed_paste(),
-            )
-        };
+        let (should_paste_in_input, needs_bracketed_paste) =
+            self.paste_routing(agent_owns_pty, ctx);
 
         let is_cli_agent_paste =
             !should_paste_in_input && !middle_click && self.has_active_cli_agent_session(ctx);
@@ -26078,33 +26148,6 @@ impl TerminalView {
             InputEvent::PageUp => self.page_up(ctx),
             InputEvent::PageDown => self.page_down(ctx),
             InputEvent::ExecuteCommand(event) => {
-                // #983: the head of this line was dropped during an ssh connect and the rest
-                // reached the input editor (it takes focus once the ssh block has ended), so
-                // its Enter must not run the tail as a command of its own.
-                self.log_ssh_drop_state("execute_command");
-                if (self.ssh_drop_line_through_enter
-                    || ssh_enter_follows_dropped_line(self.ssh_last_dropped_key_at, Instant::now()))
-                    && matches!(event.source, CommandExecutionSource::User)
-                {
-                    self.ssh_drop_line_through_enter = false;
-                    self.ssh_last_dropped_key_at = None;
-                    self.ssh_setup_drop_notified = false;
-                    // #1113: the vetoed line is discarded (the editor is cleared, as before), with
-                    // a notice; held text is never concatenated with what the editor holds.
-                    let had_text = self.ssh_held_typing != SshHeldTyping::default()
-                        || !self.input.as_ref(ctx).buffer_text(ctx).is_empty();
-                    self.ssh_held_typing = SshHeldTyping::default();
-                    self.input.update(ctx, |input, ctx| {
-                        input.clear_buffer_and_reset_undo_stack(ctx)
-                    });
-                    if had_text {
-                        self.show_ssh_typing_toast(
-                            "Text typed while the SSH session connected was discarded, not run",
-                            ctx,
-                        );
-                    }
-                    return;
-                }
                 self.note_command_submitted_for_ssh_gate(&event.command);
                 self.update_scroll_position_locking(
                     ScrollPositionUpdate::AfterCommandExecutionStarted,
@@ -34177,83 +34220,6 @@ impl SshConnectGate {
     }
 }
 
-/// What `SshHeldTyping::key` did with a key (#1113).
-#[derive(Debug, PartialEq, Eq)]
-enum SshHeldKey {
-    Kept,
-    /// The line had a paste or special keys and ended: it is discarded.
-    DiscardedLine,
-}
-
-/// The single line a user typed while an ssh connect dropped their keys (#1113), edited as they
-/// edit it, so it can be shown unexecuted afterwards instead of vanishing.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct SshHeldTyping {
-    text: String,
-    /// Its Enter was typed; the next printable key starts a new line.
-    ended: bool,
-    /// The line holds a paste or a control/escape sequence that cannot be reproduced.
-    tainted: bool,
-    /// An earlier complete line was replaced by a later one (it was not run).
-    superseded: bool,
-    /// The ssh block's output when the last key was recorded (#1113).
-    output_mark: Option<(BlockId, usize)>,
-}
-
-impl SshHeldTyping {
-    fn begin_line_if_ended(&mut self) {
-        if self.ended {
-            self.superseded |= !self.text.is_empty() && !self.tainted;
-            self.text.clear();
-            self.tainted = false;
-            self.ended = false;
-        }
-    }
-
-    /// `characters` is None for a paste.
-    fn key(&mut self, characters: Option<&str>) -> SshHeldKey {
-        match characters {
-            None => {
-                self.begin_line_if_ended();
-                self.tainted = true;
-            }
-            Some("\r" | "\n" | "\r\n") => {
-                if self.tainted {
-                    *self = Self::default();
-                    return SshHeldKey::DiscardedLine;
-                }
-                if !self.text.is_empty() {
-                    self.ended = true;
-                }
-            }
-            Some("\u{7f}" | "\u{8}") => {
-                if !self.ended {
-                    self.text.pop();
-                }
-            }
-            Some("\u{15}") => *self = Self::default(),
-            Some("\u{17}") => {
-                if !self.ended {
-                    let trimmed = self.text.trim_end().len();
-                    let word_start = self.text[..trimmed]
-                        .rfind(char::is_whitespace)
-                        .map_or(0, |i| i + 1);
-                    self.text.truncate(word_start);
-                }
-            }
-            Some(text) if !text.is_empty() && text.chars().all(|c| !c.is_control()) => {
-                self.begin_line_if_ended();
-                self.text.push_str(text);
-            }
-            Some(_) => {
-                self.begin_line_if_ended();
-                self.tainted = true;
-            }
-        }
-        SshHeldKey::Kept
-    }
-}
-
 /// Whether `output` holds text a user could read (not just whitespace and control bytes).
 fn output_has_visible_text(output: &str) -> bool {
     output
@@ -34292,14 +34258,6 @@ fn subshell_setup_defer_ready(
     unchanged_for: Duration,
 ) -> bool {
     answered && (!prompt_visible || unchanged_for >= SUBSHELL_SETUP_DEFER_QUIET)
-}
-
-/// #1123/#1127: whether an Enter arriving `now` ends a line whose last key was dropped at
-/// `last_dropped` during an ssh connect. Pure so the window is testable. Text typed blind is
-/// never re-delivered either way; the cost of a false positive is one Enter the user presses
-/// again.
-fn ssh_enter_follows_dropped_line(last_dropped: Option<Instant>, now: Instant) -> bool {
-    last_dropped.is_some_and(|at| now.saturating_duration_since(at) < SSH_DROPPED_LINE_ENTER_WINDOW)
 }
 
 /// Keys that always reach ssh (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so a hung connect can be aborted.
@@ -34624,6 +34582,8 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
         .filter_map(|(index, value)| Some((shift_block_index(index, count)?, value)))
         .collect();
 }
+
+mod ssh_typeahead;
 
 #[cfg(test)]
 #[path = "view_test.rs"]
