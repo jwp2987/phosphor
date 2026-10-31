@@ -313,10 +313,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # skipped that precmd (and so owes one) or already ran it.
       _WARP_PRECMD_PENDING=1
       local warp_escaped_command
-      # Phosphor (#1255): only the first 4096 characters are escaped and sent. The app reads just the
-      # start of this command (the in-band generator prefix), and escaping a pasted multi-MB command
-      # in full took minutes in a UTF-8 locale with the shell frozen before it ran.
-      __warp_ej_var warp_escaped_command "${1[1,4096]}"
+      __warp_ej_var warp_escaped_command "$1"
       warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID}}"
       warp_maybe_send_reset_grid_osc
 
@@ -699,7 +696,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   __warp_ej_var () {
     emulate -L zsh
     local v=${2-}
-    if [[ $v == *[^[:alnum:]\ ._/@+:,=%~\(\)-]* ]]; then
+    # Phosphor (#1255): a value over 8 KiB (a pasted multi-MB command) takes the linear sed path;
+    # the substitutions below are far too slow on it.
+    if (( ${#v} > 8192 )); then
+      v=$(warp_escape_json "${2-}")
+    elif [[ $v == *[^[:alnum:]\ ._/@+:,=%~\(\)-]* ]]; then
       v=${v//\\/\\\\}
       v=${v//\"/\\\"}
       v=${v//$'\t'/\\t}
