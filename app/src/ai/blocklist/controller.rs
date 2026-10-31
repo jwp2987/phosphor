@@ -2025,16 +2025,17 @@ impl BlocklistAIController {
         // request is built, so the summarizer sees every call with its real result and
         // nothing is cancelled or synthesized; the committed summary then resumes the task
         // with the continue message (`handle_response_stream_finished`).
-        let root_task_id = BlocklistAIHistoryModel::as_ref(ctx)
-            .conversation(&conversation_id)
-            .map(|conversation| conversation.get_root_task_id().clone());
-        let results_all_in_root_task = root_task_id.as_ref().is_some_and(|root_task_id| {
-            finished_results
-                .iter()
-                .all(|result| &result.task_id == root_task_id)
-        });
+        // #1074: the summary rides in the task the results belong to — the root task, or a
+        // CLI/LRC subagent's own task — so a subagent loop is compacted too and resumes inside
+        // the subagent (the continue message goes to the monitored subagent task). Results
+        // spanning several tasks have no single task to carry it: plain follow-up.
+        let single_result_task_id = crate::ai::byop_compaction::single_task_id(
+            finished_results.iter().map(|result| &result.task_id),
+        )
+        .cloned();
+        let results_in_one_task = single_result_task_id.is_some();
         let results_request = self.update_compaction_turn_state(conversation_id, |state| {
-            state.on_tool_results_ready(results_all_in_root_task)
+            state.on_tool_results_ready(results_in_one_task)
         });
 
         let context = action_result_context(
@@ -2054,14 +2055,14 @@ impl BlocklistAIController {
             ctx,
         );
         if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults {
-            if let Some(root_task_id) = root_task_id {
+            if let Some(result_task_id) = single_result_task_id {
                 log::info!(
                     "[byop-compaction] tool loop over the threshold: sending this step's tool \
-                     results with the automatic summary (#1059)"
+                     results with the automatic summary (#1059, #1074)"
                 );
                 request_input
                     .input_messages
-                    .entry(root_task_id)
+                    .entry(result_task_id)
                     .or_default()
                     .push(AIAgentInput::SummarizeConversation {
                         prompt: None,
@@ -4692,6 +4693,11 @@ impl BlocklistAIController {
                 // stream's own AgentOutput can be the summary: an earlier one is some old
                 // narration that does not summarize the head it would replace.
                 let mut summary_committed = false;
+                // Asked before the commit, which consumes the note (#1079).
+                let summary_dropped_tool_calls = summarize_overflow.is_some()
+                    && crate::ai::agent_providers::chat_stream::summary_stream_dropped_tool_calls(
+                        conversation_id,
+                    );
                 if let Some(overflow) = summarize_overflow {
                     let compaction_cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                     history_model.update(ctx, |history_model, _ctx| {
@@ -4816,7 +4822,19 @@ impl BlocklistAIController {
                 // An automatic (overflow) summary interrupted the user's task. Don't let
                 // the turn end on the summary text; resume below, after the stream is
                 // marked complete.
-                let resume_after_auto_compaction = plan.resume_with_continue_message;
+                // #1079: the model answered the summary request with a tool call (it ignores
+                // `tool_choice`) and nothing committed: ask once more, with an explicit "no
+                // tools" instruction, instead of resuming uncompacted. Part of the same
+                // compaction (the allowance is not touched), and at most once.
+                let retry_summary_overflow = summarize_overflow.filter(|_| {
+                    !summary_committed
+                        && summary_dropped_tool_calls
+                        && self.update_compaction_turn_state(conversation_id, |state| {
+                            state.claim_summary_retry()
+                        })
+                });
+                let resume_after_auto_compaction =
+                    plan.resume_with_continue_message && retry_summary_overflow.is_none();
                 let auto_compaction_decision = plan.decision;
 
                 if auto_compaction_decision
@@ -4861,6 +4879,22 @@ impl BlocklistAIController {
                         crate::ai::blocklist::controller::SlashCommandRequest::Summarize {
                             prompt: None,
                             overflow: true,
+                        },
+                        ctx,
+                    );
+                }
+
+                if let Some(overflow) = retry_summary_overflow {
+                    log::info!(
+                        "[byop-compaction] the summary came back as a tool call: asking once more without tools (#1079)"
+                    );
+                    self.send_slash_command_request(
+                        crate::ai::blocklist::controller::SlashCommandRequest::Summarize {
+                            prompt: Some(
+                                crate::ai::byop_compaction::prompt::SUMMARY_RETRY_INSTRUCTION
+                                    .to_owned(),
+                            ),
+                            overflow,
                         },
                         ctx,
                     );

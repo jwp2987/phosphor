@@ -224,6 +224,19 @@ pub(crate) fn note_summary_stream_dropped_tool_calls(
         .insert(conversation_id);
 }
 
+/// Whether `conversation_id`'s summarize stream dropped a tool call, without consuming the
+/// answer (the commit consumes it); the controller asks before the commit to decide on a
+/// retry (#1079).
+pub(crate) fn summary_stream_dropped_tool_calls(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> bool {
+    SUMMARY_STREAM_DROPPED_TOOL_CALLS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|set| set.contains(&conversation_id))
+}
+
 /// Whether `conversation_id`'s summarize stream dropped a tool call; consumes the answer.
 pub(crate) fn take_summary_stream_dropped_tool_calls(
     conversation_id: crate::ai::agent::conversation::AIConversationId,
@@ -4684,8 +4697,8 @@ fn accepts_tool_choice_none(
 /// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
 /// commit then accepts the stream's text only if it is a complete summary
 /// (`byop_compaction::prompt::is_complete_summary`); anything else — narration before the
-/// call, a half-written summary — is not committed and the task resumes uncompacted
-/// (retrying the summary is #1079).
+/// call, a half-written summary — is not committed; the controller then re-asks once with an
+/// explicit "no tools" instruction (#1079) before the task resumes uncompacted.
 fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
     if !calls.is_empty() && is_summarize_request(params) {
         log::warn!(

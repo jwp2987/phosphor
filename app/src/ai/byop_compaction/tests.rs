@@ -1650,10 +1650,34 @@ fn rejected_tool_call_drops_the_deferral() {
     assert!(state.is_idle());
 }
 
-/// Results of a subagent's task (a CLI/LRC subagent's own loop) never carry the summary:
+/// A subagent's own loop (CLI/LRC subagent task) is compacted like the root task's (#1074):
+/// results that all answer calls of one task, whichever task it is, carry the summary in that
+/// task; only results spanning tasks have no single task for it.
+#[test]
+fn single_task_id_names_a_subagent_task_too() {
+    use super::single_task_id;
+    let root = "root".to_owned();
+    let sub = "cli-subagent".to_owned();
+    assert_eq!(single_task_id([&sub, &sub]), Some(&sub));
+    assert_eq!(single_task_id([&root]), Some(&root));
+    assert_eq!(single_task_id([&root, &sub]), None);
+    assert_eq!(single_task_id(std::iter::empty::<&String>()), None);
+}
+
+/// A subagent loop over the threshold is deferred and then summarized with its results, like
+/// the root loop (#1074): the state machine does not care which task the results are in.
+#[test]
+fn subagent_loop_over_the_threshold_is_summarized_with_its_results() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+}
+
+/// Results spanning several tasks never carry the summary:
 /// they go as a plain follow-up, the deferral is dropped, and the allowance is not spent.
 #[test]
-fn subagent_task_results_go_as_a_plain_follow_up() {
+fn results_spanning_tasks_go_as_a_plain_follow_up() {
     use super::{ToolResultsRequest as R, TurnCompactionState};
     let mut state = TurnCompactionState::default();
     state.on_stream_finished(turn(true, Some(true)));
@@ -2587,4 +2611,33 @@ fn a_recent_turn_with_a_pdf_stays_in_the_tail() {
         (older_turn..older_turn + 100).contains(&summarizable),
         "only the older turn (and its PDF) is summarized; u2 and its PDF are kept: {summarizable}"
     );
+}
+
+/// A summary the model answered with a tool call (providers that ignore `tool_choice`) is
+/// re-asked once (#1079), within the same allowance; a second failure does not loop, and a
+/// committed summary or a restored allowance re-arms the retry for the next compaction.
+#[test]
+fn summary_answered_with_a_tool_call_is_retried_once() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(false, Some(true)));
+    assert!(state.auto_compacted());
+    state.on_stream_finished(summary_stream(true, false));
+    assert!(state.claim_summary_retry());
+    assert!(
+        state.auto_compacted(),
+        "the retry does not respend or restore the allowance"
+    );
+    state.on_stream_finished(summary_stream(true, false));
+    assert!(
+        !state.claim_summary_retry(),
+        "only one retry per compaction"
+    );
+    state.on_stream_finished(summary_stream(true, true));
+    assert!(
+        state.claim_summary_retry(),
+        "a committed summary re-arms the retry"
+    );
+    state.on_new_user_turn();
+    assert!(state.is_idle());
 }
