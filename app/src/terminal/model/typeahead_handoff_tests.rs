@@ -1652,3 +1652,27 @@ fn conpty_midline_guard_counts_held_keys() {
     assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
     assert!(handoff.typing_a_line_on_conpty(Instant::now()));
 }
+
+/// #1131: a new session's shell (the remote shell of an `ssh`) has its own loop; the previous
+/// session's round trips must not size its hold. A subshell keeps them (same machine), which the
+/// caller decides; this only checks the reset itself.
+#[test]
+fn a_new_session_drops_the_previous_sessions_round_trips() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    for _ in 0..8 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    handoff.on_new_session();
+    assert_eq!(handoff.rtt_samples.len(), 0);
+    assert_eq!(
+        handoff.young_hold_wait(now),
+        YOUNG_ENTER_WINDOW,
+        "unmeasured again until the new shell's first command"
+    );
+    // The new session's first command measures afresh.
+    assert!(handoff.on_command_written().is_empty());
+    assert!(!handoff.on_preexec(false));
+    assert_eq!(handoff.rtt_samples.len(), 1);
+}

@@ -427,6 +427,16 @@ impl TypeaheadHandoff {
         self.record_rtt(rtt);
     }
 
+    /// A new shell session (not a subshell) took the pty over, e.g. the remote shell of an `ssh`
+    /// (#1131): its loop through the shell and the pipeline is unrelated to the previous
+    /// session's, so the measured round trips are dropped and the next command measures afresh.
+    /// A subshell (`sudo -i`, `ksu`) runs on the same machine and keeps them.
+    pub fn on_new_session(&mut self) {
+        self.rtt_samples.clear();
+        self.rtt_pending.clear();
+        self.command_written_at = None;
+    }
+
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
     /// window the young hold is sized from.
     fn record_rtt(&mut self, rtt: Duration) {

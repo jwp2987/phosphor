@@ -3664,6 +3664,12 @@ impl ansi::Handler for TerminalModel {
             .map(|subshell_info| subshell_info.spawning_command.clone())
             .unwrap_or(self.block_list.active_block().command_to_string());
 
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && fully_populated_session_info.subshell_info.is_none()
+        {
+            self.typeahead_handoff.on_new_session();
+        }
+
         self.emit_handler_event(HandlerEvent::Bootstrapped(BootstrappedEvent {
             spawning_command,
             session_info: Box::new(fully_populated_session_info),
