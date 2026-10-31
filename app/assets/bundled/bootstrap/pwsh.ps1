@@ -454,7 +454,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # file. The subshell bootstrap's first line installs a handler with the same filter
             # before either is typed; this one keeps them out once it has replaced that handler.
             $trimmed = $line.TrimStart()
-            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["']?\s*$' -or $trimmed.StartsWith('. (Warp-Run-LongCommand ', [System.StringComparison]::Ordinal)) {
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$' -or $trimmed.StartsWith('. (Warp-Run-LongCommand ', [System.StringComparison]::Ordinal)) {
                 return $false
             }
             # Keep honouring the handler the user had before the subshell bootstrap replaced it.

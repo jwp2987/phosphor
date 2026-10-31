@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Parses every bundled PowerShell script with the real PowerShell parser.
+#
+# THE DEFECT CLASS
+# ----------------
+# The bootstrap scripts under app/assets/bundled are data to the Rust build:
+# include_str! embeds them, every Rust test stays green, and nothing parses them
+# until a real PowerShell session sources one. A single unescaped `'` inside a
+# single-quoted string makes the WHOLE script fail to parse, and every managed
+# PowerShell tab then hangs on "Starting Windows PowerShell…".
+#
+# That is not hypothetical. Issue #1161: v0.1.16 shipped pwsh.ps1 with
+# `["']` inside a single-quoted regex (from the #1122 fix); it parsed with 5
+# errors and no managed PowerShell tab on Windows ever finished bootstrapping.
+#
+# HOW
+# ---
+# Templates carry @@PLACEHOLDER@@ tokens the app substitutes at runtime (e.g.
+# pwsh_init_shell.ps1's `[uint64]@@WARP_SESSION_ID@@`); they are replaced with
+# `0` in a temporary copy so the parser sees what the shell will see.
+#
+# Needs `pwsh` (PowerShell 7) on PATH. Without it the check prints SKIPPED and
+# exits 0, so a machine without PowerShell isn't blocked -- but the skip is
+# visible in precheck output.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "check_pwsh_parse: SKIPPED (pwsh not installed)"
+    exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# A parser script run with -File: -Command would append the file name to the
+# command text and EXECUTE the bootstrap instead of parsing it.
+cat >"$tmp/parse.ps1" <<'PS1'
+param([string]$Path)
+$tokens = $null; $errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+foreach ($e in $errors) { "  line $($e.Extent.StartLineNumber): $($e.Message)" }
+PS1
+
+status=0
+while IFS= read -r -d '' script; do
+    copy="$tmp/copy-$(basename "$script")"
+    sed -E 's/@@[A-Z0-9_]+@@/0/g' "$script" >"$copy"
+    result="$(pwsh -NoProfile -NonInteractive -File "$tmp/parse.ps1" -Path "$copy")"
+    if [[ -n "$result" ]]; then
+        echo "FAIL $script"
+        printf '%s\n' "$result"
+        status=1
+    fi
+done < <(find app/assets/bundled -name '*.ps1' -print0 | sort -z)
+
+if ((status == 0)); then
+    echo "check_pwsh_parse: all bundled PowerShell scripts parse"
+fi
+exit $status

@@ -234,6 +234,12 @@ if [[ -x ./script/check_brand_strings ]]; then
     ./script/check_brand_strings >/dev/null 2>&1 && ok "brand strings" \
         || fail "brand strings -- run ./script/check_brand_strings for detail"
 fi
+if [[ -x ./script/check_pwsh_parse ]]; then
+    # #1161: a bundled .ps1 that doesn't parse ships a PowerShell that never bootstraps.
+    _pwsh_out="$(./script/check_pwsh_parse 2>&1)" && {
+        if [[ "$_pwsh_out" == *SKIPPED* ]]; then warn "pwsh parse -- SKIPPED (pwsh not installed)"; else ok "pwsh parse"; fi
+    } || fail "pwsh parse -- run ./script/check_pwsh_parse for detail"
+fi
 if [[ -x ./script/check_settings_registry ]]; then
     ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
         || fail "settings registry -- run ./script/check_settings_registry for detail"
