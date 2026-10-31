@@ -125,7 +125,7 @@ def cases():
     alpha = [bytes([c]) for c in range(1, 128)] + [b"\xc3\xa9", b"\xff", b"a", b"b", b"/", b" "] * 8
     for _ in range(250):
         out.append(b"".join(rnd.choice(alpha) for _ in range(rnd.choice([2, 5, 20, 60]))))
-    for n in (2047, 2048, 2049, 6000):
+    for n in (511, 512, 513, 2047, 2048, 2049, 6000):
         out.append((b'a"b\\c\xc3\xa9\x01' * (n // 8 + 1))[:n])
     return out
 
@@ -224,6 +224,61 @@ end
                       "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
         else:
             print("fish: not installed")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def history_tests():
+    """bash 5.3 reads `history 1` without forking (#1203); the text bash-preexec hands to the
+    preexec functions (the tab title among them) must be what `history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'`
+    gave. Compared against that very pipeline, on fabricated `history 1` output (every prefix shape,
+    the `*` modified marker, multi-line and odd entries) and on real entries made with `history -s`."""
+    if not SHELLS["bash"]:
+        return
+    ver = subprocess.run([SHELLS["bash"], "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], capture_output=True).stdout.strip()
+    print("bash history 1 (%s %s)" % (SHELLS["bash"], ver.decode()))
+    major, minor = (int(x) for x in ver.split(b"."))
+    if (major, minor) < (5, 3):
+        print("  skipped: needs bash 5.3 (the fork-free path is not used on this one)")
+        return
+    body = read("bash.sh")
+    strip = grab(body, r"^     __bp_history1_strip\(\) \{\n.*?^     \}\n")
+    nofork = grab(body, r"^     __bp_history1_nofork\(\) \{\n.*?^     \}\n")
+    raws = [b"%5d  %s" % (n, t) for n in (1, 9, 123, 99999, 100000) for t in (b"ls", b"git status", b"echo 'a  b'", b" lead", b"")]
+    raws += [b"%5d* %s" % (n, t) for n in (7, 1234) for t in (b"ls", b"two\nlines", b"")]
+    raws += [b"", b"  ", b"x", b"123", b"123 ", b"123  ", b"  12", b"  12*", b"  12*x", b"  12 x", b"  12\tx", b"a  12  x",
+             b"  12  x\n\n", b"  12  \n", b"  12  x\n  13  y", b"\xc3\xa9 12  x", b"  12  \xe6\x97\xa5\xe6\x9c\xac", b"1 2  x",
+             b"  0  x", b"  -1  x", b"   3  *x", b"   3** x"]
+    tmp = tempfile.mkdtemp(prefix="phosphor-1190-")
+    try:
+        path = os.path.join(tmp, "h.sh")
+        with open(path, "w") as f:
+            f.write(strip + nofork + """
+mode=$1; shift
+if [ "$mode" = raw ]; then
+  for v in "$@"; do
+    __bp_history1=$(printf '%s' "$v"); __bp_history1_strip; printf '%s\\0' "$__bp_history1"
+    printf '%s\\0' "$(export LC_ALL=C; printf '%s\\n' "$v" | sed '1 s/^ *[0-9][0-9]*[* ] //')"
+  done
+else
+  set -o history; HISTFILE=/dev/null; HISTSIZE=100
+  for v in "$@"; do
+    history -c; history -s "$v"
+    __bp_history1_nofork; printf '%s\\0' "$__bp_history1"
+    printf '%s\\0' "$(export LC_ALL=C; HISTTIMEFORMAT='' builtin history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //')"
+  done
+fi
+""")
+        for mode, inputs in (("raw", [r for r in raws if b"\x00" not in r]),
+                             ("real", [b"ls", b"git status", b"  indented", b"12 monkeys", b"echo 'a\nb'", b"printf '%s' \xc3\xa9",
+                                       b"a\tb", b"1 2 3", b"* star", b"line1\nline2", b"trail  ", b"cd /tmp && ls"])):
+            r = subprocess.run([SHELLS["bash"], path, mode.encode()] + inputs, capture_output=True,
+                               env={**os.environ, "LANG": "C.UTF-8"}, timeout=60)
+            parts = r.stdout.split(b"\0")[:-1]
+            got, want = parts[0::2], parts[1::2]
+            bad = [(i, g, w) for i, g, w in zip(inputs, got, want) if g != w]
+            check(not bad and len(got) == len(inputs), "%s: %d inputs match the sed pipeline" % (mode, len(inputs)),
+                  "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (r.stderr[-300:],)) if bad else r.stderr[-300:].decode(errors="replace"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -512,6 +567,7 @@ def fish_prompt_runs():
 
 
 table_tests()
+history_tests()
 for kind in ("bash", "zsh", "fish"):
     if SHELLS[kind]:
         e2e(kind)
