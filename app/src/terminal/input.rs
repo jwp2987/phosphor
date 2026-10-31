@@ -13181,6 +13181,23 @@ impl Input {
             .is_detection_pending_for(&text, ctx)
     }
 
+    /// #1036/#1174: text over the background-job cap is never parsed, so no verdict can land for
+    /// it; drop the pending request so an Enter does not wait for one.
+    pub(crate) fn abandon_detection_if_over_parse_cap(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.buffer_exceeds_background_job_cap(ctx) {
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+        }
+    }
+
+    /// #1174: the classifier did not answer in time. Decide on everything known now, then drop
+    /// the request so a late verdict cannot land after the submit.
+    pub(crate) fn give_up_pending_detection_for_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.ai_input_model
+            .update(ctx, |model, _| model.abandon_pending_detection());
+    }
+
     /// #933: an Enter on text that reads as English, whose classification verdict has not landed
     /// and which the Enter-time rules could not decide, waits for the verdict instead of
     /// submitting on the inherited input type: prose must never
@@ -13214,10 +13231,7 @@ impl Input {
         // text those rules leave undecided waits below.
         // #1036: text over the background-job cap is never parsed, so no verdict can land;
         // the debounced job that would clear the request may not have run before this Enter.
-        if self.buffer_exceeds_background_job_cap(ctx) {
-            self.ai_input_model
-                .update(ctx, |model, _| model.abandon_pending_detection());
-        }
+        self.abandon_detection_if_over_parse_cap(ctx);
         self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
         let model = self.ai_input_model.as_ref(ctx);

@@ -10,7 +10,8 @@ use crate::{
     terminal::{
         input::{
             decorations::{
-                DecorationSet, InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS,
+                text_exceeds_background_job_token_cap, DecorationSet, InputBackgroundJobOptions,
+                MAX_BACKGROUND_JOB_BUFFER_CHARS, MAX_BACKGROUND_JOB_BUFFER_TOKENS,
             },
             tests::{
                 add_window_with_bootstrapped_terminal, initialize_app,
@@ -162,9 +163,11 @@ fn test_oversized_buffer_skips_background_jobs() {
             assert!(!input.decorations_cleared_for_oversized_buffer);
 
             // An oversized one is not.
-            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 150_000);
-            // Boundary (#1009): 149_999 and exactly 150_000 chars are parsed, 150_001 is not.
-            for (len, parsed) in [(149_999, true), (150_000, true), (150_001, false)] {
+            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 4096);
+            // Boundary (#1009, #1174): one char under and exactly at the cap are parsed, one
+            // over is not.
+            let cap = MAX_BACKGROUND_JOB_BUFFER_CHARS;
+            for (len, parsed) in [(cap - 1, true), (cap, true), (cap + 1, false)] {
                 let text = format!("echo {}", "x".repeat(len - 5));
                 input.clear_buffer_and_reset_undo_stack(ctx);
                 input.user_insert(&text, ctx);
@@ -272,6 +275,23 @@ fn test_superseded_decoration_job_is_cancelled() {
             assert!(input.decorations_future_handle.is_none());
         });
     });
+}
+
+/// #1174: the completer parse is ~quadratic in the token count, so a buffer of many short words
+/// is over the cap even when it is under the char cap.
+#[test]
+fn test_token_cap_counts_words_not_chars() {
+    let words = |n: usize| vec!["a"; n].join(" ");
+    assert!(!text_exceeds_background_job_token_cap(&words(
+        MAX_BACKGROUND_JOB_BUFFER_TOKENS
+    )));
+    assert!(text_exceeds_background_job_token_cap(&words(
+        MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1
+    )));
+    // A single enormous word is one token; the char cap handles it.
+    assert!(!text_exceeds_background_job_token_cap(&"x".repeat(100_000)));
+    // Under the char cap, so only the token cap can reject it.
+    assert!(words(MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1).len() <= MAX_BACKGROUND_JOB_BUFFER_CHARS);
 }
 
 fn range(start: usize, end: usize) -> std::ops::Range<ByteOffset> {
