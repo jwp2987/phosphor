@@ -1364,6 +1364,12 @@ fn a_deferral_whose_report_never_comes_is_given_up() {
     assert!(!handoff.give_up_uncovered_deferral(id + 1));
     assert!(handoff.give_up_uncovered_deferral(id));
     assert!(handoff.deferred_submit_pending());
+    // While the released Enter is pending the hand-off is still in `HoldAfterEnter`, so the
+    // editor's text is (by definition) not yet the whole line; that is not what gives up.
+    // Giving up forgets the untracked bytes: once the submit ran and the hold is released,
+    // nothing pins the editor literal any more.
+    assert!(handoff.editor_text_precedes_report());
+    assert!(handoff.release_after_unsubmitted_enter().is_some());
     assert!(!handoff.editor_text_precedes_report());
     assert!(!handoff.give_up_uncovered_deferral(id));
 }
