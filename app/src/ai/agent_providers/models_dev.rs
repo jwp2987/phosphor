@@ -218,6 +218,46 @@ pub fn load_from_disk() -> bool {
     }
 }
 
+/// Coalesces concurrent catalog loads (disk read + optional network refresh) so the
+/// settings page constructing the providers widget several times runs ONE background load
+/// instead of one 6 MB parse per construction.
+#[derive(Debug, Default)]
+pub struct LoadCoalescer(AtomicBool);
+
+impl LoadCoalescer {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Returns true if the caller now owns the load and must call [`Self::finish`] when it
+    /// completes; false if a load is already in flight.
+    pub fn try_begin(&self) -> bool {
+        !self.0.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn finish(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+static LOAD: LoadCoalescer = LoadCoalescer::new();
+
+/// See [`LoadCoalescer::try_begin`]; shared by every caller that loads the catalog.
+pub fn try_begin_load() -> bool {
+    LOAD.try_begin()
+}
+
+/// Marks the load started by a successful [`try_begin_load`] as finished.
+pub fn finish_load() {
+    LOAD.finish()
+}
+
+/// Whether a catalog is already in memory and within its TTL, so no disk read is needed.
+pub fn is_loaded_and_fresh() -> bool {
+    let loaded = state().read().map(|s| s.catalog.is_some()).unwrap_or(false);
+    loaded && !is_stale()
+}
+
 /// Whether the cache is stale — either missing or past the TTL.
 pub fn is_stale() -> bool {
     let s = match state().read() {
@@ -493,6 +533,10 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
     }
     merged
 }
+
+#[cfg(test)]
+#[path = "models_dev_load_tests.rs"]
+mod load_tests;
 
 #[cfg(test)]
 mod quick_add_tests {
