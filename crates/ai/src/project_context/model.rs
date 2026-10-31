@@ -611,7 +611,9 @@ impl ProjectContextModel {
                         me.path_to_rules.insert(root_clone, rule_files);
                         ctx.emit(ProjectContextModelEvent::PathIndexed);
                     }
-                    Err(e) => me.record_index_failure(root_clone, &e),
+                    Err(e) => {
+                        me.record_index_failure(root_clone, &e);
+                    }
                 },
             );
         }
