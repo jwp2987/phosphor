@@ -3,6 +3,8 @@
 #import <Metal/Metal.h>
 #import <os/signpost.h>
 #import <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 
 void warp_view_did_change_backing_properties(WarpHostView *, BOOL);
 void warp_view_set_frame_size(WarpHostView *, NSSize, BOOL);
@@ -39,6 +41,27 @@ static uint64_t warpNowNs(void) {
 // Time of the earliest key press that has not yet been attached to a frame (0 = none). Written on
 // the main thread; a stale value (no frame followed the key) is overwritten after 500 ms.
 static _Atomic uint64_t warpPendingKeyNs = 0;
+
+// Time of the most recent key press (0 = none). Unlike `warpPendingKeyNs` no frame consumes it;
+// `displayLayer:` reads it to tell a typing burst from idle output.
+static _Atomic uint64_t warpLastKeyNs = 0;
+
+// Frames this soon after a key press count as typing for `warpDisplaySyncOffWhileTyping`.
+static const uint64_t warpTypingWindowNs = 150000000ull;
+
+// Experiment, default off: while the user is typing, present without waiting for vsync
+// (`CAMetalLayer.displaySyncEnabled = NO`), so the frame carrying a keystroke is not held to the
+// next refresh; idle output keeps vsync. Tearing on a frame that also scrolls is the trade being
+// measured. PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING=1 enables it.
+static BOOL warpDisplaySyncOffWhileTyping(void) {
+    static dispatch_once_t once;
+    static BOOL enabled = NO;
+    dispatch_once(&once, ^{
+      const char *value = getenv("PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING");
+      enabled = value != NULL && strcmp(value, "0") != 0;
+    });
+    return enabled;
+}
 
 // Called on the main thread, after nextDrawable and before the drawable is presented. Attaches the
 // pending key press (if any) to this frame and reports key -> presented latency from the
@@ -192,6 +215,14 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
 - (void)displayLayer:(CALayer *)layer {
     if (!testMode && self.readyForWarp) {
+        if (warpDisplaySyncOffWhileTyping() && [layer isKindOfClass:[CAMetalLayer class]]) {
+            CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
+            uint64_t lastKeyNs = atomic_load(&warpLastKeyNs);
+            BOOL typing = lastKeyNs != 0 && warpNowNs() - lastKeyNs < warpTypingWindowNs;
+            if (metalLayer.displaySyncEnabled == typing) {
+                metalLayer.displaySyncEnabled = !typing;
+            }
+        }
         os_signpost_interval_begin(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
         warp_update_layer(self);
         os_signpost_interval_end(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
@@ -212,6 +243,7 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
 - (BOOL)keyDownImpl:(NSEvent *)event {
     uint64_t keyNowNs = warpNowNs();
+    atomic_store(&warpLastKeyNs, keyNowNs);
     uint64_t pendingKeyNs = atomic_load(&warpPendingKeyNs);
     if (pendingKeyNs == 0 || keyNowNs - pendingKeyNs > 500000000ull) {
         atomic_store(&warpPendingKeyNs, keyNowNs);
