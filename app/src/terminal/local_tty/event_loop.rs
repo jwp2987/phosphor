@@ -695,8 +695,14 @@ where
                 None => terminal.insert(match self.terminal.try_lock() {
                     // If we've buffered a lot while the terminal was locked elsewhere, block
                     // on it rather than read on: the wait is one hold by the other thread
-                    // (fair mutex), and the parse that follows stays small (#1135).
-                    None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION => self.terminal.lock(),
+                    // (fair mutex), and the parse that follows stays small (#1135). The same
+                    // goes once the pty has been drained (`WouldBlock`, `can_read` cleared):
+                    // there is nothing more to accumulate, and reading on would only spin on
+                    // `read` + `try_lock` for as long as the UI paints, a whole core burnt
+                    // while the echo of a keystroke waits for the lock anyway.
+                    None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION || !*can_read => {
+                        self.terminal.lock()
+                    }
                     // Otherwise, if we failed to acquire the lock, try to read more
                     // data into the buffer.
                     None => continue,
@@ -744,6 +750,14 @@ where
             // Give up the lock to a waiting thread, if any, before reading
             // more bytes from the PTY.
             FairMutexGuard::bump(terminal);
+
+            // Something (a keystroke, a resize, shutdown) is waiting in the channel: end the
+            // pass here instead of after up to MAX_LOCKED_READ more bytes. `service_io` takes
+            // the message and writes it before it reads on, so under a flood a Ctrl-C waits for
+            // one read-and-parse rather than a whole pass.
+            if self.rx.has_pending() {
+                break;
+            }
         }
 
         // #1092: time the first output after a keystroke reached the pty (counts only).
