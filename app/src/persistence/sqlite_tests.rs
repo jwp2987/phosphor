@@ -3403,3 +3403,40 @@ fn deliberately_read_only_file_is_not_failed_or_retried() {
     perms.set_readonly(false);
     std::fs::set_permissions(&path, perms).unwrap();
 }
+
+/// #1155: the writer connection runs `synchronous=NORMAL` (1) with an 8 MB
+/// `journal_size_limit`, but only when the database is in WAL mode.
+#[test]
+fn writer_connection_uses_normal_synchronous_in_wal_mode() {
+    use diesel::RunQueryDsl;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let synchronous = diesel::sql_query("SELECT synchronous AS value FROM pragma_synchronous")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("synchronous pragma")
+        .value;
+    assert_eq!(synchronous, 1, "NORMAL, not the FULL default (2)");
+    let limit =
+        diesel::sql_query("SELECT journal_size_limit AS value FROM pragma_journal_size_limit")
+            .get_result::<SingleInt>(&mut conn)
+            .expect("journal_size_limit pragma")
+            .value;
+    assert_eq!(limit, 8 * 1024 * 1024);
+}
+
+/// A non-WAL connection keeps the safe default: NORMAL is only crash-safe in WAL.
+#[test]
+fn durability_pragmas_are_skipped_outside_wal_mode() {
+    use diesel::{connection::SimpleConnection, Connection, RunQueryDsl};
+    let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory db");
+    conn.batch_execute("PRAGMA journal_mode=MEMORY;")
+        .expect("journal mode");
+    super::apply_wal_durability_pragmas(&mut conn);
+    let synchronous = diesel::sql_query("SELECT synchronous AS value FROM pragma_synchronous")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("synchronous pragma")
+        .value;
+    assert_eq!(synchronous, 2, "FULL stays in place outside WAL mode");
+}

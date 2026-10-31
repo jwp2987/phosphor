@@ -855,8 +855,55 @@ fn establish_connection_with_deadline(
     };
     wal_result.context("Failed to enable WAL")?;
     conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
+    if !read_only {
+        apply_wal_durability_pragmas(&mut conn);
+    }
 
     Ok(conn)
+}
+
+#[derive(diesel::QueryableByName)]
+struct JournalModeRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
+}
+
+/// Relaxes the writer connection's fsync policy and caps WAL growth. Only does
+/// anything when the database really is in WAL mode; in any other journal mode
+/// `synchronous=NORMAL` is NOT crash-safe, so it is skipped there.
+///
+/// Durability trade-off: SQLite's default `synchronous=FULL` fsyncs the WAL on
+/// every commit (about 0.5 ms median, p95 2 ms on NVMe, far more on slow or
+/// encrypted disks), and the writer commits once per event. With `NORMAL` in
+/// WAL mode a commit is written to the OS but not fsynced; the WAL is synced
+/// at checkpoints. That is safe against an application crash or SIGKILL (the
+/// written frames live in the OS page cache and survive process death). Only an
+/// OS crash or power loss can drop the last few commits, and it can never
+/// corrupt the database: WAL frames carry checksums, so a torn tail is simply
+/// discarded on recovery. Everything stored here (history, blocks, layout,
+/// conversations) tolerates losing the final moments, and the clean-quit path
+/// still ends in `wal_checkpoint(TRUNCATE)`, which syncs the database file.
+///
+/// `journal_size_limit` makes the WAL file shrink back to 8 MB after a
+/// checkpoint instead of staying at the size of its largest spike (one block
+/// write can be several MB).
+fn apply_wal_durability_pragmas(conn: &mut SqliteConnection) {
+    let in_wal_mode = diesel::sql_query("PRAGMA journal_mode")
+        .get_result::<JournalModeRow>(conn)
+        .map(|row| row.journal_mode.eq_ignore_ascii_case("wal"))
+        .unwrap_or(false);
+    if !in_wal_mode {
+        log::warn!("SQLite is not in WAL mode; leaving synchronous at its default");
+        return;
+    }
+    if let Err(err) = conn.batch_execute(
+        r#"
+        PRAGMA synchronous=NORMAL;
+        PRAGMA journal_size_limit=8388608;
+    "#,
+    ) {
+        log::warn!("Failed to relax SQLite synchronous mode: {err:#}");
+    }
 }
 
 /// Opens a standalone read-write SQLite database that holds only the
