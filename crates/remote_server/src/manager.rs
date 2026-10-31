@@ -679,6 +679,7 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::SessionDisconnected { session_id, .. }
             | RemoteServerManagerEvent::SessionReconnected { session_id, .. }
             | RemoteServerManagerEvent::SessionConnectionLost { session_id, .. }
+            | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id }
             | RemoteServerManagerEvent::SessionDeregistered { session_id }
             | RemoteServerManagerEvent::NavigatedToDirectory { session_id, .. }
             | RemoteServerManagerEvent::SetupStateChanged { session_id, .. }
