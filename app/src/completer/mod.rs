@@ -94,6 +94,102 @@ pub fn invalidate_shared_directory_cache(session_id: SessionId) {
     SHARED_DIRECTORY_CACHES.lock().remove(&session_id);
 }
 
+/// Synchronous local directory listing. Only ever call this from a blocking-pool thread (see
+/// [`list_local_dir_off_pool`]): on a hung NFS/sshfs/autofs mount `read_dir` can sit in the
+/// kernel indefinitely.
+fn read_local_dir_entries(dir: &Path) -> Vec<EngineDirEntry> {
+    // Converting a `DirEntry` to `EngineDirEntry` can usually be
+    // done without additional syscalls (though one is necessary if
+    // the entry is a symlink).
+    //
+    // A failed listing and an empty directory are the same thing to
+    // every caller above this point -- both are "no path
+    // completions" -- so a failure here is invisible unless it is
+    // logged. `NotFound` is the ordinary case while a path is
+    // half-typed and is deliberately not logged; `PermissionDenied`
+    // is the one worth a line, because it is how a session that
+    // escalated to another user (`sudo su -`, `ksu`) presents.
+    // Such a session keeps the same hostname, so
+    // `determine_session_type` classifies it `Local` (see
+    // `terminal/model/session.rs`, "Ensures subshells are treated as
+    // local") and we read the directory with the Zap *process's*
+    // uid, which is not the uid the session's shell now runs as.
+    // Nothing downstream can recover from that; the point of the
+    // log is that the user's log says so instead of the feature
+    // silently doing nothing.
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(read_dir) => read_dir,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                safe_warn!(
+                    safe: (
+                        "Failed to list a local directory for completions: {:?}",
+                        err.kind()
+                    ),
+                    full: (
+                        "Failed to list `{}` for completions: {err}",
+                        dir.display()
+                    )
+                );
+            }
+            return vec![];
+        }
+    };
+
+    read_dir
+        .filter_map(|res| res.and_then(EngineDirEntry::try_from).ok())
+        .collect::<Vec<_>>()
+}
+
+/// How long a local directory listing may take before completions give up on it.
+const LOCAL_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+static LOCAL_LISTING_TIMEOUT_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Runs `lister` on tokio's blocking pool and waits at most `timeout` for it. Returns `None`
+/// on timeout (or if the listing task died).
+///
+/// The listing used to run inline on a shared async worker. Every keystroke starts a new
+/// listing and one cannot be aborted mid-syscall, so a few keystrokes at `cd /mnt/hung/<tab>`
+/// parked all `num_cpus` workers and stalled every `ctx.spawn` task in every tab. The blocking
+/// pool is separate and large, so a stuck `read_dir` costs one idle thread, not the executor.
+/// The abandoned thread finishes whenever the kernel lets it; its result is dropped.
+async fn list_local_dir_off_pool<F>(
+    dir: std::path::PathBuf,
+    timeout: std::time::Duration,
+    lister: F,
+) -> Option<Vec<EngineDirEntry>>
+where
+    F: FnOnce(std::path::PathBuf) -> Vec<EngineDirEntry> + Send + 'static,
+{
+    // Outside a tokio runtime (some unit-test executors) there is no blocking pool.
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Some(lister(dir));
+    }
+    let shown = dir.clone();
+    let task = tokio::task::spawn_blocking(move || lister(dir));
+    match tokio::time::timeout(timeout, task).await {
+        Ok(Ok(entries)) => Some(entries),
+        Ok(Err(err)) => {
+            log::warn!("Local directory listing task failed: {err}");
+            None
+        }
+        Err(_) => {
+            if !LOCAL_LISTING_TIMEOUT_LOGGED.swap(true, AtomicOrdering::Relaxed) {
+                safe_warn!(
+                    safe: ("Local directory listing for completions timed out; returning no entries"),
+                    full: (
+                        "Listing `{}` for completions took over {timeout:?}; returning no entries (logged once)",
+                        shown.display()
+                    )
+                );
+            }
+            None
+        }
+    }
+}
+
 /// Coalescing gate for one directory path, used by
 /// [`SessionContext::refresh_directory_entries`].
 ///
@@ -224,80 +320,55 @@ impl SessionContext {
                 return entries.clone();
             }
 
-            let result = Arc::new(
-                self.list_directory_entries_internal(&directory.to_path())
-                    .await,
-            );
-            self.cached_directory_entries
-                .insert(directory, result.clone());
+            let (entries, cacheable) = self
+                .list_directory_entries_internal(&directory.to_path())
+                .await;
+            let result = Arc::new(entries);
+            if cacheable {
+                self.cached_directory_entries
+                    .insert(directory, result.clone());
+            }
             gate.completions.fetch_add(1, AtomicOrdering::Release);
             result
         }
     }
 
+    /// Returns the entries and whether the result may be cached. A timed-out local listing is
+    /// transient (the mount may recover), so it is returned empty and NOT cached.
     async fn list_directory_entries_internal(
+        &self,
+        directory: &TypedPath<'_>,
+    ) -> (Vec<EngineDirEntry>, bool) {
+        if matches!(self.session.session_type(), SessionType::Local) {
+            let dir = match self.session.maybe_convert_to_native_path(directory) {
+                Ok(dir) => dir,
+                Err(err) => {
+                    log::warn!("Failed to convert path: {err:#}");
+                    return (Vec::new(), true);
+                }
+            };
+            return match list_local_dir_off_pool(
+                dir.as_path().to_path_buf(),
+                LOCAL_LISTING_TIMEOUT,
+                |dir| read_local_dir_entries(&dir),
+            )
+            .await
+            {
+                Some(entries) => (entries, true),
+                None => (Vec::new(), false),
+            };
+        }
+        (self.list_remote_directory_entries(directory).await, true)
+    }
+
+    async fn list_remote_directory_entries(
         &self,
         directory: &TypedPath<'_>,
     ) -> Vec<EngineDirEntry> {
         match self.session.session_type() {
-            SessionType::Local => {
-                let dir = match self.session.maybe_convert_to_native_path(directory) {
-                    Ok(dir) => dir,
-                    Err(err) => {
-                        log::warn!("Failed to convert path: {err:#}");
-                        return Vec::new();
-                    }
-                };
-                // We intentionally use the synchronous `std::fs::read_dir`,
-                // despite this being an async function, because the overhead
-                // of switching threads is very expensive relative to the
-                // amount of work being done.  Converting the a `DirEntry`
-                // to `EngineDirEntry` can usually be done without additional
-                // syscalls (though one is necessary if the entry is a
-                // symlink).
-                //
-                // It's possible that it would be better to use
-                // `async_fs::read_dir` if the directory is on a network mount,
-                // but I don't think it's worth optimizing for that case.
-                //
-                // A failed listing and an empty directory are the same thing to
-                // every caller above this point -- both are "no path
-                // completions" -- so a failure here is invisible unless it is
-                // logged. `NotFound` is the ordinary case while a path is
-                // half-typed and is deliberately not logged; `PermissionDenied`
-                // is the one worth a line, because it is how a session that
-                // escalated to another user (`sudo su -`, `ksu`) presents.
-                // Such a session keeps the same hostname, so
-                // `determine_session_type` classifies it `Local` (see
-                // `terminal/model/session.rs`, "Ensures subshells are treated as
-                // local") and we read the directory with the Zap *process's*
-                // uid, which is not the uid the session's shell now runs as.
-                // Nothing downstream can recover from that; the point of the
-                // log is that the user's log says so instead of the feature
-                // silently doing nothing.
-                let read_dir = match std::fs::read_dir(dir.as_path()) {
-                    Ok(read_dir) => read_dir,
-                    Err(err) => {
-                        if err.kind() != std::io::ErrorKind::NotFound {
-                            safe_warn!(
-                                safe: (
-                                    "Failed to list a local directory for completions: {:?}",
-                                    err.kind()
-                                ),
-                                full: (
-                                    "Failed to list `{}` for completions: {err}",
-                                    dir.display()
-                                )
-                            );
-                        }
-                        return vec![];
-                    }
-                };
-
-                read_dir
-                    .filter_map(|res| res.and_then(EngineDirEntry::try_from).ok())
-                    .collect::<Vec<_>>()
-            }
+            // Local listings never reach here: `list_directory_entries_internal` routes
+            // them through `list_local_directory_entries` (off the shared worker pool).
+            SessionType::Local => Vec::new(),
             SessionType::WarpifiedRemote { .. } => {
                 let env_vars = self
                     .session
@@ -380,20 +451,20 @@ impl PathCompletionContext for SessionContext {
         // sends escape sequences to a raw remote shell. Return empty without
         // caching so we retry after the remote server handshake finishes.
         if let SessionType::WarpifiedRemote { host_id: None } = self.session.session_type() {
-            if FeatureFlag::SshRemoteServer.is_enabled()
-                && !self.session.is_legacy_ssh_session()
-            {
+            if FeatureFlag::SshRemoteServer.is_enabled() && !self.session.is_legacy_ssh_session() {
                 return Arc::new(vec![]);
             }
         }
 
-        let result = self
+        let (entries, cacheable) = self
             .list_directory_entries_internal(&directory.to_path())
             .await;
 
-        let result = Arc::new(result);
-        self.cached_directory_entries
-            .insert(directory, result.clone());
+        let result = Arc::new(entries);
+        if cacheable {
+            self.cached_directory_entries
+                .insert(directory, result.clone());
+        }
         result
     }
 

@@ -847,3 +847,51 @@ pub fn test_for_decoration_disables_generators_only_on_remote_sessions() {
         assert!(local.for_decoration().generator_context().is_some());
     });
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn slow_local_listing_times_out_without_blocking_other_tasks() {
+    use super::list_local_dir_off_pool;
+    use std::time::{Duration, Instant};
+
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let started = Instant::now();
+
+    let listing = tokio::spawn(list_local_dir_off_pool(
+        "/hung/mount".into(),
+        Duration::from_millis(100),
+        move |_| {
+            // Simulates a read_dir stuck on a dead network mount.
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            Vec::new()
+        },
+    ));
+
+    // The only async worker must stay free while the listing is stuck.
+    let other = tokio::spawn(async { 7 });
+    assert_eq!(other.await.unwrap(), 7);
+
+    let result = listing.await.unwrap();
+    assert!(result.is_none(), "a timed-out listing yields no entries");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "timed out in {:?}, expected ~100ms",
+        started.elapsed()
+    );
+    let _ = release_tx.send(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn fast_local_listing_returns_entries() {
+    use super::list_local_dir_off_pool;
+    use std::time::Duration;
+    use warp_completer::completer::EngineFileType;
+
+    let entries = list_local_dir_off_pool("/x".into(), Duration::from_secs(5), |_| {
+        vec![EngineDirEntry {
+            file_name: "a".to_owned(),
+            file_type: EngineFileType::File,
+        }]
+    })
+    .await;
+    assert_eq!(entries.map(|e| e.len()), Some(1));
+}

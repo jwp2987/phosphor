@@ -382,7 +382,6 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use sum_tree::SeekBias;
 use vec1::vec1;
@@ -2776,7 +2775,7 @@ pub struct TerminalView {
     has_shown_eviction_notice: bool,
 
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
-    file_link_scanning_join_handle: Option<JoinHandle<()>>,
+    file_link_scanning_join_handle: Option<link_detection::FileLinkScan>,
 
     /// Zap: cache of directory listings for remote SSH sessions' cwds, used to
     /// precisely validate terminal file links.
