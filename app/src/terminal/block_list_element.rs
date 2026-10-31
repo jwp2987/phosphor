@@ -1,4 +1,5 @@
 use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
+use settings::Setting as _;
 use crate::ai::blocklist::block::cli::{
     CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
 };

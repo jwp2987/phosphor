@@ -15,7 +15,7 @@ use crate::terminal::view::{TerminalAction, TerminalView};
 
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use crate::terminal::shared_session::protocol::{ParticipantId, ParticipantList, Role, SessionId};
-use crate::terminal::view::throttle;
+use crate::throttle::throttle;
 use crate::ui_components::icons::Icon;
 use chrono::{DateTime, Local};
 use markdown_parser::FormattedTextFragment;

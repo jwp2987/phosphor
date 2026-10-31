@@ -1428,9 +1428,13 @@ fn visible_commands_snapshot_matches_visible_commands() {
     );
 
     let snapshot = history.visible_commands_snapshot(session_id).unwrap();
-    let expected = history.visible_commands(session_id).unwrap().collect_vec();
+    let expected = history
+        .visible_commands(session_id)
+        .unwrap()
+        .cloned()
+        .collect_vec();
     assert!(expected.len() > 10);
-    assert_eq!(snapshot.iter().collect_vec(), expected);
+    assert_eq!(snapshot.iter().cloned().collect_vec(), expected);
     assert_eq!(
         snapshot.iter().rev().collect_vec(),
         history
@@ -1448,7 +1452,7 @@ fn visible_commands_snapshot_matches_visible_commands() {
         session_id,
         vec![HistoryEntry::with_session_id(session_id, "cmd5")],
     );
-    assert_eq!(snapshot.iter().collect_vec(), expected);
+    assert_eq!(snapshot.iter().cloned().collect_vec(), expected);
 
     assert!(history.visible_commands_snapshot(other_session).is_none());
 }

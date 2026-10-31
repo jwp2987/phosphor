@@ -2157,7 +2157,7 @@ fn user_block_completed_without_output_variant_skips_only_the_output() {
         }
     }
     let Some(BlockType::User(block)) = completed.first().map(|e| &e.block_type) else {
-        panic!("Expected a completed user block, got {completed:?}");
+        panic!("Expected a completed user block, got {} events", completed.len());
     };
     let lite = block.serialized_block_without_output.get(&block_list);
     let full = block.serialized_block.get(&block_list);
