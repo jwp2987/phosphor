@@ -55,6 +55,7 @@ use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::{
+    effective_command_timeout, DEFAULT_CHIP_COMMAND_TIMEOUT,
     effective_poll_interval, poll_decision, ActiveChipSurfaces, ChipUpdateStatus, CurrentPrompt,
     PollDecision, PromptContext, BACKGROUND_RECHECK_DELAY, REMOTE_POLL_INTERVAL,
     TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
