@@ -10760,17 +10760,26 @@ fn test_keys_typed_behind_waiting_enter_pressed_mid_line_queue_behind_it() {
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(line, ctx);
-            // Cursor after `is it`.
+        });
+        // Cursor after `is it`, moved once the insert's events have settled, as the other
+        // cursor tests do.
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.update(&mut app, |editor, ctx| {
             for _ in 0..5 {
-                input.editor().update(ctx, |editor, ctx| {
-                    editor.handle_action(&EditorAction::Left, ctx);
-                });
+                editor.move_left(/* stop at line start */ false, ctx);
             }
+        });
+        editor.read(&app, |editor, ctx| {
+            assert_eq!(
+                editor.single_cursor_to_point(ctx).unwrap(),
+                Point { row: 0, column: 5 },
+                "precondition: the cursor sits after `is it`"
+            );
         });
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         input.read(&app, |input, ctx| {
             let wait = input.verdict_wait.as_ref().expect("the Enter must be waiting");
-            assert_eq!(wait.cursor, 5);
+            assert_eq!(wait.cursor, 5, "the wait records the cursor the Enter was pressed at");
             assert!(input.detection_pending_for_buffer(ctx));
         });
 
