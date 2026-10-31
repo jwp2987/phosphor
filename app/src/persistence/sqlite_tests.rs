@@ -31,8 +31,9 @@ use super::{
     codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
     get_all_codebase_index_metadata, read_sqlite_data, read_sqlite_data_counting, save_app_state,
     save_codebase_index_embeddings, save_codebase_index_metadata, setup_database,
-    setup_database_or_quarantine, start_writer,
+    setup_database_or_quarantine, speculative_startup_read, start_writer, SPECULATIVE_READ,
 };
+use crate::auth::UserUid;
 
 #[test]
 fn test_deduplicate_snapshots() {
@@ -3456,4 +3457,60 @@ fn wal_recovery_notice_is_logged_at_info() {
         log::Level::Warn
     );
     assert_eq!(sqlite_log_level(sqlite3::SQLITE_CORRUPT), log::Level::Error);
+}
+
+/// The startup read made ahead of time on the prewarm thread must be exactly what the main-thread
+/// read returns, for either value of the NLD flag, and must be built without the flag being known.
+#[test]
+fn read_ahead_of_time_matches_the_main_thread_read() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    let app_state = AppState {
+        windows: vec![
+            test_terminal_window_snapshot(false),
+            test_terminal_window_snapshot(true),
+        ],
+        active_window_index: Some(1),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    for nld_enabled in [false, true] {
+        let _guard = FeatureFlag::NldPromptHistoryMatch.override_enabled(nld_enabled);
+        let speculative =
+            speculative_startup_read(&mut conn).expect("a database without cloud objects reads");
+        let (ahead, skipped) = speculative
+            .into_persisted_data(&None, nld_enabled)
+            .expect("no signed-in user");
+        let main = read_sqlite_data(&mut conn, None).expect("main-thread read");
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            format!("{:?}", ahead.app_state),
+            format!("{:?}", main.app_state)
+        );
+        assert_eq!(ahead.nld_prompts, main.nld_prompts);
+        assert_eq!(ahead.command_history.len(), main.command_history.len());
+        assert_eq!(ahead.ai_queries.len(), main.ai_queries.len());
+        assert_eq!(ahead.cloud_objects.len(), main.cloud_objects.len());
+        assert_eq!(ahead.workspaces.len(), main.workspaces.len());
+        assert_eq!(ahead.current_workspace_uid, main.current_workspace_uid);
+    }
+    // The read-ahead flag must not leak out of the read.
+    assert!(!SPECULATIVE_READ.with(|flag| flag.get()));
+}
+
+/// A signed-in user's id decides cloud object owners, which the prewarm thread cannot know.
+#[test]
+fn read_ahead_of_time_is_not_used_for_a_signed_in_user() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let mut conn =
+        setup_database(&tempdir.path().join("warp.sqlite")).expect("database should initialize");
+    let speculative = speculative_startup_read(&mut conn).expect("reads");
+    assert!(
+        speculative
+            .into_persisted_data(&Some(UserUid::new("someone")), false)
+            .is_none()
+    );
 }
