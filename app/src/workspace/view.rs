@@ -1969,6 +1969,9 @@ impl Workspace {
             // pause control (or app exit).
             crate::ai::agent_providers::wire_log::set_enabled(true);
             self.wire_inspector_modal.open();
+            self.wire_inspector_modal
+                .view
+                .update(ctx, |modal, ctx| modal.set_open(true, ctx));
             ctx.notify();
         }
     }
@@ -1977,6 +1980,9 @@ impl Workspace {
         // Intentionally leave capture running so messages sent while the window is
         // closed are still recorded and visible on reopen.
         self.wire_inspector_modal.close();
+        self.wire_inspector_modal
+            .view
+            .update(ctx, |modal, ctx| modal.set_open(false, ctx));
         ctx.notify();
     }
 
