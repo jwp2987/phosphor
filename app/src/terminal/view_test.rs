@@ -18786,8 +18786,10 @@ fn ssh_enter_just_after_dropped_letters_is_dropped_with_them_after_a_flag_reset(
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("exit", ctx);
             assert!(view.ssh_drop_line_through_enter);
-            // The flag is reset by something other than the line's Enter.
+            // The flag is reset by something other than the line's Enter, with the gate released
+            // (a prompt-shaped line ended the drop); the next line is typed after the release.
             view.ssh_drop_line_through_enter = false;
+            release_ssh_gate_for_test(view);
             // The editor's Enter (empty buffer) is vetoed, not executed.
             submit_command(view, "", ctx);
             assert!(
