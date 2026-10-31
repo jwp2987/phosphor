@@ -303,3 +303,67 @@ fn slot_count_is_bounded() {
     }
     assert!(cache.slots.len() <= GENERATOR_CACHE_MAX_SLOTS);
 }
+
+/// #1128: a non-local run is not kept alive by the cache. When the last waiter goes away the
+/// run is dropped (which aborts the remote command) and the next caller starts a new one; a
+/// local run in the same position keeps going.
+#[test]
+fn attached_run_is_dropped_when_no_caller_waits() {
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let make = |dropped: Arc<std::sync::atomic::AtomicBool>| -> SharedGeneratorRun {
+        let flag = DropFlag(dropped);
+        async move {
+            let _flag = flag;
+            futures::future::pending::<()>().await;
+            ok("never\n")
+        }
+        .boxed()
+        .shared()
+    };
+
+    let mut cache = GeneratorCache::default();
+    let now = Instant::now();
+    let k = key(1, "/home/me", "systemctl list-units");
+
+    let remote_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter = cache
+        .get_or_start_with(&k, now, false, |_| make(remote_dropped.clone()))
+        .err()
+        .unwrap();
+    // A second caller joins while the first waits, and keeps it alive.
+    let joiner = cache
+        .get_or_start_with(&k, now, false, |_| panic!("must join the live run"))
+        .err()
+        .unwrap();
+    drop(waiter);
+    assert!(!remote_dropped.load(std::sync::atomic::Ordering::SeqCst));
+    drop(joiner);
+    assert!(
+        remote_dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "a remote run with no waiter must be aborted"
+    );
+    let restarted = Cell::new(false);
+    let fresh = cache.get_or_start_with(&k, now, false, |_| {
+        restarted.set(true);
+        ready_run(ok("ssh.service\n"))
+    });
+    assert!(fresh.is_err());
+    assert!(restarted.get(), "a dead remote run must not be joined");
+
+    let local_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let k2 = key(2, "/home/me", "git branch");
+    let local = cache
+        .get_or_start_with(&k2, now, true, |_| make(local_dropped.clone()))
+        .err()
+        .unwrap();
+    drop(local);
+    assert!(
+        !local_dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "a local run stays alive for later callers"
+    );
+}

@@ -1,6 +1,6 @@
+mod generator_cache;
 #[cfg(feature = "completions_v2")]
 mod js;
-mod generator_cache;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -530,7 +530,7 @@ impl SessionContext {
         let pwd = self.pwd().to_str().map(str::to_owned);
         let script = key.script.clone();
         let finish_key = key.clone();
-        let join = handle.spawn(async move {
+        let run = async move {
             let outcome = tokio::time::timeout(
                 generator_cache::GENERATOR_RUN_TIMEOUT,
                 session.execute_command(
@@ -553,7 +553,13 @@ impl SessionContext {
                 .lock()
                 .finish(&key, run_id, &result, Instant::now());
             result
-        });
+        };
+        if !self.session.is_local() {
+            // A remote generator is a command on the shared ssh connection. It is polled only by
+            // its waiters and aborted when the last one is dropped (#1128); never detach it.
+            return run.boxed().shared();
+        }
+        let join = handle.spawn(run);
         async move {
             match join.await {
                 Ok(result) => result,
@@ -583,12 +589,13 @@ impl SessionContext {
         key: &generator_cache::GeneratorKey,
         env_vars: &Option<HashMap<String, String>>,
     ) -> generator_cache::GeneratorRunResult {
-        let outcome =
-            generator_cache::GENERATOR_CACHE
-                .lock()
-                .get_or_start(key, Instant::now(), |run_id| {
-                    self.start_generator_run(handle, key.clone(), run_id, env_vars.clone())
-                });
+        let detached = self.session.is_local();
+        let outcome = generator_cache::GENERATOR_CACHE.lock().get_or_start_with(
+            key,
+            Instant::now(),
+            detached,
+            |run_id| self.start_generator_run(handle, key.clone(), run_id, env_vars.clone()),
+        );
         match outcome {
             Ok(result) => result,
             Err(run) => run.await,

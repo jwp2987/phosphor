@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::future::{BoxFuture, Shared};
+use futures::future::{BoxFuture, Shared, WeakShared};
 use lazy_static::lazy_static;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
@@ -52,10 +52,27 @@ pub(super) struct GeneratorKey {
     pub script: String,
 }
 
+/// How the cache holds a run in flight. A detached (local) run is kept alive by the cache. An
+/// attached (remote) run is held weakly: it is polled only by its waiters and dropped, which
+/// aborts the remote command (#1128), when the last one goes away.
+enum RunHandle {
+    Detached(SharedGeneratorRun),
+    Attached(WeakShared<BoxFuture<'static, GeneratorRunResult>>),
+}
+
+impl RunHandle {
+    fn join(&self) -> Option<SharedGeneratorRun> {
+        match self {
+            RunHandle::Detached(run) => Some(run.clone()),
+            RunHandle::Attached(weak) => weak.upgrade(),
+        }
+    }
+}
+
 enum Slot {
     InFlight {
         run_id: u64,
-        run: SharedGeneratorRun,
+        run: RunHandle,
     },
     Done {
         at: Instant,
@@ -106,6 +123,20 @@ impl GeneratorCache {
         now: Instant,
         start: impl FnOnce(u64) -> SharedGeneratorRun,
     ) -> Result<GeneratorRunResult, SharedGeneratorRun> {
+        self.get_or_start_with(key, now, true, start)
+    }
+
+    /// [`Self::get_or_start`], with `detached` false for a non-local session: the run is then
+    /// not kept alive by the cache, so it is aborted when no caller is waiting on it any more
+    /// and a later caller starts a new one. A remote generator nobody waits for would occupy the
+    /// shared ssh connection (#1128).
+    pub(super) fn get_or_start_with(
+        &mut self,
+        key: &GeneratorKey,
+        now: Instant,
+        detached: bool,
+        start: impl FnOnce(u64) -> SharedGeneratorRun,
+    ) -> Result<GeneratorRunResult, SharedGeneratorRun> {
         self.sweep(now);
         match self.slots.get(key) {
             Some(Slot::Done { at, result })
@@ -113,17 +144,29 @@ impl GeneratorCache {
             {
                 return Ok(result.clone());
             }
-            Some(Slot::InFlight { run, .. }) => return Err(run.clone()),
+            Some(Slot::InFlight { run, .. }) => {
+                if let Some(run) = run.join() {
+                    return Err(run);
+                }
+            }
             _ => {}
         }
         let run_id = self.next_run_id;
         self.next_run_id += 1;
         let run = start(run_id);
+        let handle = if detached {
+            RunHandle::Detached(run.clone())
+        } else {
+            match run.downgrade() {
+                Some(weak) => RunHandle::Attached(weak),
+                None => RunHandle::Detached(run.clone()),
+            }
+        };
         self.slots.insert(
             key.clone(),
             Slot::InFlight {
                 run_id,
-                run: run.clone(),
+                run: handle,
             },
         );
         Err(run)
