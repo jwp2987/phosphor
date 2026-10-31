@@ -11209,7 +11209,10 @@ impl TerminalView {
             return true;
         }
         // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
+        // Only an EOF can take a held Enter with it, so every other key skips the model lock (the
+        // pty reader holds it while it parses output) on its way to the pty (#1176).
         if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && bytes.contains(&0x04)
             && let Some(with_held) = self
                 .model
                 .lock()
