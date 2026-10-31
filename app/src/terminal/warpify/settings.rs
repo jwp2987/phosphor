@@ -142,7 +142,9 @@ pub enum SshExtensionInstallMode {
     AlwaysAsk,
     /// Automatically install and connect without prompting.
     AlwaysInstall,
-    /// Never install; fall back to legacy warpification.
+    /// Never install; fall back to legacy warpification. This only stops the
+    /// install: a remote server binary that is already on the host is still
+    /// started and used (there is no "off" value; #1171).
     NeverInstall,
 }
 
@@ -153,7 +155,7 @@ maybe_define_setting!(SshExtensionInstallModeSetting, group: WarpifySettings, {
     sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
     private: false,
     toml_path: "warpify.ssh.ssh_extension_install_mode",
-    description: "Controls SSH extension installation behavior.",
+    description: "Controls SSH extension installation behavior. never_install only stops the installation: if the remote server binary is already present on the host it is still used.",
 });
 
 impl SshExtensionInstallMode {
