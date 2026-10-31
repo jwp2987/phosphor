@@ -11244,3 +11244,12 @@ fn empty_enter_focuses_only_a_blocked_pending_action() {
     // No pending action: Enter keeps its usual behaviour.
     assert!(!empty_enter_focuses_pending_action(true, None));
 }
+
+// #1192: an Enter held 500 ms or more is logged with its reason; shorter holds are not.
+#[test]
+fn slow_enter_hold_threshold() {
+    use std::time::Duration;
+    assert!(!is_slow_enter_hold(Duration::from_millis(499)));
+    assert!(is_slow_enter_hold(Duration::from_millis(500)));
+    assert!(is_slow_enter_hold(Duration::from_millis(3700)));
+}

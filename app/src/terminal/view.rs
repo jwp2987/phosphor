@@ -11798,6 +11798,12 @@ impl TerminalView {
                         .typeahead_handoff_mut()
                         .give_up_uncovered_deferral(id);
                     if released {
+                        // #1192: the report covering the pasted/typed line never arrived.
+                        log::warn!(
+                            "Enter held {} ms: the shell's typeahead report never covered the \
+                             untracked line bytes (uncovered-report patience expired)",
+                            UNCOVERED_REPORT_PATIENCE.as_millis()
+                        );
                         me.run_deferred_enter(false, ctx);
                     }
                 },
@@ -11881,6 +11887,10 @@ impl TerminalView {
             }
             YoungSubmit::SubmitWithoutVerdict => {
                 self.young_enter_released = true;
+                crate::terminal::input::log_slow_enter_hold(
+                    "young line waited for the input-type verdict and gave up",
+                    started.elapsed(),
+                );
                 self.input.update(ctx, |input, ctx| {
                     input.give_up_pending_detection_for_submit(ctx)
                 });

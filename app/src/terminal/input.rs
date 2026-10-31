@@ -1253,6 +1253,22 @@ pub(crate) fn log_late_timer_wake(timer: &'static str, deadline: Instant) {
     );
 }
 
+/// An Enter held longer than this is logged at WARN with the reason it was held (#1192).
+const SLOW_ENTER_HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether an Enter held for `held` is slow enough to log.
+pub(crate) fn is_slow_enter_hold(held: std::time::Duration) -> bool {
+    held >= SLOW_ENTER_HOLD_THRESHOLD
+}
+
+/// Logs (WARN, every occurrence: these are rare and each is a latency bug) that an Enter was held
+/// for `held` and why (#1192). Never the buffer text.
+pub(crate) fn log_slow_enter_hold(reason: &str, held: std::time::Duration) {
+    if is_slow_enter_hold(held) {
+        log::warn!("Enter held {} ms: {reason}", held.as_millis());
+    }
+}
+
 /// Longest the activity assertion of a deferred Enter is held, in case no release path runs.
 const DEFERRED_ENTER_ACTIVITY_CAP: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -1318,6 +1334,8 @@ struct HandoffEnterMark {
     tail: String,
     /// Net change in the buffer's length from the report inserted since (it replaces the front).
     inserted_delta: isize,
+    /// When the Enter was deferred, to log a long hold (#1192).
+    started: Instant,
 }
 
 impl VerdictWait {
@@ -13824,12 +13842,18 @@ impl Input {
             len,
             tail: text[tail_start..].to_string(),
             inserted_delta: 0,
+            started: Instant::now(),
         });
     }
 
     /// Forgets the boundary recorded by [`Self::note_handoff_enter`].
     pub(crate) fn clear_handoff_enter_mark(&mut self) {
-        self.handoff_enter_mark = None;
+        if let Some(mark) = self.handoff_enter_mark.take() {
+            log_slow_enter_hold(
+                "deferred behind the typeahead report / young-line classification",
+                mark.started.elapsed(),
+            );
+        }
         self.end_deferred_enter_activity();
     }
 
