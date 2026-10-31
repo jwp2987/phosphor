@@ -1542,12 +1542,24 @@ fn subagent_task_results_carry_the_auto_summary_in_their_own_task() {
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
         let (controller, conversation_id, _root_task_id) = tool_loop_controller(&mut app);
 
+        // The task must exist in the conversation: the summary exchange is appended to it, and an
+        // unknown task id fails that append, so no stream is tracked and the allowance stays unspent.
+        let subagent_task_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+                history
+                    .create_silent_cli_subagent_task_for_conversation(
+                        crate::terminal::model::block::BlockId::new(),
+                        conversation_id,
+                    )
+                    .expect("subagent task should be created")
+            });
+
         controller.update(&mut app, |controller, ctx| {
             defer_compaction_to_tool_results(controller, conversation_id);
             controller.action_model.update(ctx, |action_model, _| {
                 action_model.push_finished_action_result_for_test(
                     conversation_id,
-                    command_result("subagent-call", &TaskId::new("subagent-task".to_owned())),
+                    command_result("subagent-call", &subagent_task_id),
                 );
             });
             controller.send_follow_up_for_conversation(
