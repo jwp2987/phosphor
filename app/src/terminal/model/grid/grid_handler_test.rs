@@ -3083,6 +3083,59 @@ fn test_finished_grid_reflows_after_its_storage_was_shrunk() {
     assert!(grid.grid.raw.capacity() < rows);
 }
 
+#[test]
+fn test_finished_grid_rows_only_resize_skips_reflow() {
+    let cols = 5;
+    let build = || {
+        let mut grid = GridHandler::new_for_test_with_scroll_limit(10, cols, MAX_SCROLL_LIMIT);
+        for line in ["one", "two", "tre", "four", "five"] {
+            grid.input_at_cursor(line);
+            grid.carriage_return();
+            grid.linefeed();
+        }
+        grid.finish();
+        grid
+    };
+    let contents = |grid: &GridHandler| -> Vec<String> {
+        (0..grid.total_rows())
+            .map(|row| row_text(grid, row))
+            .collect()
+    };
+
+    let mut grid = build();
+    let before = contents(&grid);
+    let generation = grid.content_generation();
+    let visible_rows = grid.visible_rows();
+
+    // Shrinking and growing the height must leave a finished grid exactly as it was; the old
+    // path re-materialised the rows and bumped the content generation on every call.
+    for rows in [3, 40, 7] {
+        grid.resize(SizeInfo::new_without_font_metrics(rows, cols));
+        assert_eq!(contents(&grid), before);
+        assert_eq!(grid.total_rows(), before.len());
+        assert_eq!(grid.content_generation(), generation);
+        assert_eq!(grid.visible_rows(), visible_rows);
+    }
+
+    // A later column change still reflows, and reaches the same result as a grid that never
+    // saw the height changes.
+    let mut control = build();
+    grid.resize(SizeInfo::new_without_font_metrics(7, 3));
+    control.resize(SizeInfo::new_without_font_metrics(7, 3));
+    assert_eq!(grid.columns(), 3);
+    assert_eq!(contents(&grid), contents(&control));
+    assert_ne!(contents(&grid), before);
+}
+
+#[test]
+fn test_unfinished_grid_rows_only_resize_still_runs() {
+    // The fast path is for finished grids only: a live grid must still adjust its rows.
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(10, 5, MAX_SCROLL_LIMIT);
+    grid.input_at_cursor("abc");
+    grid.resize(SizeInfo::new_without_font_metrics(4, 5));
+    assert_eq!(grid.visible_rows(), 4);
+}
+
 /// A small grid with two lines of text and the cursor at the end of the second,
 /// for the content-generation tests below.
 fn content_generation_test_grid() -> GridHandler {
