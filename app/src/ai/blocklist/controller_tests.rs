@@ -2853,3 +2853,46 @@ mod finished_batch {
         assert_eq!(plan.silent_stop, None);
     }
 }
+
+/// The automatic resumes a turn gets for synthetic local tool results (bad arguments, unknown
+/// tool, intercepted tool): each is a model request on the user's provider, so they are bounded.
+mod synthetic_result_resumes {
+    use super::super::{
+        MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN, byop_synthetic_result_needs_resume,
+        charge_synthetic_result_resume,
+    };
+
+    /// An unknown tool name is answered with the available names and a request to re-issue
+    /// the call; that answer only helps if the turn resumes. Fails on the old code, which
+    /// resumed for bad arguments and intercepted tools only.
+    #[test]
+    fn an_unknown_tool_result_resumes_like_bad_arguments() {
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"error":"unknown_tool","available_tools":["read_files"],"executed":false}"#
+        ));
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"error":"invalid_arguments","executed":false}"#
+        ));
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"_byop_intercepted":true,"status":"ok"}"#
+        ));
+        // The dispatch gate's refusals stay non-resuming (#1067).
+        assert!(!byop_synthetic_result_needs_resume(
+            r#"{"error":"tool_not_offered","executed":false}"#
+        ));
+    }
+
+    /// The allowance is spent one resume at a time and then refuses; a model looping on the
+    /// same bad call is stopped after a bounded number of requests. Fails on the old code,
+    /// which had no bound for anything but skill names.
+    #[test]
+    fn the_per_turn_allowance_is_bounded() {
+        let mut spent = 0u8;
+        for _ in 0..MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN {
+            assert!(charge_synthetic_result_resume(&mut spent));
+        }
+        assert!(!charge_synthetic_result_resume(&mut spent));
+        assert!(!charge_synthetic_result_resume(&mut spent));
+        assert_eq!(spent, MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN);
+    }
+}

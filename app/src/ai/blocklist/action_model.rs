@@ -1177,11 +1177,12 @@ impl BlocklistAIActionModel {
         &mut self,
         action: AIAgentAction,
         conversation_id: AIConversationId,
+        execution: Option<warpui::r#async::SpawnedFutureHandle>,
         ctx: &mut ModelContext<Self>,
     ) {
         let action_id = action.id.clone();
         self.executor.update(ctx, |executor, _| {
-            executor.insert_async_executing_action_for_test(action, conversation_id);
+            executor.insert_async_executing_action_for_test(action, conversation_id, execution);
         });
         self.mark_action_running_for_test(conversation_id, &action_id);
     }

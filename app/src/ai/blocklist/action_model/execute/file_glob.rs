@@ -226,7 +226,26 @@ fn apply_result_limit(result: FileGlobV2Result, limit: Option<usize>) -> FileGlo
             mut matched_files,
             warnings,
         } => {
+            let total = matched_files.len();
+            if total <= limit {
+                return FileGlobV2Result::Success {
+                    matched_files,
+                    warnings,
+                };
+            }
             matched_files.truncate(limit);
+            // Said here, in the result: `glob_result_to_json`'s own marker compares the list
+            // against ITS cap, which this truncation never exceeds, so without this note a
+            // shortened list went to the model as the whole answer and it concluded the other
+            // files do not exist.
+            let note = format!(
+                "Only the first {limit} of {total} matching files are listed. Narrow `patterns` \
+                 or `search_dir` and search again for the rest."
+            );
+            let warnings = Some(match warnings {
+                Some(existing) if !existing.trim().is_empty() => format!("{note}\n{existing}"),
+                _ => note,
+            });
             FileGlobV2Result::Success {
                 matched_files,
                 warnings,

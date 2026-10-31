@@ -342,3 +342,58 @@ mod path_shell_quoting {
         );
     }
 }
+
+mod read_file_per_file_failures {
+    use std::io::Write as _;
+
+    use async_io::block_on;
+    use tempfile::TempDir;
+
+    use super::super::read_local_file_context;
+    use crate::ai::agent::FileLocations;
+
+    fn location(path: &str) -> FileLocations {
+        FileLocations {
+            name: path.to_string(),
+            lines: vec![],
+        }
+    }
+
+    /// One path that cannot be read as a file (here a directory: "Is a directory" from the
+    /// text reader, or an open failure on the binary path) is reported as that file's failure
+    /// and the other files are still read. Fails on the old code, where the `?` on the read
+    /// returned the error for the whole batch and the already-read file was lost.
+    #[test]
+    fn an_unreadable_path_fails_only_itself() {
+        let dir = TempDir::new().expect("create tempdir");
+        let good = dir.path().join("good.txt");
+        std::fs::File::create(&good)
+            .expect("create file")
+            .write_all(b"hello\n")
+            .expect("write file");
+        let subdir = dir.path().join("a-directory");
+        std::fs::create_dir(&subdir).expect("create dir");
+
+        let result = block_on(read_local_file_context(
+            &[
+                location(&good.to_string_lossy()),
+                location(&subdir.to_string_lossy()),
+            ],
+            None,
+            None,
+            None,
+            None,
+        ))
+        .expect("one bad path does not fail the batch");
+
+        assert_eq!(result.file_contexts.len(), 1, "the readable file is read");
+        assert_eq!(result.failed_files.len(), 1);
+        let failed = &result.failed_files[0];
+        assert_eq!(failed.path, subdir.to_string_lossy());
+        assert!(
+            failed.message.starts_with("Could not read file:"),
+            "got: {}",
+            failed.message
+        );
+    }
+}

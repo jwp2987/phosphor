@@ -67,7 +67,7 @@ use warp_util::file::FileLoadError;
 use warp_util::file_type::is_buffer_binary;
 use warpui::{
     AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
-    r#async::{Spawnable, SpawnableOutput},
+    r#async::{Spawnable, SpawnableOutput, SpawnedFutureHandle},
 };
 
 #[cfg(feature = "local_fs")]
@@ -303,6 +303,11 @@ struct AsyncExecutingAction {
     /// The conversation this action belongs to so cancellation and follow-up scheduling remain
     /// scoped even when several conversations have async actions in flight.
     conversation_id: AIConversationId,
+    /// The spawned execution, aborted when the action is cancelled so a Stop really stops the
+    /// work (a grep over a large tree, an MCP call, a remote read over the shared ssh
+    /// connection, #1241) instead of only discarding its result. `None` in tests that register
+    /// an action without spawning it.
+    execution: Option<SpawnedFutureHandle>,
 }
 
 impl AsyncExecutingAction {
@@ -790,24 +795,19 @@ impl BlocklistAIActionExecutor {
                 execute_future,
                 on_complete,
             } => {
-                self.async_executing_actions.insert(
-                    action_id.clone(),
-                    AsyncExecutingAction {
-                        action: action_clone,
-                        conversation_id,
-                    },
-                );
                 ctx.emit(BlocklistAIActionExecutorEvent::ExecutingAction {
                     action_id: action_id.clone(),
                 });
-                ctx.spawn(execute_future, move |me, result, ctx| {
-                    let Some(running) = me.async_executing_actions.remove(&action_id) else {
+                let completing_action_id = action_id.clone();
+                let execution = ctx.spawn(execute_future, move |me, result, ctx| {
+                    let Some(running) = me.async_executing_actions.remove(&completing_action_id)
+                    else {
                         return;
                     };
                     let result = on_complete(result, ctx);
                     ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
                         result: Arc::new(AIAgentActionResult {
-                            id: action_id,
+                            id: completing_action_id,
                             task_id: running.action.task_id,
                             result,
                         }),
@@ -815,6 +815,16 @@ impl BlocklistAIActionExecutor {
                         cancellation_reason: None,
                     });
                 });
+                // Registered after the spawn so the handle can be kept; the future cannot have
+                // completed in between, since it only runs once this update returns.
+                self.async_executing_actions.insert(
+                    action_id,
+                    AsyncExecutingAction {
+                        action: action_clone,
+                        conversation_id,
+                        execution: Some(execution),
+                    },
+                );
                 TryExecuteResult::ExecutedAsync
             }
             AnyActionExecution::Sync(action_result) => {
@@ -856,12 +866,14 @@ impl BlocklistAIActionExecutor {
         &mut self,
         action: AIAgentAction,
         conversation_id: AIConversationId,
+        execution: Option<SpawnedFutureHandle>,
     ) {
         self.async_executing_actions.insert(
             action.id.clone(),
             AsyncExecutingAction {
                 action,
                 conversation_id,
+                execution,
             },
         );
     }
@@ -878,9 +890,20 @@ impl BlocklistAIActionExecutor {
         }
         if let Some(running) = self.async_executing_actions.remove(action_id) {
             if running.is_shell_command_action() {
+                // Not aborted: the command keeps running in the shell whatever happens to this
+                // future, and the executor's own cancel (an interrupt for a manual stop, the
+                // sender cleanup) is what stopping it means. The future ends on its own once
+                // its senders are dropped.
                 self.shell_command_executor.update(ctx, |executor, ctx| {
                     executor.cancel_execution(&running.action.id, reason, ctx);
                 });
+            } else if let Some(execution) = &running.execution {
+                // Stop the work, not just its result: a cancelled read, search, MCP call or
+                // remote request would otherwise run to completion and be thrown away on
+                // arrival. Over ssh that is remote work streaming back over the shared
+                // connection (#1241). The completion callback never runs for an aborted future,
+                // and the cancelled result below is the action's one result.
+                execution.abort();
             }
             ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
                 result: Arc::new(AIAgentActionResult {
@@ -1101,7 +1124,15 @@ pub async fn read_local_file_context(
                     });
                     continue;
                 }
-                Err(e) => return Err(anyhow::anyhow!(e)),
+                // One unreadable path (permission denied, a directory, ...) is that file's
+                // failure, not the batch's: the files already read still go to the model.
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: absolute_file_path.to_string_lossy().to_string(),
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
             };
             let last_modified = metadata.modified().ok();
             let file_size = metadata.len() as usize;
@@ -1122,14 +1153,24 @@ pub async fn read_local_file_context(
             // `TextFileReadResult::NotText` if the text reader trips on invalid
             // UTF-8.
             if !should_read_as_binary(&absolute_file_path).await {
-                match FileModel::read_text_file(
+                let text_read = match FileModel::read_text_file(
                     &absolute_file_path,
                     effective_max,
                     &file.lines,
                     last_modified,
                 )
-                .await?
+                .await
                 {
+                    Ok(text_read) => text_read,
+                    Err(e) => {
+                        result.failed_files.push(ReadFilesFailedFile {
+                            path: path_str,
+                            message: format!("Could not read file: {e}"),
+                        });
+                        continue;
+                    }
+                };
+                match text_read {
                     TextFileReadResult::Segments {
                         segments,
                         bytes_read,
@@ -1155,14 +1196,24 @@ pub async fn read_local_file_context(
             }
 
             // Binary path (either detected as binary, or text reading failed).
-            match read_binary_file_context(
+            let binary_read = match read_binary_file_context(
                 &absolute_file_path,
                 effective_max,
                 file_size,
                 last_modified,
             )
-            .await?
+            .await
             {
+                Ok(binary_read) => binary_read,
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: path_str,
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
+            };
+            match binary_read {
                 BinaryFileReadResult::Context {
                     file_context,
                     bytes_read,

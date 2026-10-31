@@ -1,14 +1,15 @@
 Batch-edit files. Each entry in `operations` is one of:
 
-- `edit` — Perform an exact string replacement in an existing file. Provide the file path, the existing string to replace (`old_string`), the new string (`new_string`), and `replace_all` if every occurrence should be replaced.
+- `edit` — Replace one block of text in an existing file. Provide `file_path`, the existing text (`search`) and its replacement (`replace`); `old_string`/`new_string` are accepted as aliases. Each `edit` changes exactly one place. There is no `replace_all`: to change several occurrences, send one `edit` per occurrence, each with enough surrounding lines to be unique.
 - `create` — Create a new file at the given path with the given content. Fails if the file already exists.
 - `delete` — Delete the file at the given path.
 
 # Edit guidelines
 
-- You MUST have read the file with `read_files` at least once in this conversation before editing it. Editing without reading first will fail.
-- Preserve the exact indentation (tabs/spaces) of the surrounding lines. The `old_string` must match byte-for-byte.
-- The edit fails if `old_string` is not found, or if it appears more than once and `replace_all` is false. In the latter case, either pass a longer `old_string` with more surrounding context, or set `replace_all: true` if you really want to change every match.
+- Read the file with `read_files` first and copy `search` from its current content.
+- `search` is matched on whole lines against the file as it is on disk. Copy complete lines, including their indentation. `replace` is written exactly as given and is not re-indented, so give it the indentation the file uses.
+- If `search` matches more than one place, only the best (then the earliest) match is changed and the others are left as they are. When the text you want to change appears several times, include more surrounding lines so `search` is unique.
+- An `edit` whose `search` is not found fails with the file unchanged; the result names the search block that did not match. Several edits to the same file are all matched against the original content, so do not make one edit depend on another edit's output.
 - ALWAYS prefer editing existing files to creating new ones.
 - NEVER proactively create documentation files (`*.md`, `README*`) unless the user explicitly asked.
 - Only use emojis if the user explicitly requested it. Avoid emojis in code unless asked.
@@ -24,4 +25,4 @@ Batch-edit files. Each entry in `operations` is one of:
 
 # Batching
 
-You can pass multiple operations in a single call. They will be applied atomically (or as close as the underlying file system allows). Prefer batching when you are making related edits across files in the same task.
+You can pass multiple operations in a single call. They are checked together before anything is written: if any `search` cannot be matched, no file is changed. Files are then written one at a time; if a write fails part-way, the result says which files were updated and which were not, and those edits must not be sent again. Prefer batching when you are making related edits across files in the same task.

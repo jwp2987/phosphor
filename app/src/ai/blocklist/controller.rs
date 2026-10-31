@@ -706,6 +706,10 @@ pub struct BlocklistAIController {
     /// a model -- or tool output steering it -- that keeps naming a skill the turn does not
     /// list would loop on the user's API key (#1068).
     skill_resolution_resumes_this_turn: HashMap<AIConversationId, u8>,
+    /// Auto-resumes spent this turn on synthetic local tool results of every kind (bad
+    /// arguments, unknown tool, intercepted tool), capped at
+    /// [`MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN`]; reset with the skill counter.
+    synthetic_result_resumes_this_turn: HashMap<AIConversationId, u8>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -1172,6 +1176,7 @@ impl BlocklistAIController {
             compaction_turn_state: HashMap::new(),
             window_too_small_notified: HashSet::new(),
             skill_resolution_resumes_this_turn: HashMap::new(),
+            synthetic_result_resumes_this_turn: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
@@ -1515,6 +1520,8 @@ impl BlocklistAIController {
         if !matches!(entrypoint_type, EntrypointType::AgentInitiated) {
             self.update_compaction_turn_state(conversation_id, |state| state.on_new_user_turn());
             self.skill_resolution_resumes_this_turn
+                .remove(&conversation_id);
+            self.synthetic_result_resumes_this_turn
                 .remove(&conversation_id);
         }
 
@@ -4970,9 +4977,14 @@ impl BlocklistAIController {
                         })
                     });
                     if needs_byop_local_resume && !has_pending_resume {
-                        let allowed = !has_skill_resolution_failure
+                        let allowed = (!has_skill_resolution_failure
                             || charge_skill_resolution_resume(
                                 self.skill_resolution_resumes_this_turn
+                                    .entry(conversation_id)
+                                    .or_default(),
+                            ))
+                            && charge_synthetic_result_resume(
+                                self.synthetic_result_resumes_this_turn
                                     .entry(conversation_id)
                                     .or_default(),
                             );
@@ -4989,11 +5001,20 @@ impl BlocklistAIController {
                             );
                         } else {
                             log::warn!(
-                                "[byop] read_skill named an unlisted skill again; the per-turn \
-                                 auto-resume allowance ({MAX_SKILL_RESOLUTION_RESUMES_PER_TURN}) \
-                                 is spent, so the turn ends here. \
-                                 conversation_id={conversation_id:?}"
+                                "[byop] the per-turn auto-resume allowance for synthetic tool \
+                                 results is spent (skills {MAX_SKILL_RESOLUTION_RESUMES_PER_TURN}, \
+                                 all kinds {MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN}), so the turn \
+                                 ends here. conversation_id={conversation_id:?}"
                             );
+                            // The last result card shows the rejected call; this says why the
+                            // agent is not retrying it.
+                            ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+                                conversation_id,
+                                reason: "the model kept sending tool calls Phosphor could not \
+                                         run, and this turn's automatic retries are used up. \
+                                         Send a message to continue."
+                                    .to_owned(),
+                            });
                         }
                     }
                 }
@@ -5813,10 +5834,32 @@ fn cancellation_switches_input_to_shell(
 /// The dispatch gate's refusals (`tool_not_offered`, `plan_mode_blocked`,
 /// `computer_use_disabled`; see `chat_stream::dispatch_refusal_payload`) deliberately do NOT
 /// resume: a model that keeps naming a withheld tool would otherwise loop on the user's API
-/// key. They render a visible "tool not available this turn" card instead (#1067).
+/// key. They render a visible "tool not available this turn" card instead (#1067). Every
+/// resume this does grant is charged against [`MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN`].
 pub(crate) fn byop_synthetic_result_needs_resume(server_message_data: &str) -> bool {
     server_message_data.contains(r#""error":"invalid_arguments""#)
+        // A call to a tool that does not exist: the result lists the available names and asks
+        // the model to re-issue the call, which it can only do if the turn goes on. Without
+        // the resume the hint sat unread until the user's next message, and the turn looked
+        // finished.
+        || server_message_data.contains(r#""error":"unknown_tool""#)
         || server_message_data.contains(r#""_byop_intercepted":true"#)
+}
+
+/// At most this many automatic resumes per turn for synthetic local tool results of any kind
+/// (bad arguments, an unknown tool, a locally intercepted tool). Each one is a full model
+/// request on the user's provider, and a small model that keeps sending the same bad call
+/// would otherwise loop for as long as it kept doing so. Generous: a turn with a few
+/// intercepted `todowrite`/web calls and the odd bad argument stays well under it.
+const MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN: u8 = 8;
+
+/// Charges one synthetic-result resume against a turn's allowance; false once it is spent.
+fn charge_synthetic_result_resume(spent: &mut u8) -> bool {
+    if *spent >= MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN {
+        return false;
+    }
+    *spent += 1;
+    true
 }
 
 #[cfg(test)]
