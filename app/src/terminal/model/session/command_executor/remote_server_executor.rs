@@ -130,4 +130,8 @@ impl CommandExecutor for RemoteServerCommandExecutor {
     fn supports_parallel_command_execution(&self) -> bool {
         true
     }
+
+    fn connection_lost(&self) -> bool {
+        self.client.is_disconnected()
+    }
 }

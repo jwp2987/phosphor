@@ -2164,7 +2164,41 @@ impl Session {
         // Clone the Arc out of the lock so we don't hold the read guard
         // across the await point.
         let executor = self.command_executor.read().clone();
-        executor
+        // Kept for one retry (#1289); only a command that can be caught by an executor swap needs
+        // them, which is a remote session's.
+        let retry_args = (!self.is_local()).then(|| environment_variables.clone());
+        let result = executor
+            .execute_command(
+                command,
+                &self.info.shell,
+                current_dir_path,
+                environment_variables,
+                execute_command_options,
+            )
+            .await;
+        if result.is_ok() {
+            return result;
+        }
+        let Some(environment_variables) = retry_args else {
+            return result;
+        };
+
+        // The remote-server connection can drop under a request in flight (the proxy was killed,
+        // #1171) and the session swaps its executor for the ControlMaster one, and back after the
+        // reconnect. A request caught by that fails once, and every caller (completions, history,
+        // chips, command validity) used to read the error as an empty answer. Move off a dead
+        // connection right away rather than waiting for the manager's event, and run the
+        // command once on the executor the session has now.
+        #[cfg(feature = "local_tty")]
+        if executor.connection_lost() {
+            self.fall_back_to_control_master_executor();
+        }
+        let current = self.command_executor.read().clone();
+        if Arc::ptr_eq(&executor, &current) {
+            return result;
+        }
+        log::info!("Retrying a failed session command on the session's new command executor");
+        current
             .execute_command(
                 command,
                 &self.info.shell,

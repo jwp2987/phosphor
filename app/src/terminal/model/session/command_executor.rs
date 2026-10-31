@@ -91,6 +91,13 @@ pub trait CommandExecutor: Send + Sync + Debug {
 
     /// Whether the backing executor for the session supports execution of commands in parallel.
     fn supports_parallel_command_execution(&self) -> bool;
+
+    /// Whether this executor's connection is known to be gone, so every command on it will fail
+    /// until the session swaps it for a live one (#1289). Only the remote-server executor,
+    /// which holds a connection of its own, ever reports it.
+    fn connection_lost(&self) -> bool {
+        false
+    }
 }
 
 #[allow(unused_variables)]

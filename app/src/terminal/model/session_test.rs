@@ -1101,3 +1101,81 @@ fn local_powershell_session_lists_path_executables_without_running_pwsh() {
         assert!(!commands.contains(&"not-exec.txt"));
     });
 }
+
+/// #1289: fails once the way a request does when the remote-server connection drops under it,
+/// and the session's executor is swapped while it is failing.
+#[derive(Debug)]
+struct DropsAndSwapsExecutor {
+    session: std::sync::OnceLock<Arc<Session>>,
+    replacement: Arc<RecordingCommandExecutor>,
+}
+
+#[async_trait]
+impl CommandExecutor for DropsAndSwapsExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<CommandOutput> {
+        self.session
+            .get()
+            .expect("session set")
+            .set_command_executor(self.replacement.clone());
+        anyhow::bail!("Remote command failed: the connection was lost")
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_remote_command_caught_by_an_executor_swap_runs_on_the_new_executor() {
+    App::test((), |_app| async move {
+        let replacement = RecordingCommandExecutor::succeeding("x\n");
+        let dropping = Arc::new(DropsAndSwapsExecutor {
+            session: Default::default(),
+            replacement: replacement.clone(),
+        });
+        let info = SessionInfo::new_for_test()
+            .with_session_type(BootstrapSessionType::WarpifiedRemote)
+            .with_shell_type(ShellType::Bash);
+        let session = Arc::new(Session::new(info, dropping.clone()));
+        dropping.session.set(session.clone()).unwrap();
+
+        let output = session
+            .execute_command("ls", None, None, ExecuteCommandOptions::default())
+            .await
+            .expect("the retry on the swapped-in executor must serve the command");
+        assert_eq!(output.stdout, b"x\n");
+        assert_eq!(replacement.recorded(), vec!["ls".to_owned()]);
+    });
+}
+
+#[test]
+fn a_local_command_that_fails_is_not_retried() {
+    App::test((), |_app| async move {
+        let replacement = RecordingCommandExecutor::succeeding("x\n");
+        let dropping = Arc::new(DropsAndSwapsExecutor {
+            session: Default::default(),
+            replacement: replacement.clone(),
+        });
+        // Local session: no retry, the error is the caller's to handle.
+        let session = Arc::new(Session::new(SessionInfo::new_for_test(), dropping.clone()));
+        dropping.session.set(session.clone()).unwrap();
+        assert!(
+            session
+                .execute_command("ls", None, None, ExecuteCommandOptions::default())
+                .await
+                .is_err()
+        );
+        assert!(replacement.recorded().is_empty());
+    });
+}
