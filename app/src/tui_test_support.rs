@@ -296,6 +296,7 @@ pub fn add_tui_history_test_models(
         shell: Shell::new(ShellType::Zsh, None, None, HashSet::new(), None),
         launch_data: None,
         histfile: None,
+        history_sqlite: None,
         user: "test-user".to_owned(),
         hostname: "test-host".to_owned(),
         subshell_info: None,

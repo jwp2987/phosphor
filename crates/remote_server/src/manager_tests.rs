@@ -819,10 +819,12 @@ fn a_failed_speculative_connect_reports_only_while_it_is_current() {
         let session_id = SessionId::from(12u64);
         let failures = Rc::new(RefCell::new(0usize));
         let seen = failures.clone();
-        app.subscribe_to_model(&manager, move |_, event, _| {
-            if let RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. } = event {
-                *seen.borrow_mut() += 1;
-            }
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&manager, move |_, event, _| {
+                if let RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. } = event {
+                    *seen.borrow_mut() += 1;
+                }
+            })
         });
         let transport: Arc<dyn RemoteTransport> = Arc::new(NullTransport);
         manager.update(&mut app, |manager, ctx| {
