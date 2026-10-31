@@ -1452,3 +1452,18 @@ fn remote_sessions_poll_slowly_but_fast_chips_are_untouched() {
     let date = Duration::from_secs(30 * 60);
     assert_eq!(effective_poll_interval(date, true), date);
 }
+
+#[test]
+fn chip_commands_always_run_under_a_timeout() {
+    // A chip whose policy sets no timeout still gets the default, so a hung helper cannot
+    // run (and pile up on every refresh) forever.
+    assert_eq!(
+        effective_command_timeout(None),
+        DEFAULT_CHIP_COMMAND_TIMEOUT
+    );
+    // A chip's own timeout is honoured, whether shorter or longer than the default.
+    let short = Duration::from_secs(2);
+    assert_eq!(effective_command_timeout(Some(short)), short);
+    let long = DEFAULT_CHIP_COMMAND_TIMEOUT * 2;
+    assert_eq!(effective_command_timeout(Some(long)), long);
+}
