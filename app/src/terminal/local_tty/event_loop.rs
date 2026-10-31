@@ -30,6 +30,27 @@ use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PAST
 
 use super::mio_channel::Receiver;
 
+/// Slow-operation thresholds for the pty loop (#1146). The parse holds the terminal model lock
+/// the UI thread renders from, so it is held to the UI-thread budget.
+const PTY_PARSE_SLOW: Duration = Duration::from_millis(50);
+/// User input waiting in the writer, and the write -> first output read round trip.
+const PTY_LATENCY_SLOW: Duration = Duration::from_millis(100);
+static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty parse (terminal model lock held)",
+    PTY_PARSE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_PTY_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty write (input received -> written)",
+    PTY_LATENCY_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_PTY_ECHO: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty echo (write -> first output read)",
+    PTY_LATENCY_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 /// The size of the buffer to read data into from the PTY.
 const READ_BUFFER_SIZE: usize = 0x4_0000;
 
@@ -97,6 +118,9 @@ pub struct State {
     /// When the last user input (not a query reply) finished reaching the pty and no output has
     /// been read since. Times the keystroke round trip for the input-order log (#1092).
     user_write_finished_at: Option<Instant>,
+    /// When the oldest user input not yet fully written was received by this loop. Times the
+    /// receive -> pty write leg for the slow-operation log (#1146).
+    user_input_received_at: Option<Instant>,
 }
 
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
@@ -144,6 +168,7 @@ impl Default for State {
             withheld_since: None,
             hung_up: false,
             user_write_finished_at: None,
+            user_input_received_at: None,
         }
     }
 }
@@ -364,7 +389,20 @@ impl State {
     fn note_write_finished(&mut self, is_reply: bool, at: Instant) {
         if !is_reply {
             self.user_write_finished_at = Some(at);
+            if let Some(received) = self.user_input_received_at.take() {
+                SLOW_PTY_WRITE.report(
+                    at.saturating_duration_since(received),
+                    at,
+                    log::Level::Warn,
+                    || "user input waited in the pty writer".to_string(),
+                );
+            }
         }
+    }
+
+    /// Notes that user input reached this loop, keeping the oldest unwritten one (#1146).
+    fn note_user_input_received(&mut self, at: Instant) {
+        self.user_input_received_at.get_or_insert(at);
     }
 
     /// How long ago user input finished reaching the pty, for the first output read after it;
@@ -519,6 +557,7 @@ where
                 Message::Input(input) => {
                     // The single choke point for everything written to the pty.
                     self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
                     state.queue_input(input)
                 }
                 Message::Shutdown => {
@@ -528,6 +567,7 @@ where
                 }
                 Message::CommandInput(input) => {
                     self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
                     state.queue_command_input(input)
                 }
                 Message::DiscardQueuedInput => state.discard_queued_input(),
@@ -622,6 +662,7 @@ where
             // Read the active block BEFORE parsing: replies are generated, and the
             // command may finish, synchronously inside `parse_bytes`.
             let executing_block = executing_block_id(terminal);
+            let parse_started = Instant::now();
             state.parser.parse_bytes(
                 terminal.deref_mut(),
                 &buf[..bytes_in_buffer],
@@ -630,6 +671,9 @@ where
                     ledger: &self.reply_ledger,
                 },
             );
+            SLOW_PTY_PARSE.finish(parse_started, || {
+                format!("{bytes_in_buffer} bytes, terminal model locked")
+            });
             let evicted = state.queue_response(terminal_response_sequences, executing_block);
             if !evicted.is_empty() {
                 let mut ledger = self.reply_ledger.lock();
@@ -655,6 +699,9 @@ where
             && let Some(age) = state.take_user_write_age(Instant::now())
         {
             warpui::input_order::log_pty_read_after_write(bytes_processed, age);
+            SLOW_PTY_ECHO.report(age, Instant::now(), log::Level::Warn, || {
+                format!("{bytes_processed} bytes read after the pty write")
+            });
         }
 
         // Queue a terminal redraw if we processed some number

@@ -11,6 +11,14 @@ use toml_edit::{value, Array, DocumentMut, InlineTable, Item, Table, Value};
 
 use super::Error;
 
+/// A settings file write (temp file + fsync + rename) slower than this is a visible stall (#1146).
+const SETTINGS_WRITE_SLOW: std::time::Duration = std::time::Duration::from_millis(50);
+static SLOW_SETTINGS_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "settings file write",
+    SETTINGS_WRITE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 /// Indentation used per nesting level when pretty-printing multi-line arrays
 /// and inline tables.
 const INDENT: &str = "  ";
@@ -408,8 +416,12 @@ impl TomlBackedUserPreferences {
         // (#859). On failure the previous file is intact and the error is
         // returned. A symlinked settings file is written through (see
         // `crate::atomic_file`).
+        let write_start = std::time::Instant::now();
         let data = self.document.borrow().to_string();
-        match crate::atomic_file::write(&self.file_path, data) {
+        let written = crate::atomic_file::write(&self.file_path, data);
+        // #1146: the fsync here runs on whichever thread saved the setting.
+        SLOW_SETTINGS_WRITE.finish(write_start, || format!("path={}", self.file_path.display()));
+        match written {
             Ok(()) => {
                 self.save_failing.set(false);
                 Ok(())

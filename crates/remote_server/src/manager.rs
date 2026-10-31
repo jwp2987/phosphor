@@ -910,11 +910,13 @@ impl RemoteServerManager {
                     // versioned binary) from update (prior versioned
                     // binary present), so it can skip the install prompt
                     // in the update case.
+                    let stage_start = std::time::Instant::now();
                     let (platform_result, check_result, old_binary_result) = futures::join!(
                         transport.detect_platform(),
                         transport.check_binary(),
                         transport.check_has_old_binary(),
                     );
+                    let detect_check_ms = stage_start.elapsed().as_millis();
                     let platform = match platform_result {
                         Ok(p) => Some(p),
                         Err(e) => {
@@ -937,6 +939,7 @@ impl RemoteServerManager {
                     // round-trips. SSH-level failures are logged and
                     // surfaced as `None`, which the controller treats as
                     // inconclusive (fail open).
+                    let preinstall_start = std::time::Instant::now();
                     let preinstall = match &platform {
                         Some(p) if matches!(p.os, RemoteOs::Linux) => {
                             match transport.run_preinstall_check().await {
@@ -951,6 +954,14 @@ impl RemoteServerManager {
                         }
                         _ => None,
                     };
+                    // #1146: one line per connect so a slow ssh setup can be placed by stage.
+                    log::info!(
+                        "remote-server setup timing for session {session_id:?}: \
+                         detect+check+old-binary (concurrent) {detect_check_ms} ms, \
+                         preinstall {} ms, total {} ms",
+                        preinstall_start.elapsed().as_millis(),
+                        stage_start.elapsed().as_millis(),
+                    );
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             if let Some(p) = &platform {
@@ -1045,7 +1056,13 @@ impl RemoteServerManager {
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
+                    let install_start = std::time::Instant::now();
                     let result = transport.install_binary().await;
+                    log::info!(
+                        "remote-server install timing for session {session_id:?}: {} ms (ok={})",
+                        install_start.elapsed().as_millis(),
+                        result.is_ok(),
+                    );
                     let _ = spawner
                         .spawn(move |_me, ctx| {
                             if let Err(error) = &result {
@@ -1187,6 +1204,7 @@ impl RemoteServerManager {
         executor: &Arc<warpui::r#async::executor::Background>,
     ) -> Result<HostId, ConnectAndHandshakeError> {
         // Phase 1: Connect (establish streams, create client).
+        let connect_start = std::time::Instant::now();
         let Connection {
             client,
             event_rx,
@@ -1199,6 +1217,7 @@ impl RemoteServerManager {
             .await
             .map_err(ConnectAndHandshakeError::Connect)?;
 
+        let connect_ms = connect_start.elapsed().as_millis();
         let client = Arc::new(client);
         let client_for_init = Arc::clone(&client);
 
@@ -1252,6 +1271,7 @@ impl RemoteServerManager {
         }
 
         // Phase 2: Initialize handshake.
+        let init_start = std::time::Instant::now();
         let auth_token = auth_context.get_auth_token().await;
         // The daemon is configured for codebase indexing here, on every
         // (re)connect, rather than by a later notification: a daemon that
@@ -1271,6 +1291,14 @@ impl RemoteServerManager {
                 ConnectAndHandshakeError::Initialize(anyhow::anyhow!("{e:#}"))
                     .with_proxy_stderr(&stderr_tail)
             })?;
+
+        // #1146: one line per (re)connect with the stage split.
+        log::info!(
+            "remote-server connect timing for session {session_id:?}: connect {connect_ms} ms, \
+             initialize handshake {} ms, total {} ms",
+            init_start.elapsed().as_millis(),
+            connect_start.elapsed().as_millis(),
+        );
 
         // Version compatibility check. If the server reports a different release
         // tag than the client expects, the binary on disk is stale. Remove it so

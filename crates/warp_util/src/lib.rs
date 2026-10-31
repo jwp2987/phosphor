@@ -17,6 +17,7 @@ pub mod path;
 pub mod project_rules;
 pub mod redacted_secret;
 pub mod remote_path;
+pub mod slow_log;
 pub mod standardized_path;
 pub mod sync;
 pub mod user_input;
