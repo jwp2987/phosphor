@@ -23,6 +23,21 @@ use notify_debouncer_full::{
 };
 use warpui::{Entity, ModelContext};
 
+/// Shortest tick we give the debouncer's polling thread.
+const MIN_DEBOUNCER_TICK: Duration = Duration::from_millis(250);
+
+/// How often a debouncer's thread wakes to flush settled events.
+///
+/// The debouncer polls (it has no timer-on-event), so every watcher costs one wakeup per tick
+/// for the whole session, even when nothing changes. Its default tick is a quarter of the
+/// debounce timeout, which made five watchers wake 20+8+8+8+4 = ~48 times a second at idle.
+/// Ticking at half the timeout (but not faster than `MIN_DEBOUNCER_TICK`, and never slower
+/// than the timeout, which the debouncer rejects) cuts that to ~19/s and delays a flushed
+/// event by at most `tick` more than before, i.e. 250 ms for the 500 ms watchers.
+fn debouncer_tick(timeout: Duration) -> Duration {
+    (timeout / 2).max(MIN_DEBOUNCER_TICK).min(timeout)
+}
+
 #[derive(Debug)]
 enum BackgroundFileWatcherCommand {
     AddPath {
@@ -50,7 +65,7 @@ impl BackgroundFileWatcher {
     ) -> Result<Self> {
         let debounced_watcher = new_debouncer_opt(
             debounce_duration,
-            None,
+            Some(debouncer_tick(debounce_duration)),
             handler,
             NoCache,
             notify::Config::default(),
