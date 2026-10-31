@@ -536,7 +536,7 @@ impl CodeEditorView {
         }
         if self.find_bar.is_none() {
             let searcher = self.searcher.clone();
-            let find_bar = ctx.add_typed_action_view(|ctx| Find::new(searcher, ctx));
+            let find_bar = ctx.add_typed_action_view(|ctx| Find::new(searcher.clone(), ctx));
             ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
                 me.handle_find_event(event, ctx);
             });
