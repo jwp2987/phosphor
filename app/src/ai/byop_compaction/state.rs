@@ -181,6 +181,13 @@ impl CompactionState {
         &self.completed
     }
 
+    /// True when the state carries neither a completed compaction nor any per-message marker
+    /// (prune / synthetic-continue markers exist without a compaction), so there is nothing
+    /// worth persisting.
+    pub fn is_empty(&self) -> bool {
+        self.completed.is_empty() && self.markers.is_empty()
+    }
+
     /// The completed compaction whose summary is the assistant message `msg_id`, if that
     /// message is a committed summary.
     pub fn completed_for_summary(&self, msg_id: &str) -> Option<&CompletedCompaction> {
@@ -391,5 +398,27 @@ mod state_tests {
         let back: CompactionState = serde_json::from_str(&j).unwrap();
         assert_eq!(back.version, CompactionState::VERSION);
         assert!(back.completed.is_empty());
+    }
+
+    #[test]
+    fn marker_only_state_is_not_empty_and_roundtrips() {
+        let mut s = CompactionState::default();
+        assert!(s.is_empty());
+        s.mark_tool_compacted("t1", 42);
+        assert!(s.completed().is_empty());
+        assert!(!s.is_empty());
+        let j = serde_json::to_string(&s).unwrap();
+        let back: CompactionState = serde_json::from_str(&j).unwrap();
+        assert_eq!(
+            back.marker("t1").unwrap().tool_output_compacted_at,
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn state_json_without_markers_still_loads() {
+        let back: CompactionState =
+            serde_json::from_str(r#"{"version":2,"completed":[]}"#).unwrap();
+        assert!(back.is_empty());
     }
 }
