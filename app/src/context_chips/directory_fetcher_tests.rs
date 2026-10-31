@@ -100,3 +100,20 @@ fn test_sort_single_item() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].name, "single");
 }
+
+#[test]
+fn a_new_fetcher_lists_nothing_until_the_menu_asks() {
+    warpui::App::test((), |mut app| async move {
+        let fetcher = app.add_model(|ctx| DirectoryFetcher::new("/tmp".to_string(), None, ctx));
+        fetcher.update(&mut app, |fetcher, ctx| {
+            assert!(!fetcher.requested, "construction must not list the directory");
+            assert!(!fetcher.is_fetching());
+            // A session-context refresh before the menu was ever opened stays lazy too.
+            fetcher.update_session_context(None, ctx);
+            assert!(!fetcher.requested);
+            // Opening the menu is the explicit request.
+            fetcher.refetch_directory(ctx);
+            assert!(fetcher.requested);
+        });
+    });
+}
