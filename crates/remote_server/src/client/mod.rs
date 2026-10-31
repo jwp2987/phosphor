@@ -1118,7 +1118,20 @@ impl RemoteServerClient {
             }),
         );
 
-        let response = self.send_request(request_id, msg).await?;
+        // Generators are issued per keystroke and superseded by the next one; the caller
+        // cancels a superseded one by dropping this future. Without telling the server, the
+        // command keeps running remotely and its output streams back over the shared ssh
+        // connection, delaying interactive keystrokes (#1128). The guard sends an `Abort` on
+        // drop; the server drops the handler future, which kills the command's process group.
+        // A server that does not know the request (older, or already finished) ignores it.
+        let mut abort_guard = AbortOnDrop {
+            client: self,
+            request_id: Some(request_id.clone()),
+        };
+        let response = self.send_request(request_id, msg).await;
+        // Completed (including timeout, which sends its own `Abort`): nothing to cancel.
+        abort_guard.request_id = None;
+        let response = response?;
 
         match response.message {
             Some(server_message::Message::RunCommandResponse(resp)) => Ok(resp),
@@ -1393,6 +1406,22 @@ pub fn spawn_stderr_forwarder(
         .detach();
 
     tail
+}
+
+/// Sends an `Abort` for an in-flight request if dropped while still armed, i.e. when the
+/// future awaiting the response is cancelled before it completes.
+struct AbortOnDrop<'a> {
+    client: &'a RemoteServerClient,
+    request_id: Option<RequestId>,
+}
+
+impl Drop for AbortOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(request_id) = self.request_id.take() {
+            self.client.pending_requests.remove(&request_id);
+            self.client.send_abort(&request_id);
+        }
+    }
 }
 
 #[cfg(test)]
