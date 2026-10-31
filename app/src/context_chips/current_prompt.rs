@@ -171,6 +171,7 @@ impl ChipState {
         Self {
             last_computed_value: None,
             last_on_click_values: None,
+            last_on_click_at: None,
             last_fingerprint: None,
             last_failure_fingerprint: None,
             availability: ChipAvailability::Enabled,
