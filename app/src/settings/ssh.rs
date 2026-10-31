@@ -68,5 +68,22 @@ define_settings_group!(SshSettings,
             toml_path: "warpify.ssh.keepalive",
             description: "Whether the SSH wrapper adds ServerAliveInterval=30 / ServerAliveCountMax=6 to connections whose ssh configuration does not set ServerAliveInterval, so a silently dead connection is detected within about 3 minutes. Your own ssh configuration always wins. New tabs only.",
         },
+        // #1243: OpenSSH >= 9.5 sends interactive keystrokes on a 20 ms tick
+        // (`ObscureKeystrokeTiming yes`), measured as +11 ms median / +21 ms max per key
+        // over plain ssh. It is a privacy default (it hides typing cadence from a network
+        // observer), so it is never changed silently: this is opt-in, and the wrapper passes
+        // `-o ObscureKeystrokeTiming=no` ONLY when `ssh -G` reports the default `yes`, so a
+        // user's own ssh config always wins. A session with the remote-server proxy channel is
+        // already un-obscured (OpenSSH only obscures with exactly one session channel open).
+        obscure_keystroke_timing: SshObscureKeystrokeTiming {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+            private: false,
+            storage_key: "SshObscureKeystrokeTiming",
+            toml_path: "warpify.ssh.obscure_keystroke_timing",
+            description: "Whether managed SSH sessions keep OpenSSH's ObscureKeystrokeTiming (the default since OpenSSH 9.5): keystrokes are sent on a 20 ms tick, adding up to 20 ms to each key, so that a network observer cannot read your typing rhythm (for example while you type a password). Turning this off passes -o ObscureKeystrokeTiming=no to the connections the SSH wrapper starts, only when your ssh configuration does not set the option itself. New tabs only.",
+        },
     ]
 );

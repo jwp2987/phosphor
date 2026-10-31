@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """#1171: the ssh wrapper adds ServerAliveInterval=30 / ServerAliveCountMax=6
 ONLY when `ssh -G` reports `serveraliveinterval 0`, and only while
-WARP_SSH_KEEPALIVE is not "0".
+WARP_SSH_KEEPALIVE is not "0". #1243: it adds ObscureKeystrokeTiming=no ONLY
+when WARP_SSH_OBSCURE_KEYSTROKE_TIMING is "0" AND `ssh -G` reports
+`obscurekeystroketiming yes`.
 
 It extracts the real `ssh -G` capture and the probe block (from the
-`warp_ipqos_args` declaration up to the keepalive `fi`) out of bash_body.sh,
+`warp_ipqos_args` declaration up to the obscure-timing `fi`) out of bash_body.sh,
 zsh_body.sh and fish.sh, runs them with a fake `ssh -G` on PATH, and checks the
 resulting option array. Shells that are not installed are skipped. Also checks
 the single-`ssh -G` rule (#1172): the extracted code forks `ssh` once, and the
@@ -30,6 +32,8 @@ printf '%s\\n' "$FAKE_G"
 
 KEEPALIVE = ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6"]
 IPQOS = ["-o", "IPQoS=af21 af21"]
+NO_OBSCURE = ["-o", "ObscureKeystrokeTiming=no"]
+OBSCURE_OFF = {"WARP_SSH_OBSCURE_KEYSTROKE_TIMING": "0"}
 
 
 def extract(path, start_marker, end_marker):
@@ -56,6 +60,7 @@ def run(shell, snippet_kind, snippet, g, env_extra):
             prog = "t() {\n%s\nprintf '%%s\\n' \"${warp_ipqos_args[@]}\"\n}\nt dest\n" % snippet
         env = dict(os.environ)
         env.pop("WARP_SSH_KEEPALIVE", None)
+        env.pop("WARP_SSH_OBSCURE_KEYSTROKE_TIMING", None)
         env.update(env_extra)
         env["PATH"] = d + ":" + env["PATH"]
         env["FAKE_G"] = g
@@ -79,6 +84,13 @@ CASES = [
     ("opt out", "serveraliveinterval 0\nipqos lowdelay", {"WARP_SSH_KEEPALIVE": "0"}, []),
     ("explicit on", "serveraliveinterval 0\nipqos lowdelay", {"WARP_SSH_KEEPALIVE": "1"}, KEEPALIVE),
     ("ssh -G printed nothing", "", {}, []),
+    # #1243
+    ("obscure default kept", "serveraliveinterval 60\nobscurekeystroketiming yes", {}, []),
+    ("obscure off by setting", "serveraliveinterval 60\nobscurekeystroketiming yes", OBSCURE_OFF, NO_OBSCURE),
+    ("obscure user-set wins", "serveraliveinterval 60\nobscurekeystroketiming no", OBSCURE_OFF, []),
+    ("obscure unknown to this ssh", "serveraliveinterval 60", OBSCURE_OFF, []),
+    ("obscure off with keepalive", "serveraliveinterval 0\nobscurekeystroketiming yes", OBSCURE_OFF, KEEPALIVE + NO_OBSCURE),
+    ("obscure explicit on", "serveraliveinterval 60\nobscurekeystroketiming yes", {"WARP_SSH_OBSCURE_KEYSTROKE_TIMING": "1"}, []),
 ]
 
 # (shell, file, kind, capture line marker, probe block start marker)
@@ -121,7 +133,7 @@ def main():
         cap_line = next(
             l.strip() for l in open(path).read().split("\n") if cap_marker in l
         )
-        snippet = cap_line + "\n" + extract(path, block_marker, "-o ServerAliveInterval=30")
+        snippet = cap_line + "\n" + extract(path, block_marker, "-o ObscureKeystrokeTiming=no")
         for name, g, env, want in CASES:
             got, calls = run(shell, kind, snippet, g, env)
             ran += 1

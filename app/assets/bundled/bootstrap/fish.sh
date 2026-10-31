@@ -924,6 +924,14 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         if test "$WARP_SSH_KEEPALIVE" != "0"; and string match -q -- 'serveraliveinterval 0' $warp_ssh_g
             set -a warp_ipqos_args -o ServerAliveInterval=30 -o ServerAliveCountMax=6
         end
+        # #1243: OpenSSH >= 9.5 sends keystrokes on a 20 ms tick (ObscureKeystrokeTiming). Turn it
+        # off ONLY when the warpify.ssh.obscure_keystroke_timing setting says so
+        # (WARP_SSH_OBSCURE_KEYSTROKE_TIMING=0) AND the same `ssh -G` output reports the default
+        # `yes`: a user's own ssh config or command-line -o always wins, and an older OpenSSH
+        # without the option is left alone.
+        if test "$WARP_SSH_OBSCURE_KEYSTROKE_TIMING" = "0"; and string match -q -- 'obscurekeystroketiming yes' $warp_ssh_g
+            set -a warp_ipqos_args -o ObscureKeystrokeTiming=no
+        end
 
         # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
         # shell script, which a Windows OpenSSH server (default shell cmd.exe or PowerShell)
