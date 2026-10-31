@@ -7,11 +7,64 @@ use crate::rendering::GlyphConfig;
 use crate::windowing::winit::fonts::FontDB;
 use anyhow::{anyhow, Result};
 use cosmic_text::{CacheKey, CacheKeyFlags};
+use parking_lot::RwLock;
 use pathfinder_geometry::rect::RectI;
 use pathfinder_geometry::vector::{vec2i, Vector2F, Vector2I};
+use std::collections::HashMap;
+
+type RasterBoundsMemoKey = (FontId, GlyphId, u32, u32, u32);
+
+/// Remembers the successfully computed raster bounds of a glyph. Computing them renders the
+/// glyph, and the glyph cache asks for them once to size the atlas slot and again (via
+/// `rasterize_glyph`) for every subpixel variant it rasterizes, with identical arguments each
+/// time. Bounds do not depend on the subpixel offset, so one render per glyph and size suffices.
+#[derive(Default)]
+pub(super) struct RasterBoundsMemo {
+    bounds: RwLock<HashMap<RasterBoundsMemoKey, RectI>>,
+}
+
+impl RasterBoundsMemo {
+    fn key(font_id: FontId, size: f32, glyph_id: GlyphId, scale: Vector2F) -> RasterBoundsMemoKey {
+        (
+            font_id,
+            glyph_id,
+            size.to_bits(),
+            scale.x().to_bits(),
+            scale.y().to_bits(),
+        )
+    }
+
+    /// Returns the memoized bounds, or computes them with `compute`. Errors are not memoized.
+    fn get_or_compute(
+        &self,
+        key: RasterBoundsMemoKey,
+        compute: impl FnOnce() -> Result<RectI>,
+    ) -> Result<RectI> {
+        if let Some(bounds) = self.bounds.read().get(&key) {
+            return Ok(*bounds);
+        }
+        let bounds = compute()?;
+        self.bounds.write().insert(key, bounds);
+        Ok(bounds)
+    }
+}
 
 impl FontDB {
     pub(super) fn glyph_raster_bounds(
+        &self,
+        font_id: FontId,
+        size: f32,
+        glyph_id: GlyphId,
+        scale: Vector2F,
+        glyph_config: &GlyphConfig,
+    ) -> Result<RectI> {
+        self.raster_bounds_memo.get_or_compute(
+            RasterBoundsMemo::key(font_id, size, glyph_id, scale),
+            || self.compute_glyph_raster_bounds(font_id, size, glyph_id, scale, glyph_config),
+        )
+    }
+
+    fn compute_glyph_raster_bounds(
         &self,
         font_id: FontId,
         size: f32,
@@ -134,3 +187,7 @@ impl FontDB {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "swash_rasterizer_tests.rs"]
+mod tests;
