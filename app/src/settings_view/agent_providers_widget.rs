@@ -2591,7 +2591,7 @@ impl AgentProvidersWidget {
                 {
                     let mut add_states = self.quick_add_button_states.borrow_mut();
                     let mut hide_states = self.quick_hide_button_states.borrow_mut();
-                    for (cat_id, cat_provider) in visible_matching.iter().take(visible_count) {
+                    for &(cat_id, cat_provider) in visible_matching.iter().take(visible_count) {
                         let label = if cat_provider.name.is_empty() {
                             cat_id.clone()
                         } else {
@@ -2717,7 +2717,7 @@ impl AgentProvidersWidget {
                             .with_spacing(6.)
                             .with_run_spacing(6.)
                             .with_cross_axis_alignment(CrossAxisAlignment::Center);
-                        for (cat_id, cat_provider) in &hidden_matching {
+                        for &(cat_id, cat_provider) in &hidden_matching {
                             let label = if cat_provider.name.is_empty() {
                                 cat_id.clone()
                             } else {
