@@ -3034,6 +3034,12 @@ pub struct TerminalView {
     /// paths never stat or canonicalize per frame.
     display_cwd_cache: RefCell<Option<(PathBuf, PathBuf)>>,
 
+    /// Memoizes `last_completed_command_text` as (block id, title) for the newest finished
+    /// block: the vertical tab list asks for it on every render, and rebuilding the text of a
+    /// 1 MB command each time cost ~10 ms per frame (#1191). A finished block's command does
+    /// not change.
+    last_completed_command_title_cache: RefCell<Option<(BlockId, Option<String>)>>,
+
     /// The ID of the containing window.
     window_id: WindowId,
 
@@ -4694,6 +4700,7 @@ impl TerminalView {
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
             display_cwd_cache: RefCell::new(None),
+            last_completed_command_title_cache: RefCell::new(None),
             ai_input_model,
             ai_context_model,
             window_id,
@@ -14225,11 +14232,13 @@ impl TerminalView {
     fn active_block_is_considered_remote(&self, app: &AppContext) -> bool {
         let model = self.model.lock();
         let active_block = model.block_list().active_block();
-        self.is_block_considered_remote(
-            active_block.session_id(),
-            Some(&active_block.command_to_string()),
-            app,
-        )
+        // The command text is only read by the organisation's regex policy, which never applies
+        // while AI is allowed in remote sessions (`is_block_considered_remote` returns before
+        // looking at it). Copying a huge running command for nothing was ~3% of the UI thread
+        // after a 1 MB Enter (#1191).
+        let command = (!UserWorkspaces::as_ref(app).is_ai_allowed_in_remote_sessions())
+            .then(|| active_block.command_to_string());
+        self.is_block_considered_remote(active_block.session_id(), command.as_deref(), app)
     }
 
     /// Returns true if the block is considered remote.
@@ -33665,20 +33674,22 @@ pub fn create_size_info(
 ) -> SizeInfo {
     let cell_size_px =
         grid_cell_dimensions(font_cache, font_family_id, font_size, line_height_ratio);
-    let active_command = model
-        .block_list()
-        .active_block()
-        .top_level_command(sessions);
-
     match *TerminalSettings::as_ref(ctx).alt_screen_padding {
         AltScreenPaddingMode::Custom { uniform_padding }
             if FeatureFlag::RemoveAltScreenPadding.is_enabled()
                 && model.is_alt_screen_active()
                 // If we don't know what the top-level command is,
-                // it's not denylisted so we use the custom padding.
-                && active_command.is_none_or(|cmd| {
-                    !ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING.contains(cmd.as_str())
-                }) =>
+                // it's not denylisted so we use the custom padding. Looked up only here: it
+                // copies and parses the whole running command, which this function (run on
+                // every terminal layout) used to do even when the answer is not used. With a
+                // 1 MB command running that was ~20% of the UI thread (#1191).
+                && model
+                    .block_list()
+                    .active_block()
+                    .top_level_command(sessions)
+                    .is_none_or(|cmd| {
+                        !ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING.contains(cmd.as_str())
+                    }) =>
         {
             SizeInfo::new(
                 pane_size,

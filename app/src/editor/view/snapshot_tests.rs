@@ -84,3 +84,68 @@ fn test_empty_row_yields_no_runs() {
     assert_eq!(line, "");
     assert!(runs.is_empty());
 }
+
+// #1191: a large buffer lays out only the viewport, the ends and the cursor, with margins.
+#[test]
+fn test_small_buffer_lays_out_every_row() {
+    assert!(large_buffer_real_rows(LARGE_BUFFER_ROWS - 1, 0..30, &[5]).is_none());
+    // No window: every row is real.
+    assert!(row_is_laid_out(None, 12345));
+}
+
+#[test]
+fn test_large_buffer_windows_viewport_cursor_and_ends() {
+    let total = 13_000;
+    let ranges = large_buffer_real_rows(total, 5_000..5_030, &[9_000]).unwrap();
+    let real = |row: u32| row_is_laid_out(Some(&ranges), row);
+
+    // Viewport and its margin.
+    assert!(real(5_000) && real(5_029));
+    assert!(real(5_000 - OFFSCREEN_ROW_MARGIN) && real(5_030 + OFFSCREEN_ROW_MARGIN - 1));
+    // The cursor and its margin.
+    assert!(real(9_000) && real(9_000 + OFFSCREEN_ROW_MARGIN - 1));
+    // The first and last rows (the left notch row, Ctrl-Home / Ctrl-End).
+    assert!(real(0) && real(total - 1));
+    // Far from all of them: a placeholder, not a layout. The old code laid out all 13,000 rows.
+    assert!(!real(2_000) && !real(7_000) && !real(12_000 - 200));
+
+    let laid_out = (0..total).filter(|row| real(*row)).count();
+    assert!(laid_out < 1_500, "laid out {laid_out} of {total} rows");
+}
+
+// #1191: a tall viewport (many rows) widens the margin to four viewports, so a page up or down
+// from the edge of the window still lands on laid-out rows.
+#[test]
+fn test_large_buffer_margin_grows_with_the_viewport() {
+    let total = 20_000;
+    let ranges = large_buffer_real_rows(total, 10_000..10_200, &[10_100]).unwrap();
+    let real = |row: u32| row_is_laid_out(Some(&ranges), row);
+    // Four viewports (800 rows) either side of the 200-row window, more than the 300 minimum.
+    assert!(real(10_000 - 800) && real(10_200 + 800 - 1));
+    let narrow = large_buffer_real_rows(total, 10_000..10_030, &[]).unwrap();
+    assert!(row_is_laid_out(
+        Some(&narrow),
+        10_000 - OFFSCREEN_ROW_MARGIN
+    ));
+    assert!(!row_is_laid_out(
+        Some(&narrow),
+        10_000 - OFFSCREEN_ROW_MARGIN - 1
+    ));
+}
+
+// #1191: the windowing may only run when no row can wrap, since a placeholder is one line tall.
+#[test]
+fn test_rows_cannot_wrap_needs_a_proof_that_every_row_fits() {
+    // 13 px font, 1300 px wide: 100 ASCII chars fit even at a 1 em advance, 101 are not proven.
+    assert!(rows_cannot_wrap(100, true, true, 13., 1300.));
+    assert!(!rows_cannot_wrap(101, true, true, 13., 1300.));
+    // Non-ASCII text uses the 1.5 em bound: 66 chars are proven, 67 are not.
+    assert!(rows_cannot_wrap(66, false, true, 13., 1300.));
+    assert!(!rows_cannot_wrap(67, false, true, 13., 1300.));
+    // A tab advances to a tab stop: no proof, whatever the length.
+    assert!(!rows_cannot_wrap(1, true, false, 13., 1300.));
+    // Degenerate geometry never proves anything.
+    assert!(!rows_cannot_wrap(1, true, true, 0., 1300.));
+    assert!(!rows_cannot_wrap(1, true, true, 13., f32::INFINITY));
+    assert!(!rows_cannot_wrap(1, true, true, f32::NAN, 1300.));
+}

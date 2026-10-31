@@ -2,7 +2,9 @@ use super::super::soft_wrap::{
     ClampDirection, DisplayPointAndClampDirection, FrameLayouts, SoftWrapPoint, SoftWrapState,
 };
 use super::model::MarkedTextState;
-use super::snapshot::VOICE_INPUT_ICON_CURSOR_GAP;
+use super::snapshot::{
+    LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, large_buffer_real_rows, rows_cannot_wrap,
+};
 use super::{
     position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
     DrawableSelection, EditorAction, ScrollState, SelectAction,
@@ -1424,7 +1426,62 @@ impl EditorElement {
             .then_some(right_notch_origin)
     }
 
-    /// Note that we lay out all of the rows instead of only the visible ones.
+    /// #1191: for a large soft-wrapped buffer in which every row is a single visual line, the
+    /// rows that need a real layout (the viewport, the cursor and the ends, each with a margin);
+    /// the rest get empty one-line frames. `None` keeps the full layout of every row, which is
+    /// the case for small buffers, an unwrapped or unbounded editor, remote selections, many
+    /// selections, and any row that could wrap (its height is then not known without laying it
+    /// out, and the row-to-line mapping the windowing relies on would break).
+    fn real_rows_for_large_buffer(
+        &self,
+        view_snapshot: &ViewSnapshot,
+        total_rows: u32,
+        visible: std::ops::Range<u32>,
+        max_width: f32,
+        app: &AppContext,
+    ) -> Option<Vec<std::ops::Range<u32>>> {
+        /// Selections beyond this many fall back to the full layout.
+        const MAX_WINDOWED_SELECTIONS: usize = 8;
+
+        if !self.soft_wrap
+            || total_rows < LARGE_BUFFER_ROWS
+            || visible.end == u32::MAX
+            || !self.remote_selections_data.is_empty()
+            || !max_width.is_finite()
+        {
+            return None;
+        }
+        // Every row, the first included (it is indented by the left notch), must provably fit on
+        // one visual line. O(1): the longest row is a fragment-tree summary, so this costs
+        // nothing per frame (a per-row scan was ~40 ms at 13,000 rows).
+        {
+            let buffer = view_snapshot.editor_model.as_ref(app).buffer(app);
+            if !rows_cannot_wrap(
+                view_snapshot.rightmost_point(app).column(),
+                buffer.is_ascii(),
+                buffer.is_tab_free(),
+                view_snapshot.font_size,
+                max_width,
+            ) {
+                return None;
+            }
+        }
+        let model = view_snapshot.editor_model.as_ref(app);
+        let selections = model.selections(app);
+        if selections.len() > MAX_WINDOWED_SELECTIONS {
+            return None;
+        }
+        let map = model.display_map(app);
+        let mut selection_rows = Vec::with_capacity(selections.len() * 2);
+        for selection in selections.iter() {
+            let range = selection.display_range(map, app);
+            selection_rows.push(range.start.row());
+            selection_rows.push(range.end.row());
+        }
+        large_buffer_real_rows(total_rows, visible, &selection_rows)
+    }
+
+    /// Lays out the rows near the viewport; for a large buffer see [`Self::real_rows_for_large_buffer`].
     fn layout_text_frames(
         &self,
         view_snapshot: &ViewSnapshot,
@@ -1437,13 +1494,7 @@ impl EditorElement {
         let line_height = view_snapshot.line_height;
 
         let max_width = if self.soft_wrap { size.x() } else { f32::MAX };
-        let frames = view_snapshot.layout_text_frames(
-            0..view_snapshot.max_point(app).row() + 1,
-            ctx.text_layout_cache,
-            max_width,
-            left_notch_layout_width_px,
-            app,
-        )?;
+        let total_rows = view_snapshot.max_point(app).row() + 1;
 
         // Determine a limit for the end line. If the size is infinite,
         // this is infinite. Otherwise, depending on the scrolling position
@@ -1459,6 +1510,22 @@ impl EditorElement {
             line_height,
             top_section_height_px,
         );
+
+        let real_rows = self.real_rows_for_large_buffer(
+            view_snapshot,
+            total_rows,
+            start_line..end_line,
+            max_width,
+            app,
+        );
+        let frames = view_snapshot.layout_text_frames_windowed(
+            0..total_rows,
+            real_rows.as_deref(),
+            ctx.text_layout_cache,
+            max_width,
+            left_notch_layout_width_px,
+            app,
+        )?;
         Ok(FrameLayouts::new(frames, start_line, end_line))
     }
 
