@@ -690,6 +690,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         bind -r '"\ew"'
         bind -x '"\ew":"warp_change_prompt_modes_to_warp_prompt"'
 
+        # Readline 7.0 and 8.0 (bash 4.4 and 5.0) have bracketed paste but leave it off unless the
+        # user's inputrc turns it on (8.1 / bash 5.1 made it the default). Without it Phosphor
+        # types a command key by key, which is slow for a large one (#1129). This runs after the
+        # user's bashrc, and the editor is Phosphor's, so the choice is not the user's here.
+        if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+          bind 'set enable-bracketed-paste on' 2>/dev/null
+        fi
+
         local escaped_pwd
         if [ "${WARP_IN_MSYS2:-}" = false ]; then
           if [ -n "${WSL_DISTRO_NAME:-}" ]; then
