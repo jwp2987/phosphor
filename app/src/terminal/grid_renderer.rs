@@ -19,6 +19,8 @@ use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
 use core::mem;
 use lazy_static::lazy_static;
 use num_traits::Float as _;
+use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::{collections::HashMap, ops::RangeInclusive};
@@ -518,7 +520,10 @@ fn render_grid_without_ligatures<'a>(
     // to the cache only when needed.
     let mut font_id_cache = FontIdCache::new(default_font_id);
 
-    let mut minimal_contrast_cache = MinimalContrastCache::new();
+    // Reuse last frame's scratch buffers and contrast map (see `RenderScratch`).
+    let mut scratch = take_render_scratch();
+    let mut minimal_contrast_cache =
+        MinimalContrastCache::from_map(mem::take(&mut scratch.contrast_map));
 
     let baseline_position = calculate_grid_baseline_position(
         ctx.font_cache,
@@ -552,8 +557,8 @@ fn render_grid_without_ligatures<'a>(
     // don't get drawn cell-by-cell as individual rects. They get "batched" together for efficiency.
     // The batch doesn't get drawn until the background color changes in a later iteration of the
     // loop. When it does, we go back and draw it, likely over cells in previous loop iterations.
-    let mut cell_decorations = Vec::new();
-    let mut native_glyphs_to_render = Vec::new();
+    let mut cell_decorations = mem::take(&mut scratch.cell_decorations);
+    let mut native_glyphs_to_render = mem::take(&mut scratch.native_glyphs);
     let mut cached_background_color: Option<CachedBackgroundColor> = None;
 
     let mut prev_row = None;
@@ -892,14 +897,19 @@ fn render_grid_without_ligatures<'a>(
     // and cell decorations to ensure that they sit on top of the merged background
     // rects.  (This is not needed for glyphs, as the rendering stack currently always
     // renders glyphs above rects within a given layer.)
-    for native_glyph in native_glyphs_to_render {
+    for native_glyph in native_glyphs_to_render.drain(..) {
         render_native_glyph(native_glyph, ctx, app);
     }
-    for data in cell_decorations {
+    for data in cell_decorations.drain(..) {
         ctx.scene
             .draw_rect_without_hit_recording(RectF::new(data.origin, data.size))
             .with_background(Fill::Solid(data.color));
     }
+
+    scratch.cell_decorations = cell_decorations;
+    scratch.native_glyphs = native_glyphs_to_render;
+    scratch.contrast_map = minimal_contrast_cache.into_map();
+    return_render_scratch(scratch);
 }
 
 #[inline]
@@ -1035,7 +1045,10 @@ fn render_grid_with_ligatures<'a>(
     let mut font_id_cache = HashMap::new();
     font_id_cache.insert(FontStyle::Default, default_font_id);
 
-    let mut minimal_contrast_cache = MinimalContrastCache::new();
+    // Reuse last frame's scratch buffers and contrast map (see `RenderScratch`).
+    let mut scratch = take_render_scratch();
+    let mut minimal_contrast_cache =
+        MinimalContrastCache::from_map(mem::take(&mut scratch.contrast_map));
 
     let baseline_position = calculate_grid_baseline_position(
         ctx.font_cache,
@@ -1069,8 +1082,8 @@ fn render_grid_with_ligatures<'a>(
     // don't get drawn cell-by-cell as individual rects. They get "batched" together for efficiency.
     // The batch doesn't get drawn until the background color changes in a later iteration of the
     // loop. When it does, we go back and draw it, likely over cells in previous loop iterations.
-    let mut cell_decorations = Vec::new();
-    let mut native_glyphs_to_render = Vec::new();
+    let mut cell_decorations = mem::take(&mut scratch.cell_decorations);
+    let mut native_glyphs_to_render = mem::take(&mut scratch.native_glyphs);
     let mut cached_background_color: Option<CachedBackgroundColor> = None;
 
     let mut prev_row = None;
@@ -1525,14 +1538,19 @@ fn render_grid_with_ligatures<'a>(
         );
     }
 
-    for native_glyph in native_glyphs_to_render {
+    for native_glyph in native_glyphs_to_render.drain(..) {
         render_native_glyph(native_glyph, ctx, app);
     }
-    for data in cell_decorations {
+    for data in cell_decorations.drain(..) {
         ctx.scene
             .draw_rect_without_hit_recording(RectF::new(data.origin, data.size))
             .with_background(Fill::Solid(data.color));
     }
+
+    scratch.cell_decorations = cell_decorations;
+    scratch.native_glyphs = native_glyphs_to_render;
+    scratch.contrast_map = minimal_contrast_cache.into_map();
+    return_render_scratch(scratch);
 }
 
 fn paint_line(
@@ -1591,10 +1609,47 @@ struct CellColors {
     foreground_color: ColorU,
 }
 
+/// Buffers the grid renderers rebuild every frame, kept per thread (rendering is single-threaded)
+/// so their allocations survive from one frame to the next. A renderer takes the scratch, uses
+/// and empties it, and hands it back; a renderer that re-enters just finds an empty one.
+#[derive(Default)]
+struct RenderScratch {
+    cell_decorations: Vec<DecorationData>,
+    native_glyphs: Vec<NativeGlyph>,
+    /// [`MinimalContrastCache::map`]. The mapping is a pure function of the two colors (it does
+    /// not read the theme), so entries stay correct across frames and theme changes; only the
+    /// size is bounded.
+    contrast_map: FxHashMap<CellColors, ColorU>,
+}
+
+/// Bounds on what a [`RenderScratch`] keeps between frames, so one unusual frame (a huge
+/// grid, a truecolor image dump) doesn't pin memory forever.
+const MAX_RETAINED_CONTRAST_ENTRIES: usize = 4096;
+const MAX_RETAINED_SCRATCH_ITEMS: usize = 8192;
+
+thread_local! {
+    static RENDER_SCRATCH: RefCell<RenderScratch> = RefCell::new(RenderScratch::default());
+}
+
+fn take_render_scratch() -> RenderScratch {
+    RENDER_SCRATCH.with(|scratch| mem::take(&mut *scratch.borrow_mut()))
+}
+
+fn return_render_scratch(mut scratch: RenderScratch) {
+    scratch.cell_decorations.clear();
+    scratch.cell_decorations.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
+    scratch.native_glyphs.clear();
+    scratch.native_glyphs.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
+    if scratch.contrast_map.len() > MAX_RETAINED_CONTRAST_ENTRIES {
+        scratch.contrast_map.clear();
+    }
+    RENDER_SCRATCH.with(|slot| *slot.borrow_mut() = scratch);
+}
+
 struct MinimalContrastCache {
     /// A mapping from a pair of cell colors to a foreground color that has the
     /// required minimum contrast against the provided background.
-    map: HashMap<CellColors, ColorU>,
+    map: FxHashMap<CellColors, ColorU>,
 
     /// The last set of cell colors that were queried, and the value they map
     /// to.
@@ -1607,7 +1662,7 @@ struct MinimalContrastCache {
 }
 
 impl MinimalContrastCache {
-    fn new() -> Self {
+    fn from_map(map: FxHashMap<CellColors, ColorU>) -> Self {
         // Default the last colors to a map from transparent/transparent to
         // transparent.  This is a reasonable default because it's not likely
         // to actually occur, and if it does, this is the correct mapping.
@@ -1616,9 +1671,13 @@ impl MinimalContrastCache {
             background_color: ColorU::transparent_black(),
         };
         Self {
-            map: Default::default(),
+            map,
             last: (transparent, ColorU::transparent_black()),
         }
+    }
+
+    fn into_map(self) -> FxHashMap<CellColors, ColorU> {
+        self.map
     }
 
     fn get_or_insert(&mut self, colors: CellColors) -> ColorU {

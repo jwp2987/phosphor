@@ -487,3 +487,76 @@ fn test_calculate_selection_bounds() {
     assert_selection_bounds(10.into_lines()); // Without scroll clipping (but on the cusp of clipping)
     assert_selection_bounds(80.into_lines()); // With scroll clipping
 }
+
+#[test]
+fn render_scratch_buffers_are_reused_across_frames() {
+    use super::{
+        return_render_scratch, take_render_scratch, DecorationData, MAX_RETAINED_SCRATCH_ITEMS,
+    };
+    use warpui::color::ColorU;
+
+    let mut scratch = take_render_scratch();
+    assert_eq!(
+        scratch.cell_decorations.capacity(),
+        0,
+        "first frame starts empty"
+    );
+    for _ in 0..100 {
+        scratch.cell_decorations.push(DecorationData {
+            origin: vec2f(0., 0.),
+            size: vec2f(1., 1.),
+            color: ColorU::black(),
+        });
+    }
+    return_render_scratch(scratch);
+
+    // The next frame gets the same allocation back, emptied.
+    let scratch = take_render_scratch();
+    assert!(scratch.cell_decorations.is_empty());
+    assert!(scratch.cell_decorations.capacity() >= 100);
+    assert!(scratch.cell_decorations.capacity() <= MAX_RETAINED_SCRATCH_ITEMS.max(100));
+    return_render_scratch(scratch);
+}
+
+#[test]
+fn minimal_contrast_map_persists_across_frames_and_is_bounded() {
+    use super::{
+        return_render_scratch, take_render_scratch, CellColors, MinimalContrastCache,
+        MAX_RETAINED_CONTRAST_ENTRIES,
+    };
+    use warpui::color::ColorU;
+
+    let colors = CellColors {
+        foreground_color: ColorU::new(20, 20, 20, 255),
+        background_color: ColorU::new(10, 10, 10, 255),
+    };
+
+    // Frame 1 computes the entry.
+    let mut scratch = take_render_scratch();
+    let mut cache = MinimalContrastCache::from_map(std::mem::take(&mut scratch.contrast_map));
+    let adjusted = cache.get_or_insert(colors);
+    scratch.contrast_map = cache.into_map();
+    assert!(scratch.contrast_map.contains_key(&colors));
+    return_render_scratch(scratch);
+
+    // Frame 2 starts with it already cached, and gets the same answer.
+    let mut scratch = take_render_scratch();
+    assert!(scratch.contrast_map.contains_key(&colors));
+    let mut cache = MinimalContrastCache::from_map(std::mem::take(&mut scratch.contrast_map));
+    assert_eq!(cache.get_or_insert(colors), adjusted);
+
+    // A map that grew past the bound is dropped rather than retained forever.
+    let mut map = cache.into_map();
+    for i in 0..=MAX_RETAINED_CONTRAST_ENTRIES {
+        map.insert(
+            CellColors {
+                foreground_color: ColorU::new((i % 256) as u8, (i / 256) as u8, 0, 255),
+                background_color: ColorU::black(),
+            },
+            ColorU::white(),
+        );
+    }
+    scratch.contrast_map = map;
+    return_render_scratch(scratch);
+    assert!(take_render_scratch().contrast_map.is_empty());
+}
