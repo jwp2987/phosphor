@@ -3707,7 +3707,7 @@ impl AIConversation {
                 // a value it does not know. Matches the default at
                 // `crates/persistence/src/model.rs:1764`.
                 root_task_is_optimistic: None,
-                compaction_state_json: if self.compaction_state.completed().is_empty() {
+                compaction_state_json: if self.compaction_state.is_empty() {
                     None
                 } else {
                     match serde_json::to_string(&self.compaction_state) {
