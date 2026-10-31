@@ -7,6 +7,11 @@ mod onnx;
 mod parser;
 #[cfg(test)]
 mod request_corpus;
+#[cfg(test)]
+mod routing_corpus;
+#[cfg(test)]
+#[path = "routing_corpus_tests.rs"]
+mod routing_corpus_tests;
 mod safety_gate;
 pub mod test_utils;
 pub mod util;

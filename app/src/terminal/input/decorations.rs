@@ -16,6 +16,7 @@ use warp_core::features::FeatureFlag;
 use warpui::{AppContext, SingletonEntity, ViewContext};
 
 use crate::{
+    ai::blocklist::input_model::{RoutingSessionFacts, shell_family},
     appearance::Appearance,
     completer::{EmptyCompletionContext, SessionContext},
     editor::{TextRun, TextStyleOperation},
@@ -161,11 +162,15 @@ impl Input {
                 return;
             }
             let session_id = completion_context.session.id();
+            let facts = RoutingSessionFacts {
+                shell: shell_family(completion_context.session.shell().shell_type()),
+            };
             self.ai_input_model.update(ctx, |ai_input_model, ctx| {
-                ai_input_model.detect_and_set_input_type(
+                ai_input_model.detect_and_set_input_type_with_facts(
                     parsed_token,
                     completion_context,
                     Some(session_id),
+                    facts,
                     ctx,
                 )
             })

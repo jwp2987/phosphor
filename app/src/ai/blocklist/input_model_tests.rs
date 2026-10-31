@@ -1032,6 +1032,7 @@ fn settle_for_submit_with_head(
             head_unknown_to_shell,
             false,
             false,
+            ShellFamily::Unknown,
             ctx,
         )
     })
@@ -1443,28 +1444,39 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
             ));
             input_model.read(app, |model, _| model.input_type())
         };
-        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these (`my`, `when`, `which`, `can`, `where` are not request words).
+        // No #834 request word (`the`, `it`, ...): two words that address someone (`my`, `when`,
+        // `which`, `can`, `where`) make a sentence of these whatever the session knows about the
+        // head (#1234: a user function named `tell` is one click away; running prose is not).
         for prose in [
             "tell Josh when my build finished",
             "frobnicate which tests can fail",
             "explain where my config lives",
         ] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
-            // Head is an alias/function/builtin/PATH executable, or the session has no data:
-            // the caller reports `false`, and the line keeps the inherited Shell.
+            assert_eq!(enter(&mut app, prose, false), InputType::AI, "{prose}");
+        }
+        // With the head known absent (#1019): a request opener, a sentence comma or an English
+        // word that is no command here reads as prose; a shell operator does not make a command of
+        // a word the shell does not know (#696).
+        for prose in [
+            "tell Josh about outages",
+            "frobnicate widgets,",
+            "summarize when my build finished | less",
+            "summarize when my build finished && echo it",
+        ] {
+            assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
+            // The session cannot say: nothing moves the inherited Shell.
             assert_eq!(enter(&mut app, prose, false), InputType::Shell, "{prose}");
         }
+        // A path, an assignment prefix, a one-off keyword or a flag is command shape whatever the
+        // session knows about the head (#833).
         for kept in [
             "frobnicate",
-            "frobnicate widgets,",
             "./run when my build finished",
             "~/bin/run when my build finished",
             "FOO=1 summarize when my build finished",
-            "summarize when my build finished | less",
-            "summarize when my build finished && echo it",
             "echo when my build finished",
             "mytool --force run migrations for prod",
-            "tell Josh about outages",
         ] {
             assert_eq!(enter(&mut app, kept, true), InputType::Shell, "{kept}");
         }
@@ -1507,6 +1519,7 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
                     false,
                     known,
                     false,
+                    ShellFamily::Unknown,
                     ctx,
                 );
             });
@@ -1773,6 +1786,7 @@ fn pending_line_that_ran_before_exactly_settles_to_shell_at_submit() {
                     false,
                     false,
                     ran_before,
+                    ShellFamily::Unknown,
                     ctx,
                 );
             });

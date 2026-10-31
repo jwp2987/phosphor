@@ -6,6 +6,8 @@ use natural_language_detection::{
 };
 use warp_completer::ParsedTokensSnapshot;
 
+pub mod routing;
+
 /// The percentage of input tokens that can be described by our completion engine before
 /// we consider the input as a shell command. This could be tuned.
 const DETECT_AS_COMMAND_THRESHOLD: f32 = 0.5;

@@ -31,7 +31,7 @@ use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::input_model::{
-    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision,
+    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision, shell_family,
     should_wait_for_verdict_before_submit,
 };
 use instant::Instant;
@@ -12913,12 +12913,19 @@ impl Input {
             && self.active_block_session_id().is_some_and(|session_id| {
                 history_says_ran_before(History::as_ref(ctx), session_id, &snapshot.buffer_text)
             });
+        // #1234: the shell's syntax family, for the rules that are not POSIX (PowerShell cmdlets
+        // and `$variable` assignments, nushell keywords and pipelines, fish builtins).
+        let shell = self
+            .active_session(ctx)
+            .map(|session| shell_family(session.shell().shell_type()))
+            .unwrap_or_default();
         self.ai_input_model.update(ctx, |model, ctx| {
             model.settle_pending_detection_for_submit(
                 &snapshot,
                 head_unknown_to_shell,
                 head_known_to_shell,
                 ran_before_exactly,
+                shell,
                 ctx,
             );
         });
