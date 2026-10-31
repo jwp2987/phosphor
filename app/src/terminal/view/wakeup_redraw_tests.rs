@@ -1,4 +1,4 @@
-use super::{decide_with, paint_only_unless_disabled, RenderFingerprint, WakeupRedraw};
+use super::{RenderFingerprint, WakeupRedraw, decide_with, paint_only_unless_disabled};
 use crate::terminal::model::terminal_model::BlockIndex;
 use warpui::color::ColorU;
 
@@ -59,10 +59,7 @@ fn an_unchanged_block_list_tree_is_laid_out_and_painted_but_not_re_rendered() {
         decide_with(Some(rendered), rendered, true, true),
         WakeupRedraw::Relayout
     );
-    assert_eq!(
-        decide_with(None, rendered, true, true),
-        WakeupRedraw::Full
-    );
+    assert_eq!(decide_with(None, rendered, true, true), WakeupRedraw::Full);
 }
 
 #[test]

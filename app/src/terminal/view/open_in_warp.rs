@@ -8,8 +8,8 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use warp_util::path::EscapeChar;
 use warpui::{
-    accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     SingletonEntity, ViewContext,
+    accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
 };
 
 #[cfg(feature = "local_fs")]
@@ -43,8 +43,7 @@ use super::{Event, InlineBannerItem, InlineBannerType, TerminalView};
 #[path = "open_in_warp_tests.rs"]
 mod tests;
 
-const LEARN_MORE_MARKDOWN_URL: &str =
-    "";
+const LEARN_MORE_MARKDOWN_URL: &str = "";
 const LEARN_MORE_CODE_URL: &str = "";
 
 /// A path to a file that can be opened in Zap, along with its type.
@@ -211,15 +210,19 @@ impl TerminalView {
                     self.close_open_in_warp_banner(banner_state.id);
                     if renders_in_warp_notebook_viewer(&banner_state.target.path) {
                         GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
-                            report_if_error!(settings
-                                .open_in_warp_banner_dismissed_for_markdown
-                                .set_value(true, ctx));
+                            report_if_error!(
+                                settings
+                                    .open_in_warp_banner_dismissed_for_markdown
+                                    .set_value(true, ctx)
+                            );
                         });
                     } else {
                         GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
-                            report_if_error!(settings
-                                .open_in_warp_banner_dismissed_for_code_and_text
-                                .set_value(true, ctx));
+                            report_if_error!(
+                                settings
+                                    .open_in_warp_banner_dismissed_for_code_and_text
+                                    .set_value(true, ctx)
+                            );
                         });
                     }
                     ctx.notify();

@@ -14,13 +14,13 @@ use crate::ai::blocklist::block::cli::CLISubagentViewMode;
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::history_model::{CLIAgentConversation, LoadedConversationData};
 use crate::ai::blocklist::{BlocklistAIContextModel, SerializedBlockListItem};
+use crate::terminal::TerminalModel;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
 use crate::terminal::input::message_bar::Message as InputMessage;
 use crate::terminal::input::message_bar::MessageItem;
 use crate::terminal::model::block::SerializedBlock;
 use crate::terminal::model::rich_content::RichContentType;
 use crate::terminal::model_events::ModelEventDispatcher;
-use crate::terminal::TerminalModel;
 use crate::util::bindings::keybinding_name_to_keystroke;
 use chrono::{DateTime, Local};
 use itertools::Itertools;
@@ -40,13 +40,13 @@ use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::{
     ai::{
         agent::{
+            AIAgentExchange, AIAgentExchangeId, AIAgentOutput,
             conversation::{AIConversation, AIConversationId},
             task::TaskId,
-            AIAgentExchange, AIAgentExchangeId, AIAgentOutput,
         },
         blocklist::{
-            history_model::BlocklistAIHistoryModel, model::AIBlockModelImpl, AIBlock,
-            BlocklistAIActionModel, BlocklistAIController, ClientIdentifiers,
+            AIBlock, BlocklistAIActionModel, BlocklistAIController, ClientIdentifiers,
+            history_model::BlocklistAIHistoryModel, model::AIBlockModelImpl,
         },
     },
     persistence::model::AgentConversationData,
@@ -1641,7 +1641,8 @@ mod working_directory_tests {
 
     #[test]
     fn conversation_tracks_initial_and_latest_working_directory() {
-        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+        let conversation =
+            conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
 
         assert_eq!(
             conversation.initial_working_directory().as_deref(),
@@ -1655,7 +1656,8 @@ mod working_directory_tests {
 
     #[test]
     fn forked_startup_working_directory_uses_latest_directory() {
-        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+        let conversation =
+            conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
 
         let restoration = ConversationRestorationInNewPaneType::Forked {
             conversation,
@@ -1675,4 +1677,3 @@ mod working_directory_tests {
         );
     }
 }
-

@@ -7,25 +7,25 @@ use warpui::{App, AppContext, SingletonEntity, ViewContext};
 use crate::{
     ai::{
         agent::{
-            conversation::AIConversationId, task::TaskId, AIAgentInput, ServerOutputId,
-            UserQueryMode,
+            AIAgentInput, ServerOutputId, UserQueryMode, conversation::AIConversationId,
+            task::TaskId,
         },
         blocklist::{
+            AIBlock, ClientIdentifiers,
             agent_view::AgentViewEntryOrigin,
             block::cli_controller::UserTakeOverReason,
             model::{AIBlockModel, AIBlockOutputStatus, AIRequestType, OutputStatusUpdateCallback},
-            AIBlock, ClientIdentifiers,
         },
         llms::LLMId,
     },
     features::FeatureFlag,
     settings::AISettings,
+    terminal::CLIAgent,
     terminal::cli_agent_sessions::{
         CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext, CLIAgentSessionStatus,
         CLIAgentSessionsModel,
     },
     terminal::model::ansi::{BootstrappedValue, Handler as _, InitShellValue},
-    terminal::CLIAgent,
     test_util::{add_window_with_terminal, terminal::initialize_app_for_terminal_view},
 };
 
@@ -247,10 +247,12 @@ fn use_agent_footer_renders_for_manual_handoff_even_when_user_command_footer_set
                 let model = view.model.lock();
                 assert!(!view.should_render_use_agent_footer(&model, ctx));
                 let active_block_index = model.block_list().active_block_index();
-                assert!(model
-                    .block_list()
-                    .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                    .is_none());
+                assert!(
+                    model
+                        .block_list()
+                        .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
+                        .is_none()
+                );
                 // The block-list assertion above is now vacuous -- nothing inserts the
                 // footer there any more (§8 step 3) -- so assert what actually decides
                 // visibility: the window footer bar's per-frame predicate.
@@ -521,10 +523,12 @@ fn cli_agent_footer_does_not_render_for_phosphor_tui_session() {
             let model = view.model.lock();
             assert!(!view.should_render_use_agent_footer(&model, ctx));
             let active_block_index = model.block_list().active_block_index();
-            assert!(model
-                .block_list()
-                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                .is_none());
+            assert!(
+                model
+                    .block_list()
+                    .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
+                    .is_none()
+            );
             // Vacuous since §8 step 3; the bar's predicate is the live one.
             assert_eq!(
                 view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
