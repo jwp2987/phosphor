@@ -566,9 +566,16 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     # bytes via a hex string (in a JSON payload) to Warp.
     # Note that we are CALLING the `warp_original_fish_prompt` function on the next line and assigning the
     # outputted string to the local variable `raw_prompt_for_preview`.
-    set -l raw_prompt_for_preview (warp_original_fish_prompt)
-    # We encode the prompt as a hex string to pass it to Warp.
-    set escaped_prompt (warp_escape_prompt "$raw_prompt_for_preview")
+    #
+    # Phosphor (#1170): when the user's prompt is honored the Precmd below carries an empty `ps1`
+    # and fish itself draws the prompt right after this hook, so the preview would run the user's
+    # fish_prompt (git status, nvm, ... in many themes) a second time per prompt only to throw the
+    # text away. It is computed only when it is sent.
+    if test "$WARP_HONOR_PS1" != "1"
+        set -l raw_prompt_for_preview (warp_original_fish_prompt)
+        # We encode the prompt as a hex string to pass it to Warp.
+        set escaped_prompt (warp_escape_prompt "$raw_prompt_for_preview")
+    end
 
     set -l escaped_json
     if test "$WARP_HONOR_PS1" = "1"
@@ -612,7 +619,14 @@ function warp_escape_prompt
     # the prompt as a hex string so that it can be interpreted on the Warp side
     # Note: before converting the prompt to a hex string, we remove any multi-line newlines and
     # replace them with a single space (to avoid prompts that span multiple empty lines)
-    builtin echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n'
+    #
+    # Phosphor (#1170): the encoding costs 4 processes and the prompt is the same on most prompts,
+    # so the last result is kept. It depends on nothing but the argument, so reusing it is exact.
+    if not set -q __warp_escape_prompt_in; or test "$argv" != "$__warp_escape_prompt_in"
+        set -g __warp_escape_prompt_out (builtin echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n' | string collect)
+        set -g __warp_escape_prompt_in "$argv"
+    end
+    builtin printf '%s' "$__warp_escape_prompt_out"
 end
 
 # sed commands that escape every C0 control character (and DEL) that has no short JSON escape as
