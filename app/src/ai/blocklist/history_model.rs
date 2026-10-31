@@ -2720,15 +2720,74 @@ impl BlocklistAIHistoryModel {
     ) {
         // Make sure metadata exists for everything restorable.
         self.mark_conversations_historical_for_terminal_view(terminal_view_id);
+        let candidate_ids: Vec<AIConversationId> = self
+            .live_conversation_ids_for_terminal_view
+            .get(&terminal_view_id)
+            .into_iter()
+            .chain(
+                self.cleared_conversation_ids_for_terminal_view
+                    .get(&terminal_view_id),
+            )
+            .flatten()
+            .copied()
+            .collect();
+        let skip_eviction = self.is_terminal_view_conversation_transcript_viewer(terminal_view_id);
         self.live_conversation_ids_for_terminal_view
             .remove(&terminal_view_id);
         self.cleared_conversation_ids_for_terminal_view
             .remove(&terminal_view_id);
         self.active_conversation_for_terminal_view
             .remove(&terminal_view_id);
+        if !skip_eviction {
+            self.evict_idle_historical_conversations(candidate_ids);
+        }
         self.terminal_view_created_at.remove(&terminal_view_id);
         self.ambient_agent_terminal_view_ids
             .remove(&terminal_view_id);
+    }
+
+    /// Drops the heavy `AIConversation` objects (every task, tool result and command output the
+    /// agent saw; multi-MB in long sessions) of conversations whose tab was just discarded
+    /// (#1189). Metadata stays in `all_conversations_metadata`, so they remain in the history
+    /// list and reopen through `load_conversation_data` exactly like a conversation restored at
+    /// startup.
+    ///
+    /// Deliberately conservative; a conversation is kept in memory unless it is quiescent
+    /// (`is_done`, at least one exchange so it has been persisted), unconnected to any
+    /// parent/child orchestration, not a shared-session view, has metadata with local data to
+    /// reload from, and no remaining view references it.
+    fn evict_idle_historical_conversations(&mut self, candidate_ids: Vec<AIConversationId>) {
+        for id in candidate_ids {
+            let Some(conversation) = self.conversations_by_id.get(&id) else {
+                continue;
+            };
+            let evictable = !conversation.is_empty()
+                && conversation.status().is_done()
+                && !conversation.has_active_subagent()
+                && !conversation.is_child_agent_conversation()
+                && !conversation.is_viewing_shared_session()
+                && !self.children_by_parent.contains_key(&id)
+                && self
+                    .all_conversations_metadata
+                    .get(&id)
+                    .is_some_and(|metadata| metadata.has_local_data)
+                && !self
+                    .live_conversation_ids_for_terminal_view
+                    .values()
+                    .chain(self.cleared_conversation_ids_for_terminal_view.values())
+                    .any(|ids| ids.contains(&id))
+                && !self
+                    .active_conversation_for_terminal_view
+                    .values()
+                    .any(|active| *active == id)
+                && !self
+                    .read_only_live_viewer_conversations
+                    .values()
+                    .any(|viewed| *viewed == id);
+            if evictable {
+                self.conversations_by_id.remove(&id);
+            }
+        }
     }
 
     /// Inserts a conversation into memory by reconstructing exchanges from tasks.

@@ -369,3 +369,32 @@ fn delete_orphaned_blocks_removes_only_old_unreferenced_blocks() {
     assert_eq!(remaining[1], (dead_pane.clone(), Some(now)));
     assert_eq!(remaining[2], (dead_pane, None));
 }
+
+/// #1189: oversized stylized output is persisted as head + marker + tail, line-aligned.
+#[test]
+fn cap_persisted_output_keeps_head_and_tail() {
+    use super::{MAX_PERSISTED_OUTPUT_BYTES, cap_persisted_output};
+
+    assert!(cap_persisted_output(&vec![b'x'; MAX_PERSISTED_OUTPUT_BYTES]).is_none());
+
+    let mut big = Vec::new();
+    let mut i = 0;
+    while big.len() < MAX_PERSISTED_OUTPUT_BYTES * 8 {
+        big.extend_from_slice(format!("line {i:08}\r\n").as_bytes());
+        i += 1;
+    }
+    let capped = cap_persisted_output(&big).expect("must cap");
+    assert!(capped.len() <= MAX_PERSISTED_OUTPUT_BYTES + 256);
+    let text = String::from_utf8(capped).unwrap();
+    assert!(text.starts_with("line 00000000\r\n"));
+    assert!(text.contains("bytes of output omitted"));
+    assert!(text.ends_with(&format!("line {:08}\r\n", i - 1)));
+    assert!(
+        text.split("\r\n")
+            .filter(|l| l.starts_with("line "))
+            .all(|l| l.len() == 13)
+    );
+
+    let capped = cap_persisted_output(&vec![b'y'; MAX_PERSISTED_OUTPUT_BYTES * 4]).unwrap();
+    assert!(capped.len() <= MAX_PERSISTED_OUTPUT_BYTES + 256);
+}
