@@ -288,6 +288,9 @@ impl PaneContent for TerminalPane {
 
         #[cfg(feature = "local_fs")]
         {
+            // Streaming exchanges already persisted with their current status (#1137).
+            let persisted_pending: std::rc::Rc<std::cell::RefCell<PersistedPendingExchanges>> =
+                Default::default();
             ctx.subscribe_to_model(
                 &BlocklistAIHistoryModel::handle(ctx),
                 move |group, _, event, ctx| {
@@ -311,6 +314,7 @@ impl PaneContent for TerminalPane {
                         terminal_pane_id,
                         model_event_sender,
                         is_shared_ambient_agent_session,
+                        &mut persisted_pending.borrow_mut(),
                         ctx,
                     );
                 },
@@ -1470,6 +1474,33 @@ fn finish_spawning_local_child_agent(
     group.child_agent_panes.insert(child_id, new_pane_id.into());
 }
 
+/// Exchanges whose `Pending` query row is already persisted, keyed to the part of the row that
+/// can change while streaming (`inputs.len()`); everything else in the row is fixed per exchange.
+#[cfg(feature = "local_fs")]
+type PersistedPendingExchanges =
+    std::collections::HashMap<crate::ai::agent::AIAgentExchangeId, usize>;
+
+/// Whether an exchange event needs an `UpsertAIQuery`. `UpdatedStreamingExchange` fires once
+/// per streamed delta, but the persisted row is identical for every delta of a `Pending`
+/// exchange, so only the first (and any change in input count) is written. `AppendedExchange`
+/// and any non-`Pending` status always write; terminal statuses drop the entry (#1137).
+#[cfg(feature = "local_fs")]
+fn should_upsert_ai_query(
+    persisted: &mut PersistedPendingExchanges,
+    exchange_id: crate::ai::agent::AIAgentExchangeId,
+    status: &crate::ai::blocklist::AIQueryHistoryOutputStatus,
+    input_count: usize,
+    is_streaming_delta: bool,
+) -> bool {
+    if *status != crate::ai::blocklist::AIQueryHistoryOutputStatus::Pending {
+        persisted.remove(&exchange_id);
+        return true;
+    }
+    let unchanged = persisted.get(&exchange_id) == Some(&input_count);
+    persisted.insert(exchange_id, input_count);
+    !(is_streaming_delta && unchanged)
+}
+
 #[cfg(feature = "local_fs")]
 fn handle_ai_history_event(
     event: &BlocklistAIHistoryEvent,
@@ -1477,6 +1508,7 @@ fn handle_ai_history_event(
     terminal_pane_id: TerminalPaneId,
     model_event_sender: SyncSender<ModelEvent>,
     is_shared_ambient_agent_session: bool,
+    persisted_pending: &mut PersistedPendingExchanges,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     use std::sync::Arc;
@@ -1536,16 +1568,31 @@ fn handle_ai_history_event(
                 return;
             }
 
+            let inputs: Vec<_> = exchange
+                .input
+                .iter()
+                .filter_map(|input| PersistedAIInputType::try_from(input).ok())
+                .collect();
+            let output_status = AIQueryHistoryOutputStatus::from(&exchange.output_status);
+            if !should_upsert_ai_query(
+                persisted_pending,
+                exchange.id,
+                &output_status,
+                inputs.len(),
+                matches!(
+                    event,
+                    BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
+                ),
+            ) {
+                return;
+            }
+
             let persisted_query = PersistedAIInput {
                 start_ts: exchange.start_time,
-                inputs: exchange
-                    .input
-                    .iter()
-                    .filter_map(|input| PersistedAIInputType::try_from(input).ok())
-                    .collect(),
+                inputs,
                 exchange_id: exchange.id,
                 conversation_id: *conversation_id,
-                output_status: AIQueryHistoryOutputStatus::from(&exchange.output_status),
+                output_status,
                 working_directory: exchange.working_directory.clone(),
                 // TODO(CORE-3546): shell: exchange.shell.clone(),
                 model_id: exchange.model_id.clone(),
