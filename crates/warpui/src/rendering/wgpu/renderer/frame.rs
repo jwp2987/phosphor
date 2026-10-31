@@ -1,12 +1,42 @@
 use crate::rendering::wgpu::renderer::{glyph, image, rect, WGPUContext};
 
 use crate::rendering::wgpu::Resources;
-use crate::scene::Layer;
+use crate::scene::{CornerRadius, Layer};
 use crate::Scene;
 
+use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 use wgpu::{CommandEncoder, RenderPass, SurfaceTexture};
+
+use super::util::clear_to_background;
+
+/// The colour of the base layer's first rect when that rect is the opaque window background:
+/// it covers the whole surface (in device pixels), is one solid colour with full alpha, and has
+/// square corners, no border and no shadow. Clearing the surface to this colour and not drawing
+/// the rect produces the same pixels as clearing to transparent and drawing it (the rect
+/// shader's result for these inputs is the colour itself), one full-surface pass cheaper.
+pub(super) fn opaque_background(scene: &Scene, surface_size: Vector2F) -> Option<ColorU> {
+    let base = scene.layers().next()?;
+    let rect = base.rects.first()?;
+    let color = rect.background.start_color();
+    let scaled = rect.bounds * scene.scale_factor();
+    let covers_surface = scaled.origin().x() <= 0.
+        && scaled.origin().y() <= 0.
+        && scaled.max_x() >= surface_size.x()
+        && scaled.max_y() >= surface_size.y();
+    let is_solid_opaque = color.is_opaque() && rect.background.end_color() == color;
+    let is_plain = rect.drop_shadow.is_none()
+        && rect.corner_radius == CornerRadius::default()
+        && rect.border.top_width() == 0.
+        && rect.border.right_width() == 0.
+        && rect.border.bottom_width() == 0.
+        && rect.border.left_width() == 0.;
+    let unclipped = base
+        .clip_bounds
+        .is_none_or(|clip| (clip * scene.scale_factor()).contains_rect(scaled));
+    (covers_surface && is_solid_opaque && is_plain && unclipped).then_some(color)
+}
 
 /// The instance data of a frame. Owned by the renderer and reused from frame to frame, so the
 /// vectors keep their capacity and the vertex buffers are refilled rather than recreated.
@@ -97,7 +127,7 @@ impl<'a> Frame<'a> {
     /// responsible for finishing the [`wgpu::CommandEncoder`] and actually presenting the current
     /// drawable on the screen.
     pub(super) fn draw(
-        self,
+        mut self,
         resources: &Resources,
         encoder: &mut CommandEncoder,
         surface_texture: &SurfaceTexture,
@@ -106,6 +136,22 @@ impl<'a> Frame<'a> {
             surface_texture.texture.width() as f32,
             surface_texture.texture.height() as f32,
         );
+
+        // The window background becomes the clear colour and is not drawn as a rect (#1232).
+        let mut clear_color = wgpu::Color::TRANSPARENT;
+        if clear_to_background()
+            && let Some(background) = opaque_background(self.scene, surface_size)
+            && let Some(base) = self.layer_state.first_mut()
+        {
+            let background = background.to_f32();
+            clear_color = wgpu::Color {
+                r: background.r() as f64,
+                g: background.g() as f64,
+                b: background.b() as f64,
+                a: background.a() as f64,
+            };
+            base.rect_layer_state = base.rect_layer_state.take().and_then(rect::LayerState::without_first);
+        }
 
         let view = surface_texture
             .texture
@@ -120,7 +166,7 @@ impl<'a> Frame<'a> {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -206,3 +252,7 @@ struct LayerState<'a> {
     glyph_layer_state: Option<glyph::LayerState>,
     image_layer_state: Option<image::LayerState>,
 }
+
+#[cfg(test)]
+#[path = "frame_tests.rs"]
+mod tests;

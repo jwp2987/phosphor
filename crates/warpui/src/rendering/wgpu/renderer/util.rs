@@ -25,6 +25,19 @@ fn reuse_unless_disabled(per_frame_buffers_flag: Option<&str>) -> bool {
     per_frame_buffers_flag.is_none_or(|flag| flag == "0")
 }
 
+/// Whether a frame whose base layer starts with a full-surface, opaque, solid rect clears the
+/// surface to that colour and skips the rect, instead of clearing to transparent and filling the
+/// whole surface a second time (#1232). `PHOSPHOR_WGPU_CLEAR_TO_BACKGROUND=0` restores the two
+/// passes, for A/B measurement.
+pub fn clear_to_background() -> bool {
+    static CLEAR: OnceLock<bool> = OnceLock::new();
+    *CLEAR.get_or_init(|| {
+        std::env::var("PHOSPHOR_WGPU_CLEAR_TO_BACKGROUND")
+            .ok()
+            .is_none_or(|flag| flag != "0")
+    })
+}
+
 /// A vertex buffer that outlives the frame. `write_buffer` is ordered on the queue after the
 /// previous frame's submission, so refilling it while that frame's draws may still be executing
 /// is safe by the wgpu queue-timeline rules.
