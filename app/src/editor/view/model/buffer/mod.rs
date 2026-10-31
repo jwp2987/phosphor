@@ -1254,6 +1254,18 @@ impl Buffer {
         })
     }
 
+    /// True iff every visible char of the buffer is one byte, i.e. ASCII. O(1): it compares the
+    /// byte and char extents of the fragment tree.
+    pub fn is_ascii(&self) -> bool {
+        self.fragments.extent::<ByteOffset>().as_usize()
+            == self.fragments.extent::<CharOffset>().as_usize()
+    }
+
+    /// True iff no visible char of the buffer is a tab (see [`Self::is_tab_free_for_chars`]).
+    pub fn is_tab_free(&self) -> bool {
+        self.is_tab_free_for_chars(CharOffset::from(0), self.len().as_usize())
+    }
+
     /// True iff the buffer holds at least `len` visible chars from `start` and none of them
     /// is a tab. Scans whole fragment slices (`str::contains`) instead of walking chars one
     /// at a time, so it stays cheap on a multi-megabyte row (#955). `false` means "not

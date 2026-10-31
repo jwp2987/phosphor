@@ -2,7 +2,9 @@ use super::super::soft_wrap::{
     ClampDirection, DisplayPointAndClampDirection, FrameLayouts, SoftWrapPoint, SoftWrapState,
 };
 use super::model::MarkedTextState;
-use super::snapshot::{LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, large_buffer_real_rows};
+use super::snapshot::{
+    LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, large_buffer_real_rows, rows_cannot_wrap,
+};
 use super::{
     position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
     DrawableSelection, EditorAction, ScrollState, SelectAction,
@@ -1440,8 +1442,6 @@ impl EditorElement {
     ) -> Option<Vec<std::ops::Range<u32>>> {
         /// Selections beyond this many fall back to the full layout.
         const MAX_WINDOWED_SELECTIONS: usize = 8;
-        /// An upper bound on a glyph's advance, in ems, for deciding a row cannot wrap.
-        const MAX_GLYPH_ADVANCE_EMS: f32 = 1.5;
 
         if !self.soft_wrap
             || total_rows < LARGE_BUFFER_ROWS
@@ -1451,15 +1451,20 @@ impl EditorElement {
         {
             return None;
         }
-        let max_chars = max_width / (view_snapshot.font_size * MAX_GLYPH_ADVANCE_EMS);
-        // The first row is indented by the left notch, so it is always laid out for real.
-        let all_rows_fit_one_line = (1..total_rows).all(|row| {
-            view_snapshot
-                .line_len(row, app)
-                .is_ok_and(|len| (len as f32) <= max_chars)
-        });
-        if !all_rows_fit_one_line {
-            return None;
+        // Every row, the first included (it is indented by the left notch), must provably fit on
+        // one visual line. O(1): the longest row is a fragment-tree summary, so this costs
+        // nothing per frame (a per-row scan was ~40 ms at 13,000 rows).
+        {
+            let buffer = view_snapshot.editor_model.as_ref(app).buffer(app);
+            if !rows_cannot_wrap(
+                view_snapshot.rightmost_point(app).column(),
+                buffer.is_ascii(),
+                buffer.is_tab_free(),
+                view_snapshot.font_size,
+                max_width,
+            ) {
+                return None;
+            }
         }
         let model = view_snapshot.editor_model.as_ref(app);
         let selections = model.selections(app);

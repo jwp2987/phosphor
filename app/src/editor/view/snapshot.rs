@@ -507,6 +507,46 @@ impl ViewSnapshot {
     /// (see [`large_buffer_real_rows`]); the caller guarantees both.
     pub fn layout_text_frames_windowed(
         &self,
+        rows: Range<u32>,
+        real_rows: Option<&[Range<u32>]>,
+        layout_cache: &LayoutCache,
+        max_width: f32,
+        left_notch_width_px: f32,
+        app: &AppContext,
+    ) -> Result<Vec<Arc<text_layout::TextFrame>>> {
+        let frames = self.layout_text_frames_inner(
+            rows.clone(),
+            real_rows,
+            layout_cache,
+            max_width,
+            left_notch_width_px,
+            app,
+        )?;
+        // The windowing rests on every row being one visual line (a row index is then its line
+        // index). The caller proved it from font-independent bounds; this checks the proof on the
+        // rows that were really laid out, and if one wrapped after all, throws the window away
+        // and lays out every row, as before the windowing existed.
+        if let Some(window) = real_rows {
+            let a_real_row_wrapped = frames.iter().enumerate().any(|(index, frame)| {
+                row_is_laid_out(Some(window), rows.start + index as u32) && frame.lines().len() != 1
+            });
+            if a_real_row_wrapped {
+                log::warn!("a row wrapped in a windowed editor layout; laying out every row");
+                return self.layout_text_frames_inner(
+                    rows,
+                    None,
+                    layout_cache,
+                    max_width,
+                    left_notch_width_px,
+                    app,
+                );
+            }
+        }
+        Ok(frames)
+    }
+
+    fn layout_text_frames_inner(
+        &self,
         mut rows: Range<u32>,
         real_rows: Option<&[Range<u32>]>,
         layout_cache: &LayoutCache,
@@ -584,6 +624,9 @@ impl ViewSnapshot {
         let line_height_ratio = self.line_height_ratio;
         let first_row = rows_start;
 
+        let placeholder_frame =
+            Arc::new(text_layout::TextFrame::empty(font_size, line_height_ratio));
+
         // Use rayon parallel iterators to efficiently lay out all of the lines.
         let text_layout_system = font_cache.text_layout_system();
         let layouts = stylized_lines
@@ -591,11 +634,8 @@ impl ViewSnapshot {
             .enumerate()
             .map(|(cur_line_idx, (stylized_chars, true_len, elided_head))| {
                 if !row_is_laid_out(real_rows, first_row + cur_line_idx as u32) {
-                    return (
-                        Arc::new(text_layout::TextFrame::empty(font_size, line_height_ratio)),
-                        None,
-                        None,
-                    );
+                    // One shared frame: tens of thousands of rows would each allocate their own.
+                    return (Arc::clone(&placeholder_frame), None, None);
                 }
                 let laid_chars = stylized_chars.len();
                 let (line, style_runs) = line_and_style_runs(
@@ -766,12 +806,30 @@ impl ViewSnapshot {
 pub(crate) const LARGE_BUFFER_ROWS: u32 = 2000;
 
 /// Rows laid out above and below the viewport and around each selection end in a large buffer,
-/// so paging and cursor moves land on real layouts.
+/// so paging and cursor moves land on real layouts. At least this, and four viewports.
 pub(crate) const OFFSCREEN_ROW_MARGIN: u32 = 300;
 
 /// Whether `row` gets a real layout: always when `real_rows` is `None`.
 fn row_is_laid_out(real_rows: Option<&[Range<u32>]>, row: u32) -> bool {
     real_rows.is_none_or(|ranges| ranges.iter().any(|range| range.contains(&row)))
+}
+
+/// Whether no row can wrap, given the length in chars of the longest row: even if every one of
+/// its chars were as wide as the font's widest glyph, the row would fit in `max_width`. The
+/// advance bound is 1 em for ASCII text (no common font has a wider ASCII glyph) and 1.5 em
+/// otherwise (wide and emoji glyphs). A tab advances to the next tab stop, so any tab gives up.
+pub(crate) fn rows_cannot_wrap(
+    longest_row_chars: u32,
+    all_ascii: bool,
+    tab_free: bool,
+    font_size: f32,
+    max_width: f32,
+) -> bool {
+    if !tab_free || !font_size.is_finite() || font_size <= 0. || !max_width.is_finite() {
+        return false;
+    }
+    let max_advance_ems = if all_ascii { 1.0 } else { 1.5 };
+    longest_row_chars as f32 * font_size * max_advance_ems <= max_width
 }
 
 /// The row ranges of a `total_rows` buffer that need a real layout when it is large (#1191):
@@ -786,13 +844,12 @@ pub(crate) fn large_buffer_real_rows(
     if total_rows < LARGE_BUFFER_ROWS {
         return None;
     }
-    let edge = visible.end.saturating_sub(visible.start) + 64;
-    let around = |row: u32| {
-        row.saturating_sub(OFFSCREEN_ROW_MARGIN)..row.saturating_add(OFFSCREEN_ROW_MARGIN)
-    };
+    let viewport_rows = visible.end.saturating_sub(visible.start);
+    let margin = OFFSCREEN_ROW_MARGIN.max(viewport_rows.saturating_mul(4));
+    let edge = viewport_rows + 64;
+    let around = |row: u32| row.saturating_sub(margin)..row.saturating_add(margin);
     let mut ranges = vec![
-        visible.start.saturating_sub(OFFSCREEN_ROW_MARGIN)
-            ..visible.end.saturating_add(OFFSCREEN_ROW_MARGIN),
+        visible.start.saturating_sub(margin)..visible.end.saturating_add(margin),
         0..edge,
         total_rows.saturating_sub(edge)..total_rows,
     ];
