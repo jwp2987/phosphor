@@ -961,16 +961,17 @@ pub fn test_remote_subshell_lists_directory_entries_before_any_host_id() {
 
                 // The ssh session itself, before its handshake, still gets the (uncached) empty
                 // answer: its executor is about to be replaced.
+                // A distinct id: a remote session's listings are cached per (session id, cwd), and
+                // `new_for_test` gives both sessions id 0, so the subshell's listing would answer.
                 let connecting = Session::new(
                     SessionInfo::new_for_test()
+                        .with_id(1u64)
                         .with_session_type(BootstrapSessionType::WarpifiedRemote)
                         .with_shell_type(ShellType::Bash),
                     Arc::new(TestCommandExecutor::default()),
                 );
                 let ctx = test_session_context(connecting, cwd.clone(), &app);
-                assert!(
-                    warpui::r#async::block_on(ctx.list_directory_entries(cwd)).is_empty()
-                );
+                assert!(warpui::r#async::block_on(ctx.list_directory_entries(cwd)).is_empty());
             },
         );
     });
