@@ -2247,6 +2247,7 @@ impl BlocklistAIHistoryModel {
         terminal_view_id: Option<EntityId>,
         ctx: &mut ModelContext<Self>,
     ) {
+        crate::ai::agent_providers::chat_stream::forget_conversation_context(conversation_id);
         // Clean up reverse indices before removing the conversation. Guard
         // token-index removals with an equality check: the live conversation's
         // token and the metadata's token can diverge after a rebind, and we
