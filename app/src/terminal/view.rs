@@ -6083,6 +6083,17 @@ impl TerminalView {
         if let BlocklistAIControllerEvent::SentRequest { model_id, .. } = event {
             self.maybe_insert_aws_bedrock_login_banner(model_id, ctx);
         }
+        if let BlocklistAIControllerEvent::AgentStopped { reason, .. } = event {
+            // #1178: persistent, like the queue notices: a turn that ended without a message
+            // must not look like the agent finished.
+            if ctx.has_singleton_model::<ToastStack>() {
+                let window_id = ctx.window_id();
+                let text = format!("Agent stopped: {reason}");
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_persistent_toast(DismissibleToast::error(text), window_id, ctx);
+                });
+            }
+        }
         if let BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id } = event {
             // A blocked action ended with no follow-up request, so no turn end will drain the
             // queue (#1026). Restore the head into the input like every other cancel; a Reject
@@ -9350,6 +9361,13 @@ impl TerminalView {
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1178: every stop / Escape / ^C path ends here, so a command that then exits 130 was
+        // interrupted rather than reporting 130 by itself.
+        self.model
+            .lock()
+            .block_list_mut()
+            .active_block_mut()
+            .mark_interrupted_by_ctrl_c();
         if self.ssh_pre_init_abort_bytes().is_none() && self.ssh_connect_sigint_applies() {
             ctx.emit(Event::SigintForegroundToPty);
             return;
@@ -11041,10 +11059,16 @@ impl TerminalView {
         mode: &AIAgentPtyWriteMode,
         ctx: &mut ViewContext<Self>,
     ) {
-        ctx.emit(Event::WriteAgentInputToPty {
-            bytes: data.into(),
-            mode: *mode,
-        });
+        let bytes: Cow<'static, [u8]> = data.into();
+        // #1178: a ^C the agent writes into its command interrupts it.
+        if bytes.contains(&0x03) {
+            self.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .mark_interrupted_by_ctrl_c();
+        }
+        ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
     }
 
     /// Writes a shared session viewer's bytes to the pty.
@@ -11251,6 +11275,13 @@ impl TerminalView {
                     .block_list_mut()
                     .active_block_mut()
                     .mark_received_user_input();
+            }
+            // #1178: a ^C typed into the running command interrupts it.
+            if bytes.contains(&0x03) {
+                terminal_model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .mark_interrupted_by_ctrl_c();
             }
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 if terminal_model.is_alt_screen_active() {

@@ -714,6 +714,7 @@ impl ShellCommandExecutor {
                                                 exit_code: block.exit_code(),
                                                 start_ts: block.start_ts().cloned(),
                                                 completed_ts: block.completed_ts().cloned(),
+                                                interrupted: block.was_interrupted_by_ctrl_c(),
                                             }
                                         } else {
                                             let grid_contents = if model.is_alt_screen_active() {
@@ -910,6 +911,7 @@ impl ShellCommandExecutor {
                             exit_code: block.exit_code(),
                             start_ts: block.start_ts().cloned(),
                             completed_ts: block.completed_ts().cloned(),
+                            interrupted: block.was_interrupted_by_ctrl_c(),
                         }
                     } else {
                         let grid_contents = if model.is_alt_screen_active() {
@@ -1041,6 +1043,7 @@ fn kill_own_shell_refusal(command: &str) -> RequestCommandOutputResult {
         exit_code: ExitCode::from(1),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     }
 }
 
@@ -1070,6 +1073,7 @@ fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputRe
         exit_code: ExitCode::from(1),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     }
 }
 
@@ -1223,6 +1227,7 @@ fn with_pager_closed_note(result: ActionResult) -> ActionResult {
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         } => {
             if !output.ends_with('\n') && !output.is_empty() {
                 output.push('\n');
@@ -1234,6 +1239,7 @@ fn with_pager_closed_note(result: ActionResult) -> ActionResult {
                 exit_code,
                 start_ts,
                 completed_ts,
+                interrupted,
             }
         }
         other => other,
@@ -1589,6 +1595,7 @@ fn action_result_for_requested_command(
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         } => AIAgentActionResultType::RequestCommandOutput(RequestCommandOutputResult::Completed {
             command,
             block_id,
@@ -1596,6 +1603,7 @@ fn action_result_for_requested_command(
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         }),
         ActionResult::LongRunningCommandSnapshot {
             block_id,
@@ -1887,6 +1895,8 @@ enum ActionResult {
         /// tool-call result records how long the command actually ran.
         start_ts: Option<DateTime<Local>>,
         completed_ts: Option<DateTime<Local>>,
+        /// A ^C was written to the command by the user or Phosphor (#1178).
+        interrupted: bool,
     },
     LongRunningCommandSnapshot {
         block_id: BlockId,

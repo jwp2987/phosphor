@@ -557,12 +557,26 @@ impl CLISubagentController {
                         });
                     }
 
+                    // #1178: the model may have answered the "still running" snapshot with text
+                    // and ended its turn, and nothing else reports the command's end. Decided
+                    // before the optimistic completion below, which would cancel a stream this
+                    // sends; it is skipped when this follow-up goes out.
+                    let sent_follow_up = conversation_id.is_some_and(|conversation_id| {
+                        me.controller.update(ctx, |controller, ctx| {
+                            controller.follow_up_on_monitored_command_completed(
+                                conversation_id,
+                                &block_id,
+                                ctx,
+                            )
+                        })
+                    });
+
                     let is_inline_agent_view =
                         me.agent_view_controller.as_ref().is_some_and(|controller| {
                             controller.read(ctx, |controller, _| controller.is_inline())
                         });
 
-                    if is_inline_agent_view {
+                    if is_inline_agent_view && !sent_follow_up {
                         // Mark conversation as successfully completed BEFORE exiting agent view.
                         // The command finished naturally, so this is a successful completion.
                         if let Some(conversation_id) = conversation_id {

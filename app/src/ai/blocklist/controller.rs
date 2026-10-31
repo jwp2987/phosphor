@@ -23,7 +23,8 @@ use super::{
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
-        context_and_files_for_attachments, BlocklistAIContextModel, PendingAttachment,
+        block_context_from_terminal_model, context_and_files_for_attachments,
+        BlocklistAIContextModel, PendingAttachment,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
@@ -375,6 +376,33 @@ pub enum BlocklistAIControllerEvent {
 
     /// Emitted when the export-to-file slash command is executed.
     ExportConversationToFile { filename: Option<String> },
+
+    /// A turn ended with tool results pending and no final assistant message, for a reason the
+    /// user did not choose (#1178). The terminal view shows "Agent stopped: <reason>" so the
+    /// agent never just goes quiet.
+    AgentStopped {
+        conversation_id: AIConversationId,
+        reason: String,
+    },
+}
+
+/// Why a batch of finished action results that sends no follow-up request leaves the turn
+/// silent, when nobody asked for that (#1178). `None` for a deliberate stop (a cancellation
+/// reason is set: Stop, Reject, a new query, ...) and for a batch with nothing cancelled.
+pub(crate) fn silent_stop_reason(
+    cancellation_reason: Option<CancellationReason>,
+    results: &[Arc<AIAgentActionResult>],
+) -> Option<String> {
+    if cancellation_reason.is_some() {
+        return None;
+    }
+    results
+        .iter()
+        .find(|result| result.result.is_cancelled())
+        .map(|result| match result.result.command_str() {
+            Some(command) => format!("the command `{command}` was interrupted"),
+            None => "a tool call was cancelled before it returned a result".to_owned(),
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -614,6 +642,43 @@ pub struct BlocklistAIController {
     /// a follow-up nor put their conversation back `InProgress`. Mirrors
     /// `TerminalView::suspended_for_close`, which sets and clears it.
     suspended_for_close: bool,
+    /// Blocks whose completion already produced a follow-up request for a monitored command the
+    /// model had stopped waiting on (#1178): one per block, however many completion signals
+    /// arrive.
+    monitored_completion_follow_ups: HashSet<BlockId>,
+}
+
+/// What `BlocklistAIController::follow_up_on_monitored_command_completed` checks before it
+/// reports a finished monitored command to the model (#1178).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MonitoredCompletionFacts {
+    /// A response stream of the conversation is running: the model is mid-turn and reads the
+    /// result itself (including one that polled `read_shell_command_output`).
+    pub stream_in_flight: bool,
+    /// The conversation's last turn ended normally. A turn the user stopped, one that failed
+    /// and one still in progress (a new user turn) are not resumed.
+    pub last_turn_succeeded: bool,
+    /// The pane is closed (undo-restorable).
+    pub suspended_for_close: bool,
+    /// A compaction summary or its continue message is in flight.
+    pub mid_compaction: bool,
+    /// Actions are pending, running, or finished but not yet sent: a request that carries them
+    /// is coming and will include the command's result.
+    pub has_unsent_actions: bool,
+    /// This block already produced a follow-up.
+    pub already_followed_up: bool,
+}
+
+impl MonitoredCompletionFacts {
+    /// Whether the finished command is reported to the model with a follow-up request.
+    pub(crate) fn should_follow_up(&self) -> bool {
+        self.last_turn_succeeded
+            && !self.stream_in_flight
+            && !self.suspended_for_close
+            && !self.mid_compaction
+            && !self.has_unsent_actions
+            && !self.already_followed_up
+    }
 }
 
 /// `send_request_input`'s refusal while the pane is closed (#848). Expected, not a failure:
@@ -840,6 +905,10 @@ impl BlocklistAIController {
                     //
                     // If the user does end up following up on the passive diff-originated conversation,
                     // the status will once again be updated to `InProgress`.
+                    // #1178: no request follows and nobody asked for that: say so instead of
+                    // leaving a finished-looking turn with no message.
+                    let silent_stop =
+                        silent_stop_reason(*cancellation_reason, finished_action_results);
                     let updated_conversation_status = if finished_action_results
                         .iter()
                         .all(|result| result.result.is_successful())
@@ -864,6 +933,13 @@ impl BlocklistAIController {
                             ctx,
                         );
                     });
+
+                    if let Some(reason) = silent_stop {
+                        ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+                            conversation_id: *conversation_id,
+                            reason,
+                        });
+                    }
 
                     // This is the only terminal outcome for a rejected (or otherwise
                     // resolved-without-a-follow-up) blocked action: no new request is being
@@ -968,12 +1044,75 @@ impl BlocklistAIController {
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
+            monitored_completion_follow_ups: HashSet::new(),
         }
     }
 
     /// Marks this controller's pane closed (or restored); see `suspended_for_close`.
     pub fn set_suspended_for_close(&mut self, suspended: bool) {
         self.suspended_for_close = suspended;
+    }
+
+    /// #1178: a command the model was left monitoring (`wait_until_complete=false`, or a stall
+    /// snapshot) finished after the model had already ended its turn on the "still running"
+    /// snapshot. Nothing else tells the model, so the turn would stay silent forever. Resumes
+    /// the conversation once with the finished block (command, output, exit code) as context.
+    ///
+    /// Not when a stream is running (the model is mid-turn), the user stopped or started a new
+    /// turn, the pane is closed, a compaction is under way, or results are still on their way
+    /// to the model. Returns whether a request was sent.
+    pub(crate) fn follow_up_on_monitored_command_completed(
+        &mut self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let facts = MonitoredCompletionFacts {
+            stream_in_flight: self
+                .in_flight_response_streams
+                .has_active_stream_for_conversation(conversation_id, ctx),
+            last_turn_succeeded: BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| {
+                    matches!(conversation.status(), ConversationStatus::Success)
+                }),
+            suspended_for_close: self.suspended_for_close,
+            mid_compaction: self
+                .compaction_turn_state
+                .get(&conversation_id)
+                .is_some_and(|state| state.is_mid_compaction()),
+            has_unsent_actions: {
+                let action_model = self.action_model.as_ref(ctx);
+                action_model.has_unfinished_actions_for_conversation(conversation_id)
+                    || action_model
+                        .get_finished_action_results(conversation_id)
+                        .is_some_and(|results| !results.is_empty())
+            },
+            already_followed_up: self.monitored_completion_follow_ups.contains(block_id),
+        };
+        if !facts.should_follow_up() {
+            return false;
+        }
+        let block_context = {
+            let terminal_model = self.terminal_model.lock();
+            block_context_from_terminal_model(&terminal_model, block_id, false)
+        };
+        let Some(block_context) = block_context else {
+            return false;
+        };
+        self.monitored_completion_follow_ups
+            .insert(block_id.clone());
+        log::info!(
+            "[byop] monitored command finished after the turn ended; following up \
+             block={block_id:?} conversation={conversation_id:?}"
+        );
+        self.resume_conversation(
+            conversation_id,
+            /*is_auto_resume_after_error*/ false,
+            vec![AIAgentContext::Block(Box::new(block_context))],
+            ctx,
+        );
+        true
     }
 
     pub fn is_suspended_for_close(&self) -> bool {

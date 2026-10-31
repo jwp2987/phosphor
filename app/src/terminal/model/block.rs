@@ -462,6 +462,12 @@ pub struct Block {
     /// This may only be `true` for long running commands.
     has_received_user_input: bool,
 
+    /// `true` once a ^C (ETX) was written to this block's pty by the user or by Phosphor (the
+    /// stop button, an Escape stop, a ^C the agent wrote). A command that exits 130 on its own
+    /// leaves this `false`, so the agent can tell an interrupted command from one that merely
+    /// reports 130 (#1178).
+    interrupted_by_ctrl_c: bool,
+
     /// When true, don't show the block in the blocklist.
     hidden: bool,
 
@@ -1094,6 +1100,7 @@ impl Block {
             cloud_env_var_collection_id: None,
             last_painted_at: None.into(),
             has_received_user_input: false,
+            interrupted_by_ctrl_c: false,
             hidden: false,
             should_hide_output_grid: false,
             ssh_payload_only: false,
@@ -1366,6 +1373,16 @@ impl Block {
     /// command execution.
     pub fn mark_received_user_input(&mut self) {
         self.has_received_user_input = true;
+    }
+
+    /// Whether a ^C was written to this block's pty by the user or by Phosphor.
+    pub fn was_interrupted_by_ctrl_c(&self) -> bool {
+        self.interrupted_by_ctrl_c
+    }
+
+    /// Records that a ^C was written to this block's pty (#1178).
+    pub fn mark_interrupted_by_ctrl_c(&mut self) {
+        self.interrupted_by_ctrl_c = true;
     }
 
     fn init_rprompt_grid(&mut self, rprompt: &str) {

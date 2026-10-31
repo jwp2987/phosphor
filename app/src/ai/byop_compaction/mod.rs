@@ -334,6 +334,12 @@ impl TurnCompactionState {
         self.compact_after_tool_results = false;
     }
 
+    /// A deferred summary is owed to the next tool results, or the continue message sent after a
+    /// summary has not been answered yet: a request about this conversation is still coming.
+    pub fn is_mid_compaction(&self) -> bool {
+        self.compact_after_tool_results || self.continue_pending
+    }
+
     /// The synthetic continue message was just sent: its reply is judged by
     /// [`Self::on_continue_reply`].
     pub fn on_continue_sent(&mut self) {

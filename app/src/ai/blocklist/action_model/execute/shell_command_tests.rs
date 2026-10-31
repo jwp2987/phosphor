@@ -877,6 +877,7 @@ fn pager_closed_note_is_appended_to_finished_output_only() {
         exit_code: 0.into(),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     };
     let ActionResult::CommandFinished { output, .. } = with_pager_closed_note(finished) else {
         panic!("a finished command stays finished");
