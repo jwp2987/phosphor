@@ -19046,6 +19046,10 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
         let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
 
         let size_info = terminal.update(&mut app, |view, ctx| {
+            // The first output turns the empty pre-bootstrap block into a visible one, which is
+            // itself a render input (block visibility/height), so it goes in before the first
+            // render; the wakeup under test below only extends the line already there.
+            ansi::Handler::input(&mut *view.model.lock(), 'x');
             view.handle_terminal_wakeup(Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
             *view.size_info
@@ -19062,7 +19066,7 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
         }));
 
         terminal.update(&mut app, |view, ctx| {
-            ansi::Handler::input(&mut *view.model.lock(), 'x');
+            ansi::Handler::input(&mut *view.model.lock(), 'y');
             view.handle_terminal_wakeup(Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Relayout));
 
