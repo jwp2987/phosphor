@@ -36,7 +36,8 @@ use crate::ai::agent::conversation::{AIConversation, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentActionResult, CancellationOutcome, CancellationReason, PassiveSuggestionResultType,
-    PassiveSuggestionTrigger, PassiveSuggestionTriggerType, RunningCommand,
+    PassiveSuggestionTrigger, PassiveSuggestionTriggerType, ReadShellCommandOutputResult,
+    RunningCommand, TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
 };
 use crate::ai::agent::{DocumentContentAttachmentSource, FileContext};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
@@ -384,6 +385,12 @@ pub enum BlocklistAIControllerEvent {
         conversation_id: AIConversationId,
         reason: String,
     },
+
+    /// `follow_up_on_monitored_command_completed` just resumed the conversation for a block
+    /// completion whose `FinishedSubagent` is about to be delivered. The terminal view records
+    /// it the way `on_user_block_completed` records its own resume, so a `LrcAutoQueue` row
+    /// does not fire into -- and cancel -- that resume; the row goes out at the resume's end.
+    ResumedOnBlockCompletion { conversation_id: AIConversationId },
 }
 
 /// Why a batch of finished action results that sends no follow-up request leaves the turn
@@ -403,6 +410,24 @@ pub(crate) fn silent_stop_reason(
             Some(command) => format!("the command `{command}` was interrupted"),
             None => "a tool call was cancelled before it returned a result".to_owned(),
         })
+}
+
+/// The block whose command `result` reports as finished, for the tools that read or drive a
+/// running command. A `RequestCommandOutput` completion is the command's own action and is not
+/// one: its block is reported by the request that carries it.
+pub(crate) fn finished_command_block_id(result: &AIAgentActionResultType) -> Option<&BlockId> {
+    match result {
+        AIAgentActionResultType::ReadShellCommandOutput(
+            ReadShellCommandOutputResult::CommandFinished { block_id, .. },
+        )
+        | AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::CommandFinished { block_id, .. },
+        )
+        | AIAgentActionResultType::TransferShellCommandControlToUser(
+            TransferShellCommandControlToUserResult::CommandFinished { block_id, .. },
+        ) => Some(block_id),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -646,6 +671,26 @@ pub struct BlocklistAIController {
     /// model had stopped waiting on (#1178): one per block, however many completion signals
     /// arrive.
     monitored_completion_follow_ups: HashSet<BlockId>,
+    /// A monitored command that finished while a request about its conversation was still in
+    /// flight (the model mid-reply, a tool step, a compaction) or scheduled. `BlockCompleted`
+    /// fires once; the model's reply may then end on the stale "still running" snapshot with
+    /// nothing left to report the result. The completion is held here and re-decided at every
+    /// clean stream end ([`Self::retry_deferred_monitored_completion`]) until it is sent or
+    /// dropped. One per conversation: a later completion replaces an earlier one.
+    deferred_monitored_completions: HashMap<AIConversationId, BlockId>,
+}
+
+/// What [`MonitoredCompletionFacts`] say to do about a finished monitored command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MonitoredCompletionDecision {
+    /// Resume the conversation now with the finished block as context.
+    Send,
+    /// A request about this conversation is in flight or coming; hold the completion and
+    /// re-decide when that stream ends.
+    Defer,
+    /// Nothing to do: already reported, the pane is closed, or the turn ended in a way the
+    /// user chose (stopped, failed) with nothing coming that could change that.
+    Drop,
 }
 
 /// What `BlocklistAIController::follow_up_on_monitored_command_completed` checks before it
@@ -667,17 +712,38 @@ pub(crate) struct MonitoredCompletionFacts {
     pub has_unsent_actions: bool,
     /// This block already produced a follow-up.
     pub already_followed_up: bool,
+    /// An automatic resume (after an error, or for a synthetic tool result) is scheduled, or a
+    /// request the readiness pass stashed is waiting to be resent: a request is coming, and
+    /// sending one now would abort it.
+    pub resume_scheduled: bool,
 }
 
 impl MonitoredCompletionFacts {
-    /// Whether the finished command is reported to the model with a follow-up request.
+    /// Whether the finished command is reported to the model with a follow-up request now.
     pub(crate) fn should_follow_up(&self) -> bool {
-        self.last_turn_succeeded
-            && !self.stream_in_flight
-            && !self.suspended_for_close
-            && !self.mid_compaction
-            && !self.has_unsent_actions
-            && !self.already_followed_up
+        self.decision() == MonitoredCompletionDecision::Send
+    }
+
+    /// Send now, hold for the next stream end, or drop. Holding is for every reason that is a
+    /// request about this conversation still being on its way: that request's end re-decides
+    /// with fresh facts, so a command that finishes while the model is mid-reply is reported
+    /// once the reply (or the tool loop, or the compaction) is over instead of never.
+    pub(crate) fn decision(&self) -> MonitoredCompletionDecision {
+        if self.already_followed_up || self.suspended_for_close {
+            return MonitoredCompletionDecision::Drop;
+        }
+        if self.stream_in_flight
+            || self.mid_compaction
+            || self.has_unsent_actions
+            || self.resume_scheduled
+        {
+            return MonitoredCompletionDecision::Defer;
+        }
+        if self.last_turn_succeeded {
+            MonitoredCompletionDecision::Send
+        } else {
+            MonitoredCompletionDecision::Drop
+        }
     }
 }
 
@@ -851,6 +917,16 @@ impl BlocklistAIController {
             else {
                 return;
             };
+            // The model read the finished command itself (`read_shell_command_output` or a
+            // write/transfer that returned `CommandFinished`): the completion held for it has
+            // been reported through that result, so it is not reported again at the turn end.
+            if let Some(held_block_id) = me.deferred_monitored_completions.get(conversation_id)
+                && finished_action_results.iter().any(|result| {
+                    finished_command_block_id(&result.result) == Some(held_block_id)
+                })
+            {
+                me.deferred_monitored_completions.remove(conversation_id);
+            }
             let is_passive_code_diff = is_entirely_passive_code_diff
                 && finished_action_results.last().is_some_and(|result| {
                     matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
@@ -1045,6 +1121,7 @@ impl BlocklistAIController {
             pending_byop_requests: HashMap::new(),
             suspended_for_close: false,
             monitored_completion_follow_ups: HashSet::new(),
+            deferred_monitored_completions: HashMap::new(),
         }
     }
 
@@ -1058,16 +1135,70 @@ impl BlocklistAIController {
     /// snapshot. Nothing else tells the model, so the turn would stay silent forever. Resumes
     /// the conversation once with the finished block (command, output, exit code) as context.
     ///
-    /// Not when a stream is running (the model is mid-turn), the user stopped or started a new
-    /// turn, the pane is closed, a compaction is under way, or results are still on their way
-    /// to the model. Returns whether a request was sent.
+    /// Not when the user stopped or started a new turn, or the pane is closed. While a stream is
+    /// running (the model is mid-reply), a compaction is under way, results are still on their
+    /// way to the model or a resume is scheduled, the completion is held and re-decided at that
+    /// request's end (`deferred_monitored_completions`): the model's reply may end on the stale
+    /// "still running" snapshot, and `BlockCompleted` does not fire twice. Returns whether a
+    /// request was sent.
     pub(crate) fn follow_up_on_monitored_command_completed(
         &mut self,
         conversation_id: AIConversationId,
         block_id: &BlockId,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        let facts = MonitoredCompletionFacts {
+        let facts = self.monitored_completion_facts(conversation_id, block_id, ctx);
+        match facts.decision() {
+            MonitoredCompletionDecision::Drop => {
+                self.clear_deferred_monitored_completion(conversation_id, block_id);
+                return false;
+            }
+            MonitoredCompletionDecision::Defer => {
+                log::info!(
+                    "[byop] monitored command finished while a request is in flight or coming; \
+                     reporting it at the turn end block={block_id:?} \
+                     conversation={conversation_id:?} facts={facts:?}"
+                );
+                self.deferred_monitored_completions
+                    .insert(conversation_id, block_id.clone());
+                return false;
+            }
+            MonitoredCompletionDecision::Send => {}
+        }
+        self.clear_deferred_monitored_completion(conversation_id, block_id);
+        let block_context = {
+            let terminal_model = self.terminal_model.lock();
+            block_context_from_terminal_model(&terminal_model, block_id, false)
+        };
+        let Some(block_context) = block_context else {
+            return false;
+        };
+        self.monitored_completion_follow_ups
+            .insert(block_id.clone());
+        log::info!(
+            "[byop] monitored command finished after the turn ended; following up \
+             block={block_id:?} conversation={conversation_id:?}"
+        );
+        // Before the resume's own `SentRequest`, so the view's record is in place when the
+        // `FinishedSubagent` queued behind this call is delivered (events are delivered in the
+        // order they were emitted).
+        ctx.emit(BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id });
+        self.resume_conversation(
+            conversation_id,
+            /*is_auto_resume_after_error*/ false,
+            vec![AIAgentContext::Block(Box::new(block_context))],
+            ctx,
+        );
+        true
+    }
+
+    fn monitored_completion_facts(
+        &self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+        ctx: &ModelContext<Self>,
+    ) -> MonitoredCompletionFacts {
+        MonitoredCompletionFacts {
             stream_in_flight: self
                 .in_flight_response_streams
                 .has_active_stream_for_conversation(conversation_id, ctx),
@@ -1089,30 +1220,48 @@ impl BlocklistAIController {
                         .is_some_and(|results| !results.is_empty())
             },
             already_followed_up: self.monitored_completion_follow_ups.contains(block_id),
-        };
-        if !facts.should_follow_up() {
-            return false;
+            resume_scheduled: self.pending_auto_resume_handles.contains_key(&conversation_id)
+                || self.pending_byop_requests.contains_key(&conversation_id),
         }
-        let block_context = {
-            let terminal_model = self.terminal_model.lock();
-            block_context_from_terminal_model(&terminal_model, block_id, false)
-        };
-        let Some(block_context) = block_context else {
-            return false;
-        };
-        self.monitored_completion_follow_ups
-            .insert(block_id.clone());
-        log::info!(
-            "[byop] monitored command finished after the turn ended; following up \
-             block={block_id:?} conversation={conversation_id:?}"
-        );
-        self.resume_conversation(
-            conversation_id,
-            /*is_auto_resume_after_error*/ false,
-            vec![AIAgentContext::Block(Box::new(block_context))],
-            ctx,
-        );
-        true
+    }
+
+    /// Re-decides a completion held by [`Self::follow_up_on_monitored_command_completed`] once a
+    /// stream of `conversation_id` has ended. Holds it again if another request is in flight or
+    /// coming (a tool step, a compaction's summary and continue), so it is reported at the first
+    /// quiet turn end.
+    fn retry_deferred_monitored_completion(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(block_id) = self
+            .deferred_monitored_completions
+            .get(&conversation_id)
+            .cloned()
+        {
+            self.follow_up_on_monitored_command_completed(conversation_id, &block_id, ctx);
+        }
+    }
+
+    /// Drops a held completion of `block_id`, if that is the one held for `conversation_id`.
+    fn clear_deferred_monitored_completion(
+        &mut self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+    ) {
+        if self.deferred_monitored_completions.get(&conversation_id) == Some(block_id) {
+            self.deferred_monitored_completions.remove(&conversation_id);
+        }
+    }
+
+    /// Whether a monitored command completion is held for `conversation_id`.
+    #[cfg(test)]
+    pub(crate) fn has_deferred_monitored_completion(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> bool {
+        self.deferred_monitored_completions
+            .contains_key(&conversation_id)
     }
 
     pub fn is_suspended_for_close(&self) -> bool {
@@ -4114,6 +4263,14 @@ impl BlocklistAIController {
         // recorded stay in history; nothing is lost.
         self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
 
+        // The user stopped the conversation or moved on (a new prompt, a revert, a delete): a
+        // monitored command's completion held for the turn end is not reported on their behalf.
+        // An optimistic subagent completion is the command finishing, not the user acting, and
+        // keeps the hold.
+        if reason.conversation_outcome() != CancellationOutcome::Succeeded {
+            self.deferred_monitored_completions.remove(&conversation_id);
+        }
+
         if !self
             .in_flight_response_streams
             .try_cancel_streams_for_conversation(conversation_id, reason, ctx)
@@ -4723,6 +4880,14 @@ impl BlocklistAIController {
                     }
                 });
                 ctx.unsubscribe_from_model(response_stream);
+
+                // A monitored command that finished during this stream is reported now that it
+                // has ended -- unless the turn goes on (tool calls were queued above, a resume
+                // or a compaction is coming), in which case it is held for that end. Before
+                // `FinishedReceivingOutput`: the resume's exchange must exist when the view
+                // decides whether this turn end drains the queued prompts, so that a queued
+                // row waits for the resume instead of firing into it.
+                self.retry_deferred_monitored_completion(conversation_id, ctx);
 
                 if self.should_refresh_available_llms_on_stream_finish {
                     self.should_refresh_available_llms_on_stream_finish = false;

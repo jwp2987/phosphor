@@ -2358,7 +2358,9 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
 
 /// #1178: the facts under which a finished monitored command is reported to the model.
 mod monitored_completion {
-    use super::super::{silent_stop_reason, MonitoredCompletionFacts};
+    use super::super::{
+        MonitoredCompletionDecision, MonitoredCompletionFacts, silent_stop_reason,
+    };
     use super::*;
 
     fn idle_after_text_reply() -> MonitoredCompletionFacts {
@@ -2467,5 +2469,143 @@ mod monitored_completion {
             silent_stop_reason(Some(CancellationReason::ManuallyCancelled), &[interrupted]),
             None
         );
+    }
+
+    /// A request about the conversation is in flight or coming -- the model mid-reply, a tool
+    /// step, a compaction, a scheduled resume: the completion is held for that request's end,
+    /// never dropped. Fails on the old code, which only knew send-or-nothing.
+    #[test]
+    fn a_completion_while_a_request_is_in_flight_or_coming_is_deferred() {
+        use MonitoredCompletionDecision as D;
+        let base = idle_after_text_reply();
+        // Mid-reply the status is still `InProgress`.
+        assert_eq!(
+            MonitoredCompletionFacts {
+                stream_in_flight: true,
+                last_turn_succeeded: false,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                mid_compaction: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                has_unsent_actions: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                resume_scheduled: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+    }
+
+    /// Nothing coming and the turn did not end normally (the user stopped it, it failed), or
+    /// the block was already reported, or the pane is closed: dropped, whatever else is going on.
+    #[test]
+    fn a_stopped_or_failed_turn_with_nothing_coming_drops_the_completion() {
+        use MonitoredCompletionDecision as D;
+        assert_eq!(MonitoredCompletionFacts::default().decision(), D::Drop);
+        assert_eq!(
+            MonitoredCompletionFacts {
+                already_followed_up: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                suspended_for_close: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(idle_after_text_reply().decision(), D::Send);
+    }
+
+    /// The controller holds a completion that arrives while a stream is in flight, keeps it
+    /// across the command's own optimistic completion, and drops it when the user stops the
+    /// conversation. Fails on the old code: the first call returned false and nothing was kept.
+    #[test]
+    fn a_completion_during_the_models_reply_is_held_until_the_user_stops_or_the_turn_ends() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    assert!(
+                        !controller.follow_up_on_monitored_command_completed(
+                            conversation_id,
+                            &block_id,
+                            ctx
+                        ),
+                        "nothing is sent into a running stream"
+                    );
+                    assert!(
+                        controller.has_deferred_monitored_completion(conversation_id),
+                        "the completion is held for the stream's end"
+                    );
+                    // The command finishing is not the user acting: the hold survives.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::OptimisticCLISubagentCompletion,
+                        ctx,
+                    );
+                    assert!(controller.has_deferred_monitored_completion(conversation_id));
+                    // The user stopping (or sending a new prompt) drops it: nothing resumes on
+                    // their behalf.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                    assert!(!controller.has_deferred_monitored_completion(conversation_id));
+                });
+            });
+        });
     }
 }
