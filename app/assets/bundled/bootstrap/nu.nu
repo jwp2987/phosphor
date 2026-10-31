@@ -129,6 +129,64 @@ def --wrapped __warp_git [...args: string]: nothing -> string {
     if $r.exit_code == 0 { $r.stdout | str trim } else { "" }
 }
 
+# Phosphor (#1233): finds the branch `git symbolic-ref --short HEAD` would print by reading
+# .git/HEAD, without forking git (that fork ran on every prompt: ~3 ms of a 6 ms hook). Returns
+# {branch, packed}: branch "" outside any repository (git prints nothing there either). Returns
+# null, leaving the answer to git as before, for anything it cannot answer with certainty; the
+# same cases as __warp_git_head_fast in fish.sh: a .git file (worktree, submodule), a bare repo or
+# the .git directory itself, a symlinked .git, a repo owned by someone else (git refuses it),
+# reftable (HEAD is refs/heads/.invalid), a detached HEAD (needs an abbreviated hash), a branch
+# whose short name git would qualify because a ref of the same name exists elsewhere, and any
+# error. The walk starts at the physical path (`path expand` follows symlinks), as git's does.
+def __warp_git_probe [me: string]: nothing -> any {
+    mut p = ($env.PWD | path expand)
+    mut gd = ""
+    for _ in 1..64 {
+        let g = ($p | path join .git)
+        let t = (if ($g | path exists) { $g | path type | default "" } else { "" })
+        if $t == "dir" { $gd = $g; break }
+        if $t != "" { return null }
+        if (($p | path join HEAD | path exists) and ($p | path join refs | path exists)) { return null }
+        let parent = ($p | path dirname)
+        if $parent == $p { return {branch: "", packed: false} }
+        $p = $parent
+    }
+    if $gd == "" { return null }
+    let owners = (ls --long --directory $gd $p | get user)
+    if ($owners | any {|u| $u != $me }) { return null }
+    if not (($gd | path join objects | path exists) and ($gd | path join refs | path exists)) { return null }
+    let line = (open --raw ($gd | path join HEAD) | lines | first)
+    if not ($line | str starts-with "ref: refs/heads/") { return null }
+    let branch = ($line | str substring 16..)
+    if $branch == "" or $branch == ".invalid" { return null }
+    if (($gd | path join $branch | path exists) or ($gd | path join refs $branch | path exists) or ($gd | path join refs tags $branch | path exists)) { return null }
+    {branch: $branch, packed: ($gd | path join packed-refs | path exists)}
+}
+
+# The current branch ("" when there is none) and the HEAD name for the Precmd hook. A packed tag
+# of the branch's name cannot be seen without reading all of packed-refs, so git is asked once per
+# directory and branch in a repository that has one.
+def --env __warp_git_info []: nothing -> record {
+    if (which git | is-empty) { return {branch: "", head: ""} }
+    let me = ($env.__warp_me? | default "")
+    let plain = ($me != "" and $nu.os-info.name != "windows" and $env.GIT_DIR? == null and $env.GIT_WORK_TREE? == null and $env.GIT_CEILING_DIRECTORIES? == null and $env.GIT_DISCOVERY_ACROSS_FILESYSTEM? == null and $env.GIT_NAMESPACE? == null and $env.GIT_COMMON_DIR? == null)
+    if $plain {
+        let r = (try { __warp_git_probe $me } catch { null })
+        if $r != null {
+            let key = $"($env.PWD)|($r.branch)"
+            if not $r.packed or ($env.__warp_git_checked? | default "") == $key {
+                return {branch: $r.branch, head: $r.branch}
+            }
+            if (__warp_git symbolic-ref --short HEAD) == $r.branch {
+                $env.__warp_git_checked = $key
+                return {branch: $r.branch, head: $r.branch}
+            }
+        }
+    }
+    let branch = (__warp_git symbolic-ref --short HEAD)
+    {branch: $branch, head: (if ($branch | is-empty) { __warp_git rev-parse --short HEAD } else { $branch })}
+}
+
 # The Node.js version, only inside a git repository that holds a package.json, cached per PWD+PATH.
 def --env __warp_node_version []: nothing -> string {
     if ($env.WARP_PROMPT_NODE_VERSION_ENABLED? | default "1") == "0" or (which node | is-empty) { return "" }
@@ -188,9 +246,9 @@ def --env __warp_precmd [] {
         $venv = (__warp_jstr ($env.VIRTUAL_ENV? | default ""))
         $conda = (__warp_jstr ($env.CONDA_DEFAULT_ENV? | default ""))
         $node = (__warp_jstr (__warp_node_version))
-        let branch = (__warp_git symbolic-ref --short HEAD)
-        $git_branch = (__warp_jstr $branch)
-        $git_head = (__warp_jstr (if ($branch | is-empty) { __warp_git rev-parse --short HEAD } else { $branch }))
+        let git = (__warp_git_info)
+        $git_branch = (__warp_jstr $git.branch)
+        $git_head = (__warp_jstr $git.head)
     }
 
     __warp_update_prompt_vars
@@ -249,6 +307,9 @@ def __warp_bootstrapped [] {
     let path = ($env.PATH | each {|p| $p | into string } | str join (char esep))
     __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
 }
+
+# Who owns the repositories git will accept (see __warp_git_probe); one fork, once.
+$env.__warp_me = (do -i { ^id -un } | default "" | into string | str trim)
 
 # Hooks. Ours is first in pre_prompt so user hooks cannot disturb $env.LAST_EXIT_CODE before the
 # exit code is read.
