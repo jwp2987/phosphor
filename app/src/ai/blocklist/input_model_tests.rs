@@ -1556,6 +1556,36 @@ fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
     assert!(!wait(true, false, true, Classifiable, true), "second Enter after giving up");
 }
 
+/// #1158: a waiting Enter polls only within the budget; past it, a late verdict is dropped and the
+/// Enter submits on the Enter-time rules. It is never kept in the editor, however long it waited.
+#[test]
+fn enter_verdict_wait_is_bounded_and_never_swallows_the_enter() {
+    use std::time::Duration;
+    let decide = enter_verdict_wait_decision;
+    assert_eq!(decide(false, Duration::ZERO), EnterVerdictWait::Submit);
+    assert_eq!(
+        decide(false, Duration::from_secs(60)),
+        EnterVerdictWait::Submit
+    );
+    assert_eq!(decide(true, Duration::ZERO), EnterVerdictWait::Wait);
+    assert_eq!(
+        decide(true, ENTER_VERDICT_BUDGET - Duration::from_millis(1)),
+        EnterVerdictWait::Wait
+    );
+    assert_eq!(
+        decide(true, ENTER_VERDICT_BUDGET),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert_eq!(
+        decide(true, Duration::from_secs(5)),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert!(
+        ENTER_VERDICT_BUDGET <= Duration::from_millis(20),
+        "the budget is local compute plus the 10 ms debounce, never I/O"
+    );
+}
+
 #[test]
 fn typeahead_is_young_only_while_the_provenance_lasts() {
     App::test((), |mut app| async move {

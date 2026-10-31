@@ -307,6 +307,16 @@ impl Input {
 
         match self.completion_session_context_or_empty_context(ctx) {
             CompletionSessionContext::Session(completion_context) => {
+                // #1158: a parse that feeds input-type detection runs no generators, on any
+                // session. Enter can be waiting on its verdict, and a generator is a process
+                // (local) or a command on the shared ssh connection (remote) that takes
+                // seconds for `systemctl`; the classifier needs only the command word, aliases,
+                // history and syntax.
+                let completion_context = if mode.ai_input_detection {
+                    completion_context.for_classification()
+                } else {
+                    completion_context
+                };
                 let editor = self.editor.as_ref(ctx);
                 let buffer_text = editor.buffer_text(ctx);
 

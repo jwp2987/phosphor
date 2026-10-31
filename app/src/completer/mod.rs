@@ -91,9 +91,25 @@ pub struct SessionContext {
 
     /// Snapshot of all Zap workflow aliases.
     workflow_aliases: HashMap<String, String>,
+
+    /// When set, `generator_context()` is `None`: no completion generator or alias command is
+    /// ever run. Used for the input-type classification parse (#1158); fix/1130 also uses it for
+    /// highlighting on non-local sessions, where every generator is a command on the shared ssh
+    /// connection.
+    generators_disabled: bool,
 }
 
 impl SessionContext {
+    /// A context for the input-type classification parse, on every session (#1158). The verdict
+    /// Enter may be waiting on must come from local signals only (command word, aliases,
+    /// history, syntax): a generator is a process spawn locally and a command on the shared ssh
+    /// connection remotely, seconds for `systemctl`, and classification must be fast and
+    /// deterministic whichever session the line is typed in.
+    pub fn for_classification(mut self) -> Self {
+        self.generators_disabled = true;
+        self
+    }
+
     /// Lists `directory` fresh from disk and caches the results, coalescing concurrent
     /// refreshes of the same path so only one listing is actually performed.
     ///
@@ -373,7 +389,11 @@ impl GeneratorContext for SessionContext {
 
 impl CompletionContext for SessionContext {
     fn generator_context(&self) -> Option<&dyn GeneratorContext> {
-        Some(self)
+        if self.generators_disabled {
+            None
+        } else {
+            Some(self)
+        }
     }
 
     fn path_completion_context(&self) -> Option<&dyn PathCompletionContext> {
@@ -488,6 +508,7 @@ impl SessionContext {
                     cached_directory_entries: Arc::new(Default::default()),
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
+                    generators_disabled: false,
                 }
             } else {
                 Self {
@@ -497,6 +518,7 @@ impl SessionContext {
                     cached_directory_entries: Arc::new(Default::default()),
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
+                    generators_disabled: false,
                 }
             }
         }

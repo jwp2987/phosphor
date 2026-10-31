@@ -32,6 +32,29 @@ fn working_directory() -> TypedPathBuf {
     cwd
 }
 
+/// #1158: the classification parse runs no generators on any session, local included; Enter may be
+/// waiting on its verdict. The ordinary context still has them.
+#[test]
+pub fn test_for_classification_context_has_no_generators() {
+    App::test((), |app| async move {
+        let session = Session::new(
+            SessionInfo::new_for_test(),
+            Arc::new(TestCommandExecutor::default()),
+        );
+        let ctx = test_session_context(session, working_directory(), &app);
+        assert!(ctx.generator_context().is_some());
+
+        let classification = ctx.clone().for_classification();
+        assert!(classification.generator_context().is_none());
+        // Everything else the classifier reads is intact.
+        assert!(classification.path_completion_context().is_some());
+        assert_eq!(
+            classification.top_level_commands().collect_vec(),
+            ctx.top_level_commands().collect_vec()
+        );
+    });
+}
+
 #[test]
 pub fn test_session_context_top_level_commands_includes_function_names() {
     App::test((), |app| async move {

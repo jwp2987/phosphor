@@ -7340,6 +7340,85 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
+/// #1158: an Enter waiting for a verdict that never arrives (over ssh it waited on remote
+/// completion generators) submits once the budget is spent. It used to hold for 5 s and then keep
+/// the text in the editor.
+#[test]
+fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "precondition: the verdict has not landed"
+            );
+        });
+
+        // Within the budget it keeps waiting.
+        input.update(&mut app, |input, ctx| {
+            input.wait_for_verdict_then_enter(line.to_string(), Instant::now(), ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(input.verdict_wait.is_some(), "still within the budget");
+        });
+
+        // The verdict never lands; once the budget is spent the Enter goes ahead.
+        input.update(&mut app, |input, ctx| {
+            let started =
+                Instant::now() - ENTER_VERDICT_BUDGET - std::time::Duration::from_millis(5);
+            input.wait_for_verdict_then_enter(line.to_string(), started, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "a late verdict must not keep the Enter waiting"
+            );
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the late verdict is dropped"
+            );
+            assert!(
+                input.last_enter_submitted_shell_command || input.buffer_text(ctx) != line,
+                "the Enter must not be kept in the editor"
+            );
+        });
+    });
+}
+
 /// #1036: a buffer over the background-job cap is never parsed, so no verdict can ever land for
 /// it. The first Enter must submit rather than wait for one (it used to be swallowed, and only a
 /// second Enter submitted).
