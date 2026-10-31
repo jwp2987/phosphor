@@ -878,6 +878,22 @@ impl Window {
         Ok(())
     }
 
+    /// Asks winit for another `RedrawRequested`, keeping the scene that was already built. Used to
+    /// retry a frame that was skipped before anything was presented, where the scene is still
+    /// valid (unlike [`platform::WindowContext::request_redraw`], which discards it).
+    pub(super) fn request_redraw_keeping_scene(&self) {
+        if let Some(inner) = self.inner.borrow().as_ref() {
+            inner.window.request_redraw();
+        }
+    }
+
+    /// How long the last surface texture acquire took, for slow-frame diagnostics.
+    pub(super) fn last_acquire_wait(&self) -> Option<std::time::Duration> {
+        let inner = self.inner.borrow();
+        let resources = &inner.as_ref()?.rendering_resources.as_ref()?.resources;
+        Some(resources.last_acquire_wait())
+    }
+
     pub fn render(
         &self,
         new_scene: Option<Rc<Scene>>,
