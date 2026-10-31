@@ -5,7 +5,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use rangemap::{RangeInclusiveMap, StepLite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Not, RangeInclusive};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -191,20 +191,31 @@ impl ObfuscateSecrets {
 pub struct Secret {
     /// Whether the secret is currently obfuscated.
     is_obfuscated: IsObfuscated,
-    range: RangeInclusive<Point>,
+    /// Where the secret is. While the secret is being built this is in the grid's current row
+    /// coordinates; once it is inserted into a [`SecretMap`] the rows are absolute (the grid row
+    /// plus the number of rows the grid had truncated from its front at that moment), so that the
+    /// secret keeps pointing at the same text when the grid later drops rows from its front.
+    /// Read it through [`Secret::current_range`], never directly.
+    abs_range: RangeInclusive<Point>,
     /// The level/source of this secret's redaction rule
     secret_level: SecretLevel,
+    /// The text that was detected as a secret, shared with the grid's plaintext index so that the
+    /// index can be cleaned up when this secret goes away.
+    plaintext: Option<Arc<str>>,
+    /// The owning [`SecretMap`]'s count of rows truncated from the front of the grid. `None`
+    /// until the secret is inserted into a map.
+    truncated_rows: Option<Arc<AtomicUsize>>,
 }
 
 impl RangeInModel for &Secret {
     fn range(&self) -> RangeInclusive<Point> {
-        self.range.clone()
+        self.current_range()
     }
 }
 
 impl RangeInModel for &mut Secret {
     fn range(&self) -> RangeInclusive<Point> {
-        self.range.clone()
+        self.current_range()
     }
 }
 
@@ -219,6 +230,7 @@ impl Secret {
         matches!(self.is_obfuscated, IsObfuscated::Yes)
     }
 
+    /// Creates a secret at `range`, given in the grid's current row coordinates.
     pub fn new(
         is_obfuscated: IsObfuscated,
         range: RangeInclusive<Point>,
@@ -226,9 +238,44 @@ impl Secret {
     ) -> Self {
         Self {
             is_obfuscated,
-            range,
+            abs_range: range,
             secret_level,
+            plaintext: None,
+            truncated_rows: None,
         }
+    }
+
+    /// Records the text this secret was detected from.
+    pub fn with_plaintext(mut self, plaintext: Arc<str>) -> Self {
+        self.plaintext = Some(plaintext);
+        self
+    }
+
+    /// The text this secret was detected from, if it was recorded.
+    pub fn plaintext(&self) -> Option<&Arc<str>> {
+        self.plaintext.as_ref()
+    }
+
+    /// The secret's range in the grid's current row coordinates. Rows the grid has truncated from
+    /// its front since the secret was inserted are accounted for; a secret whose rows are all gone
+    /// saturates to row 0 (the map drops such secrets the next time it is told about the
+    /// truncation).
+    pub fn current_range(&self) -> RangeInclusive<Point> {
+        let truncated = self
+            .truncated_rows
+            .as_ref()
+            .map_or(0, |truncated_rows| truncated_rows.load(Ordering::Relaxed));
+        let shift = |point: &Point| {
+            if point.row < truncated {
+                Point { row: 0, col: 0 }
+            } else {
+                Point {
+                    row: point.row - truncated,
+                    col: point.col,
+                }
+            }
+        };
+        shift(self.abs_range.start())..=shift(self.abs_range.end())
     }
 
     pub fn secret_level(&self) -> SecretLevel {
@@ -237,32 +284,148 @@ impl Secret {
 }
 
 /// Map that is responsible for storing secrets indexed by both [`SecretHandle`] and `Range`.
-#[derive(Clone, Default, Debug)]
+///
+/// Secrets are stored with absolute rows (see [`Secret::abs_range`]) so that the grid dropping
+/// rows from its front (`max_rows`) never makes a secret point at the wrong text.
+#[derive(Debug, Default)]
 pub(in crate::terminal::model) struct SecretMap {
     /// Mapping of secrets stored within the grid, keyed on the secret's [`SecretHandle`].
     secrets: HashMap<SecretHandle, Secret>,
-    /// Mapping of secrets keyed on the range of the secret.
+    /// Mapping of secrets keyed on the (absolute) range of the secret.
     secret_ranges: RangeInclusiveMap<RangeMapPoint, SecretHandle>,
+    /// The secrets that are currently shown rather than obfuscated. Usually empty, which lets a
+    /// scan skip looking at every secret in the grid.
+    unobfuscated: HashSet<SecretHandle>,
+    /// The number of rows truncated from the front of the grid, as last reported through
+    /// [`SecretMap::set_truncated_rows`]. Shared with every [`Secret`] in the map.
+    truncated_rows: Arc<AtomicUsize>,
+}
+
+impl Clone for SecretMap {
+    fn clone(&self) -> Self {
+        // The clone needs its own counter: sharing it would make the two maps shift each other's
+        // secrets.
+        let truncated_rows = Arc::new(AtomicUsize::new(
+            self.truncated_rows.load(Ordering::Relaxed),
+        ));
+        let secrets = self
+            .secrets
+            .iter()
+            .map(|(handle, secret)| {
+                let mut secret = secret.clone();
+                secret.truncated_rows = Some(truncated_rows.clone());
+                (*handle, secret)
+            })
+            .collect();
+        Self {
+            secrets,
+            secret_ranges: self.secret_ranges.clone(),
+            unobfuscated: self.unobfuscated.clone(),
+            truncated_rows,
+        }
+    }
 }
 
 impl SecretMap {
-    /// Insert a [`Secret`] identified by `handle` into the map.
-    pub fn insert(&mut self, handle: SecretHandle, secret: Secret, num_columns: usize) {
-        let secret_range = secret.range.clone();
-        let range_point_range = RangeMapPoint::new(*secret_range.start(), num_columns)
-            ..=RangeMapPoint::new(*secret_range.end(), num_columns);
+    /// Converts a point in the grid's current row coordinates to an absolute one.
+    fn to_absolute(&self, point: Point) -> Point {
+        Point {
+            row: point.row + self.truncated_rows.load(Ordering::Relaxed),
+            col: point.col,
+        }
+    }
+
+    /// Insert a [`Secret`] identified by `handle` into the map. The secret's range is taken to be
+    /// in the grid's current row coordinates.
+    pub fn insert(&mut self, handle: SecretHandle, mut secret: Secret, num_columns: usize) {
+        let current_range = secret.abs_range.clone();
+        secret.abs_range =
+            self.to_absolute(*current_range.start())..=self.to_absolute(*current_range.end());
+        secret.truncated_rows = Some(self.truncated_rows.clone());
+
+        let range_point_range = RangeMapPoint::new(*secret.abs_range.start(), num_columns)
+            ..=RangeMapPoint::new(*secret.abs_range.end(), num_columns);
         self.secret_ranges.insert(range_point_range, handle);
+        if !secret.is_obfuscated() {
+            self.unobfuscated.insert(handle);
+        }
         self.secrets.insert(handle, secret);
     }
 
-    /// Removes a [`Secret`] identified by `handle` from the map.
-    pub fn remove(&mut self, handle: SecretHandle, num_columns: usize) {
-        let removed = self.secrets.remove(&handle);
-        if let Some(secret) = removed {
-            let range = RangeMapPoint::new(*secret.range.start(), num_columns)
-                ..=RangeMapPoint::new(*secret.range.end(), num_columns);
-            self.secret_ranges.remove(range);
+    /// Removes a [`Secret`] identified by `handle` from the map and returns it.
+    pub fn remove(&mut self, handle: SecretHandle, num_columns: usize) -> Option<Secret> {
+        let secret = self.secrets.remove(&handle)?;
+        self.unobfuscated.remove(&handle);
+        let range = RangeMapPoint::new(*secret.abs_range.start(), num_columns)
+            ..=RangeMapPoint::new(*secret.abs_range.end(), num_columns);
+        self.secret_ranges.remove(range);
+        Some(secret)
+    }
+
+    /// Records that the grid has now truncated `truncated_rows` rows from its front in total, and
+    /// removes (and returns) the secrets that lay entirely within the dropped rows. This is O(1)
+    /// plus the number of secrets dropped, however many secrets remain.
+    pub fn set_truncated_rows(
+        &mut self,
+        truncated_rows: usize,
+        num_columns: usize,
+    ) -> Vec<(SecretHandle, Secret)> {
+        let previous = self.truncated_rows.swap(truncated_rows, Ordering::Relaxed);
+        let mut dropped = Vec::new();
+        if truncated_rows <= previous {
+            return dropped;
         }
+        while let Some((range, handle)) = self.secret_ranges.first_range_value() {
+            if range.end().as_point().row >= truncated_rows {
+                break;
+            }
+            let (range, handle) = (range.clone(), *handle);
+            self.secret_ranges.remove(range);
+            self.unobfuscated.remove(&handle);
+            if let Some(secret) = self.secrets.remove(&handle) {
+                dropped.push((handle, secret));
+            }
+        }
+        // The loop above only follows the range map. Make sure no secret outlives its range entry
+        // (which can happen if a later, overlapping insert replaced it).
+        let truncated = self.truncated_rows.load(Ordering::Relaxed);
+        if self.secrets.len() > self.secret_ranges.len() {
+            let stale = self
+                .secrets
+                .iter()
+                .filter(|(_, secret)| secret.abs_range.end().row < truncated)
+                .map(|(handle, _)| *handle)
+                .collect_vec();
+            for handle in stale {
+                self.unobfuscated.remove(&handle);
+                if let Some(secret) = self.secrets.remove(&handle) {
+                    dropped.push((handle, secret));
+                }
+            }
+        }
+        dropped
+    }
+
+    /// Returns the handles of the secrets that overlap `range`, given in the grid's current row
+    /// coordinates, without looking at any secret that is elsewhere in the grid.
+    pub fn handles_overlapping(
+        &self,
+        range: &RangeInclusive<Point>,
+        num_columns: usize,
+    ) -> Vec<SecretHandle> {
+        let query = RangeMapPoint::new(self.to_absolute(*range.start()), num_columns)
+            ..=RangeMapPoint::new(self.to_absolute(*range.end()), num_columns);
+        self.secret_ranges
+            .overlapping(&query)
+            .map(|(_, handle)| *handle)
+            .collect()
+    }
+
+    /// The secrets that are currently shown rather than obfuscated.
+    pub fn unobfuscated_secrets(&self) -> impl Iterator<Item = &Secret> {
+        self.unobfuscated
+            .iter()
+            .filter_map(|handle| self.secrets.get(handle))
     }
 
     /// Returns the [`Secret`] identified by [`SecretHandle`] or `None` if no such secret exists.
@@ -285,7 +448,8 @@ impl SecretMap {
         } else {
             point
         };
-        let point_with_metadata = RangeMapPoint::new(original_point, grid.columns());
+        let point_with_metadata =
+            RangeMapPoint::new(self.to_absolute(original_point), grid.columns());
         let handle = self.secret_ranges.get(&point_with_metadata).copied();
 
         handle.zip(handle.and_then(|h| self.get_by_handle(&h)))
@@ -297,15 +461,24 @@ impl SecretMap {
 
     #[cfg(test)]
     pub fn ranges(&self) -> impl Iterator<Item = (RangeInclusive<Point>, &SecretHandle)> {
-        self.secret_ranges
-            .iter()
-            .map(|(range, handle)| (range.start().as_point()..=range.end().as_point(), handle))
+        let truncated = self.truncated_rows.load(Ordering::Relaxed);
+        self.secret_ranges.iter().map(move |(range, handle)| {
+            let shift = |point: Point| Point {
+                row: point.row.saturating_sub(truncated),
+                col: point.col,
+            };
+            (
+                shift(range.start().as_point())..=shift(range.end().as_point()),
+                handle,
+            )
+        })
     }
 
     /// Clears all secrets within the map.
     pub fn clear(&mut self) {
         self.secrets.clear();
         self.secret_ranges.clear();
+        self.unobfuscated.clear();
     }
 
     /// Marks the secret identified by `handle` as obfuscated. Returns an `Err` if no secret is
@@ -320,6 +493,10 @@ impl SecretMap {
             .get_mut(handle)
             .ok_or_else(|| anyhow!("No secret identified by provided SecretHandle"))?;
         secret.is_obfuscated = is_obfuscated;
+        match is_obfuscated {
+            IsObfuscated::Yes => self.unobfuscated.remove(handle),
+            IsObfuscated::No => self.unobfuscated.insert(*handle),
+        };
         Ok(())
     }
 
@@ -329,12 +506,6 @@ impl SecretMap {
 
     pub fn is_empty(&self) -> bool {
         self.secrets.is_empty()
-    }
-
-    /// Clears all of the secret ranges. Should be called after the resize of a grid since ranges
-    /// are not stable across resizes.
-    pub fn clear_ranges_after_resize(&mut self) {
-        self.secret_ranges.clear();
     }
 }
 

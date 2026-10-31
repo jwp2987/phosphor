@@ -1939,10 +1939,22 @@ impl GridHandler {
         // Move lines into scrollback.  We don't do this for the alt screen,
         // as it has no scrollback.
         if !self.ansi_handler_state.is_alt_screen {
+            let truncated_before = self.flat_storage.num_truncated_rows();
             let range = region.start..std::cmp::min(region.end, region.start + lines);
             for row_idx in range.start.0..range.end.0 {
                 self.flat_storage
                     .push_rows([&self.grid[VisibleRow(row_idx)]]);
+            }
+
+            // Once the scrollback is full, every row pushed above drops one from the front, which
+            // moves all the rows after it up by one. The cursor point stays where it was, so the
+            // dirty range -- which is what secret scanning and filtering look at -- has to move
+            // up with the rows it covers. Otherwise it collapses to the cursor row and the lines
+            // that scrolled by during this pass are never scanned.
+            let newly_truncated =
+                (self.flat_storage.num_truncated_rows() - truncated_before) as usize;
+            if newly_truncated > 0 {
+                self.shift_dirty_cells_range_up(newly_truncated);
             }
         }
 
