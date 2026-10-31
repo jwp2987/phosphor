@@ -79,6 +79,22 @@ fn exchange_is_streaming_follows_the_output_status() {
                 .id
         });
 
+        // The stream's init is what gives the exchange its output; a stream that never produced
+        // one cannot be completed (`OutputAlreadyFinished`).
+        history_model.update(&mut app, |history_model, ctx| {
+            history_model.initialize_output_for_response_stream(
+                &stream_id,
+                conversation_id,
+                terminal_view_id,
+                warp_multi_agent_api::response_event::StreamInit {
+                    request_id: String::new(),
+                    conversation_id: String::new(),
+                    run_id: String::new(),
+                },
+                ctx,
+            );
+        });
+
         app.read(|ctx| {
             assert!(exchange_is_streaming(conversation_id, exchange_id, ctx));
             // An exchange that cannot be found keeps the conservative answer: repaint.
