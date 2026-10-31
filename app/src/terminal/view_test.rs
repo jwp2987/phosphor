@@ -7610,6 +7610,151 @@ fn cancel_execution_event_interrupts_an_agent_held_command_once() {
     })
 }
 
+/// #1179: printable keys typed while the agent runs an ordinary command (no CLI subagent, so
+/// `is_agent_in_control` is false) are steer text for the agent's input, never bytes for the
+/// command's pty -- the shell read those as typeahead after the command and Phosphor wiped them.
+/// Old code: `pty_writes` held `abc` and the input stayed empty. Not compiled/run when written.
+#[test]
+fn typing_during_an_agent_driven_command_goes_to_the_input_not_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control()
+            );
+            view.typed_characters_on_terminal("a", ctx);
+            view.typed_characters_on_terminal("bc", ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "abc");
+        });
+    })
+}
+
+/// #1179: with the input hidden the keys used to be dropped (`refused_with_hidden_input`); while
+/// the agent owns the command they are buffered in the input instead.
+#[test]
+fn typing_during_an_agent_driven_command_with_hidden_input_is_not_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            // Hide the input the way a pending shared-session view does.
+            view.model.lock().set_shared_session_status(
+                crate::terminal::shared_session::SharedSessionStatus::ViewPending,
+            );
+            {
+                let model = view.model.lock();
+                assert!(
+                    !view.is_input_box_visible(&model, ctx),
+                    "precondition: input hidden"
+                );
+            }
+            view.typed_characters_on_terminal("x", ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+    })
+}
+
+/// #1179: once the user takes the command over (here the non-resuming `Stop` Ctrl-C installs) the
+/// agent no longer owns it and keys go to the pty again, not the input.
+#[test]
+fn typing_after_the_user_takes_over_an_agent_command_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_user_control_with_stop_reason();
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1179: a command the user started keeps raw typeahead to the pty, exactly as before.
+#[test]
+fn typing_during_a_user_owned_long_command_still_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100000", "");
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+    })
+}
+
+/// #1179: an agent command that stops on a prompt (`Password:`, `[y/N]`) is answered by typing,
+/// so the agent does not own the pty while the cursor sits on that prompt line.
+#[test]
+fn typing_at_a_prompt_of_an_agent_driven_command_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .process_bytes(b"[sudo] password for me: ".as_slice());
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("pw", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"pw".to_vec()]);
+    })
+}
+
 /// A real `RequestedCommandView`, wired into a real `AIBlock` in a real `TerminalView`, for the
 /// `sleep 100000` command of a conversation, with that command running in the active block.
 /// Returns the card, the action id, the conversation id and the recorded PTY writes.

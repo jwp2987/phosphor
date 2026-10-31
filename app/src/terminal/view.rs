@@ -10142,7 +10142,10 @@ impl TerminalView {
             self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             return;
         }
-        if self.is_long_running()
+        // #1179: control keys (Enter, Backspace, ...) typed while the agent drives its command
+        // are not written to that command either; only Ctrl-C / Ctrl-D (stop / EOF) are.
+        let agent_owns_key = !is_abort_key(characters.as_bytes()) && self.agent_owns_command_pty();
+        if (self.is_long_running() && !agent_owns_key)
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
             || (is_abort_key(characters.as_bytes())
@@ -10793,6 +10796,30 @@ impl TerminalView {
         }
     }
 
+    /// Whether the agent, not the user, owns the running command's pty, so user typing belongs
+    /// in the agent's input and never in the command (#1179).
+    ///
+    /// `is_agent_driving_command` is wider than `is_agent_in_control`: it covers an ordinary
+    /// agent-requested command (`seq`, `sleep`, `du`) for its whole life, because no CLI subagent
+    /// ever takes control of it. Bytes written to such a command's pty were read by the shell as
+    /// typeahead after it ended and then wiped, so the text silently vanished. It turns false
+    /// when the user takes the command over (Stop, manual take-over, or the hand-over made when
+    /// the command stops on a password / `[y/N]` prompt), and then keys go to the pty as for any
+    /// command the user holds. On the alt screen the existing #963 take-over applies instead:
+    /// the input is hidden there, so typing into the program is the user taking it over.
+    ///
+    /// Also not owned while the command sits on a prompt-shaped, newline-less line (`Password:`,
+    /// `[y/N]`, `read -p`): typing is then the answer to it, and the hand-over to the user
+    /// (`on_possible_password_prompt` / `on_stalled_interactive_prompt`) can lag the prompt by
+    /// a poll. Reading the cursor line is cheap, unlike scanning the whole output.
+    fn agent_owns_command_pty(&self) -> bool {
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        !model.is_alt_screen_active()
+            && active_block.is_agent_driving_command()
+            && interactive_prompt_candidate(active_block.output_grid().grid_handler()).is_none()
+    }
+
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
         // Computed before the model lock below (it takes the same lock).
         let subshell_bootstrap_stalled = self
@@ -10880,8 +10907,14 @@ impl TerminalView {
         // route them as if the terminal held focus, and let focus follow them.
         let typed_on_settled_ai_target =
             !typed_on_approval_card && self.typed_on_settled_ai_target(ctx);
-        let written_to_pty =
-            !typed_on_approval_card && self.should_write_typed_chars_to_pty(ctx) && {
+        // #1179: an agent-driven command's pty takes no user bytes; the text is for the agent's
+        // input. Ctrl-C / Ctrl-D keep their own route to the command.
+        let agent_owns_typing =
+            !is_abort_key(characters.as_bytes()) && self.agent_owns_command_pty();
+        let written_to_pty = !typed_on_approval_card
+            && !agent_owns_typing
+            && self.should_write_typed_chars_to_pty(ctx)
+            && {
                 self.highlighted_link.invalidate();
                 self.report_possible_typeahead(characters);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
@@ -10889,10 +10922,13 @@ impl TerminalView {
         if written_to_pty && typed_on_settled_ai_target {
             self.focus_terminal(ctx);
         }
-        // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
-        // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
+        // The pty refused the bytes for another reason (e.g. the alt screen) and the input is
+        // hidden: keep the old behaviour and drop them. Not when the agent owns the command
+        // (#1179): those keys are the user's steer text, buffered in the input (shown, with the
+        // text, once it is visible) instead of discarded.
         let refused_with_hidden_input = !written_to_pty
             && !typed_on_approval_card
+            && !agent_owns_typing
             && self.should_write_typed_chars_to_pty(ctx)
             && !{
                 let model = self.model.lock();
@@ -13634,9 +13670,9 @@ impl TerminalView {
     /// Right after an approval the input is hidden while the card's command is expanded, and
     /// `redetermine_global_focus` would then park focus on the AI block, which drops typed
     /// characters. Until the input is visible again focus stays on the terminal view itself:
-    /// the pty refuses user bytes while the agent runs the command, so
-    /// `typed_characters_on_terminal` routes them into the agent's input instead, and nothing
-    /// typed in that window is lost. Once the input is visible it gets focus and the reclaim
+    /// the pty refuses user bytes while the agent runs the command (`agent_owns_command_pty`,
+    /// #1179), so `typed_characters_on_terminal` routes them into the agent's input instead, and
+    /// nothing typed in that window is lost. Once the input is visible it gets focus and the reclaim
     /// ends. Returns whether focus was moved.
     fn place_focus_after_card_resolved(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let reset_focus = ctx.is_self_or_child_focused()
