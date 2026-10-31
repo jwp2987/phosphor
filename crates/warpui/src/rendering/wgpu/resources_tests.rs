@@ -152,3 +152,17 @@ fn test_is_unsupported_intel_uhd_adapter() {
         transient_saves_memory: false,
     }));
 }
+
+#[test]
+fn test_desired_frame_latency_only_overrides_dx12() {
+    assert_eq!(desired_frame_latency(Backend::Dx12), Some(1));
+    for backend in [
+        Backend::Vulkan,
+        Backend::Gl,
+        Backend::Metal,
+        Backend::BrowserWebGpu,
+        Backend::Noop,
+    ] {
+        assert_eq!(desired_frame_latency(backend), None, "{backend:?}");
+    }
+}

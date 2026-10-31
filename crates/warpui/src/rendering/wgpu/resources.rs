@@ -917,7 +917,26 @@ fn create_surface_config(
         config.alpha_mode = CompositeAlphaMode::Auto;
     }
 
+    if let Some(latency) = desired_frame_latency(adapter.get_info().backend) {
+        config.desired_maximum_frame_latency = latency;
+    }
+
     Some(config)
+}
+
+/// The `desired_maximum_frame_latency` to override wgpu's default of 2 with, if any.
+///
+/// DX12 flip-model swapchains block `get_current_texture` on a frame-latency waitable object
+/// until fewer than this many frames are queued, so with 2 a typed key can sit behind a queued
+/// frame (up to one extra refresh) while the main thread is blocked and not handling input.
+/// 1 is what Windows Terminal uses. Vulkan, GL and Metal keep wgpu's default: on Vulkan the
+/// value sets the image count (a Fifo-only compositor with 2 images serialises CPU and GPU), and
+/// GL ignores it.
+fn desired_frame_latency(backend: Backend) -> Option<u32> {
+    match backend {
+        Backend::Dx12 => Some(1),
+        _ => None,
+    }
 }
 
 #[derive(Error, Debug)]
