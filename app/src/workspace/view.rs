@@ -3654,6 +3654,8 @@ impl Workspace {
         })
     }
 
+    // `UpdatedStreamingExchange` (one per streamed delta) is deliberately absent: the tab
+    // indicator/title only change with status or metadata events (#1137).
     fn agent_conversation_event_affects_vertical_tabs(
         &self,
         event: &BlocklistAIHistoryEvent,
@@ -3663,7 +3665,6 @@ impl Workspace {
             event,
             BlocklistAIHistoryEvent::StartedNewConversation { .. }
                 | BlocklistAIHistoryEvent::AppendedExchange { .. }
-                | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
                 | BlocklistAIHistoryEvent::SetActiveConversation { .. }
                 | BlocklistAIHistoryEvent::ClearedActiveConversation { .. }
                 | BlocklistAIHistoryEvent::ClearedConversationsInTerminalView { .. }
