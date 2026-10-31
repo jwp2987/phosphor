@@ -1,5 +1,6 @@
 #[cfg(feature = "completions_v2")]
 mod js;
+mod generator_cache;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::FutureExt;
 use lazy_static::lazy_static;
 use smol_str::SmolStr;
 use typed_path::{TypedPath, TypedPathBuf};
@@ -92,6 +94,8 @@ fn shared_directory_cache_at(
 /// command is submitted: the command may have created or removed files.
 pub fn invalidate_shared_directory_cache(session_id: SessionId) {
     SHARED_DIRECTORY_CACHES.lock().remove(&session_id);
+    // The same command may have changed what a generator lists (a new branch, a started unit).
+    generator_cache::invalidate_session(session_id);
 }
 
 /// Synchronous local directory listing. Only ever call this from a blocking-pool thread (see
@@ -484,6 +488,114 @@ impl PathCompletionContext for SessionContext {
     }
 }
 
+impl SessionContext {
+    /// The environment a generator runs with. `PATH` is set explicitly even with session env vars:
+    /// if the user opened Zap through a parent process that didn't have the PATH var set (i.e.
+    /// outside of a shell, for example opening the app via Finder), the subshell won't inherit
+    /// the PATH var, but we need it to reference executables we might run as part of generators.
+    fn generator_env_vars(
+        &self,
+        session_env_vars: Option<HashMap<String, String>>,
+    ) -> Option<HashMap<String, String>> {
+        let mut env_vars = session_env_vars.unwrap_or_default();
+        if let Some(path) = self.session.path().as_deref() {
+            env_vars.insert("PATH".to_string(), path.to_string());
+        }
+
+        if env_vars.is_empty() {
+            None
+        } else {
+            Some(env_vars)
+        }
+    }
+
+    fn generator_execute_options() -> ExecuteCommandOptions {
+        ExecuteCommandOptions {
+            run_command_in_same_shell_as_session: !FeatureFlag::RunGeneratorsWithCmdExe
+                .is_enabled(),
+        }
+    }
+
+    /// Starts `script` on the runtime as its own task, so a caller that is aborted (the next
+    /// keystroke) does not discard a run the next caller can use, and returns a future every
+    /// interested caller can wait on. The task stores its result in the generator cache.
+    fn start_generator_run(
+        &self,
+        handle: &tokio::runtime::Handle,
+        key: generator_cache::GeneratorKey,
+        run_id: u64,
+        env_vars: Option<HashMap<String, String>>,
+    ) -> generator_cache::SharedGeneratorRun {
+        let session = self.session.clone();
+        let pwd = self.pwd().to_str().map(str::to_owned);
+        let script = key.script.clone();
+        let finish_key = key.clone();
+        let join = handle.spawn(async move {
+            let outcome = tokio::time::timeout(
+                generator_cache::GENERATOR_RUN_TIMEOUT,
+                session.execute_command(
+                    &script,
+                    pwd.as_deref(),
+                    env_vars,
+                    Self::generator_execute_options(),
+                ),
+            )
+            .await;
+            let result: generator_cache::GeneratorRunResult = Arc::new(match outcome {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(err)) => Err(format!("{err:#}")),
+                Err(_) => Err(format!(
+                    "generator timed out after {:?}",
+                    generator_cache::GENERATOR_RUN_TIMEOUT
+                )),
+            });
+            generator_cache::GENERATOR_CACHE
+                .lock()
+                .finish(&key, run_id, &result, Instant::now());
+            result
+        });
+        async move {
+            match join.await {
+                Ok(result) => result,
+                Err(err) => {
+                    // The task panicked or was cancelled with the runtime: free the slot.
+                    let result: generator_cache::GeneratorRunResult =
+                        Arc::new(Err(format!("generator task failed: {err}")));
+                    generator_cache::GENERATOR_CACHE.lock().finish(
+                        &finish_key,
+                        run_id,
+                        &result,
+                        Instant::now(),
+                    );
+                    result
+                }
+            }
+        }
+        .boxed()
+        .shared()
+    }
+
+    /// One shared generator run for `key`: a fresh cached result, the run already in flight, or
+    /// a new run.
+    async fn shared_generator_run(
+        &self,
+        handle: &tokio::runtime::Handle,
+        key: &generator_cache::GeneratorKey,
+        env_vars: &Option<HashMap<String, String>>,
+    ) -> generator_cache::GeneratorRunResult {
+        let outcome =
+            generator_cache::GENERATOR_CACHE
+                .lock()
+                .get_or_start(key, Instant::now(), |run_id| {
+                    self.start_generator_run(handle, key.clone(), run_id, env_vars.clone())
+                });
+        match outcome {
+            Ok(result) => result,
+            Err(run) => run.await,
+        }
+    }
+}
+
 #[async_trait]
 impl GeneratorContext for SessionContext {
     async fn execute_command_at_pwd(
@@ -491,33 +603,46 @@ impl GeneratorContext for SessionContext {
         shell_command: &str,
         session_env_vars: Option<HashMap<String, String>>,
     ) -> Result<CommandOutput> {
-        let mut env_vars = session_env_vars.unwrap_or_default();
-        // We need to run the command with the PATH var set explicitly even if we have session env vars
-        // because if the user opened Zap through a parent process that didn't have the PATH var set
-        // (i.e. outside of a shell, for example opening the app via Finder),
-        // the subshell won't inherit the PATH var, but we need the PATH var
-        // to reference executables we might run as part of generators.
-        if let Some(path) = self.session.path().as_deref() {
-            env_vars.insert("PATH".to_string(), path.to_string());
-        }
-
-        let env_vars_option = if env_vars.is_empty() {
-            None
-        } else {
-            Some(env_vars)
-        };
+        let env_vars_option = self.generator_env_vars(session_env_vars);
 
         self.session
             .execute_command(
                 shell_command,
                 self.pwd().to_str(),
                 env_vars_option,
-                ExecuteCommandOptions {
-                    run_command_in_same_shell_as_session: !FeatureFlag::RunGeneratorsWithCmdExe
-                        .is_enabled(),
-                },
+                Self::generator_execute_options(),
             )
             .await
+    }
+
+    async fn execute_generator_at_pwd(
+        &self,
+        shell_command: &str,
+        session_env_vars: Option<HashMap<String, String>>,
+    ) -> Result<CommandOutput> {
+        // Outside a tokio runtime (some unit-test executors) there is no task to detach.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return self
+                .execute_command_at_pwd(shell_command, session_env_vars)
+                .await;
+        };
+        let env_vars = self.generator_env_vars(session_env_vars);
+        let key = generator_cache::GeneratorKey {
+            session_id: self.session.id(),
+            pwd: self.pwd().to_string_lossy().into_owned(),
+            script: shell_command.to_owned(),
+        };
+
+        let mut result = self.shared_generator_run(&handle, &key, &env_vars).await;
+        if generator_cache::is_cancelled_run(&result) {
+            // The run was killed for a keystroke that is gone (`cancel_active_commands` kills
+            // every generator of the session); this caller is still waiting, so run it again.
+            result = self.shared_generator_run(&handle, &key, &env_vars).await;
+        }
+        match result.as_ref() {
+            Ok(output) => Ok(output.clone()),
+            Err(message) => Err(anyhow::anyhow!("{message}")),
+        }
     }
 
     fn supports_parallel_execution(&self) -> bool {

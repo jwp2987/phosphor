@@ -223,11 +223,24 @@ pub trait GeneratorContext: Send + Sync {
         _session_env_vars: Option<HashMap<String, String>>,
     ) -> Result<CommandOutput>;
 
+    /// Runs a completion generator or alias lookup from a command signature. These are read-only
+    /// queries whose output depends only on the pwd and the script, so an implementation may
+    /// reuse a recent result or share one in-flight run between callers. Defaults to running the
+    /// command afresh. Never use this for a command that has side effects.
+    async fn execute_generator_at_pwd(
+        &self,
+        shell_command: &str,
+        session_env_vars: Option<HashMap<String, String>>,
+    ) -> Result<CommandOutput> {
+        self.execute_command_at_pwd(shell_command, session_env_vars)
+            .await
+    }
+
     /// Whether the implementation allows execution of generators in parallel.
     fn supports_parallel_execution(&self) -> bool;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -277,7 +290,7 @@ impl From<command::Output> for CommandOutput {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CommandExitStatus {
     Success,
     Failure,

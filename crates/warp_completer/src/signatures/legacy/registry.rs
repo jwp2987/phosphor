@@ -291,7 +291,7 @@ impl CommandRegistry {
 
                 if let Some(generator_context) = context.generator_context() {
                     if let Ok(output) = generator_context
-                        .execute_command_at_pwd(&command_to_run, None)
+                        .execute_generator_at_pwd(&command_to_run, None)
                         .await
                     {
                         match output.to_string() { Ok(output_string) => {
