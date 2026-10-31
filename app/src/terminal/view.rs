@@ -3246,10 +3246,12 @@ pub struct TerminalView {
     /// `FinishedReceivingOutput` skipped because a subagent was still active. See
     /// [`SkippedTurnEndDrain`] and [`Self::deliver_queued_prompts_after_subagent_finished`].
     skipped_turn_end_drains: HashMap<AIConversationId, SkippedTurnEndDrain>,
-    /// Conversations `on_user_block_completed` just auto-resumed on a block completion while a
-    /// subagent was active, i.e. whose subagent finish for that same block is about to be
-    /// delivered. Tells [`subagent_finished_queue_delivery`] that the in-progress turn is that
-    /// resume, which a queued follow-up would cancel. Read but NOT removed by
+    /// Conversations `on_user_block_completed` (a take-over's auto-resume) or the AI controller
+    /// (`BlocklistAIControllerEvent::ResumedOnBlockCompletion`, a monitored command the model
+    /// had stopped waiting on) just resumed on a block completion while a subagent was active,
+    /// i.e. whose subagent finish for that same block is about to be delivered. Tells
+    /// [`subagent_finished_queue_delivery`] that the in-progress turn is that resume, which a
+    /// queued follow-up would cancel. Read but NOT removed by
     /// [`Self::deliver_queued_prompts_after_subagent_finished`], because one block completion
     /// reaches it twice (the handoff retry, then `FinishedSubagent`); it is removed only by the
     /// conversation's next `FinishedReceivingOutput` -- the resumed turn's end, which drains the
@@ -6144,6 +6146,12 @@ impl TerminalView {
             // queue (#1026). Restore the head into the input like every other cancel; a Reject
             // and a Stop look the same here, so nothing is sent on the user's behalf.
             self.drain_queued_prompts(*conversation_id, FinishReason::Cancelled, ctx);
+        }
+        if let BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id } = event {
+            // The same record `on_user_block_completed` keeps for its own resume: the
+            // `FinishedSubagent` for this block follows, and its `LrcAutoQueue` rows must wait
+            // for this resume's end rather than cancel it and lose the command's output.
+            self.block_completion_auto_resumes.insert(*conversation_id);
         }
         if let BlocklistAIControllerEvent::FinishedReceivingOutput {
             conversation_id, ..
