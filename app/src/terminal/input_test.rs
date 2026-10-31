@@ -11111,24 +11111,24 @@ fn test_manual_completion_aborts_previous_run_without_completions_while_typing()
     });
 }
 
-// #1180: Enter on an empty input with an approval card awaiting the user accepts it; a
-// non-empty input keeps today's behaviour; a finished (or running) card never takes Enter (#871).
+// #1180: Enter on an empty input with an approval card awaiting the user focuses it (never approves); a
+// non-empty input keeps today's behaviour; a finished (or running) card is not focused (#871).
 #[test]
-fn empty_enter_accepts_only_a_blocked_pending_action() {
+fn empty_enter_focuses_only_a_blocked_pending_action() {
     use crate::ai::agent::task::TaskId;
     use crate::ai::agent::{AIAgentActionId, AIAgentActionResult, AIAgentActionResultType};
     use std::sync::Arc;
 
-    assert!(empty_enter_accepts_pending_action(
+    assert!(empty_enter_focuses_pending_action(
         true,
         Some(&AIActionStatus::Blocked)
     ));
-    // Non-empty input: queue or steer, never Accept.
-    assert!(!empty_enter_accepts_pending_action(
+    // Non-empty input: queue or steer, never focus the card.
+    assert!(!empty_enter_focuses_pending_action(
         false,
         Some(&AIActionStatus::Blocked)
     ));
-    // Finished card: no Accept.
+    // Finished card: not focused.
     let finished = AIActionStatus::Finished(Arc::new(AIAgentActionResult {
         id: AIAgentActionId::from("action".to_owned()),
         task_id: TaskId::new("task".to_owned()),
@@ -11140,8 +11140,8 @@ fn empty_enter_accepts_only_a_blocked_pending_action() {
         AIActionStatus::RunningAsync,
         finished,
     ] {
-        assert!(!empty_enter_accepts_pending_action(true, Some(&status)));
+        assert!(!empty_enter_focuses_pending_action(true, Some(&status)));
     }
     // No pending action: Enter keeps its usual behaviour.
-    assert!(!empty_enter_accepts_pending_action(true, None));
+    assert!(!empty_enter_focuses_pending_action(true, None));
 }

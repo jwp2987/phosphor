@@ -1109,8 +1109,9 @@ pub enum InputEmptyStateChangeReason {
 pub enum Event {
     AutosuggestionAccepted,
     /// Enter on an empty input while an agent approval card awaits the user's decision: the
-    /// terminal view accepts the pending action, like the card's Run button (#1180).
-    AcceptPendingAgentAction,
+    /// terminal view focuses the card, so a second Enter (its Run binding) approves it (#1180).
+    /// Enter never approves from the input itself.
+    FocusPendingAgentAction,
     ClearSelectedBlock,
     PageUp,
     PageDown,
@@ -12889,13 +12890,14 @@ impl Input {
                 view.accept_selected_item(false, ctx);
             });
             return;
-        } else if empty_enter_accepts_pending_action(
+        } else if empty_enter_focuses_pending_action(
             self.editor.as_ref(ctx).is_empty(ctx),
             self.pending_action_status(ctx).as_ref(),
         ) {
-            // The card advertises Run with Enter; an empty Enter must run it, never fall through
-            // to submit an empty command or query (#1180). Non-empty input keeps queueing/steering.
-            ctx.emit(Event::AcceptPendingAgentAction);
+            // Move focus to the card (its Enter binding and Run hint then apply) instead of
+            // approving: an habitual empty Enter must not run an unreviewed command. Never falls
+            // through to submit an empty command or query (#1180).
+            ctx.emit(Event::FocusPendingAgentAction);
             return;
         } else if self
             .queued_prompts_panel
@@ -16393,11 +16395,11 @@ pub(crate) fn end_past_auto_paired_closing_quote(
 
 /// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
 /// multi-line buffer: the completer tokenizes a single command line (#1013).
-/// Whether Enter in the agent input should accept the pending approval card instead of
+/// Whether Enter in the agent input should focus the pending approval card instead of
 /// submitting: only with an empty input and an action still `Blocked` on the user's decision. A
 /// running or finished action never takes Enter (#871), and a non-empty input keeps queueing or
-/// steering (#1180).
-pub(crate) fn empty_enter_accepts_pending_action(
+/// steering (#1180). It never approves.
+pub(crate) fn empty_enter_focuses_pending_action(
     input_is_empty: bool,
     pending_action_status: Option<&AIActionStatus>,
 ) -> bool {

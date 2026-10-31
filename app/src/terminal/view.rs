@@ -25801,11 +25801,12 @@ impl TerminalView {
                 );
             }
             InputEvent::ClearSelectionsWhenShellMode => self.clear_selections_when_shell_mode(ctx),
-            InputEvent::AcceptPendingAgentAction => {
+            InputEvent::FocusPendingAgentAction => {
+                // Focus only; the card's own Enter binding then runs it on a second Enter.
                 if let Some(ai_block) = self.last_ai_block() {
-                    // A refused accept (part of the command still hidden on the card) leaves the
-                    // card pending; the result is not needed here.
-                    let _ = ai_block.update(ctx, |ai_block, ctx| ai_block.accept_pending_action(ctx));
+                    ai_block.update(ctx, |ai_block, ctx| {
+                        ai_block.focus_subview_if_necessary(ctx);
+                    });
                 }
             }
             InputEvent::AutosuggestionAccepted => {
