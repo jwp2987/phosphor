@@ -3574,6 +3574,10 @@ impl Element for BlockListElement {
         let mut visible_block_indices = vec![];
         let mut updated_rich_content_heights = HashMap::new();
 
+        // Restored blocks parsed off the UI thread (#1254) are installed before anything
+        // measures heights, so this frame already lays out their real content.
+        model.block_list_mut().install_ready_deferred_restores();
+
         // First, remeasure any rich content items whose heights may be out of date.
         // We track these in the BlockList via a dirty set keyed by view ID to
         // avoid laying out every rich content block on every frame.

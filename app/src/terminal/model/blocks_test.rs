@@ -457,6 +457,136 @@ pub fn test_restore_completed_blocks() {
     ));
 }
 
+fn lazy_restore_test_blocks() -> Vec<SerializedBlockListItem> {
+    // A small block, a block that wraps and is styled, and a block with a multi-line command.
+    let small: SerializedBlockListItem =
+        SerializedBlock::new_for_test("small".into(), "tiny\r\n".into()).into();
+    let mut wide_output = b"\x1b[31mred\x1b[0m plain\r\n".to_vec();
+    for i in 0..400 {
+        wide_output.extend_from_slice(format!("line {i} {}\r\n", "x".repeat(150)).as_bytes());
+    }
+    let wide: SerializedBlockListItem =
+        SerializedBlock::new_for_test(b"echo wide".to_vec(), wide_output).into();
+    let multiline: SerializedBlockListItem = SerializedBlock::new_for_test(
+        b"for i in 1 2 3\r\ndo echo $i\r\ndone".to_vec(),
+        b"1\r\n2\r\n3\r\n".to_vec(),
+    )
+    .into();
+    vec![small, wide, multiline]
+}
+
+// A block restored as a placeholder and filled in by the background parse must end up identical
+// to one restored eagerly: same text, same grid sizes, same heights (#1254).
+#[test]
+fn test_deferred_restore_matches_eager_restore() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let eager = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    // A threshold of 0 defers every restored block.
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+
+    // Before the install the placeholders carry the metadata but no grid contents.
+    assert!(deferred.has_ready_deferred_restores());
+    assert_eq!(deferred.blocks.len(), eager.blocks.len());
+    assert_eq!(deferred.blocks[1].command_to_string(), "");
+    assert_eq!(deferred.blocks[1].output_to_string(), "");
+    assert_ne!(
+        deferred.blocks[1].output_to_string(),
+        eager.blocks[1].output_to_string()
+    );
+
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(!deferred.has_ready_deferred_restores());
+    // Nothing left to install.
+    assert!(!deferred.install_ready_deferred_restores());
+
+    for (eager_block, deferred_block) in eager.blocks.iter().zip(deferred.blocks.iter()) {
+        assert_eq!(eager_block.id(), deferred_block.id());
+        assert_eq!(
+            eager_block.command_to_string(),
+            deferred_block.command_to_string()
+        );
+        assert_eq!(
+            eager_block.output_to_string(),
+            deferred_block.output_to_string()
+        );
+        assert_eq!(
+            eager_block.output_grid().len(),
+            deferred_block.output_grid().len()
+        );
+        assert_eq!(
+            eager_block.is_empty(&TranscriptScope::Terminal),
+            deferred_block.is_empty(&TranscriptScope::Terminal)
+        );
+        assert_lines_approx_eq!(
+            deferred_block.height(&TranscriptScope::Terminal),
+            eager_block.height(&TranscriptScope::Terminal)
+        );
+        assert_eq!(eager_block.finished(), deferred_block.finished());
+        assert_eq!(eager_block.exit_code(), deferred_block.exit_code());
+    }
+    // The height tree was refreshed for the installed blocks, not just the blocks themselves.
+    assert_lines_approx_eq!(
+        deferred.block_heights.summary().height,
+        eager.block_heights.summary().height
+    );
+    assert_eq!(deferred.blocks[1].command_to_string(), "echo wide");
+}
+
+// Only blocks at or over the threshold are deferred, and the kill switch value `None` defers
+// nothing (#1254).
+#[test]
+fn test_deferred_restore_threshold_and_kill_switch() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let eager = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .build();
+
+    // Only the wide block is over 10 KiB.
+    let mut some_deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(10 * 1024)
+        .build();
+    assert_eq!(some_deferred.blocks[0].command_to_string(), "small");
+    assert_eq!(some_deferred.blocks[1].command_to_string(), "");
+    assert_eq!(
+        some_deferred.blocks[2].command_to_string(),
+        eager.blocks[2].command_to_string()
+    );
+    assert!(some_deferred.install_ready_deferred_restores());
+    assert_eq!(some_deferred.blocks[1].command_to_string(), "echo wide");
+
+    // The default builder (and `PHOSPHOR_LAZY_RESTORE=0`) restores eagerly: nothing pending.
+    assert!(!eager.has_ready_deferred_restores());
+    assert_eq!(eager.blocks[1].command_to_string(), "echo wide");
+}
+
+// A placeholder's later changes survive the install, and a block that has since been removed is
+// skipped rather than corrupting another block (#1254).
+#[test]
+fn test_deferred_restore_install_keeps_placeholder_state_and_skips_removed() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+
+    deferred.blocks[1].hide();
+    let removed_id = deferred.blocks[2].id().clone();
+    let removed_index = deferred.blocks[2].index();
+    deferred.remove_block_at_index(removed_index);
+
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(deferred.block_index_for_id(&removed_id).is_none());
+    assert_eq!(deferred.blocks[0].command_to_string(), "small");
+    assert_eq!(deferred.blocks[1].command_to_string(), "echo wide");
+    assert!(deferred.blocks[1].is_hidden());
+}
+
 #[test]
 pub fn test_restore_blocks_with_local_status() {
     let (events_tx, events_rx) = async_channel::unbounded();
