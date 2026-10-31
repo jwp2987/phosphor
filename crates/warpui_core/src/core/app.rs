@@ -754,6 +754,11 @@ pub struct AppContext {
     #[cfg(test)]
     task_done: (async_channel::Sender<usize>, async_channel::Receiver<usize>),
     pub(super) pending_effects: VecDeque<Effect>,
+    /// How many effects at the front of `pending_effects` were queued with
+    /// [`AppContext::push_urgent_effect`]. They run in the order they were queued, ahead of every
+    /// ordinary effect, so e.g. a key's bytes reach the pty before the notifications queued ahead
+    /// of them are delivered (#1176).
+    urgent_effects: usize,
     pending_flushes: usize,
     flushing_effects: bool,
     #[allow(clippy::type_complexity)]
@@ -918,6 +923,7 @@ impl AppContext {
             #[cfg(test)]
             task_done: async_channel::unbounded(),
             pending_effects: VecDeque::new(),
+            urgent_effects: 0,
             pending_flushes: 0,
             flushing_effects: false,
             first_frame_callback: None,
@@ -3932,6 +3938,14 @@ impl AppContext {
         }
     }
 
+    /// Queues `effect` to run before every ordinary pending effect, but after the urgent effects
+    /// already queued, so urgent effects keep their relative order.
+    pub(super) fn push_urgent_effect(&mut self, effect: Effect) {
+        let at = self.urgent_effects.min(self.pending_effects.len());
+        self.pending_effects.insert(at, effect);
+        self.urgent_effects = at + 1;
+    }
+
     fn flush_effects(&mut self) {
         self.pending_flushes -= 1;
 
@@ -3941,6 +3955,7 @@ impl AppContext {
             self.remove_dropped_items();
 
             while let Some(effect) = self.pending_effects.pop_front() {
+                self.urgent_effects = self.urgent_effects.saturating_sub(1);
                 match effect {
                     Effect::Event { entity_id, payload } => self.emit_event(entity_id, payload),
                     Effect::ModelNotification { model_id } => self.notify_model_observers(model_id),

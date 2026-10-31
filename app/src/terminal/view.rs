@@ -8191,7 +8191,7 @@ impl TerminalView {
                         .set_agent_display_command(action_id.clone(), display_command.clone());
                 }
 
-                ctx.emit(Event::ExecuteCommand(ExecuteCommandEvent {
+                ctx.emit_urgent(Event::ExecuteCommand(ExecuteCommandEvent {
                     command,
                     session_id,
                     source,
@@ -8914,7 +8914,7 @@ impl TerminalView {
     /// Also marks this view as manually shut down for telemetry attribution.
     pub fn shutdown_pty(&mut self, ctx: &mut ViewContext<Self>) {
         self.manual_pty_shutdown_requested = true;
-        ctx.emit(Event::ShutdownPty);
+        ctx.emit_urgent(Event::ShutdownPty);
     }
 
     /// Whether [`Self::shutdown_pty`] has been requested for this view.
@@ -9088,7 +9088,7 @@ impl TerminalView {
                 self.redetermine_terminal_focus(ctx);
             }
         }
-        ctx.emit(Event::DiscardPendingCommandWrites);
+        ctx.emit_urgent(Event::DiscardPendingCommandWrites);
         self.user_write_ctrl_c_to_pty(ctx);
 
         // A foreground process can ignore ^C (a nested interactive shell, `trap '' INT`), which
@@ -9169,7 +9169,7 @@ impl TerminalView {
             .lock()
             .typeahead_handoff_mut()
             .set_held_agent_command(None);
-        ctx.emit(Event::DiscardHeldTypeaheadCommand);
+        ctx.emit_urgent(Event::DiscardHeldTypeaheadCommand);
     }
 
     /// Cancels a local agent conversation and tears down the command it is driving.
@@ -9386,7 +9386,7 @@ impl TerminalView {
             .active_block_mut()
             .mark_interrupted_by_ctrl_c();
         if self.ssh_pre_init_abort_bytes().is_none() && self.ssh_connect_sigint_applies() {
-            ctx.emit(Event::SigintForegroundToPty);
+            ctx.emit_urgent(Event::SigintForegroundToPty);
             return;
         }
         let bytes = self
@@ -10212,7 +10212,7 @@ impl TerminalView {
                 .then(|| self.ssh_pre_init_abort_bytes())
                 .flatten();
             if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
-                ctx.emit(Event::SigintForegroundToPty);
+                ctx.emit_urgent(Event::SigintForegroundToPty);
             } else if let Some(abort) = abort {
                 self.write_user_bytes_to_pty(abort, ctx);
             } else {
@@ -11115,7 +11115,7 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) {
-        ctx.emit(Event::WriteBytesToPty { bytes: data.into() });
+        ctx.emit_urgent(Event::WriteBytesToPty { bytes: data.into() });
     }
 
     /// Exposes the PTY output broadcast receiver, for non-recording subscribers to
@@ -11144,7 +11144,7 @@ impl TerminalView {
                 .active_block_mut()
                 .mark_interrupted_by_ctrl_c();
         }
-        ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
+        ctx.emit_urgent(Event::WriteAgentInputToPty { bytes, mode: *mode });
     }
 
     /// Writes a shared session viewer's bytes to the pty.
@@ -11422,7 +11422,7 @@ impl TerminalView {
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         if handoff_route == UserBytesRoute::WriteCounted {
-            ctx.emit(Event::WriteHandoffUserBytesToPty { bytes });
+            ctx.emit_urgent(Event::WriteHandoffUserBytesToPty { bytes });
         } else {
             self.write_to_pty(bytes, ctx);
         }
@@ -11444,7 +11444,7 @@ impl TerminalView {
             self.input
                 .update(ctx, |input, _| input.clear_handoff_enter_mark());
             for bytes in chunks {
-                ctx.emit(Event::WriteHandoffUserBytesToPty {
+                ctx.emit_urgent(Event::WriteHandoffUserBytesToPty {
                     bytes: Cow::Owned(bytes),
                 });
             }
@@ -11736,7 +11736,7 @@ impl TerminalView {
             self.handle_typeahead_handoff_changed(ctx);
         }
         if committed || still_pty_owned {
-            ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            ctx.emit_urgent(Event::RetryTypeaheadHandoffRequest);
         }
     }
 
@@ -11757,13 +11757,13 @@ impl TerminalView {
                 // #1104: bytes written behind the request this report answers are still in the
                 // shell's line; ask for them with one more request.
                 if self.model.lock().typeahead_handoff().drain_pending() {
-                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
+                    ctx.emit_urgent(Event::RetryTypeaheadHandoffRequest);
                 }
             }
             ReportDisposition::InsertKeepDeferred => {
                 self.insert_typeahead_from_handoff(ctx);
                 self.arm_uncovered_deferral_timer(ctx);
-                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+                ctx.emit_urgent(Event::RetryTypeaheadHandoffRequest);
             }
             ReportDisposition::Insert | ReportDisposition::InsertYoung => {
                 self.insert_typeahead_from_handoff(ctx);
@@ -19866,7 +19866,7 @@ impl TerminalView {
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterResize, ctx);
 
         // Notify subscribers.
-        ctx.emit(Event::Resize { size_update });
+        ctx.emit_urgent(Event::Resize { size_update });
     }
 
     /// If we're a viewer eligible for viewer-driven sizing, report our natural
@@ -25808,7 +25808,7 @@ impl TerminalView {
                     self.focus_terminal(ctx);
                 }
 
-                ctx.emit(Event::ExecuteCommand(event.as_ref().clone()));
+                ctx.emit_urgent(Event::ExecuteCommand(event.as_ref().clone()));
 
                 if self.block_onboarding_active {
                     self.interrupt_onboarding_blocks(ctx);
@@ -26120,7 +26120,7 @@ impl TerminalView {
                 if self.ssh_connect_holds_eot() {
                     self.note_ssh_interrupt_held(ctx);
                 } else {
-                    ctx.emit(Event::CtrlD);
+                    ctx.emit_urgent(Event::CtrlD);
                 }
             }
             InputEvent::CtrlC { cleared_buffer_len } => {
@@ -30041,7 +30041,7 @@ impl TerminalView {
             let event = event.clone();
             match event {
                 EnvVarCollectionBlockEvent::RanCommand(command) => {
-                    ctx.emit(Event::ExecuteCommand(ExecuteCommandEvent {
+                    ctx.emit_urgent(Event::ExecuteCommand(ExecuteCommandEvent {
                         command,
                         session_id,
                         workflow_id: None,
@@ -31973,7 +31973,7 @@ impl TypedActionView for TerminalView {
                 buffer_text,
                 results_tx,
             } => {
-                ctx.emit(Event::RunNativeShellCompletions {
+                ctx.emit_urgent(Event::RunNativeShellCompletions {
                     buffer_text: buffer_text.clone(),
                     results_tx: results_tx.clone(),
                 });
