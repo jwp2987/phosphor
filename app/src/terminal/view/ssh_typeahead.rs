@@ -37,6 +37,19 @@ pub(super) enum HeldInput {
     Seq(String),
 }
 
+// Never prints the text (see the module docs); a mismatch in a test shows kind and length.
+impl fmt::Debug for HeldInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Typed(_) => "Typed",
+            Self::Key(_) => "Key",
+            Self::Paste(_) => "Paste",
+            Self::Seq(_) => "Seq",
+        };
+        write!(f, "{kind}(<{} bytes>)", self.len())
+    }
+}
+
 impl HeldInput {
     pub(super) fn from_chars(chars: &str) -> Self {
         if chars.chars().all(|c| !c.is_control()) {
@@ -111,6 +124,7 @@ impl SshTypeahead {
         self.bytes
     }
 
+    #[cfg(test)]
     pub(super) fn overflowed(&self) -> bool {
         self.overflowed
     }

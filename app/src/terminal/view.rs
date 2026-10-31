@@ -10607,6 +10607,32 @@ impl TerminalView {
         }
     }
 
+    /// Delivers one held control key the way the same key typed now would be routed: to the pty
+    /// where the pty takes typed text (Enter included, as after a deferred Enter), else to the
+    /// input editor, where Enter submits the line it holds.
+    fn replay_held_key(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
+        if self.replayed_enter_goes_to_pty(ctx) {
+            self.report_possible_typeahead(key);
+            self.write_user_bytes_to_pty(key.as_bytes().to_vec(), ctx);
+            return;
+        }
+        let action = match key {
+            "\r" | "\n" | "\r\n" => {
+                self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                return;
+            }
+            "\u{7f}" | "\u{8}" => EditorAction::Backspace,
+            "\u{15}" => EditorAction::DeleteAllLeft,
+            "\u{17}" => EditorAction::DeleteWordLeft,
+            _ => return,
+        };
+        self.input.update(ctx, |input, ctx| {
+            input
+                .editor()
+                .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
+        });
+    }
+
     /// The connect is over (#1292). With the remote shell at its first prompt the held keys are
     /// delivered to it, exactly as if typed there now. Otherwise the connect failed or ended
     /// without a remote shell and the keys were typed for a session that never came up: they are
@@ -10627,7 +10653,7 @@ impl TerminalView {
             for input in held {
                 match input {
                     HeldInput::Typed(text) => self.typed_characters_on_terminal(&text, ctx),
-                    HeldInput::Key(key) => self.keydown_on_terminal(&key, ctx),
+                    HeldInput::Key(key) => self.replay_held_key(&key, ctx),
                     HeldInput::Paste(text) => self.deliver_paste_text(&text, ctx),
                     HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
                 }
