@@ -904,53 +904,12 @@ impl RemoteServerManager {
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
-                    // Run platform detection, binary check, and old-binary
-                    // check concurrently. The old-binary check lets the
-                    // controller distinguish fresh install (no prior
-                    // versioned binary) from update (prior versioned
-                    // binary present), so it can skip the install prompt
-                    // in the update case.
-                    let (platform_result, check_result, old_binary_result) = futures::join!(
-                        transport.detect_platform(),
-                        transport.check_binary(),
-                        transport.check_has_old_binary(),
-                    );
-                    let platform = match platform_result {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            log::warn!("Platform detection failed for session {session_id:?}: {e}");
-                            None
-                        }
-                    };
-                    let has_old_binary = match old_binary_result {
-                        Ok(has) => has,
-                        Err(e) => {
-                            log::warn!(
-                                "Old-binary detection failed for session {session_id:?}: {e}. \
-                                 Treating as fresh install."
-                            );
-                            false
-                        }
-                    };
-                    // Run the preinstall check after platform detection
-                    // resolves, only on Linux. macOS hosts pay zero extra
-                    // round-trips. SSH-level failures are logged and
-                    // surfaced as `None`, which the controller treats as
-                    // inconclusive (fail open).
-                    let preinstall = match &platform {
-                        Some(p) if matches!(p.os, RemoteOs::Linux) => {
-                            match transport.run_preinstall_check().await {
-                                Ok(r) => Some(r),
-                                Err(e) => {
-                                    log::warn!(
-                                        "Preinstall check failed for session {session_id:?}: {e}"
-                                    );
-                                    None
-                                }
-                            }
-                        }
-                        _ => None,
-                    };
+                    let BinaryCheckProbes {
+                        platform,
+                        check_result,
+                        has_old_binary,
+                        preinstall,
+                    } = run_binary_check_probes(&transport, session_id).await;
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             if let Some(p) = &platform {
@@ -2850,6 +2809,78 @@ impl HostRequestHandle {
                 Err(HostRequestError::UnexpectedResponse)
             }
         }
+    }
+}
+
+/// Everything `check_binary` learns about a host before setup continues.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+pub(crate) struct BinaryCheckProbes {
+    pub(crate) platform: Option<RemotePlatform>,
+    pub(crate) check_result: Result<bool, String>,
+    pub(crate) has_old_binary: bool,
+    pub(crate) preinstall: Option<PreinstallCheckResult>,
+}
+
+/// Runs the setup probes for one host.
+///
+/// Platform detection, binary check, old-binary check and the preinstall check all start
+/// together (#1136): the preinstall check used to wait for platform detection, which cost
+/// an extra round trip plus a remote shell start on every Linux connect. The old-binary
+/// check lets the controller distinguish a fresh install (no prior versioned binary) from
+/// an update (prior versioned binary present), so it can skip the install prompt in the
+/// update case.
+///
+/// The preinstall check only matters on Linux, so its result is dropped for any other
+/// platform (or when detection failed), exactly as if it had never run. SSH-level failures
+/// are logged and surfaced as `None`, which the controller treats as inconclusive (fail
+/// open).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) async fn run_binary_check_probes<T>(
+    transport: &T,
+    session_id: SessionId,
+) -> BinaryCheckProbes
+where
+    T: RemoteTransport + ?Sized,
+{
+    let (platform_result, check_result, old_binary_result, preinstall_result) = futures::join!(
+        transport.detect_platform(),
+        transport.check_binary(),
+        transport.check_has_old_binary(),
+        transport.run_preinstall_check(),
+    );
+    let platform = match platform_result {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log::warn!("Platform detection failed for session {session_id:?}: {e}");
+            None
+        }
+    };
+    let has_old_binary = match old_binary_result {
+        Ok(has) => has,
+        Err(e) => {
+            log::warn!(
+                "Old-binary detection failed for session {session_id:?}: {e}. \
+                 Treating as fresh install."
+            );
+            false
+        }
+    };
+    let preinstall = match &platform {
+        Some(p) if matches!(p.os, RemoteOs::Linux) => match preinstall_result {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log::warn!("Preinstall check failed for session {session_id:?}: {e}");
+                None
+            }
+        },
+        _ => None,
+    };
+    BinaryCheckProbes {
+        platform,
+        check_result,
+        has_old_binary,
+        preinstall,
     }
 }
 

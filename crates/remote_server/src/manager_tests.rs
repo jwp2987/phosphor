@@ -402,3 +402,180 @@ fn deregister_after_shell_exit_leaves_the_master_to_the_wrapper() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// run_binary_check_probes: setup probes overlap (#1136)
+// ---------------------------------------------------------------------------
+
+mod binary_check_probes {
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use futures::channel::oneshot;
+
+    use crate::setup::{PreinstallStatus, RemoteArch, RemoteLibc};
+
+    use super::*;
+
+    type Fut<T> = Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+    /// A transport whose probes resolve immediately, except that `detect_platform` can be held
+    /// back until `run_preinstall_check` has started.
+    #[derive(Debug)]
+    struct FakeTransport {
+        platform: Result<RemotePlatform, String>,
+        preinstall: Result<PreinstallCheckResult, String>,
+        preinstall_started_tx: Mutex<Option<oneshot::Sender<()>>>,
+        detect_gate_rx: Mutex<Option<oneshot::Receiver<()>>>,
+        preinstall_calls: AtomicUsize,
+    }
+
+    impl FakeTransport {
+        fn new(
+            platform: Result<RemotePlatform, String>,
+            preinstall: Result<PreinstallCheckResult, String>,
+        ) -> Self {
+            Self {
+                platform,
+                preinstall,
+                preinstall_started_tx: Mutex::new(None),
+                detect_gate_rx: Mutex::new(None),
+                preinstall_calls: AtomicUsize::new(0),
+            }
+        }
+
+        /// `detect_platform` will not resolve until `run_preinstall_check` has been polled.
+        fn gate_detect_on_preinstall(self) -> Self {
+            let (tx, rx) = oneshot::channel();
+            *self.preinstall_started_tx.lock().unwrap() = Some(tx);
+            *self.detect_gate_rx.lock().unwrap() = Some(rx);
+            self
+        }
+    }
+
+    impl RemoteTransport for FakeTransport {
+        fn detect_platform(&self) -> Fut<Result<RemotePlatform, String>> {
+            let gate = self.detect_gate_rx.lock().unwrap().take();
+            let platform = self.platform.clone();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                platform
+            })
+        }
+
+        fn run_preinstall_check(&self) -> Fut<Result<PreinstallCheckResult, String>> {
+            self.preinstall_calls.fetch_add(1, Ordering::SeqCst);
+            let started = self.preinstall_started_tx.lock().unwrap().take();
+            let result = self.preinstall.clone();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                result
+            })
+        }
+
+        fn check_binary(&self) -> Fut<Result<bool, String>> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn check_has_old_binary(&self) -> Fut<anyhow::Result<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn install_binary(&self) -> Fut<Result<(), String>> {
+            Box::pin(async { Err("unused".to_string()) })
+        }
+
+        fn connect(
+            &self,
+            _executor: Arc<warpui::r#async::executor::Background>,
+        ) -> Fut<anyhow::Result<Connection>> {
+            Box::pin(async { Err(anyhow::anyhow!("unused")) })
+        }
+
+        fn remove_remote_server_binary(&self) -> Fut<anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn platform(os: RemoteOs) -> RemotePlatform {
+        RemotePlatform {
+            os,
+            arch: RemoteArch::X86_64,
+        }
+    }
+
+    fn supported() -> PreinstallCheckResult {
+        PreinstallCheckResult {
+            status: PreinstallStatus::Supported,
+            libc: RemoteLibc::Unknown,
+            raw: "status=supported".to_string(),
+        }
+    }
+
+    /// Runs the probes on a helper thread so that a regression to serial probing (which can
+    /// never finish with a gated transport) fails the test instead of hanging it.
+    fn run(transport: FakeTransport) -> (BinaryCheckProbes, Arc<FakeTransport>) {
+        let transport = Arc::new(transport);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let for_thread = transport.clone();
+        std::thread::spawn(move || {
+            let probes = futures::executor::block_on(run_binary_check_probes(
+                &*for_thread,
+                SessionId::from(1u64),
+            ));
+            let _ = tx.send(probes);
+        });
+        let probes = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("setup probes did not run concurrently");
+        (probes, transport)
+    }
+
+    #[test]
+    fn preinstall_check_starts_without_waiting_for_platform_detection() {
+        // Fails on the old code: `run_preinstall_check` was only called after `detect_platform`
+        // resolved, but detection here resolves only once preinstall has started.
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::Linux)), Ok(supported()))
+            .gate_detect_on_preinstall();
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::Linux)));
+        assert_eq!(probes.preinstall, Some(supported()));
+        assert_eq!(probes.check_result, Ok(true));
+        assert!(!probes.has_old_binary);
+    }
+
+    #[test]
+    fn preinstall_result_is_dropped_for_non_linux_hosts() {
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::MacOs)), Ok(supported()));
+        let (probes, transport) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::MacOs)));
+        assert_eq!(probes.preinstall, None);
+        // Started in parallel with everything else, but its answer is ignored.
+        assert_eq!(transport.preinstall_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn preinstall_result_is_dropped_when_platform_detection_fails() {
+        let transport = FakeTransport::new(Err("uname failed".to_string()), Ok(supported()));
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, None);
+        assert_eq!(probes.preinstall, None);
+    }
+
+    #[test]
+    fn preinstall_failure_on_linux_is_inconclusive() {
+        let transport = FakeTransport::new(
+            Ok(platform(RemoteOs::Linux)),
+            Err("ssh timed out".to_string()),
+        );
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::Linux)));
+        assert_eq!(probes.preinstall, None);
+    }
+}
