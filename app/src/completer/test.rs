@@ -975,3 +975,109 @@ pub fn test_remote_subshell_lists_directory_entries_before_any_host_id() {
         );
     });
 }
+
+/// Executor for #1289: the first `failures` calls fail like a request caught by a remote-server
+/// connection drop; every later call returns a fixed listing.
+#[derive(Debug)]
+struct DropThenListExecutor {
+    failures: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl DropThenListExecutor {
+    fn new(failures: usize) -> Arc<Self> {
+        Arc::new(Self {
+            failures: std::sync::atomic::AtomicUsize::new(failures),
+            calls: Default::default(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::terminal::model::session::command_executor::CommandExecutor for DropThenListExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &crate::terminal::shell::Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _options: crate::terminal::model::session::command_executor::ExecuteCommandOptions,
+    ) -> anyhow::Result<warp_completer::completer::CommandOutput> {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let failing = self
+            .failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if failing {
+            anyhow::bail!("Remote command failed: connection to the remote server was lost");
+        }
+        Ok(warp_completer::completer::CommandOutput {
+            stdout: b"./src\0.\0\0./a.txt\0".to_vec(),
+            stderr: vec![],
+            status: warp_completer::completer::CommandExitStatus::Success,
+            exit_code: Some(warp_core::command::ExitCode::from(0)),
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+fn remote_session_with(executor: Arc<DropThenListExecutor>) -> Session {
+    let info = SessionInfo::new_for_test()
+        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+        .with_shell_type(crate::terminal::shell::ShellType::Bash);
+    Session::new(info, executor)
+}
+
+/// #1289: a listing request that fails once (the remote-server connection dropped under it, the
+/// session then swapped executors) is retried on the current executor instead of completing as
+/// an empty directory.
+#[test]
+pub fn test_remote_listing_retries_a_dropped_request() {
+    App::test((), |app| async move {
+        let executor = DropThenListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1289-retry/");
+        let ctx = test_session_context(remote_session_with(executor.clone()), cwd.clone(), &app);
+        let entries = warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(
+            HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(entries)),
+            HashSet::from_iter([
+                EngineDirEntry::test_dir("src"),
+                EngineDirEntry::test_file("a.txt")
+            ]),
+            "the retry must serve the listing, not an empty directory"
+        );
+        assert_eq!(executor.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    });
+}
+
+/// #1289: when both attempts fail the empty result is NOT stored, so the next Tab lists again
+/// (and gets the real entries) instead of reading a cached empty directory for the rest of the
+/// cache window.
+#[test]
+pub fn test_remote_listing_failure_is_not_cached() {
+    App::test((), |app| async move {
+        let executor = DropThenListExecutor::new(2);
+        let cwd = TypedPathBuf::from("/test-1289-nocache/");
+        let ctx = test_session_context(remote_session_with(executor.clone()), cwd.clone(), &app);
+        let first = warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        assert!(first.is_empty(), "both attempts failed");
+
+        let second = warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(
+            HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(second)),
+            HashSet::from_iter([
+                EngineDirEntry::test_dir("src"),
+                EngineDirEntry::test_file("a.txt")
+            ]),
+            "a failed listing must not be cached as an empty directory"
+        );
+    });
+}
