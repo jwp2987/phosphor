@@ -1435,13 +1435,10 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
                 model.apply_autodetected_input_type(InputType::Shell, ctx);
                 model.note_detection_requested(text.to_owned());
             });
-            // Never a Shell-ward settle.
-            assert!(!settle_for_submit_with_head(
-                app,
-                &input_model,
-                text,
-                unknown
-            ));
+            // The settle may report a Shell decision for command-shaped text (`./run ...`, an
+            // assignment prefix): the inherited Shell then simply stands. What is asserted below
+            // is the resulting type, so a prose line settled Shell-ward still fails there.
+            settle_for_submit_with_head(app, &input_model, text, unknown);
             input_model.read(app, |model, _| model.input_type())
         };
         // No #834 request word (`the`, `it`, ...): two words that address someone (`my`, `when`,
@@ -1537,7 +1534,6 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
             "env FOO=1 grep this the file",
             "time grep this the file",
             "timeout 5 grep this the file",
-            "sudo grep this the file",
         ] {
             assert_eq!(
                 enter(&mut app, command, true),
@@ -1545,6 +1541,17 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
                 "{command}"
             );
             assert_eq!(enter(&mut app, command, false), InputType::AI, "{command}");
+        }
+        // `sudo` is a one-off shell keyword: the routing procedure (#1234) runs a line headed by
+        // it as a command whatever the session knows, so the inherited AI does not stand for it.
+        for command in ["sudo grep this the file"] {
+            for known in [true, false] {
+                assert_eq!(
+                    enter(&mut app, command, known),
+                    InputType::Shell,
+                    "{command} (known: {known})"
+                );
+            }
         }
         for prose in [
             "make sure the build passes",
