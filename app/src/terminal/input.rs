@@ -1221,6 +1221,79 @@ pub enum AfterEnterInput {
     Enter,
 }
 
+/// How long a backstop timer may run past its deadline before it is logged (#1181).
+const LATE_TIMER_WAKE_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Logs (INFO, one line per occurrence, at most once a second) that a backstop timer of a
+/// deferred Enter ran well after its deadline (#1181): the timer thread was not woken on time,
+/// which is what strands the Enter until the next OS event. `deadline` is when it was due.
+pub(crate) fn log_late_timer_wake(timer: &'static str, deadline: Instant) {
+    let late = Instant::now().saturating_duration_since(deadline);
+    if late <= LATE_TIMER_WAKE_LOG_THRESHOLD {
+        return;
+    }
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicU64;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    static LAST_LOGGED_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST_LOGGED_MS.load(Ordering::Relaxed);
+    if last != 0 && now_ms.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_LOGGED_MS.store(now_ms, Ordering::Relaxed);
+    log::info!(
+        "Deferred-Enter timer '{timer}' ran {} ms after its deadline",
+        late.as_millis()
+    );
+}
+
+/// Longest the activity assertion of a deferred Enter is held, in case no release path runs.
+const DEFERRED_ENTER_ACTIVITY_CAP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A macOS activity assertion (`NSProcessInfo beginActivityWithOptions`, UserInitiated) held
+/// while an Enter is deferred, so App Nap and timer coalescing cannot delay the timers that
+/// back it up (#1181). A no-op elsewhere.
+#[derive(Default)]
+struct DeferredEnterActivity {
+    #[cfg(target_os = "macos")]
+    guard: Option<prevent_sleep::Guard>,
+    /// Bumped on every begin, so a cap timer armed for an earlier hold cannot end a later one.
+    generation: u64,
+}
+
+impl DeferredEnterActivity {
+    /// Starts the assertion unless one is held. Returns the generation to pass to
+    /// [`Self::end_generation`] from the cap timer, or `None` if nothing was started.
+    #[cfg(target_os = "macos")]
+    fn begin(&mut self) -> Option<u64> {
+        if self.guard.is_some() {
+            return None;
+        }
+        self.guard = Some(prevent_sleep::prevent_sleep("Deferred Enter pending"));
+        self.generation = self.generation.wrapping_add(1);
+        Some(self.generation)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn begin(&mut self) -> Option<u64> {
+        None
+    }
+
+    fn end(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.guard = None;
+        }
+    }
+
+    fn end_generation(&mut self, generation: u64) {
+        if self.generation == generation {
+            self.end();
+        }
+    }
+}
+
 /// An Enter waiting for the classification verdict of `text` (#933), and what was typed behind
 /// it (#1016).
 #[derive(Debug)]
@@ -1905,6 +1978,9 @@ pub struct Input {
     multiline_submit_confirmed: bool,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
+    /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
+    /// coalescing stranded the backstop timers on a late wake).
+    deferred_enter_activity: DeferredEnterActivity,
     /// The editor's text boundary at an Enter deferred behind the typeahead hand-off (#1016).
     handoff_enter_mark: Option<HandoffEnterMark>,
     /// Input typed after a deferred Enter, held until the terminal view has routed it (#1016).
@@ -3496,6 +3572,11 @@ impl Input {
             me.handle_slash_commands_menu_event(event, ctx);
         });
 
+        // #1181: a verdict landing releases an Enter deferred behind it; the timers are only
+        // the backstop. The model notifies when a pending detection settles.
+        ctx.observe(&ai_input_model, |me, _, ctx| {
+            me.release_verdict_wait_if_settled(ctx);
+        });
         ctx.subscribe_to_model(&ai_input_model, move |me, _, event, ctx| {
             match event {
                 BlocklistAIInputEvent::InputTypeChanged { .. }
@@ -3661,6 +3742,7 @@ impl Input {
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
             verdict_wait: None,
+            deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_mark: None,
             after_enter_replay: Vec::new(),
             after_enter_replay_open: false,
@@ -13255,8 +13337,47 @@ impl Input {
             text: text.clone(),
             queued: Vec::new(),
         });
+        self.begin_deferred_enter_activity(ctx);
         self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
         true
+    }
+
+    /// #1181: holds the macOS activity assertion while an Enter is deferred, with a hard cap in
+    /// case no release path runs. A no-op elsewhere.
+    fn begin_deferred_enter_activity(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(generation) = self.deferred_enter_activity.begin() {
+            ctx.spawn(
+                Timer::after(DEFERRED_ENTER_ACTIVITY_CAP),
+                move |me, _, _| {
+                    me.deferred_enter_activity.end_generation(generation);
+                },
+            );
+        }
+    }
+
+    /// Releases the assertion taken by [`Self::begin_deferred_enter_activity`].
+    fn end_deferred_enter_activity(&mut self) {
+        self.deferred_enter_activity.end();
+    }
+
+    /// #1181: the observer of the input model, which notifies when a pending detection settles.
+    /// If the waiting Enter's verdict has landed, run it now rather than at the next timer tick.
+    /// The release is [`Self::wait_for_verdict_then_enter`] itself, which takes `verdict_wait`:
+    /// whichever of this and the backstop timer runs second finds nothing to release, so the
+    /// Enter runs exactly once. Never re-arms a timer (a still-pending verdict is the timer's).
+    fn release_verdict_wait_if_settled(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref() else {
+            return;
+        };
+        let text = wait.text.clone();
+        if self
+            .ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&text, ctx)
+        {
+            return;
+        }
+        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
     }
 
     /// Moves what was typed behind the waiting Enter out of the buffer (#1016). The Enter
@@ -13312,6 +13433,7 @@ impl Input {
         // behind the Enter is moved out of the buffer first (#1016).
         if !self.reconcile_verdict_wait(ctx) {
             self.verdict_wait = None;
+            self.end_deferred_enter_activity();
             return;
         }
         let pending = self
@@ -13337,6 +13459,7 @@ impl Input {
                 // Open the replay before the submit so nothing typed from here on can be routed
                 // ahead of the queue (#1016); the view drains it once the pty route is settled.
                 let has_queued = !queued.is_empty();
+                self.end_deferred_enter_activity();
                 if has_queued {
                     self.after_enter_replay = queued;
                     self.after_enter_replay_open = true;
@@ -13352,10 +13475,12 @@ impl Input {
                 }
             }
             EnterVerdictWait::Wait => {
-                ctx.spawn(
-                    Timer::after(std::time::Duration::from_millis(2)),
-                    move |me, _, ctx| me.wait_for_verdict_then_enter(text, started, ctx),
-                );
+                let rearm = std::time::Duration::from_millis(2);
+                let deadline = Instant::now() + rearm;
+                ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
+                    log_late_timer_wake("verdict wait", deadline);
+                    me.wait_for_verdict_then_enter(text, started, ctx)
+                });
             }
         }
     }
@@ -13631,6 +13756,7 @@ impl Input {
         }
         let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();
         if deferred {
+            self.begin_deferred_enter_activity(ctx);
             self.note_handoff_enter(ctx);
             ctx.emit(Event::TypeaheadHandoffEnterDeferred);
         }
@@ -13659,6 +13785,7 @@ impl Input {
     /// Forgets the boundary recorded by [`Self::note_handoff_enter`].
     pub(crate) fn clear_handoff_enter_mark(&mut self) {
         self.handoff_enter_mark = None;
+        self.end_deferred_enter_activity();
     }
 
     /// Splits off what reached the editor after the Enter the typeahead hand-off deferred

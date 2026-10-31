@@ -10373,6 +10373,125 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
     })
 }
 
+/// #1181: the Enter waiting for a verdict is released by the verdict landing (the model's
+/// notification), not only by its timer, and runs exactly once when the timer fires as well. Keys
+/// typed behind it, in several pieces, all survive the release in order.
+#[test]
+fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_order() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("true", ctx);
+            input.verdict_wait = Some(VerdictWait {
+                text: "true".to_string(),
+                queued: Vec::new(),
+            });
+            // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
+            // reach the editor before the wait is reconciled.
+            for key in ["e", "c", "h", "o"] {
+                input.user_insert(key, ctx);
+            }
+            // No detection is pending for "true": the verdict has landed. The model's
+            // notification releases the Enter.
+            input.release_verdict_wait_if_settled(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "the verdict released the Enter"
+            );
+            assert!(
+                input.last_enter_submitted_shell_command,
+                "the released Enter must submit the line it waited for"
+            );
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [AfterEnterInput::Text("echo".to_string())],
+                "every key typed behind the Enter survives the release, in order"
+            );
+        });
+
+        // The backstop timer (and a second notification) arrive after the release: neither may
+        // submit again.
+        input.update(&mut app, |input, ctx| {
+            input.last_enter_submitted_shell_command = false;
+            input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
+            input.release_verdict_wait_if_settled(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                !input.last_enter_submitted_shell_command,
+                "the Enter must be released exactly once"
+            );
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [AfterEnterInput::Text("echo".to_string())],
+                "the late timer must not touch the replay"
+            );
+        });
+    })
+}
+
+/// #1181: a notification while the verdict is still pending releases nothing; the timer keeps
+/// the wait.
+#[test]
+fn test_notification_with_verdict_still_pending_keeps_the_enter_waiting() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.update(&mut app, |input, ctx| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "precondition: the verdict has not landed"
+            );
+            input.release_verdict_wait_if_settled(ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "a notification with the verdict pending must not release the Enter"
+            );
+        });
+    })
+}
+
 /// #1017: a quote completion consumes the editor's auto-paired closing quote instead of doubling it.
 #[test]
 fn completion_consumes_auto_paired_closing_quote() {

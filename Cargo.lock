@@ -15028,6 +15028,7 @@ dependencies = [
  "pin-project-lite",
  "plist",
  "pprof",
+ "prevent_sleep",
  "prost",
  "prost-build",
  "prost-types",

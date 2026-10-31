@@ -280,6 +280,7 @@ use warp_core::execution_mode::AppExecutionMode;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
+use crate::terminal::input::log_late_timer_wake;
 use crate::terminal::input::{
     CommandExecutionSource, InputAction, InputEmptyStateChangeReason, YoungTypeaheadDetection,
 };
@@ -2870,6 +2871,10 @@ pub struct TerminalView {
     /// shown in the input editor, unexecuted, once the line has ended and the editor is back, so
     /// no typed key vanishes and none can run on the wrong host.
     ssh_held_typing: SshHeldTyping,
+    /// #1181: whether the young line's deferred Enter has been released (or none waits). The
+    /// verdict observer and the backstop timer both release it; whichever runs first sets this
+    /// and the other finds nothing to do.
+    young_enter_released: bool,
     /// The remote shell's first prompt was seen in this connect: the only point where held text
     /// may be shown (#1113). A failed or prompt-less end of the ssh block discards it instead.
     ssh_remote_prompt_seen: bool,
@@ -4160,6 +4165,11 @@ impl TerminalView {
             Self::handle_ai_history_model_event,
         );
         ctx.subscribe_to_model(&ai_input_model, Self::handle_ai_input_model_event);
+        // #1181: the model notifies when a pending detection settles; release an Enter deferred
+        // behind that verdict now instead of at the next timer tick.
+        ctx.observe(&ai_input_model, |me, _, ctx| {
+            me.release_deferred_enter_if_verdict_settled(ctx);
+        });
         ctx.subscribe_to_model(&ai_action_model, Self::handle_ai_action_model_event);
         ctx.subscribe_to_model(&CLIAgentSessionsModel::handle(ctx), |me, _, event, ctx| {
             if let CLIAgentSessionsModelEvent::Ended {
@@ -4613,6 +4623,7 @@ impl TerminalView {
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
             ssh_held_typing: SshHeldTyping::default(),
+            young_enter_released: true,
             ssh_remote_prompt_seen: false,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
@@ -11750,6 +11761,7 @@ impl TerminalView {
                 match detection {
                     YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
                     YoungTypeaheadDetection::Requested => {
+                        self.young_enter_released = false;
                         self.submit_deferred_enter_after_detection(Instant::now(), ctx);
                     }
                     YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
@@ -11769,9 +11781,11 @@ impl TerminalView {
             .typeahead_handoff_mut()
             .take_uncovered_deferral_started();
         if let Some(id) = id {
+            let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
             ctx.spawn(
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
+                    log_late_timer_wake("uncovered report patience", deadline);
                     let released = me
                         .model
                         .lock()
@@ -11831,7 +11845,17 @@ impl TerminalView {
         started: Instant,
         ctx: &mut ViewContext<Self>,
     ) {
-        if !self.model.lock().typeahead_handoff().deferred_submit_pending() {
+        if self.young_enter_released {
+            return;
+        }
+        if !self
+            .model
+            .lock()
+            .typeahead_handoff()
+            .deferred_submit_pending()
+        {
+            // Cancelled (Ctrl-C) or already run elsewhere: nothing left to release.
+            self.young_enter_released = true;
             return;
         }
         // #1174: text over the background-job cap is never parsed, so no verdict can land; do not
@@ -11845,19 +11869,50 @@ impl TerminalView {
             )
         });
         match young_submit_decision(can_run, pending, started.elapsed()) {
-            YoungSubmit::Submit => self.run_deferred_enter(true, ctx),
+            YoungSubmit::Submit => {
+                self.young_enter_released = true;
+                self.run_deferred_enter(true, ctx);
+            }
             YoungSubmit::SubmitWithoutVerdict => {
-                self.input
-                    .update(ctx, |input, ctx| input.give_up_pending_detection_for_submit(ctx));
+                self.young_enter_released = true;
+                self.input.update(ctx, |input, ctx| {
+                    input.give_up_pending_detection_for_submit(ctx)
+                });
                 self.run_deferred_enter(true, ctx);
             }
             YoungSubmit::Wait => {
-                ctx.spawn(Timer::after(Duration::from_millis(10)), move |me, _, ctx| {
+                let rearm = Duration::from_millis(10);
+                let deadline = Instant::now() + rearm;
+                ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
+                    log_late_timer_wake("young detection wait", deadline);
                     me.submit_deferred_enter_after_detection(started, ctx);
                 });
             }
-            YoungSubmit::KeepInEditor => self.keep_deferred_enter_text(ctx),
+            YoungSubmit::KeepInEditor => {
+                self.young_enter_released = true;
+                self.keep_deferred_enter_text(ctx);
+            }
         }
+    }
+
+    /// #1181: the model-notification path of [`Self::submit_deferred_enter_after_detection`]. A
+    /// verdict that landed (or a buffer that can no longer be classified) releases the waiting
+    /// Enter now. While the verdict is still pending the backstop timer owns the wait, so this
+    /// never arms a second one; `young_enter_released` makes the release happen once.
+    fn release_deferred_enter_if_verdict_settled(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.young_enter_released {
+            return;
+        }
+        let (can_run, pending) = self.input.read(ctx, |input, ctx| {
+            (
+                input.can_classify_buffer(ctx),
+                input.detection_pending_for_buffer(ctx),
+            )
+        });
+        if can_run && pending {
+            return;
+        }
+        self.submit_deferred_enter_after_detection(Instant::now(), ctx);
     }
 
     /// Ends a deferred Enter without submitting: the text stays in the editor for the user to
