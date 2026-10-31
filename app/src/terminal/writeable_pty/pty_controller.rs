@@ -1166,6 +1166,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 );
             }
         } else {
+            // #1172: a bash over ssh that can take a counted raw read gets the body of the
+            // bootstrap that way, not typed through its line editor.
+            let bootstrap =
+                bootstrap::bootstrap_for_session(bootstrap, shell_type, pending_session_info);
             self.write_bytes(bootstrap, ctx);
         }
     }

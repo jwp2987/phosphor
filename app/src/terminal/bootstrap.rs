@@ -14,7 +14,7 @@ use crate::{
 
 #[cfg(feature = "local_fs")]
 use super::{
-    model::session::{BootstrapSessionType, SessionInfo},
+    model::session::{BootstrapSessionType, IsLegacySSHSession, SessionInfo},
     warpify::settings::{PIPENV_SUBSHELL_COMMAND_REGEX, POETRY_SUBSHELL_COMMAND_REGEX},
 };
 
@@ -124,6 +124,86 @@ pub fn should_use_rc_file_bootstrap_method(
                 || is_msys2
         }
         BootstrapSessionType::WarpifiedRemote => false,
+    }
+}
+
+/// The line of the bash bootstrap (`bash.sh`) that opens the here-document holding `bash_body.sh`.
+const BASH_BOOTSTRAP_HEREDOC_OPEN: &[u8] =
+    b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n";
+/// The end of that here-document: the newline of the body's last line, then the terminator line.
+const BASH_BOOTSTRAP_HEREDOC_CLOSE: &[u8] = b"\nEOM\n";
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// #1172: rewrites the bash bootstrap so that its large body (`bash_body.sh`, about 45 of the
+/// 52 KB) is read by one `head -c <bytes>` instead of being typed, line by line, into the remote
+/// shell's line editor as a here-document. The remote spends ~200 ms reading the here-document
+/// (1,200 prompts and redraws) and ~120 ms running it; the counted read brings the first to
+/// ~15 ms (measured over ssh, 8 runs each: 330 -> 142 ms from InitShell to the Bootstrapped
+/// hook). `stty -echo` keeps the tty from echoing the 45 KB back. Returns `None` when the
+/// script does not have the expected here-document, so the caller keeps the original.
+///
+/// Only valid for a shell that is known to have a `head` with `-c`, because a failing `head`
+/// would leave the body to be executed as commands: see `SSHValue::raw_bootstrap`.
+pub fn bash_counted_read_bootstrap(script: &[u8]) -> Option<Vec<u8>> {
+    let open = find_subslice(script, BASH_BOOTSTRAP_HEREDOC_OPEN)?;
+    let body_start = open + BASH_BOOTSTRAP_HEREDOC_OPEN.len();
+    let close = body_start + find_subslice(&script[body_start..], BASH_BOOTSTRAP_HEREDOC_CLOSE)?;
+    // The body keeps its final newline, exactly as `read -d ''` read it.
+    let body = &script[body_start..=close];
+    let command = format!(
+        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c {}); command -p stty echo\r",
+        body.len()
+    );
+    let mut rewritten = Vec::with_capacity(script.len() + command.len());
+    rewritten.extend_from_slice(&script[..open]);
+    rewritten.extend_from_slice(command.as_bytes());
+    rewritten.extend_from_slice(body);
+    rewritten.extend_from_slice(&script[close + BASH_BOOTSTRAP_HEREDOC_CLOSE.len()..]);
+    Some(rewritten)
+}
+
+/// Whether the counted-read bootstrap is allowed. On by default;
+/// `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0` sends the here-document form again.
+fn counted_read_bootstrap_enabled() -> bool {
+    counted_read_bootstrap_enabled_from_env(
+        std::env::var("PHOSPHOR_SSH_COUNTED_BOOTSTRAP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+pub(crate) fn counted_read_bootstrap_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// The bootstrap to write into the shell: the counted-read form of the bash script
+/// ([`bash_counted_read_bootstrap`]) for an ssh session whose remote reported `raw_bootstrap`,
+/// otherwise `script` unchanged.
+pub fn bootstrap_for_session(
+    script: Cow<'static, [u8]>,
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> Cow<'static, [u8]> {
+    if shell_type != ShellType::Bash
+        || !matches!(
+            session_info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes {
+                raw_bootstrap: true,
+                ..
+            }
+        )
+        || !counted_read_bootstrap_enabled()
+    {
+        return script;
+    }
+    match bash_counted_read_bootstrap(&script) {
+        Some(rewritten) => Cow::Owned(rewritten),
+        None => script,
     }
 }
 

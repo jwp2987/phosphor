@@ -55,12 +55,16 @@ enum SshInitState {
         #[allow(dead_code)]
         for_update: bool,
     },
-    /// Stash held, `connect_session` in flight. Bootstrap is flushed only
-    /// once `SessionConnected` arrives (or on connection failure).
+    /// `connect_session` in flight. The bootstrap is flushed when the binary check passes
+    /// (#1172, `bootstrap_flushed`), or otherwise once `SessionConnected` arrives (or on
+    /// connection failure).
     AwaitingConnect {
         session_id: SessionId,
         session_info: SessionInfo,
         setup_start: Instant,
+        /// The stashed bootstrap was already written to the PTY (see
+        /// `early_bootstrap_flush_enabled`), so no later path may write it again.
+        bootstrap_flushed: bool,
     },
 }
 
@@ -189,6 +193,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         let IsLegacySSHSession::Yes {
             socket_path,
             external_control_master,
+            ..
         } = &info.is_legacy_ssh_session
         else {
             return;
@@ -210,12 +215,17 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             | SshInitState::AwaitingInstall {
                 session_info: old_info,
                 ..
-            }
-            | SshInitState::AwaitingConnect {
-                session_info: old_info,
-                ..
             } => {
                 self.flush_stashed_bootstrap(old_info, ctx);
+            }
+            SshInitState::AwaitingConnect {
+                session_info: old_info,
+                bootstrap_flushed,
+                ..
+            } => {
+                if !bootstrap_flushed {
+                    self.flush_stashed_bootstrap(old_info, ctx);
+                }
             }
         }
         // ControlMaster ownership is driven by the bootstrap SSH hook's
@@ -296,10 +306,26 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 let socket_path = transport.socket_path().clone();
                 let owns_control_master = transport.owns_control_master();
                 let connection_label = connection_label_for_session_info(&session_info);
+                // #1172: the binary is there, so the connect below is what the bootstrap was
+                // waiting for -- and the remote shell needs hundreds of ms to read and run the
+                // bootstrap, far longer than the connect + handshake (tens of ms). Write it now
+                // so the two overlap. If the connect somehow lands after the session was
+                // initialized, `Sessions` swaps the remote-server executor in (the same swap a
+                // reconnect does); a failed connect just leaves the legacy executor.
+                let bootstrap_flushed = early_bootstrap_flush_enabled();
+                if bootstrap_flushed {
+                    self.flush_stashed_bootstrap(session_info.clone(), ctx);
+                    log::info!(
+                        "remote-server bootstrap flushed {} ms after ssh init, \
+                         overlapping the connect for session {session_id:?}",
+                        setup_start.elapsed().as_millis()
+                    );
+                }
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
                     setup_start,
+                    bootstrap_flushed,
                 };
                 self.connect_session_for_current_identity(
                     session_id,
@@ -418,16 +444,19 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         let SshInitState::AwaitingConnect {
             session_info,
             setup_start,
+            bootstrap_flushed,
             ..
         } = std::mem::replace(&mut self.state, SshInitState::Idle)
         else {
             unreachable!("just matched AwaitingConnect above");
         };
 
-        // Flush the stashed bootstrap now that the server is connected.
-        // `client_for_session` will return `Some` when the session
+        // Flush the stashed bootstrap now that the server is connected (unless the binary check
+        // already did, #1172). `client_for_session` will return `Some` when the session
         // subsequently initializes, so it picks `RemoteServerCommandExecutor`.
-        self.flush_stashed_bootstrap(session_info, ctx);
+        if !bootstrap_flushed {
+            self.flush_stashed_bootstrap(session_info, ctx);
+        }
 
         let duration_ms = Instant::now()
             .duration_since(setup_start)
@@ -436,8 +465,9 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         // #1146: the end of the per-connect stage timings (see the manager's setup, install and
         // connect lines): the shell bootstrap was held this long behind the ssh init.
         log::info!(
-            "remote-server setup done for session {session_id:?}: bootstrap flushed \
-             {duration_ms} ms after ssh init (installed_binary={})",
+            "remote-server setup done for session {session_id:?}: connected \
+             {duration_ms} ms after ssh init (early_flush={bootstrap_flushed}, \
+             installed_binary={})",
             self.did_install
         );
         let (remote_os, remote_arch) = self
@@ -484,11 +514,21 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             return;
         }
 
-        let SshInitState::AwaitingConnect { session_info, .. } =
-            std::mem::replace(&mut self.state, SshInitState::Idle)
+        let SshInitState::AwaitingConnect {
+            session_info,
+            bootstrap_flushed,
+            ..
+        } = std::mem::replace(&mut self.state, SshInitState::Idle)
         else {
             unreachable!("just matched AwaitingConnect above");
         };
+        if bootstrap_flushed {
+            log::warn!(
+                "Remote server connection failed for session {session_id:?}; the bootstrap \
+                 was already flushed, so the session continues on the ControlMaster executor"
+            );
+            return;
+        }
         log::warn!(
             "Remote server connection failed for session {session_id:?}; \
              flushing bootstrap to unblock SSH session"
@@ -543,6 +583,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_id,
                     session_info,
                     setup_start,
+                    bootstrap_flushed: false,
                 };
                 self.connect_session_for_current_identity(
                     session_id,
@@ -584,6 +625,21 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             );
         });
     }
+}
+
+/// #1172: whether the stashed shell bootstrap is written as soon as the binary check passes
+/// instead of after the remote-server connect and handshake. On by default;
+/// `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` restores the old order (bootstrap held until connected).
+fn early_bootstrap_flush_enabled() -> bool {
+    early_bootstrap_flush_from_env(
+        std::env::var("PHOSPHOR_SSH_EARLY_BOOTSTRAP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn early_bootstrap_flush_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
 }
 
 /// Builds the connection label for a session from its [`SessionInfo`],

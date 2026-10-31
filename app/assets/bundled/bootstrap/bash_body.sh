@@ -1333,8 +1333,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         }
 
         function warp_ssh_helper() {
-            init_shell_bash=$(init_shell_hook "bash")
-            init_shell_zsh=$(init_shell_hook "zsh")
+            # #1172: the two InitShell hook encodings this used to compute here were never read (six forks
+            # before every ssh); the remote bootstrap builds its own InitShell message.
             # Mint the remote session's ID *here*, on the local (already
             # registered) side, from /dev/urandom -- 64 bits, unguessable. It
             # is handed to the remote shell as $WARP_SESSION_ID and reported to
@@ -1354,7 +1354,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # command, aborting with "Cannot execute command-line and remote
             # command." Warpification is structurally impossible there, so fall
             # back to plain SSH. `ssh -G` prints `remotecommand none` when unset.
-            local user_remote_command=$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^remotecommand //p')
+            # #1172: ONE `ssh -G` per invocation (it was four, ~7 ms each). Every probe below -- RemoteCommand,
+            # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
+            local warp_ssh_g
+            warp_ssh_g="$(command ssh -G "${@:1}" 2>/dev/null)"
+            local user_remote_command=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^remotecommand //p')
             if [[ -n "$user_remote_command" && "$user_remote_command" != "none" ]]; then
                 command ssh "${@:1}"
                 return
@@ -1378,7 +1382,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             local control_master_mode="yes"
             local external_control_master="false"
             if [[ "$WARP_SSH_REUSE_CONTROL_MASTER" == "1" ]]; then
-                local user_control_path=$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^controlpath //p')
+                local user_control_path=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^controlpath //p')
                 case "$user_control_path" in
                     "" | none)
                         # No ControlPath configured for this destination.
@@ -1407,8 +1411,6 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # classes to the interactive one, but ONLY when `ssh -G` reports exactly OpenSSH's
             # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
             # older OpenSSH (different default / no two-value form) is left alone.
-            local warp_ssh_g
-            warp_ssh_g="$(command ssh -G "${@:1}" 2>/dev/null)"
             local warp_ipqos_args=()
             if [[ "$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
                 warp_ipqos_args=(-o "IPQoS=af21 af21")
@@ -1500,7 +1502,9 @@ test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSI
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
 test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'
 
-hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"'}}" "${SHELL##*/}" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
+warp_rb=false
+if test "'"${SHELL##*/}" = "bash"'" && printf x | command -p head -c 1 >/dev/null 2>&1; then warp_rb=true; fi
+hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"', \"raw_bootstrap\": %s}}" "${SHELL##*/}" "$warp_rb" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
 printf '$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR%s$OSC_END' "'$hook'"
 
 if test "'"${SHELL##*/}" != "bash" -a "${SHELL##*/}" != "zsh"'"; then
@@ -1614,7 +1618,13 @@ esac
             local control_path="$1"
             shift
             local key
-            key=$(command ssh -G "$@" 2>/dev/null | command -p awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}')
+            # #1172: reuse the wrapper's single `ssh -G` capture (visible here through dynamic scope) when
+            # there is one; a direct caller without it asks ssh itself.
+            local key_g="${warp_ssh_g-}"
+            if [[ -z "$key_g" ]]; then
+                key_g=$(command ssh -G "$@" 2>/dev/null)
+            fi
+            key=$(printf '%s\n' "$key_g" | command -p awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}')
             if [[ -z "$key" ]]; then
                 warp_ssh_remote_is_non_posix "$control_path" "$@"
                 return

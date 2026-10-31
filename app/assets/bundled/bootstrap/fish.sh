@@ -841,8 +841,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
     end
 
     function warp_ssh_helper
-        set -l init_shell_zsh (warp_init_shell "zsh")
-        set -l init_shell_bash (warp_init_shell "bash")
+        # #1172: the two InitShell hook encodings computed here were never read (forks before every ssh).
         # Mint the remote session's ID *here*, on the local (already
         # registered) side, from /dev/urandom -- 64 bits, unguessable. It is
         # handed to the remote shell as $WARP_SESSION_ID and reported to the
@@ -862,7 +861,10 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # command, aborting with "Cannot execute command-line and remote
         # command." Warpification is structurally impossible there, so fall back
         # to plain SSH. `ssh -G` prints `remotecommand none` when unset.
-        set -l user_remote_command (command ssh -G $argv 2>/dev/null | command sed -n 's/^remotecommand //p')
+        # #1172: ONE `ssh -G` per invocation (it was four, ~7 ms each). Every probe below -- RemoteCommand,
+        # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
+        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
+        set -l user_remote_command (printf '%s\n' $warp_ssh_g | command sed -n 's/^remotecommand //p')
         if test -n "$user_remote_command"; and test "$user_remote_command" != "none"
             command ssh $argv
             return
@@ -886,7 +888,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l control_master_mode "yes"
         set -l external_control_master "false"
         if test "$WARP_SSH_REUSE_CONTROL_MASTER" = "1"
-            set -l user_control_path (command ssh -G $argv 2>/dev/null | command sed -n 's/^controlpath //p')
+            set -l user_control_path (printf '%s\n' $warp_ssh_g | command sed -n 's/^controlpath //p')
             # Skip when no ControlPath is configured, and reject resolved
             # paths containing characters we cannot safely embed in the SSH
             # hook JSON below (e.g. an unexpanded % token, quotes, or
@@ -910,7 +912,6 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
         # and an older OpenSSH is left alone.
         set -l warp_ipqos_args
-        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
         set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
@@ -973,6 +974,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # managed session below; the idle background master expires via ControlPersist.
         end
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
+            set -g __warp_ssh_g $warp_ssh_g
             if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
@@ -996,7 +998,9 @@ export TERM_PROGRAM='WarpTerminal'
 test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSION'
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
 test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'
-hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"'}}" "${SHELL##*/}" | command od -An -v -tx1 | command tr -d " \n")'"
+warp_rb=false
+if test "'"${SHELL##*/}" = "bash"'" && printf x | command -p head -c 1 >/dev/null 2>&1; then warp_rb=true; fi
+hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"', \"raw_bootstrap\": %s}}" "${SHELL##*/}" "$warp_rb" | command od -An -v -tx1 | command tr -d " \n")'"
 printf '$DCS_START$DCS_JSON_MARKER%s$DCS_END' "'$hook'"
 
 if test "'"${SHELL##*/}" != "bash" -a "${SHELL##*/}" != "zsh"'"; then
@@ -1117,7 +1121,17 @@ esac
     function warp_ssh_remote_is_non_posix_cached
         set -l control_path $argv[1]
         set -e argv[1]
-        set -l key (command ssh -G $argv 2>/dev/null | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
+        # #1172: reuse the wrapper's single `ssh -G` capture (handed over in the global
+        # __warp_ssh_g, read once and erased) when there is one; a direct caller without it asks ssh.
+        set -l key_g
+        if set -q __warp_ssh_g
+            set key_g $__warp_ssh_g
+            set -e __warp_ssh_g
+        end
+        if test (count $key_g) -eq 0
+            set key_g (command ssh -G $argv 2>/dev/null)
+        end
+        set -l key (printf '%s\n' $key_g | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
         if test -z "$key"
             warp_ssh_remote_is_non_posix "$control_path" $argv
             return
