@@ -5455,6 +5455,126 @@ fn test_forget_terminal_view_drops_per_view_maps_and_keeps_conversations() {
     });
 }
 
+/// A done conversation with one exchange, restored for `view`: what `forget_terminal_view`
+/// evicts from memory when SQLite can hand it back (#1202).
+fn restore_done_conversation_for_view(
+    app: &mut App,
+    history_model: &warpui::ModelHandle<BlocklistAIHistoryModel>,
+    view: EntityId,
+) -> AIConversationId {
+    let conversation_id = AIConversationId::new();
+    let persisted_conversation = persisted_agent_conversation_for_test(
+        conversation_id,
+        Utc::now().naive_utc(),
+        vec![
+            byop_user_query_message("user-query-1", "request-1", "list files", None),
+            byop_tool_call_message("root-task", "tool-call-1", "call_1"),
+        ],
+    );
+    let conversation =
+        convert_persisted_conversation_to_ai_conversation_with_metadata(persisted_conversation)
+            .expect("persisted conversation should restore");
+    history_model.update(app, |history_model, ctx| {
+        history_model.restore_conversations(view, vec![conversation], ctx);
+    });
+    conversation_id
+}
+
+/// #1202: closing the tab of a done conversation drops it from memory only when SQLite holds it.
+/// With `persist_conversations` off nothing was ever written, so the conversation stays in
+/// memory; evicting it would lose it while the history list still offers it.
+#[test]
+fn forget_terminal_view_keeps_a_done_conversation_when_conversations_are_not_persisted() {
+    use settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.update(|ctx| {
+            crate::terminal::general_settings::GeneralSettings::handle(ctx).update(
+                ctx,
+                |settings, ctx| {
+                    settings
+                        .persist_conversations
+                        .set_value(false, ctx)
+                        .expect("setting should update");
+                },
+            );
+        });
+        let _receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "a conversation that was never persisted must stay in memory"
+            );
+            assert!(model.all_conversations_metadata.contains_key(&id));
+            assert!(
+                !model
+                    .live_conversation_ids_for_terminal_view
+                    .contains_key(&view)
+            );
+        });
+    });
+}
+
+/// #1202: the same when persistence is on but there is no SQLite writer to have written it.
+#[test]
+fn forget_terminal_view_keeps_a_done_conversation_without_a_sqlite_writer() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = None;
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "a conversation no writer could have persisted must stay in memory"
+            );
+        });
+    });
+}
+
+/// #1202: with persistence on and a writer present, the done conversation leaves memory and
+/// stays in the history list, to be reloaded from SQLite.
+#[test]
+fn forget_terminal_view_evicts_a_done_conversation_that_sqlite_holds() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let _receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_none(),
+                "a persisted, done conversation is dropped from memory"
+            );
+            assert!(
+                model.all_conversations_metadata.contains_key(&id),
+                "it stays in the history list"
+            );
+        });
+    });
+}
+
 /// #972: a title delivered by `UpdateTaskDescription` (e.g. generated after the
 /// response finished) must be written to the SQLite writer immediately, not
 /// only with the next exchange or on clean shutdown.

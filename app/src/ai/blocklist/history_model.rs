@@ -37,9 +37,11 @@ use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::input_suggestions::HistoryOrder;
 use crate::persistence::model::AgentConversationData;
 use crate::persistence::{ModelEvent, PersistedTaskRetention};
+use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::blocklist_filter;
 use crate::GlobalResourceHandlesProvider;
+use warp_core::execution_mode::AppExecutionMode;
 use crate::{
     ai::agent::{
         conversation::{AIConversation, AIConversationId},
@@ -2711,13 +2713,15 @@ impl BlocklistAIHistoryModel {
     /// Releases the per-view maps this model holds for a terminal view that is being
     /// permanently discarded (#843). Called from `PaneGroup`'s teardown hook.
     ///
-    /// Conversation objects stay in `conversations_by_id`; only the per-view bookkeeping
-    /// is dropped, and conversations are marked historical so they stay restorable.
+    /// Conversations are marked historical so they stay restorable, and the idle ones are
+    /// dropped from `conversations_by_id` when SQLite can hand them back
+    /// ([`Self::evict_idle_historical_conversations`]).
     pub fn forget_terminal_view(
         &mut self,
         terminal_view_id: EntityId,
-        _ctx: &mut ModelContext<Self>,
+        ctx: &mut ModelContext<Self>,
     ) {
+        let conversations_reload_from_sqlite = Self::conversations_reload_from_sqlite(ctx);
         // Make sure metadata exists for everything restorable.
         self.mark_conversations_historical_for_terminal_view(terminal_view_id);
         let candidate_ids: Vec<AIConversationId> = self
@@ -2738,7 +2742,7 @@ impl BlocklistAIHistoryModel {
             .remove(&terminal_view_id);
         self.active_conversation_for_terminal_view
             .remove(&terminal_view_id);
-        if !skip_eviction {
+        if !skip_eviction && conversations_reload_from_sqlite {
             self.evict_idle_historical_conversations(candidate_ids);
         }
         self.terminal_view_created_at.remove(&terminal_view_id);
@@ -2746,11 +2750,31 @@ impl BlocklistAIHistoryModel {
             .remove(&terminal_view_id);
     }
 
+    /// Whether a conversation dropped from memory can be loaded back from SQLite: the user
+    /// persists conversations, this execution mode saves sessions, and the writer that
+    /// `write_updated_conversation_state` sends to exists. These are the conditions that write
+    /// path checks before it persists anything; when any of them fails, a conversation exists in
+    /// memory only, and evicting it would lose it for good while the history list still offers
+    /// it (#1202). An app without the singletons (bare test apps) reports `false`.
+    fn conversations_reload_from_sqlite(ctx: &AppContext) -> bool {
+        ctx.has_singleton_model::<GeneralSettings>()
+            && *GeneralSettings::as_ref(ctx).persist_conversations
+            && ctx.has_singleton_model::<AppExecutionMode>()
+            && AppExecutionMode::as_ref(ctx).can_save_session()
+            && ctx.has_singleton_model::<GlobalResourceHandlesProvider>()
+            && GlobalResourceHandlesProvider::as_ref(ctx)
+                .get()
+                .model_event_sender
+                .is_some()
+    }
+
     /// Drops the heavy `AIConversation` objects (every task, tool result and command output the
     /// agent saw; multi-MB in long sessions) of conversations whose tab was just discarded
     /// (#1189). Metadata stays in `all_conversations_metadata`, so they remain in the history
     /// list and reopen through `load_conversation_data` exactly like a conversation restored at
-    /// startup.
+    /// startup. Only called when [`Self::conversations_reload_from_sqlite`] holds: the metadata's
+    /// `has_local_data` is `true` for every conversation that was ever live, so it cannot tell a
+    /// persisted conversation from one that exists in memory only.
     ///
     /// Deliberately conservative; a conversation is kept in memory unless it is quiescent
     /// (`is_done`, at least one exchange so it has been persisted), unconnected to any

@@ -11481,6 +11481,27 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
     });
 }
 
+/// A Tab whose result landed with no Enter waiting is answered: the next Enter has nothing to
+/// hold for and runs at once, instead of waiting out `TAB_COMPLETION_ENTER_BUDGET` for a result
+/// that already came (#1165). A no-match result leaves the buffer unchanged, which is exactly
+/// what the hold used to mistake for a Tab still in flight.
+#[test]
+fn test_enter_after_an_answered_tab_does_not_hold() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        deliver_tab_result(&input, &mut app, generation, vec![], snapshot);
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "an answered Tab leaves the Enter nothing to hold for"
+            );
+        });
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+    });
+}
+
 /// #1165: several matches: no menu opens and the visible text is submitted.
 #[test]
 fn test_tab_then_enter_multiple_matches_submits_visible_text() {

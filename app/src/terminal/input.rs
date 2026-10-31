@@ -11906,6 +11906,12 @@ impl Input {
             }
             return;
         }
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            // The Tab is answered: an Enter after this has nothing to hold for. Left in place, a
+            // result that changed nothing (no match) made the next Enter wait out the whole
+            // completion budget for an answer that had already come.
+            self.tab_completion_request = None;
+        }
         self.handle_completion_suggestions_results(
             results,
             completions_trigger,

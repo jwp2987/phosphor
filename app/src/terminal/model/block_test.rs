@@ -43,6 +43,21 @@ impl float_cmp::ApproxEq for BlockSection {
     }
 }
 
+/// #1178: a ^C typed at the prompt (to clear a line) lands on the block that hosts the next
+/// command; starting that command clears it, so a command that exits 130 on its own is not
+/// reported as interrupted. A ^C after the start survives the preexec's second `start`.
+#[test]
+pub fn test_start_clears_a_ctrl_c_typed_before_the_command() {
+    let mut block = TestBlockBuilder::new().build();
+    block.mark_interrupted_by_ctrl_c();
+    block.start();
+    assert!(!block.was_interrupted_by_ctrl_c());
+
+    block.mark_interrupted_by_ctrl_c();
+    block.start();
+    assert!(block.was_interrupted_by_ctrl_c());
+}
+
 /// `should_hide_command_grid` is a layout fact, not only a painting one. A painter that
 /// skips the command grid while `height()` still reserves its space leaves a blank gap
 /// exactly as tall as the command it declined to draw, and `is_visible()` stays true for
