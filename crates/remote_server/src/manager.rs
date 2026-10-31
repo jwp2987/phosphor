@@ -1016,22 +1016,57 @@ impl RemoteServerManager {
             ctx.background_executor()
                 .spawn(async move {
                     let stage_start = std::time::Instant::now();
-                    let BinaryCheckProbes {
-                        platform,
-                        check_result,
-                        has_old_binary,
-                        preinstall,
-                    } = run_binary_check_probes(&transport, session_id).await;
+                    // #1172: a binary that is there and runs `--version` needs none of the other
+                    // probes to decide anything: the preinstall verdict is about hosts the binary
+                    // cannot run on, and the platform is only telemetry. The controller holds the
+                    // remote shell's bootstrap until this result lands, so it is reported the
+                    // moment the check itself passes, not after the slowest of the four probes
+                    // (20-47 ms of every connect). The rest still run and are recorded.
+                    let (early_tx, early_rx) = futures::channel::oneshot::channel();
+                    let early_spawner = spawner.clone();
+                    let early_fut = async move {
+                        if early_rx.await.is_ok() {
+                            let _ = early_spawner
+                                .spawn(move |_me, ctx| {
+                                    ctx.emit(RemoteServerManagerEvent::BinaryCheckComplete {
+                                        session_id,
+                                        result: Ok(true),
+                                        remote_platform: None,
+                                        preinstall_check: None,
+                                        has_old_binary: false,
+                                    });
+                                })
+                                .await;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    let (
+                        BinaryCheckProbes {
+                            platform,
+                            check_result,
+                            has_old_binary,
+                            preinstall,
+                        },
+                        early_reported,
+                    ) = futures::join!(
+                        run_binary_check_probes_staged(&transport, session_id, Some(early_tx)),
+                        early_fut,
+                    );
                     // #1146: one line per connect so a slow ssh setup can be placed by stage.
                     log::info!(
                         "remote-server setup timing for session {session_id:?}: \
-                         detect+check+old-binary+preinstall (concurrent) {} ms",
+                         detect+check+old-binary+preinstall (concurrent) {} ms (check result reported early: {early_reported})",
                         stage_start.elapsed().as_millis(),
                     );
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             if let Some(p) = &platform {
                                 me.session_platforms.insert(session_id, p.clone());
+                            }
+                            if early_reported {
+                                return;
                             }
                             // #1266: a speculative connect may already have connected this
                             // session; a probe that failed on the side is then not a setup
@@ -3212,9 +3247,30 @@ pub(crate) async fn run_binary_check_probes<T>(
 where
     T: RemoteTransport + ?Sized,
 {
+    run_binary_check_probes_staged(transport, session_id, None).await
+}
+
+/// [`run_binary_check_probes`], signalling `early` the moment the binary check reports the
+/// binary present, without waiting for the other three probes (#1172).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) async fn run_binary_check_probes_staged<T>(
+    transport: &T,
+    session_id: SessionId,
+    mut early: Option<futures::channel::oneshot::Sender<()>>,
+) -> BinaryCheckProbes
+where
+    T: RemoteTransport + ?Sized,
+{
     let (platform_result, check_result, old_binary_result, preinstall_result) = futures::join!(
         transport.detect_platform(),
-        transport.check_binary(),
+        async {
+            let result = transport.check_binary().await;
+            // #1172: tell the caller as soon as the binary is known to be there.
+            if let (Ok(true), Some(early)) = (&result, early.take()) {
+                let _ = early.send(());
+            }
+            result
+        },
         transport.check_has_old_binary(),
         transport.run_preinstall_check(),
     );

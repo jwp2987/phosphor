@@ -1386,7 +1386,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # before the remote shell can emit anything. Do NOT derive it from
             # the clock or $RANDOM: it is the credential every subsequent DCS
             # hook from that session is validated against.
-            local remote_session_id=$(command -p od -An -N8 -tu8 /dev/urandom 2>/dev/null | command -p tr -d ' \n')
+            # #1172: bash >= 5.1 has $SRANDOM, 32 bits straight from the kernel's getrandom() each time it
+            # is read, so two reads are the same 64 unguessable bits without the three processes od and
+            # tr cost; older bash (and macOS's 3.2) keep reading /dev/urandom.
+            local remote_session_id=""
+            if [[ -n "${SRANDOM-}" ]]; then
+                builtin printf -v remote_session_id '%u' "$(( (SRANDOM << 32) | SRANDOM ))"
+            fi
+            if [[ -z "$remote_session_id" || "$remote_session_id" == "0" ]]; then
+                remote_session_id=$(command -p od -An -N8 -tu8 /dev/urandom 2>/dev/null | command -p tr -d ' \n')
+            fi
             if [[ -z "$remote_session_id" || "$remote_session_id" == "0" ]]; then
                 # If we cannot generate a non-zero random token, run plain SSH instead.
                 command ssh "${@:1}"
@@ -1402,7 +1411,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
             local warp_ssh_g
             warp_ssh_g="$(command ssh -G "${@:1}" 2>/dev/null)"
-            local user_remote_command=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^remotecommand //p')
+            local user_remote_command
+            warp_ssh_g_value user_remote_command remotecommand "$warp_ssh_g"
             if [[ -n "$user_remote_command" && "$user_remote_command" != "none" ]]; then
                 command ssh "${@:1}"
                 return
@@ -1426,7 +1436,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             local control_master_mode="yes"
             local external_control_master="false"
             if [[ "$WARP_SSH_REUSE_CONTROL_MASTER" == "1" ]]; then
-                local user_control_path=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^controlpath //p')
+                local user_control_path
+                warp_ssh_g_value user_control_path controlpath "$warp_ssh_g"
                 case "$user_control_path" in
                     "" | none)
                         # No ControlPath configured for this destination.
@@ -1456,7 +1467,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
             # older OpenSSH (different default / no two-value form) is left alone.
             local warp_ipqos_args=()
-            if [[ "$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
+            local warp_ssh_ipqos
+            warp_ssh_g_value warp_ssh_ipqos ipqos "$warp_ssh_g"
+            if [[ "$warp_ssh_ipqos" == "af21 cs1" ]]; then
                 warp_ipqos_args=(-o "IPQoS=af21 af21")
             fi
             # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
@@ -1659,6 +1672,19 @@ esac
             return 1
         }
 
+        # #1172: the value of the first `key value` line of `ssh -G` output ($2), assigned to the variable
+        # named $1 (empty when the key is absent). Pure bash: the wrapper used to fork a subshell and
+        # a sed for each of the keys it reads (RemoteCommand, ControlPath, IPQoS), on the critical path
+        # before the master connect starts.
+        function warp_ssh_g_value() {
+            local __g=$'\n'"${3-}"$'\n' __v=
+            if [[ "$__g" == *$'\n'"$2 "* ]]; then
+                __v=${__g#*$'\n'"$2 "}
+                __v=${__v%%$'\n'*}
+            fi
+            builtin printf -v "$1" '%s' "$__v"
+        }
+
         # #1136: the probe above costs a channel on the master plus a remote shell start on every
         # connect. Its answer for a host only changes if the machine behind the name is replaced,
         # so a DEFINITIVE answer is remembered for ten minutes (from when it was measured),
@@ -1676,7 +1702,14 @@ esac
             if [[ -z "$key_g" ]]; then
                 key_g=$(command ssh -G "$@" 2>/dev/null)
             fi
-            key=$(printf '%s\n' "$key_g" | command -p awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}')
+            local key_user key_host key_port
+            warp_ssh_g_value key_user user "$key_g"
+            warp_ssh_g_value key_host hostname "$key_g"
+            warp_ssh_g_value key_port port "$key_g"
+            key=
+            if [[ -n "$key_user$key_host$key_port" ]]; then
+                key="user $key_user hostname $key_host port $key_port "
+            fi
             if [[ -z "$key" ]]; then
                 warp_ssh_remote_is_non_posix "$control_path" "$@"
                 return
@@ -1684,6 +1717,16 @@ esac
             local now line rest l_ts l_key
             local kept=""
             local verdict=""
+            # #1172: the cache lives in this shell, so every new tab (and every restart) probed a host again,
+            # a whole shell start on the remote (60-120 ms). Seed it from, and write it back to, a file next
+            # to the pane sockets: the 10-minute rule and the key are unchanged, only the memory is shared.
+            local probe_file=""
+            if [[ -n "${SSH_SOCKET_DIR-}" ]]; then
+                probe_file="${SSH_SOCKET_DIR/#\~/$HOME}/phosphor-ssh-probe-cache"
+                if [[ -z "${WARP_SSH_PROBE_CACHE-}" && -r "$probe_file" ]]; then
+                    builtin read -r -d '' WARP_SSH_PROBE_CACHE < "$probe_file" 2>/dev/null || :
+                fi
+            fi
             now=$(command -p date +%s)
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
@@ -1706,6 +1749,10 @@ esac
             warp_ssh_remote_is_non_posix "$control_path" "$@" || probe_rc=$?
             if [[ -n "$warp_ssh_probe_verdict" ]]; then
                 WARP_SSH_PROBE_CACHE="$kept$key|$warp_ssh_probe_verdict|$now"$'\n'
+                if [[ -n "$probe_file" ]]; then
+                    # Best effort and private (the file names hosts); a failed write only costs a probe.
+                    ( builtin umask 077; builtin printf '%s' "$WARP_SSH_PROBE_CACHE" > "$probe_file" ) 2>/dev/null || :
+                fi
             fi
             return $probe_rc
         }
@@ -2093,6 +2140,9 @@ fi' RETURN
     shell_plugins=()
 
     function warp_bootstrapped () {
+        # #1172: every value below goes through __warp_ej_var, not `$(warp_escape_json ...)`: that was a
+        # subshell for each of about twenty values and a sed + tr pair for each one with a quote or a
+        # newline (aliases, names, options), about 40 ms of forks on the path to a remote prompt.
         local aliases="`alias`"
         local env_var_names="`compgen -e`"
         local function_names="`compgen -A function`"
@@ -2100,13 +2150,19 @@ fi' RETURN
         local keywords="`compgen -k`"
         if [ "${WARP_IN_MSYS2:-}" = false ]; then
           # Note that for now we don't support dynamically changing HISTFILE within a session.
-          local escaped_histfile="$(warp_escape_json "$HISTFILE")"
+          local escaped_histfile
+          __warp_ej_var escaped_histfile "$HISTFILE"
           local escaped_abbrs=""
-          local escaped_aliases="$(warp_escape_json "$aliases")"
-          local escaped_env_var_names="$(warp_escape_json "$env_var_names")"
-          local escaped_function_names="$(warp_escape_json "$function_names")"
-          local escaped_builtins="$(warp_escape_json "$builtins")"
-          local escaped_keywords="$(warp_escape_json "$keywords")"
+          local escaped_aliases
+          __warp_ej_var escaped_aliases "$aliases"
+          local escaped_env_var_names
+          __warp_ej_var escaped_env_var_names "$env_var_names"
+          local escaped_function_names
+          __warp_ej_var escaped_function_names "$function_names"
+          local escaped_builtins
+          __warp_ej_var escaped_builtins "$builtins"
+          local escaped_keywords
+          __warp_ej_var escaped_keywords "$keywords"
         fi
 
         # Phosphor (#1164): the option names (field 1 of `shopt -s`, padding kept) via parameter
@@ -2134,9 +2190,12 @@ fi' RETURN
         local shell_plugins_list="$(builtin printf '%s\n' "${shell_plugins[@]}")"
 
         if [ "${WARP_IN_MSYS2:-}" = false ]; then
-          local escaped_shell_plugins=$(warp_escape_json "$shell_plugins_list")
-          local escaped_path="$(warp_escape_json "$PATH")"
-          local escaped_shell_options=$(warp_escape_json "$shell_options")
+          local escaped_shell_plugins
+          __warp_ej_var escaped_shell_plugins "$shell_plugins_list"
+          local escaped_path
+          __warp_ej_var escaped_path "$PATH"
+          local escaped_shell_options
+          __warp_ej_var escaped_shell_options "$shell_options"
         fi
 
         # Phosphor (#1164): InitShell already resolved both (bash_init_shell.sh leaves them in
@@ -2178,15 +2237,23 @@ fi' RETURN
           warp_send_hook_kv_pair "shell_path" "$BASH"
           warp_send_hook_via_kv_pairs_end
         else
-          local escaped_editor="$(warp_escape_json "$EDITOR")"
-          local escaped_shell_path="$(warp_escape_json "$BASH")"
+          local escaped_editor
+          __warp_ej_var escaped_editor "$EDITOR"
+          local escaped_shell_path
+          __warp_ej_var escaped_shell_path "$BASH"
           # Free-form values: a login like CORP\tdoe must not decode as a tab (#879).
-          local escaped_home="$(warp_escape_json "$HOME")"
-          local escaped_user="$(warp_escape_json "$_user")"
-          local escaped_host="$(warp_escape_json "$_hostname")"
-          local escaped_distro="$(warp_escape_json "${linux_distribution-}")"
-          local escaped_bash_version="$(warp_escape_json "$BASH_VERSION")"
-          local escaped_wsl_name="$(warp_escape_json "${WSL_DISTRO_NAME-}")"
+          local escaped_home
+          __warp_ej_var escaped_home "$HOME"
+          local escaped_user
+          __warp_ej_var escaped_user "$_user"
+          local escaped_host
+          __warp_ej_var escaped_host "$_hostname"
+          local escaped_distro
+          __warp_ej_var escaped_distro "${linux_distribution-}"
+          local escaped_bash_version
+          __warp_ej_var escaped_bash_version "$BASH_VERSION"
+          local escaped_wsl_name
+          __warp_ej_var escaped_wsl_name "${WSL_DISTRO_NAME-}"
           local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": ${WARP_SESSION_ID:-}, \"shell\": \"bash\",  \"home_dir\": \"$escaped_home\", \"user\":\"$escaped_user\", \"host\":\"$escaped_host\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$escaped_bash_version\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$escaped_distro\", \"wsl_name\": \"$escaped_wsl_name\", \"shell_path\": \"$escaped_shell_path\"}}"
           warp_send_json_message "$escaped_json"
         fi

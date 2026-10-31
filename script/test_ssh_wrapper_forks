@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# #1172: the bash ssh wrapper reads `ssh -G` keys and mints the remote session id without forking
+# (sed / awk / od / tr used to cost about a dozen processes on the critical path before the master
+# connect). Cuts the real text out of bash_body.sh.
+#   1. warp_ssh_g_value returns the value of exactly the named key, empty when absent.
+#   2. warp_ssh_helper's executable lines contain no sed or awk, and od only as the fallback.
+#   3. with $SRANDOM the session id is minted without running od (a fake od on PATH records calls).
+set -u
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+f="${BASH_BODY:-$root/app/assets/bundled/bootstrap/bash_body.sh}"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+fail=0
+bad() { echo "FAIL: $*"; fail=1; }
+
+# 1
+fn="$(sed -n '/^ *function warp_ssh_g_value() {/,/^ *}$/p' "$f")"
+[ -n "$fn" ] || bad "warp_ssh_g_value is not defined in bash_body.sh"
+eval "$fn" 2>/dev/null
+g=$'user u\nhostname h.example\nport 2222\nipqos af21 cs1\nremotecommand none\ncontrolpath none'
+chk() { local v=; warp_ssh_g_value v "$1" "$g" 2>/dev/null; [ "$v" = "$2" ] || bad "key '$1': want '$2' got '$v'"; }
+chk user u; chk hostname h.example; chk port 2222; chk ipqos "af21 cs1"; chk remotecommand none
+chk missing ""; chk host ""; chk ipq ""
+v=x; warp_ssh_g_value v user "" 2>/dev/null; [ -z "$v" ] || bad "empty ssh -G output must give an empty value"
+
+# 2
+body="$(sed -n '/^ *function warp_ssh_helper() {/,/^ *function warp_ssh_g_value() {/p' "$f" | grep -v '^ *#')"
+echo "$body" | grep -Eq '(^|[ |(`])(command -p )?(sed|awk)( |$)' && bad "warp_ssh_helper still forks sed/awk"
+echo "$body" | grep -q 'od -An' || bad "od fallback missing"
+
+# 3
+mkdir "$tmp/bin"; printf '#!/bin/sh\necho x >> "%s/od.count"\nexec /usr/bin/od "$@"\n' "$tmp" >"$tmp/bin/od"; chmod +x "$tmp/bin/od"
+if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then
+  id="$(sed -n '/local remote_session_id=""/,/^ *fi$/p' "$f" | head -12)"
+  out="$(PATH="$tmp/bin:$PATH" bash -c "mint() {"$'\n'"$id"$'\n''printf %s "$remote_session_id"'$'\n'"}; mint" 2>&1)"
+  [[ "$out" =~ ^[0-9]+$ && "$out" != 0 ]] || bad "session id via SRANDOM is not a nonzero integer: '$out'"
+  [ ! -e "$tmp/od.count" ] || bad "SRANDOM path still ran od"
+fi
+# 4: the Bootstrapped hook (runs on the remote on every managed ssh) escapes its values without forks
+# and gets exactly what warp_escape_json would have printed.
+boot="$(sed -n '/^ *function warp_bootstrapped () {/,/^ *warp_bootstrapped$/p' "$f" | grep -v '^ *#')"
+echo "$boot" | grep -q '\$(warp_escape_json' && bad "warp_bootstrapped still forks warp_escape_json"
+{
+  sed -n '/^ *WARP_ESCAPE_JSON_CTRL_SED=/,/^ *unset warp_ctrl_octal/p' "$f"
+  sed -n '/^ *warp_escape_json () {/,/^    }$/p' "$f"
+  sed -n '/^ *__warp_ej_var () {/,/^    }$/p' "$f"
+} >"$tmp/ej.sh"
+cat >>"$tmp/ej.sh" <<'EOS'
+vals=(
+  "alias ll='ls -alF'"$'\n'"alias gs='git status'"
+  "a\\b \"q\" tab"$'\t'"x"
+  "line1"$'\n'"line2"$'\n'
+  "esc"$'\033'"[0m and bell"$'\a'
+  "ctrl"$'\001'"del"$'\177'
+  "unicode é日本 and cr"$'\r'
+  "shopt line"$'\n'"expand_aliases   "$'\n'"histappend"
+  ""
+  "/usr/bin:/bin:/home/u/.local/bin"
+)
+for v in "${vals[@]}"; do
+  want="$(warp_escape_json "$v")"
+  __warp_ej_var got "$v"
+  [ "$want" = "$got" ] || { echo "MISMATCH: want [$want] got [$got]"; exit 1; }
+done
+echo equiv-ok
+EOS
+out="$(bash "$tmp/ej.sh" 2>&1)"; [ "$out" = equiv-ok ] || bad "__warp_ej_var differs from warp_escape_json: $out"
+# 5: the non-POSIX probe verdict is shared between shells (new tabs, restarts) through a file next to
+# the pane sockets, so a second shell does not probe a host the first one already did.
+mkdir "$tmp/sock" "$tmp/b2"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = -G ] && { echo "user u"; echo "hostname h9"; echo "port 22"; exit 0; }; done\necho probe >> "%s/probes"\necho "warp-probe-%%COMSPEC%%-"\n' "$tmp" >"$tmp/b2/ssh"
+chmod +x "$tmp/b2/ssh"
+sed -n '/^ *function warp_ssh_remote_is_non_posix() {/,/^ *# Ends the Phosphor-owned master/p' "$f" >"$tmp/pf.sh"
+for shell_no in 1 2; do
+  PATH="$tmp/b2:$PATH" SSH_SOCKET_DIR="$tmp/sock" bash -c "source '$tmp/pf.sh'; warp_ssh_remote_is_non_posix_cached /nonexistent h" >/dev/null 2>&1
+done
+n=$(wc -l <"$tmp/probes" 2>/dev/null | tr -d ' ')
+[ "${n:-0}" = 1 ] || bad "second shell re-probed a host the first one had already answered for (probes=${n:-0}, want 1)"
+[ -z "$(find "$tmp/sock" -name 'phosphor-ssh-probe-cache' -perm /077 2>/dev/null)" ] || bad "probe cache file is not private"
+[ $fail = 0 ] && echo "test_ssh_wrapper_forks: ok"
+exit $fail
