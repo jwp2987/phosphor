@@ -1176,6 +1176,7 @@ impl TerminalView {
             .for_each(|block| {
                 ctx.emit(Event::BlockCompleted {
                     is_local: self.is_block_considered_remote(block.session_id, None, ctx),
+                    persisted_content: None,
                     block,
                 });
             });

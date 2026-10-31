@@ -115,15 +115,19 @@ fn without_output_keeps_metadata_and_drops_only_the_output() {
 }
 
 #[test]
-fn with_output_reuses_the_metadata_only_block_unchanged() {
-    let mut block = SerializedBlock::new_for_test(b"echo hi".to_vec(), Vec::new());
+fn deferred_bytes_fill_in_the_metadata_only_block_once_and_repeatably() {
+    let mut block = SerializedBlock::new_for_test(Vec::new(), Vec::new());
     block.pwd = Some("/tmp".to_owned());
-    let full = SerializedBlock::with_output(&block, b"the output".to_vec());
-    assert_eq!(full.stylized_output, b"the output");
-    assert_eq!(full.stylized_command, block.stylized_command);
-    assert_eq!(full.pwd, block.pwd);
-    assert_eq!(full.id, block.id);
-    assert_eq!(full.exit_code, block.exit_code);
+    let deferred = DeferredBlockContent::from_bytes(b"echo hi".to_vec(), b"the output".to_vec());
+    for _ in 0..2 {
+        // A retried save materializes again and must see the same bytes.
+        let full = deferred.materialize(&block);
+        assert_eq!(full.stylized_command, b"echo hi");
+        assert_eq!(full.stylized_output, b"the output");
+        assert_eq!(full.pwd, block.pwd);
+        assert_eq!(full.id, block.id);
+        assert_eq!(full.exit_code, block.exit_code);
+    }
     // The metadata-only block is untouched.
-    assert!(block.stylized_output.is_empty());
+    assert!(block.stylized_command.is_empty() && block.stylized_output.is_empty());
 }

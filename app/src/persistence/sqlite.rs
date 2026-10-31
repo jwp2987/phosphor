@@ -516,6 +516,86 @@ type DeleteCloudObjectFn =
 ///   result, and by the background thread to store the result.
 static PREWARMED_DB: OnceLock<Mutex<PrewarmState>> = OnceLock::new();
 
+/// What the prewarm thread hands to `initialize`: the migrated connection and, when it could be
+/// produced, the startup read done ahead of time (see [`speculative_startup_read`]).
+struct PrewarmedDb {
+    conn: SqliteConnection,
+    speculative: Option<SpeculativeRead>,
+}
+
+/// A startup read made on the prewarm thread, before the user id and feature flags are known.
+struct SpeculativeRead {
+    data: super::SendablePersistedData,
+    skipped_tabs: usize,
+}
+
+thread_local! {
+    /// Set while the prewarm thread reads the database ahead of time: the user id and feature
+    /// flags are not known yet, so anything that depends on them must be left for the main thread.
+    static SPECULATIVE_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when a speculative read reached code that depends on the user id or on `SharedWithMe`.
+    /// The result is then discarded and the main thread reads again.
+    static SPECULATIVE_READ_TAINTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `PHOSPHOR_DB_PREWARM_READ=0` turns the read-ahead off: `initialize` reads on the main thread.
+fn prewarm_read_enabled() -> bool {
+    std::env::var("PHOSPHOR_DB_PREWARM_READ").map_or(true, |value| value.trim() != "0")
+}
+
+/// Reads the startup data on the prewarm thread, overlapping the window/GPU initialization on the
+/// main thread. The read only depends on the user id (cloud object permissions), on
+/// `SharedWithMe` (guest decoding in the same place) and on `NldPromptHistoryMatch`, which only
+/// decides whether an in-memory derivation is kept. The first two are checked, not guessed: if a
+/// read touches them, or `cloud_objects` is non-empty, or the read fails, this returns `None` and
+/// `initialize` reads on the main thread as before. The NLD derivation is always built here and
+/// dropped by [`SpeculativeRead::into_persisted_data`] when the flag turns out to be off.
+fn speculative_startup_read(conn: &mut SqliteConnection) -> Option<SpeculativeRead> {
+    if !prewarm_read_enabled() {
+        return None;
+    }
+    let start = Instant::now();
+    SPECULATIVE_READ.with(|flag| flag.set(true));
+    SPECULATIVE_READ_TAINTED.with(|flag| flag.set(false));
+    let skipped_tabs = std::cell::Cell::new(0);
+    let result = read_sqlite_data_counting(conn, None, &skipped_tabs);
+    SPECULATIVE_READ.with(|flag| flag.set(false));
+    let tainted = SPECULATIVE_READ_TAINTED.with(|flag| flag.get());
+    // Left to the main thread (which also owns the damaged-database handling) when the read
+    // failed, touched the user id / SharedWithMe, or produced cloud objects.
+    let data = match result {
+        Ok(data) if !tainted => super::SendablePersistedData::from_persisted(data)?,
+        _ => return None,
+    };
+    log::info!(
+        "SQLite startup read ahead of time on the prewarm thread: {} ms",
+        start.elapsed().as_millis()
+    );
+    Some(SpeculativeRead {
+        data,
+        skipped_tabs: skipped_tabs.get(),
+    })
+}
+
+impl SpeculativeRead {
+    /// The data a main-thread read would have returned, given the now-known flag. `None` when a
+    /// user is signed in (their id is not what the prewarm thread assumed).
+    fn into_persisted_data(
+        self,
+        user_id: &Option<UserUid>,
+        nld_prompt_history_enabled: bool,
+    ) -> Option<(PersistedData, usize)> {
+        if user_id.is_some() {
+            return None;
+        }
+        let mut data = self.data;
+        if !nld_prompt_history_enabled {
+            data.clear_nld_prompts();
+        }
+        Some((data.into_persisted(), self.skipped_tabs))
+    }
+}
+
 /// The prewarm state machine. `Pending` -> (`Done` | `Joining`). `Joining`
 /// means the main thread has taken the handle but the background thread
 /// hasn't written Done yet — the background thread should still be able to
@@ -526,7 +606,7 @@ enum PrewarmState {
     /// hasn't written the result yet. The background thread will transition
     /// this state to Done.
     Joining,
-    Done(Result<SqliteConnection>),
+    Done(Result<PrewarmedDb>),
     Taken,
 }
 
@@ -550,7 +630,10 @@ pub fn prewarm_db_in_background() {
                 unsafe {
                     init_logging();
                 }
-                let result = init_db();
+                let result = init_db().map(|mut conn| {
+                    let speculative = speculative_startup_read(&mut conn);
+                    PrewarmedDb { conn, speculative }
+                });
                 let elapsed_ms = start.elapsed().as_millis();
                 log::info!(
                     "SQLite prewarm completed in {elapsed_ms} ms (success={})",
@@ -587,7 +670,7 @@ pub fn prewarm_db_in_background() {
 /// If background prewarming has been started, take the result (may need to
 /// wait for the background thread to join). Returns `None` to mean prewarming
 /// was never kicked off, in which case the caller takes the synchronous path.
-fn take_prewarmed_db() -> Option<Result<SqliteConnection>> {
+fn take_prewarmed_db() -> Option<Result<PrewarmedDb>> {
     let cell = PREWARMED_DB.get()?;
     let take_start = Instant::now();
 
@@ -664,13 +747,14 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     let database_path = database_file_path();
 
     // Prefer taking the background prewarm result; fall back to synchronous init_db() (the original behavior) if unavailable.
-    let init_result = match take_prewarmed_db() {
-        Some(result) => result,
+    let (init_result, speculative) = match take_prewarmed_db() {
+        Some(Ok(prewarmed)) => (Ok(prewarmed.conn), prewarmed.speculative),
+        Some(Err(err)) => (Err(err), None),
         None => {
             unsafe {
                 init_logging();
             }
-            init_db()
+            (init_db(), None)
         }
     };
 
@@ -678,7 +762,17 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
         Ok(mut conn) => {
             let user_uid = AuthStateProvider::as_ref(ctx).get().user_id();
             let skipped_tabs = std::cell::Cell::new(0);
-            let mut read_result = read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs);
+            let ahead_of_time = speculative.and_then(|speculative| {
+                speculative
+                    .into_persisted_data(&user_uid, FeatureFlag::NldPromptHistoryMatch.is_enabled())
+            });
+            let mut read_result = match ahead_of_time {
+                Some((data, skipped)) => {
+                    skipped_tabs.set(skipped);
+                    Ok(data)
+                }
+                None => read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs),
+            };
             // A database that opens and migrates but cannot be read (a dropped
             // table, damaged pages) would otherwise fail every write too (#860).
             if let Err(err) = &read_result {
@@ -2553,8 +2647,17 @@ fn handle_model_event_unsettled(
         ModelEvent::SaveBlock(BlockCompleted {
             pane_id,
             block,
+            deferred_content,
             is_local,
-        }) => save_block(connection, pane_id, &block, is_local).context("error saving block"),
+        }) => {
+            // The command and output are turned into bytes here, on the writer thread, rather
+            // than on the UI thread when the block finished.
+            let block = match &deferred_content {
+                Some(content) => Arc::new(content.materialize(&block)),
+                None => block,
+            };
+            save_block(connection, pane_id, &block, is_local).context("error saving block")
+        }
         ModelEvent::DeleteBlocks(pane_id) => {
             // Delete the blocks even if the setting is off so users can still remove
             // panes and have their data deleted locally.
@@ -5679,7 +5782,9 @@ fn read_sqlite_data_counting(
     let recent_ai_queries = read_recent_ai_queries(conn)?;
     // Gated because the scan is 20x wider than the up-arrow one and nothing reads the result
     // with the flag off; `NldPromptHistoryMatch` is off by default here and at the pin.
-    let nld_prompts = if FeatureFlag::NldPromptHistoryMatch.is_enabled() {
+    let nld_prompts = if SPECULATIVE_READ.with(|flag| flag.get())
+        || FeatureFlag::NldPromptHistoryMatch.is_enabled()
+    {
         process_ai_queries_for_nld_history_match(&recent_ai_queries)
     } else {
         Vec::new()
@@ -5783,6 +5888,11 @@ fn to_cloud_object_permissions(
     permissions: &ObjectPermissions,
     default_user_id: Option<UserUid>,
 ) -> Option<StoredObjectPermissions> {
+    if SPECULATIVE_READ.with(|flag| flag.get()) {
+        // Depends on the user id and the SharedWithMe flag, neither known yet: taint the read.
+        SPECULATIVE_READ_TAINTED.with(|flag| flag.set(true));
+        return None;
+    }
     let owner = owner_for_permissions(permissions, default_user_id)?;
     let permissions_last_updated_ts = permissions
         .permissions_last_updated_at

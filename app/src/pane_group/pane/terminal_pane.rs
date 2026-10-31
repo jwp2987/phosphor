@@ -749,7 +749,11 @@ fn handle_terminal_view_event(
             Event::AppStateChanged => {
                 ctx.emit(pane_group::Event::AppStateChanged);
             }
-            Event::BlockCompleted { block, is_local } => {
+            Event::BlockCompleted {
+                block,
+                persisted_content,
+                is_local,
+            } => {
                 match group.terminal_session_by_id(pane_id) {
                     Some(pane) => {
                         if *GeneralSettings::as_ref(ctx).restore_session
@@ -759,6 +763,7 @@ fn handle_terminal_view_event(
                                 let block_completed_event = ModelEvent::SaveBlock(BlockCompleted {
                                     pane_id: pane.session_uuid(),
                                     block: block.clone(),
+                                    deferred_content: persisted_content.clone(),
                                     is_local: *is_local,
                                 });
 

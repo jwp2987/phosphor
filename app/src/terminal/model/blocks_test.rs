@@ -2135,7 +2135,7 @@ pub fn test_emits_after_block_completed_event() {
 }
 
 #[test]
-fn user_block_completed_without_output_variant_skips_only_the_output() {
+fn user_block_completed_without_output_variant_skips_the_command_and_output_bytes() {
     let (events_tx, events_rx) = async_channel::unbounded();
     let mut block_list = new_bootstrapped_block_list(
         None,
@@ -2164,13 +2164,61 @@ fn user_block_completed_without_output_variant_skips_only_the_output() {
     assert!(lite.stylized_output.is_empty());
     assert!(!full.stylized_output.is_empty());
     assert_eq!(lite.id, full.id);
-    assert_eq!(lite.stylized_command, full.stylized_command);
+    // The metadata-only block carries neither the command nor the output bytes (serializing them
+    // is the slow part and only persistence reads them) ...
+    assert!(lite.stylized_command.is_empty());
+    assert!(!full.stylized_command.is_empty());
+    // ... and the deferred content converts to exactly the bytes of the full block.
+    let materialized = block.persisted_content.get(&block_list).materialize(lite);
+    assert_eq!(materialized.stylized_command, full.stylized_command);
+    assert_eq!(materialized.stylized_output, full.stylized_output);
+    assert_eq!(materialized.id, full.id);
     assert_eq!(lite.exit_code, full.exit_code);
     assert_eq!(lite.pwd, full.pwd);
     assert_eq!(lite.session_id, full.session_id);
     assert_eq!(lite.start_ts, full.start_ts);
     assert_eq!(lite.completed_ts, full.completed_ts);
     assert_eq!(lite.honor_ps1, full.honor_ps1);
+}
+
+/// A long, wrapping, multi-line command and a multi-line output survive the deferred path byte
+/// for byte, and a second `materialize` (a retried save) returns the same bytes.
+#[test]
+fn deferred_content_of_a_long_command_matches_the_full_block() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = new_bootstrapped_block_list(
+        None,
+        None,
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+    );
+    command_finished_and_precmd(&mut block_list);
+    while let Ok(_event) = events_rx.try_recv() {}
+
+    let command = format!("echo {}\n", "word ".repeat(2000));
+    insert_block(&mut block_list, &command, "line one\nline two\nline three\n");
+    input_string(&mut block_list, "next");
+
+    let mut completed = vec![];
+    while let Ok(event) = events_rx.try_recv() {
+        if let Event::AfterBlockCompleted(event_content) = event {
+            completed.push(event_content);
+        }
+    }
+    let Some(BlockType::User(block)) = completed.first().map(|e| &e.block_type) else {
+        panic!("Expected a completed user block, got {} events", completed.len());
+    };
+    let lite = block.serialized_block_without_output.get(&block_list);
+    let full = block.serialized_block.get(&block_list);
+    assert!(full.stylized_command.len() > 10_000);
+    let deferred = block.persisted_content.get(&block_list);
+    let first = deferred.materialize(lite);
+    assert_eq!(first.stylized_command, full.stylized_command);
+    assert_eq!(first.stylized_output, full.stylized_output);
+    let second = deferred.materialize(lite);
+    assert_eq!(second.stylized_command, full.stylized_command);
+    assert_eq!(second.stylized_output, full.stylized_output);
 }
 
 #[test]

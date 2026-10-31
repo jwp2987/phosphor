@@ -51,7 +51,9 @@ use crate::server::experiments::ServerExperiment;
 use crate::server::ids::SyncId;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::terminal::history::PersistedCommand;
-use crate::terminal::model::block::{SerializedAgentViewVisibility, SerializedBlock};
+use crate::terminal::model::block::{
+    DeferredBlockContent, SerializedAgentViewVisibility, SerializedBlock,
+};
 use crate::terminal::model::session::SessionId;
 use crate::workflows::WorkflowObject;
 use crate::workspaces::user_profiles::UserProfileWithUID;
@@ -367,12 +369,130 @@ pub struct PersistedData {
     pub queued_prompts: Vec<model::QueuedPromptRow>,
 }
 
+/// [`PersistedData`] without `cloud_objects`, so it can move between threads. `cloud_objects` holds
+/// `Box<dyn StoredObject>`, which is not `Send`; every other field is checked by the compiler
+/// (the `assert_send` below fails to build if one stops being `Send`). Used to hand a startup
+/// read made on the prewarm thread to the main thread.
+pub(crate) struct SendablePersistedData {
+    app_state: AppState,
+    workspaces: Vec<WorkspaceMetadata>,
+    current_workspace_uid: Option<WorkspaceUid>,
+    command_history: Vec<PersistedCommand>,
+    user_profiles: Vec<UserProfileWithUID>,
+    time_of_next_force_object_refresh: Option<DateTime<Utc>>,
+    object_actions: Vec<ObjectAction>,
+    experiments: Vec<ServerExperiment>,
+    ai_queries: Vec<PersistedAIInput>,
+    nld_prompts: Vec<(String, DateTime<Local>)>,
+    codebase_indices: Vec<CodeWorkspaceMetadata>,
+    workspace_language_servers: HashMap<PathBuf, HashMap<LSPServerType, EnablementState>>,
+    multi_agent_conversations: Vec<AgentConversation>,
+    projects: Vec<Project>,
+    project_rules: Vec<ProjectRulePath>,
+    ignored_suggestions: Vec<(String, SuggestionType)>,
+    mcp_server_installations: HashMap<Uuid, TemplatableMCPServerInstallation>,
+    mcp_servers_to_restore: Vec<Uuid>,
+    queued_prompts: Vec<model::QueuedPromptRow>,
+}
+
+#[allow(dead_code)]
+fn assert_send<T: Send>() {}
+#[allow(dead_code)]
+fn sendable_persisted_data_is_send() {
+    assert_send::<SendablePersistedData>();
+}
+
+impl SendablePersistedData {
+    /// `None` when `data` holds cloud objects, which cannot be moved. The destructuring names
+    /// every field, so adding a field to `PersistedData` fails to build until it is handled here.
+    pub(crate) fn from_persisted(data: PersistedData) -> Option<Self> {
+        let PersistedData {
+            app_state,
+            cloud_objects,
+            workspaces,
+            current_workspace_uid,
+            command_history,
+            user_profiles,
+            time_of_next_force_object_refresh,
+            object_actions,
+            experiments,
+            ai_queries,
+            nld_prompts,
+            codebase_indices,
+            workspace_language_servers,
+            multi_agent_conversations,
+            projects,
+            project_rules,
+            ignored_suggestions,
+            mcp_server_installations,
+            mcp_servers_to_restore,
+            queued_prompts,
+        } = data;
+        if !cloud_objects.is_empty() {
+            return None;
+        }
+        Some(Self {
+            app_state,
+            workspaces,
+            current_workspace_uid,
+            command_history,
+            user_profiles,
+            time_of_next_force_object_refresh,
+            object_actions,
+            experiments,
+            ai_queries,
+            nld_prompts,
+            codebase_indices,
+            workspace_language_servers,
+            multi_agent_conversations,
+            projects,
+            project_rules,
+            ignored_suggestions,
+            mcp_server_installations,
+            mcp_servers_to_restore,
+            queued_prompts,
+        })
+    }
+
+    pub(crate) fn clear_nld_prompts(&mut self) {
+        self.nld_prompts.clear();
+    }
+
+    pub(crate) fn into_persisted(self) -> PersistedData {
+        PersistedData {
+            app_state: self.app_state,
+            cloud_objects: Vec::new(),
+            workspaces: self.workspaces,
+            current_workspace_uid: self.current_workspace_uid,
+            command_history: self.command_history,
+            user_profiles: self.user_profiles,
+            time_of_next_force_object_refresh: self.time_of_next_force_object_refresh,
+            object_actions: self.object_actions,
+            experiments: self.experiments,
+            ai_queries: self.ai_queries,
+            nld_prompts: self.nld_prompts,
+            codebase_indices: self.codebase_indices,
+            workspace_language_servers: self.workspace_language_servers,
+            multi_agent_conversations: self.multi_agent_conversations,
+            projects: self.projects,
+            project_rules: self.project_rules,
+            ignored_suggestions: self.ignored_suggestions,
+            mcp_server_installations: self.mcp_server_installations,
+            mcp_servers_to_restore: self.mcp_servers_to_restore,
+            queued_prompts: self.queued_prompts,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockCompleted {
     pub pane_id: Vec<u8>,
     /// Indicates if the block was created locally (e.g. not in a remote session)
     pub is_local: bool,
     pub block: Arc<SerializedBlock>,
+    /// When set, `block` carries no command or output bytes: the SQLite writer fills them in from
+    /// this (the slow conversion to text, kept off the UI thread).
+    pub deferred_content: Option<DeferredBlockContent>,
 }
 
 #[derive(Debug)]
