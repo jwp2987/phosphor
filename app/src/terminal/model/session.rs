@@ -1559,6 +1559,39 @@ impl Session {
         };
     }
 
+    /// The output `shell_command_to_get_executables` gives for a local PowerShell session,
+    /// produced by scanning the session's `PATH` directories in this process (see
+    /// [`warp_util::path::executable_file_names_in_path`]); `None` for any other session, which
+    /// runs the shell command.
+    async fn native_powershell_executables(&self) -> Option<CommandOutput> {
+        let is_msys2 = self
+            .info
+            .launch_data
+            .as_ref()
+            .is_some_and(|launch_data| matches!(launch_data, ShellLaunchData::MSYS2 { .. }));
+        if is_msys2 || !self.deferred_name_enumeration_is_redundant() {
+            // Not a local PowerShell session.
+            return None;
+        }
+        let path_env = self
+            .info
+            .path
+            .as_deref()
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"))?;
+        let pathext = std::env::var_os("PATHEXT");
+        let names = blocking::unblock(move || {
+            warp_util::path::executable_file_names_in_path(&path_env, pathext.as_deref())
+        })
+        .await;
+        Some(CommandOutput {
+            stdout: names.join("\n").into_bytes(),
+            stderr: Vec::new(),
+            status: CommandExitStatus::Success,
+            exit_code: None,
+        })
+    }
+
     /// Asynchronously loads the external commands.
     ///
     /// If this is called while a previous call to `load_external_commands` is
@@ -1598,14 +1631,21 @@ impl Session {
                 .as_deref()
                 .map(|path| HashMap::from_iter([("PATH".to_string(), path.to_string())]));
 
-            let result = self
-                .execute_command(
-                    shell_command_to_get_executables,
-                    None,
-                    env_vars,
-                    ExecuteCommandOptions::default(),
-                )
-                .await;
+            // A local PowerShell session lists the executables itself (#1230) instead of
+            // starting `pwsh -NoProfile` for `Get-Command -CommandType Application`.
+            let native_result = self.native_powershell_executables().await;
+            let result = match native_result {
+                Some(output) => Ok(output),
+                None => {
+                    self.execute_command(
+                        shell_command_to_get_executables,
+                        None,
+                        env_vars,
+                        ExecuteCommandOptions::default(),
+                    )
+                    .await
+                }
+            };
 
             let is_msys2 =
                 self.info.launch_data.as_ref().is_some_and(|launch_data| {

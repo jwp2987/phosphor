@@ -388,39 +388,24 @@ impl LocalCommandExecutor {
         shell_config_flag: &str,
         execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
-        // A per-prompt chip command that is only one external program does not need a PowerShell
-        // process to run it (#1230).
+        // A per-prompt chip command that is made of external programs only does not need a
+        // PowerShell process to run it (#1230).
         #[cfg(unix)]
         {
             if self.shell_type == ShellType::PowerShell && shell_config_flag == "-NoProfile" {
-                if let Some(direct) =
+                if let Some(plan) =
                     crate::context_chips::builtins::direct_powershell_invocation(command)
                 {
-                    if let Some(direct_process) =
-                        direct_command(&direct, environment_variables.as_ref())
+                    if let Some(result) = self
+                        .run_direct_plan(
+                            &plan,
+                            command,
+                            current_directory_path,
+                            environment_variables.as_ref(),
+                        )
+                        .await
                     {
-                        match self
-                            .run_prepared_command(
-                                direct_process,
-                                command,
-                                current_directory_path,
-                                environment_variables.as_ref(),
-                                direct.env,
-                            )
-                            .await
-                        {
-                            Err(error)
-                                if error
-                                    .downcast_ref::<std::io::Error>()
-                                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-                            {
-                                log::info!(
-                                    "Direct run of {} failed to start: {error:#}",
-                                    direct.program
-                                );
-                            }
-                            result => return result,
-                        }
+                        return result;
                     }
                 }
             }
@@ -437,6 +422,100 @@ impl LocalCommandExecutor {
             &[],
         )
         .await
+    }
+
+    /// Runs one step of a [`DirectPlan`]; `None` when its program cannot be found or started,
+    /// so the caller falls back to the shell.
+    #[cfg(unix)]
+    async fn run_direct_step(
+        &self,
+        step: &crate::context_chips::builtins::DirectInvocation,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+    ) -> Option<Result<CommandOutput>> {
+        let process = direct_command(step, environment_variables)?;
+        match self
+            .run_prepared_command(
+                process,
+                command,
+                current_directory_path,
+                environment_variables,
+                step.env,
+            )
+            .await
+        {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                log::info!("Direct run of {} failed to start: {error:#}", step.program);
+                None
+            }
+            result => Some(result),
+        }
+    }
+
+    /// Runs a chip command's programs directly, with the output and success the PowerShell
+    /// command gave. `None` when a program cannot be started (the caller runs the shell).
+    #[cfg(unix)]
+    async fn run_direct_plan(
+        &self,
+        plan: &crate::context_chips::builtins::DirectPlan,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+    ) -> Option<Result<CommandOutput>> {
+        use crate::context_chips::builtins::DirectPlan;
+
+        match plan {
+            DirectPlan::Single(step) => {
+                self.run_direct_step(step, command, current_directory_path, environment_variables)
+                    .await
+            }
+            DirectPlan::FirstSuccess(first, second) => {
+                match self
+                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) if output.success() => Some(Ok(output)),
+                    _ => {
+                        self.run_direct_step(
+                            second,
+                            command,
+                            current_directory_path,
+                            environment_variables,
+                        )
+                        .await
+                    }
+                }
+            }
+            DirectPlan::JoinedWithRecordSeparator(first, second) => {
+                let first_output = match self
+                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) => output,
+                    Err(error) => return Some(Err(error)),
+                };
+                let mut output = match self
+                    .run_direct_step(second, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) => output,
+                    Err(error) => return Some(Err(error)),
+                };
+                let mut stdout = first_output.stdout;
+                stdout.extend_from_slice(b"\x1e\n");
+                stdout.append(&mut output.stdout);
+                output.stdout = stdout;
+                let mut stderr = first_output.stderr;
+                stderr.append(&mut output.stderr);
+                output.stderr = stderr;
+                Some(Ok(output))
+            }
+        }
     }
 
     /// Starts `command_process` with the session's environment and working directory and

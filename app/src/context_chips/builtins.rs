@@ -126,12 +126,7 @@ pub fn shell_git_branch() -> ShellCommandGenerator {
     // bootstrap scripts, at least until that is removed.
     const SH_COMMAND: &str = "GIT_OPTIONAL_LOCKS=0 git symbolic-ref --short HEAD 2> /dev/null || \
      GIT_OPTIONAL_LOCKS=0 git rev-parse --short HEAD 2> /dev/null";
-    let pwsh_command = safe_git_powershell(
-        "git symbolic-ref --short HEAD  2>$null; \
-            if ($? -eq $false) { \
-                git rev-parse --short HEAD 2>$null; \
-            }",
-    );
+    let pwsh_command = pwsh_git_branch_command();
 
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, pwsh_command),
@@ -147,11 +142,7 @@ pub fn shell_other_git_branches() -> ShellCommandGenerator {
     const SH_COMMAND: &str = "git --no-optional-locks branch --no-color --sort=-committerdate; \
         printf '\\036\\n'; \
         git --no-optional-locks worktree list --porcelain";
-    let pwsh_command = safe_git_powershell(
-        "git --no-optional-locks branch --no-color --sort=-committerdate; \
-        [char]30; \
-        git --no-optional-locks worktree list --porcelain",
-    );
+    let pwsh_command = pwsh_other_git_branches_command();
 
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, pwsh_command),
@@ -273,8 +264,24 @@ pub fn kubernetes_current_context() -> ShellCommandGenerator {
     )
 }
 
-/// A chip command that is one external program with fixed arguments, so it can be run without
-/// a shell.
+fn pwsh_git_branch_command() -> String {
+    safe_git_powershell(
+        "git symbolic-ref --short HEAD  2>$null; \
+            if ($? -eq $false) { \
+                git rev-parse --short HEAD 2>$null; \
+            }",
+    )
+}
+
+fn pwsh_other_git_branches_command() -> String {
+    safe_git_powershell(
+        "git --no-optional-locks branch --no-color --sort=-committerdate; \
+        [char]30; \
+        git --no-optional-locks worktree list --porcelain",
+    )
+}
+
+/// One external program with fixed arguments.
 #[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DirectInvocation {
@@ -284,26 +291,76 @@ pub(crate) struct DirectInvocation {
     pub env: &'static [(&'static str, &'static str)],
 }
 
-/// Recognises the PowerShell chip commands that run on every prompt and are only a single
-/// external program, so the local executor can start that program itself instead of a
-/// `pwsh -NoProfile` process (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux
-/// and several times that on Windows, where bash costs 3 ms. Matches the exact text the chips
-/// above generate, nothing else: any other command still goes through pwsh.
+/// A chip command that is made of external programs only, so it can be run without a shell.
 #[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectInvocation> {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DirectPlan {
+    /// One program.
+    Single(DirectInvocation),
+    /// The first program, and only if it fails, the second: the result is the first success's
+    /// output, else the second's.
+    FirstSuccess(DirectInvocation, DirectInvocation),
+    /// Both programs one after the other with a record separator line (`\x1e` and a newline)
+    /// between their stdout; the result's status is the second's, as the shell's is the last
+    /// command's.
+    JoinedWithRecordSeparator(DirectInvocation, DirectInvocation),
+}
+
+const GIT_ENV: &[(&str, &str)] = &[("GIT_OPTIONAL_LOCKS", "0")];
+
+/// Recognises the PowerShell chip commands that run at prompts and are only external programs,
+/// so the local executor can start those programs itself instead of a `pwsh -NoProfile` process
+/// (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux and several times that on
+/// Windows, where bash costs 3 ms. Matches the exact text the chips above generate, nothing
+/// else: any other command still goes through pwsh.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> {
     if command == pwsh_git_line_changes_command() {
-        return Some(DirectInvocation {
+        return Some(DirectPlan::Single(DirectInvocation {
             program: "git",
             args: GIT_LINE_CHANGES_ARGS,
-            env: &[("GIT_OPTIONAL_LOCKS", "0")],
-        });
+            env: GIT_ENV,
+        }));
     }
     if command == KUBECTL_CURRENT_CONTEXT_COMMAND {
-        return Some(DirectInvocation {
+        return Some(DirectPlan::Single(DirectInvocation {
             program: "kubectl",
             args: &["config", "current-context"],
             env: &[],
-        });
+        }));
+    }
+    if command == pwsh_git_branch_command() {
+        return Some(DirectPlan::FirstSuccess(
+            DirectInvocation {
+                program: "git",
+                args: &["symbolic-ref", "--short", "HEAD"],
+                env: GIT_ENV,
+            },
+            DirectInvocation {
+                program: "git",
+                args: &["rev-parse", "--short", "HEAD"],
+                env: GIT_ENV,
+            },
+        ));
+    }
+    if command == pwsh_other_git_branches_command() {
+        return Some(DirectPlan::JoinedWithRecordSeparator(
+            DirectInvocation {
+                program: "git",
+                args: &[
+                    "--no-optional-locks",
+                    "branch",
+                    "--no-color",
+                    "--sort=-committerdate",
+                ],
+                env: GIT_ENV,
+            },
+            DirectInvocation {
+                program: "git",
+                args: &["--no-optional-locks", "worktree", "list", "--porcelain"],
+                env: GIT_ENV,
+            },
+        ));
     }
     None
 }

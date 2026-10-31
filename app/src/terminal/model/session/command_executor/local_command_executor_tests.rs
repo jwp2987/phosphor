@@ -392,4 +392,64 @@ mod unix {
                 .expect_err("must have tried to start PowerShell");
         });
     }
+
+    /// The branch chips are two git calls; run directly they give what the PowerShell text gave.
+    #[test]
+    fn powershell_git_branch_chips_run_without_a_powershell_process() {
+        futures_lite::future::block_on(async {
+            let bin = tempfile::tempdir().expect("create temp dir");
+            // A detached HEAD: `symbolic-ref` fails, `rev-parse` answers. `branch` and `worktree`
+            // print one line each.
+            write_fake_program(
+                bin.path(),
+                "git",
+                r#"case "$*" in
+  "symbolic-ref --short HEAD") exit 1 ;;
+  "rev-parse --short HEAD") echo abc1234 ;;
+  "--no-optional-locks branch --no-color --sort=-committerdate") echo "* main" ;;
+  "--no-optional-locks worktree list --porcelain") echo "worktree /w" ;;
+  *) echo "unexpected: $*"; exit 9 ;;
+esac"#,
+            );
+            let executor = LocalCommandExecutor::new(
+                Some("/nonexistent/pwsh".into()),
+                ShellType::PowerShell,
+            );
+            let env = || Some(HashMap::from([("PATH".to_owned(), bin.path().display().to_string())]));
+            let text = |generator: crate::context_chips::context_chip::ShellCommandGenerator| {
+                generator
+                    .command()
+                    .for_shell(ShellType::PowerShell)
+                    .expect("PowerShell supported")
+                    .to_owned()
+            };
+
+            let branch = executor
+                .execute_local_command(
+                    &text(crate::context_chips::builtins::shell_git_branch()),
+                    None,
+                    env(),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("runs directly");
+            assert!(branch.success());
+            assert_eq!(String::from_utf8_lossy(branch.output()), "abc1234\n");
+
+            let others = executor
+                .execute_local_command(
+                    &text(crate::context_chips::builtins::shell_other_git_branches()),
+                    None,
+                    env(),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("runs directly");
+            assert!(others.success());
+            assert_eq!(
+                String::from_utf8_lossy(others.output()),
+                "* main\n\u{1e}\nworktree /w\n"
+            );
+        });
+    }
 }

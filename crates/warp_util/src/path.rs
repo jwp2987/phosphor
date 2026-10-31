@@ -1313,6 +1313,70 @@ fn resolve_executable_in_dir(path_dir: &Path, command: &str) -> Option<PathBuf> 
     None
 }
 
+/// The file names of every executable in the directories of `path_env`, the way PowerShell's
+/// `Get-Command -CommandType Application` lists them (#1230): each directory once, regular files
+/// (symlinks followed) that are executable; on unix that is an execute permission bit, on Windows
+/// an extension listed in `pathext` (`PATHEXT`, e.g. `.COM;.EXE;.BAT;.CMD`; a built-in default
+/// when it is empty), compared without regard to case. Names keep their extension. A directory
+/// that cannot be read is skipped, as it is by the shell. The result may hold a name more than
+/// once (one per directory that has it).
+#[cfg(not(target_family = "wasm"))]
+pub fn executable_file_names_in_path(
+    path_env: &std::ffi::OsStr,
+    pathext: Option<&std::ffi::OsStr>,
+) -> Vec<String> {
+    #[cfg(not(windows))]
+    let _ = pathext;
+    #[cfg(windows)]
+    let extensions: Vec<String> = {
+        let configured = pathext.map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        let configured = if configured.trim().is_empty() {
+            ".COM;.EXE;.BAT;.CMD".to_owned()
+        } else {
+            configured
+        };
+        configured
+            .split(';')
+            .map(|ext| ext.trim().to_lowercase())
+            .filter(|ext| !ext.is_empty())
+            .collect()
+    };
+
+    let mut names = Vec::new();
+    for dir in env::split_paths(path_env).unique() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            // `metadata` follows symlinks, so a link to an executable counts and a dangling one
+            // does not.
+            let Ok(metadata) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt as _;
+                metadata.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(windows)]
+            let executable = Path::new(&name)
+                .extension()
+                .map(|ext| format!(".{}", ext.to_string_lossy().to_lowercase()))
+                .is_some_and(|ext| extensions.contains(&ext));
+            if executable {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 /// The executable extensions to try for a bare command on Windows, from the
 /// `PATHEXT` environment variable (e.g. `.COM;.EXE;.BAT;.CMD`).
 #[cfg(windows)]

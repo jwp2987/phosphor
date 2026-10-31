@@ -169,39 +169,60 @@ fn test_shell_specific_chip_commands_fall_back_to_bash_for_nu() {
 
 #[test]
 fn direct_powershell_invocation_recognises_the_per_prompt_chip_commands() {
+    use super::{DirectInvocation, DirectPlan};
     use crate::terminal::shell::ShellType;
 
-    // The chips' own PowerShell text maps to the program they wrap (#1230).
-    let line_changes = super::shell_git_line_changes();
-    let line_changes_command = line_changes
-        .command()
-        .for_shell(ShellType::PowerShell)
-        .expect("the git line-changes chip supports PowerShell");
-    let direct = super::direct_powershell_invocation(line_changes_command)
-        .expect("the git diff-stat chip command is a single program");
-    assert_eq!(direct.program, "git");
+    let pwsh = |generator: crate::context_chips::context_chip::ShellCommandGenerator| {
+        generator
+            .command()
+            .for_shell(ShellType::PowerShell)
+            .expect("the chip supports PowerShell")
+            .to_owned()
+    };
+    let git = |args: &'static [&'static str]| DirectInvocation {
+        program: "git",
+        args,
+        env: &[("GIT_OPTIONAL_LOCKS", "0")],
+    };
+
+    // The chips' own PowerShell text maps to the programs they wrap (#1230).
     assert_eq!(
-        direct.args,
-        [
+        super::direct_powershell_invocation(&pwsh(super::shell_git_line_changes())),
+        Some(DirectPlan::Single(git(&[
             "-c",
             "diff.autoRefreshIndex=false",
             "diff",
             "--shortstat",
             "HEAD"
-        ]
+        ])))
     );
-    assert_eq!(direct.env, [("GIT_OPTIONAL_LOCKS", "0")]);
-
-    let kubernetes = super::kubernetes_current_context();
-    let kubernetes_command = kubernetes
-        .command()
-        .for_shell(ShellType::PowerShell)
-        .expect("the kubernetes chip supports PowerShell");
-    let direct = super::direct_powershell_invocation(kubernetes_command)
-        .expect("the kubectl chip command is a single program");
-    assert_eq!(direct.program, "kubectl");
-    assert_eq!(direct.args, ["config", "current-context"]);
-    assert!(direct.env.is_empty());
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::kubernetes_current_context())),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "kubectl",
+            args: &["config", "current-context"],
+            env: &[],
+        }))
+    );
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::shell_git_branch())),
+        Some(DirectPlan::FirstSuccess(
+            git(&["symbolic-ref", "--short", "HEAD"]),
+            git(&["rev-parse", "--short", "HEAD"]),
+        ))
+    );
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::shell_other_git_branches())),
+        Some(DirectPlan::JoinedWithRecordSeparator(
+            git(&[
+                "--no-optional-locks",
+                "branch",
+                "--no-color",
+                "--sort=-committerdate"
+            ]),
+            git(&["--no-optional-locks", "worktree", "list", "--porcelain"]),
+        ))
+    );
 }
 
 #[test]
@@ -236,9 +257,9 @@ fn direct_powershell_invocation_leaves_every_other_command_to_the_shell() {
             "{command:?} must still run in PowerShell"
         );
     }
-    // The other git chips have logic around the git calls and stay in PowerShell.
-    let other = super::shell_other_git_branches();
-    let text = other
+    // The branch-status chip has logic around the git calls and stays in PowerShell.
+    let status = super::shell_git_branch_status();
+    let text = status
         .command()
         .for_shell(crate::terminal::shell::ShellType::PowerShell)
         .unwrap();

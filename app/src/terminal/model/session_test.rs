@@ -1067,3 +1067,37 @@ fn remote_history_is_read_as_a_bounded_tail() {
         "cat '/home/u/.bash_history'"
     );
 }
+
+/// #1230: a local PowerShell session lists the executables on its PATH itself; the shell path
+/// below does not exist, so only the native scan can produce them.
+#[cfg(unix)]
+#[test]
+fn local_powershell_session_lists_path_executables_without_running_pwsh() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    App::test((), |_app| async move {
+        let bin = tempfile::tempdir().unwrap();
+        for (name, mode) in [("my-tool", 0o755), ("not-exec.txt", 0o644)] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let info = SessionInfo::new_for_test()
+            .with_shell_type(ShellType::PowerShell)
+            .with_path(Some(bin.path().display().to_string()));
+        let session = Session::new(
+            info,
+            Arc::new(super::command_executor::LocalCommandExecutor::new(
+                Some("/nonexistent/pwsh".into()),
+                ShellType::PowerShell,
+            )),
+        );
+
+        session.load_external_commands().await;
+
+        assert!(session.has_loaded_external_commands());
+        let commands = sorted(session.top_level_commands());
+        assert!(commands.contains(&"my-tool"));
+        assert!(!commands.contains(&"not-exec.txt"));
+    });
+}
