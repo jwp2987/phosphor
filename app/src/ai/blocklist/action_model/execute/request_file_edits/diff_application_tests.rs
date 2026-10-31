@@ -757,7 +757,7 @@ fn test_format_single_errors() {
 
     assert_eq!(
         DiffApplicationError::error_for_conversation(&errs),
-        "Could not read no_permissions.scala"
+        "Could not read no_permissions.scala: permission denied"
     );
 }
 
@@ -1412,5 +1412,133 @@ fn test_apply_v4a_rename_destination_is_resolved_against_session_cwd() {
                 other => panic!("Expected Update with rename, got {other:?}"),
             }
         }
+    });
+}
+
+// ── #1277: errors instead of silent drops, and causes kept ──────────────────────────────
+
+/// Runs `edits` against the real filesystem and returns the result.
+async fn apply_on_disk(
+    app: &App,
+    edits: Vec<FileEdit>,
+) -> Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>> {
+    apply_edits(
+        edits,
+        &SessionContext::new_for_test(),
+        &AIIdentifiers::default(),
+        app.background_executor(),
+        Arc::new(AuthState::new_for_test()),
+        false,
+        |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+    )
+    .await
+}
+
+fn str_replace(file: &str, search: Option<&str>, replace: Option<&str>) -> FileEdit {
+    FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+        file: Some(file.to_owned()),
+        search: search.map(str::to_owned),
+        replace: replace.map(str::to_owned),
+    })
+}
+
+/// Old code prepended the replacement at line 0 of the existing file.
+#[test]
+fn an_empty_search_on_an_existing_file_is_rejected() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        writeln!(&mut temp_file, "existing content").unwrap();
+
+        for search in [None, Some("")] {
+            let errors = apply_on_disk(
+                &app,
+                vec![str_replace(&file_path, search, Some("overwrite attempt"))],
+            )
+            .await
+            .expect_err("an empty search on a non-empty file must not prepend");
+            match &errors[..] {
+                [DiffApplicationError::EmptySearch { file }] => assert_eq!(*file, file_path),
+                other => panic!("expected EmptySearch, got {other:?}"),
+            }
+            let message = DiffApplicationError::error_for_conversation(&errors);
+            assert!(message.contains("empty search"), "got: {message}");
+        }
+    });
+}
+
+/// An empty search remains the way to create a file that does not exist.
+#[test]
+fn an_empty_search_on_a_missing_file_still_creates_it() {
+    App::test((), |app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt").to_string_lossy().to_string();
+        let diffs = apply_on_disk(&app, vec![str_replace(&path, Some(""), Some("hello"))])
+            .await
+            .expect("explicit create via empty search");
+        assert!(matches!(diffs[0].diff_type, DiffType::Create { .. }));
+    });
+}
+
+#[test]
+fn an_edit_with_neither_search_nor_replace_is_an_error() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        writeln!(&mut temp_file, "existing content").unwrap();
+
+        for (search, replace) in [(None, None), (Some(""), Some(""))] {
+            let errors = apply_on_disk(&app, vec![str_replace(&file_path, search, replace)])
+                .await
+                .expect_err("an edit that changes nothing must be reported");
+            assert!(
+                matches!(&errors[..], [DiffApplicationError::EmptyEdit { file }] if *file == file_path),
+                "got {errors:?}"
+            );
+        }
+    });
+}
+
+/// Old code dropped a create with no content (`continue`), so the call reported "No diffs
+/// could be applied" or silently skipped the file when other edits succeeded.
+#[test]
+fn a_create_with_empty_content_is_an_error() {
+    App::test((), |app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.txt").to_string_lossy().to_string();
+        for content in [None, Some(String::new())] {
+            let errors = apply_on_disk(
+                &app,
+                vec![FileEdit::Create {
+                    file: Some(path.clone()),
+                    content,
+                }],
+            )
+            .await
+            .expect_err("an empty create must be reported");
+            assert!(
+                matches!(&errors[..], [DiffApplicationError::EmptyCreate { file }] if *file == path),
+                "got {errors:?}"
+            );
+        }
+    });
+}
+
+/// The cause of a failed read reaches the model (EACCES, non-UTF-8, ...).
+#[test]
+fn a_read_failure_carries_its_cause_into_the_message() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&[0xff, 0xfe, 0x00, 0x80]).unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        let errors = apply_on_disk(&app, vec![str_replace(&file_path, Some("x"), Some("y"))])
+            .await
+            .expect_err("a non-UTF-8 file cannot be read as text");
+        let message = DiffApplicationError::error_for_conversation(&errors);
+        assert!(
+            message.starts_with(&format!("Could not read {file_path}:")),
+            "got: {message}"
+        );
+        assert!(message.len() > format!("Could not read {file_path}:").len() + 1);
     });
 }

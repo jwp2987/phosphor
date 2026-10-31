@@ -675,8 +675,17 @@ impl DiffViewer for InlineDiffView {
     }
 
     fn accept_and_save_diff(&self, ctx: &mut ViewContext<Self>) {
-        // No-op when no file is registered (WASM / restored conversations).
+        // With no file registered (WASM, or a path that could not be registered) nothing can be
+        // written. Say so: a silent return left `SavedAcceptedDiffs` unfired and the agent
+        // action without a result until the user pressed Stop (#1277).
         if self.backing_file_id.is_none() {
+            let path = self
+                .file_path
+                .as_ref()
+                .map_or_else(|| "the file".to_owned(), |p| p.to_string());
+            ctx.emit(InlineDiffViewEvent::FailedToSave {
+                error: Rc::new(FileSaveError::Other(no_backing_file_message(&path))),
+            });
             return;
         }
 
@@ -691,6 +700,13 @@ impl DiffViewer for InlineDiffView {
         #[cfg(not(target_family = "wasm"))]
         self.save_content(ctx);
     }
+}
+
+/// The error reported when an accepted diff has no registered file to write to.
+fn no_backing_file_message(path: &str) -> String {
+    format!(
+        "Could not save {path}: the file could not be opened for writing, so nothing was written."
+    )
 }
 
 /// What [`InlineDiffView::restore_diff_base`] did. A revert is not done when
@@ -1209,6 +1225,15 @@ mod tests {
     /// against a real file — which is what actually matters: that the write
     /// lands, or refuses, exactly as the decision says.
     const BASE: &str = "fn main() {}\n";
+
+    /// With no registered file, accepting used to return silently and the agent action never got
+    /// a result (#1277). The error names the file and says nothing was written.
+    #[test]
+    fn a_missing_backing_file_produces_a_visible_error() {
+        let message = no_backing_file_message("/tmp/example.rs");
+        assert!(message.contains("/tmp/example.rs"), "got: {message}");
+        assert!(message.contains("nothing was written"), "got: {message}");
+    }
 
     fn path() -> StandardizedPath {
         StandardizedPath::try_new("/tmp/example.rs").expect("standardized path")

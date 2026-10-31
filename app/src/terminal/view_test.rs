@@ -14270,6 +14270,60 @@ fn stopping_the_conversation_aborts_a_running_tools_execution() {
     })
 }
 
+/// Stop while a file edit is being saved (#1277): the writes are spawned by `FileModel` and
+/// cannot be recalled, so the action must not be reported Cancelled and its execution not
+/// aborted at once -- it waits (bounded) for the real outcome. Fails on the old code, which
+/// removed the action and emitted Cancelled immediately while the write could still land.
+#[test]
+fn stopping_while_a_file_edit_is_saving_does_not_report_cancelled() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_with_agent_command(&mut app, true);
+        let action_id = AIAgentActionId::from("edit-call".to_owned());
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let execution = action_model.update(&mut app, |action_model, ctx| {
+            let execution = ctx.spawn(futures::future::pending::<()>(), |_, (), _| {});
+            action_model.start_running_async_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestFileEdits {
+                        file_edits: vec![],
+                        title: None,
+                    },
+                    requires_result: true,
+                },
+                conversation_id,
+                Some(execution.clone()),
+                ctx,
+            );
+            execution
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+        });
+
+        assert!(
+            !execution.abort_handle().is_aborted(),
+            "a save in flight is not aborted: its write would land anyway"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_running()),
+                "the action keeps running until its real result (or the grace period) arrives"
+            );
+        });
+    })
+}
+
 /// Closing a pane whose agent is running a command with a real async action: exactly one ^C and
 /// one discard. The close path's own interrupt runs first and hands the command to the user, so
 /// the executor's manual-cancel interrupt (`CancelExecution`) for the cancelled action stays out.

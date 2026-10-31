@@ -70,9 +70,22 @@ pub(crate) enum DiffApplicationError {
     /// The file could not be read (I/O error, permissions, remote connectivity, etc.).
     ReadFailed {
         file: String,
-        // TODO(CODE-353): Display I/O errors to the user, since they may be able to fix them.
-        #[expect(dead_code)]
+        /// The underlying cause (non-UTF-8, binary, EACCES, ...). Surfaced to the model.
         message: String,
+    },
+    /// An edit carried neither a search nor a replacement, so it changes nothing. Reported
+    /// instead of silently dropped, so the model does not believe the edit happened.
+    EmptyEdit {
+        file: String,
+    },
+    /// An edit to an existing, non-empty file had an empty `search`. That used to prepend the
+    /// replacement at line 0, which is never what a model meaning "overwrite" or "append" wants.
+    EmptySearch {
+        file: String,
+    },
+    /// A create operation had no content. Reported instead of silently dropped.
+    EmptyCreate {
+        file: String,
     },
     /// A file that was supposed to be new already exists.
     AlreadyExists {
@@ -126,11 +139,34 @@ impl DiffApplicationError {
             DiffApplicationError::MissingFile { file } => {
                 format!("{file} does not exist. Is the path correct?")
             }
+            DiffApplicationError::EmptyEdit { file } => {
+                format!(
+                    "The edit to {file} has an empty search and an empty replace, so it would \
+                     change nothing. Nothing was applied for it."
+                )
+            }
+            DiffApplicationError::EmptySearch { file } => {
+                format!(
+                    "The edit to {file} has an empty search, which is only valid when creating a \
+                     new file. To change an existing file, set `search` to the exact text to \
+                     replace; to replace the whole file, delete it and create it again."
+                )
+            }
+            DiffApplicationError::EmptyCreate { file } => {
+                format!(
+                    "Could not create {file}: the content is empty. This tool cannot create an \
+                     empty file; provide the file's content."
+                )
+            }
             DiffApplicationError::AlreadyExists { file } => {
                 format!("Could not create {file} because it already exists.")
             }
-            DiffApplicationError::ReadFailed { file, .. } => {
-                format!("Could not read {file}")
+            DiffApplicationError::ReadFailed { file, message } => {
+                if message.is_empty() {
+                    format!("Could not read {file}")
+                } else {
+                    format!("Could not read {file}: {message}")
+                }
             }
             DiffApplicationError::MultipleFileCreation { file } => {
                 format!("There can only be one attempt to create {file}.")
@@ -239,6 +275,9 @@ where
             }
             DiffApplicationError::MissingFile { .. }
             | DiffApplicationError::ReadFailed { .. }
+            | DiffApplicationError::EmptyEdit { .. }
+            | DiffApplicationError::EmptySearch { .. }
+            | DiffApplicationError::EmptyCreate { .. }
             | DiffApplicationError::AlreadyExists { .. }
             | DiffApplicationError::MultipleFileCreation { .. }
             | DiffApplicationError::MutatedDeletedFile { .. }
@@ -338,9 +377,14 @@ where
 
                 match diff {
                     ParsedDiff::StrReplaceEdit { .. } => {
-                        let deltas = search_replace_deltas.entry(file_path).or_default();
-                        if let Ok(d) = diff.try_into() {
-                            deltas.push(d);
+                        match SearchAndReplace::try_from(diff) {
+                            Ok(d) if !(d.search.is_empty() && d.replace.is_empty()) => {
+                                search_replace_deltas.entry(file_path).or_default().push(d);
+                            }
+                            // Neither string: nothing to apply. Say so rather than drop it.
+                            _ => result
+                                .errors
+                                .push(DiffApplicationError::EmptyEdit { file: file_path }),
                         }
                     }
                     ParsedDiff::V4AEdit { hunks, move_to, .. } => {
@@ -376,7 +420,10 @@ where
                         continue;
                     }
                     Entry::Vacant(entry) => {
-                        let Some(content) = content else {
+                        let Some(content) = content.filter(|c| !c.is_empty()) else {
+                            result.errors.push(DiffApplicationError::EmptyCreate {
+                                file: entry.key().clone(),
+                            });
                             continue;
                         };
                         entry.insert(content);
@@ -678,6 +725,14 @@ async fn apply_search_replace<F, Fut>(
                 safe: ("Matching diffs"),
                 full: ("Matching diffs for: {file_path:?}")
             );
+            // An empty search means "create"; on an existing file with content it would
+            // silently prepend at line 0. (An existing empty file has nothing to prepend to.)
+            if !file_content.is_empty() && deltas.iter().any(|d| d.search.is_empty()) {
+                result
+                    .errors
+                    .push(DiffApplicationError::EmptySearch { file: file_path });
+                return;
+            }
             let fuzzy_match_diffs = fuzzy_match_diffs(&file_path, &deltas, file_content);
 
             // Add warnings from the failure info - the `DiffMatchFailures` type includes both

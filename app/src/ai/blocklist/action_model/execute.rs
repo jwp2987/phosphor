@@ -85,7 +85,7 @@ use crate::{
         agent::{
             AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
             AIAgentActionType, CancellationReason, FileContext, FileLocations, ReadFilesFailedFile,
-            ServerOutputId, conversation::AIConversationId,
+            RequestFileEditsResult, ServerOutputId, conversation::AIConversationId,
         },
         ambient_agents::AmbientAgentTaskId,
     },
@@ -308,9 +308,29 @@ struct AsyncExecutingAction {
     /// connection, #1241) instead of only discarding its result. `None` in tests that register
     /// an action without spawning it.
     execution: Option<SpawnedFutureHandle>,
+    /// Set when a Stop arrived while this file-edit action was saving. The writes are spawned by
+    /// `FileModel` and cannot be recalled, so the action is not reported Cancelled while they
+    /// may still land (#1277): it keeps running until its real result arrives, or until
+    /// [`FILE_EDIT_CANCEL_GRACE`] passes. Holds the reason of the Stop.
+    cancel_pending: Option<Option<CancellationReason>>,
 }
 
+/// Result text for a file-edit action that was stopped mid-save and never reported an outcome.
+pub(super) const FILE_EDIT_STOPPED_MID_SAVE: &str = "The user stopped the agent while these edits were being saved, and the save did not report back. The files may or may not have been written; read them again before editing them.";
+
+/// How long a Stop waits for an in-flight file-edit save to report its real outcome before the
+/// action is ended with an explicit "outcome unknown" result.
+const FILE_EDIT_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl AsyncExecutingAction {
+    fn is_file_edit_save_in_flight(&self) -> bool {
+        // `execution` is set once `execute` has run, i.e. once the save was dispatched.
+        matches!(
+            self.action.action,
+            AIAgentActionType::RequestFileEdits { .. }
+        ) && self.execution.is_some()
+    }
+
     fn is_shell_command_action(&self) -> bool {
         matches!(
             self.action.action,
@@ -812,7 +832,7 @@ impl BlocklistAIActionExecutor {
                             result,
                         }),
                         conversation_id: running.conversation_id,
-                        cancellation_reason: None,
+                        cancellation_reason: running.cancel_pending.flatten(),
                     });
                 });
                 // Registered after the spawn so the handle can be kept; the future cannot have
@@ -823,6 +843,7 @@ impl BlocklistAIActionExecutor {
                         action: action_clone,
                         conversation_id,
                         execution: Some(execution),
+                        cancel_pending: None,
                     },
                 );
                 TryExecuteResult::ExecutedAsync
@@ -874,6 +895,7 @@ impl BlocklistAIActionExecutor {
                 action,
                 conversation_id,
                 execution,
+                cancel_pending: None,
             },
         );
     }
@@ -887,6 +909,23 @@ impl BlocklistAIActionExecutor {
         // A viewer should not be able to cancel an action.
         if self.is_shared_session_viewer() {
             return;
+        }
+        if let Some(running) = self.async_executing_actions.get_mut(action_id) {
+            if running.is_file_edit_save_in_flight() {
+                // The write may already be landing and cannot be recalled, so reporting
+                // Cancelled could be a lie. Wait (bounded) for the real outcome instead.
+                if running.cancel_pending.is_none() {
+                    running.cancel_pending = Some(reason);
+                    let action_id = action_id.clone();
+                    ctx.spawn(
+                        async {
+                            let _ = warpui::r#async::Timer::after(FILE_EDIT_CANCEL_GRACE).await;
+                        },
+                        move |me, _, ctx| me.end_unfinished_file_edit(&action_id, ctx),
+                    );
+                }
+                return;
+            }
         }
         if let Some(running) = self.async_executing_actions.remove(action_id) {
             if running.is_shell_command_action() {
@@ -915,6 +954,35 @@ impl BlocklistAIActionExecutor {
                 cancellation_reason: reason,
             });
         }
+    }
+
+    /// Ends a file-edit action whose save did not report back within [`FILE_EDIT_CANCEL_GRACE`]
+    /// of a Stop, with a result that says the outcome is unknown instead of claiming Cancelled.
+    fn end_unfinished_file_edit(
+        &mut self,
+        action_id: &AIAgentActionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(running) = self.async_executing_actions.remove(action_id) else {
+            // The real result arrived in time.
+            return;
+        };
+        if let Some(execution) = &running.execution {
+            execution.abort();
+        }
+        ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
+            result: Arc::new(AIAgentActionResult {
+                id: running.action.id.clone(),
+                task_id: running.action.task_id,
+                result: AIAgentActionResultType::RequestFileEdits(
+                    RequestFileEditsResult::DiffApplicationFailed {
+                        error: FILE_EDIT_STOPPED_MID_SAVE.to_owned(),
+                    },
+                ),
+            }),
+            conversation_id: running.conversation_id,
+            cancellation_reason: running.cancel_pending.flatten(),
+        });
     }
 
     /// Drops executor-held per-action state now that the action has reached a
@@ -1506,6 +1574,28 @@ async fn read_file_as_binary(file_path: &std::path::Path) -> Result<Vec<u8>, Fil
     }
 
     async_fs::read(file_path).await.map_err(FileLoadError::from)
+}
+
+/// Expands a leading `~` in a model-supplied path against the home of the host the session's
+/// shell runs on. A local session is returned unchanged (the ordinary local expansion happens
+/// later); a remote one must not expand against the LOCAL home (#1278). A remote session whose
+/// home is unknown is also returned unchanged.
+pub(super) fn expand_session_tilde(
+    active_session: &ActiveSession,
+    path: &str,
+    ctx: &AppContext,
+) -> String {
+    let is_remote = matches!(
+        active_session.session_type(ctx),
+        Some(crate::terminal::model::session::SessionType::WarpifiedRemote { .. })
+    );
+    if !is_remote {
+        return path.to_owned();
+    }
+    let home = active_session
+        .session(ctx)
+        .and_then(|session| session.home_dir().map(str::to_owned));
+    crate::ai::paths::expand_tilde_against(path, home.as_deref())
 }
 
 #[cfg(all(test, feature = "local_fs"))]

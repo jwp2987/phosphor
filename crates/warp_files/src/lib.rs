@@ -38,6 +38,7 @@ use warpui::ModelHandle;
 use warpui::{r#async::SpawnedFutureHandle, AppContext, Entity, ModelContext, SingletonEntity};
 use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
 
+pub mod atomic_write;
 pub mod text_file_reader;
 pub use text_file_reader::{TextFileReadResult, TextFileSegment};
 
@@ -1198,12 +1199,12 @@ impl FileModel {
                                 path: file_path,
                             });
                         }
-                        async_fs::write(&file_path, content).await.map_err(|err| {
-                            FileSaveError::IOError {
+                        atomic_write::write_atomic(&file_path, content.as_bytes())
+                            .await
+                            .map_err(|err| FileSaveError::IOError {
                                 error: err,
                                 path: file_path,
-                            }
-                        })
+                            })
                     },
                     move |me, write_result: Result<(), FileSaveError>, ctx| {
                         me.report_save_outcome(file_id, version, write_result, ctx);
@@ -1365,12 +1366,12 @@ impl FileModel {
                             return Err(FileSaveError::Other(message));
                         }
 
-                        async_fs::write(&file_path, content).await.map_err(|err| {
-                            FileSaveError::IOError {
+                        atomic_write::write_atomic(&file_path, content.as_bytes())
+                            .await
+                            .map_err(|err| FileSaveError::IOError {
                                 error: err,
                                 path: file_path,
-                            }
-                        })
+                            })
                     },
                     move |me, write_result: Result<(), FileSaveError>, ctx| {
                         me.report_save_outcome(file_id, version, write_result, ctx);
@@ -1450,12 +1451,12 @@ impl FileModel {
                 }
 
                 // Write the updated contents to the old path first.
-                async_fs::write(&file_path, content).await.map_err(|err| {
-                    FileSaveError::IOError {
+                atomic_write::write_atomic(&file_path, content.as_bytes())
+                    .await
+                    .map_err(|err| FileSaveError::IOError {
                         error: err,
                         path: file_path.clone(),
-                    }
-                })?;
+                    })?;
 
                 // Now rename.
                 async_fs::rename(&file_path, &new_path)
