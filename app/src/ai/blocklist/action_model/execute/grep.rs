@@ -220,7 +220,8 @@ impl GrepExecutor {
             .current_working_directory()
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
-        let absolute_path = host_native_absolute_path(path, &shell, &current_working_directory);
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
+        let absolute_path = host_native_absolute_path(&path, &shell, &current_working_directory);
 
         BlocklistAIPermissions::handle(ctx)
             .as_ref(ctx)
@@ -253,8 +254,9 @@ impl GrepExecutor {
             .as_ref(ctx)
             .current_working_directory()
             .cloned();
+        let expanded_path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
         let absolute_path = shell_native_absolute_path(
-            path,
+            &expanded_path,
             shell_launch_data.as_ref(),
             current_working_directory.as_ref(),
         );
@@ -458,6 +460,10 @@ async fn run_ripgrep(queries: &[String], absolute_path: String) -> Result<GrepRe
                         line_number: m.line_number as usize,
                     });
             }
+            let mut files_map: Vec<_> = files_map.into_iter().collect();
+            // A HashMap's order changes from run to run; a stable order keeps results (and the
+            // model's prompt cache) reproducible.
+            files_map.sort_by(|(a, _), (b, _)| a.cmp(b));
             let matched_files: Vec<GrepFileMatch> = files_map
                 .into_iter()
                 .map(|(file_path, matched_lines)| GrepFileMatch {
@@ -479,6 +485,17 @@ enum GrepCommandOutcome {
     Matches(String),
 }
 
+/// The size a remote `RunCommand` reply is cut to (`MAX_MESSAGE_SIZE - 1024`, see
+/// `server_model::handle_run_command`).
+const REMOTE_OUTPUT_CAP_BYTES: usize = remote_server::protocol::MAX_MESSAGE_SIZE - 1024;
+
+const REMOTE_OUTPUT_CUT_MESSAGE: &str = "The grep output reached the remote connection's size limit and was cut off, so the results would be incomplete. Narrow the query or the search path and try again.";
+
+/// Whether `len` bytes of remote command output is at the point where the host truncated it.
+fn remote_output_was_cut(len: usize) -> bool {
+    len >= REMOTE_OUTPUT_CAP_BYTES - 1024
+}
+
 async fn execute_grep_command(
     command: &str,
     session: &Session,
@@ -493,6 +510,14 @@ async fn execute_grep_command(
         )
         .await
         .map_err(|e| GrepError::new(e.to_string()).with_command(command.to_string()))?;
+
+    // A remote host's RunCommand reply is cut at the wire limit with no marker, so a result
+    // that long ends mid-record and would be reported as the complete answer (#1278).
+    if !session.is_local() && remote_output_was_cut(command_output.output().len()) {
+        return Err(
+            GrepError::new(REMOTE_OUTPUT_CUT_MESSAGE.to_string()).with_command(command.to_string())
+        );
+    }
 
     if command_output.success() {
         Ok(GrepCommandOutcome::Matches(

@@ -692,3 +692,13 @@ fn parse_grep_content_scan_output_returns_empty_for_empty_output() {
         Vec::<GrepFileMatch>::new()
     );
 }
+
+/// A remote reply cut at the wire limit ended mid-record and was reported as the whole answer
+/// (#1278). Output at the cut point is recognised; ordinary output is not.
+#[test]
+fn remote_output_at_the_wire_limit_is_recognised_as_cut() {
+    assert!(remote_output_was_cut(REMOTE_OUTPUT_CAP_BYTES));
+    assert!(remote_output_was_cut(REMOTE_OUTPUT_CAP_BYTES - 1));
+    assert!(!remote_output_was_cut(0));
+    assert!(!remote_output_was_cut(10 * 1024 * 1024));
+}

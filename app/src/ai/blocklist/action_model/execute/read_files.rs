@@ -66,7 +66,11 @@ impl ReadFilesExecutor {
                     .iter()
                     .map(|file| {
                         PathBuf::from(host_native_absolute_path(
-                            &file.name,
+                            &super::expand_session_tilde(
+                                self.active_session.as_ref(ctx),
+                                &file.name,
+                                ctx,
+                            ),
                             &shell,
                             &current_working_directory,
                         ))
@@ -110,7 +114,19 @@ impl ReadFilesExecutor {
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
 
-        let locations = locations.clone();
+        // On a remote session `~` is the remote user's home, not ours (#1278).
+        let locations: Vec<_> = locations
+            .iter()
+            .cloned()
+            .map(|mut location| {
+                location.name = super::expand_session_tilde(
+                    self.active_session.as_ref(ctx),
+                    &location.name,
+                    ctx,
+                );
+                location
+            })
+            .collect();
 
         // Check if this is a remote session with a connected host.
         let session_type = self.active_session.as_ref(ctx).session_type(ctx);

@@ -368,3 +368,28 @@ fn test_shell_native_wsl_paths() {
         "/home/user/file.txt"
     );
 }
+
+#[test]
+fn expand_tilde_against_uses_the_given_home_not_the_local_one() {
+    assert_eq!(
+        expand_tilde_against("~/proj/a.rs", Some("/home/remote")),
+        "/home/remote/proj/a.rs"
+    );
+    assert_eq!(
+        expand_tilde_against("~", Some("/home/remote")),
+        "/home/remote"
+    );
+    assert_eq!(
+        expand_tilde_against("~/a", Some("/home/remote/")),
+        "/home/remote/a"
+    );
+}
+
+#[test]
+fn expand_tilde_against_leaves_everything_else_alone() {
+    assert_eq!(expand_tilde_against("/etc/hosts", Some("/h")), "/etc/hosts");
+    assert_eq!(expand_tilde_against("rel/x", Some("/h")), "rel/x");
+    assert_eq!(expand_tilde_against("~bob/x", Some("/h")), "~bob/x");
+    assert_eq!(expand_tilde_against("~/x", None), "~/x");
+    assert_eq!(expand_tilde_against("~/x", Some("")), "~/x");
+}

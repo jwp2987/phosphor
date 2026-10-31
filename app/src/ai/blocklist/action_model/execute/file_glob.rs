@@ -82,8 +82,8 @@ impl FileGlobExecutor {
             .current_working_directory()
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
-        let absolute_path =
-            host_native_absolute_path(path.as_str(), &shell, &current_working_directory);
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
+        let absolute_path = host_native_absolute_path(&path, &shell, &current_working_directory);
 
         BlocklistAIPermissions::as_ref(ctx)
             .can_read_files_with_conversation(
@@ -123,6 +123,7 @@ impl FileGlobExecutor {
             .as_ref(ctx)
             .current_working_directory()
             .cloned();
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
         let absolute_path = shell_native_absolute_path(
             path.as_str(),
             shell_launch_data.as_ref(),

@@ -52,6 +52,12 @@ fn grep_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     ))
 }
 
+/// Most matching files a grep result lists, and most line numbers it lists per file. Past
+/// these the result says it was cut (see [`grep_result_to_json`]) rather than relying on the
+/// generic character-level cap, which slices mid-record.
+const GREP_FILE_LIMIT: usize = 200;
+const GREP_LINES_PER_FILE_LIMIT: usize = 100;
+
 fn grep_result_to_json(result: &api::message::tool_call_result::Result) -> Option<Value> {
     use api::grep_result::Result as GR;
     use api::message::tool_call_result::Result as R;
@@ -61,17 +67,42 @@ fn grep_result_to_json(result: &api::message::tool_call_result::Result) -> Optio
     };
     let value = match &r.result {
         Some(GR::Success(s)) => {
-            let files: Vec<Value> = s
-                .matched_files
+            let total_files = s.matched_files.len();
+            // Backends return files in whatever order they found them (a HashMap, or the
+            // search's own); sorted, the same search gives the same answer every time.
+            let mut matched: Vec<&_> = s.matched_files.iter().collect();
+            matched.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+            let mut lines_cut = 0usize;
+            let files: Vec<Value> = matched
                 .iter()
+                .take(GREP_FILE_LIMIT)
                 .map(|f| {
-                    json!({
-                        "path": f.file_path,
-                        "lines": f.matched_lines.iter().map(|l| l.line_number).collect::<Vec<_>>(),
-                    })
+                    let mut lines: Vec<_> = f.matched_lines.iter().map(|l| l.line_number).collect();
+                    lines.sort_unstable();
+                    let mut entry = json!({ "path": f.file_path });
+                    if lines.len() > GREP_LINES_PER_FILE_LIMIT {
+                        lines_cut += lines.len() - GREP_LINES_PER_FILE_LIMIT;
+                        entry["total_lines"] = json!(lines.len());
+                        lines.truncate(GREP_LINES_PER_FILE_LIMIT);
+                    }
+                    entry["lines"] = json!(lines);
+                    entry
                 })
                 .collect();
-            json!({ "status": "ok", "files": files })
+            let mut value = json!({ "status": "ok", "files": files });
+            if total_files > files.len() || lines_cut > 0 {
+                // Never present a shortened result as the whole answer: the model would
+                // conclude the missing matches do not exist.
+                value["truncated"] = json!(true);
+                value["total_files"] = json!(total_files);
+                value["note"] = json!(format!(
+                    "Results were cut: showing {} of {total_files} matching files, at most \
+                     {GREP_LINES_PER_FILE_LIMIT} lines each (files sorted by path). Narrow \
+                     `queries` or `path` and search again for the rest.",
+                    files.len()
+                ));
+            }
+            value
         }
         Some(GR::Error(e)) => json!({ "status": "error", "message": e.message }),
         None => json!({ "status": "cancelled" }),
@@ -339,5 +370,74 @@ mod glob_result_tests {
             panic!("expected FileGlobV2");
         };
         assert_eq!(glob.max_matches, GLOB_RESULT_LIMIT as i32);
+    }
+}
+
+#[cfg(test)]
+mod grep_result_tests {
+    use super::*;
+
+    fn file(path: &str, lines: &[u32]) -> api::grep_result::success::GrepFileMatch {
+        api::grep_result::success::GrepFileMatch {
+            file_path: path.to_owned(),
+            matched_lines: lines
+                .iter()
+                .map(
+                    |&line_number| api::grep_result::success::grep_file_match::GrepLineMatch {
+                        line_number,
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    fn result(
+        files: Vec<api::grep_result::success::GrepFileMatch>,
+    ) -> api::message::tool_call_result::Result {
+        api::message::tool_call_result::Result::Grep(api::GrepResult {
+            result: Some(api::grep_result::Result::Success(
+                api::grep_result::Success {
+                    matched_files: files,
+                },
+            )),
+        })
+    }
+
+    /// Old code emitted files in backend order (a HashMap's, for local ripgrep).
+    #[test]
+    fn files_and_lines_come_out_sorted() {
+        let value = grep_result_to_json(&result(vec![
+            file("/r/b.rs", &[9, 2]),
+            file("/r/a.rs", &[5]),
+        ]))
+        .expect("grep result");
+        assert_eq!(value["files"][0]["path"], "/r/a.rs");
+        assert_eq!(value["files"][1]["path"], "/r/b.rs");
+        assert_eq!(value["files"][1]["lines"], json!([2, 9]));
+        assert!(value.get("truncated").is_none());
+    }
+
+    #[test]
+    fn too_many_files_are_capped_and_the_result_says_so() {
+        let files = (0..GREP_FILE_LIMIT + 7)
+            .map(|i| file(&format!("/r/f{i:05}.rs"), &[1]))
+            .collect();
+        let value = grep_result_to_json(&result(files)).expect("grep result");
+        assert_eq!(value["files"].as_array().unwrap().len(), GREP_FILE_LIMIT);
+        assert_eq!(value["truncated"], json!(true));
+        assert_eq!(value["total_files"], json!(GREP_FILE_LIMIT + 7));
+    }
+
+    #[test]
+    fn too_many_lines_in_one_file_are_capped_and_the_result_says_so() {
+        let lines: Vec<u32> = (1..=(GREP_LINES_PER_FILE_LIMIT as u32 + 5)).collect();
+        let value =
+            grep_result_to_json(&result(vec![file("/r/a.rs", &lines)])).expect("grep result");
+        assert_eq!(
+            value["files"][0]["lines"].as_array().unwrap().len(),
+            GREP_LINES_PER_FILE_LIMIT
+        );
+        assert_eq!(value["files"][0]["total_lines"], json!(lines.len()));
+        assert_eq!(value["truncated"], json!(true));
     }
 }

@@ -4777,6 +4777,36 @@ fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<T
     calls
 }
 
+/// Gives every call in one reply a distinct `call_id`, in order. Providers that omit ids make
+/// genai assign `call_{index}`, and a provider can repeat an id outright; accumulating by id
+/// would overwrite the first call with the second and the model would never get its result
+/// (#1278). A repeat becomes `{id}#2`, `{id}#3`, ... (re-checked, so it cannot collide with an
+/// id the reply already used). The first use of an id is left untouched.
+fn unique_call_ids(calls: impl IntoIterator<Item = ToolCall>) -> Vec<ToolCall> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique = Vec::new();
+    for mut call in calls {
+        if !seen.insert(call.call_id.clone()) {
+            let base = call.call_id.clone();
+            let mut n = 2usize;
+            let renamed = loop {
+                let candidate = format!("{base}#{n}");
+                if !seen.contains(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            };
+            log::warn!(
+                "[byop] duplicate tool call id {base:?} in one reply; renamed to {renamed:?}"
+            );
+            seen.insert(renamed.clone());
+            call.call_id = renamed;
+        }
+        unique.push(call);
+    }
+    unique
+}
+
 /// Test-only: runs [`tool_calls_to_dispatch`] on run_shell_command calls with `call_ids`, as
 /// `generate_byop_output` does at the end of a stream, and returns how many were dispatched.
 #[cfg(test)]
@@ -7656,11 +7686,11 @@ pub async fn generate_byop_output(
                             }
                         }
                         let mut captured_order: Vec<String> = Vec::new();
-                        for call in content.tool_calls() {
+                        for call in unique_call_ids(content.tool_calls().into_iter().cloned()) {
                             if !captured_order.contains(&call.call_id) {
                                 captured_order.push(call.call_id.clone());
                             }
-                            tool_bufs.insert(call.call_id.clone(), call.clone());
+                            tool_bufs.insert(call.call_id.clone(), call);
                         }
                         if !captured_order.is_empty() {
                             for call_id in &tool_order {
@@ -17775,5 +17805,43 @@ mod request_overhead_tests {
             !window[..scan_at].contains("let diag_body_json = serde_json::to_string"),
             "the unconditional dump is back"
         );
+    }
+}
+
+#[cfg(test)]
+mod duplicate_call_id_tests {
+    use super::*;
+
+    fn call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            call_id: id.to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            fn_arguments: serde_json::json!({ "command": command }),
+            thought_signatures: None,
+        }
+    }
+
+    /// Old code keyed a `HashMap` by call id, so the second call replaced the first.
+    #[test]
+    fn two_calls_with_one_id_both_survive_with_distinct_ids() {
+        let out = unique_call_ids([call("call_0", "ls"), call("call_0", "pwd")]);
+        let ids: Vec<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["call_0", "call_0#2"]);
+        assert_eq!(out[0].fn_arguments["command"], "ls");
+        assert_eq!(out[1].fn_arguments["command"], "pwd");
+    }
+
+    #[test]
+    fn distinct_ids_are_untouched_and_order_is_kept() {
+        let out = unique_call_ids([call("b", "1"), call("a", "2")]);
+        let ids: Vec<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["b", "a"]);
+    }
+
+    #[test]
+    fn a_renamed_id_does_not_collide_with_an_id_the_reply_already_used() {
+        let out = unique_call_ids([call("x", "1"), call("x#2", "2"), call("x", "3")]);
+        let ids: HashSet<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
     }
 }

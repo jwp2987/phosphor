@@ -120,6 +120,27 @@ pub fn host_native_absolute_path(
     }
 }
 
+/// Expands a leading `~` or `~/` in `file_path` against `home`, the home directory of the host
+/// the shell runs on.
+///
+/// [`shell_native_absolute_path`] and [`host_native_absolute_path`] expand `~` against the
+/// LOCAL user's home, which is right for a local shell and wrong for a remote session: `~/x`
+/// on a remote host is not `/home/<local user>/x` (#1278). Callers on a remote session expand
+/// with the session's own home first. Paths without a leading `~`, other users' homes
+/// (`~bob`), and an unknown `home` are returned unchanged.
+pub fn expand_tilde_against(file_path: &str, home: Option<&str>) -> String {
+    let Some(home) = home.filter(|home| !home.is_empty()) else {
+        return file_path.to_owned();
+    };
+    if file_path == "~" {
+        return home.to_owned();
+    }
+    match file_path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
+        None => file_path.to_owned(),
+    }
+}
+
 #[cfg(test)]
 #[path = "paths_tests.rs"]
 mod tests;
