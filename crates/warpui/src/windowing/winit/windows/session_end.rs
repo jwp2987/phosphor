@@ -15,7 +15,7 @@
 //! `WM_QUERYENDSESSION`/`WM_ENDSESSION` before winit's own window procedure
 //! ever sees them.
 //!
-//! # Why the callback stays minimal (the option chosen, and why)
+//! # What the callback does (the options considered, and why)
 //!
 //! `WM_ENDSESSION` is *sent* synchronously on the same thread that pumps
 //! winit's event loop, nested inside whatever `GetMessage`/`DispatchMessage`
@@ -45,13 +45,22 @@
 //!     out to a `'static` the subclass callback can reach, which nothing
 //!     today does and which would have to be invented and reasoned about
 //!     without a Windows build to test the borrow hazards it creates.
-//! (c) **Chosen.** Keep the callback itself to: answer `WM_QUERYENDSESSION` `TRUE` at once,
-//!     and on the first `WM_ENDSESSION(TRUE)` register a shutdown block reason, arm
-//!     [`SHUTDOWN_DEADLINE`]'s watchdog, post the *same* [`CustomEvent::TerminateFromSignal`] the
-//!     Unix `SIGTERM`/`SIGHUP` path already posts, and return. The graceful shutdown then runs
-//!     on its normal, already-tested turn through the event loop (`LoopExiting` ->
-//!     `app_will_terminate`) instead of inside this callback, so this module never touches
-//!     `AppContext`/`EventLoop` state and never nests a message pump.
+//! (c) Keep the callback itself to: answer `WM_QUERYENDSESSION` `TRUE` at once, and on the first
+//!     `WM_ENDSESSION(TRUE)` register a shutdown block reason, arm [`SHUTDOWN_DEADLINE`]'s
+//!     watchdog, post the *same* [`CustomEvent::TerminateFromSignal`] the Unix `SIGTERM`/`SIGHUP`
+//!     path already posts, and return. Superseded (jwp2987/phosphor#1075): Windows may end the
+//!     session as soon as every window has returned from `WM_ENDSESSION`, so the graceful
+//!     shutdown, which then ran on a later turn of the loop, raced the OS killing the process.
+//! (d) **Chosen.** (c), but the callback does not return until the shutdown is over:
+//!     [`run_shutdown_before_returning`] pumps *only* winit's wake-up message (a `PeekMessageW`
+//!     filter, so no input, paint or timer message is dispatched re-entrantly), which delivers
+//!     the posted `TerminateFromSignal` to the main loop's handler. That handler checks
+//!     [`take_inline_shutdown_request`] and runs the exit sequence (`app_will_terminate`) itself
+//!     rather than waiting for `LoopExiting`, which cannot come until this callback returns, and
+//!     the exit sequence ends the process. Winit hands an event to the app only when its handler
+//!     is not already running (otherwise it buffers it), so the nested dispatch cannot re-enter a
+//!     handler that is mid-borrow; in that case the wait ends at the deadline instead. Nothing is
+//!     destroyed at `WM_QUERYENDSESSION`, which is cancellable.
 //!
 //! When the block reason is registered, and why only then, is
 //! [`termination_signals::session_end_step`]'s doc (jwp2987/phosphor#1072): it lives from
@@ -77,30 +86,39 @@
 //! - That a multi-window session end (every window gets `WM_ENDSESSION`) in
 //!   fact posts exactly one [`CustomEvent::TerminateFromSignal`], via the
 //!   process-wide [`SessionEndState`] below -- this was reasoned through, not observed.
-//! - That Windows lets `app_will_terminate` finish after this callback has returned from
-//!   `WM_ENDSESSION`: the docs say the session "can end any time after all applications have
-//!   returned from processing this message". The `graceful shutdown completed in` log line
-//!   (or its absence) answers this (jwp2987/phosphor#1075).
+//! - That the nested wake-up dispatch in [`run_shutdown_before_returning`] really reaches the
+//!   main loop's `TerminateFromSignal` handler from inside `WM_ENDSESSION`, and that
+//!   `app_will_terminate` finishes (`shutdown finished`/`graceful shutdown completed in` log
+//!   lines; the `hard_exit` status 133/134 ends the process from inside the callback)
+//!   (jwp2987/phosphor#1075).
+//! - That a cancelled restart/sign-out (`WM_ENDSESSION(FALSE)`) leaves Phosphor running with
+//!   its shell panes kept open (`crate::platform::session_end_gate`, jwp2987/phosphor#1103).
 //! - That the deadline watchdog's [`hard_exit`][termination_signals::hard_exit]
 //!   actually fires and is not itself blocked by whatever state Windows is in
 //!   during a real session end.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use instant::Instant;
 use parking_lot::Mutex;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, TRUE, WPARAM};
 use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockReasonDestroy};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::{WM_ENDSESSION, WM_QUERYENDSESSION};
-use windows::core::HSTRING;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, RegisterWindowMessageA, WM_ENDSESSION,
+    WM_QUERYENDSESSION,
+};
+use windows::core::{HSTRING, s};
 use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window as WinitWindow;
 
+use crate::platform::session_end_gate::{self, PumpOutcome, pump_until};
 use crate::platform::termination_signals::{
-    self, SESSION_END_LOG_PREFIX, SessionEndEffect, SessionEndInput, SessionEndState,
-    describe_end_session_flags, session_end_step, spawn_deadline_watchdog,
+    self, SESSION_END_LOG_PREFIX, SHUTDOWN_DEADLINE, SessionEndEffect, SessionEndInput,
+    SessionEndState, describe_end_session_flags, session_end_step, spawn_deadline_watchdog,
 };
 use crate::windowing::winit::app::CustomEvent;
 
@@ -125,6 +143,18 @@ static RUNTIME: Mutex<Runtime> = Mutex::new(Runtime {
     block_reason_hwnd: None,
     shutdown_started: None,
 });
+
+/// Set when `WM_ENDSESSION(TRUE)` posts its terminate request and consumed by the main loop's
+/// `TerminateFromSignal` handler ([`take_inline_shutdown_request`]): that handler then runs the
+/// exit sequence (`app_will_terminate`) right there instead of waiting for winit's `LoopExiting`,
+/// which only comes once the `WM_ENDSESSION` callback has returned (jwp2987/phosphor#1075).
+static INLINE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the `TerminateFromSignal` being handled came from `WM_ENDSESSION(TRUE)` and so must
+/// run the exit sequence inline. Main thread.
+pub(crate) fn take_inline_shutdown_request() -> bool {
+    INLINE_SHUTDOWN_REQUESTED.swap(false, Ordering::AcqRel)
+}
 
 /// Posts a terminate request to the main loop -- set once, from the first window this process
 /// opens. There is exactly one event loop regardless of how many windows exist.
@@ -180,13 +210,13 @@ pub(crate) fn notify_shutdown_complete() {
              was in progress"
         ),
     }
-    drive(SessionEndInput::ShutdownCompleted, None);
+    let _ = drive(SessionEndInput::ShutdownCompleted, None);
     log::logger().flush();
 }
 
 /// The watchdog's exit path; runs on the watchdog thread.
 fn on_deadline_elapsed(exit_code: i32) {
-    drive(SessionEndInput::DeadlineElapsed, None);
+    let _ = drive(SessionEndInput::DeadlineElapsed, None);
     // `session_end_step` always asks for a hard exit once the watchdog was armed; this only
     // guards a state the machine says is unreachable.
     log::error!(
@@ -198,8 +228,9 @@ fn on_deadline_elapsed(exit_code: i32) {
 /// Feeds `input` (and whatever outcomes its effects produce) through
 /// [`session_end_step`], performing each effect. `hwnd` is the window whose message is being
 /// handled, if any. Returns the reply for that message.
-fn drive(input: SessionEndInput, hwnd: Option<HWND>) -> LRESULT {
+fn drive(input: SessionEndInput, hwnd: Option<HWND>) -> (LRESULT, bool) {
     let mut reply = LRESULT(0);
+    let mut shutdown_posted = false;
     let mut next_input = Some(input);
     while let Some(input) = next_input.take() {
         let effects = {
@@ -246,15 +277,19 @@ fn drive(input: SessionEndInput, hwnd: Option<HWND>) -> LRESULT {
                 },
                 SessionEndEffect::RequestTerminate { signal } => {
                     RUNTIME.lock().shutdown_started = Some(Instant::now());
+                    // Set before posting so the main loop cannot see the request without it.
+                    INLINE_SHUTDOWN_REQUESTED.store(true, Ordering::Release);
                     let delivered = REQUEST_TERMINATE
                         .get()
                         .is_some_and(|request_terminate| request_terminate(signal));
                     if delivered {
+                        shutdown_posted = true;
                         log::info!(
                             "{SESSION_END_LOG_PREFIX} graceful shutdown begun \
                              (TerminateFromSignal({signal}) posted)"
                         );
                     } else {
+                        INLINE_SHUTDOWN_REQUESTED.store(false, Ordering::Release);
                         log::warn!(
                             "{SESSION_END_LOG_PREFIX} main loop is gone; exiting without a \
                              graceful shutdown"
@@ -269,7 +304,7 @@ fn drive(input: SessionEndInput, hwnd: Option<HWND>) -> LRESULT {
             }
         }
     }
-    reply
+    (reply, shutdown_posted)
 }
 
 fn create_block_reason(hwnd: Option<HWND>) {
@@ -328,6 +363,10 @@ unsafe extern "system" fn session_end_subclass_proc(
             "{SESSION_END_LOG_PREFIX} WM_QUERYENDSESSION received (lParam {})",
             describe_end_session_flags(flags)
         );
+        // Answer at once and destroy nothing: the query is cancellable (another app, or the
+        // user, can still veto the session end). The gate only keeps panes whose shells
+        // Windows kills from closing meanwhile (jwp2987/phosphor#1103).
+        session_end_gate::note_query();
         SessionEndInput::QueryEndSession { lparam: flags }
     } else if msg == WM_ENDSESSION {
         let session_ending = wparam.0 != 0;
@@ -336,6 +375,7 @@ unsafe extern "system" fn session_end_subclass_proc(
             if session_ending { "TRUE" } else { "FALSE" },
             describe_end_session_flags(flags)
         );
+        session_end_gate::note_end_session(session_ending);
         SessionEndInput::EndSession {
             session_ending,
             lparam: flags,
@@ -346,7 +386,67 @@ unsafe extern "system" fn session_end_subclass_proc(
         // `DefSubclassProc`'s contract requires.
         return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
     };
-    let reply = drive(input, Some(hwnd));
+    let (reply, shutdown_posted) = drive(input, Some(hwnd));
     log::logger().flush();
+    if shutdown_posted {
+        // Windows may end the session as soon as every window has returned from
+        // `WM_ENDSESSION(TRUE)`, so the save must finish before this returns
+        // (jwp2987/phosphor#1075). In practice it never does return: the exit sequence ends
+        // the process.
+        run_shutdown_before_returning();
+    }
     reply
+}
+
+/// Delivers the posted `TerminateFromSignal` to the main loop from inside the
+/// `WM_ENDSESSION` callback and waits (at most [`SHUTDOWN_DEADLINE`]) for the shutdown it runs.
+///
+/// Only winit's wake-up message is pumped (`PeekMessageW` filtered to it), not the whole queue,
+/// so no other input/paint/timer message is dispatched re-entrantly. Dispatching it makes winit
+/// call the app's event handler for the user event; the handler sees
+/// [`take_inline_shutdown_request`] and runs the exit sequence on the spot. If this callback
+/// was itself reached from inside the event handler, winit buffers that event instead and it
+/// cannot run until we return; the wait then ends at the deadline (the watchdog armed for the
+/// shutdown ends the process at the same time).
+fn run_shutdown_before_returning() {
+    // SAFETY: `RegisterWindowMessageA` is given a NUL-terminated literal. It returns the same id
+    // for the same string process-wide, so this is the id winit's `EventLoopProxy::send_event`
+    // posts (`Winit::WakeupMsg`).
+    let wake_message = unsafe { RegisterWindowMessageA(s!("Winit::WakeupMsg")) };
+    if wake_message == 0 {
+        log::warn!(
+            "{SESSION_END_LOG_PREFIX} could not look up winit's wake-up message; returning from \
+             WM_ENDSESSION without waiting for the shutdown"
+        );
+        return;
+    }
+    let started = Instant::now();
+    let outcome = pump_until(
+        SHUTDOWN_DEADLINE,
+        || started.elapsed(),
+        || matches!(RUNTIME.lock().state, SessionEndState::Exiting { .. }),
+        |_remaining| {
+            let mut msg = MSG::default();
+            // SAFETY: `msg` is a valid out-pointer; the filter admits only the wake-up
+            // message, and dispatching it is what the thread's own message loop would do.
+            while unsafe { PeekMessageW(&mut msg, None, wake_message, wake_message, PM_REMOVE) }
+                .as_bool()
+            {
+                unsafe { DispatchMessageW(&msg) };
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        },
+    );
+    match outcome {
+        PumpOutcome::Completed => log::info!(
+            "{SESSION_END_LOG_PREFIX} shutdown finished inside WM_ENDSESSION after {}ms",
+            started.elapsed().as_millis()
+        ),
+        PumpOutcome::TimedOut => log::warn!(
+            "{SESSION_END_LOG_PREFIX} shutdown still running at the {}s deadline; returning from \
+             WM_ENDSESSION",
+            SHUTDOWN_DEADLINE.as_secs()
+        ),
+    }
+    log::logger().flush();
 }
