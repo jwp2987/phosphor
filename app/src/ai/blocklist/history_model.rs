@@ -1772,13 +1772,16 @@ impl BlocklistAIHistoryModel {
             cli_subagent_block_snapshots_json: None,
         };
         let forked_conversation_id = AIConversationId::new();
-        if let Err(e) = sqlite_sender.send(ModelEvent::UpdateMultiAgentConversation {
-            conversation_id: forked_conversation_id.to_string(),
-            updated_tasks: updated_tasks_with_new_ids.clone(),
-            conversation_data: conversation_data.clone(),
-            // A fork is written under a fresh id, so there are no existing rows to prune.
-            task_retention: PersistedTaskRetention::DeleteMissing,
-        }) {
+        if let Err(e) = crate::persistence::send_model_event_nonblocking(
+            &sqlite_sender,
+            ModelEvent::UpdateMultiAgentConversation {
+                conversation_id: forked_conversation_id.to_string(),
+                updated_tasks: updated_tasks_with_new_ids.clone(),
+                conversation_data: conversation_data.clone(),
+                // A fork is written under a fresh id, so there are no existing rows to prune.
+                task_retention: PersistedTaskRetention::DeleteMissing,
+            },
+        ) {
             return Err(anyhow!("Failed to persist forked conversation: {e:?}."));
         }
 
@@ -1975,13 +1978,16 @@ impl BlocklistAIHistoryModel {
         };
 
         let forked_conversation_id = AIConversationId::new();
-        if let Err(e) = sqlite_sender.send(ModelEvent::UpdateMultiAgentConversation {
-            conversation_id: forked_conversation_id.to_string(),
-            updated_tasks: updated_tasks_with_new_ids.clone(),
-            conversation_data: conversation_data.clone(),
-            // A fork is written under a fresh id, so there are no existing rows to prune.
-            task_retention: PersistedTaskRetention::DeleteMissing,
-        }) {
+        if let Err(e) = crate::persistence::send_model_event_nonblocking(
+            &sqlite_sender,
+            ModelEvent::UpdateMultiAgentConversation {
+                conversation_id: forked_conversation_id.to_string(),
+                updated_tasks: updated_tasks_with_new_ids.clone(),
+                conversation_data: conversation_data.clone(),
+                // A fork is written under a fresh id, so there are no existing rows to prune.
+                task_retention: PersistedTaskRetention::DeleteMissing,
+            },
+        ) {
             return Err(anyhow!(
                 "Failed to persist forked conversation at block: {e:?}."
             ));

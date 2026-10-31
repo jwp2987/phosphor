@@ -1674,10 +1674,13 @@ impl BlocklistAIController {
                 .as_ref()
             {
                 for (block_id, agent_view_visibility) in promoted_blocks {
-                    if let Err(e) = sender.send(ModelEvent::UpdateBlockAgentViewVisibility {
-                        block_id: block_id.to_string(),
-                        agent_view_visibility: agent_view_visibility.into(),
-                    }) {
+                    if let Err(e) = crate::persistence::send_model_event_nonblocking(
+                        sender,
+                        ModelEvent::UpdateBlockAgentViewVisibility {
+                            block_id: block_id.to_string(),
+                            agent_view_visibility: agent_view_visibility.into(),
+                        },
+                    ) {
                         log::error!("Error sending UpdateBlockAgentViewVisibility event: {e:?}");
                     }
                 }
