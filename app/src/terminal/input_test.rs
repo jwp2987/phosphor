@@ -11191,19 +11191,26 @@ fn test_stale_next_command_and_enum_results_are_dropped() {
 fn test_manual_completion_aborts_previous_run_without_completions_while_typing() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // A run only starts (and so only supersedes the previous one) when the session can
+        // answer completions: it needs a session and a working directory.
+        let session_id: SessionId = 1.into();
+        let session_info = SessionInfo::new_for_test().with_id(session_id);
         let terminal = add_window_with_bootstrapped_terminal(
-            &mut app, None, /* history_file_commands */ None,
+            &mut app,
+            None, /* history_file_commands */
+            Some(session_info),
         )
         .await;
         let input = terminal.read(&app, |view, _| view.input().clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/tmp");
 
         input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("cd A", ctx);
             // A previous run is in flight; a new run must supersede it whatever the
             // completions-while-typing setting says.
             let (handle, _registration) = futures::stream::AbortHandle::new_pair();
             input.completions_abort_handle = Some(handle.clone());
-            input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("cd A", ctx);
             input.open_completion_suggestions(CompletionsTrigger::Keybinding, ctx);
             assert!(handle.is_aborted());
         });
