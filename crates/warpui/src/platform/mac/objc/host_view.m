@@ -331,6 +331,9 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.device = metalDevice;
+    // Two drawables (default 3): at most one stale frame can queue ahead of the one carrying the
+    // latest keystroke. Documented range is 2-3.
+    layer.maximumDrawableCount = 2;
     layer.allowsNextDrawableTimeout = NO;
     layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
     layer.needsDisplayOnBoundsChange = YES;
