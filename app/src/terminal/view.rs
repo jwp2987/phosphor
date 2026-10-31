@@ -469,6 +469,7 @@ use crate::terminal::block_list_element::{
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::block_list_viewport::{InputMode, ScrollPosition, ViewportState};
 use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines};
+use crate::terminal::event_listener::Wakeup;
 use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
@@ -534,7 +535,7 @@ use crate::terminal::{block_list_element::BlockListMenuSource, prompt};
 use crate::terminal::{color, History, SizeInfo};
 use crate::terminal::{color::List, model::block::TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES};
 use crate::terminal::{event::AfterBlockCompletedEvent, event::BlockLatencyData, event::BlockType};
-use crate::throttle::throttle;
+use crate::throttle::throttle_with_bypass;
 use crate::util::color::darken;
 use crate::util::links;
 use crate::{send_telemetry_from_ctx, send_telemetry_on_executor, send_telemetry_sync_from_ctx};
@@ -655,6 +656,10 @@ pub const OVERFLOW_BUTTON_OFFSET_X: f32 = -3.;
 pub const MAX_WAKEUPS_PER_SECOND: u64 = 60;
 pub const WAKEUP_THROTTLE_PERIOD: Duration =
     Duration::from_micros(1000 * 1000 / MAX_WAKEUPS_PER_SECOND);
+
+/// Echo of a keystroke may skip the rest of the wakeup throttle period, but only if the previous
+/// wakeup was at least this long ago, so output floods stay at the 60 Hz cadence (#1138).
+pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
@@ -3376,7 +3381,7 @@ impl TerminalView {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         resources: TerminalViewResources,
-        wakeups_rx: Receiver<()>,
+        wakeups_rx: Receiver<Wakeup>,
         model_events_handle: ModelHandle<ModelEventDispatcher>,
         model: Arc<FairMutex<TerminalModel>>,
         sessions: ModelHandle<Sessions>,
@@ -3993,7 +3998,7 @@ impl TerminalView {
         });
 
         let _ = ctx.spawn_stream_local(
-            throttle(WAKEUP_THROTTLE_PERIOD, wakeups_rx),
+            throttle_with_bypass(WAKEUP_THROTTLE_PERIOD, WAKEUP_BYPASS_FLOOR, wakeups_rx),
             Self::handle_terminal_wakeup,
             |_, _| {}, /* on_done */
         );
@@ -11748,7 +11753,7 @@ impl TerminalView {
 
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
-    fn handle_terminal_wakeup(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+    fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
         // If find bar is active, we update the matches for the last/active block or the alt screen.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
             self.find_model.update(ctx, |find_model, ctx| {
@@ -14155,7 +14160,7 @@ impl TerminalView {
         }
         match event {
             ModelEvent::TerminalClear => {
-                self.handle_terminal_wakeup((), ctx);
+                self.handle_terminal_wakeup(Wakeup::Output, ctx);
                 self.update_scroll_position_locking(ScrollPositionUpdate::AfterClear, ctx);
                 ctx.notify();
             }
