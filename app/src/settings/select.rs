@@ -95,6 +95,13 @@ impl SelectionSettings {
         *self.copy_on_select.value()
     }
 
+    /// Whether [`Self::maybe_copy_on_select`] could write anything: the system clipboard
+    /// (`copy_on_select`) or the Linux primary selection. Lets callers skip building a large
+    /// selection string when it would be discarded.
+    pub fn copy_on_select_would_write(&self) -> bool {
+        self.copy_on_select_enabled() || self.linux_selection_clipboard_enabled()
+    }
+
     pub fn right_click_pastes(&self) -> bool {
         *self.right_click_behavior.value() == RightClickBehavior::Paste
     }
