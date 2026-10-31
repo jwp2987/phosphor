@@ -1331,8 +1331,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         }
 
         function warp_ssh_helper() {
-            init_shell_bash=$(init_shell_hook "bash")
-            init_shell_zsh=$(init_shell_hook "zsh")
+            # #1172: the two InitShell hook encodings this used to compute here were never read (six forks
+            # before every ssh); the remote bootstrap builds its own InitShell message.
             # Mint the remote session's ID *here*, on the local (already
             # registered) side, from /dev/urandom -- 64 bits, unguessable. It
             # is handed to the remote shell as $WARP_SESSION_ID and reported to

@@ -841,8 +841,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
     end
 
     function warp_ssh_helper
-        set -l init_shell_zsh (warp_init_shell "zsh")
-        set -l init_shell_bash (warp_init_shell "bash")
+        # #1172: the two InitShell hook encodings computed here were never read (forks before every ssh).
         # Mint the remote session's ID *here*, on the local (already
         # registered) side, from /dev/urandom -- 64 bits, unguessable. It is
         # handed to the remote shell as $WARP_SESSION_ID and reported to the

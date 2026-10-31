@@ -40,6 +40,8 @@ use crate::terminal::event::ExecutedExecutorCommandEvent;
 use crate::terminal::ShellHost;
 use crate::terminal::ShellLaunchData;
 #[cfg(feature = "local_tty")]
+use crate::remote_server::client::RemoteServerClient;
+#[cfg(feature = "local_tty")]
 use command_executor::remote_server_executor::RemoteServerCommandExecutor;
 use parking_lot::{Mutex, RwLock};
 
@@ -205,6 +207,13 @@ impl Sessions {
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(Some(host_id.clone()));
+                        // #1172: the connect landed after the session was initialized (the
+                        // bootstrap no longer waits for it): move it off the ControlMaster.
+                        let client = RemoteServerManager::handle(ctx)
+                            .read(ctx, |mgr, _| mgr.client_for_session(*sid).cloned());
+                        if let Some(client) = client {
+                            session.adopt_remote_server_client(client);
+                        }
                     }
                 }
                 RemoteServerManagerEvent::SessionDisconnected {
@@ -1238,6 +1247,41 @@ impl Session {
         log::info!(
             "Remote-server client lost for ssh session {:?}; \
              command executor fell back to the ControlMaster",
+            self.info.session_id
+        );
+        true
+    }
+
+    /// #1172: the shell bootstrap of a legacy ssh session is written as soon as the remote-server
+    /// binary check passes, overlapping the connect and handshake, so on a slow link the session
+    /// can be initialized (and given the ControlMaster executor) before the connect lands. When it
+    /// does, this swaps the ControlMaster executor for one backed by `client`, as a reconnect
+    /// does. Returns `true` if the executor was replaced; `false` for a non-ssh session or one
+    /// whose executor is not the ControlMaster one (already remote-server backed, tmux, ...).
+    #[cfg(feature = "local_tty")]
+    pub fn adopt_remote_server_client(&self, client: Arc<RemoteServerClient>) -> bool {
+        if !matches!(
+            self.info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes { .. }
+        ) {
+            return false;
+        }
+        let mut executor = self.command_executor.write();
+        if executor
+            .as_ref()
+            .as_any()
+            .downcast_ref::<RemoteCommandExecutor>()
+            .is_none()
+        {
+            return false;
+        }
+        *executor = Arc::new(RemoteServerCommandExecutor::new(
+            self.info.session_id,
+            client,
+        ));
+        log::info!(
+            "Remote-server client connected after session init for ssh session {:?}; \
+             command executor swapped from the ControlMaster",
             self.info.session_id
         );
         true
