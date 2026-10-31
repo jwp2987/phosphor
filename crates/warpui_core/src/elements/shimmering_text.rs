@@ -235,7 +235,10 @@ impl Element for ShimmeringTextElement {
             return;
         };
 
-        ctx.repaint_after(Duration::from_millis(REPAINT_DURATION));
+        // Paint-only: the shimmer position is read from the animation clock in
+        // `build_color_overrides` below, and the laid-out line is cached, so no
+        // layout is needed between ticks.
+        ctx.repaint_after_paint_only(Duration::from_millis(REPAINT_DURATION));
 
         let bounds = RectF::from_points(origin, origin + size);
         let style_overrides = self.build_color_overrides();
