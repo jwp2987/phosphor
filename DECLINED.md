@@ -2551,3 +2551,15 @@ which is rare outside hostile tests. Reverse only together with a rule that stil
 remnants (for example, keep rows below the cursor only when no cursor-up / home happened after
 they were written).
 <!-- markers: keep:finished_block_ends_at_the_cursor_after_a_mid_command_cursor_home -->
+
+## One shared filesystem watcher for DirectoryWatcher and LocalRepoMetadataModel — declined 2026-10-31 (#1268)
+
+Both own a `BulkFilesystemWatcher`, so each repo's ~1,300 directories sit under two inotify
+instances and each raw event wakes two threads. Sharing one instance is not a safe mechanical
+merge: inotify watches are per path, not reference-counted, so when one owner unregisters a root
+(a closed tab, `unwatch_removed_subtree`, symlink-target sync) the other silently loses its
+watch; and the two register the same roots with different `WatchFilter`s (force-included paths,
+per-directory extra watches, symlink targets) where a second registration of a path replaces the
+first. A correct merge needs a reference-counted registry that unions filters per path, and a
+re-check of both consumers' event attribution. Until that is built the cost is one extra inotify
+thread's wakeups, proportional to the raw event rate in watched (non-ignored) directories.
