@@ -11919,3 +11919,127 @@ fn test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell(
         }
     });
 }
+
+/// #1284: in an agent view the live input type is the previous submit's (AI, unlocked) while a
+/// shell line is typed, and the history ghost was gated on it being Shell: after the first few
+/// uses (whenever the guess sat on AI) the ghost never came back. Drives 20 type/accept cycles.
+#[test]
+fn test_history_ghost_is_requested_for_an_unlocked_ai_guess_every_cycle() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app,
+            Some(vec!["echo seedghost_alpha3".to_owned()]),
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        for cycle in 0..20 {
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: false,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("echo seedghost_alp", ctx);
+                input.autosuggestions_abort_handle = None;
+                input.maybe_generate_autosuggestion(ctx);
+                assert!(
+                    input.autosuggestions_abort_handle.is_some(),
+                    "cycle {cycle}: no ghost was requested for an unlocked AI guess"
+                );
+
+                // The accept path: the ghost is taken and the input becomes Shell.
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_type(InputType::Shell, ctx);
+                });
+            });
+        }
+    });
+}
+
+/// #1284: a locked AI input is a prompt, never a shell line: no history ghost.
+#[test]
+fn test_history_ghost_is_not_requested_for_a_locked_ai_input() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app,
+            Some(vec!["echo seedghost_alpha3".to_owned()]),
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true,
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo seedghost_alp", ctx);
+            input.autosuggestions_abort_handle = None;
+            input.maybe_generate_autosuggestion(ctx);
+            assert!(input.autosuggestions_abort_handle.is_none());
+        });
+    });
+}
+
+/// #1284: a verdict that lands after the last key (AI -> Shell) bumps the generation, which drops
+/// a ghost in flight; the flip must ask again or the line is left without one.
+#[test]
+fn test_history_ghost_is_requested_again_when_the_verdict_flips_to_shell() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app,
+            Some(vec!["echo seedghost_alpha3".to_owned()]),
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true,
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo seedghost_alp", ctx);
+            input.autosuggestions_abort_handle = None;
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: false,
+                    },
+                    false,
+                    ctx,
+                );
+            });
+        });
+        // The model's event is delivered once the update above returns.
+        input.read(&app, |input, _| {
+            assert!(input.autosuggestions_abort_handle.is_some());
+        });
+    });
+}
