@@ -221,19 +221,56 @@ impl Drop for TerminalServer {
     }
 }
 
-/// How often the reaper checks whether the terminal server has exited.
+/// Fallback poll interval for the reaper, used only if blocking on the child's exit fails.
 const SERVER_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Blocks until the process `pid` (a child of this process) has exited, without reaping it, or
+/// returns `false` if it cannot block on it (the child is already gone, or the call failed).
+///
+/// `WNOWAIT` leaves the exit status for `Child::try_wait` / `wait`, so whichever of the reaper and
+/// [`TerminalServer`]'s `Drop` runs first still reaps it exactly once.
+fn block_until_child_exits(pid: u32) -> bool {
+    loop {
+        // SAFETY: `siginfo_t` is plain old data for which all-zero is a valid value, and `waitid`
+        // only writes into it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            return true;
+        }
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return false;
+    }
+}
 
 /// Reaps the terminal server child if it dies on its own (e.g. it is killed
 /// externally), so it does not linger as a zombie for the rest of the app's
 /// lifetime. Exits once the server has been reaped or the owning
 /// [`TerminalServer`] has been dropped (#830).
+///
+/// Sleeps in `waitid` until the child exits, so an idle app costs no wakeups from this thread
+/// (it used to poll `try_wait` once a second for the whole session).
 fn spawn_server_reaper_thread(server: std::sync::Weak<Mutex<std::process::Child>>) {
+    let Some(pid) = server.upgrade().map(|server| server.lock().id()) else {
+        return;
+    };
     let _ = std::thread::Builder::new()
         .name("Terminal server reaper".into())
         .spawn(move || {
+            let blocked = block_until_child_exits(pid);
             loop {
-                std::thread::sleep(SERVER_REAP_INTERVAL);
+                if !blocked {
+                    std::thread::sleep(SERVER_REAP_INTERVAL);
+                }
                 let Some(server) = server.upgrade() else {
                     return;
                 };
@@ -243,6 +280,34 @@ fn spawn_server_reaper_thread(server: std::sync::Weak<Mutex<std::process::Child>
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod reaper_tests {
+    use super::*;
+
+    /// The reaper's blocking wait returns once the child exits, and leaves it reapable.
+    #[test]
+    fn blocking_wait_returns_when_the_child_exits_and_leaves_it_reapable() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2"])
+            .spawn()
+            .expect("spawn sh");
+        let started = std::time::Instant::now();
+        assert!(block_until_child_exits(child.id()));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(100));
+        // WNOWAIT: the exit status is still there for the owner to collect.
+        assert!(matches!(child.try_wait(), Ok(Some(_))));
+    }
+
+    /// Once the child has been reaped there is nothing to block on.
+    #[test]
+    fn blocking_wait_gives_up_when_the_child_is_already_reaped() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("wait");
+        assert!(!block_until_child_exits(pid));
+    }
 }
 
 /// A handle for a pty that is owned by a terminal server forked from the
