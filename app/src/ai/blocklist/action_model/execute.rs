@@ -1124,7 +1124,15 @@ pub async fn read_local_file_context(
                     });
                     continue;
                 }
-                Err(e) => return Err(anyhow::anyhow!(e)),
+                // One unreadable path (permission denied, a directory, ...) is that file's
+                // failure, not the batch's: the files already read still go to the model.
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: absolute_file_path.to_string_lossy().to_string(),
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
             };
             let last_modified = metadata.modified().ok();
             let file_size = metadata.len() as usize;
@@ -1145,14 +1153,24 @@ pub async fn read_local_file_context(
             // `TextFileReadResult::NotText` if the text reader trips on invalid
             // UTF-8.
             if !should_read_as_binary(&absolute_file_path).await {
-                match FileModel::read_text_file(
+                let text_read = match FileModel::read_text_file(
                     &absolute_file_path,
                     effective_max,
                     &file.lines,
                     last_modified,
                 )
-                .await?
+                .await
                 {
+                    Ok(text_read) => text_read,
+                    Err(e) => {
+                        result.failed_files.push(ReadFilesFailedFile {
+                            path: path_str,
+                            message: format!("Could not read file: {e}"),
+                        });
+                        continue;
+                    }
+                };
+                match text_read {
                     TextFileReadResult::Segments {
                         segments,
                         bytes_read,
@@ -1178,14 +1196,24 @@ pub async fn read_local_file_context(
             }
 
             // Binary path (either detected as binary, or text reading failed).
-            match read_binary_file_context(
+            let binary_read = match read_binary_file_context(
                 &absolute_file_path,
                 effective_max,
                 file_size,
                 last_modified,
             )
-            .await?
+            .await
             {
+                Ok(binary_read) => binary_read,
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: path_str,
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
+            };
+            match binary_read {
                 BinaryFileReadResult::Context {
                     file_context,
                     bytes_read,
