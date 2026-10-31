@@ -605,6 +605,31 @@ mod late_commands {
     }
 
     #[test]
+    fn needs_probe_is_a_pure_cache_check_that_the_background_probe_satisfies() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            install(dir.path(), "zorkle", 0o755);
+            let session = session_with_path(dir.path());
+            // Asking (the Enter path) does not stat, record a miss, or find the program ...
+            assert!(session.command_word_needs_probe("zorkle"));
+            assert!(session.command_word_needs_probe("zorkle"));
+            assert!(!session.top_level_commands().any(|c| c == "zorkle"));
+            // ... known and non-candidate words never need one ...
+            assert!(!session.command_word_needs_probe("git"));
+            assert!(!session.command_word_needs_probe("./zorkle"));
+            // ... and the probe (run off-thread by Enter) finds it and settles the question.
+            session.probe_command_word("zorkle");
+            assert!(!session.command_word_needs_probe("zorkle"));
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
+
+            // A miss is cached, so the same unknown word is not probed again.
+            assert!(session.command_word_needs_probe("nope"));
+            session.probe_command_word("nope");
+            assert!(!session.command_word_needs_probe("nope"));
+        });
+    }
+
+    #[test]
     fn only_executable_files_named_by_a_bare_word_are_found() {
         App::test((), |_app| async move {
             let dir = tempfile::tempdir().unwrap();

@@ -98,3 +98,18 @@ fn serialized_ai_metadata_preserves_explicit_visible_block() {
 
     assert!(!agent_metadata.should_hide_block());
 }
+
+#[test]
+fn without_output_keeps_metadata_and_drops_only_the_output() {
+    let mut block = SerializedBlock::new_for_test(b"echo hi".to_vec(), b"a lot of output".to_vec());
+    block.pwd = Some("/tmp".to_owned());
+    let lite = block.without_output();
+    assert!(lite.stylized_output.is_empty());
+    assert_eq!(lite.stylized_command, block.stylized_command);
+    assert_eq!(lite.pwd, block.pwd);
+    assert_eq!(lite.exit_code, block.exit_code);
+    assert_eq!(lite.start_ts, block.start_ts);
+    assert_eq!(lite.id, block.id);
+    // The original is untouched.
+    assert_eq!(block.stylized_output, b"a lot of output");
+}

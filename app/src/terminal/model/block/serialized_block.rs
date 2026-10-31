@@ -278,19 +278,38 @@ impl SerializedBlock {
     }
 }
 
-/// We should only be serializing a block that has finished.
-impl From<&Block> for SerializedBlock {
-    fn from(block: &Block) -> Self {
+impl SerializedBlock {
+    /// Serializes everything except the output grid (`stylized_output` is left empty). The output
+    /// is by far the expensive part (up to `MAX_SERIALIZED_STYLIZED_OUTPUT_LINES` lines), so
+    /// consumers that only read metadata should use this. Never persist the result.
+    pub fn from_block_without_output(block: &Block) -> Self {
+        Self::from_block(block, false)
+    }
+
+    /// Drops the output from an already-built block (see `from_block_without_output`).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn without_output(&self) -> Self {
+        Self {
+            stylized_output: Vec::new(),
+            ..self.clone()
+        }
+    }
+
+    fn from_block(block: &Block, include_output: bool) -> Self {
         let stylized_command = block
             .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
             .into_bytes();
-        let stylized_output = block
-            .output_grid()
-            .contents_to_string_with_secrets_unobfuscated(
-                true, /*include_escape_sequences*/
-                Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
-            )
-            .into_bytes();
+        let stylized_output = if include_output {
+            block
+                .output_grid()
+                .contents_to_string_with_secrets_unobfuscated(
+                    true, /*include_escape_sequences*/
+                    Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
+                )
+                .into_bytes()
+        } else {
+            Vec::new()
+        };
         let ps1 =
             (!block.is_prompt_empty()).then(|| hex::encode(block.prompt_contents_to_string(true)));
         let rprompt = (!block.rprompt_grid().is_empty()).then(|| {
@@ -352,6 +371,13 @@ impl From<&Block> for SerializedBlock {
             is_local: None,
             agent_view_visibility: Some(block.agent_view_visibility().clone().into()),
         }
+    }
+}
+
+/// We should only be serializing a block that has finished.
+impl From<&Block> for SerializedBlock {
+    fn from(block: &Block) -> Self {
+        Self::from_block(block, true)
     }
 }
 

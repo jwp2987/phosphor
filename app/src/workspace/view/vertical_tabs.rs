@@ -5679,11 +5679,18 @@ fn compute_tab_group_color_mode(
                 match pane_group.terminal_view_from_pane_id(pane_id, app) {
                     Some(tv) => {
                         // Terminal pane: determine color from CWD.
-                        tv.as_ref(app).pwd_if_local(app).and_then(|cwd| {
-                            dir_colors
-                                .color_for_directory(Path::new(&cwd))
-                                .and_then(|c| c.ansi_color())
-                        })
+                        // Render path: no filesystem calls. Skip entirely when no
+                        // directory colors are configured; otherwise use the memoized
+                        // canonical cwd.
+                        if dir_colors.is_empty() {
+                            None
+                        } else {
+                            tv.as_ref(app).canonical_cwd_for_display(app).and_then(|cwd| {
+                                dir_colors
+                                    .color_for_canonical_directory(&cwd)
+                                    .and_then(|c| c.ansi_color())
+                            })
+                        }
                     }
                     _ => {
                         match pane_group.code_view_from_pane_id(pane_id, app) {

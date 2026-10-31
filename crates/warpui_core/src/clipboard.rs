@@ -7,6 +7,25 @@ pub trait Clipboard: 'static {
 
     fn read(&mut self) -> ClipboardContent;
 
+    /// Whether the clipboard holds anything at all. Platforms should override this with a probe
+    /// that does not decode images; the default reads (and decodes) everything.
+    fn has_content(&mut self) -> bool {
+        !self.read().is_empty()
+    }
+
+    /// Like `read`, but `images` is always `None`. For callers that never use image data, so
+    /// platforms can skip the (potentially large) image read and decode.
+    fn read_without_images(&mut self) -> ClipboardContent {
+        let mut content = self.read();
+        content.images = None;
+        content
+    }
+
+    /// Just the plain text of the clipboard (empty if none).
+    fn read_plain_text(&mut self) -> String {
+        self.read().plain_text
+    }
+
     /// Writes to the primary clipboard, used to support the Primary Selection Protocol (middle-click paste).
     ///
     /// NOTE: For platforms that don't support the primary clipboard, it writes to the default clipboard instead.
@@ -138,3 +157,7 @@ impl Clipboard for InMemoryClipboard {
     #[cfg(target_family = "wasm")]
     fn save(&mut self, _content: ClipboardContent) {}
 }
+
+#[cfg(test)]
+#[path = "clipboard_tests.rs"]
+mod tests;

@@ -276,6 +276,7 @@ use crate::terminal::block_list_viewport::ScrollState;
 use crate::terminal::command_corrections_denylist::COMMAND_CORRECTIONS_PREFERRED_DENYLIST;
 use crate::terminal::event::RemoteServerSetupState;
 use crate::terminal::general_settings::GeneralSettings;
+use warp_core::execution_mode::AppExecutionMode;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
@@ -2956,6 +2957,10 @@ pub struct TerminalView {
     /// the LSP idle-shutdown scan calls this for every terminal on every pass.
     canonical_session_pwd_cache: RefCell<Option<LocalSessionCanonicalPwdCache>>,
 
+    /// Memoizes `canonical_cwd_for_display` as (raw cwd, canonical cwd) so render
+    /// paths never stat or canonicalize per frame.
+    display_cwd_cache: RefCell<Option<(PathBuf, PathBuf)>>,
+
     /// The ID of the containing window.
     window_id: WindowId,
 
@@ -4601,6 +4606,7 @@ impl TerminalView {
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
+            display_cwd_cache: RefCell::new(None),
             ai_input_model,
             ai_context_model,
             window_id,
@@ -8346,6 +8352,19 @@ impl TerminalView {
     }
 
     pub fn active_session_path_if_local<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
+        // Checking if the pwd from the active session actually exists
+        // and if not (ie. directory was removed) - return None.
+        self.active_session_cwd_unchecked_if_local(ctx)
+            .filter(|path| path.is_dir())
+    }
+
+    /// The active local session's working directory as reported by the shell, WITHOUT
+    /// checking that it still exists. Does no filesystem access, so it is safe to call
+    /// from render paths (see `canonical_cwd_for_display`).
+    pub fn active_session_cwd_unchecked_if_local<C: ModelAsRef>(
+        &self,
+        ctx: &C,
+    ) -> Option<PathBuf> {
         if self.active_session_is_local(ctx) == Some(true) {
             self.active_block_metadata
                 .as_ref()
@@ -8361,12 +8380,29 @@ impl TerminalView {
                                 .and_then(|data| data.maybe_convert_absolute_path(cwd))
                         })
                 })
-                // Checking if the pwd from the active session actually exists
-                // and if not (ie. directory was removed) - return None.
-                .filter(|path| path.is_dir())
         } else {
             None
         }
+    }
+
+    /// The active local session's working directory, canonicalized for display-time
+    /// matching (tab colors, review-panel repo containment). Unlike
+    /// `active_session_path_if_local` this does no `is_dir` stat, and the
+    /// `canonicalize` result is memoized against the raw cwd, so repeated render calls
+    /// touch the filesystem only when the cwd changes. Falls back to the raw path if
+    /// canonicalization fails (e.g. the directory was removed).
+    pub fn canonical_cwd_for_display<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
+        let path = self.active_session_cwd_unchecked_if_local(ctx)?;
+        if let Some((raw, canonical)) = self.display_cwd_cache.borrow().as_ref()
+            && *raw == path
+        {
+            return Some(canonical.clone());
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if let Ok(mut cache) = self.display_cwd_cache.try_borrow_mut() {
+            *cache = Some((path, canonical.clone()));
+        }
+        Some(canonical)
     }
 
     /// The active local session's working directory, canonicalized.
@@ -11849,7 +11885,8 @@ impl TerminalView {
         shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
     ) -> String {
-        let content = ctx.clipboard().read();
+        // Image data is never used here, so don't read or decode it.
+        let content = ctx.clipboard().read_without_images();
         clipboard_content_with_escaped_paths(content, shell_dialect, false)
     }
 
@@ -14372,7 +14409,7 @@ impl TerminalView {
                     // the connect window; a clean end keeps it for the bootstrap grace period.
                     if self.ssh_connect_gate.is_some() {
                         let exit_code = user_completed
-                            .serialized_block
+                            .serialized_block_without_output
                             .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
@@ -14788,7 +14825,7 @@ impl TerminalView {
                         // block was holding, use that.
                         BlockType::User(user_block_completed) => {
                             user_block_completed
-                                .serialized_block
+                                .serialized_block_without_output
                                 .get_with(|compute| {
                                     let model = self.model.lock();
                                     compute(model.block_list())
@@ -14804,7 +14841,7 @@ impl TerminalView {
                             InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
                         let is_in_agent_view = self.agent_view_controller.as_ref(ctx).is_active();
                         let serialized_block =
-                            user_block_completed.serialized_block.get_with(|compute| {
+                            user_block_completed.serialized_block_without_output.get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });
@@ -14928,7 +14965,7 @@ impl TerminalView {
                                     compute(model.block_list())
                                 });
                                 let top_level = user_block_completed
-                                    .serialized_block
+                                    .serialized_block_without_output
                                     .get_with(|compute| {
                                         let model = self.model.lock();
                                         compute(model.block_list())
@@ -14969,7 +15006,7 @@ impl TerminalView {
                 }
 
                 if let BlockType::User(block_completed) = block_type {
-                    let serialized_block = block_completed.serialized_block.get_with(|compute| {
+                    let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                         let model = self.model.lock();
                         compute(model.block_list())
                     });
@@ -15111,8 +15148,21 @@ impl TerminalView {
 
                     // Emit the event to the parent view. This will save the block to sqlite if
                     // session restoration is enabled.
+                    // Only the SaveBlock consumer needs the (up to 5000 line) serialized
+                    // output; skip building it when nothing will persist it. Mirrors the gate
+                    // in `terminal_pane.rs`'s `Event::BlockCompleted` handler.
+                    let block_to_emit = if *GeneralSettings::as_ref(ctx).restore_session
+                        && AppExecutionMode::as_ref(ctx).can_save_session()
+                    {
+                        block_completed.serialized_block.get_with(|compute| {
+                            let model = self.model.lock();
+                            compute(model.block_list())
+                        })
+                    } else {
+                        serialized_block
+                    };
                     ctx.emit(Event::BlockCompleted {
-                        block: serialized_block.clone(),
+                        block: block_to_emit.clone(),
                         is_local: !self.is_block_considered_remote(
                             serialized_block.session_id,
                             Some(block_completed.command.get_with(|compute| {
@@ -18863,7 +18913,7 @@ impl TerminalView {
                     compute(model.block_list())
                 })
                 .to_owned();
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
+            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = self.model.lock();
                 compute(model.block_list())
             });
@@ -18971,7 +19021,7 @@ impl TerminalView {
         let notification_settings = session_settings_handle.notifications.value().clone();
         let long_running_trigger = NotificationsTrigger::LongRunningCommand(
             !block
-                .serialized_block
+                .serialized_block_without_output
                 .get_with(|compute| {
                     let model = self.model.lock();
                     compute(model.block_list())
@@ -19807,7 +19857,12 @@ impl TerminalView {
         let mut copied = if middle_click {
             TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {
-            let clipboard_content = ctx.clipboard().read();
+            // Images matter only for CLI-agent paste; otherwise skip the read and decode.
+            let clipboard_content = if is_cli_agent_paste {
+                ctx.clipboard().read()
+            } else {
+                ctx.clipboard().read_without_images()
+            };
 
             if is_cli_agent_paste && clipboard_content.has_image_data() {
                 if !cfg!(windows) {
@@ -20532,7 +20587,7 @@ impl TerminalView {
     /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
     /// clipboard and target semantics, and is disabled while the clipboard is empty.
     fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
-        let is_clipboard_empty = ctx.clipboard().read().is_empty();
+        let is_clipboard_empty = !ctx.clipboard().has_content();
         MenuItemFields::new(crate::t!("common-paste"))
             .with_on_select_action(TerminalAction::Paste)
             .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))
@@ -22986,10 +23041,10 @@ impl TerminalView {
     }
 
     fn paste_in_input(&mut self, ctx: &mut ViewContext<Self>) {
-        let clipboard_content = ctx.clipboard().read();
+        let clipboard_text = ctx.clipboard().read_plain_text();
 
         self.input.update(ctx, |input, ctx| {
-            input.system_insert(clipboard_content.plain_text.as_str(), ctx);
+            input.system_insert(clipboard_text.as_str(), ctx);
             ctx.focus_self();
         });
         send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
@@ -30550,7 +30605,7 @@ impl TerminalSurface for TerminalView {
         // block with an exit code; other block types don't terminate an upload.
         let exit_code = match &completed.block_type {
             BlockType::User(user) => {
-                user.serialized_block
+                user.serialized_block_without_output
                     .get_with(|compute| {
                         let model = self.model.lock();
                         compute(model.block_list())

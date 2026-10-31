@@ -376,6 +376,12 @@ pub struct UserBlockCompleted {
     /// in an `Arc`.
     pub serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
 
+    /// The same block's metadata (exit code, pwd, session id, timestamps, shell host, ...) but
+    /// with `stylized_output` left empty. Building `serialized_block` serializes up to 5000 output
+    /// lines with SGR escapes, which is wasted work (on the main thread, under the model lock)
+    /// for the many consumers that only need metadata. Use this unless the output is required.
+    pub serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
+
     /// The input lines for a block without any escape sequences.
     pub command: Lazy<String, BlockList>,
 
@@ -412,6 +418,7 @@ impl UserBlockCompleted {
         index: BlockIndex,
         eviction_stamp: EvictionStamp,
         serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
+        serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
         command: Lazy<String, BlockList>,
         command_with_obfuscated_secrets: Lazy<String, BlockList>,
         output_truncated: Lazy<String, BlockList>,
@@ -425,6 +432,7 @@ impl UserBlockCompleted {
             index,
             eviction_stamp,
             serialized_block,
+            serialized_block_without_output,
             command,
             command_with_obfuscated_secrets,
             output_truncated,
@@ -454,6 +462,7 @@ impl UserBlockCompleted {
         Self::new(
             index,
             EvictionStamp::default(),
+            Lazy::provided(Arc::new(serialized_block.without_output())),
             Lazy::provided(serialized_block),
             Lazy::provided(command),
             Lazy::provided(command_with_obfuscated_secrets),

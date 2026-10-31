@@ -204,7 +204,22 @@ impl DirectoryTabColors {
     /// Returns the configured tab color for a directory using longest-prefix matching.
     /// Returns `None` if no configured directory is a prefix of `dir`.
     pub fn color_for_directory(&self, dir: &Path) -> Option<DirectoryTabColor> {
+        // Nothing configured: skip the `canonicalize` (a syscall per path component).
+        if self.0.is_empty() {
+            return None;
+        }
         let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        self.color_for_canonical_directory(&canonical_dir)
+    }
+
+    /// Whether no directory colors are configured at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Like `color_for_directory`, but `canonical_dir` is already canonicalized, so this
+    /// never touches the filesystem (safe to call from render).
+    pub fn color_for_canonical_directory(&self, canonical_dir: &Path) -> Option<DirectoryTabColor> {
         self.0
             .iter()
             .filter_map(|(configured_path, color)| {

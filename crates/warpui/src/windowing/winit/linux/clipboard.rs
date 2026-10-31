@@ -41,6 +41,34 @@ impl Clipboard for LinuxClipboard {
         }
     }
 
+    fn has_content(&mut self) -> bool {
+        // Non-empty text is the overwhelmingly common case and answers the question without
+        // the HTML, path and image reads (an image decode can take hundreds of ms).
+        if self
+            .inner
+            .get()
+            .text()
+            .is_ok_and(|text| !text.is_empty())
+        {
+            return true;
+        }
+        !self.read().is_empty()
+    }
+
+    fn read_without_images(&mut self) -> ClipboardContent {
+        match self.read_from_specific_clipboard_inner(LinuxClipboardKind::Clipboard, false) {
+            Ok(content) => content,
+            Err(err) => {
+                log::warn!("Failed to read from Linux clipboard: {err:?}");
+                ClipboardContent::null_value()
+            }
+        }
+    }
+
+    fn read_plain_text(&mut self) -> String {
+        self.inner.get().text().unwrap_or_default()
+    }
+
     fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
         match self.write_to_specific_clipboard(LinuxClipboardKind::Primary, &contents) {
             Ok(_) => (),
@@ -94,6 +122,17 @@ impl LinuxClipboard {
     fn parse_valid_filepaths_from_text(&mut self, text_content: &str) -> Option<Vec<String>> {
         let mut file_paths = Vec::new();
 
+        // Cheap syntactic pass first (no filesystem access): ordinary text is rejected here
+        // without ever stat'ing a path taken from the clipboard on the main thread.
+        let all_lines_absolute = text_content.trim().lines().map(str::trim).all(|line| {
+            line.is_empty()
+                || line.starts_with("file://")
+                || std::path::Path::new(line).is_absolute()
+        });
+        if !all_lines_absolute {
+            return None;
+        }
+
         // Check for absolute filepaths
         for line in text_content.trim().lines() {
             let line = line.trim();
@@ -131,6 +170,15 @@ impl LinuxClipboard {
         &mut self,
         clipboard_kind: LinuxClipboardKind,
     ) -> Result<ClipboardContent, arboard::Error> {
+        self.read_from_specific_clipboard_inner(clipboard_kind, true)
+    }
+
+    /// `include_images == false` skips the image read/decode entirely (`images` stays `None`).
+    fn read_from_specific_clipboard_inner(
+        &mut self,
+        clipboard_kind: LinuxClipboardKind,
+        include_images: bool,
+    ) -> Result<ClipboardContent, arboard::Error> {
         let text_result = self.inner.get().text();
         let mut content = ClipboardContent {
             plain_text: text_result.as_ref().map(|s| s.clone()).unwrap_or_default(),
@@ -146,11 +194,13 @@ impl LinuxClipboard {
                 content.html = html.is_empty().not().then_some(html);
 
                 // Try to get image content from clipboard
-                content.images = crate::clipboard_utils::read_images_from_clipboard(
-                    &mut self.inner,
-                    &content.html,
-                    &content.plain_text,
-                );
+                if include_images {
+                    content.images = crate::clipboard_utils::read_images_from_clipboard(
+                        &mut self.inner,
+                        &content.html,
+                        &content.plain_text,
+                    );
+                }
 
                 return Ok(content);
             }
@@ -162,11 +212,13 @@ impl LinuxClipboard {
         }
 
         // Fallback to using plaintext
-        content.images = crate::clipboard_utils::read_images_from_clipboard(
-            &mut self.inner,
-            &None, // No HTML in fallback case
-            &content.plain_text,
-        );
+        if include_images {
+            content.images = crate::clipboard_utils::read_images_from_clipboard(
+                &mut self.inner,
+                &None, // No HTML in fallback case
+                &content.plain_text,
+            );
+        }
 
         // Return success if we have ANY content (text, paths, OR images)
         // Only error if ALL content types failed

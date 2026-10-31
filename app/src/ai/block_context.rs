@@ -68,7 +68,7 @@ impl BlockContext {
         block_completed: &UserBlockCompleted,
         model: &FairMutex<TerminalModel>,
     ) -> Box<Self> {
-        let serialized_block = block_completed.serialized_block.get_with(|compute| {
+        let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
             let model = model.lock();
             compute(model.block_list())
         });

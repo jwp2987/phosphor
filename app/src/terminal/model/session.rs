@@ -1506,13 +1506,23 @@ impl Session {
     /// `stat` per `$PATH` directory, and a miss is remembered for [`LATE_COMMAND_MISS_TTL`], so
     /// re-typing the same unknown word costs nothing.
     pub fn discover_command_word(&self, word: &str) {
+        if self.command_word_needs_probe(word) {
+            self.probe_command_word(word);
+        }
+    }
+
+    /// Whether [`Self::discover_command_word`] would stat `$PATH` for `word` right now: the word
+    /// is a candidate, is not already known, and has no fresh negative-cache entry. Does no
+    /// filesystem access, so the Enter path can ask this on the main thread and push the stat to a
+    /// background task ([`Self::probe_command_word`]) instead of waiting on it.
+    pub fn command_word_needs_probe(&self, word: &str) -> bool {
         if !cfg!(unix)
             || !self.is_local()
             || self.is_wsl()
             || !self.has_loaded_external_commands()
             || !is_bare_command_name(word)
         {
-            return;
+            return false;
         }
         let case_insensitive = matches!(
             self.command_case_sensitivity,
@@ -1525,8 +1535,19 @@ impl Session {
                 name == word
             }
         }) {
-            return;
+            return false;
         }
+        !self
+            .late_commands
+            .missing
+            .lock()
+            .get(word)
+            .is_some_and(|at| Instant::now().duration_since(*at) < LATE_COMMAND_MISS_TTL)
+    }
+
+    /// The `stat`-per-`$PATH`-directory half of [`Self::discover_command_word`]; records a miss
+    /// in the negative cache. Blocks on the filesystem: call off the main thread.
+    pub fn probe_command_word(&self, word: &str) {
         let now = Instant::now();
         {
             let mut missing = self.late_commands.missing.lock();
