@@ -470,6 +470,34 @@ fn test_refocus_root_when_persistent_child_stops_being_emitted_by_mounted_parent
     })
 }
 
+/// #1256: `AppContext::is_view_reachable` is false only for a live view the last (current)
+/// layout did not visit, and true for a mounted view and for one that was never rendered
+/// against a layout. A terminal wakeup uses it to skip a frame request for a hidden tab.
+#[test]
+fn test_is_view_reachable_is_false_only_for_a_view_the_last_layout_left_out() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (child, tab, lay_out_child) = root.update(app, |root, _| {
+            (
+                root.child.clone(),
+                root.tab.clone(),
+                root.lay_out_child.clone(),
+            )
+        });
+        // Before the first layout nothing is judged unreachable.
+        assert!(app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
+
+        lay_out_child.set(false);
+        tab.update(app, |_, ctx| ctx.notify());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(!app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
+    })
+}
+
 /// #842: the lazy-row shape. A lazy container that skips laying out a child it
 /// owns (an off-screen row) reports it with `mark_lazy_child`; that view stays
 /// reachable and keeps focus.
