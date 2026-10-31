@@ -3,10 +3,12 @@
 ONLY when `ssh -G` reports `serveraliveinterval 0`, and only while
 WARP_SSH_KEEPALIVE is not "0".
 
-It extracts the real probe block (from `warp_ssh_g` up to the keepalive `fi`)
-out of bash_body.sh, zsh_body.sh and fish.sh, runs it with a fake `ssh -G` on
-PATH, and checks the resulting option array. Shells that are not installed are
-skipped. Also checks the single-`ssh -G` rule: the block must fork `ssh` once.
+It extracts the real `ssh -G` capture and the probe block (from the
+`warp_ipqos_args` declaration up to the keepalive `fi`) out of bash_body.sh,
+zsh_body.sh and fish.sh, runs them with a fake `ssh -G` on PATH, and checks the
+resulting option array. Shells that are not installed are skipped. Also checks
+the single-`ssh -G` rule (#1172): the extracted code forks `ssh` once, and the
+whole wrapper function body contains exactly one `ssh -G` capture.
 
 Usage: script/test_ssh_keepalive
 """
@@ -79,23 +81,47 @@ CASES = [
     ("ssh -G printed nothing", "", {}, []),
 ]
 
+# (shell, file, kind, capture line marker, probe block start marker)
 SHELLS = [
-    ("bash", "bash_body.sh", "bash"),
-    ("zsh", "zsh_body.sh", "bash"),
-    ("fish", "fish.sh", "fish"),
+    ("bash", "bash_body.sh", "bash", "warp_ssh_g=\"$(command ssh -G", "local warp_ipqos_args"),
+    ("zsh", "zsh_body.sh", "bash", "warp_ssh_g=\"$(command ssh -G", "local -a warp_ipqos_args"),
+    ("fish", "fish.sh", "fish", "set -l warp_ssh_g (command ssh -G", "set -l warp_ipqos_args"),
 ]
+
+
+def helper_body(path):
+    """The text of warp_ssh_helper (bash/zsh) / warp_ssh_helper (fish) up to the next function."""
+    text = open(path).read()
+    start = text.index("function warp_ssh_helper")
+    end = text.index("function warp_ssh_remote_is_non_posix", start)
+    return text[start:end]
 
 
 def main():
     failures = 0
     ran = 0
-    for shell, fname, kind in SHELLS:
+    for shell, fname, kind, cap_marker, block_marker in SHELLS:
+        path = os.path.join(BOOT, fname)
+        # Comments mention `ssh -G` too, so count only executed captures.
+        n_exec = sum(
+            1
+            for l in helper_body(path).split("\n")
+            if "ssh -G" in l and not l.lstrip().startswith("#")
+        )
+        ran += 1
+        if n_exec != 1:
+            failures += 1
+            print("FAIL %s: warp_ssh_helper runs `ssh -G` %d times, want 1" % (shell, n_exec))
+        else:
+            print("ok   %s: warp_ssh_helper runs `ssh -G` once" % shell)
         if not shutil.which(shell):
             print("SKIP %s (not installed)" % shell)
             continue
-        path = os.path.join(BOOT, fname)
         # Fish gets its own `end` terminator; the others close with `fi`.
-        snippet = extract(path, "warp_ssh_g", "-o ServerAliveInterval=30")
+        cap_line = next(
+            l.strip() for l in open(path).read().split("\n") if cap_marker in l
+        )
+        snippet = cap_line + "\n" + extract(path, block_marker, "-o ServerAliveInterval=30")
         for name, g, env, want in CASES:
             got, calls = run(shell, kind, snippet, g, env)
             ran += 1

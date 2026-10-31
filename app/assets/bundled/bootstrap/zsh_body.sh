@@ -1255,7 +1255,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
           # command, aborting with "Cannot execute command-line and remote
           # command." Warpification is structurally impossible there, so fall
           # back to plain SSH. `ssh -G` prints `remotecommand none` when unset.
-          local user_remote_command=$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^remotecommand //p')
+          # #1172: ONE `ssh -G` per invocation (it was four, ~7 ms each). Every probe below -- RemoteCommand,
+          # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
+          local warp_ssh_g
+          warp_ssh_g="$(command ssh -G "${@:1}" 2>/dev/null)"
+          local user_remote_command=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^remotecommand //p')
           if [[ -n "$user_remote_command" && "$user_remote_command" != "none" ]]; then
               command ssh "${@:1}"
               return
@@ -1279,7 +1283,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
           local control_master_mode="yes"
           local external_control_master="false"
           if [[ "$WARP_SSH_REUSE_CONTROL_MASTER" == "1" ]]; then
-              local user_control_path=$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^controlpath //p')
+              local user_control_path=$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^controlpath //p')
               case "$user_control_path" in
                   "" | none)
                       # No ControlPath configured for this destination.
@@ -1308,8 +1312,6 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
           # classes to the interactive one, but ONLY when `ssh -G` reports exactly OpenSSH's
           # current default (`af21 cs1`): a user-configured IPQoS is never overridden, and an
           # older OpenSSH (different default / no two-value form) is left alone.
-          local warp_ssh_g
-          warp_ssh_g="$(command ssh -G "${@:1}" 2>/dev/null)"
           local -a warp_ipqos_args
           warp_ipqos_args=()
           if [[ "$(printf '%s\n' "$warp_ssh_g" | command -p sed -n 's/^ipqos //p')" == "af21 cs1" ]]; then
@@ -1517,7 +1519,13 @@ esac
           local control_path="$1"
           shift
           local key
-          key=$(command ssh -G "$@" 2>/dev/null | command -p awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}')
+          # #1172: reuse the wrapper's single `ssh -G` capture (visible here through dynamic scope) when
+          # there is one; a direct caller without it asks ssh itself.
+          local key_g="${warp_ssh_g-}"
+          if [[ -z "$key_g" ]]; then
+              key_g=$(command ssh -G "$@" 2>/dev/null)
+          fi
+          key=$(printf '%s\n' "$key_g" | command -p awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}')
           if [[ -z "$key" ]]; then
               warp_ssh_remote_is_non_posix "$control_path" "$@"
               return

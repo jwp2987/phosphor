@@ -862,7 +862,10 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # command, aborting with "Cannot execute command-line and remote
         # command." Warpification is structurally impossible there, so fall back
         # to plain SSH. `ssh -G` prints `remotecommand none` when unset.
-        set -l user_remote_command (command ssh -G $argv 2>/dev/null | command sed -n 's/^remotecommand //p')
+        # #1172: ONE `ssh -G` per invocation (it was four, ~7 ms each). Every probe below -- RemoteCommand,
+        # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
+        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
+        set -l user_remote_command (printf '%s\n' $warp_ssh_g | command sed -n 's/^remotecommand //p')
         if test -n "$user_remote_command"; and test "$user_remote_command" != "none"
             command ssh $argv
             return
@@ -886,7 +889,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l control_master_mode "yes"
         set -l external_control_master "false"
         if test "$WARP_SSH_REUSE_CONTROL_MASTER" = "1"
-            set -l user_control_path (command ssh -G $argv 2>/dev/null | command sed -n 's/^controlpath //p')
+            set -l user_control_path (printf '%s\n' $warp_ssh_g | command sed -n 's/^controlpath //p')
             # Skip when no ControlPath is configured, and reject resolved
             # paths containing characters we cannot safely embed in the SSH
             # hook JSON below (e.g. an unexpanded % token, quotes, or
@@ -910,7 +913,6 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
         # and an older OpenSSH is left alone.
         set -l warp_ipqos_args
-        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
         set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
@@ -973,6 +975,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # managed session below; the idle background master expires via ControlPersist.
         end
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
+            set -g __warp_ssh_g $warp_ssh_g
             if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
@@ -1117,7 +1120,17 @@ esac
     function warp_ssh_remote_is_non_posix_cached
         set -l control_path $argv[1]
         set -e argv[1]
-        set -l key (command ssh -G $argv 2>/dev/null | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
+        # #1172: reuse the wrapper's single `ssh -G` capture (handed over in the global
+        # __warp_ssh_g, read once and erased) when there is one; a direct caller without it asks ssh.
+        set -l key_g
+        if set -q __warp_ssh_g
+            set key_g $__warp_ssh_g
+            set -e __warp_ssh_g
+        end
+        if test (count $key_g) -eq 0
+            set key_g (command ssh -G $argv 2>/dev/null)
+        end
+        set -l key (printf '%s\n' $key_g | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
         if test -z "$key"
             warp_ssh_remote_is_non_posix "$control_path" $argv
             return
