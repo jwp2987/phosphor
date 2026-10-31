@@ -99,6 +99,16 @@ impl Index {
 
     /// Rebuilds an [`Index`] to wrap lines at a different number of columns.
     pub fn rebuild(old_index: &Index, columns: usize) -> Self {
+        Self::rebuild_impl(old_index, columns, true)
+    }
+
+    /// `rebuild` with the per-row fast path switched off; the reference the fast path must match.
+    #[cfg(test)]
+    fn rebuild_slow(old_index: &Index, columns: usize) -> Self {
+        Self::rebuild_impl(old_index, columns, false)
+    }
+
+    fn rebuild_impl(old_index: &Index, columns: usize, allow_fast_path: bool) -> Self {
         let mut index = Self::new(columns, Some(old_index.len()));
         // Update the content length to be the start offset of the first row,
         // or preserve the old content offset if no rows remain, to ensure we
@@ -119,6 +129,14 @@ impl Index {
         // case of a grid that contains only ASCII text.  We could take more
         // advantage of the run-length encoded `GraphemeRun` structure here.
         for row_idx in 0..old_index.len() {
+            // Fast path: a hard-terminated row that already fits in the new width cannot be
+            // changed by reflowing, so copy its entry instead of re-feeding every grapheme.
+            if allow_fast_path
+                && entry_builder.is_empty()
+                && index.try_copy_unchanged_row(old_index, row_idx)
+            {
+                continue;
+            }
             if let Some(grapheme_infos) = old_index.grapheme_infos_for_row(row_idx) {
                 for info in grapheme_infos {
                     entry_builder.process_grapheme_info(info, &mut index);
@@ -144,6 +162,56 @@ impl Index {
         }
 
         index
+    }
+
+    /// Appends `old_index`'s row `row_idx` to `self` unchanged, if reflowing at `self.columns`
+    /// provably yields exactly that one row. Returns whether it did.
+    ///
+    /// This is only valid when the caller's [`EntryBuilder`] is empty (i.e. the previous row
+    /// ended in a newline or there was none), so the row starts at column zero. The row must end
+    /// in a hard newline, must not end in a leading wide-char spacer, and its cells must fit in
+    /// `self.columns`; then no grapheme overflows, so the slow path would produce an identical
+    /// entry with identical (already maximally merged) grapheme runs.
+    fn try_copy_unchanged_row(&mut self, old_index: &Index, row_idx: usize) -> bool {
+        let Some(entry) = old_index.get_entry(row_idx) else {
+            return false;
+        };
+        if !entry.has_trailing_newline || entry.ends_with_leading_wide_char_spacer {
+            return false;
+        }
+        let Some(runs) = old_index.grapheme_runs_for_row(row_idx) else {
+            return false;
+        };
+        let mut cells = 0usize;
+        let mut bytes = 0usize;
+        for run in runs {
+            // Zero-width graphemes are dropped by the slow path; never fast-path a row with one.
+            if run.info.cell_width == 0 {
+                return false;
+            }
+            cells += run.cols();
+            bytes += run.count.get() as usize * run.info.utf8_bytes.get() as usize;
+        }
+        if cells > self.columns {
+            return false;
+        }
+
+        let content_offset = ByteOffset::from(self.content_len);
+        let grapheme_sizing = match &entry.grapheme_sizing {
+            GraphemeSizing::NonUniform => {
+                self.grapheme_sizing.insert(content_offset, runs.to_vec());
+                GraphemeSizing::NonUniform
+            }
+            other => *other,
+        };
+        self.content_len += bytes + '\n'.len_utf8();
+        self.rows.push_back(Entry {
+            content_offset,
+            grapheme_sizing,
+            has_trailing_newline: true,
+            ends_with_leading_wide_char_spacer: false,
+        });
+        true
     }
 
     /// Truncates the index to the given number of rows, returning the new

@@ -2931,6 +2931,10 @@ impl BlockList {
     /// here because resizing may result in a change in gap size.
     pub fn resize(&mut self, size_update: &SizeUpdate, update_old_blocks: bool) {
         let size = size_update.new_size;
+        // Compare against the size this list actually had, not `size_update.last_size`, so a
+        // caller passing a stale `last_size` can never make us skip a needed rebuild.
+        let grid_dimensions_changed =
+            self.size.rows() != size.rows() || self.size.columns() != size.columns();
         self.size = size;
         if size_update.rows_or_columns_changed() {
             self.clear_selection();
@@ -2947,6 +2951,26 @@ impl BlockList {
         }
 
         let active_block_index = self.active_block_index();
+
+        // Pixel-only changes (pane size, window-edge drags, panel animations) leave rows,
+        // columns and the gap alone. Block heights are a function of grid content, padding and
+        // visibility, none of which a pure pixel change touches, so the O(blocks) height-tree
+        // rebuild is wasted work. Blocks still get the new `SizeInfo` (their grids early-return
+        // when the dimensions are unchanged, and only record the cell metrics).
+        if !grid_dimensions_changed && size_update.new_gap_height.is_none() {
+            for b in self.blocks.iter_mut() {
+                if active_block_index == b.index() || update_old_blocks {
+                    b.resize(size);
+                }
+            }
+            if let Some(pending_background_block) =
+                self.early_output_mut().pending_background_block_mut()
+            {
+                pending_background_block.resize(size);
+            }
+            return;
+        }
+
         self.update_blocks_and_sumtree(
             None,
             None,

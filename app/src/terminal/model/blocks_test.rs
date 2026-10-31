@@ -3444,3 +3444,56 @@ fn restoring_conversation_blocks_into_running_pane_keeps_existing_terminal_block
         "the agent-owned restored block belongs to the conversation, not the terminal scope"
     );
 }
+
+/// #1150: a resize that changes only pixels (rows, columns and gap untouched) must not rebuild the
+/// whole height tree, but must still hand every block the new `SizeInfo`. A column change must
+/// keep rebuilding it.
+#[test]
+fn test_pixel_only_resize_skips_height_tree_rebuild() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    for _ in 0..3 {
+        insert_block(&mut block_list, "cmd", "output");
+    }
+    let rows = block_list.size().rows();
+    let cols = block_list.size().columns();
+    let items_before = block_list.block_heights().items();
+
+    let pixel_only_size =
+        SizeInfo::new_without_font_metrics(rows + 1, cols + 1).with_rows_and_columns(rows, cols);
+    assert_ne!(
+        pixel_only_size.pane_size_px(),
+        block_list.size().pane_size_px()
+    );
+    let pixel_only = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: pixel_only_size,
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: cols,
+    };
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+    block_list.resize(&pixel_only, true);
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "a pixel-only resize must not rebuild the block-height tree"
+    );
+    assert_eq!(block_list.block_heights().items(), items_before);
+    assert_eq!(*block_list.size(), pixel_only_size);
+    for block in block_list.blocks() {
+        assert_eq!(block.size(), pixel_only_size);
+    }
+
+    let narrower = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, cols - 1),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: cols - 1,
+    };
+    block_list.resize(&narrower, true);
+    assert_eq!(block_list.sumtree_rebuild_count(), rebuilds_before + 1);
+}
