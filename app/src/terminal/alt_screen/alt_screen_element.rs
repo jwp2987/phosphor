@@ -37,7 +37,7 @@ use warpui::text::SelectionType;
 
 use super::{should_intercept_mouse, should_intercept_scroll};
 use std::ops::{Deref as _, Range};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use warpui::elements::{Axis, Point as UiPoint, ScrollData, ScrollableElement};
 use warpui::fonts::Properties;
 use warpui::geometry::rect::RectF;
@@ -53,6 +53,18 @@ use warpui::{ClipBounds, EntityId, ModelHandle};
 
 const CLI_SUBAGENT_HORIZONTAL_MARGIN: f32 = 8.;
 const CLI_SUBAGENT_VERTICAL_MARGIN: f32 = 8.;
+
+/// The alt screen is painted from a clone of its grid taken under the model lock, so the pty
+/// thread waits for the copy (tens of microseconds) rather than for the whole paint.
+/// `PHOSPHOR_ALT_SCREEN_PAINT_UNDER_LOCK=1` restores painting straight from the locked model.
+fn alt_screen_paint_from_snapshot() -> bool {
+    static FROM_SNAPSHOT: OnceLock<bool> = OnceLock::new();
+    *FROM_SNAPSHOT.get_or_init(|| {
+        std::env::var("PHOSPHOR_ALT_SCREEN_PAINT_UNDER_LOCK")
+            .ok()
+            .is_none_or(|flag| flag == "0")
+    })
+}
 
 pub struct AltScreenElement {
     model: Arc<FairMutex<TerminalModel>>,
@@ -698,11 +710,36 @@ impl Element for AltScreenElement {
         ));
         self.origin = Some(UiPoint::from_vec2f(origin, ctx.scene.z_index()));
 
-        let model = self.model.lock();
-
-        let override_colors = model.override_colors();
-
-        let grid = model.alt_screen().grid_handler();
+        let mut model = Some(self.model.lock());
+        let locked = model.as_ref().expect("locked just above");
+        let colors = locked.colors();
+        let override_colors = locked.override_colors();
+        let cursor_visible = locked.alt_screen().is_mode_set(TermMode::SHOW_CURSOR);
+        let cursor_style = locked.alt_screen().cursor_style();
+        let bg_color_sampler = locked.alt_screen().bg_color_sampler.clone();
+        // One consistent copy of everything the grid paint reads, so the lock can go before the
+        // (much longer) paint and the pty thread parses the next output meanwhile.
+        let snapshot = alt_screen_paint_from_snapshot().then(|| {
+            (
+                locked.alt_screen().grid_handler().clone(),
+                locked.image_id_to_metadata.clone(),
+            )
+        });
+        if snapshot.is_some() {
+            model = None;
+        }
+        let (grid, image_metadata) = match &snapshot {
+            Some((grid, image_metadata)) => (grid, image_metadata),
+            None => {
+                let locked = model
+                    .as_ref()
+                    .expect("still locked when not painting from a snapshot");
+                (
+                    locked.alt_screen().grid_handler(),
+                    &locked.image_id_to_metadata,
+                )
+            }
+        };
 
         let cell_size = Vector2F::new(
             self.grid_render_params.size_info.cell_width_px().as_f32(),
@@ -726,7 +763,7 @@ impl Element for AltScreenElement {
         let obfuscate_secrets =
             get_secret_obfuscation_mode(app).and(&grid.get_secret_obfuscation());
 
-        let mut sampler = model.alt_screen().bg_color_sampler.lock();
+        let mut sampler = bg_color_sampler.lock();
         sampler.reset();
 
         // Render grid cells. Since the alt screen has no scrollback we can always start at index 0.
@@ -739,12 +776,11 @@ impl Element for AltScreenElement {
                 .as_f64())
         .min(grid.visible_rows() as f64);
         let adjusted_grid_origin = origin - self.vertical_scroll_pixels();
-        let cursor_visible = model.alt_screen().is_mode_set(TermMode::SHOW_CURSOR);
         grid_renderer::render_grid(
             grid,
             start_row.floor() as usize,
             end_row.ceil() as usize,
-            &model.colors(),
+            &colors,
             &override_colors,
             &self.grid_render_params.warp_theme,
             properties,
@@ -764,9 +800,9 @@ impl Element for AltScreenElement {
             obfuscate_secrets,
             self.hovered_secret,
             self.grid_render_params.use_ligature_rendering,
-            cursor_visible.then(|| model.alt_screen().cursor_style().shape),
+            cursor_visible.then(|| cursor_style.shape),
             RespectDisplayedOutput::Yes,
-            &model.image_id_to_metadata,
+            image_metadata,
             Some(&mut sampler),
             self.grid_render_params.hide_cursor_cell,
             ctx,
@@ -781,7 +817,7 @@ impl Element for AltScreenElement {
                 &self.grid_render_params,
                 grid.cursor_render_point(),
                 grid.is_cursor_on_wide_char(),
-                model.alt_screen().cursor_style(),
+                cursor_style,
                 padding_x,
                 adjusted_grid_origin,
                 self.grid_render_params.warp_theme.cursor().into(),
