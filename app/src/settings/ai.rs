@@ -3028,8 +3028,26 @@ impl AISettings {
         false
     }
 
+    /// Whether any completed cycle still has its quota banner undismissed. False for the empty
+    /// history of a user with no quota data, and once every completed cycle has been dismissed.
+    pub fn quota_banner_needs_dismissal(&self) -> bool {
+        let now = Utc::now();
+        self.ai_request_quota_info
+            .cycle_history
+            .iter()
+            .any(|cycle| cycle.end_date < now && !cycle.banner_state.dismissed)
+    }
+
     /// Marks the banner as dismissed for all completed cycles.
+    ///
+    /// A no-op when no completed cycle needs it (#1203): Enter calls this on every submit, and
+    /// the write below reads the stored value back from the preferences backend (a file, or the
+    /// OS keychain for a private setting) on the UI thread, ahead of the pty write. On a busy disk
+    /// or a slow keyring that read took 0.2-5.7 s per Enter.
     pub fn mark_quota_banner_as_dismissed(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.quota_banner_needs_dismissal() {
+            return;
+        }
         let mut cycle_history = self.ai_request_quota_info.cycle_history.clone();
 
         for cycle in cycle_history.iter_mut() {

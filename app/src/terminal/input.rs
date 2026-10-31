@@ -13281,11 +13281,16 @@ impl Input {
             self.model.lock().set_is_input_dirty(false);
         }
 
-        AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-            // Don't show the quota banner once a user has run a command or AI query.
-            ai_settings.mark_quota_banner_as_dismissed(ctx);
-            ctx.notify();
-        });
+        // #1203: only when a banner is actually waiting. The update below writes a setting and
+        // notifies every observer of AISettings, on the UI thread, before the effects queued by
+        // the submit (the pty write among them) are delivered.
+        if AISettings::as_ref(ctx).quota_banner_needs_dismissal() {
+            AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                // Don't show the quota banner once a user has run a command or AI query.
+                ai_settings.mark_quota_banner_as_dismissed(ctx);
+                ctx.notify();
+            });
+        }
     }
 
     /// Runs Enter as a shell command: for this one submit the input is locked to shell, in
