@@ -1738,6 +1738,774 @@ pub fn has_no_prose_evidence(buffer_text: &str) -> bool {
         || words.iter().any(is_prose_word))
 }
 
+/// Byte offset of a trailing shell comment in `text` (#1185): a `#` that follows whitespace and
+/// sits outside single quotes, double quotes, backticks and backslash escapes. A `#` at the very
+/// start is not a trailing comment (the whole line is the comment; `#` is a one-off shell keyword),
+/// nor is one glued to a word (`$#`, `${#x}`, `a#b`).
+fn trailing_comment_start(text: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut previous_is_space = false;
+    for (index, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            previous_is_space = false;
+            continue;
+        }
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                }
+            }
+            Some(q) => {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\\' => escaped = true,
+                '\'' | '"' | '`' => quote = Some(c),
+                '#' if previous_is_space => return Some(index),
+                _ => {}
+            },
+        }
+        previous_is_space = quote.is_none() && c.is_whitespace();
+    }
+    None
+}
+
+/// #1185: the snapshot with a trailing ` # comment` removed, for classification only. A comment's
+/// words are not the command's (`rec    # for its own body ...` is the command `rec`, but the
+/// classifier read the comment as prose and sent it to the agent). Borrowed unchanged when there
+/// is no trailing comment or nothing but the comment would be left; callers keep matching
+/// pending-detection state against the original `buffer_text`.
+pub fn strip_trailing_comment(
+    input: &ParsedTokensSnapshot,
+) -> std::borrow::Cow<'_, ParsedTokensSnapshot> {
+    let Some(start) = trailing_comment_start(&input.buffer_text) else {
+        return std::borrow::Cow::Borrowed(input);
+    };
+    let kept = input.buffer_text[..start].trim_end();
+    if kept.trim().is_empty() {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let end = kept.len();
+    std::borrow::Cow::Owned(ParsedTokensSnapshot {
+        buffer_text: kept.to_owned(),
+        parsed_tokens: input
+            .parsed_tokens
+            .iter()
+            .filter(|token| token.token.span().end() <= end)
+            .cloned()
+            .collect(),
+    })
+}
+
+/// #1184: true iff the first word of `text` is a slash command spelling rather than a path to
+/// run: it starts with `/` and has no further `/` or `.` (`/mod`, `/model gpt`, `/`). `/usr/bin/ls`,
+/// `/bin/sh.` and `/./x` are paths.
+pub fn starts_with_slash_command_not_path(text: &str) -> bool {
+    text.split_whitespace()
+        .next()
+        .is_some_and(|head| head.starts_with('/') && !head[1..].contains(['/', '.']))
+}
+
+/// Subcommands of the CLIs whose first argument must be one of them (#1183). Used when no
+/// completion spec describes the argument (spec not loaded, remote session, stale data): a head
+/// listed here with a first argument that is not a subcommand (`git can memory my to`) is not a
+/// command line. Deliberately generous; a miss only sends an agent-conversation line to the agent.
+fn known_subcommands(head: &str) -> Option<&'static [&'static str]> {
+    const GIT: &[&str] = &[
+        "status",
+        "add",
+        "commit",
+        "push",
+        "pull",
+        "fetch",
+        "checkout",
+        "branch",
+        "merge",
+        "rebase",
+        "log",
+        "diff",
+        "show",
+        "stash",
+        "reset",
+        "clone",
+        "init",
+        "remote",
+        "tag",
+        "switch",
+        "restore",
+        "cherry-pick",
+        "bisect",
+        "blame",
+        "clean",
+        "config",
+        "describe",
+        "grep",
+        "mv",
+        "rm",
+        "revert",
+        "submodule",
+        "worktree",
+        "reflog",
+        "apply",
+        "am",
+        "archive",
+        "gc",
+        "notes",
+        "shortlog",
+        "ls-files",
+        "rev-parse",
+        "fsck",
+        "prune",
+        "lfs",
+        "maintenance",
+    ];
+    const SYSTEMCTL: &[&str] = &[
+        "status",
+        "start",
+        "stop",
+        "restart",
+        "reload",
+        "enable",
+        "disable",
+        "is-active",
+        "is-enabled",
+        "is-failed",
+        "list-units",
+        "list-unit-files",
+        "list-timers",
+        "daemon-reload",
+        "mask",
+        "unmask",
+        "cat",
+        "show",
+        "edit",
+        "reboot",
+        "poweroff",
+        "suspend",
+        "kill",
+        "try-restart",
+        "reload-or-restart",
+        "isolate",
+        "get-default",
+        "set-default",
+    ];
+    const DOCKER: &[&str] = &[
+        "ps",
+        "images",
+        "run",
+        "exec",
+        "build",
+        "pull",
+        "push",
+        "logs",
+        "stop",
+        "start",
+        "restart",
+        "rm",
+        "rmi",
+        "compose",
+        "network",
+        "volume",
+        "inspect",
+        "stats",
+        "top",
+        "tag",
+        "login",
+        "logout",
+        "cp",
+        "system",
+        "container",
+        "image",
+        "info",
+        "version",
+        "kill",
+        "pause",
+        "unpause",
+        "attach",
+        "commit",
+        "save",
+        "load",
+        "search",
+        "events",
+        "buildx",
+        "context",
+    ];
+    const CARGO: &[&str] = &[
+        "build",
+        "run",
+        "test",
+        "check",
+        "clippy",
+        "fmt",
+        "doc",
+        "bench",
+        "clean",
+        "new",
+        "init",
+        "add",
+        "remove",
+        "update",
+        "install",
+        "uninstall",
+        "publish",
+        "fetch",
+        "tree",
+        "nextest",
+        "metadata",
+        "search",
+        "package",
+        "vendor",
+        "bloat",
+        "audit",
+        "deny",
+        "watch",
+        "fix",
+    ];
+    const NODE_PM: &[&str] = &[
+        "install",
+        "i",
+        "run",
+        "test",
+        "start",
+        "build",
+        "init",
+        "publish",
+        "update",
+        "uninstall",
+        "ci",
+        "audit",
+        "list",
+        "ls",
+        "outdated",
+        "exec",
+        "dev",
+        "add",
+        "remove",
+        "create",
+        "version",
+        "login",
+        "cache",
+        "link",
+        "pack",
+        "prune",
+        "rebuild",
+        "dlx",
+        "upgrade",
+        "why",
+        "info",
+        "config",
+        "x",
+        "t",
+        "lint",
+    ];
+    const KUBECTL: &[&str] = &[
+        "get",
+        "describe",
+        "apply",
+        "delete",
+        "logs",
+        "exec",
+        "create",
+        "edit",
+        "config",
+        "rollout",
+        "scale",
+        "port-forward",
+        "top",
+        "cp",
+        "label",
+        "annotate",
+        "patch",
+        "expose",
+        "run",
+        "cordon",
+        "uncordon",
+        "drain",
+        "taint",
+        "auth",
+        "api-resources",
+        "explain",
+        "diff",
+        "replace",
+        "wait",
+        "cluster-info",
+        "version",
+        "attach",
+        "set",
+        "events",
+    ];
+    const BREW: &[&str] = &[
+        "install",
+        "uninstall",
+        "list",
+        "update",
+        "upgrade",
+        "search",
+        "info",
+        "cleanup",
+        "doctor",
+        "services",
+        "tap",
+        "untap",
+        "outdated",
+        "deps",
+        "leaves",
+        "link",
+        "unlink",
+        "pin",
+        "unpin",
+        "reinstall",
+        "autoremove",
+        "fetch",
+        "home",
+        "bundle",
+        "cask",
+    ];
+    const APT: &[&str] = &[
+        "install",
+        "update",
+        "upgrade",
+        "remove",
+        "purge",
+        "search",
+        "show",
+        "list",
+        "autoremove",
+        "full-upgrade",
+        "dist-upgrade",
+        "clean",
+        "autoclean",
+        "policy",
+        "depends",
+        "download",
+        "source",
+        "build-dep",
+        "edit-sources",
+        "satisfy",
+        "reinstall",
+    ];
+    const PIP: &[&str] = &[
+        "install",
+        "uninstall",
+        "list",
+        "freeze",
+        "show",
+        "search",
+        "download",
+        "check",
+        "config",
+        "cache",
+        "wheel",
+        "hash",
+        "inspect",
+        "index",
+    ];
+    const GO: &[&str] = &[
+        "build", "run", "test", "mod", "get", "fmt", "vet", "install", "generate", "clean", "env",
+        "version", "list", "work", "doc", "tool", "bug", "fix", "clean",
+    ];
+    const GH: &[&str] = &[
+        "pr",
+        "issue",
+        "repo",
+        "run",
+        "auth",
+        "workflow",
+        "release",
+        "api",
+        "gist",
+        "browse",
+        "status",
+        "config",
+        "alias",
+        "extension",
+        "search",
+        "secret",
+        "variable",
+        "codespace",
+        "cache",
+        "label",
+        "ruleset",
+        "project",
+    ];
+    const OTHER_CLIS: &[&str] = &[
+        "list",
+        "ls",
+        "install",
+        "remove",
+        "status",
+        "up",
+        "down",
+        "plan",
+        "apply",
+        "destroy",
+        "init",
+        "validate",
+        "version",
+        "search",
+        "update",
+        "upgrade",
+        "uninstall",
+        "run",
+        "enable",
+        "disable",
+        "halt",
+        "ssh",
+        "provision",
+        "reload",
+        "se",
+        "in",
+        "info",
+        "refresh",
+        "show",
+        "fmt",
+        "get",
+        "repo",
+        "rollback",
+        "history",
+        "template",
+        "lint",
+        "package",
+        "pull",
+        "push",
+    ];
+    Some(match head {
+        "helm" | "snap" | "flatpak" | "vagrant" | "terraform" | "tofu" => OTHER_CLIS,
+        "git" => GIT,
+        "systemctl" | "loginctl" | "machinectl" => SYSTEMCTL,
+        "docker" | "podman" | "nerdctl" => DOCKER,
+        "cargo" => CARGO,
+        "npm" | "pnpm" | "yarn" | "bun" | "npx" => NODE_PM,
+        "kubectl" | "oc" => KUBECTL,
+        "brew" => BREW,
+        "apt" | "apt-get" | "apt-cache" | "dnf" | "yum" | "zypper" | "pacman" => APT,
+        "pip" | "pip3" | "pipx" | "uv" | "poetry" => PIP,
+        "go" => GO,
+        "gh" => GH,
+        _ => return None,
+    })
+}
+
+/// Targets that are routine for `make`/`just`/`ninja` in any repository.
+const COMMON_MAKE_TARGETS: &[&str] = &[
+    "all",
+    "build",
+    "check",
+    "ci",
+    "clean",
+    "debug",
+    "default",
+    "deploy",
+    "dev",
+    "dist",
+    "doc",
+    "docs",
+    "fmt",
+    "format",
+    "help",
+    "install",
+    "lint",
+    "package",
+    "precheck",
+    "release",
+    "run",
+    "serve",
+    "setup",
+    "test",
+    "tests",
+    "uninstall",
+    "bootstrap",
+    "distclean",
+];
+
+/// Commands whose arguments are free words by design: file, user, process or job names, or text
+/// (`ls the`, `cat notes`, `touch the`, `write alice`, `kill firefox`). Beyond
+/// [`FREE_TEXT_ARG_HEADS`] and the one-off shell keywords. A head here never needs an argument
+/// shaped like a flag or a path to count as a command inside an agent conversation (#1183).
+const FREE_WORD_ARG_HEADS: &[&str] = &[
+    "ls",
+    "ll",
+    "la",
+    "cat",
+    "touch",
+    "rm",
+    "cp",
+    "mv",
+    "mkdir",
+    "rmdir",
+    "stat",
+    "file",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "less",
+    "more",
+    "cd",
+    "pushd",
+    "popd",
+    "which",
+    "type",
+    "diff",
+    "cmp",
+    "ln",
+    "chmod",
+    "chown",
+    "chgrp",
+    "du",
+    "df",
+    "tree",
+    "open",
+    "code",
+    "vim",
+    "vi",
+    "nvim",
+    "nano",
+    "emacs",
+    "bat",
+    "kill",
+    "pkill",
+    "pgrep",
+    "killall",
+    "write",
+    "wall",
+    "id",
+    "who",
+    "w",
+    "finger",
+    "readlink",
+    "realpath",
+    "basename",
+    "dirname",
+    "source",
+    "export",
+    "unset",
+    "alias",
+    "unalias",
+    "history",
+    "jobs",
+    "read",
+    "test",
+    "printf",
+    "cut",
+    "tr",
+    "tee",
+    "xargs",
+    "watch",
+    "sleep",
+    "dd",
+    "tar",
+    "zip",
+    "unzip",
+    "gzip",
+    "gunzip",
+    "cmd",
+    "command",
+    "builtin",
+    "exec",
+    "eval",
+    "set",
+    "declare",
+    "local",
+    "readonly",
+    "typeset",
+    "hash",
+    "fg",
+    "bg",
+    "disown",
+    "wait",
+    "complete",
+    "bind",
+    "ulimit",
+    "umask",
+    "date",
+    "mkfifo",
+    "mktemp",
+    "nl",
+    "rev",
+    "fold",
+    "fmt",
+    "paste",
+    "join",
+    "comm",
+    "od",
+    "xxd",
+    "hexdump",
+    "strings",
+    "md5sum",
+    "sha256sum",
+    "cksum",
+    "base64",
+    "shuf",
+    "split",
+    "csplit",
+    "column",
+    "stty",
+    "tput",
+    "mount",
+    "umount",
+    "passwd",
+    "su",
+    "chsh",
+    "sudo",
+    "doas",
+    "ping",
+    "traceroute",
+    "host",
+    "whois",
+    "telnet",
+    "ftp",
+    "ssh",
+    "scp",
+    "rsync",
+];
+
+/// Heads that are plain English as a lone word: with nothing after them there is no argument to
+/// prove a command, so a lone one is ambiguous (#1185: `help` is a bash builtin AND an everyday
+/// request). [`REQUEST_OPENER_HEADS`] plus verbs that open requests.
+const AMBIGUOUS_LONE_HEADS: &[&str] = &[
+    "help", "list", "run", "install", "delete", "update", "remove", "add", "find", "check",
+    "start", "stop", "fix", "build", "test", "make", "do",
+];
+
+/// #1183: inside an agent conversation a line goes to the shell only on positive evidence that
+/// it is a plausible command; a head word match alone is not enough. Returns `true` when this
+/// line has none, so the caller routes it to the agent (the safe default: a wrong guess here
+/// either executes prose in the user's real working directory (`make commit port` ran `make`) or
+/// costs one click on "Run as shell command instead").
+///
+/// Positive evidence, any of: shell structure (`| & ; < > $` or a backtick); a leading
+/// `NAME=value`; an argument shaped like data rather than English (a flag, a path, `key=value`,
+/// a glob, a quoted string, a word with an interior `.`, `:`, `@`...); a later token the
+/// completion spec describes as a subcommand or option; a head that takes free words by design
+/// ([`FREE_WORD_ARG_HEADS`], [`FREE_TEXT_ARG_HEADS`], one-off keywords); a first argument that is
+/// a known subcommand of a subcommand CLI ([`known_subcommands`]; `git can` is not, `git status`
+/// and `systemctl status nginx` are); for `make`, only routine targets; for a compound
+/// command, an `in`, `do` or `then` word; a bare head that is a known command, an explicit path
+/// or not an English word; and for any other head, not being an ordinary English word
+/// (`kubectl`, `terraform plan`). An ordinary English head with only English-word arguments and
+/// none of the above (`make commit port`, `last about build script`) has none.
+///
+/// Multi-line and oversized buffers are not decided here (`false`), and a trailing comment is
+/// ignored. Callers apply this only in an active agent view; in plain terminal mode the
+/// classifier verdict stands.
+pub fn lacks_command_evidence_in_agent_conversation(input: &ParsedTokensSnapshot) -> bool {
+    let input = strip_trailing_comment(input);
+    let text = input.buffer_text.trim();
+    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || text.contains(['\n', '\r']) {
+        return false;
+    }
+    // Shell structure is evidence of its own, and a line with an open quote is left to the
+    // classifier (bash would park it at `PS2`, nothing runs).
+    if text.contains(['|', '&', ';', '<', '>', '$', '`']) || !has_shell_safe_quoting(text) {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    if first_index > 0 {
+        return false;
+    }
+    let Some(head_index) = effective_head_index(&words, first_index) else {
+        // Only a wrapper and its options so far (`sudo -n`, `nice`): a command line in progress.
+        return false;
+    };
+    let head_word = &words[head_index];
+    // #1184: `/mod` is a slash command spelling, never a path to run; `/usr/bin/ls` is a path.
+    if starts_with_slash_command_not_path(&head_word.text) {
+        return true;
+    }
+    if head_word.quoted || is_explicit_path_token(&head_word.text) {
+        return false;
+    }
+    let head = word_basename(head_word).to_lowercase();
+    let head = head.as_str();
+    let args = &words[head_index + 1..];
+
+    if COMPOUND_COMMAND_HEADS.contains(&head) {
+        return !args
+            .iter()
+            .any(|word| !word.quoted && matches!(word.text.as_str(), "in" | "do" | "then"));
+    }
+    if is_one_off_shell_command_keyword(head) {
+        return false;
+    }
+    let english = is_ordinary_english_word(head);
+    if args.is_empty() {
+        if is_known_shell_command_word(head) {
+            return false;
+        }
+        if english {
+            // Installed or not, a lone English word is ambiguous unless the session described it
+            // as a command and it is not an everyday request opener (`write`, `date`; not `help`).
+            let described = input
+                .parsed_tokens
+                .iter()
+                .find(|token| {
+                    token.token_index == 0
+                        && token.token.as_str().eq_ignore_ascii_case(&head_word.text)
+                })
+                .is_some_and(|token| token.token_description.is_some());
+            return !described
+                || REQUEST_OPENER_HEADS.contains(&head)
+                || AMBIGUOUS_LONE_HEADS.contains(&head);
+        }
+        return false;
+    }
+    if args.iter().any(is_data_shaped_word) {
+        return false;
+    }
+    if input.parsed_tokens.iter().any(|token| {
+        token.token_index >= 1
+            && token.token_description.as_ref().is_some_and(|d| {
+                matches!(
+                    d.suggestion_type,
+                    warp_completer::completer::SuggestionType::Subcommand
+                        | warp_completer::completer::SuggestionType::Option(..)
+                )
+            })
+    }) {
+        return false;
+    }
+    if let Some(subcommands) = known_subcommands(head) {
+        return !subcommands.contains(&args[0].text.as_str());
+    }
+    if matches!(head, "make" | "gmake" | "just" | "ninja") {
+        return !args
+            .iter()
+            .all(|word| COMMON_MAKE_TARGETS.contains(&word.text.as_str()));
+    }
+    if FREE_WORD_ARG_HEADS.contains(&head) || FREE_TEXT_ARG_HEADS.contains(&head) {
+        return false;
+    }
+    english
+}
+
+/// An argument that is shell data rather than an English word: quoted, a flag, a path, `k=v`, a
+/// glob or brace, `host:port`, `a@b`, or a word with an interior dot (`main.rs`).
+fn is_data_shaped_word(word: &ShellWord) -> bool {
+    if word.quoted
+        || word.text.starts_with(['-', '.', '~'])
+        || word
+            .text
+            .contains(['/', '=', '*', '[', ']', '{', '}', '@', '\\', '%', '+', '#'])
+    {
+        return true;
+    }
+    let bare = strip_sentence_punctuation(&word.text);
+    bare.contains(['.', ':']) && !bare.is_empty()
+}
+
 #[cfg(test)]
 #[path = "util_tests.rs"]
 mod tests;
