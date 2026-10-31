@@ -210,6 +210,21 @@ pub fn local_cwd_for_session(
         .map(std::path::PathBuf::from)
 }
 
+/// Why the local codebase index cannot answer for this conversation's session, if so
+/// (#1276). Lets the tools return an explicit "unavailable" result instead of an empty
+/// snapshot, which the model would read as "the repository is empty".
+pub fn codebase_unavailable_reason(
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<&'static str> {
+    if session_context.is_remote() {
+        Some("codebase index unavailable for remote sessions")
+    } else if session_context.current_working_directory().is_none() {
+        Some("codebase index unavailable: this session's working directory is not known yet")
+    } else {
+        None
+    }
+}
+
 /// Builds the request-scoped symbol snapshot from the conversation's own repository's local
 /// `RepoOutlines` index (resolved from `session_context`, not the active window).
 ///

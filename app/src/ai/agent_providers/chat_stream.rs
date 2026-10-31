@@ -8220,6 +8220,7 @@ pub async fn generate_byop_output(
                     &args_str,
                     params.codebase_context_enabled,
                     &params.codebase_symbols,
+                    tools::codebase_runtime::codebase_unavailable_reason(&params.session_context),
                 );
 
                 let result_content = serde_json::to_string(&result_json)
@@ -8257,6 +8258,7 @@ pub async fn generate_byop_output(
                     params.codebase_context_enabled,
                     params.relevant_files.as_deref(),
                     params.codebase_retrieval.as_ref(),
+                    tools::codebase_runtime::codebase_unavailable_reason(&params.session_context),
                 )
                 .await;
 
@@ -8972,6 +8974,7 @@ fn dispatch_byop_codebase_tool(
     args_str: &str,
     codebase_context_enabled: bool,
     symbols: &[tools::codebase_runtime::CodebaseSymbol],
+    unavailable: Option<&'static str>,
 ) -> Value {
     use tools::codebase_runtime;
     if !codebase_context_enabled {
@@ -8979,6 +8982,11 @@ fn dispatch_byop_codebase_tool(
         return codebase_runtime::error_to_json(&anyhow::anyhow!(
             "codebase_context_enabled is disabled for this profile"
         ));
+    }
+    // An explicit "unavailable" (remote session, cwd not known yet), not an empty snapshot
+    // that would read as "no index / empty repository" (#1276).
+    if let Some(reason) = unavailable {
+        return codebase_runtime::error_to_json(&anyhow::anyhow!("{reason}"));
     }
     match serde_json::from_str::<codebase_runtime::SearchCodebaseArgs>(args_str) {
         Ok(args) => {
@@ -9005,6 +9013,7 @@ async fn dispatch_byop_get_relevant_files_tool(
     codebase_context_enabled: bool,
     snapshot: Option<&tools::get_relevant_files_runtime::RelevantFilesSnapshot>,
     retrieval: Option<&crate::ai::codebase_retrieval::CodebaseRetrievalHandle>,
+    unavailable: Option<&'static str>,
 ) -> Value {
     use tools::get_relevant_files_runtime;
     // Two independent mechanisms answer this tool, on two independent settings: the
@@ -9036,6 +9045,11 @@ async fn dispatch_byop_get_relevant_files_tool(
     // no longer the end of the road: the embedding index may still answer. Both being
     // absent yields a graceful `no_context`, not an error.
     let snapshot = snapshot.filter(|_| codebase_context_enabled);
+    // No local snapshot and no embedding index, because the session is remote or its cwd is
+    // unknown: say so instead of answering `no_context` (#1276).
+    if let (Some(reason), None, None) = (unavailable, snapshot, retrieval) {
+        return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!("{reason}"));
+    }
     let out =
         get_relevant_files_runtime::run_get_relevant_files_merged(args, snapshot, retrieval).await;
     get_relevant_files_runtime::output_to_json(&out)

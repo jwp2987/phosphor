@@ -290,15 +290,67 @@ pub mod relevant_files {
         })
     }
 
+    /// Longest the one-shot filter may take before the tool reports a timeout. The call runs
+    /// inline in the agent's stream, so a stalled provider would otherwise hold the turn
+    /// until the user pressed Stop (#1276).
+    pub const ONESHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// What the one-shot filter returned, plus how much of the candidate list the model saw.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct FilterRun {
+        pub files: Vec<String>,
+        /// Candidate files that fit in the prompt before the `max_chars` cut.
+        pub shown: usize,
+        pub total: usize,
+    }
+
+    /// Awaits `fut`, giving up after `deadline` (`None` on timeout).
+    pub async fn with_deadline<T>(
+        fut: impl std::future::Future<Output = T>,
+        deadline: std::time::Duration,
+    ) -> Option<T> {
+        use futures::future::{select, Either};
+        let fut = std::pin::pin!(fut);
+        let timer = std::pin::pin!(warpui::r#async::Timer::after(deadline));
+        match select(fut, timer).await {
+            Either::Left((value, _)) => Some(value),
+            Either::Right(_) => None,
+        }
+    }
+
+    /// How many file lines of the rendered user prompt lie entirely within the first
+    /// `max_chars` characters (what `oneshot` keeps), and how many there are in all. The
+    /// file list is the `- ` lines after the `# Files` header.
+    pub fn files_within_budget(user: &str, max_chars: usize) -> (usize, usize) {
+        let mut consumed = 0usize;
+        let (mut shown, mut total) = (0usize, 0usize);
+        let mut in_files = false;
+        for line in user.split_inclusive('\n') {
+            consumed += line.chars().count();
+            let trimmed = line.trim_end_matches('\n');
+            if trimmed == "# Files" {
+                in_files = true;
+            } else if in_files && trimmed.starts_with("- ") {
+                total += 1;
+                // The trailing newline is not needed for the line to be intact.
+                if consumed - (line.len() - trimmed.len()) <= max_chars {
+                    shown += 1;
+                }
+            }
+        }
+        (shown, total)
+    }
+
     /// Phase 2 (in the spawn / tool interceptor, no `AppContext`): render the user
     /// prompt from `query` + `files`, run the BYOP oneshot, and parse the response
-    /// into the subset of `files` the model judged relevant. Returns an empty vec on
-    /// any error (mirrors the original ServerApi-less no-op behavior).
+    /// into the subset of `files` the model judged relevant. A failed or timed-out
+    /// call is an `Err` carrying a message for the agent -- never an empty list, which
+    /// would read as "no relevant files" (#1276).
     pub async fn run_with_context(
         prepared: &PreparedContext,
         query: &str,
         files: &[FileEntry],
-    ) -> Vec<String> {
+    ) -> Result<FilterRun, String> {
         let input_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
         let user = render(
             "relevant_files_user.j2",
@@ -307,21 +359,35 @@ pub mod relevant_files {
                 files => files,
             },
         );
-        let raw = match byop_oneshot_completion(
-            &prepared.cfg,
-            &prepared.system,
-            &user,
-            &prepared.opts,
+        let (shown, total) =
+            files_within_budget(&user, prepared.opts.max_chars.unwrap_or(usize::MAX));
+        let raw = match with_deadline(
+            byop_oneshot_completion(&prepared.cfg, &prepared.system, &user, &prepared.opts),
+            ONESHOT_TIMEOUT,
         )
         .await
         {
-            Ok(s) => s,
-            Err(e) => {
+            Some(Ok(s)) => s,
+            Some(Err(e)) => {
                 log::debug!("[active_ai] relevant_files oneshot failed: {e:#}");
-                return Vec::new();
+                return Err(format!(
+                    "the outline filter's model call failed ({}); this is not an empty result",
+                    e.root_cause()
+                ));
+            }
+            None => {
+                log::warn!("[active_ai] relevant_files oneshot timed out");
+                return Err(format!(
+                    "the outline filter's model call timed out after {}s; this is not an empty result",
+                    ONESHOT_TIMEOUT.as_secs()
+                ));
             }
         };
-        parsing::parse_relevant_files(&raw, &input_paths)
+        Ok(FilterRun {
+            files: parsing::parse_relevant_files(&raw, &input_paths),
+            shown,
+            total,
+        })
     }
 }
 

@@ -203,3 +203,25 @@ fn local_cwd_for_session_is_none_for_remote_sessions() {
     // Unknown cwd: nothing to index (no fallback to the active window).
     assert_eq!(local_cwd_for_session(&SessionContext::new_for_test()), None);
 }
+
+/// #1276: a remote session, or one whose cwd is not known yet, gets an explicit
+/// "unavailable" reason rather than an empty snapshot that reads as an empty repository.
+#[test]
+fn codebase_unavailable_reason_names_remote_and_unknown_cwd() {
+    use crate::ai::blocklist::SessionContext;
+
+    let remote =
+        SessionContext::new_warpified_remote_for_test(true).with_cwd_for_test("/work/repo-x");
+    assert_eq!(
+        codebase_unavailable_reason(&remote),
+        Some("codebase index unavailable for remote sessions")
+    );
+    let local = SessionContext::new_local_with_cwd_for_test("/w");
+    assert!(codebase_unavailable_reason(&local).is_none());
+    let no_cwd = SessionContext::new_for_test();
+    assert!(
+        codebase_unavailable_reason(&no_cwd)
+            .unwrap()
+            .contains("working directory is not known")
+    );
+}
