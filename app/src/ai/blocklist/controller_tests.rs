@@ -2274,3 +2274,117 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
         });
     });
 }
+
+/// #1178: the facts under which a finished monitored command is reported to the model.
+mod monitored_completion {
+    use super::super::{silent_stop_reason, MonitoredCompletionFacts};
+    use super::*;
+
+    fn idle_after_text_reply() -> MonitoredCompletionFacts {
+        MonitoredCompletionFacts {
+            last_turn_succeeded: true,
+            ..Default::default()
+        }
+    }
+
+    /// The reported case: the model answered the "running" snapshot with text and ended its
+    /// turn, then the command finished. Fails on the old code, which sent nothing.
+    #[test]
+    fn sends_one_follow_up_when_the_turn_already_ended() {
+        assert!(idle_after_text_reply().should_follow_up());
+    }
+
+    #[test]
+    fn never_sends_a_second_follow_up_for_the_same_block() {
+        let facts = MonitoredCompletionFacts {
+            already_followed_up: true,
+            ..idle_after_text_reply()
+        };
+        assert!(!facts.should_follow_up());
+    }
+
+    #[test]
+    fn guarded_cases_send_nothing() {
+        let base = idle_after_text_reply();
+        // The model is mid-turn (a new user turn, or it polled the output itself).
+        assert!(!MonitoredCompletionFacts {
+            stream_in_flight: true,
+            ..base
+        }
+        .should_follow_up());
+        // The user stopped the conversation, it failed, or a new turn is in progress.
+        assert!(!MonitoredCompletionFacts {
+            last_turn_succeeded: false,
+            ..base
+        }
+        .should_follow_up());
+        // The pane is closed.
+        assert!(!MonitoredCompletionFacts {
+            suspended_for_close: true,
+            ..base
+        }
+        .should_follow_up());
+        // A compaction is under way.
+        assert!(!MonitoredCompletionFacts {
+            mid_compaction: true,
+            ..base
+        }
+        .should_follow_up());
+        // Results are on their way to the model already.
+        assert!(!MonitoredCompletionFacts {
+            has_unsent_actions: true,
+            ..base
+        }
+        .should_follow_up());
+    }
+
+    fn result_of(
+        result: crate::ai::agent::AIAgentActionResultType,
+    ) -> std::sync::Arc<crate::ai::agent::AIAgentActionResult> {
+        std::sync::Arc::new(crate::ai::agent::AIAgentActionResult {
+            id: AIAgentActionId::from("call".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result,
+        })
+    }
+
+    fn completed_130(interrupted: bool) -> crate::ai::agent::AIAgentActionResultType {
+        crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(
+            crate::ai::agent::RequestCommandOutputResult::Completed {
+                block_id: crate::terminal::model::block::BlockId::new(),
+                command: "sh -c 'exit 130'".to_owned(),
+                output: String::new(),
+                exit_code: 130.into(),
+                start_ts: None,
+                completed_ts: None,
+                interrupted,
+            },
+        )
+    }
+
+    /// B: a self-exited 130 produces a normal result, so a request follows and nothing is
+    /// reported as a silent stop; a user interrupt does not trigger one.
+    #[test]
+    fn self_exited_130_continues_and_an_interrupt_does_not() {
+        let self_exit = result_of(completed_130(false));
+        assert!(self_exit.result.should_trigger_request_upon_completion());
+        assert_eq!(silent_stop_reason(None, &[self_exit]), None);
+
+        let interrupted = result_of(completed_130(true));
+        assert!(!interrupted.result.should_trigger_request_upon_completion());
+    }
+
+    /// A turn that ends with a cancelled result nobody asked for says why; a deliberate stop
+    /// (a cancellation reason is set) stays quiet.
+    #[test]
+    fn unrequested_cancelled_result_reports_a_stop_reason() {
+        let interrupted = result_of(completed_130(true));
+        let reason = silent_stop_reason(None, std::slice::from_ref(&interrupted))
+            .expect("an unrequested cancelled result must be reported");
+        assert!(reason.contains("sh -c 'exit 130'"), "{reason}");
+        assert_eq!(
+            silent_stop_reason(Some(CancellationReason::ManuallyCancelled), &[interrupted]),
+            None
+        );
+    }
+}

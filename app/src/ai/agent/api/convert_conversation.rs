@@ -529,6 +529,9 @@ pub(crate) fn convert_tool_call_result_to_input(
                             .finish_ts
                             .as_ref()
                             .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos)),
+                        // The wire format does not carry it: a restored 130 keeps meaning
+                        // "cancelled", as before #1178.
+                        interrupted: finished.exit_code == 130,
                     }
                 }
                 Some(api::run_shell_command_result::Result::LongRunningCommandSnapshot(
