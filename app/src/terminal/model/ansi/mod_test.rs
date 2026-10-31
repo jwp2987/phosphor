@@ -1128,6 +1128,7 @@ fn parse_dcs_bootstrapped() {
             BootstrappedValue {
                 session_id: Some(167303092612201),
                 histfile: Some("/Users/andy/.zsh_history".to_string()),
+                history_sqlite: None,
                 shell: "bash".to_string(),
                 home_dir: Some("/Users/andy".to_string()),
                 path: Some("/usr/sbin:/usr/bin".to_string()),

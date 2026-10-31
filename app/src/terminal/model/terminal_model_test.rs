@@ -93,6 +93,7 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
 
     let bootstrapped_value = BootstrappedValue {
         histfile: None,
+        history_sqlite: None,
         shell: String::from("bash"),
         home_dir: None,
         path: None,
