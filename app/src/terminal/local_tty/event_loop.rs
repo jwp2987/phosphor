@@ -37,6 +37,20 @@ const READ_BUFFER_SIZE: usize = 0x4_0000;
 /// someone else an opportunity to lock it.
 const MAX_LOCKED_READ: usize = 0x1_0000;
 
+/// Most bytes parsed in one hold of the terminal model lock. The reader parses what it has read
+/// in slices of this size and lets a waiting thread (the UI) in between them, so one hold is
+/// bounded by a slice rather than by everything buffered (#1135).
+const PARSE_SLICE: usize = 0x4000;
+
+/// Most bytes buffered while the terminal model is locked elsewhere (the UI is laying out or
+/// painting) before the reader blocks for the lock instead of reading on. Without a cap the
+/// reader buffered the whole read buffer and parsed it in one hold right after the UI let go,
+/// just before the UI wanted the lock again (#1135).
+const MAX_UNLOCKED_ACCUMULATION: usize = 0x8000;
+
+/// A hold of the terminal model lock longer than this is logged at debug level.
+const SLOW_PARSE_HOLD: Duration = Duration::from_millis(8);
+
 pub const CHANNEL_TOKEN: mio::Token = mio::Token(0);
 pub const PTY_TOKEN: mio::Token = mio::Token(1);
 pub const SIGNALS_TOKEN: mio::Token = mio::Token(2);
@@ -382,6 +396,46 @@ fn executing_block_id(terminal: &TerminalModel) -> Option<BlockId> {
     block.is_executing().then(|| block.id().clone())
 }
 
+/// Parses one slice of pty output into the terminal model, queueing the replies the parser
+/// generates. The executing block is read for each slice: the command may finish, and the next
+/// one start, inside the parse of an earlier slice. The parser is incremental (it advances a
+/// byte at a time and already sees arbitrary read boundaries), so slicing does not change the
+/// result.
+fn parse_slice(
+    state: &mut State,
+    terminal: &mut TerminalModel,
+    reply_ledger: &SharedReplyLedger,
+    bytes: &[u8],
+) {
+    // Any terminal response sequences the parser generates (e.g. cursor position / device
+    // status reports) are collected into a buffer and queued onto `write_list` below, rather
+    // than written directly to the PTY here: a direct write can hit `WouldBlock` if the PTY's
+    // write buffer is full, and `ansi::Processor` does not retry a failed write, so a direct
+    // write silently drops the response. `write_list`/`pty_write` already retry across
+    // `WouldBlock`, so routing through it is what actually guarantees delivery.
+    // Upstream: e59c7a491489 "Fix dropped terminal response sequences when PTY writes block"
+    // (#11906).
+    let mut terminal_response_sequences = Vec::new();
+    // Read the active block BEFORE parsing: replies are generated, and the command may finish,
+    // synchronously inside `parse_bytes`.
+    let executing_block = executing_block_id(terminal);
+    state.parser.parse_bytes(
+        terminal,
+        bytes,
+        &mut ReplyWriter {
+            replies: &mut terminal_response_sequences,
+            ledger: reply_ledger,
+        },
+    );
+    let evicted = state.queue_response(terminal_response_sequences, executing_block);
+    if !evicted.is_empty() {
+        let mut ledger = reply_ledger.lock();
+        for bytes in &evicted {
+            ledger.forget_replies(bytes);
+        }
+    }
+}
+
 impl Writing {
     #[inline]
     fn new(c: Cow<'static, [u8]>, is_reply: bool, discardable: bool) -> Writing {
@@ -596,8 +650,10 @@ where
             let terminal = match &mut terminal {
                 Some(terminal) => terminal,
                 None => terminal.insert(match self.terminal.try_lock() {
-                    // If we've filled up the buffer, block on locking the terminal.
-                    None if bytes_in_buffer >= READ_BUFFER_SIZE => self.terminal.lock(),
+                    // If we've buffered a lot while the terminal was locked elsewhere, block
+                    // on it rather than read on: the wait is one hold by the other thread
+                    // (fair mutex), and the parse that follows stays small (#1135).
+                    None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION => self.terminal.lock(),
                     // Otherwise, if we failed to acquire the lock, try to read more
                     // data into the buffer.
                     None => continue,
@@ -606,35 +662,28 @@ where
                 }),
             };
 
-            // Process the bytes read into the buffer. Any terminal response
-            // sequences the parser generates (e.g. cursor position / device
-            // status reports) are collected into a buffer and queued onto
-            // `write_list` below, rather than written directly to the PTY
-            // here: a direct write can hit `WouldBlock` if the PTY's write
-            // buffer is full, and `ansi::Processor` does not retry a failed
-            // write, so a direct write silently drops the response.
-            // `write_list`/`pty_write` already retry across `WouldBlock`
-            // (see below), so routing through it is what actually
-            // guarantees delivery.
-            // Upstream: e59c7a491489 "Fix dropped terminal response
-            // sequences when PTY writes block" (#11906).
-            let mut terminal_response_sequences = Vec::new();
-            // Read the active block BEFORE parsing: replies are generated, and the
-            // command may finish, synchronously inside `parse_bytes`.
-            let executing_block = executing_block_id(terminal);
-            state.parser.parse_bytes(
-                terminal.deref_mut(),
-                &buf[..bytes_in_buffer],
-                &mut ReplyWriter {
-                    replies: &mut terminal_response_sequences,
-                    ledger: &self.reply_ledger,
-                },
-            );
-            let evicted = state.queue_response(terminal_response_sequences, executing_block);
-            if !evicted.is_empty() {
-                let mut ledger = self.reply_ledger.lock();
-                for bytes in &evicted {
-                    ledger.forget_replies(bytes);
+            // Parse in bounded slices, handing the lock to a waiting thread between them, so
+            // no single hold covers everything read (#1135).
+            let mut offset = 0;
+            while offset < bytes_in_buffer {
+                let end = (offset + PARSE_SLICE).min(bytes_in_buffer);
+                let held_since = Instant::now();
+                parse_slice(
+                    state,
+                    terminal.deref_mut(),
+                    &self.reply_ledger,
+                    &buf[offset..end],
+                );
+                let held = held_since.elapsed();
+                if held >= SLOW_PARSE_HOLD {
+                    log::debug!(
+                        "pty parse held the model lock for {held:?} ({} bytes)",
+                        end - offset
+                    );
+                }
+                offset = end;
+                if offset < bytes_in_buffer {
+                    FairMutexGuard::bump(terminal);
                 }
             }
 
@@ -725,7 +774,7 @@ where
         buf: &mut [u8],
         can_read: &mut bool,
         can_write: &mut bool,
-    ) -> Result<(), ()> {
+    ) -> Result<ChannelResult, ()> {
         self.refresh_reply_gate(state);
         while *can_read || (state.needs_write() && *can_write) {
             if *can_read {
@@ -742,11 +791,23 @@ where
                         // Nothing queued can reach a dead pty, and a withheld reply would
                         // keep the gate poll timer armed.
                         state.discard_pending_writes();
-                        return Ok(());
+                        return Ok(ChannelResult::Continue);
                     }
 
                     error!("Error reading from PTY in event loop: {err}");
                     return Err(());
+                }
+
+                // Under a sustained flood the pty never reports `WouldBlock`, so this loop
+                // would not return to `poll` (the only other place the channel is drained)
+                // until the output stopped: typed keys, resizes and shutdown waited behind
+                // it (#1132). Take them between read passes. This must not return early:
+                // `mio` is edge-triggered, so leaving with `can_read` still set would wait
+                // for an edge that has already been consumed.
+                if let ChannelResult::TerminateLoop { child_exited } =
+                    self.drain_recv_channel(state)
+                {
+                    return Ok(ChannelResult::TerminateLoop { child_exited });
                 }
             }
 
@@ -758,7 +819,16 @@ where
                 }
             }
         }
-        Ok(())
+        Ok(ChannelResult::Continue)
+    }
+
+    /// What the loop does when it is asked to stop. Returns whether the child had exited.
+    fn note_terminating(&self, child_exited: bool) -> bool {
+        if child_exited {
+            self.terminal.lock().exit(ExitReason::ShellProcessExited);
+            self.event_listener.send_wakeup_event();
+        }
+        child_exited
     }
 
     pub fn spawn(mut self) -> JoinHandle<()> {
@@ -859,13 +929,7 @@ where
                                     ChannelResult::TerminateLoop {
                                         child_exited: exited,
                                     } => {
-                                        if exited {
-                                            self.terminal
-                                                .lock()
-                                                .exit(ExitReason::ShellProcessExited);
-                                            child_exited = true;
-                                            self.event_listener.send_wakeup_event();
-                                        }
+                                        child_exited = self.note_terminating(exited);
                                         break 'event_loop;
                                     }
                                 }
@@ -920,7 +984,13 @@ where
                     }
                     self.refresh_reply_gate(&mut state);
                     match self.service_io(&mut state, &mut buf, &mut can_read, &mut can_write) {
-                        Ok(()) => {}
+                        Ok(ChannelResult::Continue) => {}
+                        Ok(ChannelResult::TerminateLoop {
+                            child_exited: exited,
+                        }) => {
+                            child_exited = self.note_terminating(exited);
+                            break 'event_loop;
+                        }
                         Err(()) => break 'event_loop,
                     }
                     // After a hang-up the exit event may already have been consumed; ask the

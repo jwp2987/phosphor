@@ -9,7 +9,7 @@ use crate::terminal::{
 };
 use async_channel::Receiver;
 use futures_util::SinkExt;
-use parking_lot::FairMutex;
+use parking_lot::{FairMutex, FairMutexGuard};
 use serde::Serialize;
 use std::io;
 use std::sync::Arc;
@@ -224,11 +224,21 @@ impl EventLoop {
     /// Processes a byte slice through the `Processor`.
     fn process_pty_bytes(&mut self, bytes: &[u8]) {
         let mut terminal_model = self.terminal_model.lock();
-        self.parser
-            .parse_bytes(&mut *terminal_model, bytes, &mut io::sink());
+        // Bounded slices, letting a waiting thread in between (#1135).
+        let mut slices = bytes.chunks(PARSE_SLICE).peekable();
+        while let Some(slice) = slices.next() {
+            self.parser
+                .parse_bytes(&mut *terminal_model, slice, &mut io::sink());
+            if slices.peek().is_some() {
+                FairMutexGuard::bump(&mut terminal_model);
+            }
+        }
         self.channel_event_listener.send_wakeup_event();
     }
 }
+
+/// Most bytes parsed in one hold of the terminal model lock.
+const PARSE_SLICE: usize = 0x4000;
 
 impl Entity for EventLoop {
     type Event = ();
