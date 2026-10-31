@@ -661,7 +661,7 @@ async fn generate_suggestions_for_argument_value(
             };
 
             let Ok(output) = generator_ctx
-                .execute_command_at_pwd(script.as_str(), session_env_vars.cloned())
+                .execute_generator_at_pwd(script.as_str(), session_env_vars.cloned())
                 .await
             else {
                 return vec![];
