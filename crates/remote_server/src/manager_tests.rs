@@ -663,3 +663,30 @@ fn a_new_connection_attempt_invalidates_the_previous_streams_generation() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------
+// consecutive_short_lived_connections (#1250)
+// ---------------------------------------------------------------------------
+
+/// A daemon that dies right after each handshake is reconnected to at most
+/// `MAX_SHORT_LIVED_CONNECTIONS` times; one connection that stays up resets the count, and a
+/// disconnect from a session that never reached `Connected` counts as nothing.
+#[test]
+fn short_lived_connections_count_up_and_a_stable_one_resets() {
+    let short = Some(STABLE_CONNECTION_AFTER / 2);
+    let mut count = 0;
+    for expected in 1..=MAX_SHORT_LIVED_CONNECTIONS {
+        count = consecutive_short_lived_connections(count, short);
+        assert_eq!(count, expected);
+    }
+    assert!(count >= MAX_SHORT_LIVED_CONNECTIONS);
+    assert_eq!(
+        consecutive_short_lived_connections(count, Some(STABLE_CONNECTION_AFTER)),
+        0
+    );
+    assert_eq!(consecutive_short_lived_connections(2, None), 0);
+    assert_eq!(
+        consecutive_short_lived_connections(u32::MAX, short),
+        u32::MAX
+    );
+}
