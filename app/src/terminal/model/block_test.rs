@@ -1833,6 +1833,59 @@ fn test_mark_end_of_prompt_with_some_rows_in_flat_storage() {
     assert!(block.header_grid.prompt_and_command_grid().grid_storage()[point].is_end_of_prompt());
 }
 
+/// The finished-block counterpart of the test above (follow-up to 942338093, #1198): a rows-only
+/// resize of a FINISHED grid is a no-op, so its prompt rows stay in flat storage. The end-of-prompt
+/// marker must still be found there by the flat-storage-aware readers real code uses:
+/// `GridHandler::prompt_end_point` (the row scan that refreshes the cached prompt end),
+/// the cached `HeaderGrid::prompt_end_point`, and `prompt_contents_to_string` (what copy and
+/// selection read). Reading `grid_storage()` directly, as the live-grid test does, cannot see them.
+#[test]
+fn test_end_of_prompt_found_in_flat_storage_of_finished_block_after_rows_only_resize() {
+    use warp_terminal::model::grid::Dimensions as _;
+
+    let mut block = TestBlockBuilder::new()
+        .with_size_info(SizeInfo::new_without_font_metrics(1, 40))
+        .with_honor_ps1(true)
+        .build();
+
+    block.prompt_only_precmd(PromptMetadata {
+        ps1: Some(hex::encode("prompt1\r\n")),
+        honor_ps1: Some(true),
+        ..Default::default()
+    });
+    block.start();
+    block.finish(0);
+
+    let read_back = |block: &Block| {
+        let handler = block.header_grid.prompt_and_command_grid().grid_handler();
+        (
+            handler.prompt_end_point(),
+            block.header_grid.prompt_end_point(),
+            block.prompt_contents_to_string(false),
+        )
+    };
+    let (scanned, cached, text) = read_back(&block);
+    assert_eq!(scanned, Some(Point::new(0, 39)));
+    assert!(matches!(
+        cached,
+        Some(PromptEndPoint::PromptEnd { point, .. }) if point == Point::new(0, 39)
+    ));
+    assert_eq!(text.trim_end(), "prompt1");
+
+    // Rows-only resize of the finished block: skipped by the grid, nothing may change.
+    let rows = block
+        .header_grid
+        .prompt_and_command_grid()
+        .grid_handler()
+        .total_rows();
+    block.resize(SizeInfo::new_without_font_metrics(rows + 3, 40));
+
+    let (scanned_after, cached_after, text_after) = read_back(&block);
+    assert_eq!(scanned_after, scanned);
+    assert_eq!(cached_after, cached);
+    assert_eq!(text_after, text);
+}
+
 #[test]
 fn test_restored_block_was_local() {
     // Test default value is None
