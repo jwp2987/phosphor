@@ -364,6 +364,58 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
     }
 
+    # Resolves the current branch/HEAD for the prompt without spawning git (a process spawn costs
+    # ~90 ms per prompt on Windows, #1163). Walks up from $PWD to a '.git' directory or a '.git'
+    # file ('gitdir: <path>', used by worktrees and submodules) and reads HEAD.
+    # Returns a hashtable with 'Branch' (a branch name, or $null when detached), 'Head' (the
+    # branch, or the HEAD text when detached) and 'Gitdir'; returns @{ NotRepo = $true } when
+    # there is clearly no repository; returns $null whenever the answer needs git itself
+    # (GIT_DIR set, non-filesystem location, bare repo, HEAD not a plain refs/heads ref or a
+    # 40/64-hex object name, unreadable files).
+    function Warp-GitHeadInProcess {
+        try {
+            if ($env:GIT_DIR -or $env:GIT_WORK_TREE -or $env:GIT_CEILING_DIRECTORIES -or $env:GIT_DISCOVERY_ACROSS_FILESYSTEM) { return $null }
+            if ($PWD.Provider.Name -ne 'FileSystem') { return $null }
+            $dir = $PWD.ProviderPath
+            $gitdir = $null
+            while (-not [string]::IsNullOrEmpty($dir)) {
+                $candidate = [System.IO.Path]::Combine($dir, '.git')
+                if ([System.IO.Directory]::Exists($candidate)) {
+                    $gitdir = $candidate
+                    break
+                }
+                if ([System.IO.File]::Exists($candidate)) {
+                    $line = [System.IO.File]::ReadAllText($candidate).Trim()
+                    if (-not $line.StartsWith('gitdir:')) { return $null }
+                    $gitdir = [System.IO.Path]::Combine($dir, $line.Substring(7).Trim())
+                    if (-not [System.IO.Directory]::Exists($gitdir)) { return $null }
+                    break
+                }
+                $dir = [System.IO.Path]::GetDirectoryName($dir)
+            }
+            if ($null -eq $gitdir) {
+                # A bare repository (or a directory inside a '.git' dir) has no '.git' entry.
+                $here = $PWD.ProviderPath
+                if ([System.IO.File]::Exists([System.IO.Path]::Combine($here, 'HEAD')) -or [System.IO.Directory]::Exists([System.IO.Path]::Combine($here, 'refs'))) { return $null }
+                return @{ NotRepo = $true }
+            }
+            $headPath = [System.IO.Path]::Combine($gitdir, 'HEAD')
+            if (-not [System.IO.File]::Exists($headPath)) { return $null }
+            $head = [System.IO.File]::ReadAllText($headPath).Trim()
+            if ($head.StartsWith('ref: refs/heads/')) {
+                $branch = $head.Substring(16)
+                if ($branch.Length -eq 0 -or $branch -eq '.invalid') { return $null }
+                return @{ Branch = $branch; Head = $branch; Gitdir = $gitdir }
+            }
+            if ($head -match '^[0-9a-f]{40}$' -or $head -match '^[0-9a-f]{64}$') {
+                return @{ Branch = $null; Head = $head; Gitdir = $gitdir }
+            }
+            return $null
+        } catch {
+            return $null
+        }
+    }
+
     # Helper function that resets the values of '$?' and
     # $LASTEXITCODE. Note that it cannot force '$?' to $true
     # if it is currently $false
@@ -612,7 +664,18 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # current location + PATH so we only spawn node when the directory or PATH
                 # changes (PATH changes on version-manager switches like `nvm use`).
                 $nodeChipEnabled = "$env:WARP_PROMPT_NODE_VERSION_ENABLED" -ne '0'
-                $hasNodeCommand = if ($nodeChipEnabled) { Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null } else { $null }
+                # Whether node exists is cached per session, negative results included, and
+                # re-probed only when $env:PATH changes (a failed lookup scans all of PATH,
+                # ~30 ms per prompt on Windows, #1163).
+                $hasNodeCommand = $false
+                if ($nodeChipEnabled) {
+                    if (-not $script:warpNodeProbeDone -or $script:warpNodeProbePath -ne $env:PATH) {
+                        $script:warpNodeProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null)
+                        $script:warpNodeProbePath = $env:PATH
+                        $script:warpNodeProbeDone = $true
+                    }
+                    $hasNodeCommand = $script:warpNodeProbeValue
+                }
                 if ($hasNodeCommand) {
                     try {
                         $nodeCacheKey = "$($PWD.Path)|$env:PATH"
@@ -663,17 +726,39 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # in an if statement; it thinks we are trying to do -gt incorrectly.
                 # Since this is a good warning and we do not want to turn off this lint rule,
                 # we do a little indirection here
-                $hasGitCommand = Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null
+                # git's presence is cached per $env:PATH like node's; the branch is read from
+                # .git/HEAD in-process, and git itself is only spawned for what that cannot answer.
+                if (-not $script:warpGitProbeDone -or $script:warpGitProbePath -ne $env:PATH) {
+                    $script:warpGitProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null)
+                    $script:warpGitProbePath = $env:PATH
+                    $script:warpGitProbeDone = $true
+                }
+                $hasGitCommand = $script:warpGitProbeValue
                 if ($hasGitCommand) {
-                    # This is deliberately not using || b/c || only works in Powershell >=7
-                    $gitBranchTmp = Warp-Git symbolic-ref --short HEAD 2>$null
-                    if ($null -ne $gitBranchTmp) {
-                        $gitBranch = $gitBranchTmp
-                        $gitHead = $gitBranchTmp
+                    $gitInfo = Warp-GitHeadInProcess
+                    if ($null -ne $gitInfo -and $gitInfo.NotRepo) {
+                        # Not in a repository: leave both empty, as git's failure did.
+                    } elseif ($null -ne $gitInfo -and $null -ne $gitInfo.Branch) {
+                        $gitBranch = $gitInfo.Branch
+                        $gitHead = $gitInfo.Head
+                    } elseif ($null -ne $gitInfo -and "$($gitInfo.Gitdir)|$($gitInfo.Head)" -eq $script:warpGitDetachedKey) {
+                        # Detached at the same commit as last prompt: reuse git's abbreviation.
+                        $gitHead = $script:warpGitDetachedValue
                     } else {
-                        $gitHeadTmp = Warp-Git rev-parse --short HEAD 2>$null
-                        if ($null -ne $gitHeadTmp) {
-                            $gitHead = $gitHeadTmp
+                        # This is deliberately not using || b/c || only works in Powershell >=7
+                        $gitBranchTmp = Warp-Git symbolic-ref --short HEAD 2>$null
+                        if ($null -ne $gitBranchTmp) {
+                            $gitBranch = $gitBranchTmp
+                            $gitHead = $gitBranchTmp
+                        } else {
+                            $gitHeadTmp = Warp-Git rev-parse --short HEAD 2>$null
+                            if ($null -ne $gitHeadTmp) {
+                                $gitHead = $gitHeadTmp
+                                if ($null -ne $gitInfo) {
+                                    $script:warpGitDetachedKey = "$($gitInfo.Gitdir)|$($gitInfo.Head)"
+                                    $script:warpGitDetachedValue = $gitHeadTmp
+                                }
+                            }
                         }
                     }
                 }
