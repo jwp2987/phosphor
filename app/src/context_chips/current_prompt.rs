@@ -7,7 +7,7 @@ use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionsEv
 use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::{
-    debounce::debounce,
+    debounce::debounce_leading,
     editor::EditorView,
     menu::{MenuItem, MenuItemFields},
     terminal::{
@@ -271,9 +271,11 @@ impl CurrentPrompt {
             .map(Duration::from_millis)
             .unwrap_or(PROMPT_DEBOUNCE_PERIOD);
 
-        // Debounce rendering updates to the prompt
+        // Rate-limit rendering updates to the prompt. Leading-edge (#1166): the first change paints
+        // at once; changes inside the window coalesce into one trailing update, so the final
+        // value is never lost.
         ctx.spawn_stream_local(
-            debounce(debounce_period, update_rx),
+            debounce_leading(debounce_period, update_rx),
             |_, _, ctx| ctx.notify(),
             |_, _| {},
         );
