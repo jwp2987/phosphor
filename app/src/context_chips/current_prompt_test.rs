@@ -54,7 +54,12 @@ use crate::{
 use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
-use super::{ActiveChipSurfaces, ChipUpdateStatus, CurrentPrompt, PromptContext};
+use super::{
+    effective_poll_interval, poll_decision, ActiveChipSurfaces, ChipUpdateStatus, CurrentPrompt,
+    PollDecision, PromptContext, BACKGROUND_RECHECK_DELAY, REMOTE_POLL_INTERVAL,
+    TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
+};
+use std::time::Duration;
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
@@ -1187,4 +1192,50 @@ fn test_git_status_pr_info_updates_github_pr_chip_value() {
             );
         });
     });
+}
+
+#[test]
+fn poll_runs_when_foreground_and_idle() {
+    assert_eq!(poll_decision(true, None), PollDecision::Run);
+    assert_eq!(
+        poll_decision(true, Some(Duration::from_secs(10))),
+        PollDecision::Run
+    );
+}
+
+#[test]
+fn poll_defers_for_background_terminals() {
+    assert_eq!(
+        poll_decision(false, None),
+        PollDecision::Defer(BACKGROUND_RECHECK_DELAY)
+    );
+    // Hidden wins over idle: a hidden tab never starts a chip command.
+    assert_eq!(
+        poll_decision(false, Some(Duration::from_secs(60))),
+        PollDecision::Defer(BACKGROUND_RECHECK_DELAY)
+    );
+}
+
+#[test]
+fn poll_defers_while_typing() {
+    assert_eq!(
+        poll_decision(true, Some(Duration::from_millis(200))),
+        PollDecision::Defer(TYPING_RECHECK_DELAY)
+    );
+    assert_eq!(
+        poll_decision(true, Some(TYPING_QUIET_PERIOD)),
+        PollDecision::Run
+    );
+}
+
+#[test]
+fn remote_sessions_poll_slowly_but_fast_chips_are_untouched() {
+    let thirty = Duration::from_secs(30);
+    assert_eq!(effective_poll_interval(thirty, false), thirty);
+    assert_eq!(effective_poll_interval(thirty, true), REMOTE_POLL_INTERVAL);
+    let clock = Duration::from_secs(1);
+    assert_eq!(effective_poll_interval(clock, true), clock);
+    // Never shorten an already longer interval (the date chip).
+    let date = Duration::from_secs(30 * 60);
+    assert_eq!(effective_poll_interval(date, true), date);
 }

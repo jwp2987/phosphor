@@ -27,7 +27,7 @@ use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
 use super::git_status_update::{GitRepoStatusEvent, GitStatusMetadata};
-use crate::code::buffer_location::{util_remote_path_to_buffer, RemotePath};
+use crate::code::buffer_location::{RemotePath, util_remote_path_to_buffer};
 use crate::remote_server::git_status_proto::proto_to_git_status_metadata;
 use crate::remote_server::proto;
 
@@ -37,6 +37,8 @@ pub struct RemoteGitRepoStatusModel {
     /// key carries. See `code::buffer_location` for why the fork has two.
     remote_path: RemotePath,
     metadata: Option<GitStatusMetadata>,
+    /// See `LocalGitRepoStatusModel::has_emitted_metadata`.
+    has_emitted_metadata: bool,
 }
 
 impl Entity for RemoteGitRepoStatusModel {
@@ -53,6 +55,7 @@ impl RemoteGitRepoStatusModel {
         let model = Self {
             remote_path: util_remote_path_to_buffer(&remote_path),
             metadata: None,
+            has_emitted_metadata: false,
         };
         model.request_snapshot(ctx);
         model
@@ -115,8 +118,17 @@ impl RemoteGitRepoStatusModel {
         };
         match proto_to_git_status_metadata(metadata) {
             Ok(status) => {
-                self.metadata = Some(status);
-                ctx.emit(GitRepoStatusEvent::MetadataChanged);
+                let new_metadata = Some(status);
+                let should_emit = super::git_status_update::should_emit_metadata_changed(
+                    &self.metadata,
+                    &new_metadata,
+                    self.has_emitted_metadata,
+                );
+                self.metadata = new_metadata;
+                if should_emit {
+                    self.has_emitted_metadata = true;
+                    ctx.emit(GitRepoStatusEvent::MetadataChanged);
+                }
             }
             Err(error) => {
                 // Keep the previous value: a malformed push is a daemon bug,

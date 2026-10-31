@@ -41,7 +41,7 @@ use crate::context_chips::display_chip::GitBranchTrackingStatus;
 /// gate is equivalent to the pin's split one and avoids an enum with zero
 /// live variants on wasm.
 #[cfg(feature = "local_fs")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GitStatusMetadata {
     pub current_branch_name: String,
     pub main_branch_name: String,
@@ -293,7 +293,24 @@ pub struct LocalGitRepoStatusModel {
     repository: ModelHandle<Repository>,
     subscriber_id: Option<SubscriberId>,
     metadata: Option<GitStatusMetadata>,
+    /// Whether `MetadataChanged` has fired at least once. The first event is
+    /// always delivered (consumers such as `deferred_code_review_open` wait
+    /// for it, even when the first load fails); later ones only on change.
+    has_emitted_metadata: bool,
     computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
+}
+
+/// Whether a freshly loaded/pushed snapshot warrants a `MetadataChanged`
+/// event. Re-emitting identical metadata invalidates every subscribed terminal
+/// view (a full-window layout) and, on the remote daemon, pushes a redundant
+/// message over the shared ssh connection.
+#[cfg(feature = "local_fs")]
+pub(super) fn should_emit_metadata_changed(
+    old: &Option<GitStatusMetadata>,
+    new: &Option<GitStatusMetadata>,
+    has_emitted_before: bool,
+) -> bool {
+    !has_emitted_before || old != new
 }
 
 #[cfg(feature = "local_fs")]
@@ -315,6 +332,7 @@ impl LocalGitRepoStatusModel {
             repository: repository_model.clone(),
             subscriber_id: None,
             metadata: None,
+            has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
         };
 
@@ -414,14 +432,20 @@ impl LocalGitRepoStatusModel {
         result: anyhow::Result<GitStatusMetadata>,
         ctx: &mut ModelContext<Self>,
     ) {
-        match result {
-            Ok(metadata) => self.metadata = Some(metadata),
+        let new_metadata = match result {
+            Ok(metadata) => Some(metadata),
             Err(e) => {
                 log::warn!("LocalGitRepoStatusModel: metadata load failed: {e}");
-                self.metadata = None;
+                None
             }
+        };
+        let should_emit =
+            should_emit_metadata_changed(&self.metadata, &new_metadata, self.has_emitted_metadata);
+        self.metadata = new_metadata;
+        if should_emit {
+            self.has_emitted_metadata = true;
+            ctx.emit(GitRepoStatusEvent::MetadataChanged);
         }
-        ctx.emit(GitRepoStatusEvent::MetadataChanged);
     }
 
     /// Whether the update moved HEAD or a local branch ref (`commit_updated`).
@@ -556,6 +580,7 @@ impl LocalGitRepoStatusModel {
             repository,
             subscriber_id: None,
             metadata,
+            has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
         }
     }
@@ -566,6 +591,7 @@ impl LocalGitRepoStatusModel {
         ctx: &mut ModelContext<Self>,
     ) {
         self.metadata = metadata;
+        self.has_emitted_metadata = true;
         ctx.emit(GitRepoStatusEvent::MetadataChanged);
     }
 }

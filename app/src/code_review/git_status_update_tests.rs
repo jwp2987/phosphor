@@ -29,7 +29,9 @@ fn should_refresh_metadata_ignores_ignored_file_updates() {
     tracked_update
         .modified
         .insert(TargetFile::new(PathBuf::from("/repo/src/main.rs"), false));
-    assert!(LocalGitRepoStatusModel::should_refresh_metadata(&tracked_update));
+    assert!(LocalGitRepoStatusModel::should_refresh_metadata(
+        &tracked_update
+    ));
 
     let remote_ref_update = RepositoryUpdate {
         remote_ref_updated: true,
@@ -79,4 +81,55 @@ fn head_changes_bypass_throttle_but_file_churn_does_not() {
     assert!(!LocalGitRepoStatusModel::is_head_change(
         &RepositoryUpdate::default()
     ));
+}
+
+fn sample_metadata(branch: &str, additions: usize) -> GitStatusMetadata {
+    GitStatusMetadata {
+        current_branch_name: branch.to_owned(),
+        main_branch_name: "main".to_owned(),
+        stats_against_head: DiffStats {
+            files_changed: 1,
+            total_additions: additions,
+            total_deletions: 0,
+        },
+        branch_tracking_status: GitBranchTrackingStatus::new(
+            branch.to_owned(),
+            Some(format!("origin/{branch}")),
+            0,
+            0,
+        ),
+    }
+}
+
+#[test]
+fn metadata_changed_is_emitted_for_the_first_result_even_if_unchanged() {
+    // The first event is what `deferred_code_review_open` waits for, so it must
+    // fire even when the first load yields None (failed load) or equal data.
+    assert!(should_emit_metadata_changed(&None, &None, false));
+    let m = Some(sample_metadata("main", 1));
+    assert!(should_emit_metadata_changed(&m, &m.clone(), false));
+}
+
+#[test]
+fn metadata_changed_is_suppressed_when_identical() {
+    let m = Some(sample_metadata("main", 1));
+    assert!(!should_emit_metadata_changed(&m, &m.clone(), true));
+    assert!(!should_emit_metadata_changed(&None, &None, true));
+}
+
+#[test]
+fn metadata_changed_is_emitted_on_any_field_change() {
+    let old = Some(sample_metadata("main", 1));
+    assert!(should_emit_metadata_changed(
+        &old,
+        &Some(sample_metadata("main", 2)),
+        true
+    ));
+    assert!(should_emit_metadata_changed(
+        &old,
+        &Some(sample_metadata("dev", 1)),
+        true
+    ));
+    assert!(should_emit_metadata_changed(&None, &old, true));
+    assert!(should_emit_metadata_changed(&old, &None, true));
 }
