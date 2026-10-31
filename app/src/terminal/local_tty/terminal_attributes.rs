@@ -92,6 +92,71 @@ pub fn foreground_process_names(fd: RawFd) -> Option<Vec<String>> {
     process_group_names(pgid)
 }
 
+/// Whether the pty's foreground process group provably cannot hold a shell at its prompt, local
+/// or remote: it is not the shell's own group (`shell_pid`, a session leader) and none of its
+/// processes is a shell or a program that hands the terminal to one (a login hop such as `ssh`,
+/// `sudo -i`, `su`, `ksu`, a container or multiplexer). Over ssh the foreground is `ssh` while the
+/// REMOTE shell may be at its prompt, so a name check, not just "not the shell", decides. Any
+/// failure or unsupported platform is `false`: callers keep the safe behaviour.
+pub fn foreground_is_plain_program(fd: RawFd, shell_pid: i32) -> bool {
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid <= 0 || pgid == shell_pid {
+        return false;
+    }
+    process_group_names(pgid)
+        .is_some_and(|names| names.iter().all(|name| !is_shell_or_login_hop(name)))
+}
+
+/// Shells, and programs that put a shell (possibly on another machine) behind the pty.
+pub(crate) fn is_shell_or_login_hop(comm: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+        "dash",
+        "ash",
+        "ksh",
+        "mksh",
+        "pdksh",
+        "tcsh",
+        "csh",
+        "nu",
+        "nushell",
+        "pwsh",
+        "powershell",
+        "elvish",
+        "xonsh",
+        "ssh",
+        "mosh",
+        "mosh-client",
+        "et",
+        "sshpass",
+        "telnet",
+        "sudo",
+        "su",
+        "doas",
+        "ksu",
+        "login",
+        "docker",
+        "podman",
+        "kubectl",
+        "nsenter",
+        "chroot",
+        "screen",
+        "tmux",
+        "script",
+        "expect",
+        "wsl",
+        "machinectl",
+        "lxc",
+        "incus",
+    ];
+    let name = comm.trim_start_matches('-').to_ascii_lowercase();
+    NAMES.contains(&name.as_str())
+}
+
 /// Delivers SIGINT to the pty's foreground process group (what the tty driver does for a ^C
 /// byte in cooked mode), regardless of the line discipline. A client that put the tty in raw
 /// mode (ssh, once connected) receives a ^C byte as DATA and forwards it to the far side, but

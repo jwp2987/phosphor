@@ -1238,3 +1238,40 @@ fn the_handoffs_own_request_covers_untracked_bytes_written_before_it() {
     handoff.on_report();
     assert!(!handoff.editor_text_precedes_report());
 }
+
+#[test]
+fn an_enter_into_a_plain_foreground_program_is_not_held() {
+    // The command was written just now, but `cat` owns the foreground: the shell is not at a
+    // prompt, so the Enter is for `cat` and must not wait for one (#1131).
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| true)));
+    type_and_flush(&mut handoff, b"hello");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.take_young_hold_started(), None);
+    assert!(!handoff.has_young_hold());
+}
+
+#[test]
+fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
+    // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or
+    // unknown), so the young Enter keeps waiting for the prompt.
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| false)));
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(handoff.take_young_hold_started().is_some());
+}
+
+#[test]
+fn a_held_enter_waits_only_for_what_is_left_of_the_window() {
+    let mut handoff = young_after_submit();
+    let now = Instant::now();
+    handoff.last_activity_at = Some(now - Duration::from_millis(500));
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
+    handoff.last_activity_at = Some(now - Duration::from_millis(100));
+    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
+    handoff.last_activity_at = Some(now);
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_WINDOW);
+    handoff.last_activity_at = None;
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
+}

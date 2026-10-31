@@ -496,8 +496,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_ENTER_WINDOW,
-    YoungSubmit, forces_shell_submit, text_for_editor, young_submit_decision,
+    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungSubmit,
+    forces_shell_submit, text_for_editor, young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -11156,10 +11156,15 @@ impl TerminalView {
                 None
             };
             if let Some(hold_id) = hold_id {
+                let hold_wait = self
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .young_hold_wait(Instant::now());
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
-                ctx.spawn(Timer::after(YOUNG_ENTER_WINDOW), move |me, _, ctx| {
+                ctx.spawn(Timer::after(hold_wait), move |me, _, ctx| {
                     me.release_expired_young_hold(hold_id, ctx);
                 });
             }

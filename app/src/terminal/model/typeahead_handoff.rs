@@ -13,6 +13,7 @@
 //! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
 
 use std::mem;
+use std::sync::Arc;
 use std::time::Duration;
 
 use instant::Instant;
@@ -28,6 +29,38 @@ use crate::ai::agent::conversation::AIConversationId;
 /// is held until the prompt arrives, then routed like an Enter in the editor; if no prompt comes
 /// within this window the command is running and the Enter is written as typeahead.
 pub const YOUNG_ENTER_WINDOW: Duration = Duration::from_millis(600);
+
+/// The shortest a held young Enter waits for the prompt. The window runs from the last activity
+/// (command write, precmd, preexec), not from the Enter, so an Enter typed late in the window
+/// waits only for what is left of it; this floor is the lag between the shell logging its precmd
+/// and the app processing it, which is all the race in [`YOUNG_ENTER_WINDOW`] needs.
+pub const YOUNG_ENTER_MIN_HOLD: Duration = Duration::from_millis(150);
+
+/// Asks the platform whether the pty's foreground process group provably cannot be a shell at
+/// its prompt (a plain program such as `cat` runs in the foreground, and the shell waits for
+/// it). Unix only; where nothing is installed, or the answer is unknown, it is `false`.
+#[derive(Clone, Default)]
+pub struct ForegroundProbe(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl ForegroundProbe {
+    pub fn new(probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self(Some(probe))
+    }
+
+    fn foreground_is_plain_program(&self) -> bool {
+        self.0.as_ref().is_some_and(|probe| probe())
+    }
+}
+
+impl std::fmt::Debug for ForegroundProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "ForegroundProbe(installed)"
+        } else {
+            "ForegroundProbe(none)"
+        })
+    }
+}
 
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
@@ -233,6 +266,9 @@ pub struct TypeaheadHandoff {
     tracks_view_precmds: bool,
     /// The last command written, prompt or preexec seen (see [`YOUNG_ENTER_WINDOW`]).
     last_activity_at: Option<Instant>,
+    /// Whether the pty's foreground process group is provably not a shell at a prompt. A line
+    /// typed into such a program cannot be a #933 line typed at an unnoticed prompt.
+    foreground_probe: ForegroundProbe,
     /// The user's Enter, and every key typed after it, held while the pty owns input and the
     /// command that was written may already have finished (#933). Nothing in it was written.
     young_hold: Option<Vec<u8>>,
@@ -267,6 +303,20 @@ pub struct HeldAgentCommand {
 impl TypeaheadHandoff {
     pub fn state(&self) -> &HandoffState {
         &self.state
+    }
+
+    pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
+        self.foreground_probe = probe;
+    }
+
+    /// How long the view should wait for the prompt before releasing the hold just started: what
+    /// is left of [`YOUNG_ENTER_WINDOW`] counted from the last activity, never less than
+    /// [`YOUNG_ENTER_MIN_HOLD`].
+    pub fn young_hold_wait(&self, now: Instant) -> Duration {
+        let left = self.last_activity_at.map_or(Duration::ZERO, |at| {
+            YOUNG_ENTER_WINDOW.saturating_sub(now.saturating_duration_since(at))
+        });
+        left.clamp(YOUNG_ENTER_MIN_HOLD, YOUNG_ENTER_WINDOW)
     }
 
     /// Whether keys typed on the terminal go to the pty (or are held for it) rather than being
@@ -698,6 +748,9 @@ impl TypeaheadHandoff {
                     || self.last_activity_at.is_some_and(|at| {
                         now.saturating_duration_since(at) < YOUNG_ENTER_WINDOW
                     }))
+                // A plain program in the foreground means the shell is waiting on it, not at a
+                // prompt: the Enter is for that program, not a line the app has yet to notice.
+                && !self.foreground_probe.foreground_is_plain_program()
         )
     }
 

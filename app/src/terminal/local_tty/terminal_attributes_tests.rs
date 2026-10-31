@@ -1,4 +1,14 @@
-use super::parse_proc_stat;
+use super::{is_shell_or_login_hop, parse_proc_stat};
+
+#[test]
+fn shells_and_login_hops_are_not_plain_programs() {
+    for name in ["bash", "-zsh", "fish", "ssh", "sudo", "ksu", "tmux"] {
+        assert!(is_shell_or_login_hop(name), "{name}");
+    }
+    for name in ["cat", "less", "python3", "vim", "sleep", "ncat"] {
+        assert!(!is_shell_or_login_hop(name), "{name}");
+    }
+}
 
 #[test]
 fn parses_comm_and_process_group() {
