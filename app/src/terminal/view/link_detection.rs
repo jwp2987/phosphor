@@ -1,4 +1,6 @@
 use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use serde::{Serialize, Serializer};
 use url::Url;
@@ -38,6 +40,26 @@ cfg_if::cfg_if! {
 }
 
 use super::{FindLinkArg, TerminalEditor};
+
+/// An in-flight hover scan for file-path links (see `compute_valid_paths`).
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+pub(super) struct FileLinkScan {
+    abort: futures::future::AbortHandle,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl FileLinkScan {
+    pub(super) fn new(abort: futures::future::AbortHandle, cancelled: Arc<AtomicBool>) -> Self {
+        Self { abort, cancelled }
+    }
+
+    /// Aborts the async wrapper (so `handle_file_link_completed` never runs for a
+    /// superseded hover) and asks a blocking scan already in progress to stop.
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(true, AtomicOrdering::Relaxed);
+        self.abort.abort();
+    }
+}
 
 // "a/" and "b/" are prefixes specific to Git Diff
 #[cfg(feature = "local_fs")]
@@ -922,30 +944,36 @@ impl super::TerminalView {
                     .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
                     .and_then(|session| session.launch_data().cloned());
 
-                // Using the thread builder instead of ctx.spawn here so that the previous
-                // scanning job will be dropped once there is a new scanning job created.
-                let (tx, rx) = futures::channel::oneshot::channel();
-                self.file_link_scanning_join_handle = std::thread::Builder::new()
-                    .name("Compute file paths".into())
-                    .spawn(move || {
-                        let paths = Self::compute_valid_paths(
-                            &path,
-                            possible_paths,
-                            max_columns,
-                            shell_launch_data,
-                            validation_ctx,
-                        );
-                        let _ = tx.send(paths);
-                    })
-                    .map_err(|e| {
-                        log::error!("Unable to spawn thread {e:?}");
-                    })
-                    .ok();
-
-                let _ = ctx.spawn(
-                    async move { rx.await.ok().flatten() },
+                // A new hover aborts the previous scan: the async wrapper is dropped
+                // and `cancelled` tells an already-running blocking stat loop to stop
+                // at the next candidate. The loop itself runs on tokio's reusable
+                // blocking pool instead of a freshly spawned OS thread per hover.
+                if let Some(previous) = self.file_link_scanning_join_handle.take() {
+                    previous.cancel();
+                }
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let cancelled_for_scan = cancelled.clone();
+                let spawned = ctx.spawn(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let possible_paths = possible_paths
+                                .take_while(|_| !cancelled_for_scan.load(AtomicOrdering::Relaxed));
+                            Self::compute_valid_paths(
+                                &path,
+                                possible_paths,
+                                max_columns,
+                                shell_launch_data,
+                                validation_ctx,
+                            )
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    },
                     Self::handle_file_link_completed,
                 );
+                self.file_link_scanning_join_handle =
+                    Some(FileLinkScan::new(spawned.abort_handle(), cancelled));
             }
             _ if self.highlighted_link.take(&mut self.model.lock()).is_some() => {
                 ctx.reset_cursor();

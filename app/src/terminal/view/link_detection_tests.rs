@@ -213,3 +213,26 @@ fn compute_valid_paths_keeps_trailing_fullwidth_punctuation_when_it_is_the_filen
         }
     );
 }
+
+#[test]
+fn new_hover_cancels_previous_file_link_scan() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let (abort, registration) = futures::future::AbortHandle::new_pair();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let scan = super::FileLinkScan::new(abort.clone(), cancelled.clone());
+    assert!(!abort.is_aborted());
+    assert!(!cancelled.load(Ordering::Relaxed));
+
+    scan.cancel();
+
+    // The async wrapper is aborted and a blocking scan already running is told to stop.
+    assert!(abort.is_aborted());
+    assert!(cancelled.load(Ordering::Relaxed));
+    let aborted = futures::executor::block_on(futures::future::Abortable::new(
+        futures::future::pending::<()>(),
+        registration,
+    ));
+    assert!(aborted.is_err());
+}
