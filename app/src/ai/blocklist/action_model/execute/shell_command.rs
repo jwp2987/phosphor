@@ -557,7 +557,8 @@ impl ShellCommandExecutor {
                     );
                 };
                 if block.finished() {
-                    let output: String = agent_shell_command_block_output(block);
+                    let output =
+                        with_input_not_delivered_note(agent_shell_command_block_output(block));
                     let exit_code = block.exit_code();
                     let start_ts = block.start_ts().cloned();
                     let completed_ts = block.completed_ts().cloned();
@@ -1239,6 +1240,22 @@ fn handles_command_snapshots_for(providers: &[AgentProvider], llm_id: &str) -> b
                 .map(|model| model.resolved_handles_command_snapshots(provider))
         })
         .unwrap_or(false)
+}
+
+/// What the model is told when it wrote to a command that had already exited. The result is
+/// the same `CommandFinished` a write that landed just before the exit gets, so this note is
+/// the only thing that says the input went nowhere.
+const INPUT_NOT_DELIVERED_NOTE: &str = "[The command had already exited before this input was \
+                                        written, so nothing was sent to it. Start the command \
+                                        again if the input is still needed.]";
+
+/// Appends [`INPUT_NOT_DELIVERED_NOTE`] to a finished command's output.
+fn with_input_not_delivered_note(mut output: String) -> String {
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(INPUT_NOT_DELIVERED_NOTE);
+    output
 }
 
 /// What the model is told when Phosphor closed a pager the command had opened.

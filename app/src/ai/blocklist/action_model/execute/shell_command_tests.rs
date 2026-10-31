@@ -968,3 +968,16 @@ fn the_note_is_appended_to_a_snapshot() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A write to a command that had already exited gets the same `CommandFinished` as a write that
+/// landed just before the exit; the note is what tells the model its input went nowhere. Fails
+/// on the old code, which returned the bare output.
+#[test]
+fn a_write_to_a_finished_command_says_the_input_was_not_delivered() {
+    let noted = with_input_not_delivered_note("done\n".to_owned());
+    assert!(noted.starts_with("done\n["), "{noted}");
+    assert!(noted.contains("already exited before this input was written"), "{noted}");
+    let noted_without_newline = with_input_not_delivered_note("done".to_owned());
+    assert!(noted_without_newline.starts_with("done\n["), "{noted_without_newline}");
+    assert!(with_input_not_delivered_note(String::new()).starts_with('['));
+}
