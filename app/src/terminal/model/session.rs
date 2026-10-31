@@ -1325,6 +1325,26 @@ impl Session {
         self.external_commands_load_finished.load(Ordering::Acquire)
     }
 
+    /// Whether the post-bootstrap function and builtin enumeration
+    /// ([`Self::load_all_function_names`], [`Self::load_all_builtins`]) can be skipped because it
+    /// would only repeat what the Bootstrapped hook already carried (#1230).
+    ///
+    /// A local PowerShell session runs those commands in two fresh `pwsh -NoProfile` processes,
+    /// each a 140-250 ms (Linux) to multi-second (Windows) start with a cold module scan, started
+    /// together with the chip commands right after bootstrap. What they could add is names
+    /// the bootstrapped shell did not report, and the bootstrap's own `Get-Command` listings in
+    /// the live session see everything a `-NoProfile` process does and the profile's additions.
+    pub fn deferred_name_enumeration_is_redundant(&self) -> bool {
+        self.info.shell.shell_type() == ShellType::PowerShell
+            && self
+                .command_executor
+                .read()
+                .as_ref()
+                .as_any()
+                .downcast_ref::<command_executor::LocalCommandExecutor>()
+                .is_some()
+    }
+
     /// Asynchronously collects all function names via an in-band shell command.
     ///
     /// A no-op for every shell whose bootstrap already reports its complete

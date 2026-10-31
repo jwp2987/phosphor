@@ -1,5 +1,5 @@
 // TODO: restrict what we make public here.
-mod builtins;
+pub(crate) mod builtins;
 pub mod context_chip;
 pub mod current_prompt;
 pub mod directory_fetcher;

@@ -17228,13 +17228,17 @@ impl TerminalView {
         // whose bootstrap already reports the complete set — which today is all
         // four of them; see `Session::load_all_function_names` for what this
         // fork has not taken from the pin, and why.
-        ctx.background_executor()
-            .spawn(async move { session_clone.load_all_function_names().await })
-            .detach();
+        // Not for a local PowerShell session (#1230): there each would start a `pwsh -NoProfile`
+        // process to list names the Bootstrapped hook already carried.
+        if !session_clone.deferred_name_enumeration_is_redundant() {
+            ctx.background_executor()
+                .spawn(async move { session_clone.load_all_function_names().await })
+                .detach();
 
-        ctx.background_executor()
-            .spawn(async move { session_clone2.load_all_builtins().await })
-            .detach();
+            ctx.background_executor()
+                .spawn(async move { session_clone2.load_all_builtins().await })
+                .detach();
+        }
 
         // If we were waiting for a successful warpification, it's come. Stop the timeout.
         self.warpify_state.abort_ssh_warpify_timeout();

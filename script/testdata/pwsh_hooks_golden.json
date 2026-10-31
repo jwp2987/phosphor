@@ -1,0 +1,1415 @@
+{
+ "InitShell": [
+  [
+   "hook",
+   "InitShell",
+   {
+    "hostname": "winters-83td",
+    "session_id": 12345678901234,
+    "shell": "pwsh",
+    "user": "winters"
+   }
+  ]
+ ],
+ "after-generator": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-19",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "after-prediction": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-25",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "after-vi": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-23",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "bootstrap": [
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-0",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "hook",
+   "Bootstrapped",
+   {
+    "abbreviations": "",
+    "aliases": "<aliases set>",
+    "builtins": "<builtins set>",
+    "editor": "<editor empty>",
+    "env_var_names": "<env_var_names set>",
+    "function_names": "<function_names set>",
+    "histfile": "<histfile set>",
+    "home_dir": "<home_dir set>",
+    "keywords": "begin\nbreak\ncatch\ncl",
+    "linux_distribution": "<linux_distribution set>",
+    "os_category": "Linux",
+    "path": "<path set>",
+    "rcfiles_end_time": "<rcfiles_end_time set>",
+    "rcfiles_start_time": "<rcfiles_start_time set>",
+    "session_id": 12345678901234,
+    "shell": "pwsh",
+    "shell_options": "",
+    "shell_path": "<shell_path set>",
+    "shell_plugins": "",
+    "shell_version": "<shell_version set>",
+    "vi_mode_enabled": ""
+   }
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-1",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "cd-plain": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "cd '<TMP>/plain dir'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-9",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/plain dir",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "cd-repo": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "cd '<TMP>/repo'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-10",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "main",
+    "git_head": "main",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "clear": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "clear",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Clear",
+   {
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-26",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "cmdlet-error": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "Get-Item /nonexistent-path-for-test",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 7,
+    "next_block_id": "precmd-12345678901234-6",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "detached": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "git checkout -q --detach",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-12",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "echo": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "echo hi",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-3",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "env-chips": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$env:VIRTUAL_ENV = '/venv/x'; $env:KUBECONFIG = '/k/c'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-14",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "/k/c",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": "/venv/x"
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "env-chips-clear": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "Remove-Item env:VIRTUAL_ENV, env:KUBECONFIG",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-16",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "env-chips-set": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-15",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "/k/c",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": "/venv/x"
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "external-fail": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "/bin/sh -c 'exit 7'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 7,
+    "next_block_id": "precmd-12345678901234-5",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "external-ok": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "/bin/true",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-4",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "generator": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "Warp-Run-GeneratorCommand g1 'echo gen' g2 'Get-Item /nonexistent-gen'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-18",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "is_after_in_band_command": true,
+    "ps1": "",
+    "pwd": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "honor-ps1-on": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$env:WARP_HONOR_PS1 = '1'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-20",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "honor-ps1-set": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-21",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "in-detached": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-13",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "in-repo": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "echo in repo",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-11",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "main",
+    "git_head": "main",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "not-found": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "ehco foo",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 7,
+    "next_block_id": "precmd-12345678901234-7",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "null": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "$null",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-2",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "prediction-changed": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "Set-PSReadLineOption -PredictionSource History",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-24",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "throw": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "throw 'boom'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 7,
+    "next_block_id": "precmd-12345678901234-8",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "unicode": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "echo 'h\u00e9llo \u4e16\u754c'",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-17",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": false,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ],
+ "vi-mode": [
+  [
+   "hook",
+   "Preexec",
+   {
+    "command": "Set-PSReadLineOption -EditMode Vi",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "CommandFinished",
+   {
+    "exit_code": 0,
+    "next_block_id": "precmd-12345678901234-22",
+    "session_id": 12345678901234
+   }
+  ],
+  [
+   "osc",
+   "9279"
+  ],
+  [
+   "hook",
+   "Precmd",
+   {
+    "conda_env": "",
+    "git_branch": "",
+    "git_head": "7a3767a",
+    "honor_ps1": true,
+    "kube_config": "",
+    "node_version": "",
+    "ps1": "",
+    "pwd": "<TMP>/repo",
+    "rprompt": "",
+    "session_id": 12345678901234,
+    "virtual_env": ""
+   }
+  ],
+  [
+   "osc",
+   "133;A"
+  ],
+  [
+   "osc",
+   "133;B"
+  ]
+ ]
+}

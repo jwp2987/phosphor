@@ -258,6 +258,23 @@ impl CommandBuilder<'_> {
     }
 }
 
+/// The process for a chip command that is a single external program (#1230), resolved against
+/// the session's `PATH` (the executor's `environment_variables` carry it), or `None` when the
+/// program is not found there so the command still goes through the shell.
+#[cfg(unix)]
+fn direct_command(
+    direct: &crate::context_chips::builtins::DirectInvocation,
+    environment_variables: Option<&HashMap<String, String>>,
+) -> Option<Command> {
+    let path_var = environment_variables
+        .and_then(|vars| vars.get("PATH").map(std::ffi::OsString::from))
+        .or_else(|| std::env::var_os("PATH"))?;
+    let program = warp_util::path::resolve_executable_in_path(direct.program, &path_var)?;
+    let mut command = Command::new_with_process_group(program.as_os_str());
+    command.args(direct.args);
+    Some(command)
+}
+
 #[cfg(test)]
 #[path = "local_command_executor_tests.rs"]
 mod tests;
@@ -371,10 +388,68 @@ impl LocalCommandExecutor {
         shell_config_flag: &str,
         execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
+        // A per-prompt chip command that is only one external program does not need a PowerShell
+        // process to run it (#1230).
+        #[cfg(unix)]
+        {
+            if self.shell_type == ShellType::PowerShell && shell_config_flag == "-NoProfile" {
+                if let Some(direct) =
+                    crate::context_chips::builtins::direct_powershell_invocation(command)
+                {
+                    if let Some(direct_process) =
+                        direct_command(&direct, environment_variables.as_ref())
+                    {
+                        match self
+                            .run_prepared_command(
+                                direct_process,
+                                command,
+                                current_directory_path,
+                                environment_variables.as_ref(),
+                                direct.env,
+                            )
+                            .await
+                        {
+                            Err(error)
+                                if error
+                                    .downcast_ref::<std::io::Error>()
+                                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                            {
+                                log::info!(
+                                    "Direct run of {} failed to start: {error:#}",
+                                    direct.program
+                                );
+                            }
+                            result => return result,
+                        }
+                    }
+                }
+            }
+        }
+
         let command_builder = self.command_builder(execute_command_options);
 
-        let mut command_process = command_builder.build(command, shell_config_flag);
+        let command_process = command_builder.build(command, shell_config_flag);
+        self.run_prepared_command(
+            command_process,
+            command,
+            current_directory_path,
+            environment_variables.as_ref(),
+            &[],
+        )
+        .await
+    }
 
+    /// Starts `command_process` with the session's environment and working directory and
+    /// collects its output.
+    async fn run_prepared_command(
+        &self,
+        mut command_process: Command,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+        // Set after the session's variables, as the shell wrapper this replaces set them.
+        extra_environment: &[(&str, &str)],
+    ) -> Result<CommandOutput> {
         // This sets then environment variables, including the PATH var.
         // We need to run the command with the PATH var set because if the
         // user opened Zap through a parent process that didn't have the PATH var set
@@ -384,8 +459,9 @@ impl LocalCommandExecutor {
         // Note: we don't need to quote/escape the PATH and pwd because
         // they're treated as single words.
         if let Some(environment_variables) = environment_variables {
-            command_process.envs(&environment_variables);
+            command_process.envs(environment_variables);
         }
+        command_process.envs(extra_environment.iter().copied());
 
         // Set the current dir, if any.
         if let Some(current_directory_path) = current_directory_path {
