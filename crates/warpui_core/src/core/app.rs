@@ -117,6 +117,14 @@ static SLOW_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::
     warp_util::slow_log::DEFAULT_WINDOW,
 );
 
+/// A frame this slow is a lockup, not a hitch: record whether the thread was computing or waiting
+/// (#1293). Rate limited like the other slow logs.
+static FROZEN_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "frozen frame",
+    std::time::Duration::from_secs(1),
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 #[derive(Clone)]
 pub struct App(Rc<RefCell<AppContext>>);
 
@@ -3227,8 +3235,15 @@ impl AppContext {
     /// paint took long enough to be a visible hitch.
     fn build_scene(&mut self, window_id: WindowId, window: &dyn WindowContext) -> Rc<Scene> {
         let slow_start = Instant::now();
+        let usage_start = warp_util::slow_log::ThreadUsage::now();
         let scene = self.build_scene_inner(window_id, window);
         SLOW_FRAME.finish(slow_start, || format!("window {window_id:?}"));
+        let wall = slow_start.elapsed();
+        if wall >= FROZEN_FRAME.threshold() {
+            FROZEN_FRAME.report(wall, Instant::now(), log::Level::Warn, || {
+                warp_util::slow_log::ThreadUsage::now().describe_since(&usage_start, wall)
+            });
+        }
         scene
     }
 

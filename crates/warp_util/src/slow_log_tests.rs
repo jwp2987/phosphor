@@ -48,3 +48,12 @@ fn truncate_for_log_limits_and_flattens() {
     assert_eq!(truncate_for_log("abcdefghij", 4), "abcd…");
     assert_eq!(truncate_for_log("one\ntwo", 10), "one…");
 }
+
+#[test]
+fn classify_stall_separates_compute_from_waiting() {
+    assert_eq!(classify_stall(ms(10_000), ms(9_000)), "cpu-bound");
+    assert_eq!(
+        classify_stall(ms(10_000), ms(50)),
+        "waiting: blocked or descheduled"
+    );
+}
