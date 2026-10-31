@@ -2515,7 +2515,7 @@ impl AgentProvidersWidget {
         const COLLAPSED_LIMIT: usize = 8;
         let expanded = models_dev::chips_expanded();
 
-        match models_dev::cached() {
+        match models_dev::quick_add_cached() {
             None => {
                 let catalog_text = if models_dev::last_fetch_failed() {
                     crate::t!("settings-agent-providers-catalog-load-failed")
@@ -2554,7 +2554,7 @@ impl AgentProvidersWidget {
             Some(catalog) => {
                 // Merge the Vertex-family entries into one "Google Vertex AI" chip before
                 // filtering, so the row never shows two easily-confused vertex options.
-                let catalog = models_dev::quick_add_catalog(&catalog);
+                // (Memoized per catalog load; render only filters it.)
                 // Filters by the search query; an empty query -> all entries in order.
                 let query = models_dev::search_query();
                 let filtered = models_dev::filter_catalog(&catalog, &query);

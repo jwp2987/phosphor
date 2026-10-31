@@ -4263,13 +4263,12 @@ impl TypedActionView for AISettingsPageView {
                 catalog_provider_id,
             } => {
                 use crate::ai::agent_providers::models_dev;
-                let Some(catalog) = models_dev::cached() else {
+                let Some(catalog) = models_dev::quick_add_cached() else {
                     log::warn!("[models.dev] catalog not yet loaded, cannot add {catalog_provider_id}");
                     return;
                 };
                 // Resolve against the merged (Vertex-family-collapsed) catalog, matching what
                 // the chip row itself rendered and clicked through.
-                let catalog = models_dev::quick_add_catalog(&catalog);
                 let Some(cat_provider) = catalog.get(catalog_provider_id) else {
                     log::warn!("[models.dev] no such provider id in the catalog: {catalog_provider_id}");
                     return;
@@ -4309,7 +4308,7 @@ impl TypedActionView for AISettingsPageView {
             }
             AISettingsPageAction::SyncProviderModelsFromModelsDev { provider_id } => {
                 use crate::ai::agent_providers::models_dev;
-                let Some(catalog) = models_dev::cached() else {
+                let Some(catalog) = models_dev::quick_add_cached() else {
                     log::warn!("[models.dev] catalog not loaded, cannot sync {provider_id}");
                     return;
                 };
@@ -4321,7 +4320,6 @@ impl TypedActionView for AISettingsPageView {
                 // never find it by either URL or name, so "Sync from models.dev" would
                 // silently no-op on every Vertex provider forever. This is a no-op for every
                 // other provider type, since quick_add_catalog only touches Vertex entries.
-                let catalog = models_dev::quick_add_catalog(&catalog);
                 let providers_snapshot = AISettings::as_ref(ctx).agent_providers.value().clone();
                 let Some(local) = providers_snapshot.iter().find(|p| p.id == *provider_id) else {
                     return;

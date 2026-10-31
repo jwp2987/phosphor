@@ -23,8 +23,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use http_client::Client;
@@ -122,6 +122,9 @@ pub struct ModelLimit {
 struct State {
     /// The loaded catalog. `None` means it has never loaded successfully.
     catalog: Option<Catalog>,
+    /// `quick_add_catalog(catalog)`, built lazily and dropped whenever `catalog` is
+    /// replaced, so the merge runs once per catalog load instead of once per render.
+    quick_add: Option<Arc<Catalog>>,
     /// The cache's last-modified time (used to check for staleness).
     loaded_at: Option<SystemTime>,
 }
@@ -142,6 +145,25 @@ fn cache_path() -> PathBuf {
 /// retry button.
 pub fn cached() -> Option<Catalog> {
     state().read().ok().and_then(|s| s.catalog.clone())
+}
+
+impl State {
+    /// Returns the memoized merged quick-add catalog, building it on first use after a load.
+    fn quick_add(&mut self) -> Option<Arc<Catalog>> {
+        if self.quick_add.is_none() {
+            self.quick_add = self
+                .catalog
+                .as_ref()
+                .map(|c| Arc::new(quick_add_catalog(c)));
+        }
+        self.quick_add.clone()
+    }
+}
+
+/// The Vertex-collapsed quick-add catalog (see [`quick_add_catalog`]), computed once per
+/// catalog load. Use this, not `quick_add_catalog(&cached()?)`, anywhere on a render path.
+pub fn quick_add_cached() -> Option<Arc<Catalog>> {
+    state().write().ok().and_then(|mut s| s.quick_add())
 }
 
 /// A snapshot of a model's capabilities extracted from models.dev, used by the BYOP
@@ -207,6 +229,7 @@ pub fn load_from_disk() -> bool {
         Ok(catalog) => {
             if let Ok(mut s) = state().write() {
                 s.catalog = Some(catalog);
+                s.quick_add = None;
                 s.loaded_at = mtime;
             }
             true
@@ -268,6 +291,7 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
 
     if let Ok(mut s) = state().write() {
         s.catalog = Some(catalog);
+        s.quick_add = None;
         s.loaded_at = Some(SystemTime::now());
     }
     Ok(())
@@ -467,7 +491,9 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
                     // silently vanish from the merged chip under `extend`'s last-wins
                     // semantics. Keep the first (catalog iterates providers in BTreeMap/id
                     // order, so this is deterministic) and log instead of losing it quietly.
-                    log::warn!(
+                    // Expected for models.dev (the Claude-on-Vertex ids are listed under both
+                    // vertex providers); runs once per catalog load, so debug is enough.
+                    log::debug!(
                         "quick_add_catalog: model id {model_id:?} appears in multiple Vertex-family providers (already merged before reaching {id:?}); keeping the first, dropping this one"
                     );
                     continue;
@@ -535,6 +561,36 @@ mod quick_add_tests {
         // Anything else (Groq, OpenRouter, DeepInfra, ...) is genuinely
         // OpenAI-compatible and keeps the default.
         assert_eq!(infer_api_type("groq"), AgentProviderApiType::OpenAi);
+    }
+
+    #[test]
+    fn quick_add_is_memoized_per_catalog_load() {
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "google-vertex".to_owned(),
+            provider("Google Vertex", &["gemini-2.5-pro"]),
+        );
+        catalog.insert(
+            "google-vertex-anthropic".to_owned(),
+            provider("Google Vertex (Anthropic)", &["claude-sonnet-5"]),
+        );
+        let mut st = State::default();
+        assert!(st.quick_add().is_none());
+        st.catalog = Some(catalog.clone());
+        let first = st.quick_add().expect("loaded");
+        let second = st.quick_add().expect("loaded");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "second call must not re-merge"
+        );
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            quick_add_catalog(&catalog).keys().collect::<Vec<_>>()
+        );
+        // A reload invalidates it.
+        st.catalog = Some(catalog);
+        st.quick_add = None;
+        assert!(!Arc::ptr_eq(&first, &st.quick_add().unwrap()));
     }
 
     #[test]
