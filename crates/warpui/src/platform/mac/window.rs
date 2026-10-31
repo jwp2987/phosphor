@@ -1112,6 +1112,14 @@ impl WindowState {
         }
     }
 
+    /// Asks AppKit to run another draw pass on the next runloop turn, keeping any cached scene
+    /// (unlike `request_redraw`, which discards it and forces a rebuild).
+    pub fn schedule_redraw(&self) {
+        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
+        // SAFETY: messaging a valid window.
+        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+    }
+
     /// Returns the window's backing `CAMetalLayer`.
     pub fn metal_layer(&self) -> Retained<CAMetalLayer> {
         let view = self

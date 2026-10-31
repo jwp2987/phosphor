@@ -1073,9 +1073,18 @@ impl super::super::Renderer for Renderer {
         let metal_layer = window.metal_layer();
         let presents_with_transaction = metal_layer.presentsWithTransaction();
         let drawable_wait_start = Instant::now();
-        let drawable = metal_layer
-            .nextDrawable()
-            .expect("CAMetalLayer with allowsNextDrawableTimeout disabled always vends a drawable");
+        // With `allowsNextDrawableTimeout` enabled this returns nil after ~1s when no drawable
+        // frees up. Skip the frame rather than panic, and ask for another pass (the scene is
+        // still cached, so the retry reuses it) so the window cannot be left showing stale
+        // content. The ~1s block in `nextDrawable` itself paces any repeat.
+        let Some(drawable) = metal_layer.nextDrawable() else {
+            log::warn!(
+                "CAMetalLayer vended no drawable after {:?}; skipping this frame and re-requesting a redraw",
+                drawable_wait_start.elapsed()
+            );
+            window.schedule_redraw();
+            return;
+        };
         let drawable_wait_ns = drawable_wait_start.elapsed().as_nanos() as u64;
         // SAFETY: `drawable` is a live CAMetalDrawable (an `id<MTLDrawable>`); the ObjC side only
         // adds a presented handler to it and does not retain it past the call.
