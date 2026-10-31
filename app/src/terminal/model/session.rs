@@ -215,6 +215,7 @@ impl Sessions {
                             session.adopt_remote_server_client(client);
                         }
                     }
+                    sessions.set_remote_host_id_for_descendants(*sid, Some(host_id.clone()));
                 }
                 RemoteServerManagerEvent::SessionDisconnected {
                     session_id: sid, ..
@@ -225,6 +226,7 @@ impl Sessions {
                         // ending): never keep handing completions to it.
                         session.fall_back_to_control_master_executor();
                     }
+                    sessions.set_remote_host_id_for_descendants(*sid, None);
                 }
                 RemoteServerManagerEvent::SessionConnectionLost {
                     session_id: sid, ..
@@ -237,6 +239,7 @@ impl Sessions {
                         session.set_remote_host_id(None);
                         session.fall_back_to_control_master_executor();
                     }
+                    sessions.set_remote_host_id_for_descendants(*sid, None);
                 }
                 RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
                     sessions.set_remote_server_setup_state(*session_id, state.clone());
@@ -447,9 +450,16 @@ impl Sessions {
                 BootstrapSessionType::WarpifiedRemote
             )
         {
-            if let Some(host_id) = RemoteServerManager::as_ref(ctx).host_id_for_session(session_id)
-            {
-                session.set_remote_host_id(Some(host_id.clone()));
+            // #1239: the manager only knows the ssh session itself. A subshell bootstrapped
+            // inside it (`sudo -s`, `ksu`, then Phosphorize) runs on the same host, so it takes
+            // the host id of the nearest ancestor that has one; without it the agent's file
+            // tools refuse ("extension not installed") and path completions are withheld.
+            let host_id = RemoteServerManager::as_ref(ctx)
+                .host_id_for_session(session_id)
+                .cloned()
+                .or_else(|| self.inherited_remote_host_id(session.spawning_session_id()));
+            if let Some(host_id) = host_id {
+                session.set_remote_host_id(Some(host_id));
             }
         }
 
@@ -516,6 +526,57 @@ impl Sessions {
 
     pub fn get(&self, session_id: SessionId) -> Option<Arc<Session>> {
         self.sessions.get(&session_id).map(Clone::clone)
+    }
+
+    /// The longest spawning chain followed when resolving a subshell's host (#1239). Real chains
+    /// are two or three deep (ssh -> sudo -> su); the bound only guards against a cycle in
+    /// `spawning_session_id`, which nothing prevents.
+    const MAX_SPAWNING_CHAIN: usize = 8;
+
+    /// The remote host id of the nearest ancestor of a session spawned from `spawning_session_id`
+    /// that has one (#1239): a subshell inside an ssh session is on that session's host.
+    pub fn inherited_remote_host_id(
+        &self,
+        spawning_session_id: Option<SessionId>,
+    ) -> Option<warp_core::HostId> {
+        let mut next = spawning_session_id;
+        for _ in 0..Self::MAX_SPAWNING_CHAIN {
+            let ancestor = self.sessions.get(&next?)?;
+            if let Some(host_id) = ancestor.remote_host_id() {
+                return Some(host_id);
+            }
+            next = ancestor.spawning_session_id();
+        }
+        None
+    }
+
+    /// Sets the remote host id of every session spawned, directly or through other subshells,
+    /// from `root` (#1239). `root` itself is left alone; the caller handles it.
+    pub fn set_remote_host_id_for_descendants(
+        &self,
+        root: SessionId,
+        host_id: Option<warp_core::HostId>,
+    ) {
+        for session in self.sessions.values() {
+            if session.id() != root && self.is_spawned_from(session, root) {
+                session.set_remote_host_id(host_id.clone());
+            }
+        }
+    }
+
+    /// Whether `session`'s spawning chain reaches `root` within [`Self::MAX_SPAWNING_CHAIN`] hops.
+    fn is_spawned_from(&self, session: &Session, root: SessionId) -> bool {
+        let mut next = session.spawning_session_id();
+        for _ in 0..Self::MAX_SPAWNING_CHAIN {
+            let Some(id) = next else {
+                return false;
+            };
+            if id == root {
+                return true;
+            }
+            next = self.sessions.get(&id).and_then(|s| s.spawning_session_id());
+        }
+        false
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1076,6 +1137,15 @@ impl Session {
     /// See [`SessionInfo::ssh_spawning_local_pwd`].
     pub fn ssh_spawning_local_pwd(&self) -> Option<&str> {
         self.info.ssh_spawning_local_pwd.as_deref()
+    }
+
+    /// The connected remote-server host of a `WarpifiedRemote` session, once the handshake has
+    /// completed (or an ancestor's has, #1239); `None` for a local session.
+    pub fn remote_host_id(&self) -> Option<warp_core::HostId> {
+        match &*self.session_type.lock() {
+            SessionType::WarpifiedRemote { host_id } => host_id.clone(),
+            SessionType::Local => None,
+        }
     }
 
     /// Updates the `host_id` on a `WarpifiedRemote` session type after the
@@ -2202,6 +2272,22 @@ pub mod testing {
 
         pub fn with_session_type(mut self, session_type: BootstrapSessionType) -> Self {
             self.session_type = session_type;
+            self
+        }
+
+        pub fn with_spawning_session_id(mut self, spawning_session_id: SessionId) -> Self {
+            self.spawning_session_id = Some(spawning_session_id);
+            self
+        }
+
+        /// A subshell bootstrapped from `spawning_command` (`sudo -s`, `ksu`, ...).
+        pub fn with_subshell_spawned_by(mut self, spawning_command: &str) -> Self {
+            self.subshell_info = Some(SubshellInitializationInfo {
+                spawning_command: spawning_command.to_owned(),
+                was_triggered_by_rc_file_snippet: false,
+                env_var_collection_name: None,
+                ssh_connection_info: None,
+            });
             self
         }
 
