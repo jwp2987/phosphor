@@ -517,6 +517,7 @@ impl Presenter {
         ctx: &mut AppContext,
         skip_layout: bool,
     ) -> Rc<Scene> {
+        crate::profiling::zone!("frame");
         self.position_cache.clear_single_frame_positions();
 
         // Scale the window size by the zoom factor. We implement zoom by faking a window size that
@@ -570,6 +571,7 @@ impl Presenter {
     }
 
     fn layout(&mut self, window_size: Vector2F, app: &AppContext) {
+        crate::profiling::zone!("layout");
         if let Some(root_view_id) = app.root_view_id(self.window_id) {
             // Rebuilt from scratch by this pass: whatever it does not visit is not
             // in the tree. See issue #805.
@@ -610,6 +612,7 @@ impl Presenter {
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
     ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
+        crate::profiling::zone!("paint");
         let mut scene = Scene::new(scale_factor, ctx.rendering_config());
         let mut repaint_at = None;
         let mut repaint_needs_layout = false;
@@ -722,14 +725,18 @@ impl Presenter {
     }
 
     pub fn dispatch_event(&mut self, event: Event, app: &AppContext) -> DispatchResult {
+        crate::profiling::zone!("input_dispatch");
         match &event {
-            Event::KeyDown { keystroke, .. } => crate::input_order::log_key_down(
-                &keystroke.key,
-                keystroke.ctrl,
-                keystroke.alt,
-                keystroke.shift,
-                keystroke.cmd,
-            ),
+            Event::KeyDown { keystroke, .. } => {
+                crate::profiling::mark!("key_down");
+                crate::input_order::log_key_down(
+                    &keystroke.key,
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd,
+                )
+            }
             Event::TypedCharacters { chars } => crate::input_order::log_typed_characters(chars),
             _ => {}
         }

@@ -480,6 +480,9 @@ embed-resource = "3.0"
 
 # Note that we support channel-specific enables for these features
 [features]
+# Tracy instrumentation (#1169). OFF by default and rejected by the release bundle scripts.
+# Needs a C++ compiler (vendored Tracy client). See docs/profiling.md.
+profiling = ["warpui/profiling", "warpui_core/profiling"]
 ai_resume_button = []
 autoupdate = []
 # Exposes the app's test helpers (terminal/model/test_utils, model mock ctors, …)

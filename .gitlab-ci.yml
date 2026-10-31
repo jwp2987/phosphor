@@ -378,6 +378,114 @@ build-windows-x86_64:
     when: on_success
 
 # ---------------------------------------------------------------------------
+# Profiling builds (#1169, manual). The `profiling` cargo profile is release-lto
+# with symbols kept; these jobs build the app binary directly (NOT through the
+# bundlers, which strip) and publish it UNSTRIPPED as a 7-day artifact. They are
+# for samply / Instruments / WPA / Tracy (docs/profiling.md), never a release:
+# no installer, no dmg.
+#
+# PROFILING_FEATURES defaults to the Tracy `profiling` feature. Set it to "" in
+# the pipeline variables for a plain sampling-profiler build with no extra code.
+# ---------------------------------------------------------------------------
+
+build-linux-profiling:
+  extends: .shim_github_env
+  stage: build
+  tags: [little-thing]
+  when: manual
+  needs: []
+  resource_group: little-thing-cargo
+  timeout: 5h
+  variables:
+    RUSTUP_HOME: /home/winters/.rustup
+    CARGO_HOME: /home/gitlab-runner/.cargo-ci
+    CARGO_BUILD_JOBS: "8"
+    PROFILING_FEATURES: "profiling"
+    # Keep the DWARF inside the one binary (the profile's inherited "packed" would
+    # write a separate .dwp on Linux).
+    CARGO_PROFILE_PROFILING_SPLIT_DEBUGINFO: "off"
+  script:
+    - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    - rustup target list --installed | grep -qx x86_64-unknown-linux-gnu || { echo "ERROR target x86_64-unknown-linux-gnu is not installed on this runner" >&2; exit 1; }
+    # cmake and a C++ compiler: the Tracy client (feature `profiling`) is vendored C++.
+    - for t in cargo protoc cmake pkg-config c++; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    # Same as script/linux/bundle: setting RUSTFLAGS replaces the mold [target] flags
+    # (mold miscompiles .rela.dyn here), so symbol-mangling-version is repeated.
+    # force-frame-pointers gives OUR code frame pointers (cheap `perf --call-graph fp`),
+    # but the prebuilt std/libc have none, so fp unwinding stops at the first std frame.
+    # samply's DWARF unwinder handles those frames; prefer it.
+    - export RUSTFLAGS="-C symbol-mangling-version=v0 -C force-frame-pointers=yes"
+    - export APPIMAGE_NAME="Phosphor-x86_64.AppImage"
+    - FEATURES="release_bundle,gui,nld_improvements${PROFILING_FEATURES:+,$PROFILING_FEATURES}"
+    - cargo build -p warp --profile profiling --bin phosphor-oss --features "$FEATURES"
+    - mkdir -p dist
+    # No `strip` anywhere in this job: that is the point.
+    - cp target/profiling/phosphor-oss dist/phosphor-oss-profiling
+    - readelf -S dist/phosphor-oss-profiling | grep -q '\.debug_line' || { echo "ERROR the profiling binary has no DWARF line tables" >&2; exit 1; }
+    - readelf -S dist/phosphor-oss-profiling | grep -q '\.symtab' || { echo "ERROR the profiling binary has no symbol table (stripped?)" >&2; exit 1; }
+    - (cd dist && sha256sum * | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-linux-profiling
+    paths: [dist/]
+    expire_in: 7 days
+    when: on_success
+
+build-macos-profiling:
+  extends: .shim_github_env
+  stage: build
+  tags: [Mac]
+  when: manual
+  needs: []
+  timeout: 3h
+  variables:
+    CARGO_BUILD_JOBS: "4"
+    PROFILING_FEATURES: "profiling"
+  script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    - for t in cargo rustc protoc dsymutil; do command -v $t >/dev/null || { echo "ERROR $t is missing on this runner; install it by hand (not done automatically)" >&2; exit 1; }; done
+    - xcrun -sdk macosx metal --version >/dev/null || { echo "ERROR the Metal toolchain is missing (xcodebuild -downloadComponent MetalToolchain)" >&2; exit 1; }
+    # Frame pointers are already on for aarch64-apple-darwin; nothing to add.
+    - FEATURES="release_bundle,gui,nld_improvements${PROFILING_FEATURES:+,$PROFILING_FEATURES}"
+    # A bare binary, not an .app: samply and Instruments both attach to it, and the
+    # dSYM (split-debuginfo = packed) is produced next to it.
+    - cargo build -p warp --profile profiling --bin phosphor-oss --features "$FEATURES"
+    - mkdir -p dist
+    - cp target/profiling/phosphor-oss dist/phosphor-oss-profiling
+    - if [ -d target/profiling/phosphor-oss.dSYM ]; then cp -R target/profiling/phosphor-oss.dSYM dist/phosphor-oss-profiling.dSYM; else echo "WARNING no dSYM produced" >&2; fi
+    - (cd dist && shasum -a 256 phosphor-oss-profiling | tee SHA256SUMS)
+  artifacts:
+    name: phosphor-macos-profiling
+    paths: [dist/]
+    expire_in: 7 days
+    when: on_success
+
+build-windows-profiling:
+  extends: .windows_job
+  stage: build
+  when: manual
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    PROFILING_FEATURES: "profiling"
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (not done automatically)"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - $features = "release_bundle,gui,nld_improvements"
+    - if ($env:PROFILING_FEATURES) { $features = "$features,$env:PROFILING_FEATURES" }
+    - cargo build -p warp --profile profiling --bin phosphor-oss --features "$features"
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    - New-Item -ItemType Directory -Force dist | Out-Null
+    # The .pdb is what WPA / Superluminal / samply read; ship it next to the exe.
+    - Copy-Item target\profiling\phosphor-oss.exe dist\phosphor-oss-profiling.exe
+    - Get-ChildItem target\profiling\*.pdb | Where-Object { $_.Name -like "phosphor*oss.pdb" } | Select-Object -First 1 | Copy-Item -Destination dist\phosphor-oss-profiling.pdb
+    - Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
+  artifacts:
+    name: phosphor-windows-profiling
+    paths: [dist/]
+    expire_in: 7 days
+    when: on_success
+
+# ---------------------------------------------------------------------------
 # Test jobs (ported from pr-check.yml). All run on the build box and all go
 # through script/agent-cargo (slot/memory governor); `resource_group` serialises
 # them with every other cargo job across pipelines.

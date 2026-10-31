@@ -654,6 +654,7 @@ where
         buf: &mut [u8],
         can_read: &mut bool,
     ) -> io::Result<()> {
+        warpui::profiling::zone!("pty_read");
         let mut bytes_in_buffer = 0;
         let mut bytes_processed = 0;
 
@@ -709,6 +710,7 @@ where
             let mut offset = 0;
             while offset < bytes_in_buffer {
                 let end = (offset + PARSE_SLICE).min(bytes_in_buffer);
+                warpui::profiling::zone!("parse");
                 let held_since = Instant::now();
                 parse_slice(
                     state,
@@ -772,6 +774,7 @@ where
 
     #[inline]
     fn pty_write(&mut self, state: &mut State, can_write: &mut bool) -> io::Result<()> {
+        warpui::profiling::zone!("pty_write");
         state.ensure_next();
 
         'write_many: while let Some(mut current) = state.take_current() {

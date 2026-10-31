@@ -96,6 +96,7 @@ pub async fn read_message<M: Message + Default>(
             ProtocolError::Io(e)
         }
     })?;
+    warpui::profiling::mark!("remote_receive");
 
     M::decode(&buf[..]).map_err(|e| {
         let request_id = try_extract_request_id(&buf).map(RequestId::from);
@@ -121,6 +122,7 @@ pub async fn write_message<M: Message>(
     writer.write_all(&len.to_le_bytes()).await?;
     writer.write_all(&encoded).await?;
     writer.flush().await?;
+    warpui::profiling::mark!("remote_send");
     Ok(())
 }
 

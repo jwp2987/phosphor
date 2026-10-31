@@ -708,6 +708,8 @@ fn apply_scroll_multiplier(event: &mut Event, app: &AppContext) {
 
 /// Runs the app. If a subcommand was requested, it'll be run instead of the main application.
 pub fn run() -> Result<()> {
+    // Starts the Tracy client when built with `--features profiling`; a no-op otherwise (#1169).
+    warpui::profiling::init();
     // First, while the process is still single-threaded; every worker re-exec (terminal server,
     // plugin host, ...) of this binary also enters here.
     #[cfg(all(

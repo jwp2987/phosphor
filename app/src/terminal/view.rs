@@ -10398,6 +10398,7 @@ impl TerminalView {
     /// #1113: shows the line dropped during an ssh connect in the input editor, UNEXECUTED, in
     /// front of whatever the editor holds. Waits while a running command hides the editor.
     fn flush_ssh_held_typing(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff");
         self.discard_ssh_held_if_output_changed(ctx);
         if self.ssh_held_typing.text.is_empty() || self.ssh_held_typing.tainted {
             self.ssh_held_typing = SshHeldTyping::default();
@@ -11814,6 +11815,7 @@ impl TerminalView {
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
     /// there since the request.
     fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff_insert");
         let typeahead = self
             .model
             .lock()
@@ -12080,6 +12082,7 @@ impl TerminalView {
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
     fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("grid_update");
         // If find bar is active, we update the matches for the last/active block or the alt screen.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
             self.find_model.update(ctx, |find_model, ctx| {

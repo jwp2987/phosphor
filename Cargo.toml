@@ -530,6 +530,23 @@ miniz_oxide.opt-level = 3
 inherits = "release"
 lto = "thin"
 
+# Profiling build (#1169): the optimised release-lto code with symbols kept, for
+# samply / perf / Instruments / WPA / Tracy. Never shipped: the CI jobs
+# `build-{linux,macos,windows}-profiling` publish it as a short-lived artifact only.
+#   - debug = "line-tables-only": file:line for every frame, no variable/type DWARF.
+#   - strip = false: the symbol table survives (the release bundlers strip afterwards;
+#     the profiling jobs do not run the bundlers).
+#   - split-debuginfo: inherited "packed" from [profile.release] (macOS dSYM, which
+#     samply/Instruments read; Windows .pdb). On Linux "packed" means a separate .dwp, so
+#     the Linux job sets CARGO_PROFILE_PROFILING_SPLIT_DEBUGINFO=off to keep the DWARF
+#     inside the one binary.
+# Frame pointers are not a profile setting; the Linux job adds
+# `-C force-frame-pointers=yes` through RUSTFLAGS (see docs/profiling.md).
+[profile.profiling]
+inherits = "release-lto"
+debug = "line-tables-only"
+strip = false
+
 # A shorthand profile for `release-lto`.
 # Windows enforces that any path is a maximum of 255 characters and
 # the length of this profile is sufficiently long that it can cause

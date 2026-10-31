@@ -259,6 +259,13 @@ if [[ -n "$BUILD_TARGET" ]]; then
   CARGO_TARGET_ARG=(--target "$BUILD_TARGET")
 fi
 
+# The Tracy `profiling` feature is for the manual build-*-profiling CI jobs only (#1169).
+# Never ship it: refuse here rather than discover it in a release.
+if [[ ",$FEATURES," == *",profiling,"* ]]; then
+  echo "ERROR: the 'profiling' cargo feature must never be part of a bundle (FEATURES=$FEATURES)" >&2
+  exit 1
+fi
+
 # If we only want to check that compilation will succeed, perform the checks
 # then exit.  We use this script to invoke `cargo check` to ensure that we are
 # using the same feature flags and profile that we would be using in production.

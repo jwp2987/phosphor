@@ -8123,6 +8123,7 @@ impl Input {
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("typeahead_insert");
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         self.note_typeahead_inserted(typeahead, ctx);
     }
@@ -8776,6 +8777,7 @@ impl Input {
         completer_data: CompleterData,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("autosuggest_request");
         if buffer_text.is_empty() {
             return;
         }
@@ -12506,6 +12508,7 @@ impl Input {
 
     #[cfg(test)]
     fn user_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        warpui::profiling::zone!("editor_edit");
         self.insert_internal(text, EditOrigin::UserTyped, ctx)
     }
 
@@ -16464,6 +16467,7 @@ impl Autosuggester for Input {
         result: AutoSuggestionResult,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("autosuggest_result");
         if result
             .generation
             .is_some_and(|g| self.is_stale_generation(g))
