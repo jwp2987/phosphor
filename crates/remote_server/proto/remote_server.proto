@@ -229,7 +229,23 @@ message ServerMessage {
     // mismatch documented above: an old daemon never sends 42, and an old
     // client drops it as an unknown field.
     GitStageResponse git_stage_response = 42;
+    // #1244: one piece of a large frame, see `FrameChunk`. Sent only to a
+    // client that set `Initialize.chunked_responses`, so an old client never
+    // receives one; an old daemon never sends one.
+    FrameChunk frame_chunk = 43;
   }
+}
+
+// Server -> client (#1244): one piece of a frame too large to send whole
+// without holding every other frame behind it. The pieces of one `stream_id`,
+// in order, concatenate to one encoded `ServerMessage` (never itself a
+// FrameChunk), which the client dispatches exactly as if it had arrived
+// whole. The carrying ServerMessage has an empty request_id; the reassembled
+// message carries the real one.
+message FrameChunk {
+  string stream_id = 1;
+  bytes payload = 2;
+  bool last = 3;
 }
 
 // ── Initialize handshake
@@ -250,6 +266,10 @@ message Initialize {
   // Fork-original: the user's own embedding endpoint. See
   // `EmbeddingProviderConfig`.
   optional EmbeddingProviderConfig embedding_provider = 6;
+  // #1244: the client reassembles `FrameChunk`s, so the daemon may split a
+  // large response into them. An old daemon ignores the field and keeps
+  // sending whole frames; an old client leaves it false.
+  bool chunked_responses = 7;
 }
 
 // Sent by the client when its bearer credential rotates after initialization.
@@ -271,6 +291,10 @@ message Abort {
 message InitializeResponse {
   string server_version = 1;
   string host_id = 2;
+  // #1244: the daemon will split large responses into `FrameChunk`s on this
+  // connection (it only does so when the client asked). Absent on an old
+  // daemon, which the client reads as false.
+  bool chunked_responses = 3;
 }
 
 // Sent by the client after the SSH session has been bootstrapped.

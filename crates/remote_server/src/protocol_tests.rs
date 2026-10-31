@@ -15,6 +15,7 @@ async fn round_trip_client_message() {
             auth_token: String::new(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         }),
     );
 
@@ -143,6 +144,7 @@ async fn round_trip_server_message() {
             InitializeResponse {
                 server_version: "0.1.0".to_string(),
                 host_id: "test-host".to_string(),
+                chunked_responses: false,
             },
         )),
     };
@@ -232,6 +234,7 @@ fn try_extract_request_id_from_valid_message() {
             auth_token: String::new(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         }),
     );
     let buf = msg.encode_to_vec();

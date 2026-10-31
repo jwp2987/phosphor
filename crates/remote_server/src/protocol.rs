@@ -126,6 +126,28 @@ pub async fn write_message<M: Message>(
     Ok(())
 }
 
+/// Writes an already encoded message as one length-delimited frame (#1244: the daemon's
+/// writer encodes once to size and chunk a message, then writes the pieces).
+///
+/// Wire format: `[4-byte little-endian length][protobuf bytes]`.
+pub async fn write_encoded_message(
+    writer: &mut (impl AsyncWrite + Unpin),
+    encoded: &[u8],
+) -> Result<(), ProtocolError> {
+    if encoded.len() > MAX_MESSAGE_SIZE {
+        return Err(ProtocolError::MessageTooLarge {
+            size: encoded.len(),
+            max: MAX_MESSAGE_SIZE,
+        });
+    }
+    let len = encoded.len() as u32;
+    writer.write_all(&len.to_le_bytes()).await?;
+    writer.write_all(encoded).await?;
+    writer.flush().await?;
+    warpui::profiling::mark!("remote_send");
+    Ok(())
+}
+
 /// Reads a `ClientMessage` from the given reader.
 pub async fn read_client_message(
     reader: &mut (impl AsyncRead + Unpin),
@@ -196,7 +218,7 @@ impl ProtocolError {
 ///
 /// Returns `None` if the buffer doesn't start with a valid field 1 string,
 /// or if the extracted string is empty.
-fn try_extract_request_id(buf: &[u8]) -> Option<String> {
+pub(crate) fn try_extract_request_id(buf: &[u8]) -> Option<String> {
     // Field 1 (string) wire tag: field_number=1, wire_type=2 (length-delimited).
     if buf.first() != Some(&0x0a) {
         return None;

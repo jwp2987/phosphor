@@ -578,6 +578,7 @@ impl RemoteCodebaseIndexModel {
             // request/response rather than as manager events); this fork has
             // `RemoteAgentContextSnapshot`, which the pin does not.
             RemoteServerManagerEvent::SessionConnecting { .. }
+            | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. }
             | RemoteServerManagerEvent::SessionConnectionLost { .. }
             | RemoteServerManagerEvent::SessionConnectionFailed { .. }
             | RemoteServerManagerEvent::HostConnected { .. }

@@ -16,7 +16,7 @@ use super::super::proto::{
 use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
-use super::{ConnectionId, PendingFileOps, ServerModel};
+use super::{ConnectionId, HandlerOutcome, PendingFileOps, ServerModel};
 // SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5): the
 // event-bridge half of the daemon handler, and its pure message-building helpers.
 #[cfg(feature = "local_fs")]
@@ -101,6 +101,7 @@ fn initialize_with_auth_token_stores_token() {
             auth_token: "initial-token".to_string(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         },
         &request_id(),
     );
@@ -116,6 +117,7 @@ fn empty_initialize_preserves_existing_auth_token() {
             auth_token: "initial-token".to_string(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         },
         &request_id(),
     );
@@ -125,6 +127,7 @@ fn empty_initialize_preserves_existing_auth_token() {
             auth_token: String::new(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         },
         &request_id(),
     );
@@ -140,6 +143,7 @@ fn authenticate_with_auth_token_replaces_auth_token() {
             auth_token: "initial-token".to_string(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         },
         &request_id(),
     );
@@ -159,6 +163,7 @@ fn empty_authenticate_preserves_existing_auth_token() {
             auth_token: "initial-token".to_string(),
             codebase_index_limits: None,
             embedding_provider: None,
+            chunked_responses: false,
         },
         &request_id(),
     );
@@ -1261,4 +1266,49 @@ fn remote_agent_context_snapshot_broadcasts_replacements_and_initializes_once() 
     ));
     model.send_remote_agent_context_snapshot_to_connection(late_conn);
     assert!(late_rx.try_recv().is_err());
+}
+
+/// #1244: the daemon confirms chunked responses only to a client that asked for them (and only
+/// while the daemon-side switch is on, which is the default).
+#[test]
+fn initialize_confirms_chunked_responses_only_when_the_client_asked() {
+    let mut model = test_model();
+    let confirmed = |outcome: HandlerOutcome| match outcome {
+        HandlerOutcome::Sync(server_message::Message::InitializeResponse(resp)) => {
+            resp.chunked_responses
+        }
+        _ => panic!("expected an InitializeResponse"),
+    };
+    let asked = model.handle_initialize(
+        Initialize {
+            auth_token: String::new(),
+            codebase_index_limits: None,
+            embedding_provider: None,
+            chunked_responses: true,
+        },
+        &request_id(),
+    );
+    // Default environment: the switch is on, so the answer follows the request.
+    assert_eq!(
+        confirmed(asked),
+        super::chunked_responses_enabled_from_env(
+            std::env::var("PHOSPHOR_REMOTE_SERVER_CHUNKED_RESPONSES")
+                .ok()
+                .as_deref()
+        )
+    );
+    let not_asked = model.handle_initialize(
+        Initialize {
+            auth_token: String::new(),
+            codebase_index_limits: None,
+            embedding_provider: None,
+            chunked_responses: false,
+        },
+        &request_id(),
+    );
+    assert!(!confirmed(not_asked));
+
+    assert!(super::chunked_responses_enabled_from_env(None));
+    assert!(!super::chunked_responses_enabled_from_env(Some("0")));
+    assert!(!super::chunked_responses_enabled_from_env(Some("no")));
 }

@@ -5099,6 +5099,7 @@ impl TerminalView {
                         }
                     }
                     RemoteServerManagerEvent::SessionConnecting { .. }
+                    | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. }
                     | RemoteServerManagerEvent::SessionConnectionLost { .. }
                     | RemoteServerManagerEvent::SessionReconnected { .. }
                     | RemoteServerManagerEvent::HostConnected { .. }
