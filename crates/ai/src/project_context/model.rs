@@ -360,6 +360,11 @@ impl ProjectRules {
 pub struct ProjectContextModel {
     /// Mapping from directory path to list of rule files found in that directory
     path_to_rules: HashMap<PathBuf, ProjectRules>,
+    /// Roots whose rules scan failed with "Repo size exceeded max file limit".
+    /// Such a repo stays over the limit for the session, so
+    /// `index_and_store_rules` skips it instead of re-walking it (and
+    /// re-logging) on every prompt. #1193.
+    over_limit_roots: HashSet<PathBuf>,
     /// Queued repository updates for paths that have an in-flight
     /// `process_repository_updates` task in `register_watcher_for_path`'s
     /// stream handler. The presence of a key indicates an active async task
@@ -567,7 +572,8 @@ impl ProjectContextModel {
         root_path: PathBuf,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        if self.path_to_rules.contains_key(&root_path) {
+        if self.path_to_rules.contains_key(&root_path) || self.over_limit_roots.contains(&root_path)
+        {
             return Ok(());
         }
         #[cfg(feature = "local_fs")]
@@ -605,16 +611,37 @@ impl ProjectContextModel {
                         me.path_to_rules.insert(root_clone, rule_files);
                         ctx.emit(ProjectContextModelEvent::PathIndexed);
                     }
-                    Err(e) => log::warn!(
-                        "Couldn't index rules for path {}: {}",
-                        root_clone.display(),
-                        e
-                    ),
+                    Err(e) => me.record_index_failure(root_clone, &e),
                 },
             );
         }
 
         Ok(())
+    }
+
+    /// Handles a failed rules scan. An over-limit repo is remembered and logged
+    /// once; it will not be retried this session. Other errors keep warning
+    /// (they may be transient). Returns true when the root was newly marked
+    /// over-limit. #1193.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    fn record_index_failure(&mut self, root: PathBuf, err: &anyhow::Error) -> bool {
+        let over_limit = matches!(
+            err.downcast_ref::<repo_metadata::entry::BuildTreeError>(),
+            Some(repo_metadata::entry::BuildTreeError::ExceededMaxFileLimit)
+        );
+        if !over_limit {
+            log::warn!("Couldn't index rules for path {}: {}", root.display(), err);
+            return false;
+        }
+        let newly_marked = self.over_limit_roots.insert(root.clone());
+        if newly_marked {
+            log::warn!(
+                "Couldn't index rules for path {}: {} (not retrying this session)",
+                root.display(),
+                err
+            );
+        }
+        newly_marked
     }
 
     // Zap: `try_initialize_and_register_watcher` used to be the entry point

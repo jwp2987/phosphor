@@ -1270,3 +1270,21 @@ fn test_merge_rediscovery_keeps_latest() {
     assert_eq!(delta.discovered_rules.len(), 1);
     assert!(delta.deleted_rules.is_empty());
 }
+
+// #1193: an over-limit repo is remembered once and not re-indexed per prompt.
+#[test]
+fn test_over_limit_repo_is_marked_once_and_other_errors_are_not() {
+    let mut model = ProjectContextModel::default();
+    let root = PathBuf::from("/repo/huge");
+    let over: anyhow::Error = repo_metadata::entry::BuildTreeError::ExceededMaxFileLimit.into();
+
+    assert!(model.record_index_failure(root.clone(), &over));
+    assert!(model.over_limit_roots.contains(&root));
+    // A repeat is not "new" (so it is not logged again).
+    assert!(!model.record_index_failure(root.clone(), &over));
+
+    let other_root = PathBuf::from("/repo/other");
+    let other = anyhow::anyhow!("permission denied");
+    assert!(!model.record_index_failure(other_root.clone(), &other));
+    assert!(!model.over_limit_roots.contains(&other_root));
+}
