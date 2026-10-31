@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::{any::Any, path::PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use command::r#async::Command;
 use itertools::Itertools as _;
 
-use crate::env_vars::{serialize_variables_for_shell, EnvVarValue};
+use crate::env_vars::{EnvVarValue, serialize_variables_for_shell};
 use crate::terminal::shell::Shell;
 
 use super::shared::shell_escape_single_quotes;
@@ -70,25 +70,14 @@ impl CommandExecutor for RemoteCommandExecutor {
         }
         command_str.push_str(command);
 
-        let ssh_args = [
-            "-q",
-            "-o",
-            "PasswordAuthentication=no",
-            // Disable X11 forwarding, as none of our background commands
-            // should need it, and it can cause warnings to appear in the
-            // user's session.
-            "-o",
-            "ForwardX11=no",
-            "-o",
-            &format!(
-                "ControlPath={}",
-                self.control_socket_path
-                    .to_str()
-                    .ok_or_else(|| anyhow!("socket path must exist"))?
-            ),
-            "placeholder@placeholder",
-            command_str.as_str(),
-        ];
+        // Guarded mux client (#1100): ride the existing master or fail fast, never open a new
+        // connection or prompt. Argument list only; see `remote_server::ssh::ssh_args`.
+        let mut ssh_args = remote_server::ssh::ssh_args(std::path::Path::new(
+            self.control_socket_path
+                .to_str()
+                .ok_or_else(|| anyhow!("socket path must exist"))?,
+        ));
+        ssh_args.push(command_str);
 
         // If the SSH session originated from WSL, the ControlPath also exists inside WSL.
         // Therefore, SSH commands directly from the Windows host will not work. They must be run
@@ -106,6 +95,8 @@ impl CommandExecutor for RemoteCommandExecutor {
         // A superseded generator is cancelled by dropping this future; `kill_on_drop` then kills
         // the local ssh client, closing its channel on the shared connection (#1128).
         command
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output()
             .await
