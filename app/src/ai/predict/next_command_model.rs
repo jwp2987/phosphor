@@ -4,11 +4,12 @@ use crate::ai_assistant::execution_context::WarpAiExecutionContext;
 use crate::completer::SessionContext;
 use crate::report_error;
 use crate::settings::AISettings;
-#[cfg(feature = "local_fs")]
-use crate::terminal::ShellHost;
 use crate::terminal::event::UserBlockCompleted;
+use crate::terminal::history::VisibleHistorySnapshot;
 use crate::terminal::input::{CompleterData, IntelligentAutosuggestionResult};
 use crate::terminal::model::session::Sessions;
+#[cfg(feature = "local_fs")]
+use crate::terminal::ShellHost;
 use crate::terminal::{History, HistoryEntry, TerminalModel};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use chrono::Utc;
@@ -34,6 +35,8 @@ use warp_core::features::FeatureFlag;
 use warpui::r#async::FutureExt;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
+#[cfg(feature = "local_fs")]
+use super::generate_ai_input_suggestions::HistoryContext;
 use super::generate_ai_input_suggestions::{
     create_generate_ai_input_suggestions_request, get_context_messages,
     GenerateAIInputSuggestionsRequest, GenerateAIInputSuggestionsResponseV2, NextCommandContext,
@@ -416,6 +419,49 @@ impl NextCommandModel {
         ))
     }
 
+    /// Like [`Self::get_reverse_chronological_potential_autosuggestions`], for the per-keystroke
+    /// call on the UI thread: it only walks the newest [`MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET`]
+    /// visible entries here. A prefix with few matches would otherwise walk the whole history
+    /// (hundreds of thousands of entries) before the keystroke can paint, so when the budget
+    /// runs out the scan comes back as a [`DeferredHistoryScan`] the caller finishes on its
+    /// background future (#1140). Either way the candidates, their order and the dedupe are
+    /// exactly those of the synchronous function.
+    pub fn get_potential_autosuggestions_within_budget(
+        prefix: &str,
+        completer_data: &CompleterData,
+        excluded_commands: &HashSet<String>,
+        app: &AppContext,
+    ) -> PotentialAutosuggestions {
+        let Some(session_id) = completer_data.active_block_session_id() else {
+            return PotentialAutosuggestions::Ready(None);
+        };
+        let history = History::as_ref(app);
+        let Some(history_entries) = history.visible_commands(session_id) else {
+            return PotentialAutosuggestions::Ready(None);
+        };
+        let working_dir = completer_data
+            .active_block_metadata
+            .as_ref()
+            .and_then(|block_metadata| block_metadata.current_working_directory());
+        if let Some(candidates) = scan_history_for_autosuggestions(
+            history_entries,
+            prefix,
+            working_dir,
+            excluded_commands,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+            Some(MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET),
+        ) {
+            return PotentialAutosuggestions::Ready(Some(candidates));
+        }
+        match history.visible_commands_snapshot(session_id) {
+            Some(snapshot) => PotentialAutosuggestions::Deferred(DeferredHistoryScan {
+                snapshot,
+                working_dir: working_dir.map(str::to_owned),
+            }),
+            None => PotentialAutosuggestions::Ready(None),
+        }
+    }
+
     /// Generates a next command suggestion with a prefix in the input.
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     #[expect(clippy::too_many_arguments)]
@@ -450,8 +496,7 @@ impl NextCommandModel {
         };
         // The profile's per-prompt override for the next-command system prompt must
         // also be resolved pre-spawn (the render runs where `&AppContext` is gone).
-        let next_command_prompt_override =
-            byop_next_command::resolve_prompt_override(ctx, None);
+        let next_command_prompt_override = byop_next_command::resolve_prompt_override(ctx, None);
 
         let completion_context = completer_data.completion_session_context(ctx);
         // This is only needed if we have a prefix.
@@ -982,14 +1027,48 @@ fn find_potential_autosuggestions_from_history<'a>(
     excluded_commands: &HashSet<String>,
     limit: usize,
 ) -> Vec<Arc<HistoryEntry>> {
+    scan_history_for_autosuggestions(
+        history_entries,
+        buffer_text,
+        working_dir,
+        excluded_commands,
+        limit,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+/// How many of the newest visible history entries the per-keystroke autosuggestion scan may
+/// look at on the UI thread before handing the rest to its background future. At a few tens
+/// of nanoseconds an entry this is well under a millisecond.
+const MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET: usize = 8192;
+
+/// The scan behind [`find_potential_autosuggestions_from_history`]. With
+/// `max_entries_visited` set it gives up and returns `None` once it has looked at that many
+/// entries without finishing; with `None` it always finishes.
+fn scan_history_for_autosuggestions<'a>(
+    history_entries: impl DoubleEndedIterator<Item = &'a Arc<HistoryEntry>>,
+    buffer_text: &str,
+    working_dir: Option<&str>,
+    excluded_commands: &HashSet<String>,
+    limit: usize,
+    max_entries_visited: Option<usize>,
+) -> Option<Vec<Arc<HistoryEntry>>> {
     if limit == 0 {
-        return vec![];
+        return Some(vec![]);
     }
     let mut commands_in_same_dir: Vec<&Arc<HistoryEntry>> = vec![];
     let mut commands_in_other_dirs: Vec<&Arc<HistoryEntry>> = vec![];
     let mut seen_in_same_dir: HashSet<&str> = HashSet::new();
     let mut seen_in_other_dirs: HashSet<&str> = HashSet::new();
+    let mut visited = 0usize;
     for entry in history_entries.rev() {
+        if let Some(max_entries_visited) = max_entries_visited {
+            if visited >= max_entries_visited {
+                return None;
+            }
+            visited += 1;
+        }
         if !entry.command.starts_with(buffer_text) || excluded_commands.contains(&entry.command) {
             continue;
         }
@@ -1011,12 +1090,140 @@ fn find_potential_autosuggestions_from_history<'a>(
             break;
         }
     }
-    commands_in_same_dir
-        .into_iter()
-        .chain(commands_in_other_dirs)
-        .take(limit)
-        .cloned()
-        .collect()
+    Some(
+        commands_in_same_dir
+            .into_iter()
+            .chain(commands_in_other_dirs)
+            .take(limit)
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The result of [`NextCommandModel::get_potential_autosuggestions_within_budget`].
+pub enum PotentialAutosuggestions {
+    /// The scan finished within the UI-thread budget (`None`: the session has no history yet).
+    Ready(Option<Vec<Arc<HistoryEntry>>>),
+    /// The scan needs to walk more of the history than the budget allows; finish it with
+    /// [`DeferredHistoryScan::run`] off the UI thread.
+    Deferred(DeferredHistoryScan),
+}
+
+impl PotentialAutosuggestions {
+    /// The ranked candidates, finishing a deferred scan if need be. Call off the UI thread.
+    pub fn resolve(
+        self,
+        prefix: &str,
+        excluded_commands: &HashSet<String>,
+    ) -> Vec<Arc<HistoryEntry>> {
+        match self {
+            PotentialAutosuggestions::Ready(candidates) => candidates.unwrap_or_default(),
+            PotentialAutosuggestions::Deferred(scan) => scan.run(prefix, excluded_commands),
+        }
+    }
+}
+
+/// An autosuggestion history scan that outgrew the UI-thread budget, holding an owned
+/// snapshot of the session's visible history so it can finish on a background thread.
+pub struct DeferredHistoryScan {
+    snapshot: VisibleHistorySnapshot,
+    working_dir: Option<String>,
+}
+
+impl DeferredHistoryScan {
+    /// Runs the whole scan over the snapshot: the candidates the synchronous function would
+    /// have returned for the same history.
+    pub fn run(&self, prefix: &str, excluded_commands: &HashSet<String>) -> Vec<Arc<HistoryEntry>> {
+        find_potential_autosuggestions_from_history(
+            self.snapshot.iter(),
+            prefix,
+            self.working_dir.as_deref(),
+            excluded_commands,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+        )
+    }
+}
+
+/// How long [`SimilarHistoryContextCache`] trusts a result. The cached query depends only on
+/// the last completed block, but the database is written by a separate thread (a block's
+/// finished-state update can land just after its first keystroke), so a result is not kept
+/// indefinitely.
+#[cfg(feature = "local_fs")]
+const SIMILAR_HISTORY_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// Remembers the result of [`NextCommandModel::get_similar_history_context`] for the last
+/// completed block. That query costs one SQLite lookup plus one more per match, and its answer
+/// depends only on the block that just finished, yet the autosuggestion path ran it again on
+/// every keystroke (#1140).
+#[cfg(feature = "local_fs")]
+#[derive(Default)]
+pub struct SimilarHistoryContextCache {
+    entry: Mutex<Option<SimilarHistoryContextCacheEntry>>,
+}
+
+#[cfg(feature = "local_fs")]
+struct SimilarHistoryContextCacheEntry {
+    command: String,
+    pwd: Option<String>,
+    exit_code: ExitCode,
+    shell_host: Option<ShellHost>,
+    computed_at: std::time::Instant,
+    contexts: Arc<Vec<HistoryContext>>,
+}
+
+#[cfg(feature = "local_fs")]
+impl SimilarHistoryContextCache {
+    /// Returns the cached contexts for this block if they are fresh, otherwise runs `compute`
+    /// (without holding the cache lock) and remembers its result.
+    pub fn get_or_compute(
+        &self,
+        command: &str,
+        pwd: &Option<String>,
+        exit_code: ExitCode,
+        shell_host: Option<&ShellHost>,
+        compute: impl FnOnce() -> Vec<HistoryContext>,
+    ) -> Arc<Vec<HistoryContext>> {
+        self.get_or_compute_at(
+            std::time::Instant::now(),
+            command,
+            pwd,
+            exit_code,
+            shell_host,
+            compute,
+        )
+    }
+
+    fn get_or_compute_at(
+        &self,
+        now: std::time::Instant,
+        command: &str,
+        pwd: &Option<String>,
+        exit_code: ExitCode,
+        shell_host: Option<&ShellHost>,
+        compute: impl FnOnce() -> Vec<HistoryContext>,
+    ) -> Arc<Vec<HistoryContext>> {
+        if let Some(entry) = self.entry.lock().as_ref() {
+            if entry.command == command
+                && entry.pwd == *pwd
+                && entry.exit_code == exit_code
+                && entry.shell_host.as_ref() == shell_host
+                && now.saturating_duration_since(entry.computed_at)
+                    < SIMILAR_HISTORY_CONTEXT_CACHE_TTL
+            {
+                return entry.contexts.clone();
+            }
+        }
+        let contexts = Arc::new(compute());
+        *self.entry.lock() = Some(SimilarHistoryContextCacheEntry {
+            command: command.to_owned(),
+            pwd: pwd.clone(),
+            exit_code,
+            shell_host: shell_host.cloned(),
+            computed_at: now,
+            contexts: contexts.clone(),
+        });
+        contexts
+    }
 }
 
 #[cfg(test)]
