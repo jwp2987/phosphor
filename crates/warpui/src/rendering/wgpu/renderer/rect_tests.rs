@@ -47,8 +47,9 @@ fn reused_instance_vector_encodes_the_same_bytes_as_a_fresh_one() {
     let reused_layers = encode_all(&scene, &mut reused);
 
     assert_eq!(fresh_layers, reused_layers);
-    // Two rects, one of them with a drop shadow (two instances), then one more in layer two.
-    assert_eq!(fresh_layers, vec![(0, 3), (3, 1)]);
+    // A solid rect, the shadow of a second rect that draws nothing itself (one instance: the rect
+    // has no fill), then one more rect in layer two.
+    assert_eq!(fresh_layers, vec![(0, 2), (2, 1)]);
     assert_eq!(
         bytemuck::cast_slice::<_, u8>(&fresh),
         bytemuck::cast_slice::<_, u8>(&reused)
@@ -63,6 +64,60 @@ fn layers_without_rects_add_no_instances() {
     let mut out = Vec::new();
     assert!(encode_all(&scene, &mut out).is_empty());
     assert!(out.is_empty());
+}
+
+#[test]
+fn rects_that_draw_nothing_are_not_encoded_and_do_not_move_the_others() {
+    let mut scene = Scene::new(1., rendering::Config::default());
+    let solid = Fill::Solid(ColorU::new(10, 20, 30, 255));
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+        .with_background(solid);
+    // A container with no fill and no border, a fully transparent solid, and a fill-less rect
+    // with a border that has no alpha: nothing to draw.
+    scene.draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(500., 500.)));
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(500., 500.)))
+        .with_background(Fill::Solid(ColorU::new(5, 5, 5, 0)));
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(500., 500.)))
+        .with_border(crate::scene::Border::all(1.));
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(20., 20.), vec2f(10., 10.)))
+        .with_background(solid);
+
+    let mut out = Vec::new();
+    assert_eq!(encode_all(&scene, &mut out), vec![(0, 2)]);
+    assert_eq!(out.len(), 2);
+
+    // The same two rects without the ones in between encode to the same bytes.
+    let mut plain = Scene::new(1., rendering::Config::default());
+    plain
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+        .with_background(solid);
+    plain
+        .draw_rect_without_hit_recording(RectF::new(vec2f(20., 20.), vec2f(10., 10.)))
+        .with_background(solid);
+    let mut expected = Vec::new();
+    encode_all(&plain, &mut expected);
+    assert_eq!(
+        bytemuck::cast_slice::<_, u8>(&out),
+        bytemuck::cast_slice::<_, u8>(&expected)
+    );
+}
+
+#[test]
+fn a_layer_whose_rects_all_draw_nothing_has_no_layer_state() {
+    let mut scene = Scene::new(1., rendering::Config::default());
+    scene.draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)));
+    scene.start_layer(crate::ClipBounds::None);
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+        .with_background(Fill::Solid(ColorU::new(1, 2, 3, 255)));
+    scene.stop_layer();
+    let mut out = Vec::new();
+    // The first layer contributes no state; the second starts at instance 0.
+    assert_eq!(encode_all(&scene, &mut out), vec![(0, 1)]);
 }
 
 const SHADER: &str = include_str!("../shaders/rect_shader.wgsl");

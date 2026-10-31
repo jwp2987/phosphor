@@ -158,6 +158,22 @@ pub struct Rect {
     pub border: Border,
 }
 
+impl Rect {
+    /// Whether drawing this rect (its shadow aside) cannot change a pixel: the background has no
+    /// alpha at either end and the border either is not drawn (no width on any side) or has none
+    /// either. The rect shader returns alpha 0 for such a rect and the alpha blend leaves the
+    /// destination as it was, so a renderer may skip it. Containers whose fill is `Fill::None`
+    /// are the common case; each one costs a full pass over its bounds on a software rasterizer.
+    pub fn draws_nothing(&self) -> bool {
+        let transparent = |fill: &Fill| fill.start_color().a == 0 && fill.end_color().a == 0;
+        let border_drawn = self.border.top_width() != 0.
+            || self.border.right_width() != 0.
+            || self.border.bottom_width() != 0.
+            || self.border.left_width() != 0.;
+        transparent(&self.background) && (!border_drawn || transparent(&self.border.color))
+    }
+}
+
 #[derive(Clone)]
 pub struct Image {
     pub bounds: RectF,
@@ -302,6 +318,18 @@ pub struct CornerRadius {
 }
 
 impl CornerRadius {
+    /// Whether every corner is square: unset, or an absolute radius of zero. `with_all(Pixels(0.))`
+    /// draws the same as `CornerRadius::default()`, but compares unequal to it.
+    pub fn is_square(&self) -> bool {
+        [self.top_left, self.top_right, self.bottom_left, self.bottom_right]
+            .into_iter()
+            .all(|radius| match radius {
+                None => true,
+                Some(Radius::Pixels(pixels)) => pixels == 0.,
+                Some(Radius::Percentage(_)) => false,
+            })
+    }
+
     /// Merge this CornerRadius struct with another.
     /// `Some(r)` takes precedence over `None`.
     /// If both are present, `other`'s values, take precedence over `self`'s existing values.

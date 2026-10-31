@@ -232,3 +232,71 @@ fn splice_at_in_reverse_order_handles_several_points_and_sub_layers() {
     assert_eq!(primitives(&direct), primitives(&deferred));
     assert_eq!(colors(&direct), colors(&deferred));
 }
+
+fn rect_with(background: Fill, border: Border) -> Rect {
+    Rect {
+        bounds: RectF::new(vec2f(0., 0.), vec2f(10., 10.)),
+        background,
+        border,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_rect_without_alpha_and_without_a_drawn_border_draws_nothing() {
+    assert!(rect_with(Fill::None, Border::default()).draws_nothing());
+    assert!(rect_with(Fill::Solid(ColorU::new(9, 9, 9, 0)), Border::default()).draws_nothing());
+    assert!(rect_with(
+        Fill::Gradient {
+            start: vec2f(0., 0.),
+            end: vec2f(1., 1.),
+            start_color: ColorU::new(1, 2, 3, 0),
+            end_color: ColorU::new(4, 5, 6, 0),
+        },
+        Border::default(),
+    )
+    .draws_nothing());
+    // A border colour with no alpha, or a border with no width on any side, adds nothing.
+    assert!(rect_with(Fill::None, Border::all(2.)).draws_nothing());
+    let mut no_sides = Border::all(2.);
+    no_sides.color = Fill::Solid(ColorU::new(255, 0, 0, 255));
+    no_sides.top = false;
+    no_sides.right = false;
+    no_sides.bottom = false;
+    no_sides.left = false;
+    assert!(rect_with(Fill::None, no_sides).draws_nothing());
+}
+
+#[test]
+fn a_rect_with_any_visible_alpha_or_border_is_drawn() {
+    assert!(!rect_with(Fill::Solid(ColorU::new(0, 0, 0, 1)), Border::default()).draws_nothing());
+    assert!(!rect_with(
+        Fill::Gradient {
+            start: vec2f(0., 0.),
+            end: vec2f(1., 1.),
+            start_color: ColorU::new(0, 0, 0, 0),
+            end_color: ColorU::new(0, 0, 0, 255),
+        },
+        Border::default(),
+    )
+    .draws_nothing());
+    let mut visible = Border::all(1.);
+    visible.color = Fill::Solid(ColorU::new(255, 255, 255, 255));
+    assert!(!rect_with(Fill::None, visible).draws_nothing());
+    let mut one_side = Border::all(1.);
+    one_side.color = Fill::Solid(ColorU::new(255, 255, 255, 80));
+    one_side.top = false;
+    one_side.left = false;
+    one_side.right = false;
+    assert!(!rect_with(Fill::None, one_side).draws_nothing());
+}
+
+#[test]
+fn zero_radii_are_square_and_anything_else_is_not() {
+    assert!(CornerRadius::default().is_square());
+    assert!(CornerRadius::with_all(Radius::Pixels(0.)).is_square());
+    assert!(CornerRadius::with_top(Radius::Pixels(0.)).is_square());
+    assert!(!CornerRadius::with_all(Radius::Pixels(4.)).is_square());
+    assert!(!CornerRadius::with_bottom_right(Radius::Pixels(0.5)).is_square());
+    assert!(!CornerRadius::with_all(Radius::Percentage(0.)).is_square());
+}
