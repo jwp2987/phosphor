@@ -9,7 +9,7 @@ use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
 use crate::terminal::model::terminal_model::ExitReason;
 use crate::terminal::view;
 use crate::terminal::writeable_pty::command_history::update_command_history;
-use crate::terminal::writeable_pty::pty_controller::EventLoopSender;
+use crate::terminal::writeable_pty::pty_controller::{EventLoopSender, PASTE_WRITE_MIN_BYTES};
 use crate::terminal::writeable_pty::terminal_surface::{PtyIntent, PtyIntentEvent, TerminalSurface};
 use crate::terminal::writeable_pty::{PtyController, PtyControllerEvent};
 use crate::terminal::ModelEventDispatcher;
@@ -121,7 +121,11 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyIntent::WriteBytes(bytes) => {
                 controller.update(ctx, |controller, ctx| {
                     // TODO: the underlying bytes should be wrapped in an Arc and copied out only when they need to be written to the PTY.
-                    controller.write_bytes(bytes, ctx);
+                    if bytes.len() >= PASTE_WRITE_MIN_BYTES {
+                        controller.write_paste_bytes(bytes, ctx);
+                    } else {
+                        controller.write_bytes(bytes, ctx);
+                    }
                 });
             }
             PtyIntent::WriteHandoffUserBytes(bytes) => {

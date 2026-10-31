@@ -105,6 +105,12 @@ enum PtyWrite {
         /// The bytes to be written.
         bytes: Cow<'static, [u8]>,
     },
+    /// A paste-sized user write (#1255): written like `Bytes`, but a ^C cancels the part the
+    /// event loop has not yet written to the pty.
+    PasteBytes {
+        /// The bytes to be written.
+        bytes: Cow<'static, [u8]>,
+    },
     AgentInput {
         /// The bytes to be written.
         bytes: Cow<'static, [u8]>,
@@ -619,6 +625,8 @@ impl<T: EventLoopSender> PtyController<T> {
         let byte_count = bytes.len();
         if deferred_behind_command {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
+        } else if byte_count >= PASTE_WRITE_MIN_BYTES {
+            self.write_paste_bytes(bytes, ctx);
         } else {
             self.write_bytes(bytes, ctx);
         }
@@ -1608,6 +1616,22 @@ impl<T: EventLoopSender> PtyController<T> {
         );
     }
 
+    /// Writes a paste-sized block of user bytes. The event loop streams it to the pty as the pty
+    /// (and whatever is on the other end, such as ssh) accepts it, never dropping or splitting a
+    /// byte, and a ^C cancels what is still unwritten (#1255).
+    pub fn write_paste_bytes<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        bytes: B,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.send_write_to_event_loop(
+            PtyWrite::PasteBytes {
+                bytes: bytes.into(),
+            },
+            ctx,
+        );
+    }
+
     pub fn set_foreground_sigint(&mut self, f: std::sync::Arc<dyn Fn() -> bool>) {
         self.foreground_sigint = Some(f);
     }
@@ -1685,6 +1709,7 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::Command { shell_type, .. } => Some(*shell_type),
             PtyWrite::AgentInput { .. }
             | PtyWrite::Bytes { .. }
+            | PtyWrite::PasteBytes { .. }
             | PtyWrite::TmuxCommand(_)
             | PtyWrite::RunNativeShellCompletions(_) => None,
         };
@@ -1704,6 +1729,11 @@ impl<T: EventLoopSender> PtyController<T> {
             &write,
             PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
         );
+
+        // A paste is streamed by the event loop a tty-buffer at a time (the remote program or ssh
+        // sets the pace; nothing is dropped or split). It is tagged cancellable so a ^C stops
+        // what is still unwritten instead of queueing behind all of it (#1255).
+        let is_paste = matches!(&write, PtyWrite::PasteBytes { .. });
 
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
@@ -1729,7 +1759,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     mode.decorate_bytes(bytes.into_owned(), self.is_bracketed_paste_enabled);
                 (decorated_bytes.into(), false, None, false)
             }
-            PtyWrite::Bytes { bytes } => (bytes, false, None, false),
+            PtyWrite::Bytes { bytes } | PtyWrite::PasteBytes { bytes } => {
+                (bytes, false, None, false)
+            }
             PtyWrite::TmuxCommand(command) => {
                 let command = command.get_command_string();
                 debug_assert!(
@@ -1807,7 +1839,7 @@ impl<T: EventLoopSender> PtyController<T> {
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
         self.send_message_to_event_loop(
-            if is_user_command {
+            if is_user_command || is_paste {
                 Message::CommandInput(bytes_to_write)
             } else {
                 Message::Input(bytes_to_write)
@@ -1957,6 +1989,10 @@ pub(crate) fn command_is_sent_as_bracketed_paste(
 ) -> bool {
     is_bracketed_paste_enabled && !command.is_empty()
 }
+
+/// User writes at least this large are pastes, not keystrokes: they go out as
+/// [`PtyController::write_paste_bytes`], so a ^C cancels the part not yet written (#1255).
+pub(crate) const PASTE_WRITE_MIN_BYTES: usize = 32 * 1024;
 
 /// Returns the shell-dependent array of bytes to be written to the PTY to execute `command`.
 fn bytes_to_execute_command(

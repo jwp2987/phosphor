@@ -10158,6 +10158,14 @@ impl TerminalView {
     /// Emits if at least one terminal inputs is synced, so receivers of this
     /// event must determine how to process this event.
     /// Also emits an event for shared session viewers to notify the sharer of a write to pty request.
+    /// Whether anything consumes `emit_non_editor_typed_event`: input synced to other panes or a
+    /// shared session this one drives. Without either, a 50 MB paste is not copied for nothing
+    /// (#1255).
+    fn non_editor_typed_event_wanted(&self, ctx: &ViewContext<Self>) -> bool {
+        SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id())
+            || self.model.lock().shared_session_status().is_executor()
+    }
+
     fn emit_non_editor_typed_event(&self, chars: Vec<u8>, ctx: &mut ViewContext<Self>) {
         if SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id()) {
             ctx.emit(Event::SyncInput(SyncEvent {
@@ -11539,7 +11547,9 @@ impl TerminalView {
             return true;
         }
 
-        let bytes_vec = bytes.to_vec();
+        let bytes_vec = self
+            .non_editor_typed_event_wanted(ctx)
+            .then(|| bytes.to_vec());
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         if handoff_route == UserBytesRoute::WriteCounted {
@@ -11547,7 +11557,9 @@ impl TerminalView {
         } else {
             self.write_to_pty(bytes, ctx);
         }
-        self.emit_non_editor_typed_event(bytes_vec, ctx);
+        if let Some(bytes_vec) = bytes_vec {
+            self.emit_non_editor_typed_event(bytes_vec, ctx);
+        }
         true
     }
 
@@ -20470,6 +20482,12 @@ impl TerminalView {
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
         if self.swallow_input_during_ssh_setup(None, ctx) {
+            // Typed keys are dropped silently, but a paste is something the user is waiting to
+            // see arrive: say why nothing happened (#1255).
+            self.show_error_toast(
+                "Paste ignored \u{2014} the ssh session is still starting".to_string(),
+                ctx,
+            );
             return;
         }
         // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for

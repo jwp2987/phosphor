@@ -2664,6 +2664,54 @@ fn user_command_is_sent_as_command_input_but_in_band_is_not() {
     });
 }
 
+/// #1255: a paste-sized user write is tagged cancellable (a ^C drops what the event loop has not
+/// yet written), while the bytes themselves are sent whole and unchanged: nothing is split,
+/// capped or dropped on the way to the pty, whatever the size.
+#[test]
+fn paste_bytes_are_sent_whole_as_cancellable_input() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        let paste: Vec<u8> = (0..PASTE_WRITE_MIN_BYTES * 3 + 17)
+            .map(|i| b'a' + (i % 26) as u8)
+            .collect();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_paste_bytes(paste.clone(), ctx);
+            controller.write_bytes(&b"k"[..], ctx);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        match &messages[0] {
+            Message::CommandInput(bytes) => assert_eq!(bytes.as_ref(), paste.as_slice()),
+            other => panic!("a paste must be sent as cancellable input, got {other:?}"),
+        }
+        // A keystroke behind it stays ordinary input, so a cancel never takes typed keys.
+        assert!(matches!(&messages[1], Message::Input(bytes) if bytes.as_ref() == b"k"));
+
+        drop(model_events_tx);
+    });
+}
+
 /// #1046: the input's multi-line confirmation asks `command_is_sent_as_bracketed_paste`, the
 /// same decision `bytes_to_execute_command` wraps by, so the two cannot disagree.
 #[test]
