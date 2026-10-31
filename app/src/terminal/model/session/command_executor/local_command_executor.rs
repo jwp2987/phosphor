@@ -19,7 +19,8 @@ fn kill_all_processes_in_process_group(pid: u32) -> Result<(), nix::Error> {
     kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
 }
 #[cfg(unix)]
-fn terminate_process_group(process_group_id: u32) {
+fn terminate_process_group(process_group: &ActiveProcessGroup) {
+    let process_group_id = process_group.id;
     // A pgid of 0 targets the caller's own process group, and 1 negates to
     // -1, which SIGKILLs every process this user is allowed to signal.
     // Neither is ever a legitimate target, so refuse them rather than let a
@@ -42,8 +43,22 @@ fn terminate_process_group(process_group_id: u32) {
         }
     }
 }
-#[cfg(not(unix))]
-fn terminate_process_group(_: u32) {}
+
+/// Windows has no process groups, so the spawned child is placed in a kill-on-close Job
+/// Object instead; closing the job terminates the child and everything it spawned.
+#[cfg(windows)]
+fn terminate_process_group(process_group: &ActiveProcessGroup) {
+    match process_group.job.lock().take() {
+        Some(job) => {
+            drop(job);
+            log::info!("Closed job object for process {}", process_group.id);
+        }
+        None => log::info!(
+            "No job object for process {}; relying on kill_on_drop",
+            process_group.id
+        ),
+    }
+}
 
 /// The process groups this executor has spawned and not yet accounted for.
 ///
@@ -58,12 +73,17 @@ struct ActiveProcessGroups {
 #[derive(Debug)]
 struct ActiveProcessGroup {
     id: u32,
+    /// Windows only: the job holding the child, closed to kill it and its descendants.
+    #[cfg(windows)]
+    job: Mutex<Option<command::windows::KillOnCloseJob>>,
 }
 
 impl ActiveProcessGroups {
     fn register(&self, process_group_id: u32) -> Arc<ActiveProcessGroup> {
         let process_group = Arc::new(ActiveProcessGroup {
             id: process_group_id,
+            #[cfg(windows)]
+            job: Mutex::new(None),
         });
         self.process_groups
             .lock()
@@ -85,11 +105,17 @@ impl ActiveProcessGroups {
 
     fn complete(&self, process_group: &Arc<ActiveProcessGroup>) {
         self.remove(process_group);
+        // The command finished on its own: close the job without killing deliberately
+        // detached descendants, matching the unix behaviour of leaving the group alone.
+        #[cfg(windows)]
+        if let Some(job) = process_group.job.lock().take() {
+            job.disarm();
+        }
     }
 
     fn cancel(&self, process_group: &Arc<ActiveProcessGroup>) {
         if self.remove(process_group) {
-            terminate_process_group(process_group.id);
+            terminate_process_group(process_group);
         }
     }
 
@@ -121,6 +147,22 @@ impl SpawnedChildCleanup {
         Self {
             process_group: Some(process_group),
             active_process_groups,
+        }
+    }
+
+    /// Windows only: puts the freshly spawned child in a kill-on-close job so that
+    /// cancelling the command can terminate it and its descendants. Best effort.
+    #[cfg(windows)]
+    fn attach_job(&self, process_handle: isize) {
+        let Some(process_group) = &self.process_group else {
+            return;
+        };
+        match command::windows::KillOnCloseJob::with_process(process_handle) {
+            Ok(job) => *process_group.job.lock() = Some(job),
+            Err(e) => log::warn!(
+                "Could not place process {} in a job object: {e:#}",
+                process_group.id
+            ),
         }
     }
 
@@ -362,6 +404,11 @@ impl LocalCommandExecutor {
 
         let child_cleanup =
             SpawnedChildCleanup::new(child.id(), self.active_process_groups.clone());
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            child_cleanup.attach_job(child.as_raw_handle() as isize);
+        }
 
         let output = child
             .output()

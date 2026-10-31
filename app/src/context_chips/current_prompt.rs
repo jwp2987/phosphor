@@ -100,6 +100,16 @@ fn poll_decision(in_foreground: bool, since_editor_activity: Option<Duration>) -
     PollDecision::Run
 }
 
+/// Upper bound for a chip's shell command when its policy sets no timeout of its own. A hung
+/// helper (a stuck `git`, a network mount) would otherwise run forever, and on every refresh
+/// another one would pile up behind it.
+const DEFAULT_CHIP_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The timeout a chip command actually runs under: its own, or the default.
+fn effective_command_timeout(policy_timeout: Option<Duration>) -> Duration {
+    policy_timeout.unwrap_or(DEFAULT_CHIP_COMMAND_TIMEOUT)
+}
+
 /// The interval between polls of a chip whose configured interval is `base`.
 fn effective_poll_interval(base: Duration, session_is_remote: bool) -> Duration {
     if session_is_remote && base >= GATED_POLL_MIN_INTERVAL {
@@ -765,11 +775,7 @@ impl CurrentPrompt {
                 ExecuteCommandOptions::default(),
             )
             .fuse();
-        let timeout_future = match timeout {
-            Some(duration) => Timer::after(duration),
-            None => Timer::never(),
-        }
-        .fuse();
+        let timeout_future = Timer::after(effective_command_timeout(timeout)).fuse();
         pin_mut!(command_future);
         pin_mut!(timeout_future);
 
