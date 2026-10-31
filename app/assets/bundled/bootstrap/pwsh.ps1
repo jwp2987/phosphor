@@ -45,12 +45,24 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         $encodedMessage = Warp-Encode-HexString $json
-        Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
     }
 
     # This script block contains commands and constants that are needed in background threads.
     # If you want to be able to use it in a background thread, stick it in this block
     $warpCommon = {
+        # Writes control-sequence text (an OSC) straight to the console. Write-Host in Windows
+        # PowerShell 5.1 blocks for a ConPTY frame (~14 ms) on about every third call, and a prompt
+        # cycle makes eight or more of them (#1224); [Console]::Out takes ~0.1 ms every time. The
+        # fallback keeps a host without a console output stream (an embedded host) working.
+        function Warp-Write-Osc([string]$text) {
+            try {
+                [Console]::Out.Write($text)
+            } catch {
+                Microsoft.PowerShell.Utility\Write-Host -NoNewline $text
+            }
+        }
+
         # OSC used to mark the start of in-band command output.
         #
         # Printable characters received this OSC and oscEndGeneratorOutput are parsed and handled as
@@ -66,7 +78,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $oscResetGrid = "$([char]0x1b)]9279$oscEnd"
 
         function Warp-Send-ResetGridOSC() {
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline $oscResetGrid
+            Warp-Write-Osc $oscResetGrid
         }
 
         # Safely attempt to get Node.js version if available. Avoid literal 'node' invocation
@@ -101,7 +113,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             $hexEncodedMessage = Warp-Encode-HexString $message
             $byteCount = [System.Text.Encoding]::ASCII.GetByteCount($hexEncodedMessage)
 
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
+            Warp-Write-Osc "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
             Warp-Send-ResetGridOSC
         }
 
@@ -479,7 +491,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # the contents of the early output handler when we kill the line editor's buffer.
             # However, PowerShell doesn't do this correctly due to cursor position mismatch. So,
             # we do it manually here instead.
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$([char]0x1b)[2K"
+            Warp-Write-Osc "$([char]0x1b)[2K"
         }
 
         # Sets the prompt mode to custom prompt (PS1)

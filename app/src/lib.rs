@@ -710,6 +710,13 @@ fn apply_scroll_multiplier(event: &mut Event, app: &AppContext) {
 pub fn run() -> Result<()> {
     // Starts the Tracy client when built with `--features profiling`; a no-op otherwise (#1169).
     warpui::profiling::init();
+    // 1 ms timers instead of the 15.6 ms tick: every debounce, throttle and async wait in the app
+    // would otherwise fire up to a tick late (#1260). `PHOSPHOR_TIMER_RESOLUTION=0` keeps the
+    // default, to compare.
+    #[cfg(windows)]
+    if !std::env::var("PHOSPHOR_TIMER_RESOLUTION").is_ok_and(|value| value == "0") {
+        warp_util::windows::request_high_resolution_timer();
+    }
     // First, while the process is still single-threaded; every worker re-exec (terminal server,
     // plugin host, ...) of this binary also enters here.
     #[cfg(all(

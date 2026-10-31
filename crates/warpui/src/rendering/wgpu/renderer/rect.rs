@@ -16,6 +16,28 @@ pub(super) struct Pipeline {
     render_pipeline: RenderPipeline,
 }
 
+/// The line of `rect_shader.wgsl` that switches the solid-rect fast path (#1225).
+const FAST_PATH_ON: &str = "const SOLID_FAST_PATH: bool = true;";
+const FAST_PATH_OFF: &str = "const SOLID_FAST_PATH: bool = false;";
+
+/// The rect shader's source. Setting `PHOSPHOR_RECT_FAST_PATH=0` compiles it without the
+/// solid-rect early return, to compare frame cost (and look for a rendering difference) with the
+/// general path alone.
+fn shader_source() -> Cow<'static, str> {
+    shader_source_with(
+        include_str!("../shaders/rect_shader.wgsl"),
+        std::env::var("PHOSPHOR_RECT_FAST_PATH").is_ok_and(|value| value == "0"),
+    )
+}
+
+fn shader_source_with(source: &'static str, disable_fast_path: bool) -> Cow<'static, str> {
+    if disable_fast_path {
+        Cow::Owned(source.replace(FAST_PATH_ON, FAST_PATH_OFF))
+    } else {
+        Cow::Borrowed(source)
+    }
+}
+
 /// Kept across frames so the instance vector and vertex buffer are reused; see `begin_frame`.
 #[derive(Default)]
 pub(super) struct PerFrameState {
@@ -56,9 +78,7 @@ impl Pipeline {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Rect Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../shaders/rect_shader.wgsl"
-            ))),
+            source: wgpu::ShaderSource::Wgsl(shader_source()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
