@@ -10355,6 +10355,7 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
             input.verdict_wait = Some(VerdictWait {
                 text: "true".to_string(),
                 queued: Vec::new(),
+                completion_hold: None,
             });
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
@@ -10390,6 +10391,7 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
             input.verdict_wait = Some(VerdictWait {
                 text: "true".to_string(),
                 queued: Vec::new(),
+                completion_hold: None,
             });
             // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
             // reach the editor before the wait is reconciled.
@@ -11059,6 +11061,213 @@ fn test_completion_landing_during_deferred_enter_is_dropped() {
                 "nothing may be replayed into the next prompt"
             );
         });
+    });
+}
+
+/// #1165: a shell fixture for the Tab-then-Enter hold. The buffer holds `git checkout fe`, a Tab
+/// completion request is in flight for it (`local` says where its completer runs), and every
+/// executed command is recorded.
+async fn tab_enter_fixture(
+    app: &mut App,
+    local: bool,
+) -> (
+    ViewHandle<Input>,
+    Rc<RefCell<Vec<String>>>,
+    u64,
+    EditorSnapshot,
+) {
+    use crate::ai::blocklist::InputConfig;
+
+    let (input, executed) = multiline_submit_fixture(app, "git checkout fe", false).await;
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::Shell,
+                    is_locked: true,
+                },
+                false, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+    });
+    let (generation, snapshot) = input.update(app, |input, ctx| {
+        let generation = input.input_generation;
+        let snapshot = editor_model_snapshot(input, ctx);
+        input.tab_completion_request = Some(TabCompletionRequest {
+            generation,
+            snapshot: snapshot.clone(),
+            local,
+        });
+        (generation, snapshot)
+    });
+    (input, executed, generation, snapshot)
+}
+
+fn deliver_tab_result(
+    input: &ViewHandle<Input>,
+    app: &mut App,
+    generation: u64,
+    suggestions: Vec<&str>,
+    snapshot: EditorSnapshot,
+) {
+    input.update(app, |input, ctx| {
+        input.deliver_completion_suggestions_results(
+            generation,
+            build_suggestion_results(
+                suggestions.into_iter().map(argument_suggestion).collect(),
+                (13, 15),
+                MatchStrategy::CaseInsensitive,
+            ),
+            CompletionsTrigger::Keybinding,
+            snapshot,
+            ctx,
+        );
+    });
+}
+
+/// #1165: Tab, then an Enter before the result: the Enter holds, and a single match is applied
+/// and the COMPLETED line submitted, once, leaving the next buffer empty.
+#[test]
+fn test_tab_then_enter_single_match_submits_completed_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            let wait = input.verdict_wait.as_ref().expect("the Enter must hold");
+            assert!(wait.completion_hold.is_some());
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "nothing runs before the result"
+        );
+
+        deliver_tab_result(
+            &input,
+            &mut app,
+            generation,
+            vec!["feature"],
+            snapshot.clone(),
+        );
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(
+                input.buffer_text(ctx).is_empty(),
+                "the next buffer is empty"
+            );
+            assert!(input.after_enter_replay_for_test().is_empty());
+        });
+
+        // A copy of the result arriving after the submit is dropped.
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty())
+        });
+    });
+}
+
+/// #1165: several matches: no menu opens and the visible text is submitted.
+#[test]
+fn test_tab_then_enter_multiple_matches_submits_visible_text() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        deliver_tab_result(
+            &input,
+            &mut app,
+            generation,
+            vec!["feature", "fennel"],
+            snapshot,
+        );
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+        input.read(&app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+            assert!(input.buffer_text(ctx).is_empty());
+        });
+    });
+}
+
+/// #1165: no answer within the budget: the visible text is submitted and a late result is dropped.
+#[test]
+fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            input.verdict_wait.as_mut().unwrap().completion_hold =
+                Some(Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2);
+            input.poll_completion_hold(ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty())
+        });
+    });
+}
+
+/// #1165: keys typed during the hold go behind the submitted command, in order, never into the
+/// old buffer.
+#[test]
+fn test_tab_then_enter_keys_typed_during_hold_replay_after_submit() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            input.user_insert("l", ctx);
+            input.user_insert("s", ctx);
+        });
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.after_enter_replay_for_test(),
+                [AfterEnterInput::Text("ls".to_string())]
+            );
+            assert!(input.buffer_text(ctx).is_empty());
+        });
+    });
+}
+
+/// #1165: Ctrl-C during the hold cancels both the completion and the Enter.
+#[test]
+fn test_tab_then_enter_ctrl_c_during_hold_submits_nothing() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.poll_completion_hold(ctx);
+        });
+        input.read(&app, |input, _| assert!(input.verdict_wait.is_none()));
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert!(executed.borrow().is_empty());
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty())
+        });
+    });
+}
+
+/// #1165: a remote completer is never waited for: the Enter submits the visible text at once.
+#[test]
+fn test_tab_then_enter_remote_completer_is_not_waited_for() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, false).await;
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
     });
 }
 

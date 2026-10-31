@@ -1321,7 +1321,27 @@ impl DeferredEnterActivity {
 struct VerdictWait {
     text: String,
     queued: Vec<AfterEnterInput>,
+    /// Set while the Enter holds for the Tab completion in flight for `text` (#1165): when the
+    /// hold began. The Enter then submits the completed line (or the visible text on an
+    /// ambiguous, empty, failed or late result).
+    completion_hold: Option<Instant>,
 }
+
+/// The Tab (`CompletionsTrigger::Keybinding`) completion request in flight, so an Enter that
+/// arrives for the exact buffer and cursor it was started for can wait for it (#1165).
+#[derive(Debug)]
+struct TabCompletionRequest {
+    generation: u64,
+    snapshot: EditorSnapshot,
+    /// Whether the completer runs on this machine. A remote completer cannot answer quickly and
+    /// is never waited for.
+    local: bool,
+}
+
+/// How long an Enter holds for the Tab completion in flight before it submits the visible text.
+const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
+/// A hold longer than this is logged at WARN, so slow completers can be traced.
+const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Where the editor's text ended when an Enter was deferred behind the typeahead hand-off's
 /// report (#1016). Keys that reach the editor after that Enter (before the terminal takes the
@@ -1830,6 +1850,8 @@ pub struct Input {
     /// (e.g. new input), we simply abort the existing run. The same applies to the
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
+    /// The Tab completion request in flight, if any (#1165).
+    tab_completion_request: Option<TabCompletionRequest>,
     /// Bumped whenever a pending async result (completion, autosuggestion, next-command
     /// suggestion, AI query prediction) can no longer be applied: Esc, submit, buffer
     /// clear/replace, block completion, input-mode switch. Requests capture it when they start
@@ -3711,6 +3733,7 @@ impl Input {
             decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
+            tab_completion_request: None,
             input_generation: 0,
             next_command_request_generation: 0,
             menu_positioning_provider,
@@ -11586,6 +11609,7 @@ impl Input {
         if let Some(last_abort_handle) = self.completions_abort_handle.take() {
             last_abort_handle.abort();
         }
+        self.tab_completion_request = None;
 
         let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
@@ -11623,6 +11647,13 @@ impl Input {
 
         let completion_session = completion_context.session.clone();
         let generation = self.input_generation;
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            self.tab_completion_request = Some(TabCompletionRequest {
+                generation,
+                snapshot: editor_snapshot.clone(),
+                local: completion_session.is_local(),
+            });
+        }
 
         let abort_handle = ctx
             .spawn_abortable(
@@ -11755,7 +11786,20 @@ impl Input {
         editor_snapshot_when_completer_was_ran: EditorSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.is_stale_generation(generation) || self.verdict_wait.is_some() {
+        if self.is_stale_generation(generation) {
+            return;
+        }
+        if let Some(wait) = self.verdict_wait.as_ref() {
+            // #1165: the Tab completion an Enter holds for. Anything else that lands while an
+            // Enter waits is dropped.
+            if wait.completion_hold.is_some()
+                && completions_trigger == CompletionsTrigger::Keybinding
+            {
+                self.finish_completion_hold(
+                    Some((results, editor_snapshot_when_completer_was_ran)),
+                    ctx,
+                );
+            }
             return;
         }
         self.handle_completion_suggestions_results(
@@ -12972,6 +13016,8 @@ impl Input {
                 self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
             }
             return;
+        } else if self.hold_enter_for_tab_completion(ctx) {
+            return;
         } else if self.defer_enter_for_classification(ctx) {
             return;
         } else if self.settle_detection_and_maybe_queue_input(ctx)
@@ -13378,6 +13424,25 @@ impl Input {
             self.queue_after_enter_replay(AfterEnterInput::Enter);
             return true;
         }
+        let Some(text) = self.verdict_needed_before_submit(ctx) else {
+            return false;
+        };
+        self.ai_input_model
+            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        self.verdict_wait = Some(VerdictWait {
+            text: text.clone(),
+            queued: Vec::new(),
+            completion_hold: None,
+        });
+        self.cancel_pending_completions_for_deferred_enter();
+        self.begin_deferred_enter_activity(ctx);
+        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        true
+    }
+
+    /// Settles what the Enter-time rules can decide, then returns the buffer text if the Enter
+    /// must wait for its classification verdict (#933); `None` if it submits now.
+    fn verdict_needed_before_submit(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
         // What the Enter-time rules can decide without a verdict is decided now, exactly as
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
@@ -13400,18 +13465,177 @@ impl Input {
             provenance,
             false,
         ) {
+            return None;
+        }
+        Some(text)
+    }
+
+    /// #1165: an Enter that arrives while the Tab completion for the exact current buffer and
+    /// cursor is in flight holds for it, as a real shell runs the completed line. The result is
+    /// applied (a single match), or the visible text is submitted (several matches, none, an
+    /// error, or no answer within `TAB_COMPLETION_ENTER_BUDGET`). A remote completer cannot
+    /// answer quickly: it is cancelled and the Enter submits the visible text at once. Keys typed
+    /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
+    /// Returns whether the Enter was taken.
+    fn hold_enter_for_tab_completion(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.running_deferred_enter || self.after_enter_replay_open {
             return false;
         }
-        self.ai_input_model
-            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        if self
+            .verdict_wait
+            .as_ref()
+            .is_some_and(|wait| wait.completion_hold.is_some())
+        {
+            if self.reconcile_verdict_wait(ctx) {
+                if let Some(wait) = self.verdict_wait.as_mut() {
+                    wait.queued.push(AfterEnterInput::Enter);
+                }
+                return true;
+            }
+            return false;
+        }
+        if self.verdict_wait.is_some() {
+            return false;
+        }
+        let Some(request) = self.tab_completion_request.as_ref() else {
+            return false;
+        };
+        if self.is_stale_generation(request.generation) {
+            self.tab_completion_request = None;
+            return false;
+        }
+        let current = self
+            .editor
+            .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+        if request.snapshot.text() != current.text()
+            || request.snapshot.selections() != current.selections()
+        {
+            return false;
+        }
+        if !request.local {
+            // Never wait on remote I/O: submit the visible text now.
+            log::info!("Enter not held for a remote Tab completion; completion cancelled");
+            self.tab_completion_request = None;
+            self.cancel_pending_completions_for_deferred_enter();
+            return false;
+        }
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
         self.verdict_wait = Some(VerdictWait {
-            text: text.clone(),
+            text,
             queued: Vec::new(),
+            completion_hold: Some(Instant::now()),
         });
-        self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
-        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        self.poll_completion_hold(ctx);
         true
+    }
+
+    /// Moves what was typed behind a held Enter out of the buffer, ends the hold at the budget,
+    /// and re-arms itself while the hold lasts. The result itself arrives through
+    /// [`Self::deliver_completion_suggestions_results`].
+    fn poll_completion_hold(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(held_since) = self
+            .verdict_wait
+            .as_ref()
+            .and_then(|wait| wait.completion_hold)
+        else {
+            return;
+        };
+        // Void (Ctrl-C, an edit of the text): the completion is cancelled with it.
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        if held_since.elapsed() >= TAB_COMPLETION_ENTER_BUDGET {
+            self.cancel_pending_completions_for_deferred_enter();
+            self.finish_completion_hold(None, ctx);
+            return;
+        }
+        let rearm = std::time::Duration::from_millis(2);
+        ctx.spawn(Timer::after(rearm), |me, _, ctx| {
+            me.poll_completion_hold(ctx)
+        });
+    }
+
+    /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
+    /// completion that landed, `None` when the wait timed out. A single match is applied first;
+    /// the verdict for the COMPLETED text then decides the route (the partial line's verdict is
+    /// dropped), within the usual verdict budget.
+    fn finish_completion_hold(
+        &mut self,
+        result: Option<(Option<SuggestionResults>, EditorSnapshot)>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.tab_completion_request = None;
+        // Moves keys typed during the hold out of the buffer; false: the Enter was voided.
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        let Some(held_since) = self
+            .verdict_wait
+            .as_ref()
+            .and_then(|wait| wait.completion_hold)
+        else {
+            return;
+        };
+        let waited = held_since.elapsed();
+        let before = self.editor.as_ref(ctx).buffer_text(ctx);
+        let mut outcome = "timed out";
+        if let Some((results, snapshot)) = result {
+            outcome = "no match";
+            let current = self
+                .editor
+                .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+            if snapshot.text() == current.text()
+                && snapshot.selections() == current.selections()
+                && let Some(results) = results
+                && !results.suggestions.is_empty()
+            {
+                outcome = "ambiguous";
+                let query = results.replacement_span.slice(&before);
+                if let ExplicitTabCompletion::InsertSingle {
+                    suggestion,
+                    replacement_span,
+                } = results.explicit_tab_completion(query, self.path_separators(ctx).all)
+                {
+                    outcome = "applied";
+                    self.insert_completion_result_into_editor(
+                        &suggestion.suggestion.replacement,
+                        replacement_span.start(),
+                        Executing::No,
+                        ctx,
+                    );
+                }
+            }
+        }
+        if waited > TAB_COMPLETION_ENTER_WARN {
+            log::warn!(
+                "Enter held {} ms for a local Tab completion ({outcome}; budget {} ms)",
+                waited.as_millis(),
+                TAB_COMPLETION_ENTER_BUDGET.as_millis()
+            );
+        }
+        // Nothing the completion started may land after this point, in this or the next prompt.
+        self.cancel_pending_completions_for_deferred_enter();
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if text != before {
+            // A verdict requested for the partial line must not route the completed one.
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+            if self.can_classify_buffer(ctx) {
+                self.request_input_detection_for_current_buffer(ctx);
+            }
+        }
+        if let Some(wait) = self.verdict_wait.as_mut() {
+            wait.completion_hold = None;
+            wait.text = text.clone();
+        }
+        if self.verdict_needed_before_submit(ctx).is_some() {
+            self.ai_input_model
+                .update(ctx, |model, _| model.clear_typeahead_provenance());
+            self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        } else {
+            self.submit_held_enter(ctx);
+        }
     }
 
     /// #1181: holds the macOS activity assertion while an Enter is deferred, with a hard cap in
@@ -13441,6 +13665,9 @@ impl Input {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return;
         };
+        if wait.completion_hold.is_some() {
+            return;
+        }
         let text = wait.text.clone();
         if self
             .ai_input_model
@@ -13482,16 +13709,46 @@ impl Input {
             _ => {
                 // The user edited the waiting text itself: the Enter is void. Keep what was
                 // typed behind it in the editor rather than losing it.
-                let rest = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued_text())
-                    .unwrap_or_default();
+                let wait = self.verdict_wait.take();
+                if wait.as_ref().is_some_and(|w| w.completion_hold.is_some()) {
+                    // The held Enter is void (Ctrl-C, an edit): so is its completion.
+                    self.tab_completion_request = None;
+                    self.cancel_pending_completions_for_deferred_enter();
+                    self.end_deferred_enter_activity();
+                }
+                let rest = wait.map(|wait| wait.queued_text()).unwrap_or_default();
                 if !rest.is_empty() {
                     self.system_insert(&rest, ctx);
                 }
                 false
             }
+        }
+    }
+
+    /// Runs the Enter that waited (verdict or completion hold): opens the replay for what was
+    /// typed behind it (#1016), submits, and hands the replay to the view.
+    fn submit_held_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let queued = self
+            .verdict_wait
+            .take()
+            .map(|wait| wait.queued)
+            .unwrap_or_default();
+        // Open the replay before the submit so nothing typed from here on can be routed
+        // ahead of the queue (#1016); the view drains it once the pty route is settled.
+        let has_queued = !queued.is_empty();
+        self.end_deferred_enter_activity();
+        if has_queued {
+            self.after_enter_replay = queued;
+            self.after_enter_replay_open = true;
+            self.after_enter_replay_awaits_pty = false;
+        }
+        self.last_enter_submitted_shell_command = false;
+        self.running_deferred_enter = true;
+        self.input_enter(ctx);
+        self.running_deferred_enter = false;
+        if has_queued {
+            self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
+            ctx.emit(Event::ReplayAfterDeferredEnter);
         }
     }
 
@@ -13523,28 +13780,7 @@ impl Input {
                     self.ai_input_model
                         .update(ctx, |model, _| model.abandon_pending_detection());
                 }
-                let queued = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued)
-                    .unwrap_or_default();
-                // Open the replay before the submit so nothing typed from here on can be routed
-                // ahead of the queue (#1016); the view drains it once the pty route is settled.
-                let has_queued = !queued.is_empty();
-                self.end_deferred_enter_activity();
-                if has_queued {
-                    self.after_enter_replay = queued;
-                    self.after_enter_replay_open = true;
-                    self.after_enter_replay_awaits_pty = false;
-                }
-                self.last_enter_submitted_shell_command = false;
-                self.running_deferred_enter = true;
-                self.input_enter(ctx);
-                self.running_deferred_enter = false;
-                if has_queued {
-                    self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
-                    ctx.emit(Event::ReplayAfterDeferredEnter);
-                }
+                self.submit_held_enter(ctx);
             }
             EnterVerdictWait::Wait => {
                 let rearm = std::time::Duration::from_millis(2);
@@ -15984,6 +16220,7 @@ impl TypedActionView for Input {
         match action {
             InputAction::FocusInputBox => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new(
+
                     translate_input_key(INPUT_A11Y_LABEL_KEY),
                     // TODO (a11y) use bindings from user settings
                     translate_input_key(INPUT_A11Y_HELPER_KEY),
@@ -16219,7 +16456,6 @@ impl View for Input {
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
         }
     }
-
 
     fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
         let mut ctx = Self::default_keymap_context();
