@@ -210,6 +210,65 @@ function __phosphor_ap_fish_restore --on-event fish_prompt
     end
 end
 
+# Phosphor (#1170): sets __warp_git_branch and __warp_git_head the way `git symbolic-ref --short
+# HEAD`, then `git rev-parse --short HEAD`, would, but without forking when the answer is in
+# .git/HEAD. Those two git processes ran on every prompt (about 4 ms in a repo, 2 in a plain
+# directory). Returns 1, leaving the answer to git exactly as before, for anything it cannot
+# answer with certainty: GIT_* variables that change discovery, a .git file (worktree, submodule),
+# a bare repo or the .git directory itself, a repo owned by someone else (git refuses it), reftable
+# (HEAD is `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose
+# short name git would qualify because a tag of the same name exists (a packed one is checked with
+# git once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a
+# symlinked directory is followed the way git (which uses the physical path) follows it.
+function __warp_git_head_fast
+    for v in GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_NAMESPACE GIT_COMMON_DIR
+        set -q $v; and return 1
+    end
+    set -l p .
+    set -l gd
+    set -l n 0
+    while test $n -lt 64
+        set n (math $n + 1)
+        if test -d $p/.git
+            set gd $p/.git
+            break
+        end
+        if test -e $p/.git; or begin; test -f $p/HEAD; and test -d $p/refs; end
+            return 1
+        end
+        if test $p/.. -ef $p
+            # Reached / without finding a repo: git would print nothing for both.
+            set -g __warp_git_branch ""
+            set -g __warp_git_head ""
+            return 0
+        end
+        set p $p/..
+    end
+    test -n "$gd"; and test -O $gd; and test -O $p; and test -d $gd/objects; and test -d $gd/refs; and test -r $gd/HEAD; or return 1
+    read -l line < $gd/HEAD; or return 1
+    switch "$line"
+        case 'ref: refs/heads/.invalid'
+            return 1
+        case 'ref: refs/heads/*'
+            set line (string replace 'ref: refs/heads/' '' -- "$line")
+        case '*'
+            return 1
+    end
+    test -n "$line"; or return 1
+    if test -e "$gd/$line"; or test -e "$gd/refs/$line"; or test -e "$gd/refs/tags/$line"
+        return 1
+    end
+    if test -e $gd/packed-refs; and test "$__warp_git_checked" != "$PWD|$line"
+        # A packed tag of the same name cannot be seen without reading the whole file, so ask
+        # git once per directory and branch instead of on every prompt.
+        set -l short (warp_git symbolic-ref --short HEAD 2> /dev/null)
+        test "$short" = "$line"; or return 1
+        set -g __warp_git_checked "$PWD|$line"
+    end
+    set -g __warp_git_branch "$line"
+    set -g __warp_git_head "$line"
+end
+
 # Run before a command is executed.
 function warp_preexec --on-event fish_preexec
     set -l command (warp_escape_json "$argv")
@@ -482,12 +541,17 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       set -l git_branch ""
       set -l git_head ""
       if command -q git
-          set git_branch (warp_git symbolic-ref --short HEAD 2> /dev/null)
-          if test -z "$git_branch"
-              # Fallback to the git commit hash if we aren't on a named branch.
-              set git_head (warp_git rev-parse --short HEAD 2> /dev/null)
+          if __warp_git_head_fast
+              set git_branch "$__warp_git_branch"
+              set git_head "$__warp_git_head"
           else
-              set git_head "$git_branch"
+              set git_branch (warp_git symbolic-ref --short HEAD 2> /dev/null)
+              if test -z "$git_branch"
+                  # Fallback to the git commit hash if we aren't on a named branch.
+                  set git_head (warp_git rev-parse --short HEAD 2> /dev/null)
+              else
+                  set git_head "$git_branch"
+              end
           end
       end
       set escaped_git_head (warp_escape_json "$git_head")

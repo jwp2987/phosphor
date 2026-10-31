@@ -784,9 +784,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           # available to their session, it is unlikely they will be looking for git branch
           # information from the prompt.
           if command -v git >/dev/null 2>&1; then
-            git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
-            # The git branch the user is on, or the git commit hash if they're not on a branch.
-            git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+            if ! __warp_git_head_fast; then
+              git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
+              # The git branch the user is on, or the git commit hash if they're not on a branch.
+              git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+            fi
           fi
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
             __warp_ej_var escaped_git_head "$git_head"
@@ -920,6 +922,55 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 ;;
         esac
         builtin printf -v "$1" '%s' "$__v"
+    }
+
+    # Phosphor (#1170): sets git_branch and git_head the way `git symbolic-ref --short HEAD`, then
+    # `git rev-parse --short HEAD`, would, but without forking when the answer is in .git/HEAD. Those
+    # two git processes ran on every prompt (about 4 ms in a repo, 2 in a plain directory). Returns 1,
+    # leaving the answer to git exactly as before, for anything it cannot answer with certainty:
+    # GIT_* variables that change discovery, a .git file (worktree, submodule), a bare repo or the
+    # .git directory itself, a repo owned by someone else (git refuses it), reftable (HEAD is
+    # `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose short
+    # name git would qualify because a tag of the same name exists (a packed one is checked with git
+    # once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a symlinked
+    # directory is followed the way git (which uses the physical path) follows it.
+    __warp_git_head_fast () {
+        [[ -z ${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_CEILING_DIRECTORIES+x}${GIT_DISCOVERY_ACROSS_FILESYSTEM+x}${GIT_NAMESPACE+x}${GIT_COMMON_DIR+x} ]] || return 1
+        local __p=. __n=0 __gd= __line=
+        while (( __n++ < 64 )); do
+            if [[ -d $__p/.git ]]; then
+                __gd=$__p/.git
+                break
+            fi
+            if [[ -e $__p/.git || ( -f $__p/HEAD && -d $__p/refs ) ]]; then
+                return 1
+            fi
+            if [[ $__p/.. -ef $__p ]]; then
+                # Reached / without finding a repo: git would print nothing for both.
+                git_branch=
+                git_head=
+                return 0
+            fi
+            __p=$__p/..
+        done
+        [[ -n $__gd && -O $__gd && -O $__p && -d $__gd/objects && -d $__gd/refs && -r $__gd/HEAD ]] || return 1
+        builtin read -r __line 2>/dev/null < "$__gd/HEAD" || return 1
+        case $__line in
+            "ref: refs/heads/.invalid") return 1 ;;
+            "ref: refs/heads/"?*) __line=${__line#ref: refs/heads/} ;;
+            *) return 1 ;;
+        esac
+        if [[ -e $__gd/$__line || -e $__gd/refs/$__line || -e $__gd/refs/tags/$__line ]]; then
+            return 1
+        fi
+        if [[ -e $__gd/packed-refs && ${__warp_git_checked-} != "$PWD|$__line" ]]; then
+            # A packed tag of the same name cannot be seen without reading the whole file, so ask
+            # git once per directory and branch instead of on every prompt.
+            [[ $(warp_git symbolic-ref --short HEAD 2> /dev/null) == "$__line" ]] || return 1
+            __warp_git_checked="$PWD|$__line"
+        fi
+        git_branch=$__line
+        git_head=$__line
     }
 
     # Turns out that the processed prompt is a complicated data structure that includes lots of 
