@@ -1082,6 +1082,11 @@ impl BlocklistAIController {
                             conversation_id: *conversation_id,
                         });
                     }
+
+                    // The step ended with no request, so no stream end will re-decide a
+                    // monitored command's completion held behind it (`has_unsent_actions`);
+                    // decide it now that the turn's status is final.
+                    me.retry_deferred_monitored_completion(*conversation_id, ctx);
                 }
                 return;
             };
