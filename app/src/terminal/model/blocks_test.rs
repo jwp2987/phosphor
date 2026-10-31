@@ -550,8 +550,16 @@ fn test_deferred_restore_matches_eager_restore() {
     // Nothing left to install.
     assert!(!deferred.install_ready_deferred_restores());
 
-    for (eager_block, deferred_block) in eager.blocks.iter().zip(deferred.blocks.iter()) {
-        assert_eq!(eager_block.id(), deferred_block.id());
+    for (index, (eager_block, deferred_block)) in
+        eager.blocks.iter().zip(deferred.blocks.iter()).enumerate()
+    {
+        // Each list ends in a fresh active input block whose id is random per list; only the
+        // restored blocks carry the saved ids.
+        if let Some(saved) = restored_blocks.get(index) {
+            let SerializedBlockListItem::Command { block: saved } = saved;
+            assert_eq!(eager_block.id(), &saved.id);
+            assert_eq!(deferred_block.id(), &saved.id);
+        }
         assert_eq!(
             eager_block.command_to_string(),
             deferred_block.command_to_string()
