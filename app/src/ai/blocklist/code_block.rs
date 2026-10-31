@@ -106,16 +106,20 @@ pub struct CodeBlockOptions {
     pub file_path: Option<String>,
 }
 
+/// `code` is the snippet text the embedded editor mirrors. The caller already holds it, so the
+/// block no longer copies the whole editor buffer (`Buffer::text_with_line_ending`, ~12% of the
+/// main thread while an answer streams into a conversation of ~50 exchanges) on every render
+/// of every finished code block (#1267).
 pub fn render_code_block_with_warp_text(
+    code: &str,
     options: CodeBlockOptions,
     view: &ViewHandle<CodeEditorView>,
     app: &AppContext,
     source: Option<CodeSource>,
 ) -> Box<dyn Element> {
-    let code = view.as_ref(app).text(app);
     let code_element = ChildView::new(view).finish();
 
-    render_code_block_internal(code.as_str(), code_element, options, app, source, true)
+    render_code_block_internal(code, code_element, options, app, source, true)
 }
 
 pub fn render_code_block_plain(
