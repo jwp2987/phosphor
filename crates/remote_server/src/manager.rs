@@ -850,6 +850,11 @@ pub struct RemoteServerManager {
     /// keyed by request id, awaiting a response drained off
     /// `host_response_rx`. #438 dependent features 4/5.
     pending_host_requests: HashMap<crate::protocol::RequestId, PendingHostRequest>,
+    /// Generation of each session's live event stream (#1171). Bumped when a reconnect attempt
+    /// starts and when a new stream is installed, so the end handler of a stale stream (one
+    /// from an attempt that timed out) cannot mark the session disconnected over a
+    /// `Reconnecting` or newer state.
+    connection_generation: HashMap<SessionId, u64>,
     /// Last accepted `RemoteAgentContextSnapshot` per host, used by
     /// `accept_remote_agent_context_snapshot_revision` to drop stale/
     /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
@@ -880,6 +885,7 @@ impl RemoteServerManager {
             session_platforms: HashMap::new(),
             session_labels: HashMap::new(),
             pending_host_requests: HashMap::new(),
+            connection_generation: HashMap::new(),
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
         }
@@ -1252,13 +1258,21 @@ impl RemoteServerManager {
                     },
                 );
 
+                let generation = me.bump_connection_generation(session_id);
                 ctx.spawn_stream_local(
                     event_rx,
                     move |me, event, ctx| {
                         me.forward_client_event(session_id, event, ctx);
                     },
                     move |me, ctx| {
-                        me.mark_session_disconnected(session_id, ctx);
+                        // #1171: only the newest stream may end the session.
+                        if me.connection_generation.get(&session_id) == Some(&generation) {
+                            me.mark_session_disconnected(session_id, ctx);
+                        } else {
+                            log::info!(
+                                "Stale event stream ended for session {session_id:?}, ignoring"
+                            );
+                        }
                     },
                 );
 
@@ -1414,6 +1428,7 @@ impl RemoteServerManager {
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
         self.session_labels.remove(&session_id);
+        self.connection_generation.remove(&session_id);
 
         // Remove the session entry. Dropping the `RemoteSessionState`
         // here drops the transport's owned `Child` (if any), which
@@ -2149,6 +2164,14 @@ impl RemoteServerManager {
         );
     }
 
+    /// Starts a new connection generation for `session_id` and returns it (#1171).
+    #[cfg(not(target_family = "wasm"))]
+    fn bump_connection_generation(&mut self, session_id: SessionId) -> u64 {
+        let generation = self.connection_generation.entry(session_id).or_insert(0);
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
     /// Attempt to re-establish the remote server connection.
     #[cfg(not(target_family = "wasm"))]
     fn attempt_reconnect(
@@ -2172,6 +2195,8 @@ impl RemoteServerManager {
              (attempt {attempt}/{MAX_RECONNECT_ATTEMPTS})"
         );
 
+        // The previous attempt's stream (if it timed out after installing one) is now stale.
+        self.bump_connection_generation(session_id);
         self.sessions.insert(
             session_id,
             RemoteSessionState::Reconnecting {
