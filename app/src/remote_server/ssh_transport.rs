@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use warpui::r#async::{executor, FutureExt as _};
+use anyhow::{Result, anyhow};
+use warpui::r#async::{FutureExt as _, executor};
 
 use remote_server::auth::RemoteServerAuthContext;
 use remote_server::client::RemoteServerClient;
@@ -658,7 +658,9 @@ async fn dev_install_local_binary(socket_path: &Path) -> Result<()> {
         ));
     }
 
-    log::info!("dev remote-server: uploading local cross-compiled artifact to {remote_binary} (scp -C compression, may take several minutes for hundreds of MB)");
+    log::info!(
+        "dev remote-server: uploading local cross-compiled artifact to {remote_binary} (scp -C compression, may take several minutes for hundreds of MB)"
+    );
     // Dev artifacts are hundreds of MB, so use DEV_UPLOAD_TIMEOUT (far
     // longer than SCP_INSTALL_TIMEOUT), to avoid a large file upload being
     // interrupted by the 120s timeout and falling back to downloading a
@@ -989,6 +991,7 @@ impl RemoteTransport for SshTransport {
             // spontaneous disconnect) sends SIGKILL to this ssh process.
             let mut child = command::r#async::Command::new("ssh")
                 .args(&args)
+                .env("SHELL", "/bin/sh")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
