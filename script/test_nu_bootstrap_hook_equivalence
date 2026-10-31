@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""The fork-free git branch lookup in nu.nu must report exactly what `git symbolic-ref --short
+HEAD` (then `git rev-parse --short HEAD`) reported before (#1233), and the hooks must stay valid.
+
+The nu counterpart of script/test_bootstrap_hook_equivalence. Needs a real nushell (0.116+):
+the official release tarball works unpacked anywhere, nothing is installed.
+
+  1. The assembled bootstrap (as bootstrap.rs builds it: nu_init_shell.nu through
+     `nu --login --execute`, then ` source <file>`) runs in a pty and the Precmd payload is
+     checked for a table of working directories (quotes, backslashes, control characters,
+     unicode, repos, worktrees, a symlinked cwd, detached HEAD, a tag with the branch's name,
+     packed refs, bare and empty .git, a repo with glob characters in its name) against the
+     real `git` the old code called.
+  2. GIT_TRACE counts git processes: none per prompt where the in-shell answer is certain
+     (plain directory, branch checked out, subdirectory, symlink), and git is still called where
+     it would not be (worktree, detached HEAD, tag clash, packed refs, bare repo).
+  3. A user command with quotes, backslashes and control characters comes back byte for byte in
+     the Preexec payload.
+
+USAGE
+    script/test_nu_bootstrap_hook_equivalence [--nu PATH]
+
+A missing nu is reported and the script exits 0 (skipped) unless --nu was given. Exit 1 on failure.
+"""
+
+import glob
+import json
+import os
+import pty
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOT = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)(?:\x9c|\xc2\x9c)")
+
+args = sys.argv[1:]
+NU = None
+explicit = False
+if args[:1] == ["--nu"] and len(args) == 2:
+    NU, explicit = args[1], True
+elif args:
+    sys.exit(__doc__)
+if NU is None:
+    NU = shutil.which("nu") or next(iter(sorted(glob.glob(os.path.expanduser("~/tmp-r18/perf-nushell/nu/*/nu")))), None)
+if not NU or not os.access(NU, os.X_OK):
+    print("nu: not installed (skipped)")
+    sys.exit(1 if explicit else 0)
+GIT = shutil.which("git")
+failures = []
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def assemble(text):
+    """What bootstrap.rs does to a bootstrap file: keep one leading space, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def init_script(sid):
+    lines = [l for l in assemble(open(os.path.join(BOOT, "nu_init_shell.nu")).read()).split("\n") if l]
+    return ";".join(lines).replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+
+
+def make_tree(R):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a",
+           "GIT_COMMITTER_EMAIL": "a@b", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_COMMON_DIR"):
+        env.pop(k, None)
+
+    def sh(cmd):
+        subprocess.run(cmd, shell=True, cwd=R, check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    for d in ("plain", "ctl\ttab", 'q"uo\\te', "uni cødé 日本"):
+        os.makedirs(os.path.join(R, d))
+    # name -> (path, must the fast path avoid git?, must git be called?)
+    t = {
+        "plain": ("plain", True, False),
+        "quote and backslash": ('q"uo\\te', True, False),
+        "unicode": ("uni cødé 日本", True, False),
+        "tab": ("ctl\ttab", True, False),
+    }
+    if GIT:
+        sh("git init -q -b feat/x repo && cd repo && git commit -q --allow-empty -m i && mkdir sub "
+           "&& git worktree add -q ../wt -b wtb")
+        sh("git init -q -b main detached && cd detached && git commit -q --allow-empty -m i && git checkout -q --detach")
+        sh("git init -q -b brt tagclash && cd tagclash && git commit -q --allow-empty -m i && git tag brt")
+        sh("git init -q -b rel packed && cd packed && git commit -q --allow-empty -m i && git tag rel && git pack-refs --all")
+        sh("git init -q -b 'q\"b' quoted && cd quoted && git commit -q --allow-empty -m i")
+        sh("git init -q -b main 'gl[o]b*' && cd 'gl[o]b*' && git commit -q --allow-empty -m i")
+        sh("git init -q -b main unborn")
+        sh("git clone -q --bare repo bare.git")
+        sh("mkdir -p emptygit/.git emptygit/inner")
+        os.symlink("repo/sub", os.path.join(R, "link"))
+        os.makedirs(os.path.join(R, "repo", "ctl\ttab"))
+        t.update({
+            "branch with a slash": ("repo", True, False),
+            "subdirectory": ("repo/sub", True, False),
+            "subdirectory with a tab": ("repo/ctl\ttab", True, False),
+            "symlinked cwd": ("link", True, False),
+            "worktree": ("wt", False, True),
+            "detached HEAD": ("detached", False, True),
+            "tag named like the branch": ("tagclash", False, True),
+            "packed refs": ("packed", False, True),
+            "branch with a quote": ("quoted", True, False),
+            "glob characters in the name": ("gl[o]b*", True, False),
+            "unborn branch": ("unborn", True, False),
+            "bare repo": ("bare.git", False, True),
+            "empty .git": ("emptygit", False, False),
+            "inside empty .git": ("emptygit/inner", False, False),
+        })
+    return t
+
+
+def git_expect(path):
+    """The values the old code computed."""
+    if not GIT:
+        return "", ""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    for k in ("GIT_DIR", "GIT_WORK_TREE"):
+        env.pop(k, None)
+
+    def g(*a):
+        r = subprocess.run([GIT] + list(a), cwd=path, capture_output=True, env=env)
+        return r.stdout.decode(errors="replace").strip() if r.returncode == 0 else ""
+    branch = g("symbolic-ref", "--short", "HEAD")
+    return branch, branch or g("rev-parse", "--short", "HEAD")
+
+
+def nu_string(s):
+    """A nu double-quoted string literal for any text, typed as printable ASCII."""
+    out = '"'
+    for ch in s:
+        if ch == '"' or ch == "\\":
+            out += "\\" + ch
+        elif 32 <= ord(ch) < 127:
+            out += ch
+        else:
+            out += "\\u{%x}" % ord(ch)
+    return out + '"'
+
+
+class Shell:
+    def __init__(self, home, cwd, git_trace):
+        self.home = home
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin", "TERM": "xterm-256color",
+               "LANG": "C.UTF-8", "XDG_CONFIG_HOME": home + "/.config", "XDG_DATA_HOME": home + "/.local/share",
+               "XDG_CACHE_HOME": home + "/.cache", "WARP_HONOR_PS1": "0", "WARP_PROMPT_NODE_VERSION_ENABLED": "0",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_TRACE": git_trace}
+        self.boot = os.path.join(home, "phosphor-nu.nu")
+        with open(self.boot, "w") as f:
+            f.write(assemble(open(os.path.join(BOOT, "nu.nu")).read()))
+        argv = [NU, "--login", "--execute", init_script("4242")]
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        self.buf = b""
+        self.broken = not self.pump(20, lambda: any(n == "InitShell" for n, _ in self.hooks()))
+        self.pump(0.5)
+        os.write(self.fd, (" source '%s'\r" % self.boot).encode())
+        self.broken = self.broken or not self.pump(20, lambda: any(n == "Bootstrapped" for n, _ in self.hooks()))
+        self.pump(1.0)
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            for _ in range(data.count(b"\x1b[6n")):
+                os.write(self.fd, b"\x1b[1;1R")
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()).decode(errors="replace"))
+            except ValueError:
+                out.append(("INVALID", {}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def cycle(self, line, timeout=10):
+        """Type a line; return the hooks it produced, waiting for its Precmd."""
+        if self.broken:
+            return []
+        n = len(self.hooks())
+        before = sum(1 for h, _ in self.hooks() if h == "Precmd")
+        os.write(self.fd, line.encode() + b"\r")
+        if not self.pump(timeout, lambda: sum(1 for h, _ in self.hooks() if h == "Precmd") > before):
+            self.broken = True
+        self.pump(0.2)
+        return self.hooks()[n:]
+
+    def close(self):
+        try:
+            os.write(self.fd, b"exit\r")
+            time.sleep(0.2)
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def count_git(path):
+    try:
+        with open(path, errors="replace") as f:
+            return len(re.findall(r"(?:built-in|exec): git", f.read()))
+    except OSError:
+        return 0
+
+
+def e2e():
+    base = tempfile.mkdtemp(prefix="phosphor-1233-")
+    R = os.path.realpath(base)
+    try:
+        tree = make_tree(R)
+        log = os.path.join(base, "git.log")
+        home = os.path.join(base, "home")
+        os.makedirs(home)
+        print("nu end to end (%s)" % NU)
+        sh = Shell(home, R, log)
+        try:
+            check(not sh.broken, "bootstraps")
+            for name, (rel, no_git, want_git) in tree.items():
+                full = os.path.join(R, rel)
+                hooks = sh.cycle("cd " + nu_string(full))
+                names = [h for h, _ in hooks]
+                pre = [v for h, v in hooks if h == "Precmd"]
+                check("INVALID" not in names and names[-1:] == ["Precmd"] and pre,
+                      "%s: cd emits valid hooks ending in Precmd (got %s)" % (name, names))
+                if not pre:
+                    continue
+                want_branch, want_head = git_expect(full)
+                got = pre[-1]
+                check(got.get("pwd") == full, "%s: pwd" % name, "got %r\nwant %r" % (got.get("pwd"), full))
+                check((got.get("git_branch"), got.get("git_head")) == (want_branch, want_head),
+                      "%s: git branch/head %r/%r" % (name, want_branch, want_head),
+                      "got %r/%r" % (got.get("git_branch"), got.get("git_head")))
+                if GIT:
+                    before = count_git(log)
+                    sh.cycle("null")
+                    calls = count_git(log) - before
+                    if no_git:
+                        check(calls == 0, "%s: no git process per prompt (saw %d)" % (name, calls))
+                    elif want_git:
+                        check(calls > 0, "%s: git is still asked (saw %d)" % (name, calls))
+            line = "echo 'he said \"hi\" \\ x'"
+            hooks = sh.cycle(line)
+            pre = [v for h, v in hooks if h == "Preexec"]
+            check(pre and pre[0].get("command") == line, "Preexec command round-trips", repr(pre))
+            line = "echo " + nu_string("tab\there\x07bell\x7fdel")
+            hooks = sh.cycle(line)
+            pre = [v for h, v in hooks if h == "Preexec"]
+            check(pre and pre[0].get("command") == line, "Preexec command with escapes round-trips", repr(pre))
+            hooks = sh.cycle("do -i { ^false }; ^sh -c 'exit 3'")
+            fin = [v for h, v in hooks if h == "CommandFinished"]
+            check(fin and fin[0].get("exit_code") == 3, "exit code reaches CommandFinished", repr(fin))
+        finally:
+            sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+e2e()
+if failures:
+    print("\n%d FAILED" % len(failures))
+    sys.exit(1)
+print("\nall ok")
