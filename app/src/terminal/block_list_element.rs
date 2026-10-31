@@ -87,7 +87,8 @@ use super::shared_session::presence_manager::{
 use super::shared_session::render_util::SHARED_SESSION_AVATAR_DIAMETER;
 use super::view::{
     BlocklistAIRenderContext, InlineBannerId, RichContentMetadata, SeparatorId,
-    SharedSessionBanners, TerminalEditor, TerminalViewRenderContext, BLOCK_BANNER_HEIGHT,
+    SharedSessionBanners, TerminalEditor, TerminalView, TerminalViewRenderContext,
+    BLOCK_BANNER_HEIGHT,
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
 use super::TerminalModel;
@@ -710,6 +711,36 @@ fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bo
     live_focus.unwrap_or(snapshot_focused)
 }
 
+/// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
+/// `block_menu_items_start_origin` in `paint`), so the PS1 run time never sits under it.
+const PS1_DURATION_RIGHT_RESERVED_PX: f32 = 144.;
+
+/// #1145: whether a block gets the right-aligned run time on its first line. The Phosphor
+/// prompt (`!honor_ps1`) shows its run time in the block label instead, and background, static
+/// and in-band blocks have no user command to time.
+fn ps1_duration_visible(
+    honor_ps1: bool,
+    is_background: bool,
+    is_static: bool,
+    is_in_band: bool,
+    setting_enabled: bool,
+) -> bool {
+    setting_enabled && honor_ps1 && !(is_background || is_static || is_in_band)
+}
+
+/// #1145: the x offset (from the block's left edge) the PS1 run time is drawn at, or `None` when
+/// it would touch the prompt/command text on the first line (or does not fit in the pane).
+/// `first_line_right_px` is the right edge of the last non-empty cell of the block's first line.
+fn ps1_duration_x(
+    pane_width_px: f32,
+    first_line_right_px: f32,
+    duration_width_px: f32,
+    min_gap_px: f32,
+) -> Option<f32> {
+    let x = pane_width_px - PS1_DURATION_RIGHT_RESERVED_PX - duration_width_px;
+    (x >= first_line_right_px + min_gap_px).then_some(x)
+}
+
 pub struct BlockListElement {
     model: Arc<FairMutex<TerminalModel>>,
     size_info: SizeInfo,
@@ -777,6 +808,9 @@ pub struct BlockListElement {
 
     label_elements_builder: Box<LabelBuilderFn>,
     label_elements: HashMap<BlockIndex, Box<dyn Element>>,
+    /// #1145: run time of blocks that honour PS1 (no label), with the x offset from the block's
+    /// left edge it is painted at. Only holds blocks where it fits on the first line.
+    duration_elements: HashMap<BlockIndex, (Box<dyn Element>, f32)>,
 
     bookmark_element_builder: Box<BookmarkBuilderFn>,
     bookmark_elements: HashMap<BlockIndex, Box<dyn Element>>,
@@ -1115,6 +1149,7 @@ impl BlockListElement {
             subshell_separators,
             selected_blocks: terminal_view_render_context.selected_blocks,
             label_elements: HashMap::new(),
+            duration_elements: HashMap::new(),
             label_elements_builder,
             bookmark_element_builder,
             bookmark_elements: HashMap::new(),
@@ -2741,6 +2776,7 @@ impl BlockListElement {
         hovered_secret: Option<SecretHandle>,
         glyphs: &mut CellGlyphCache,
         label_element: Option<&mut Box<dyn Element>>,
+        duration_element: Option<&mut (Box<dyn Element>, f32)>,
         footer_element: Option<&mut Box<dyn Element>>,
         block_index: BlockIndex,
         block_borders_enabled: bool,
@@ -2797,6 +2833,14 @@ impl BlockListElement {
         if let Some(label_element) = label_element {
             label_element.paint(prompt_origin, ctx, app);
         } else {
+            // #1145: PS1 blocks have no label; the run time goes at the right of the first line.
+            if let Some((duration_element, x)) = duration_element {
+                // Centre the (slightly smaller) text on the first grid line.
+                let dy = duration_element
+                    .size()
+                    .map_or(0., |size| ((cell_size_height - size.y()) / 2.).max(0.));
+                duration_element.paint(prompt_origin + vec2f(*x, dy), ctx, app);
+            }
             let size_info = &block_grid_params.grid_render_params.size_info;
             if block.should_display_rprompt(size_info) {
                 let rprompt_origin = prompt_origin + block.rprompt_render_offset(size_info);
@@ -3567,6 +3611,11 @@ impl Element for BlockListElement {
         // Rebuild the viewport to account for updated block heights, then compute visible items.
         let viewport = create_viewport!(model.block_list());
 
+        self.duration_elements.clear();
+        let show_ps1_duration = *crate::terminal::BlockListSettings::as_ref(app)
+            .show_block_duration_with_shell_prompt
+            .value();
+
         let mut viewport_iter = viewport.iter();
         let mut visible_height_px: f64 = 0.;
         for viewport_item in viewport_iter.by_ref() {
@@ -3579,6 +3628,37 @@ impl Element for BlockListElement {
                         if let Some(block) = model.block_list().block_at(block_index) {
                             if !(block.honor_ps1() || block.is_background() || block.is_static()) {
                                 block_indices_with_label_elements.push(block_index);
+                            } else if ps1_duration_visible(
+                                block.honor_ps1(),
+                                block.is_background(),
+                                block.is_static(),
+                                block.is_in_band_command_block(),
+                                show_ps1_duration,
+                            ) {
+                                // #1145: the Phosphor-prompt label is not laid out, so draw the
+                                // run time (same element as the label's) on the first line.
+                                if let Some(mut duration) = TerminalView::render_duration_element(
+                                    block_index,
+                                    &model,
+                                    self.mouse_states.label_mouse_states.get(&block_index),
+                                    visible_block_indices.is_empty(),
+                                    Appearance::as_ref(app),
+                                ) {
+                                    let width = duration.layout(constraint, ctx, app).x();
+                                    let first_line_right = self.size_info.padding_x_px().as_f32()
+                                        + block
+                                            .prompt_and_command_grid()
+                                            .rightmost_visible_nonempty_cell_with_max_row(0)
+                                            .map_or(0., |col| (col as f32 + 1.) * cell_size.x());
+                                    if let Some(x) = ps1_duration_x(
+                                        self.size_info.pane_width_px().as_f32(),
+                                        first_line_right,
+                                        width,
+                                        cell_size.x(),
+                                    ) {
+                                        self.duration_elements.insert(block_index, (duration, x));
+                                    }
+                                }
                             }
 
                             // Check if the current block belongs to a subshell session. We'll add
@@ -4322,6 +4402,7 @@ impl Element for BlockListElement {
                         self.hovered_secret,
                         &mut glyphs,
                         self.label_elements.get_mut(block_index),
+                        self.duration_elements.get_mut(block_index),
                         self.block_footer_elements.get_mut(block_index),
                         *block_index,
                         self.block_borders_enabled,
@@ -4849,6 +4930,9 @@ impl Element for BlockListElement {
             for label_element in self.label_elements.values_mut() {
                 handled |= label_element.dispatch_event(event, ctx, app);
             }
+            for (duration_element, _) in self.duration_elements.values_mut() {
+                handled |= duration_element.dispatch_event(event, ctx, app);
+            }
 
             if let Some(banner) = &mut self.block_banner {
                 handled |= banner.dispatch_event(event, ctx, app);
@@ -5267,6 +5351,51 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1145: the PS1 run time shows only for user command blocks that honour PS1, with the
+    /// setting on. Fails on old code: the helper (and the whole PS1 duration) did not exist; the
+    /// old layout condition showed nothing for PS1 blocks.
+    #[test]
+    fn ps1_duration_visibility_rules() {
+        // PS1 block, setting on.
+        assert!(ps1_duration_visible(true, false, false, false, true));
+        // Phosphor prompt keeps its label (and so no PS1 duration).
+        assert!(!ps1_duration_visible(false, false, false, false, true));
+        // Setting off.
+        assert!(!ps1_duration_visible(true, false, false, false, false));
+        // Background, static and in-band blocks.
+        assert!(!ps1_duration_visible(true, true, false, false, true));
+        assert!(!ps1_duration_visible(true, false, true, false, true));
+        assert!(!ps1_duration_visible(true, false, false, true, true));
+    }
+
+    #[test]
+    fn ps1_duration_hidden_when_it_would_touch_the_command() {
+        let pane = 800.;
+        let width = 60.;
+        let gap = 8.;
+        let x_right = pane - PS1_DURATION_RIGHT_RESERVED_PX - width;
+        // Short first line: right-aligned left of the toolbelt area.
+        assert_eq!(ps1_duration_x(pane, 100., width, gap), Some(x_right));
+        // Exactly the minimum gap still fits.
+        assert_eq!(
+            ps1_duration_x(pane, x_right - gap, width, gap),
+            Some(x_right)
+        );
+        // One pixel closer overlaps/touches: hidden.
+        assert_eq!(ps1_duration_x(pane, x_right - gap + 1., width, gap), None);
+        // A wrapped/long command reaching the pane edge: hidden.
+        assert_eq!(ps1_duration_x(pane, pane, width, gap), None);
+        // A pane too narrow for the reserved toolbelt area: hidden.
+        assert_eq!(ps1_duration_x(100., 0., width, gap), None);
+    }
+
+    /// #1145: shown by default.
+    #[test]
+    fn ps1_duration_setting_defaults_on() {
+        use settings::Setting as _;
+        assert!(crate::terminal::ShowBlockDurationWithShellPrompt::default_value());
+    }
 
     /// #987: Shift-drag over a program that reports the mouse selects text, not blocks.
     #[test]

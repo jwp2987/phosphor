@@ -1537,6 +1537,7 @@ settings-appearance-pane-focus-follows-mouse-label = Focus follows mouse
 settings-appearance-block-compact-label = Compact mode
 settings-appearance-block-jump-bottom-label = Show Jump to Bottom of Block button
 settings-appearance-block-show-dividers-label = Show block dividers
+settings-appearance-block-show-duration-label = Show command run time with the shell prompt
 
 # Text / Fonts
 settings-appearance-font-agent-label = Agent font

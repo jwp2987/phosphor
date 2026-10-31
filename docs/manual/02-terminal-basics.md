@@ -782,6 +782,7 @@ contexts, so changing it changes both.
 | `appearance.blocks.should_show_in_band_command_blocks` | Show Phosphor's internal in-band commands | `false` |
 | `appearance.blocks.should_show_ssh_block` | Show the SSH connection block | `false` |
 | `appearance.blocks.show_block_dividers` | Draw dividers between blocks | `true` |
+| `appearance.blocks.show_block_duration_with_shell_prompt` | Show the command run time on the block when the shell's own prompt is used | `true` |
 | `appearance.blocks.show_jump_to_bottom_of_block_button` | Jump-to-bottom button in long output | `true` |
 | `appearance.cursor.cursor_blink` | Cursor blink | `enabled` |
 | `appearance.cursor.cursor_display_type` | Cursor shape | `bar` |

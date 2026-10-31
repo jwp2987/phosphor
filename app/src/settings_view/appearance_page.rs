@@ -47,7 +47,7 @@ use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::settings::{
     AltScreenPadding, AltScreenPaddingMode, Spacing, SpacingMode, TerminalSettings,
 };
-use crate::terminal::{BlockListSettings, ShowBlockDividers};
+use crate::terminal::{BlockListSettings, ShowBlockDividers, ShowBlockDurationWithShellPrompt};
 use crate::terminal::{ShowJumpToBottomOfBlockButton, SizeInfo};
 use crate::themes::theme::{self, RespectSystemTheme, SelectedSystemThemes, ThemeKind, WarpTheme};
 use crate::user_config::WarpConfig;
@@ -452,6 +452,7 @@ pub enum AppearancePageAction {
     ToggleWorkspaceDecorationVisibility,
     ToggleJumpToBottomOfBlockButton,
     ToggleShowBlockDividers,
+    ToggleShowBlockDurationWithShellPrompt,
     ToggleCompactMode,
     ToggleCursorBlink,
     ToggleRespectSystemTheme,
@@ -638,6 +639,9 @@ impl TypedActionView for AppearanceSettingsPageView {
             ToggleWorkspaceDecorationVisibility => self.toggle_workspace_decoration_visiblity(ctx),
             ToggleJumpToBottomOfBlockButton => self.toggle_jump_to_bottom_of_block_button(ctx),
             ToggleShowBlockDividers => self.toggle_show_block_dividers(ctx),
+            ToggleShowBlockDurationWithShellPrompt => {
+                self.toggle_show_block_duration_with_shell_prompt(ctx)
+            }
             ToggleCompactMode => self.toggle_compact_mode(ctx),
             ToggleCursorBlink => self.toggle_cursor_blink(ctx),
             ToggleOpenWindowsAtCustomSize => self.toggle_open_windows_at_custom_size(ctx),
@@ -1678,6 +1682,7 @@ impl AppearanceSettingsPageView {
         let mut block_settings_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
             Box::new(CompactModeWidget::default()),
             Box::new(JumpToBottomOfBlockWidget::default()),
+            Box::new(ShowBlockDurationWithShellPromptWidget::default()),
         ];
         if FeatureFlag::MinimalistUI.is_enabled() {
             block_settings_widgets.push(Box::new(ShowBlockDividersWidget::default()));
@@ -2809,6 +2814,21 @@ impl AppearanceSettingsPageView {
         ctx.update_model(&block_list_settings, move |block_list_settings, ctx| {
             report_if_error!(block_list_settings
                 .show_block_dividers
+                .set_value(new_value, ctx));
+        });
+    }
+
+    pub fn toggle_show_block_duration_with_shell_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        let block_list_settings = BlockListSettings::handle(ctx);
+        let new_value = {
+            !*block_list_settings
+                .as_ref(ctx)
+                .show_block_duration_with_shell_prompt
+                .value()
+        };
+        ctx.update_model(&block_list_settings, move |block_list_settings, ctx| {
+            report_if_error!(block_list_settings
+                .show_block_duration_with_shell_prompt
                 .set_value(new_value, ctx));
         });
     }
@@ -4620,6 +4640,55 @@ impl SettingsWidget for ShowBlockDividersWidget {
                 .build()
                 .on_click(move |ctx, _, _| {
                     ctx.dispatch_typed_action(AppearancePageAction::ToggleShowBlockDividers);
+                })
+                .finish(),
+            None,
+        )
+    }
+}
+
+#[derive(Default)]
+struct ShowBlockDurationWithShellPromptWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for ShowBlockDurationWithShellPromptWidget {
+    type View = AppearanceSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "show command duration run time timer block shell prompt ps1"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let block_list_settings = BlockListSettings::as_ref(app);
+        let enabled = block_list_settings
+            .show_block_duration_with_shell_prompt
+            .value();
+        render_body_item::<AppearancePageAction>(
+            crate::t!("settings-appearance-block-show-duration-label"),
+            None,
+            LocalOnlyIconState::for_setting(
+                ShowBlockDurationWithShellPrompt::storage_key(),
+                ShowBlockDurationWithShellPrompt::sync_to_cloud(),
+                &mut view.local_only_icon_tooltip_states.borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*enabled)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(
+                        AppearancePageAction::ToggleShowBlockDurationWithShellPrompt,
+                    );
                 })
                 .finish(),
             None,
