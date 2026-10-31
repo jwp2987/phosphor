@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""A local bash or zsh must bootstrap identically when the script goes in as a counted raw
+read instead of a here-document typed into the line editor (#1226).
+
+WHY THIS EXISTS
+---------------
+A local bash or zsh tab was handed the 52 KB bootstrap as a here-document: the shell's line
+editor read ~1,400 lines (a prompt and redraw each) and the tty echoed ~100 KB back, which cost
+174 ms (bash) / 92 ms (zsh) from the InitShell hook to the Bootstrapped hook; a sudo/su subshell
+paced it in 2 KB writes 25 ms apart: 746 ms. `bootstrap.rs` (`counted_read_rewrite`) now sends
+`stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo` and the body raw (128 / 59 / 222 ms,
+measured with this script's replay). The rewrite must not change what the shell does with it:
+this script runs both forms through a real pty, the way the app does, and checks
+
+  * the sequence of hooks the shell emits is the same, and so is every hook's content (apart
+    from times and pids), the Bootstrapped value included;
+  * WARP_BOOTSTRAP_VAR is gone afterwards and the tty is back to echo on;
+  * a command typed afterwards runs and reports Precmd (the shell is not left reading);
+  * far less is echoed back (the point of the change);
+  * through a blocking user-space pty relay (what `sudo -i` is, #960), the counted form
+    sent the way the app sends it to a subshell does not hang, while the unpaced
+    here-document does (the reason the subshell bootstrap is paced at all).
+
+It needs only python3 and the shells under test (a shell that is not installed is skipped).
+The assembly and rewrite below mirror `script_for_shell` and `counted_read_rewrite` in
+`app/src/terminal/bootstrap.rs`; the Rust unit tests pin the bundled scripts to the markers.
+
+USAGE
+    script/test_local_counted_bootstrap [--bash PATH] [--zsh PATH]
+
+Exit 0 when every check passes, 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import re
+import select
+import shutil
+import struct
+import sys
+import tempfile
+import termios
+import time
+import fcntl
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOT = os.path.join(ASSETS, "bundled", "bootstrap")
+SESSION_ID = "16408316948836431383"
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+CHUNK = 2048
+
+args = sys.argv[1:]
+SHELLS = {"bash": shutil.which("bash"), "zsh": shutil.which("zsh")}
+while args:
+    if args[0] in ("--bash", "--zsh") and len(args) >= 2:
+        SHELLS[args[0][2:]] = args[1]
+        args = args[2:]
+    else:
+        sys.exit(__doc__)
+
+failures = []
+
+
+def check(name, ok, detail=""):
+    print(("ok   " if ok else "FAIL ") + name + ("" if ok or not detail else "  -- " + detail))
+    if not ok:
+        failures.append(name)
+
+
+def trim(line):
+    n, t = len(line), len(line.lstrip(" \t\r\n\v\f"))
+    if t < n:
+        line = line[n - t - 1:]
+    return line.rstrip()
+
+
+def assemble(top):
+    out = []
+    for line in open(os.path.join(BOOT, top), encoding="utf-8").read().lstrip("﻿").split("\n"):
+        line = trim(line)
+        if line.startswith("#include "):
+            inc = open(os.path.join(ASSETS, line[9:]), encoding="utf-8").read()
+            out += [trim(x) for x in inc.replace("@@USING_CON_PTY_BOOLEAN@@", "false").split("\n")]
+        else:
+            out.append(line)
+    out = [l for l in out if not (not l.lstrip() or l.lstrip().startswith("#"))]
+    return ("\n".join(out) + "\n").encode()
+
+
+BASH_OPEN = b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n"
+ZSH_OPEN = b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; "
+CLOSE = b"\nEOM\n"
+
+
+def counted(script, shell):
+    """Mirror of counted_read_rewrite: (rewritten script, length of the part ending with the
+    command line's CR)."""
+    marker = BASH_OPEN if shell == "bash" else ZSH_OPEN
+    o = script.index(marker)
+    start = o + len(marker)
+    rest = b""
+    if shell == "zsh":
+        nl = script.index(b"\n", start)
+        rest = script[start:nl]
+        start = nl + 1
+    c = start + script[start:].index(CLOSE)
+    body = script[start:c + 1]
+    cmd = b" command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c %d); command -p stty echo" % len(body)
+    if shell == "zsh":
+        cmd += b"; " + rest
+    cmd += b"\r"
+    head = script[:o] + cmd
+    return head + body + script[c + len(CLOSE):], len(head)
+
+
+def init_bash():
+    t = open(os.path.join(BOOT, "bash_init_shell.sh"), encoding="utf-8").read()
+    lines = [l for l in t.splitlines() if not l.lstrip().startswith("#") and l.strip()]
+    s = ";".join(lines).replace("'", "'\"'\"'")
+    return s.replace("@@USING_CON_PTY_BOOLEAN@@", "false").replace("@@WARP_SESSION_ID@@", SESSION_ID)
+
+
+def init_zsh():
+    t = open(os.path.join(BOOT, "zsh_init_shell.sh"), encoding="utf-8").read()
+    lines = [l for l in t.splitlines() if not l.lstrip().startswith("#") and l.strip()]
+    s = ";".join(lines)
+    return s.replace("@@USING_CON_PTY_BOOLEAN@@", "false").replace("@@WARP_SESSION_ID@@", SESSION_ID)
+
+
+def hooks_of(buf):
+    return [json.loads(bytes.fromhex(m.group(1).decode())) for m in HOOK_RE.finditer(buf)]
+
+
+def norm(v):
+    if isinstance(v, str):
+        v = re.sub(r"phosphor-1226-\w+", "HOME", v)
+    if isinstance(v, dict):
+        return {k: norm(x) for k, x in v.items() if not re.search(r"time|pid|duration|session_id|ms$", k)}
+    if isinstance(v, str) and len(v) > 300:
+        return "LONG:%d" % len(v)
+    return v
+
+
+def spawn(shell, home, relay=False):
+    """The command the app starts for a local shell (local_tty/shell.rs), optionally behind a
+    blocking pty relay."""
+    path = SHELLS[shell]
+    if shell == "bash":
+        inner = ["/bin/bash", "-c", "exec -a bash '%s' --rcfile <(echo '%s')" % (path, init_bash())]
+        prelude = b""
+    else:
+        inner = ["/bin/bash", "-c", "exec -a -zsh '%s' -g --no-rcs" % path]
+        prelude = (init_zsh() + "\n").encode()
+    env = dict(os.environ, HOME=home, TERM="xterm-256color", PS1="$ ")
+    env.pop("ZDOTDIR", None)
+    if relay:
+        relay_py = os.path.join(home, "relay.py")
+        open(relay_py, "w").write(RELAY)
+        inner_json = os.path.join(home, "inner.json")
+        json.dump(inner, open(inner_json, "w"))
+        inner = [sys.executable, "-I", relay_py, inner_json]
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(env)
+        os.execv(inner[0], inner)
+    fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+    return pid, fd, prelude
+
+
+RELAY = r'''
+import json, os, pty, select, sys, tty
+inner = json.load(open(sys.argv[1]))
+pid, m = pty.fork()
+if pid == 0:
+    os.execv(inner[0], inner)
+tty.setraw(0)
+while True:
+    r, _, _ = select.select([0, m], [], [])
+    if 0 in r:
+        d = os.read(0, 4096)
+        if not d:
+            break
+        os.write(m, d)  # blocks while the inner tty's input queue is full
+    if m in r:
+        try:
+            d = os.read(m, 4096)
+        except OSError:
+            break
+        if not d:
+            break
+        os.write(1, d)
+'''
+
+
+def bootstrap(shell, writes, relay=False, timeout=15, then=None):
+    """Start the shell, wait for InitShell, send `writes` [(delay_s, bytes)] from then on, wait for
+    Bootstrapped, optionally type `then` and wait for its Precmd. Returns (ok, output, ms)."""
+    home = tempfile.mkdtemp(prefix="phosphor-1226-")
+    pid, fd, prelude = spawn(shell, home, relay)
+    buf = b""
+    t0 = time.monotonic()
+    init_at = boot_at = None
+    pending = []
+    outbuf = b""
+    typed = False
+    try:
+        if prelude:
+            time.sleep(0.15)
+            os.write(fd, prelude)
+        while time.monotonic() - t0 < timeout:
+            now = time.monotonic()
+            if init_at is None and b"496e69745368656c6c" in buf:
+                init_at = now
+                pending = [(now + d, b) for d, b in writes]
+            while pending and now >= pending[0][0]:
+                outbuf += pending.pop(0)[1]
+            while outbuf:
+                try:
+                    k = os.write(fd, outbuf[:4096])
+                    outbuf = outbuf[k:]
+                except BlockingIOError:
+                    break
+            r, _, _ = select.select([fd], [], [], 0.002)
+            if r:
+                try:
+                    d = os.read(fd, 1 << 20)
+                except (BlockingIOError, OSError):
+                    d = b""
+                buf += d
+                if b"\x1b[c" in d:
+                    os.write(fd, b"\x1b[?62;c")
+            if boot_at is None and b"426f6f747374726170706564" in buf:
+                boot_at = time.monotonic()
+                if then is None:
+                    time.sleep(0.15)
+                    buf += _drain(fd)
+                    break
+                time.sleep(0.3)
+                buf += _drain(fd)
+                os.write(fd, then)
+                typed = True
+            if typed and buf.count(b"507265636d64") >= 2 and then is not None:
+                time.sleep(0.15)
+                buf += _drain(fd)
+                break
+        ok = boot_at is not None
+        ms = round((boot_at - init_at) * 1000) if ok and init_at else None
+        return ok, buf, ms
+    finally:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        os.close(fd)
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def _drain(fd):
+    out = b""
+    try:
+        while True:
+            d = os.read(fd, 1 << 20)
+            if not d:
+                break
+            out += d
+    except (BlockingIOError, OSError):
+        pass
+    return out
+
+
+def paced(script, prefix_len):
+    """How the app writes a counted bootstrap into a subshell: the part up to the command in
+    2 KB writes 25 ms apart, then the body as one write."""
+    pre = [script[i:min(i + CHUNK, prefix_len)] for i in range(0, prefix_len, CHUNK)]
+    w = [(0.025 * i, c) for i, c in enumerate(pre)]
+    w.append((0.025 * len(pre), script[prefix_len:]))
+    return w
+
+
+def run_shell(shell):
+    print("== %s (%s)" % (shell, SHELLS[shell]))
+    script = assemble(shell + ".sh")
+    new, prefix_len = counted(script, shell)
+    check(shell + ": the bundled script has the here-document the rewrite replaces", b"<< 'EOM'" not in new and b"head -c" in new)
+
+    cmd = b" builtin printf 'ECHO:%s\\n' \"$(command -p stty -a | command -p grep -c -- ' echo ')\" ; builtin printf 'VAR:%s\\n' \"${WARP_BOOTSTRAP_VAR-unset}\"\n"
+    ok_old, out_old, ms_old = bootstrap(shell, [(0, script)], then=cmd)
+    ok_new, out_new, ms_new = bootstrap(shell, [(0, new)], then=cmd)
+    check(shell + ": here-document form bootstraps", ok_old)
+    check(shell + ": counted form bootstraps", ok_new)
+    if not (ok_old and ok_new):
+        return
+    h_old, h_new = hooks_of(out_old), hooks_of(out_new)
+    names = [h["hook"] for h in h_old]
+    check(shell + ": same hook sequence", names == [h["hook"] for h in h_new], "%s vs %s" % (names, [h["hook"] for h in h_new]))
+    diffs = [(a, b) for a, b in zip(map(norm, h_old), map(norm, h_new)) if a != b]
+    check(shell + ": every hook has the same content (Bootstrapped included)", not diffs, json.dumps(diffs)[:600])
+    check(shell + ": WARP_BOOTSTRAP_VAR is unset afterwards", b"VAR:unset" in out_new)
+    check(shell + ": tty echo is back on afterwards", b"ECHO:1" in out_new, out_new[-300:].decode(errors="replace"))
+    check(shell + ": a command typed afterwards finishes (Precmd)", names.count("Precmd") >= 1 and [h["hook"] for h in h_new].count("Precmd") >= 2)
+    check(shell + ": echoes less than half as much", len(out_new) * 2 < len(out_old), "%d vs %d bytes" % (len(out_new), len(out_old)))
+    print("     InitShell->Bootstrapped: here-document %s ms, counted %s ms; output %d -> %d bytes" % (ms_old, ms_new, len(out_old), len(out_new)))
+
+    # A subshell behind a blocking relay.
+    ok_flood, _, _ = bootstrap(shell, [(0, script)], relay=True, timeout=8)
+    ok_sub, out_sub, ms_sub = bootstrap(shell, paced(new, prefix_len), relay=True)
+    ok_old_sub, _, ms_old_sub = bootstrap(
+        shell, [(0.025 * i, script[j:j + CHUNK]) for i, j in enumerate(range(0, len(script), CHUNK))], relay=True, timeout=30
+    )
+    check(shell + ": paced counted form works behind a blocking relay", ok_sub)
+    check(shell + ": behind the relay the hook sequence is the same too", [h["hook"] for h in hooks_of(out_sub)] == names[:len(hooks_of(out_sub))])
+    print("     behind a relay: unpaced here-document %s, paced here-document %s ms, paced counted %s ms" % ("hangs (#960)" if not ok_flood else "finishes", ms_old_sub, ms_sub))
+    if ok_old_sub and ok_sub:
+        check(shell + ": paced counted form is faster than the paced here-document", ms_sub < ms_old_sub, "%s vs %s" % (ms_sub, ms_old_sub))
+
+
+for shell in ("bash", "zsh"):
+    if not SHELLS[shell]:
+        print("== %s: not installed, skipped" % shell)
+        continue
+    run_shell(shell)
+
+if failures:
+    print("\n%d FAILED: %s" % (len(failures), ", ".join(failures)))
+    sys.exit(1)
+print("\nall checks passed")
