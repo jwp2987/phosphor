@@ -19,6 +19,18 @@ use crate::util::git::{
 const PR_INFO_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const GITHUB_INFO_PERIODIC_REFRESH: Duration = Duration::from_secs(60);
 const REPOSITORY_INFO_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// While no window of the app is active the periodic refresh is skipped; this is how often it
+/// re-checks, so the refresh happens within this long of the app coming back to the foreground.
+const INACTIVE_RECHECK_DELAY: Duration = Duration::from_secs(5);
+
+/// What a due periodic-refresh tick does: `(run_refresh_now, delay_until_next_tick)`.
+fn periodic_refresh_plan(app_active: bool) -> (bool, Duration) {
+    if app_active {
+        (true, GITHUB_INFO_PERIODIC_REFRESH)
+    } else {
+        (false, INACTIVE_RECHECK_DELAY)
+    }
+}
 
 /// Per-repository model that owns the GitHub-sourced metadata lifecycle for a
 /// single repo — the values fetched through the (relatively expensive) `gh`
@@ -142,15 +154,27 @@ impl LocalGitHubRepoModel {
     }
 
     /// Schedules a periodic timer that refreshes PR info and repository info.
+    ///
+    /// Each `gh` call is two child processes plus network, so ticks are skipped while no window
+    /// of the app is active (nobody can see the result); the first re-check after the app is
+    /// active again runs the refresh.
     fn schedule_periodic_refresh(&mut self, ctx: &mut ModelContext<Self>) {
+        self.schedule_periodic_refresh_after(GITHUB_INFO_PERIODIC_REFRESH, ctx);
+    }
+
+    fn schedule_periodic_refresh_after(&mut self, delay: Duration, ctx: &mut ModelContext<Self>) {
         let handle = ctx.spawn(
-            async {
-                async_io::Timer::after(GITHUB_INFO_PERIODIC_REFRESH).await;
+            async move {
+                async_io::Timer::after(delay).await;
             },
             |me, _, ctx| {
-                me.refresh_pr_info(ctx);
-                me.refresh_repository_info(ctx);
-                me.schedule_periodic_refresh(ctx);
+                let app_active = ctx.windows().state().active_window.is_some();
+                let (run_refresh, next_delay) = periodic_refresh_plan(app_active);
+                if run_refresh {
+                    me.refresh_pr_info(ctx);
+                    me.refresh_repository_info(ctx);
+                }
+                me.schedule_periodic_refresh_after(next_delay, ctx);
             },
         );
         self.periodic_refresh_handle = Some(handle);
