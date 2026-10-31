@@ -448,8 +448,14 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
 /// provider's/model's entry drops out of `build_byop_llm_infos`.
 pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, String, String)> {
     let (provider_id, model_id) = llm_id::decode(id)?;
-    let providers = AISettings::as_ref(app).agent_providers.value().clone();
-    let provider = providers.into_iter().find(|p| p.id == provider_id)?;
+    // Borrow the settings list and clone only the matched provider: this runs several times
+    // per send on the UI thread, and the list carries every provider's full model table.
+    let provider = AISettings::as_ref(app)
+        .agent_providers
+        .value()
+        .iter()
+        .find(|p| p.id == provider_id)?
+        .clone();
     if !provider.is_usable() {
         return None;
     }

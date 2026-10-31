@@ -3635,6 +3635,28 @@ fn diag_request_with_redacted_binaries(chat_req: &ChatRequest) -> std::borrow::C
     std::borrow::Cow::Owned(redacted)
 }
 
+/// The `diag_body_json` document: model plus the redacted `ChatRequest`. Only built under
+/// `BYOP_DIAG_CONTENT_ENV`.
+fn build_diag_body_json(model_id: &str, chat_req: &ChatRequest) -> String {
+    let diag_request = diag_request_with_redacted_binaries(chat_req);
+    serde_json::to_string(&json!({
+        "model": model_id,
+        "chat_request": diag_request.as_ref(),
+    }))
+    .unwrap_or_default()
+}
+
+/// Cheap stand-in for the serialised request length: the sum of content sizes, with no
+/// serialisation. Used where only an order-of-magnitude "how big" is logged.
+fn approx_request_content_bytes(chat_req: &ChatRequest) -> usize {
+    chat_req.system.as_deref().map(str::len).unwrap_or(0)
+        + chat_req
+            .messages
+            .iter()
+            .map(|m| m.content.size())
+            .sum::<usize>()
+}
+
 fn binary_for_log(binary: &Binary) -> String {
     let name = binary
         .name
@@ -3831,12 +3853,19 @@ fn log_chat_request_details(
 
     if let Some(tools) = &chat_req.tools {
         for (idx, tool) in tools.iter().enumerate() {
-            let schema_len = tool
-                .schema
-                .as_ref()
-                .and_then(|schema| serde_json::to_string(schema).ok())
-                .map(|schema| schema.len())
-                .unwrap_or(0);
+            // Serialising a schema just to log its length is a per-request cost on the send
+            // path (every tool, every turn), so the length is only computed under the opt-in
+            // diagnostics switch; otherwise the line says whether a schema is present.
+            let schema_len: String = if byop_diag_content_enabled() {
+                tool.schema
+                    .as_ref()
+                    .and_then(|schema| serde_json::to_string(schema).ok())
+                    .map(|schema| schema.len())
+                    .unwrap_or(0)
+                    .to_string()
+            } else {
+                format!("present={}", tool.schema.is_some())
+            };
             log::info!(
                 "[byop-diag] request tool[{idx}]: name={} desc_len={} schema_len={} \
                  strict={:?} cache_control={:?}",
@@ -6804,14 +6833,24 @@ pub async fn generate_byop_output(
     // offsets — but writing it to the log is opt-in; see `BYOP_DIAG_CONTENT_ENV`. (It used to
     // have a second reader, the on-error column window, which indexed it with an offset into
     // the provider's *response*; that is gone, see the stream-error branch.)
-    let diag_request = diag_request_with_redacted_binaries(&chat_req);
-    let diag_body_json = serde_json::to_string(&json!({
-        "model": &model_id,
-        "chat_request": diag_request.as_ref(),
-    }))
-    .unwrap_or_default();
-    log::info!("[byop] diag_body_approx_len={}", diag_body_json.len());
-    if byop_diag_content_enabled() {
+    //
+    // R1 (#1156): this is built only when `BYOP_DIAG_CONTENT_ENV` is set. It used to be built
+    // and byte-scanned on every request, in front of the first byte of the HTTP request, only
+    // to log a length. The length that remains is a cheap sum of content sizes.
+    let diag_body_json: Option<String> = if byop_diag_content_enabled() {
+        Some(build_diag_body_json(&model_id, &chat_req))
+    } else {
+        None
+    };
+    let diag_body_approx_len = diag_body_json
+        .as_ref()
+        .map(String::len)
+        .unwrap_or_else(|| approx_request_content_bytes(&chat_req));
+    log::info!("[byop] diag_body_approx_len={diag_body_approx_len}");
+    if let Some(diag_body_json) = diag_body_json
+        .as_deref()
+        .filter(|_| byop_diag_content_enabled())
+    {
         log::info!("[byop-diag] full_request_json={diag_body_json}");
     } else {
         // The non-content summary that stays on by default. Everything the unconditional dump
@@ -6819,9 +6858,9 @@ pub async fn generate_byop_output(
         // "how big was it?" — is already covered by `log_chat_request_details` above plus this
         // line; the raw text itself needs the opt-in.
         log::info!(
-            "[byop-diag] full_request_json suppressed: bytes={} messages={} tools={} \
+            "[byop-diag] full_request_json suppressed: bytes~={} messages={} tools={} \
              (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
-            diag_body_json.len(),
+            diag_body_approx_len,
             chat_req.messages.len(),
             chat_req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
         );
@@ -6873,13 +6912,16 @@ pub async fn generate_byop_output(
             log::warn!("[byop] {label} contains raw control chars (offset, byte): {ctrl_hits:?}");
         }
     }
-    scan_suspicious_backslash("full_request_json", &diag_body_json);
-    if let Some(sys) = chat_req.system.as_deref() {
-        scan_suspicious_backslash("system", sys);
-    }
-    for (idx, m) in chat_req.messages.iter().enumerate() {
-        if let Some(t) = m.content.first_text() {
-            scan_suspicious_backslash(&format!("msg[{idx}]"), t);
+    // Diagnostic-only, O(history) per pass: runs under the same opt-in as the dump it scans.
+    if let Some(diag_body_json) = diag_body_json.as_deref() {
+        scan_suspicious_backslash("full_request_json", diag_body_json);
+        if let Some(sys) = chat_req.system.as_deref() {
+            scan_suspicious_backslash("system", sys);
+        }
+        for (idx, m) in chat_req.messages.iter().enumerate() {
+            if let Some(t) = m.content.first_text() {
+                scan_suspicious_backslash(&format!("msg[{idx}]"), t);
+            }
         }
     }
 
@@ -7312,13 +7354,15 @@ pub async fn generate_byop_output(
                     evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                     // Same payload as the per-turn dump, so it carries the same content and the
                     // same opt-in.
-                    if byop_diag_content_enabled() {
+                    if let Some(diag_body_json) =
+                        diag_body_json.as_deref().filter(|_| byop_diag_content_enabled())
+                    {
                         log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
                     } else {
                         log::error!(
-                            "[byop-diag] full_request_json_on_error suppressed: bytes={} \
+                            "[byop-diag] full_request_json_on_error suppressed: bytes~={} \
                              (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
-                            diag_body_json.len()
+                            diag_body_approx_len
                         );
                     }
                     // There is deliberately no ±200-character context window here any more.
@@ -7347,9 +7391,9 @@ pub async fn generate_byop_output(
                         log::error!(
                             "[byop] response decode position: line={line:?} column={column} \
                              (an offset into the provider's response chunk, NOT into the \
-                             request; request_bytes={} for scale). The chunk text itself is \
+                             request; request_bytes~={} for scale). The chunk text itself is \
                              not available at this layer — see the comment at this call site.",
-                            diag_body_json.len()
+                            diag_body_approx_len
                         );
                     }
                     yield Err(Arc::new(byop_stream_error_to_api_error(
@@ -17620,5 +17664,111 @@ mod summarize_turn_tool_gate_tests {
             tool_calls_to_dispatch(&params(vec![resume()]), vec![call("a"), call("b")]);
         let ids: Vec<&str> = dispatched.iter().map(|c| c.call_id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);
+    }
+}
+
+/// #1156: per-request overhead. The request body must not change when the history is shared
+/// instead of copied, and the diagnostics-only work must stay behind the opt-in.
+#[cfg(test)]
+mod request_overhead_tests {
+    use super::*;
+
+    fn long_history_params() -> RequestParams {
+        let mut messages = Vec::new();
+        for turn in 0..300 {
+            messages.push(make_user_query_message(
+                "task-1",
+                &format!("req-{turn}"),
+                format!("question {turn} with a literal \\u00e9 and a tab\there"),
+                &[],
+            ));
+            messages.push(make_agent_output_message(
+                "task-1",
+                &format!("req-{turn}"),
+                format!("answer {turn}: {}", "x".repeat(400)),
+            ));
+        }
+        let task = api::Task {
+            id: "task-1".to_owned(),
+            messages,
+            dependencies: None,
+            description: String::new(),
+            summary: String::new(),
+            server_data: String::new(),
+        };
+        RequestParams::new_for_test(vec![], vec![task])
+    }
+
+    fn body_of(params: &RequestParams) -> String {
+        let request = build_chat_request_for_test(params).expect("long history builds");
+        serde_json::to_string(&request).expect("request serialises")
+    }
+
+    /// Cloning the params (as `ResponseStream::new` and the preflight rebuild do) shares the
+    /// task list, and the request built from the clone is byte-identical to the one built
+    /// from the original and from an independently deep-copied history.
+    #[test]
+    fn request_body_is_identical_for_shared_and_deep_copied_history() {
+        let original = long_history_params();
+        let shared = original.clone();
+        assert!(
+            Arc::ptr_eq(&original.tasks, &shared.tasks),
+            "cloning RequestParams must share the task list, not copy it"
+        );
+        let deep = RequestParams::new_for_test(vec![], original.tasks.as_ref().clone());
+        let body = body_of(&original);
+        assert!(body.len() > 100_000, "fixture should be a long conversation");
+        assert_eq!(body, body_of(&shared));
+        assert_eq!(body, body_of(&deep));
+    }
+
+    #[test]
+    fn diag_body_json_carries_model_and_request_and_approx_len_needs_no_serialisation() {
+        let params = long_history_params();
+        let request = build_chat_request_for_test(&params).expect("builds");
+        let diag = build_diag_body_json("test-model", &request);
+        let parsed: serde_json::Value = serde_json::from_str(&diag).expect("valid json");
+        assert_eq!(parsed["model"], "test-model");
+        assert!(parsed["chat_request"]["messages"].is_array());
+
+        let approx = approx_request_content_bytes(&request);
+        let text_bytes: usize = request
+            .messages
+            .iter()
+            .map(|m| m.content.size())
+            .sum::<usize>()
+            + request.system.as_deref().map(str::len).unwrap_or(0);
+        assert_eq!(approx, text_bytes);
+        assert!(approx > 100_000);
+    }
+
+    /// The env switch is read once per process, so it cannot be flipped inside a test; instead
+    /// pin the structure: the dump builder and the byte scans each sit behind the content
+    /// switch in the send path.
+    #[test]
+    fn diag_dump_and_scans_are_gated_on_the_content_switch() {
+        let source = include_str!("chat_stream.rs");
+        let send_path_start = source
+            .find("let diag_body_json: Option<String>")
+            .expect("send path moved; repoint this test");
+        let window = &source[send_path_start..];
+        let build_at = window
+            .find("build_diag_body_json(&model_id")
+            .expect("builder call");
+        assert!(
+            window[..build_at].contains("if byop_diag_content_enabled()"),
+            "diag body must only be built under the content switch"
+        );
+        let scan_at = window
+            .find("scan_suspicious_backslash(\"full_request_json\"")
+            .expect("scan call");
+        assert!(
+            window[..scan_at].contains("if let Some(diag_body_json) = diag_body_json.as_deref()"),
+            "the full-request scan must only run when the dump was built"
+        );
+        assert!(
+            !window[..scan_at].contains("let diag_body_json = serde_json::to_string"),
+            "the unconditional dump is back"
+        );
     }
 }

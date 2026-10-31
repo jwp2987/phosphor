@@ -2457,7 +2457,7 @@ impl BlocklistAIController {
             let task_id = conversation.get_root_task_id().clone();
             let conversation_data = api::ConversationData {
                 id: conversation_id,
-                tasks: conversation.compute_active_tasks(),
+                tasks: Arc::new(conversation.compute_active_tasks()),
                 server_conversation_token: conversation.server_conversation_token().cloned(),
                 forked_from_conversation_token: conversation
                     .forked_from_server_conversation_token()
@@ -2477,7 +2477,7 @@ impl BlocklistAIController {
             let task_id = TaskId::new(uuid::Uuid::new_v4().to_string());
             let conversation_data = api::ConversationData {
                 id: conversation_id,
-                tasks: vec![],
+                tasks: Arc::new(vec![]),
                 server_conversation_token: None,
                 forked_from_conversation_token: None,
                 // Do not tie passive suggestion requests to the ambient agent task, since they are
@@ -2650,7 +2650,7 @@ impl BlocklistAIController {
         let conversation_id = conversation.id();
         let conversation_data = api::ConversationData {
             id: conversation_id,
-            tasks: active_tasks,
+            tasks: Arc::new(active_tasks),
             server_conversation_token: conversation.server_conversation_token().cloned(),
             forked_from_conversation_token: conversation
                 .forked_from_server_conversation_token()
