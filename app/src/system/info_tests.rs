@@ -59,10 +59,7 @@ fn test_memory_usage_stats_construction() {
 fn all_processes_refresh_kind_does_not_sample_cpu_or_memory() {
     let all = SystemInfo::all_processes_refresh_kind();
     assert!(!all.cpu(), "full-table sweep must not sample CPU");
-    assert!(
-        !all.memory(),
-        "full-table sweep must not sample memory"
-    );
+    assert!(!all.memory(), "full-table sweep must not sample memory");
 
     // The single-PID self-poll still samples both.
     let own = SystemInfo::refresh_kind();
