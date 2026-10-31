@@ -6,7 +6,7 @@ use crate::context_chips::ContextChipKind;
 
 use super::current_prompt::CurrentPrompt;
 use super::prompt::Prompt;
-use super::{chips_to_string, ChipResult, ChipValue};
+use super::{ChipResult, ChipValue, chips_to_string_borrowed};
 use crate::settings::WarpPromptSeparator;
 
 /// Struct that holds a point in time snapshot of a prompt (chips are no longer interactive)
@@ -94,6 +94,6 @@ impl PromptSnapshot {
 
 impl std::fmt::Display for PromptSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&chips_to_string(self.chips.clone().into_iter()))
+        f.write_str(&chips_to_string_borrowed(&self.chips))
     }
 }

@@ -55,7 +55,9 @@ fn search_results_identical_with_and_without_precomputed_strings() {
     let cold = searcher_with(&bindings);
     let mut warm = searcher_with(&bindings);
     warm.build_index();
-    assert_eq!(warm.searchable.len(), bindings.len());
+    // #1194: build_index only invalidates; the strings are built by the first search, so a
+    // palette open (which re-reads the bindings) never pays for them.
+    assert!(warm.searchable.get().is_none());
 
     for query in [
         "theme",
@@ -78,6 +80,10 @@ fn search_results_identical_with_and_without_precomputed_strings() {
         };
         assert_eq!(scores(&cold), scores(&warm), "query {query:?}");
     }
-    // A real match is found.
+    // A real match is found, and the first search populated the strings.
     assert!(!warm.search("theme").unwrap().is_empty());
+    assert_eq!(warm.searchable.get().map(|m| m.len()), Some(bindings.len()));
+    // Replacing the bindings invalidates them again.
+    warm.build_index();
+    assert!(warm.searchable.get().is_none());
 }

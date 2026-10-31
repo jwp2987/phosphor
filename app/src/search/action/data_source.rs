@@ -1,6 +1,6 @@
 use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::search::action::search_item::MatchedBinding;
@@ -130,6 +130,8 @@ type SearcherAction = <CommandBindingDataSource as SyncDataSource>::Action;
 trait ActionSearcher {
     fn search(&self, _search_term: &str) -> anyhow::Result<Vec<QueryResult<SearcherAction>>>;
 
+    /// Called whenever the binding set was replaced. Must be cheap: it runs on every palette
+    /// open, before the first frame.
     fn build_index(&mut self);
 
     /// Set of cached bindings, keyed on [`BindingId`]. This is cached via the [`BindingSource`]
@@ -142,9 +144,12 @@ trait ActionSearcher {
 
 struct FuzzyActionSearcher {
     all_bindings: HashMap<BindingId, Arc<CommandBinding>>,
-    /// Per-binding searchable strings, rebuilt in [`ActionSearcher::build_index`] so a query
-    /// doesn't re-lowercase and re-allocate them for every binding on every keystroke.
-    searchable: HashMap<BindingId, SearchableBinding>,
+    /// Per-binding searchable strings so a query doesn't re-lowercase and re-allocate them for
+    /// every binding on every keystroke. Built lazily by the first query after the binding set
+    /// changes ([`ActionSearcher::build_index`] only invalidates it): the palette re-reads its
+    /// bindings every time it opens, and building ~1000 strings there delayed the first frame
+    /// (#1194) although an empty-query open never searches.
+    searchable: OnceLock<HashMap<BindingId, SearchableBinding>>,
 }
 
 /// The string a binding is fuzzy-matched against, and the length of the part of it that is the
@@ -184,6 +189,12 @@ impl SearchableBinding {
 impl ActionSearcher for FuzzyActionSearcher {
     fn search(&self, search_term: &str) -> anyhow::Result<Vec<QueryResult<SearcherAction>>> {
         let search_term_lower = search_term.to_lowercase();
+        let searchables = self.searchable.get_or_init(|| {
+            self.all_bindings
+                .iter()
+                .map(|(id, binding)| (*id, SearchableBinding::new(binding)))
+                .collect()
+        });
         Ok(self
             .all_bindings
             .values()
@@ -196,7 +207,7 @@ impl ActionSearcher for FuzzyActionSearcher {
                 // binding set in `build_index`; fall back to computing it for any binding that
                 // was inserted without a rebuild.
                 let computed;
-                let searchable = match self.searchable.get(&binding.id) {
+                let searchable = match searchables.get(&binding.id) {
                     Some(searchable) => searchable,
                     None => {
                         computed = SearchableBinding::new(binding);
@@ -222,11 +233,8 @@ impl ActionSearcher for FuzzyActionSearcher {
     }
 
     fn build_index(&mut self) {
-        self.searchable = self
-            .all_bindings
-            .iter()
-            .map(|(id, binding)| (*id, SearchableBinding::new(binding)))
-            .collect();
+        // Invalidate only; the next `search` rebuilds from the current bindings.
+        self.searchable = OnceLock::new();
     }
 
     fn bindings(&self) -> &HashMap<BindingId, Arc<CommandBinding>> {

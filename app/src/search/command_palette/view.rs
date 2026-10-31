@@ -235,7 +235,9 @@ impl warpui::View for View {
 impl View {
     pub fn new(navigation_mode: NavigationMode, ctx: &mut ViewContext<Self>) -> Self {
         let search_bar_state = ctx.add_model(|_ctx| {
-            SearchBarState::new(SearchResultOrdering::TopDown).with_max_results(MAX_SEARCH_RESULTS)
+            SearchBarState::new(SearchResultOrdering::TopDown)
+                .with_max_results(MAX_SEARCH_RESULTS)
+                .skip_query_in_zero_state()
         });
 
         ctx.subscribe_to_model(&search_bar_state, |me, _, event, ctx| {
@@ -532,12 +534,34 @@ impl View {
     }
 
     fn on_session_source_changed(&mut self, ctx: &mut ViewContext<Self>) {
-        // Snapshot the open sessions once here, before the first query, rather than rebuilding
-        // every pane's prompt on every keystroke.
+        self.compute_recent_items_for_zero_state(ctx);
+
+        // The palette opens in the zero state: nothing on screen needs the session list or a
+        // query result yet, and snapshotting every pane (prompt render + terminal model lock
+        // per pane) before the first frame cost O(panes) of open latency (#1194). Do it right
+        // after the frame instead. The first keystroke can only race it by one event-loop turn,
+        // and if the user has typed by then the deferred step re-runs the query against the
+        // fresh snapshot, so a stale one is replaced at once.
+        if self.search_bar_state.as_ref(ctx).should_show_zero_state() {
+            let _ = ctx.spawn(async {}, |me, _, ctx| {
+                me.data_source_store
+                    .update(ctx, |store, ctx| store.refresh_sessions(ctx));
+                if !me.search_bar_state.as_ref(ctx).should_show_zero_state() {
+                    me.search_bar.update(ctx, |search_bar, ctx| {
+                        search_bar.run_query(ctx);
+                    });
+                }
+            });
+            return;
+        }
+        self.refresh_sessions_and_rerun_query(ctx);
+    }
+
+    /// Snapshot the open sessions once, before the first query, rather than rebuilding every
+    /// pane's prompt on every keystroke, then run the query against it.
+    fn refresh_sessions_and_rerun_query(&mut self, ctx: &mut ViewContext<Self>) {
         self.data_source_store
             .update(ctx, |store, ctx| store.refresh_sessions(ctx));
-
-        self.compute_recent_items_for_zero_state(ctx);
 
         self.search_bar.update(ctx, |search_bar, ctx| {
             search_bar.run_query(ctx);

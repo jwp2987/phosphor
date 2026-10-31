@@ -12069,7 +12069,10 @@ impl Input {
                         InputSuggestionsMode::CompletionSuggestions {
                             replacement_start: results.replacement_span.start(),
                             buffer_text_original,
-                            completion_results: results.clone(),
+                            // Moved, not cloned: `results` is not read again, and a deep copy
+                            // of a large listing (thousands of files) cost main-thread time
+                            // before the menu's first frame.
+                            completion_results: results,
                             trigger: completions_trigger,
                             menu_position,
                         },
