@@ -76,6 +76,7 @@ use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
 use super::cli_agent;
+use super::paste_sequencer::{KeyDisposition, PasteSequencer};
 use super::CLIAgent;
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
@@ -733,6 +734,10 @@ fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
     }
     out
 }
+
+/// A terminal paste still being read after this long gets a "Pasting..." notice (#1255).
+#[cfg(not(target_family = "wasm"))]
+const PASTE_PROGRESS_TOAST_DELAY: Duration = Duration::from_millis(750);
 
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
 const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
@@ -2980,6 +2985,8 @@ pub struct TerminalView {
     /// keystrokes are held in it and delivered, in order, once the last line is out, so they can
     /// never interleave with (or land inside) the bootstrap.
     subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
+    /// Orders keys typed while a large paste is read and prepared off the main thread (#1255).
+    paste_sequencer: PasteSequencer,
     /// The active block and the time at which this view last typed a subshell bootstrap stage
     /// into it. Unlike the model's pending subshell session (which only exists once the shell
     /// answered with `InitShell`), this exists even when the script never ran, so a stalled
@@ -4693,6 +4700,7 @@ impl TerminalView {
             pending_env_var_collection: None,
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
+            paste_sequencer: PasteSequencer::default(),
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
             powershell_setup_hold: PowerShellSetupHold::Off,
@@ -11361,6 +11369,23 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         let mut bytes: Cow<'static, [u8]> = data.into();
+        // A paste is still being read off the main thread (#1255): what is typed meanwhile goes
+        // out behind it, in order; an abort key cancels the paste instead.
+        if self.paste_sequencer.has_pending() {
+            match self.paste_sequencer.on_key(&bytes, is_abort_key(&bytes)) {
+                KeyDisposition::Held => return true,
+                KeyDisposition::CancelledPaste(held) => {
+                    for held_bytes in held {
+                        self.write_user_bytes_to_pty_inner(
+                            held_bytes,
+                            takes_over_agent_control,
+                            ctx,
+                        );
+                    }
+                }
+                KeyDisposition::PassThrough => {}
+            }
+        }
         self.note_input_for_deferred_subshell_setup(&bytes);
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
@@ -20519,6 +20544,15 @@ impl TerminalView {
         } else {
             Some(self.shell_dialect_from_app(ctx))
         };
+        // Terminal-bound pastes read the clipboard and prepare the pty bytes off the main thread,
+        // so a multi-MB paste neither freezes the UI nor loses keys typed behind it (#1255).
+        #[cfg(not(target_family = "wasm"))]
+        if !middle_click && !should_paste_in_input && !is_cli_agent_paste {
+            if let Some(reader) = ctx.clipboard().background_text_reader() {
+                self.start_background_paste(reader, shell_dialect, needs_bracketed_paste, ctx);
+                return;
+            }
+        }
         let copied = if middle_click {
             TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {
@@ -20587,6 +20621,90 @@ impl TerminalView {
                 paste_bytes_for_pty(&copied, needs_bracketed_paste),
                 ctx,
             );
+        }
+    }
+
+    /// Reads the clipboard and builds the pty bytes on a worker thread; the callback writes them
+    /// and then the keys typed meanwhile (see [`PasteSequencer`]).
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        shell_dialect: Option<ShellDialect>,
+        bracketed: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let id = self.paste_sequencer.begin();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("paste-read".into())
+            .spawn(move || {
+                let result = match reader() {
+                    warpui::clipboard::BackgroundTextRead::TimedOut => None,
+                    warpui::clipboard::BackgroundTextRead::Content(content) => {
+                        let text =
+                            clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                        Some(paste_bytes_for_pty(&text, bracketed))
+                    }
+                };
+                let _ = tx.send(result);
+            });
+        if spawned.is_err() {
+            self.paste_sequencer.complete(id);
+            self.show_error_toast(
+                "Paste failed \u{2014} could not start the clipboard read".to_string(),
+                ctx,
+            );
+            return;
+        }
+        ctx.spawn(
+            async move { rx.await.ok().flatten() },
+            move |me, bytes, ctx| me.finish_background_paste(id, bytes, ctx),
+        );
+        // Say what is happening when the read takes noticeable time (a big paste).
+        ctx.spawn(
+            Timer::after(PASTE_PROGRESS_TOAST_DELAY),
+            move |me, _, ctx| {
+                if me.paste_sequencer.is_pending(id) {
+                    if !ctx.has_singleton_model::<ToastStack>() {
+                        return;
+                    }
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::success(
+                            "Pasting from the clipboard\u{2026} (Ctrl-C cancels)".to_string(),
+                        );
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
+                }
+            },
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// The paste `id` was read: write it, then the keys typed behind it, in order. `None` bytes
+    /// mean the clipboard owner never answered.
+    fn finish_background_paste(
+        &mut self,
+        id: u64,
+        bytes: Option<Vec<u8>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Cancelled (Ctrl-C) or superseded: the paste is dropped, nothing is written.
+        let Some(held) = self.paste_sequencer.complete(id) else {
+            return;
+        };
+        match bytes {
+            Some(bytes) => {
+                self.write_user_bytes_to_pty(bytes, ctx);
+            }
+            None => self.show_error_toast(
+                "Paste failed \u{2014} clipboard read timed out".to_string(),
+                ctx,
+            ),
+        }
+        for held_bytes in held {
+            self.write_user_bytes_to_pty(held_bytes, ctx);
         }
     }
 

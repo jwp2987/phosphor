@@ -6,7 +6,10 @@ use arboard::{
 };
 use zbus::zvariant::NoneValue;
 
-use crate::{clipboard::ClipboardContent, Clipboard};
+use crate::{
+    Clipboard,
+    clipboard::{BackgroundTextRead, BackgroundTextReader, ClipboardContent},
+};
 
 /// How many times the text read is attempted when the owner is slow (#1173).
 const TEXT_READ_ATTEMPTS: usize = 3;
@@ -142,6 +145,22 @@ impl Clipboard for LinuxClipboard {
             paths,
             ..Default::default()
         }
+    }
+
+    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
+        // arboard's X11 and Wayland backends are process-global, so a fresh handle on another
+        // thread reads the same selections (and the same data when we own them).
+        Some(Box::new(|| {
+            let Ok(mut clipboard) = LinuxClipboard::new() else {
+                return BackgroundTextRead::Content(ClipboardContent::null_value());
+            };
+            let content = clipboard.read_text_and_paths();
+            if clipboard.take_read_failure() {
+                BackgroundTextRead::TimedOut
+            } else {
+                BackgroundTextRead::Content(content)
+            }
+        }))
     }
 
     fn read_plain_text(&mut self) -> String {
