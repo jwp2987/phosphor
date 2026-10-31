@@ -982,6 +982,112 @@ fn test_git_status_change_updates_branch_status_chip_value() {
     });
 }
 
+/// #1166: the branch chip must follow the branch the shell reported in precmd immediately,
+/// instead of waiting for the git-status refresh, and the refresh must then take over.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_branch_status_chip_is_seeded_from_precmd_branch_before_git_status_refresh() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::GitBranchStatus],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        let repo_handle = watcher_handle.update(&mut app, |watcher, ctx| {
+            watcher
+                .add_directory(
+                    warp_util::standardized_path::StandardizedPath::from_local_canonicalized(
+                        temp_dir.path(),
+                    )
+                    .unwrap(),
+                    ctx,
+                )
+                .unwrap()
+        });
+        let git_status = app
+            .add_model(move |ctx| GitRepoStatusModel::new_local_for_test(repo_handle, None, ctx));
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        // The git-status model has published nothing yet; the shell's precmd says "feat/seed".
+        current_prompt.update(&mut app, |cp, ctx| {
+            cp.set_git_repo_status(Some(git_status.downgrade()), ctx);
+            cp.latest_context = Some(PromptContext {
+                active_block_metadata: BlockMetadata::new(None, Some("/tmp/project".to_string())),
+                environment: Environment::default().with_git_branch("feat/seed"),
+            });
+            cp.update_states_with_new_context(ctx);
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                current_prompt
+                    .as_ref(ctx)
+                    .latest_chip_value(&ContextChipKind::GitBranchStatus),
+                Some(&crate::context_chips::ChipValue::GitBranchStatus(
+                    GitBranchTrackingStatus::without_counts("feat/seed".to_string(), None),
+                )),
+                "branch chip should show the precmd branch before the git-status refresh"
+            );
+        });
+
+        // The refresh lands and replaces the seed with the full status.
+        let full_status = GitBranchTrackingStatus::new(
+            "feat/seed".to_string(),
+            Some("origin/feat/seed".to_string()),
+            2,
+            0,
+        );
+        git_status.update(&mut app, |model, ctx| {
+            model.set_metadata_for_test(
+                Some(GitStatusMetadata {
+                    current_branch_name: "feat/seed".to_string(),
+                    main_branch_name: "main".to_string(),
+                    stats_against_head: DiffStats::default(),
+                    branch_tracking_status: full_status.clone(),
+                }),
+                ctx,
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                current_prompt
+                    .as_ref(ctx)
+                    .latest_chip_value(&ContextChipKind::GitBranchStatus),
+                Some(&crate::context_chips::ChipValue::GitBranchStatus(
+                    full_status
+                )),
+            );
+        });
+
+        // A later prompt for the same branch must not clobber the counts with a bare seed.
+        current_prompt.update(&mut app, |cp, ctx| {
+            cp.update_states_with_new_context(ctx);
+            let Some(crate::context_chips::ChipValue::GitBranchStatus(status)) =
+                cp.latest_chip_value(&ContextChipKind::GitBranchStatus)
+            else {
+                panic!("expected a branch status value");
+            };
+            assert_eq!(status.ahead, 2);
+        });
+    });
+}
+
 /// A [`CommandExecutor`] implementation that records which commands were run, but does not
 /// execute them.
 #[derive(Debug, Default)]

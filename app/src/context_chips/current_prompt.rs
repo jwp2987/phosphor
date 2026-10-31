@@ -42,7 +42,7 @@ use crate::code_review::git_status_update::{GitRepoStatusEvent, GitRepoStatusMod
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::{GitHubRepoEvent, GitHubRepoModel};
 #[cfg(feature = "local_fs")]
-use crate::context_chips::display_chip::GitLineChanges;
+use crate::context_chips::display_chip::{GitBranchTrackingStatus, GitLineChanges};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Arc, Weak};
@@ -1109,6 +1109,13 @@ impl CurrentPrompt {
                     if matches!(chip_kind, ContextChipKind::GithubPullRequest) {
                         self.sync_pr_chip_from_model(ctx);
                     }
+                    // The branch the shell reported in precmd is already for the new
+                    // prompt; show it now and let the git-status refresh confirm or correct
+                    // it (and fill in ahead/behind) when it lands (#1166).
+                    #[cfg(feature = "local_fs")]
+                    if matches!(chip_kind, ContextChipKind::GitBranchStatus) {
+                        self.seed_git_branch_status_from_precmd(ctx);
+                    }
                 }
                 return;
             }
@@ -1654,6 +1661,42 @@ impl CurrentPrompt {
         if current_pr != new_pr_value {
             self.update_chip_value(&ContextChipKind::GithubPullRequest, new_pr_value);
         }
+    }
+
+    /// Seeds the `GitBranchStatus` chip from the branch the shell reported in its precmd hook
+    /// for the active block, so the chip changes together with the prompt instead of waiting
+    /// for the git-status refresh. Only the branch name is known here, so the seed carries no
+    /// upstream or ahead/behind counts; `apply_git_repo_metadata` replaces it with the full
+    /// status. A precmd with no branch leaves the chip alone (the repo-detach path clears it),
+    /// and the value always comes from the active block's own context, never another cwd's.
+    #[cfg(feature = "local_fs")]
+    fn seed_git_branch_status_from_precmd(&mut self, ctx: &mut ModelContext<Self>) {
+        let chip_kind = ContextChipKind::GitBranchStatus;
+        let Some(branch) = self
+            .latest_context
+            .as_ref()
+            .and_then(|context| context.environment.git_branch())
+            .filter(|branch| !branch.is_empty())
+            .cloned()
+        else {
+            return;
+        };
+        let already_showing = matches!(
+            self.latest_chip_value(&chip_kind),
+            Some(ChipValue::GitBranchStatus(status)) if status.branch == branch
+        );
+        if already_showing {
+            return;
+        }
+        self.update_chip_value(
+            &chip_kind,
+            Some(ChipValue::GitBranchStatus(
+                GitBranchTrackingStatus::without_counts(branch, None),
+            )),
+        );
+        // `apply_git_repo_metadata` only refreshes the dropdown on a branch change relative to
+        // the current value, which the seed has just made equal; do it here instead.
+        self.refresh_git_branch_dropdown(chip_kind, ctx);
     }
 
     /// Re-run the branch-list generator for a git-branch-backed chip so its
