@@ -18,42 +18,48 @@ pub(crate) fn look_for_wayland_compositor() -> Option<String> {
     //     return Some(compositor_name);
     // }
 
-    // If the above method didn't work, fallback to a less precise method. Simply use `ps
-    // -u` and grep for a recognized set of names among the running processes. This may
-    // have false positives, like processes that name-clash with these compositors.
-    let uid = nix::unistd::getuid();
-    let euid = nix::unistd::geteuid();
-    // Keep the `Child` handle so that we can `wait()` on `ps` once `grep` has
-    // consumed its output. Dropping a `Child` without waiting leaves a zombie
-    // for the lifetime of the app (#830).
-    let mut ps_child = Command::new("ps")
-        .args(["-u", &format!("{euid}"), "-U", &format!("{uid}")])
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let wm_name = ps_child.stdout.take().and_then(|ps_output| {
-        let wm_match_cmd = Command::new("grep")
-            .args(
-                ["-m", "1", "-o", "-F", "-i"].iter().chain(
-                    WAYLAND_TILING_WM
-                        .iter()
-                        .flat_map(|wm_name| [&"-e", wm_name]),
-                ),
-            )
-            .stdin(Stdio::from(ps_output))
-            .output()
-            .ok()
-            .filter(|out| out.status.success())?;
-        String::from_utf8(wm_match_cmd.stdout)
-            .ok()
-            .filter(|wm_name| !wm_name.is_empty())
-    });
-    // `grep -m 1` may exit before `ps` finishes writing, so `ps` can die of
-    // SIGPIPE; either way, reap it.
-    if let Err(err) = ps_child.wait() {
-        log::debug!("Failed to reap `ps` child: {err}");
-    }
-    wm_name
+    // If the above method didn't work, fall back to a less precise method: look for a
+    // recognized set of names among the user's running processes. This may have false
+    // positives, like processes that name-clash with these compositors.
+    //
+    // This runs on the main thread while the first window is created, so it reads
+    // `/proc/<pid>/comm` directly. It used to spawn `ps -u | grep`, which blocked startup
+    // for 20-250 ms (two fork/execs plus a full process listing) on every launch.
+    find_compositor_in_proc(path::Path::new("/proc"), nix::unistd::geteuid().as_raw())
+}
+
+/// Scans `proc_root` (normally `/proc`) for a process owned by `uid` whose name contains one of
+/// [`WAYLAND_TILING_WM`], case-insensitively. Returns the matched part of the name as written
+/// (what `grep -o -i` printed), checking processes in ascending pid order like `ps` did.
+fn find_compositor_in_proc(proc_root: &path::Path, uid: u32) -> Option<String> {
+    let mut pids: Vec<(u32, path::PathBuf)> = fs::read_dir(proc_root)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            Some((pid, entry.path()))
+        })
+        .collect();
+    pids.sort_unstable_by_key(|(pid, _)| *pid);
+
+    pids.into_iter().find_map(|(_, dir)| {
+        if fs::metadata(&dir).ok()?.uid() != uid {
+            return None;
+        }
+        let comm = fs::read_to_string(dir.join("comm")).ok()?;
+        match_wayland_tiling_wm(comm.trim_end())
+    })
+}
+
+/// The earliest case-insensitive occurrence of a [`WAYLAND_TILING_WM`] name in `comm`, as written.
+fn match_wayland_tiling_wm(comm: &str) -> Option<String> {
+    let lowered = comm.to_ascii_lowercase();
+    WAYLAND_TILING_WM
+        .iter()
+        .filter_map(|wm_name| lowered.find(wm_name).map(|at| (at, wm_name.len())))
+        .min_by_key(|(at, _)| *at)
+        .and_then(|(at, len)| comm.get(at..at + len))
+        .map(str::to_owned)
 }
 
 /// Returns the name of the Wayland compositor by looking at the Wayland
@@ -143,3 +149,7 @@ pub(crate) fn is_tiling_window_manager(name: &str) -> bool {
         || X11_DYNAMIC_WM.contains(&normalized.as_str())
         || WAYLAND_TILING_WM.contains(&normalized.as_str())
 }
+
+#[cfg(test)]
+#[path = "window_manager_tests.rs"]
+mod tests;
