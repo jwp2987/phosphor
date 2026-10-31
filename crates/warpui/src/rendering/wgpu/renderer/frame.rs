@@ -1,7 +1,7 @@
 use crate::rendering::wgpu::renderer::{glyph, image, rect, WGPUContext};
 
 use crate::rendering::wgpu::Resources;
-use crate::scene::{CornerRadius, Layer};
+use crate::scene::Layer;
 use crate::Scene;
 
 use pathfinder_color::ColorU;
@@ -27,7 +27,7 @@ pub(super) fn opaque_background(scene: &Scene, surface_size: Vector2F) -> Option
         && scaled.max_y() >= surface_size.y();
     let is_solid_opaque = color.is_opaque() && rect.background.end_color() == color;
     let is_plain = rect.drop_shadow.is_none()
-        && rect.corner_radius == CornerRadius::default()
+        && rect.corner_radius.is_square()
         && rect.border.top_width() == 0.
         && rect.border.right_width() == 0.
         && rect.border.bottom_width() == 0.

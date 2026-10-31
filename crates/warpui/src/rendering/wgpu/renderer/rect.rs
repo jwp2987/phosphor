@@ -216,6 +216,10 @@ fn encode_layer(
             ));
         }
 
+        if rect.draws_nothing() {
+            continue;
+        }
+
         let min_dimension = f32::min(bounds.height(), bounds.width());
         let corner_radius = crate::rendering::CornerRadius::from_ui_corner_radius(
             rect.corner_radius,
@@ -271,6 +275,10 @@ fn encode_layer(
     }
 
     let len = rect_instance_data.len() - start_offset;
+    if len == 0 {
+        // Every rect of the layer draws nothing (`Rect::draws_nothing`).
+        return None;
+    }
 
     Some(LayerState { start_offset, len })
 }

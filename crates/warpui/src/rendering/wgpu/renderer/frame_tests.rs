@@ -113,3 +113,17 @@ fn rects_the_shader_would_draw_differently_from_a_clear_are_not_used() {
     let empty = Scene::new(1., crate::rendering::Config::default());
     assert_eq!(opaque_background(&empty, surface()), None);
 }
+
+/// The window background the app emits carries an explicit radius of zero on every corner
+/// (`CornerRadius::with_all(Radius::Pixels(0.))`), which is not equal to the default but draws the
+/// same; it must still become the clear colour.
+#[test]
+fn an_explicit_zero_radius_is_still_the_clear_colour() {
+    let full = RectF::new(vec2f(0., 0.), vec2f(800., 600.));
+    let mut zero_radius = Scene::new(1., crate::rendering::Config::default());
+    zero_radius
+        .draw_rect_without_hit_recording(full)
+        .with_background(Fill::Solid(BACKGROUND))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(0.)));
+    assert_eq!(opaque_background(&zero_radius, surface()), Some(BACKGROUND));
+}
