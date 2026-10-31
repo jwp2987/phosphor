@@ -525,19 +525,9 @@ struct PrewarmedDb {
 
 /// A startup read made on the prewarm thread, before the user id and feature flags are known.
 struct SpeculativeRead {
-    data: MovedPersistedData,
+    data: super::SendablePersistedData,
     skipped_tabs: usize,
 }
-
-/// `PersistedData` moved from the prewarm thread to the main thread. It is not `Send` on its own
-/// only because `cloud_objects` holds `Box<dyn StoredObject>`.
-///
-/// SAFETY: the wrapped value is built on the prewarm thread and moved whole, with no clone or
-/// reference kept behind; `speculative_startup_read` only produces one when `cloud_objects` is
-/// empty (so no trait object is moved) and the read never consulted the user id or the
-/// SharedWithMe flag. Everything else in it is plain owned data.
-struct MovedPersistedData(PersistedData);
-unsafe impl Send for MovedPersistedData {}
 
 thread_local! {
     /// Set while the prewarm thread reads the database ahead of time: the user id and feature
@@ -571,9 +561,10 @@ fn speculative_startup_read(conn: &mut SqliteConnection) -> Option<SpeculativeRe
     let result = read_sqlite_data_counting(conn, None, &skipped_tabs);
     SPECULATIVE_READ.with(|flag| flag.set(false));
     let tainted = SPECULATIVE_READ_TAINTED.with(|flag| flag.get());
+    // Left to the main thread (which also owns the damaged-database handling) when the read
+    // failed, touched the user id / SharedWithMe, or produced cloud objects.
     let data = match result {
-        Ok(data) if !tainted && data.cloud_objects.is_empty() => data,
-        // Left to the main thread, which also owns the damaged-database handling.
+        Ok(data) if !tainted => super::SendablePersistedData::from_persisted(data)?,
         _ => return None,
     };
     log::info!(
@@ -581,7 +572,7 @@ fn speculative_startup_read(conn: &mut SqliteConnection) -> Option<SpeculativeRe
         start.elapsed().as_millis()
     );
     Some(SpeculativeRead {
-        data: MovedPersistedData(data),
+        data,
         skipped_tabs: skipped_tabs.get(),
     })
 }
@@ -597,11 +588,11 @@ impl SpeculativeRead {
         if user_id.is_some() {
             return None;
         }
-        let mut data = self.data.0;
+        let mut data = self.data;
         if !nld_prompt_history_enabled {
-            data.nld_prompts.clear();
+            data.clear_nld_prompts();
         }
-        Some((data, self.skipped_tabs))
+        Some((data.into_persisted(), self.skipped_tabs))
     }
 }
 
