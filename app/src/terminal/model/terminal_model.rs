@@ -2818,11 +2818,21 @@ impl TerminalModel {
         delegate!(self.set_marked_text(marked_text, selected_range))
     }
 
-    pub fn clear_marked_text(&mut self) {
-        if !FeatureFlag::ImeMarkedText.is_enabled() {
-            return;
+    /// Clears IME marked text on the active grid. Returns whether there was any to clear.
+    ///
+    /// The IME sends a clear before every typed character, so this must be a true no-op (no
+    /// content-generation bump, which forces a grid rebuild) when no composition is in progress.
+    pub fn clear_marked_text(&mut self) -> bool {
+        if !FeatureFlag::ImeMarkedText.is_enabled() || !self.has_marked_text() {
+            return false;
         }
-        delegate!(self.clear_marked_text())
+        delegate!(self.clear_marked_text());
+        true
+    }
+
+    /// Whether IME marked text is currently set on the active grid.
+    pub fn has_marked_text(&self) -> bool {
+        delegate!(self.has_marked_text())
     }
 }
 

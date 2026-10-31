@@ -10879,8 +10879,13 @@ impl TerminalView {
         if !FeatureFlag::ImeMarkedText.is_enabled() {
             return;
         }
-        self.model.lock().clear_marked_text();
-        ctx.notify();
+        // The IME sends ClearMarkedText before every typed character; when no composition is in
+        // progress there is nothing to clear, and bumping the grid generation + notifying would
+        // cost a full extra frame per keystroke.
+        let had_marked_text = self.model.lock().clear_marked_text();
+        if had_marked_text {
+            ctx.notify();
+        }
     }
 
     pub(crate) fn write_to_pty<B: Into<Cow<'static, [u8]>>>(

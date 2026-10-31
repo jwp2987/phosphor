@@ -858,6 +858,10 @@ impl BlockGrid {
     pub(super) fn clear_marked_text(&mut self) {
         self.grid_handler.clear_marked_text();
     }
+
+    pub(super) fn has_marked_text(&self) -> bool {
+        self.grid_handler.marked_text().is_some()
+    }
 }
 
 impl ansi::Handler for BlockGrid {
