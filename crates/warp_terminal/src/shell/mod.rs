@@ -52,6 +52,37 @@ lazy_static! {
 /// * If enabled, the history is of the form: `: <beginning time>:<elapsed seconds>;<command>`.
 /// * If not enabled, history is simply the command on each line with no additional metadata.
 ///
+/// Whether a PSReadLine history line is one the Phosphor bootstrap typed into PowerShell itself
+/// (#1122, #1203): the install guard, or the `. <path>` that sources `Phosphor/pwsh.ps1` or a
+/// `.tmpXXXXXX.ps1` copy of it. The bootstrap keeps them out of the file with its own history
+/// handler; files written by older versions, or under a user-replaced handler, still hold them.
+fn is_phosphor_powershell_bootstrap_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.starts_with("if (-not $global:WARP_BOOTSTRAPPED) {") {
+        return true;
+    }
+    let Some(sourced) = line.strip_prefix(". ") else {
+        return false;
+    };
+    let sourced = sourced.trim().trim_end_matches(['"', '\'']);
+    sourced.ends_with("Phosphor/pwsh.ps1")
+        || sourced.ends_with("Phosphor\\pwsh.ps1")
+        || (sourced.ends_with(".ps1")
+            && sourced
+                .rsplit(['/', '\\'])
+                .next()
+                .is_some_and(|name| {
+                    name.strip_prefix(".tmp").is_some_and(|rest| {
+                        rest.len() == "XXXXXX.ps1".len()
+                            && rest.ends_with(".ps1")
+                            && rest
+                                .trim_end_matches(".ps1")
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric())
+                    })
+                }))
+}
+
 /// We avoid using a regex here in favor of simple string manipulation for better performance in this
 /// hot path.
 fn strip_zsh_extended_prefix(line: &str) -> &str {
@@ -615,12 +646,27 @@ impl ShellType {
             }
 
             ShellType::PowerShell => {
+                // PSReadLine's ConsoleHost_history.txt (pwsh 7 and Windows PowerShell 5.1): one
+                // command per line; a multi-line command is saved with every line but its last
+                // ending in a backtick (#1203). Lines the Phosphor bootstrap itself typed into the
+                // shell are not the user's history.
                 let history_file_contents = String::from_utf8_lossy(history_file_bytes);
-                history_lines = history_file_contents
-                    .lines()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_owned())
-                    .collect()
+                let mut current = String::new();
+                for line in history_file_contents.lines() {
+                    if let Some(continued) = line.strip_suffix('`') {
+                        current.push_str(continued);
+                        current.push('\n');
+                        continue;
+                    }
+                    current.push_str(line);
+                    if !current.is_empty() && !is_phosphor_powershell_bootstrap_line(&current) {
+                        history_lines.push(current.clone());
+                    }
+                    current.clear();
+                }
+                if !current.is_empty() && !is_phosphor_powershell_bootstrap_line(&current) {
+                    history_lines.push(current);
+                }
             }
 
             ShellType::Nu => {
