@@ -121,6 +121,8 @@ impl CodeSymbolCache {
                 DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
             })?;
 
+        // Lazy outline: opening the @ menu in this repo for the first time starts the build.
+        RepoOutlines::as_ref(app).request_outline(&git_repo_path);
         let (outline_status, _) = RepoOutlines::as_ref(app).get_outline(&git_repo_path)?;
         let outline = match outline_status {
             OutlineStatus::Complete(outline) => outline,

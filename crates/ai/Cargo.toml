@@ -64,6 +64,9 @@ unicode-width.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-fs.workspace = true
 arborium.workspace = true

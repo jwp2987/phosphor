@@ -364,6 +364,8 @@ pub fn collect_relevant_files_snapshot(
             DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
         })?;
 
+    // Lazy outline: first use in this repo kicks off the build (None until done).
+    RepoOutlines::as_ref(app).request_outline(&git_repo_path);
     let (outline_status, _) = RepoOutlines::as_ref(app).get_outline(&git_repo_path)?;
     let OutlineStatus::Complete(outline) = outline_status else {
         return None;

@@ -897,8 +897,11 @@ impl BlocklistAIContextModel {
             // above, just for symbol-search availability instead of rules.
             false
         } else {
-            pwd.as_ref()
-                .is_some_and(|pwd| RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd)))
+            pwd.as_ref().is_some_and(|pwd| {
+                // Lazy outline: an agent query in this repo is the first real need.
+                RepoOutlines::as_ref(app).request_outline(Path::new(&pwd));
+                RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd))
+            })
         };
 
         let project_rules = if let Some(host_id) = remote_host {

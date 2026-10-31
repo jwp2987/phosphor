@@ -221,6 +221,8 @@ pub fn collect_codebase_symbols(app: &warpui::AppContext) -> Vec<CodebaseSymbol>
         return Vec::new();
     };
 
+    // Lazy outline: first use in this repo kicks off the build (returns empty until done).
+    RepoOutlines::as_ref(app).request_outline(&git_repo_path);
     let Some((outline_status, _)) = RepoOutlines::as_ref(app).get_outline(&git_repo_path) else {
         return Vec::new();
     };

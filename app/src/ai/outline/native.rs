@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -49,6 +49,17 @@ pub struct RepoOutlines {
     active_outline_task: Option<AbortHandle>,
 
     indexing_enabled: bool,
+
+    /// Sender half of the on-demand build channel; see [`Self::request_outline`].
+    request_tx: Sender<PathBuf>,
+
+    /// Paths for which something asked for an outline. A repo is only parsed once a
+    /// request covers it; merely entering a git repo no longer starts the parse.
+    requested: HashSet<PathBuf>,
+
+    /// Whether `request_outline` is allowed to start builds (false in tests and
+    /// dev/integration builds, mirroring the old `DetectedGitRepo` subscription).
+    build_on_demand: bool,
 }
 
 const REPO_WATCHER_DEBOUNCE_DURATION: Duration = Duration::from_secs(10);
@@ -65,20 +76,32 @@ impl RepoOutlines {
             }
         });
 
-        if indexing_enabled
+        let build_on_demand = indexing_enabled
             && !cfg!(any(
                 test,
                 feature = "fast_dev",
                 feature = "integration_tests"
-            ))
-        {
+            ));
+        let (request_tx, request_rx) = async_channel::unbounded();
+        if build_on_demand {
+            // Detecting a repo does NOT start the parse (it keeps two threads busy for
+            // seconds and its allocations slow every keystroke afterwards). It only
+            // builds when a reader already asked for that repo before it was detected.
             ctx.subscribe_to_model(&DetectedRepositories::handle(ctx), |me, event, ctx| {
                 let DetectedRepositoriesEvent::DetectedGitRepo {
                     repository,
                     source: _,
                 } = event;
-                me.index_repo(repository.clone(), ctx);
+                let root = repository.as_ref(ctx).root_dir().to_local_path_lossy();
+                if me.is_requested(&root) {
+                    me.index_repo(repository.clone(), ctx);
+                }
             });
+            ctx.spawn_stream_local(
+                request_rx,
+                |me, path: PathBuf, ctx| me.handle_outline_request(path, ctx),
+                |_, _| {},
+            );
         }
 
         ctx.subscribe_to_model(&InputSettings::handle(ctx), |me, event, ctx| {
@@ -93,6 +116,9 @@ impl RepoOutlines {
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled,
+            request_tx,
+            requested: Default::default(),
+            build_on_demand,
         }
     }
 
@@ -104,6 +130,36 @@ impl RepoOutlines {
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled: true,
+            request_tx: async_channel::unbounded().0,
+            requested: Default::default(),
+            build_on_demand: false,
+        }
+    }
+
+    /// Asks for the outline of the repo containing `path` to be built, if it has not
+    /// been already. Called by every reader (the @ menu, the agent's codebase tools,
+    /// agent context) so the parse only happens once something needs symbols. Cheap
+    /// and non-blocking, safe to call from `&AppContext` on any path; the build
+    /// itself starts asynchronously, so the first caller sees no outline yet.
+    pub fn request_outline(&self, path: &Path) {
+        if self.build_on_demand && self.get_outline_internal(path).is_none() {
+            let _ = self.request_tx.try_send(path.to_path_buf());
+        }
+    }
+
+    fn is_requested(&self, repo_root: &Path) -> bool {
+        self.requested.iter().any(|p| p.starts_with(repo_root))
+    }
+
+    fn handle_outline_request(&mut self, path: PathBuf, ctx: &mut ModelContext<Self>) {
+        if !self.should_build_outlines(ctx) {
+            return;
+        }
+        self.requested.insert(path.clone());
+        if let Some(repository) =
+            DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&path, ctx)
+        {
+            self.index_repo(repository, ctx);
         }
     }
 
@@ -140,8 +196,15 @@ impl RepoOutlines {
 
     fn handle_setting_change_event(me: &mut RepoOutlines, ctx: &mut ModelContext<Self>) {
         if me.should_build_outlines(ctx) {
-            // Add all working directories to the queue and start processing.
+            // Rebuild only repos something already asked for; the rest stay lazy.
             for dir in all_working_directories(ctx).into_iter() {
+                if !me
+                    .requested
+                    .iter()
+                    .any(|p| p.starts_with(&dir) || dir.starts_with(p))
+                {
+                    continue;
+                }
                 if let Some(repository) =
                     DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&dir, ctx)
                 {
@@ -439,3 +502,7 @@ impl RepositorySubscriber for OutlineRepositorySubscriber {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;
