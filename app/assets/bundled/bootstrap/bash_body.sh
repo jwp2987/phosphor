@@ -131,7 +131,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # Note that because the JSON string may contain characters that we don't control (including
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
-        encoded_message=$(warp_hex_encode_string "${1-}")
+        __warp_hex_encode_to "${1-}"
+        encoded_message=$__warp_hex
         # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
         # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
         if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
@@ -916,6 +917,25 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Accepts one argument: DCS JSON string
     warp_hex_encode_string () {
       builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+    }
+
+    # Phosphor (#1170): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
+    # runs three times per command (Preexec, CommandFinished, Precmd) and the `printf | od | tr`
+    # pipeline above costs a subshell and two processes each time, 2.5-5 ms in all. Under LC_ALL=C
+    # the string is indexed byte by byte, so the output is the same bytes `od` prints. Bash 3.2's
+    # printf sign-extends a byte >= 0x80 to ffffffXX, hence the `${__c: -2}`. A long message (the
+    # Bootstrapped hook is tens of KB) goes to `od`, which beats a shell loop at that size.
+    __warp_hex_encode_to () {
+      local LC_ALL=C __s=${1-} __i __c
+      __warp_hex=
+      if (( ${#__s} > 2048 )); then
+        __warp_hex=$(warp_hex_encode_string "$__s")
+        return 0
+      fi
+      for (( __i = 0; __i < ${#__s}; __i++ )); do
+        builtin printf -v __c '%02x' "'${__s:__i:1}"
+        __warp_hex+=${__c: -2}
+      done
     }
 
     # Returns encoded InitShell hook

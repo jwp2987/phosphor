@@ -82,8 +82,11 @@ end
 
 
 # warp_hex_encode_string hex-encodes the given string with `od`.
+# Phosphor (#1170): `od` prints the bytes as space-separated lines, so the spaces and the line
+# breaks are dropped with `string` (in-process) rather than a forked `tr -d ' \n'`; this runs three
+# times per command.
 function warp_hex_encode_string 
-  builtin printf '%s' "$argv" | od -An -v -tx1 | command tr -d ' \n'
+  builtin printf '%s' (string replace -a ' ' '' -- (builtin printf '%s' "$argv" | od -An -v -tx1))
 end
 
 # A list of PIDs for running in-band command(s). This is used to kill running

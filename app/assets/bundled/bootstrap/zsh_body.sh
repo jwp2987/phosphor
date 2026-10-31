@@ -122,7 +122,8 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # Note that because the JSON string may contain characters that we don't control (including
       # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
       # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
-      local msg=$(warp_hex_encode_string "$1")
+      __warp_hex_encode_to "$1"
+      local msg=$__warp_hex
       # We send the InitShell hook via OSCs when on WSL and via DCSs otherwise.
       if [ "${WARP_USING_WINDOWS_CON_PTY-}" = true ]; then
         __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$msg$OSC_END"
@@ -702,6 +703,26 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   # Accepts one argument: DCS JSON string
   warp_hex_encode_string () {
     builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+  }
+
+  # Phosphor (#1170): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
+  # runs three times per command and the `printf | od | tr` pipeline above costs a subshell and
+  # two processes each time, 3-5 ms in all. With nomultibyte `#c` is the byte value, so the output
+  # is the same bytes `od` prints. A long message (the Bootstrapped hook is tens of KB) goes to
+  # `od`, which beats a shell loop at that size. emulate -L zsh makes the loop immune to the
+  # user's options (ksharrays, shwordsplit, errreturn, printexitvalue...).
+  __warp_hex_encode_to () {
+    emulate -L zsh
+    setopt nomultibyte
+    local s=${1-} c out=
+    if (( ${#s} > 2048 )); then
+      typeset -g __warp_hex=$(warp_hex_encode_string "$s")
+      return 0
+    fi
+    for c in ${(s::)s}; do
+      out+=${(l:2::0:)${$(( [##16] #c ))}}
+    done
+    typeset -g __warp_hex=${(L)out}
   }
 
   # We set precmd and preexec hooks in order to set the title for the idle
