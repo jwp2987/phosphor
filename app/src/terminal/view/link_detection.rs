@@ -13,7 +13,7 @@ use crate::{
     server::telemetry::{LinkOpenMethod, TelemetryEvent},
     terminal::{
         model::{
-            grid::grid_handler::Link,
+            grid::grid_handler::{ContentGeneration, Link},
             index::Point,
             terminal_model::{WithinBlock, WithinModel},
             RespectObfuscatedSecrets,
@@ -257,6 +257,12 @@ pub struct HighlightedLinkOption {
     inner: Option<GridHighlightedLink>,
     /// True if the underlying content has changed such that the link may no longer be valid.
     invalidated: bool,
+    /// The alt-screen position and grid content generation of the last completed hover scan.
+    /// The alt screen re-sends its (synthetic) mouse position every frame, so a parked mouse over
+    /// unchanged content would otherwise redo the model-locking link scan on every frame. Cleared
+    /// whenever the highlight is taken, so a hover that was dropped (selection, window blur) is
+    /// re-evaluated.
+    last_scan: Option<(WithinModel<Point>, ContentGeneration)>,
 }
 
 #[derive(Clone, Debug)]
@@ -481,7 +487,22 @@ impl HighlightedLinkOption {
         model.block_list_mut().clear_smart_select_override();
         model.alt_screen_mut().clear_smart_select_override();
         self.invalidated = false;
+        self.last_scan = None;
         self.inner.take()
+    }
+
+    /// True if a scan already ran for exactly this alt-screen position and grid content, so
+    /// running it again cannot find anything new.
+    pub fn scan_is_current(
+        &self,
+        position: &WithinModel<Point>,
+        generation: ContentGeneration,
+    ) -> bool {
+        !self.invalidated && self.last_scan == Some((*position, generation))
+    }
+
+    pub fn record_scan(&mut self, position: WithinModel<Point>, generation: ContentGeneration) {
+        self.last_scan = Some((position, generation));
     }
 
     pub fn invalidate(&mut self) {
@@ -543,9 +564,30 @@ impl super::TerminalView {
             }
         }
 
+        // The alt screen re-sends the parked mouse position every frame. If neither the position
+        // nor the grid content changed since the last completed scan, there is nothing new to
+        // find; skip the repeated model locks and url/boundary scans. Any content change bumps the
+        // generation, so a link that newly appears under a parked mouse is still detected.
+        let scan_generation = match position {
+            WithinModel::AltScreen(_) => Some(
+                self.model
+                    .lock()
+                    .alt_screen()
+                    .grid_handler()
+                    .content_generation(),
+            ),
+            WithinModel::BlockList(_) => None,
+        };
+        if let Some(generation) = scan_generation {
+            if self.highlighted_link.scan_is_current(position, generation) {
+                return;
+            }
+        }
+
         // Updating the cursor shape repeatedly can cause flashing, so we only set it once, and only
         // when necessary.
         let mut new_cursor_shape = None;
+        let mut scan_dropped = false;
 
         // If a link is highlighted and it's invalidated or we're not hovering it, remove that
         // hover and look for a new one.
@@ -599,17 +641,23 @@ impl super::TerminalView {
             {
                 // Use try_send to return an error directly when the channel is full
                 // instead of blocking main thread.
-                let _ = self.find_link_tx.try_send(FindLinkArg {
-                    position: *position,
-                    from_editor,
-                });
+                scan_dropped |= self
+                    .find_link_tx
+                    .try_send(FindLinkArg {
+                        position: *position,
+                        from_editor,
+                    })
+                    .is_err();
             }
             // If there's no last hover fragment boundary, we scan for links.
             (_, _, None) => {
-                let _ = self.find_link_tx.try_send(FindLinkArg {
-                    position: *position,
-                    from_editor,
-                });
+                scan_dropped |= self
+                    .find_link_tx
+                    .try_send(FindLinkArg {
+                        position: *position,
+                        from_editor,
+                    })
+                    .is_err();
             }
             _ => (),
         };
@@ -620,6 +668,11 @@ impl super::TerminalView {
         }
 
         self.last_hover_fragment_boundary = Some(new_fragment_boundary);
+
+        // A dropped async scan request must be retried by the next frame, so don't record it.
+        if let (Some(generation), false) = (scan_generation, scan_dropped) {
+            self.highlighted_link.record_scan(*position, generation);
+        }
     }
 
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
@@ -1312,5 +1365,46 @@ mod scheme_policy_tests {
         assert!(!BlockedTerminalLink::NotAUrl.toast_text().is_empty());
         let blocked_scheme = BlockedTerminalLink::DisallowedScheme("file".to_owned());
         assert!(!blocked_scheme.toast_text().is_empty());
+    }
+}
+
+/// The per-frame hover-scan memo (#1177).
+#[cfg(test)]
+mod scan_memo_tests {
+    use super::HighlightedLinkOption;
+    use crate::terminal::model::{
+        ansi::Handler, grid::grid_handler::GridHandler, index::Point, terminal_model::WithinModel,
+    };
+
+    fn pos(row: usize, col: usize) -> WithinModel<Point> {
+        WithinModel::AltScreen(Point { row, col })
+    }
+
+    #[test]
+    fn scan_is_current_only_for_same_position_and_content() {
+        let mut grid = GridHandler::new_for_test_with_scroll_limit(4, 6, 1000);
+        let mut link = HighlightedLinkOption::default();
+        let before = grid.content_generation();
+
+        // Nothing recorded yet: the first frame must scan.
+        assert!(!link.scan_is_current(&pos(0, 1), before));
+
+        link.record_scan(pos(0, 1), before);
+        assert!(link.scan_is_current(&pos(0, 1), before));
+        // Mouse moved.
+        assert!(!link.scan_is_current(&pos(0, 2), before));
+        // A URL printed under the parked mouse bumps the generation, so it gets re-scanned.
+        grid.input('h');
+        assert!(!link.scan_is_current(&pos(0, 1), grid.content_generation()));
+    }
+
+    #[test]
+    fn invalidation_defeats_the_memo() {
+        let grid = GridHandler::new_for_test_with_scroll_limit(4, 6, 1000);
+        let mut link = HighlightedLinkOption::default();
+        let generation = grid.content_generation();
+        link.record_scan(pos(0, 1), generation);
+        link.invalidate();
+        assert!(!link.scan_is_current(&pos(0, 1), generation));
     }
 }
