@@ -518,6 +518,29 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         Warp-Disable-PSPrediction
         Warp-Disable-PSErrorPrompt
+        $script:psrlConfiguredState = Warp-Get-PSReadLineState
+        $script:psrlConfiguredHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler
+    }
+
+    # What Warp-Configure-PSReadLine leaves behind that PSReadLine can report: edit mode, the
+    # prediction and prompt-text options, and (kept separately, by reference) the history handler.
+    function Warp-Get-PSReadLineState {
+        $psrlOption = PSReadLine\Get-PSReadLineOption
+        "$($psrlOption.EditMode)|$($psrlOption.PredictionSource)|$($psrlOption.PredictionViewStyle)|$($psrlOption.PromptText -join ',')"
+    }
+
+    # Runs at every prompt. Re-registering the key handlers, the history handler and the options
+    # cost 2 ms per prompt on Linux (#1231), several times that on Windows, to restate what is
+    # already set. Reconfigure only when PSReadLine no longer reports what was applied: the
+    # module was re-imported, the edit mode was switched, a profile or the user replaced the
+    # history handler or the prediction options.
+    function Warp-Configure-PSReadLine-IfChanged {
+        if ($null -ne $script:psrlConfiguredState -and
+            $script:psrlConfiguredState -ceq (Warp-Get-PSReadLineState) -and
+            [object]::ReferenceEquals((PSReadLine\Get-PSReadLineOption).AddToHistoryHandler, $script:psrlConfiguredHandler)) {
+            return
+        }
+        Warp-Configure-PSReadLine
     }
 
     # PSReadLine recolors the end of the prompt (its PromptText, '> ' taken from the default prompt)
@@ -609,7 +632,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         Warp-Send-JsonMessage $commandFinishedMsg
         Warp-Send-ResetGridOSC
 
-        Warp-Configure-PSReadLine
+        Warp-Configure-PSReadLine-IfChanged
 
         # If this is being called for a generator command, short circuit and send an unpopulated
         # precmd payload (except for pwd), since we don't re-render the prompt after generator commands
@@ -796,25 +819,30 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
     # The inner runspace pool maintains a pool of runspaces that can execute
     # arbitrary commands against the user's current environment without
-    # writing to the screen. Initialize to minimum of 10 runspaces
-    # to handle double the number of context chips we currently have
-    # that use in-band commands
-    $script:innerRunspacePool = [runspacefactory]::CreateRunspacePool(10, 20)
-    $script:innerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
-    $script:innerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:innerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
-
-    # The outer runspace pool maintains a pool of runspaces that
+    # writing to the screen. The outer runspace pool maintains a pool of runspaces that
     # share the same host as the user's session. This allows them
     # to send OSC commands via Write-Host. These outer runspaces
     # handle receiving results from the inner runspaces and formatting
     # those results into OSCs.
-    # Initialized to minimum of 5 runspaces since we currently do not
-    # run more than one outer command at a time.
-    $script:outerRunspacePool = [runspacefactory]::CreateRunspacePool(5, 10, $Host)
-    $script:outerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
-    $script:outerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:outerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+    #
+    # Neither pool is opened until the first generator command arrives (#1231). A local
+    # session never sends one (the app runs its own commands out of band), and opening
+    # 15 runspaces up front cost 54 ms of every start-up on Linux, several times that on
+    # Windows. The pools start with one runspace and grow to the same maximum as before.
+    function Warp-Ensure-RunspacePools {
+        if ($null -ne $script:innerRunspacePool) {
+            return
+        }
+        $script:innerRunspacePool = [runspacefactory]::CreateRunspacePool(1, 20)
+        $script:innerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
+        $script:innerRunspacePool.ThreadOptions = 'ReuseThread'
+        $script:innerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+
+        $script:outerRunspacePool = [runspacefactory]::CreateRunspacePool(1, 10, $Host)
+        $script:outerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
+        $script:outerRunspacePool.ThreadOptions = 'ReuseThread'
+        $script:outerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+    }
 
     class WarpGeneratorCommand {
         [string]$CommandId
@@ -826,6 +854,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             [WarpGeneratorCommand[]]$commands
         )
 
+        Warp-Ensure-RunspacePools
         $jobNumber = $script:inBandCommandCount++
 
         $batchNumber = 0

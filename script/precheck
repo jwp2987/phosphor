@@ -314,8 +314,10 @@ fi
 # #844). script/test_bootstrap_hook_equivalence pins the fork-free hook helpers
 # in the bash/zsh/fish bootstraps to the output of the forks they replaced
 # (hex encoding, JSON escaping, git branch, prompt runs) (#1170).
+# script/test_pwsh_hook_equivalence does the same for pwsh.ps1 against a golden
+# recording of its hook messages (#1231); it skips when pwsh is not installed.
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?
