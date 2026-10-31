@@ -9,8 +9,8 @@ use crate::ai::blocklist::agent_view::agent_input_footer::{
     AgentInputFooter, AgentInputFooterEvent,
 };
 use crate::terminal::cli_agent_sessions::{
-    event::{CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType},
     CLIAgentInputEntrypoint, CLIAgentSessionsModel,
+    event::{CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType},
 };
 use base64::Engine;
 use warpui::clipboard::{ClipboardContent, ImageData};
@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use crate::util::image::{infer_mime_type, MAX_IMAGE_SIZE_BYTES_FOR_CLI_AGENT, MIME_SNIFF_BYTES};
+use crate::util::image::{MAX_IMAGE_SIZE_BYTES_FOR_CLI_AGENT, MIME_SNIFF_BYTES, infer_mime_type};
 
 use warpui::r#async::Timer;
 
@@ -39,20 +39,20 @@ use warp_core::{
     ui::{
         appearance::Appearance,
         color::contrast::{
-            high_enough_contrast, pick_best_foreground_color, MinimumAllowedContrast,
+            MinimumAllowedContrast, high_enough_contrast, pick_best_foreground_color,
         },
-        theme::{color::internal_colors, Fill as ThemeFill},
+        theme::{Fill as ThemeFill, color::internal_colors},
     },
 };
 
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         ChildView, Container, CrossAxisAlignment, Empty, Expanded, Flex, MainAxisSize,
         ParentElement,
     },
     keymap::Keystroke,
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -65,8 +65,8 @@ use crate::{
     },
     terminal::cli_agent_sessions::CLIAgentRichInputCloseReason,
     terminal::{
-        model_events::{ModelEvent, ModelEventDispatcher},
         TerminalModel,
+        model_events::{ModelEvent, ModelEventDispatcher},
     },
     ui_components::{blended_colors, icons::Icon},
     view_components::action_button::{
@@ -1542,8 +1542,10 @@ impl TypedActionView for UseAgentToolbar {
                     .should_render_use_agent_footer_for_user_commands
                     .set_value(false, ctx)
                 {
-                    report_error!(anyhow!("{e:?}")
-                        .context("Failed to set `ShouldRenderUseAgentToolbarForUserCommands`"));
+                    report_error!(
+                        anyhow!("{e:?}")
+                            .context("Failed to set `ShouldRenderUseAgentToolbarForUserCommands`")
+                    );
                 }
             });
         }

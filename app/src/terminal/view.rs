@@ -23,9 +23,9 @@ mod open_in_warp;
 mod pane_impl;
 mod passive_suggestions;
 mod pending_user_query;
-pub(crate) mod queued_prompts_panel;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_instructions_block;
+pub(crate) mod queued_prompts_panel;
 pub mod rich_content;
 mod shared_session;
 mod shell_terminated_banner;
@@ -46,14 +46,14 @@ use warpui::clipboard_utils::get_image_filepaths_from_paths;
 
 use std::ops::Deref as _;
 
-use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
 use crate::ai::blocklist::agent_view::ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE;
 use crate::ai::blocklist::agent_view::conversation_selection::AgentViewConversationSelection;
+use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
 use crate::ai::blocklist::agent_view::{
-    agent_view_bg_fill, AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode,
-    AgentViewEntryBlockParams, AgentViewEntryOrigin, AgentViewHeaderDisabledTheme,
-    AgentViewHeaderTheme, AgentViewZeroStateBlock, AgentViewZeroStateEvent, EphemeralMessageModel,
-    ExitAgentViewError, ExitConfirmationTrigger, InlineAgentViewHeader,
+    AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode, AgentViewEntryBlockParams,
+    AgentViewEntryOrigin, AgentViewHeaderDisabledTheme, AgentViewHeaderTheme,
+    AgentViewZeroStateBlock, AgentViewZeroStateEvent, EphemeralMessageModel, ExitAgentViewError,
+    ExitConfirmationTrigger, InlineAgentViewHeader, agent_view_bg_fill,
 };
 use crate::ai::blocklist::conversation_selection::ConversationSelection;
 use crate::ai::conversation_utils;
@@ -75,11 +75,11 @@ use crate::view_components::action_button::{ActionButton, ButtonSize, KeystrokeS
 use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
-use super::cli_agent;
 use super::CLIAgent;
+use super::cli_agent;
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
-use crate::ai::ambient_agents::{conversation_output_status_from_conversation, AmbientAgentTaskId};
+use crate::ai::ambient_agents::{AmbientAgentTaskId, conversation_output_status_from_conversation};
 use crate::ai::blocklist::block::cli::{
     CLISubagentView, CLISubagentViewEvent, CLISubagentViewMode,
 };
@@ -91,21 +91,21 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
     ConversationUsageInfo, ConversationUsageView, TimingInfo,
 };
 use crate::ai::blocklist::{
-    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryId,
-    QueuedQueryEvent, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
+    AutofireAction, QueuedQuery, QueuedQueryEvent, QueuedQueryId, QueuedQueryModel,
+    QueuedQueryOrigin, SlashCommandRequest, block_context_from_terminal_model,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
+#[cfg(feature = "local_fs")]
+use crate::code_review::DiffSetScope;
 #[cfg(feature = "local_fs")]
 use crate::code_review::context::{
     convert_file_diffs_to_diffset_hunks, create_attachment_reference_and_key,
     register_diffset_attachment,
 };
-#[cfg(feature = "local_fs")]
-use crate::code_review::DiffSetScope;
 use crate::terminal::model::blocks::RemovableBlocklistItem;
 #[cfg(feature = "local_fs")]
-use crate::util::file::external_editor::{settings::EditorLayout, EditorSettings};
+use crate::util::file::external_editor::{EditorSettings, settings::EditorLayout};
 use crate::util::truncation::truncate_from_end;
 
 use crate::ai::agent::redaction::redact_secrets;
@@ -119,7 +119,7 @@ use crate::ai::blocklist::model::AIBlockOutputStatus;
 #[cfg(feature = "local_fs")]
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::code_review::comments::{
-    convert_insert_review_comments, AttachedReviewComment, PendingImportedReviewComment,
+    AttachedReviewComment, PendingImportedReviewComment, convert_insert_review_comments,
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::diff_state::LocalDiffStateModel;
@@ -138,12 +138,12 @@ use crate::remote_server::manager::{
 use crate::settings::ai::FocusedTerminalInfo;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
 use crate::terminal::cli_agent_sessions::event::{
-    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
-    CLI_AGENT_NOTIFICATION_SENTINEL,
+    CLI_AGENT_NOTIFICATION_SENTINEL, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource,
+    CLIAgentEventType, parse_event,
 };
-use crate::terminal::cli_agent_sessions::listener::{is_agent_supported, CLIAgentSessionListener};
+use crate::terminal::cli_agent_sessions::listener::{CLIAgentSessionListener, is_agent_supported};
 #[cfg(not(target_family = "wasm"))]
-use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
+use crate::terminal::cli_agent_sessions::plugin_manager::{PluginModalKind, plugin_manager_for};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentRichInputCloseReason, CLIAgentSession,
     CLIAgentSessionContext, CLIAgentSessionStatus, CLIAgentSessionsModel,
@@ -170,13 +170,13 @@ pub use action::{
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
 
 use crate::terminal::shared_session::protocol::{SessionEndedReason, SessionSourceType};
-pub use block_banner::{WithinBlockBanner, BLOCK_BANNER_HEIGHT};
+pub use block_banner::{BLOCK_BANNER_HEIGHT, WithinBlockBanner};
 use block_onboarding::onboarding_agentic_suggestions_block::{
     OnboardingAgenticSuggestionsBlock, OnboardingAgenticSuggestionsBlockEvent, OnboardingChipType,
 };
 pub use init::{
-    init, CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
-    TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+    CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
+    TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING, init,
 };
 pub use inline_banner::{NotificationsDiscoveryBannerAction, NotificationsErrorBannerAction};
 #[cfg(feature = "local_fs")]
@@ -186,15 +186,17 @@ use ssh_file_upload::{FileUpload, FileUploadEvent};
 use uuid::Uuid;
 use warp_core::channel::ChannelState;
 use warp_core::ui::theme::AnsiColorIdentifier;
-use warpui::elements::{shimmering_text::ShimmeringTextStateHandle, ChildView, MainAxisSize};
+use warpui::elements::{ChildView, MainAxisSize, shimmering_text::ShimmeringTextStateHandle};
 use warpui::fonts::Properties;
 use warpui::{ViewHandle, WeakModelHandle};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 
-use crate::ai::agent::task::TaskId;
+use crate::AIRequestUsageModel;
+use crate::ActiveSession as WindowActiveSession;
 #[cfg(any(test, feature = "integration_tests"))]
 use crate::ai::agent::UserQueryMode;
+use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentActionType, AIAgentOutputStatus, AIAgentTextSection, EntrypointType,
     FinishedAIAgentOutput, RenderableAIError, StaticQueryType,
@@ -203,28 +205,27 @@ use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToo
 use crate::ai::blocklist::agent_view::orchestration_conversation_links::pane_group_id_containing_terminal_view;
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use crate::ai::blocklist::suggested_rule_modal::SuggestedRuleAndId;
-use crate::ai::blocklist::{model::AIBlockModelImpl, ClientIdentifiers};
+use crate::ai::blocklist::{ClientIdentifiers, model::AIBlockModelImpl};
 use crate::ai::{
     agent::{
         AIAgentActionId, AIAgentCitation, AIAgentContext, AIAgentExchangeId, AIAgentInput,
         FileLocations, PassiveCodeDiffEntry, PassiveSuggestionResultType,
     },
     blocklist::{
-        ai_brand_color, get_ai_block_overflow_menu_element_position_id,
+        AIBlock, AIBlockEvent, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT, BlocklistAIActionEvent,
+        BlocklistAIActionModel, BlocklistAIContextEvent, BlocklistAIContextModel,
+        BlocklistAIController, BlocklistAIControllerEvent, BlocklistAIHistoryEvent,
+        BlocklistAIHistoryModel, BlocklistAIInputEvent, BlocklistAIInputModel,
+        ConversationStatusUpdate, GuiInputModePolicy, InputConfig, InputType,
+        LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
+        MaaPassiveSuggestionsModel, PRE_REWIND_PREFIX, PassiveSuggestionsModels, PendingQueryState,
+        PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
+        ShellCommandExecutor, ShellCommandExecutorEvent, ai_brand_color,
+        get_ai_block_overflow_menu_element_position_id,
         get_attached_blocks_chip_element_position_id,
         inline_action::code_diff_view::{CodeDiffView, FileDiff},
         summarization_cancel_dialog::SummarizationCancelDialog,
         telemetry_banner::should_collect_ai_ugc_telemetry,
-        AIBlock, AIBlockEvent, BlocklistAIActionEvent, BlocklistAIActionModel,
-        BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
-        BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-        BlocklistAIInputEvent, BlocklistAIInputModel, ConversationStatusUpdate,
-        GuiInputModePolicy, InputConfig, InputType,
-        LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
-        MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingQueryState,
-        PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
-        ShellCommandExecutor, ShellCommandExecutorEvent, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT,
-        PRE_REWIND_PREFIX,
     },
     execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId},
 };
@@ -232,21 +233,21 @@ use crate::auth::AuthManager;
 use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
 use crate::auth::AuthViewVariant;
-use crate::autoupdate::{self, get_update_state, AutoupdateStage};
+use crate::autoupdate::{self, AutoupdateStage, get_update_state};
 use crate::cloud_object::model::actions::ObjectActionType;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::update_manager::UpdateManager;
 use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject};
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
+use crate::context_chips::ContextChipKind;
 use crate::context_chips::prompt::Prompt;
 use crate::context_chips::prompt_type::PromptType;
-use crate::context_chips::ContextChipKind;
-use crate::drive::settings::WarpDriveSettings;
 use crate::drive::ObjectTypeAndId;
+use crate::drive::settings::WarpDriveSettings;
 use crate::env_vars::{
-    env_var_collection_block::{EnvVarCollectionBlock, EnvVarCollectionBlockEvent},
     EnvVar, EnvVarCollectionObject,
+    env_var_collection_block::{EnvVarCollectionBlock, EnvVarCollectionBlockEvent},
 };
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::ssh_split::{PendingRemoteCd, SplitFollowUp};
@@ -262,15 +263,16 @@ use crate::settings::{
     InputModeSettings, InputModeSettingsChangedEvent, InputSettings, PaneSettings,
     PaneSettingsChangedEvent, PrivacySettings, SelectionSettings, VimBannerSettings,
 };
+use crate::settings_view::SettingsSection;
 use crate::settings_view::flags;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
-use crate::settings_view::SettingsSection;
 use crate::shell_indicator::ShellIndicatorType;
-use crate::terminal::alias::{check_for_alias_async, AliasedCommand};
+use crate::terminal::ShellLaunchData;
+use crate::terminal::alias::{AliasedCommand, check_for_alias_async};
 use crate::terminal::alt_screen_reporting::{AltScreenReporting, AltScreenReportingChangedEvent};
 use crate::terminal::block_filter::{
-    filter_button_position_id, BlockFilterEditor, BlockFilterEditorEvent, BlockFilterQuery,
-    OpenedFromClick,
+    BlockFilterEditor, BlockFilterEditorEvent, BlockFilterQuery, OpenedFromClick,
+    filter_button_position_id,
 };
 use crate::terminal::block_list_viewport::OverhangingBlock;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
@@ -278,7 +280,6 @@ use crate::terminal::block_list_viewport::ScrollState;
 use crate::terminal::command_corrections_denylist::COMMAND_CORRECTIONS_PREFERRED_DENYLIST;
 use crate::terminal::event::RemoteServerSetupState;
 use crate::terminal::general_settings::GeneralSettings;
-use warp_core::execution_mode::AppExecutionMode;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
@@ -286,7 +287,7 @@ use crate::terminal::input::log_late_timer_wake;
 use crate::terminal::input::{
     CommandExecutionSource, InputAction, InputEmptyStateChangeReason, YoungTypeaheadDetection,
 };
-use crate::terminal::ligature_settings::{should_use_ligature_rendering, LigatureSettings};
+use crate::terminal::ligature_settings::{LigatureSettings, should_use_ligature_rendering};
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::get_shell_starter;
 #[cfg(feature = "local_tty")]
@@ -301,10 +302,10 @@ use crate::terminal::recorder::PtyRecorder;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::session_settings::ToolbarChipSelection;
 use crate::terminal::session_settings::{
-    NotificationsMode, NotificationsSettings, SessionSettings,
+    DEFAULT_THRESHOLD_FOR_LONG_RUNNING_NOTIFICATION, SessionSettingsChangedEvent,
 };
 use crate::terminal::session_settings::{
-    SessionSettingsChangedEvent, DEFAULT_THRESHOLD_FOR_LONG_RUNNING_NOTIFICATION,
+    NotificationsMode, NotificationsSettings, SessionSettings,
 };
 use crate::terminal::settings::{TerminalSettings, TerminalSettingsChangedEvent};
 use crate::terminal::shared_session::{
@@ -313,24 +314,21 @@ use crate::terminal::shared_session::{
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
+    SubshellSource,
     render::render_subshell_separator,
     settings::{NU_SUBSHELL_COMMAND_REGEX, PWSH_SUBSHELL_COMMAND_REGEX, WarpifySettings},
-    SubshellSource,
 };
-use crate::terminal::ShellLaunchData;
 use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
-use crate::terminal::{element_size_at_last_frame, HistoryEntry};
-use crate::terminal::{
-    height_in_range_approx, heights_approx_gt, heights_approx_gte, SizeUpdate,
-};
-use crate::terminal::{heights_approx_eq, CellSizeAndWindowPadding};
 use crate::terminal::{AudibleBell, SizeUpdateReason};
 use crate::terminal::{BlockListSettings, BlockListSettingsChangedEvent};
+use crate::terminal::{CellSizeAndWindowPadding, heights_approx_eq};
+use crate::terminal::{HistoryEntry, element_size_at_last_frame};
+use crate::terminal::{SizeUpdate, height_in_range_approx, heights_approx_gt, heights_approx_gte};
 use crate::themes::theme::WarpTheme;
 use crate::ui_components::icons::{self};
 use crate::util::bindings::{
-    custom_tag_to_keystroke, keybinding_name_to_display_string, keybinding_name_to_keystroke,
-    set_custom_keybinding, CustomAction,
+    CustomAction, custom_tag_to_keystroke, keybinding_name_to_display_string,
+    keybinding_name_to_keystroke, set_custom_keybinding,
 };
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
@@ -340,8 +338,8 @@ use crate::util::openable_file_type::{
 #[cfg(feature = "local_fs")]
 use crate::util::repo_detection::RepoDetectionSessionType;
 use crate::view_components::{DismissibleToast, ToastFlavor};
-use crate::workflows::workflow::Workflow;
 use crate::workflows::WorkflowSelectionSource;
+use crate::workflows::workflow::Workflow;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 use crate::workspace::{
@@ -349,10 +347,9 @@ use crate::workspace::{
 };
 use crate::workspace::{ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination};
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::AIRequestUsageModel;
-use crate::ActiveSession as WindowActiveSession;
-use crate::{report_if_error, AIAgentActionResultType};
+use crate::{AIAgentActionResultType, report_if_error};
 use crate::{safe_error, safe_warn};
+use warp_core::execution_mode::AppExecutionMode;
 
 use crate::terminal::shared_session::protocol::{
     ParticipantId, Role, WindowSize as SessionSharingWindowSize,
@@ -360,7 +357,7 @@ use crate::terminal::shared_session::protocol::{
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Local, NaiveDateTime};
 use command_corrections::rules::{Rule, RuleId as CommandCorrectionsRuleId};
-use command_corrections::{correct_command, Command, Correction, HistoryItem, SessionMetadata};
+use command_corrections::{Command, Correction, HistoryItem, SessionMetadata, correct_command};
 use enclose::enclose;
 use instant::Instant;
 use itertools::Itertools;
@@ -383,8 +380,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 use sum_tree::SeekBias;
 use vec1::vec1;
@@ -393,29 +390,31 @@ use warp_core::user_preferences::GetUserPreferences as _;
 #[cfg(feature = "local_fs")]
 use warp_util::path::LineAndColumnArg;
 use warp_util::path::{ShellDialect, ShellFamily};
+use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::new_scrollable::{
     AxisConfiguration, ClippedAxisConfiguration, DualAxisConfig, NewScrollableElement,
     ScrollableAppearance, SingleAxisConfig,
 };
 use warpui::elements::{
-    get_rich_content_position_id, ChildAnchor, ClippedScrollStateHandle, Container,
-    CrossAxisAlignment, DispatchEventResult, DropTarget, DropTargetData, Empty, EventHandler, Flex,
-    NewScrollable, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    PositionedElementAnchor, PositionedElementOffsetBounds, Radius, ScrollableElement,
-    ScrollbarWidth, Shrinkable, Text,
+    ChildAnchor, ClippedScrollStateHandle, Container, CrossAxisAlignment, DispatchEventResult,
+    DropTarget, DropTargetData, Empty, EventHandler, Flex, NewScrollable, OffsetPositioning,
+    ParentAnchor, ParentElement, ParentOffsetBounds, PositionedElementAnchor,
+    PositionedElementOffsetBounds, Radius, ScrollableElement, ScrollbarWidth, Shrinkable, Text,
+    get_rich_content_position_id,
 };
 use warpui::event::ModifiersState;
 use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification};
 use warpui::platform::{Cursor, OperatingSystem};
-use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::windowing::WindowManager;
 
 use warpui::assets::asset_cache::{AssetCache, AssetCacheEvent};
 use warpui::image_cache::ImageType;
 use warpui::units::{IntoLines, IntoPixels, Lines, Pixels};
 use warpui::{
+    AccessibilityData, AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle,
+    TypedActionView, UpdateView, View, ViewAsRef, ViewContext, WeakViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::SavePosition,
     elements::{
@@ -424,19 +423,18 @@ use warpui::{
     },
     fonts::{Cache as FontCache, FamilyId},
     ui_components::components::UiComponent,
-    AccessibilityData, AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle,
-    TypedActionView, UpdateView, View, ViewAsRef, ViewContext, WeakViewHandle,
 };
 use warpui::{
+    WindowId,
     elements::Stack,
     end_trace_after_next,
-    geometry::vector::{vec2f, Vector2F},
-    record_trace_event, WindowId,
+    geometry::vector::{Vector2F, vec2f},
+    record_trace_event,
 };
 
-use warpui::{windowing, CursorInfo, EntityId, EventContext, ModelAsRef, SingletonEntity, Tracked};
+use warpui::{CursorInfo, EntityId, EventContext, ModelAsRef, SingletonEntity, Tracked, windowing};
 
-use crate::ai_assistant::{AskAIType, ASK_AI_ASSISTANT_TEXT};
+use crate::ai_assistant::{ASK_AI_ASSISTANT_TEXT, AskAIType};
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::banner::{
     Banner, BannerAction, BannerEvent, BannerState, BannerTextButton, BannerTextContent,
@@ -448,10 +446,10 @@ use crate::features::FeatureFlag;
 use crate::pane_group::SplitPaneState;
 use crate::pane_group::{
     CodeReviewPanelArg, PaneConfiguration, PaneEvent, PaneGroupAction, PaneHeaderAction,
-    TerminalViewResources, TOGGLE_MAXIMIZE_PANE_BINDING_NAME,
+    TOGGLE_MAXIMIZE_PANE_BINDING_NAME, TerminalViewResources,
 };
 use crate::resource_center::{
-    mark_feature_used_and_write_to_user_defaults, Tip, TipHint, TipsCompleted,
+    Tip, TipHint, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
 };
 use crate::server::telemetry::{
     self, AgentModeAttachContextMethod, AgentModeEntrypoint, AgentModeRewindEntrypoint,
@@ -464,38 +462,37 @@ use crate::server::telemetry::{
     SaveAsWorkflowModalSource, TelemetryEvent,
 };
 use crate::session_management::{CommandContext, SessionNavigationPromptElements};
+use crate::terminal::ShellHost;
 use crate::terminal::alt_screen::alt_screen_element::AltScreenElement;
 use crate::terminal::block_list_element::{
-    render_hoverable_block_button, BlockListElement, BlockListMouseStates, BlockSelectAction,
-    BlockTextSelectAction, SnackbarHeaderState, ToolbeltButtonTooltip,
+    BlockListElement, BlockListMouseStates, BlockSelectAction, BlockTextSelectAction,
+    SnackbarHeaderState, ToolbeltButtonTooltip, render_hoverable_block_button,
 };
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::block_list_viewport::{InputMode, ScrollPosition, ViewportState};
 use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines};
-use crate::terminal::event_listener::Wakeup;
 use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
+use crate::terminal::event_listener::Wakeup;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
 use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvider};
 use crate::terminal::keys::TerminalKeybindings;
-use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
-use crate::terminal::model::block::{Block, BlockId};
-use crate::terminal::model::block::interactive_prompt_candidate;
 #[cfg(unix)]
 use crate::terminal::model::block::InteractivePromptCandidate;
-use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
+use crate::terminal::model::block::interactive_prompt_candidate;
+use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
+use crate::terminal::model::block::{Block, BlockId};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
 };
-use crate::terminal::model::escape_sequences::{self, EscCodes, ToEscapeSequence, C1};
+use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
+use crate::terminal::model::early_output::TypeaheadMode;
+use crate::terminal::model::escape_sequences::{self, C1, EscCodes, ToEscapeSequence};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
-use crate::terminal::model::session::{
-    BootstrapSessionType, SessionType, Sessions, SessionsEvent,
-};
-use crate::terminal::model::early_output::TypeaheadMode;
+use crate::terminal::model::session::{BootstrapSessionType, SessionType, Sessions, SessionsEvent};
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
@@ -509,18 +506,17 @@ use crate::terminal::model::{
     blocks::BlockListPoint,
 };
 use crate::terminal::view::inline_banner::{
-    render_agent_mode_setup_banner, AgentModeSetupSpeedbumpBannerAction,
-    AgentModeSetupSpeedbumpBannerState, AliasExpansionBannerState,
-    NotificationsDiscoveryBannerState, NotificationsErrorBannerState, PromptSuggestionBannerState,
-    VimModeBannerState,
+    AgentModeSetupSpeedbumpBannerAction, AgentModeSetupSpeedbumpBannerState,
+    AliasExpansionBannerState, NotificationsDiscoveryBannerState, NotificationsErrorBannerState,
+    PromptSuggestionBannerState, VimModeBannerState, render_agent_mode_setup_banner,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
-    burst_continues, HeldInput, SshTypeahead, SshTypeaheadPush,
+    HeldInput, SshTypeahead, SshTypeaheadPush, burst_continues,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
-use crate::terminal::ShellHost;
 use crate::terminal::{
+    TerminalModel,
     block_list_element::BlockHoverAction,
     // find::{Event as FindEvent, Find, FindDirection},
     input::{
@@ -529,7 +525,6 @@ use crate::terminal::{
     model::block::{DeferredBlockContent, SerializedBlock},
     shell::ShellType,
     terminal_size_element::TerminalSizeElement,
-    TerminalModel,
 };
 use crate::view_components::find::{Event as FindEvent, Find, FindDirection, FindWithinBlockState};
 use settings::{Setting, ToggleableSetting};
@@ -538,8 +533,8 @@ use warpui::text::SelectionType;
 
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
 use crate::server::telemetry::{BlockLatencyInfo, BootstrappingInfo};
+use crate::terminal::{History, SizeInfo, color};
 use crate::terminal::{block_list_element::BlockListMenuSource, prompt};
-use crate::terminal::{color, History, SizeInfo};
 use crate::terminal::{color::List, model::block::TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES};
 use crate::terminal::{event::AfterBlockCompletedEvent, event::BlockLatencyData, event::BlockType};
 use crate::throttle::throttle_with_bypass;
@@ -563,44 +558,43 @@ use super::model::secrets::RichContentSecretTooltipInfo;
 use super::model::selection::ExpandedSelectionRange;
 use super::model::session::SessionBootstrappedEvent;
 use super::settings::AltScreenPaddingMode;
-use super::ssh::error::{SshErrorBlock, SshErrorBlockEvent, SSH_ERROR_BLOCK_VISIBLE_KEY};
+use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
+use super::ssh::error::{SSH_ERROR_BLOCK_VISIBLE_KEY, SshErrorBlock, SshErrorBlockEvent};
 use super::ssh::install_tmux::{
-    install_root_tmux_script, install_tmux_script, SshInstallTmuxBlock, SshInstallTmuxBlockEvent,
-    SshKeyEvent, TmuxInstallMethod,
+    SshInstallTmuxBlock, SshInstallTmuxBlockEvent, SshKeyEvent, TmuxInstallMethod,
+    install_root_tmux_script, install_tmux_script,
 };
 use super::ssh::root_access::RootAccess;
 use super::ssh::ssh_detection::evaluate_warpify_ssh_host;
 use super::ssh::util::{
-    convert_script_to_one_line, parse_interactive_ssh_command, InteractiveSshCommand,
-    SshWarpifyCommand,
+    InteractiveSshCommand, SshWarpifyCommand, convert_script_to_one_line,
+    parse_interactive_ssh_command,
 };
 use super::ssh::warpify::{
-    begin_warpify_ssh_session_command, warpify_ssh_session_command, SshWarpifyBlock,
-    SshWarpifyBlockEvent,
+    SshWarpifyBlock, SshWarpifyBlockEvent, begin_warpify_ssh_session_command,
+    warpify_ssh_session_command,
 };
-use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
-use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
-use super::warpify::trigger_state::{ssh_output_is_payload_only, SshBlockState, WarpifyState};
 use super::warpify::WarpificationSource;
-use super::{should_right_click_paste, GridType, HistoryEvent};
+use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
+use super::warpify::trigger_state::{SshBlockState, WarpifyState, ssh_output_is_payload_only};
+use super::{GridType, HistoryEvent, should_right_click_paste};
 use crate::antivirus::AntivirusInfo;
 use crate::terminal::links::should_directly_open_link;
 use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher};
 use action::RememberForWarpification;
-use block_banner::{render_warpification_banner, WarpificationMode, WarpifyBannerState};
+use block_banner::{WarpificationMode, WarpifyBannerState, render_warpification_banner};
 use bookmarks::render_floating_block_snapshot;
 use command_corrections::rules::generic::history::History as CommandCorrectionsHistoryRule;
 use init::{INPUT_BOX_VISIBLE_KEY, TOGGLE_BLOCK_FILTER_KEYBINDING};
 use inline_banner::{
-    render_alias_expansion_banner, render_aws_bedrock_login_banner,
+    AliasExpansionBanner, AliasExpansionBannerAction, AwsBedrockLoginBannerAction,
+    AwsBedrockLoginBannerState, AwsCliNotInstalledBannerAction, AwsCliNotInstalledBannerState,
+    ByoLlmAuthBannerSessionState, OpenInWarpBannerState, SSHBannerAction, SSHBannerState,
+    VimModeBannerAction, render_alias_expansion_banner, render_aws_bedrock_login_banner,
     render_aws_cli_not_installed_banner, render_inline_notifications_discovery_banner,
     render_inline_notifications_error_banner, render_inline_shared_session_ended_banner,
     render_inline_shared_session_started_banner, render_inline_ssh_wrapper_banner,
     render_open_in_warp_banner, render_shell_process_terminated_banner, render_vim_mode_banner,
-    AliasExpansionBanner, AliasExpansionBannerAction, AwsBedrockLoginBannerAction,
-    AwsBedrockLoginBannerState, AwsCliNotInstalledBannerAction, AwsCliNotInstalledBannerState,
-    ByoLlmAuthBannerSessionState, OpenInWarpBannerState, SSHBannerAction, SSHBannerState,
-    VimModeBannerAction,
 };
 use warp_core::command::ExitCode;
 
@@ -724,7 +718,11 @@ fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'\n' {
             // A `\r` directly before the `\n` is part of the `\r\n` pair.
-            let end = if i > start && bytes[i - 1] == b'\r' { i - 1 } else { i };
+            let end = if i > start && bytes[i - 1] == b'\r' {
+                i - 1
+            } else {
+                i
+            };
             out.extend_from_slice(&bytes[start..end]);
             out.push(b'\r');
             start = i + 1;
@@ -819,10 +817,8 @@ const MIN_DELTA_FOR_TEXT_SELECTION: f32 = 0.5;
 
 /// Notifications-specific info
 /// TODO (suraj): add documentation for notifications in gitbook
-const NOTIFICATIONS_LEARN_MORE_URL: &str =
-    "";
-pub const NOTIFICATIONS_TROUBLESHOOT_URL: &str =
-    "";
+const NOTIFICATIONS_LEARN_MORE_URL: &str = "";
+pub const NOTIFICATIONS_TROUBLESHOOT_URL: &str = "";
 
 const DEBOUNCE_PERIOD: Duration = Duration::from_millis(40);
 
@@ -3963,9 +3959,9 @@ impl TerminalView {
         };
 
         let find_model = ctx.add_model(|ctx| TerminalFindModel::new(model.clone(), ctx));
-        model.lock().update_max_retained_lines(
-            *TerminalSettings::as_ref(ctx).max_retained_lines.value(),
-        );
+        model
+            .lock()
+            .update_max_retained_lines(*TerminalSettings::as_ref(ctx).max_retained_lines.value());
 
         ctx.subscribe_to_model(
             &TerminalSettings::handle(ctx),
@@ -4241,7 +4237,9 @@ impl TerminalView {
 
         let find_bar = ctx.add_typed_action_view(|ctx| Find::new(find_model.clone(), ctx));
         let banner_position_id = Self::banner_position_id(ctx.view_id());
-        find_bar.update(ctx, |find, _| find.set_avoid_position_id(banner_position_id));
+        find_bar.update(ctx, |find, _| {
+            find.set_avoid_position_id(banner_position_id)
+        });
         ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
             me.handle_find_event(event, ctx);
         });
@@ -4259,7 +4257,6 @@ impl TerminalView {
         ctx.subscribe_to_view(&context_menu, move |me, _, event, ctx| {
             me.handle_menu_event(event, ctx);
         });
-
 
         let slow_bootstrap_banner = ctx.add_typed_action_view(|_| {
             Banner::<TerminalAction>::new_with_buttons(
@@ -4426,7 +4423,9 @@ impl TerminalView {
             BlockListSettingsChangedEvent::ShowJumpToBottomOfBlockButton { .. }
             | BlockListSettingsChangedEvent::SnackbarEnabled { .. }
             | BlockListSettingsChangedEvent::ShowBlockDividers { .. }
-            | BlockListSettingsChangedEvent::ShowBlockDurationWithShellPrompt { .. } => ctx.notify(),
+            | BlockListSettingsChangedEvent::ShowBlockDurationWithShellPrompt { .. } => {
+                ctx.notify()
+            }
             BlockListSettingsChangedEvent::PreserveInputFocusOnBlockSelection { .. } => {
                 // Fires for every terminal view, so use the focus-gated variant to avoid
                 // stealing focus from another pane or Settings.
@@ -4522,7 +4521,9 @@ impl TerminalView {
             }
             // Only views that inserted this image repaint (no terminal-model lock needed).
             AssetCacheEvent::RawAssetLoaded { id } => {
-                if let Ok(id) = id.parse::<u32>() && me.pending_image_ids.remove(&id) {
+                if let Ok(id) = id.parse::<u32>()
+                    && me.pending_image_ids.remove(&id)
+                {
                     ctx.notify();
                 }
             }
@@ -5597,7 +5598,8 @@ impl TerminalView {
             });
         } else {
             self.send_user_query_after_next_conversation_finished(
-                prompt, /* show_close_button */ true, /* show_send_now_button */ false, ctx,
+                prompt, /* show_close_button */ true, /* show_send_now_button */ false,
+                ctx,
             );
         }
     }
@@ -5607,7 +5609,10 @@ impl TerminalView {
     /// flight for this terminal view (so ordinary command blocks don't advance the queue).
     pub(crate) fn on_queued_command_finished(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(conversation_id) = QueuedQueryModel::as_ref(ctx)
-            .command_in_flight_for_terminal_view(self.view_id, BlocklistAIHistoryModel::as_ref(ctx))
+            .command_in_flight_for_terminal_view(
+                self.view_id,
+                BlocklistAIHistoryModel::as_ref(ctx),
+            )
         else {
             return;
         };
@@ -5779,8 +5784,10 @@ impl TerminalView {
         // record on the first read made the second see no record and fire `LrcAutoQueue` rows
         // into the resume -- the exact bug the record exists to prevent. Only the resumed turn's
         // own `FinishedReceivingOutput` clears it, and that turn end drains the queue.
-        let auto_resumed_on_block_completion =
-            !has_active_subagent && self.block_completion_auto_resumes.contains(&conversation_id);
+        let auto_resumed_on_block_completion = !has_active_subagent
+            && self
+                .block_completion_auto_resumes
+                .contains(&conversation_id);
         let completion_report_outstanding = self
             .ai_controller
             .as_ref(ctx)
@@ -6637,14 +6644,13 @@ impl TerminalView {
         // supports it (a conversation may have been transferred to a different
         // terminal surface since this event was constructed); otherwise fall back
         // to the event's own `terminal_view_id` field (#418).
-        let should_handle = match self
-            .render_owner_for_ai_history_event(history_model.as_ref(ctx), event)
-        {
-            Some(owner_terminal_view_id) => owner_terminal_view_id == self.view_id,
-            None => !event
-                .terminal_view_id()
-                .is_some_and(|id| id != self.view_id),
-        };
+        let should_handle =
+            match self.render_owner_for_ai_history_event(history_model.as_ref(ctx), event) {
+                Some(owner_terminal_view_id) => owner_terminal_view_id == self.view_id,
+                None => !event
+                    .terminal_view_id()
+                    .is_some_and(|id| id != self.view_id),
+            };
         if !should_handle {
             return;
         }
@@ -7120,12 +7126,7 @@ impl TerminalView {
 
         let should_forward_windows_ctrl_c = is_live;
         ctx.subscribe_to_view(&subagent_view, move |me, view, event, ctx| {
-            me.handle_cli_subagent_view_event(
-                view.id(),
-                event,
-                should_forward_windows_ctrl_c,
-                ctx,
-            );
+            me.handle_cli_subagent_view_event(view.id(), event, should_forward_windows_ctrl_c, ctx);
         });
 
         if is_live {
@@ -7396,18 +7397,17 @@ impl TerminalView {
                 if let Some(conversation_id) = conversation_id {
                     let should_restore = {
                         let model = self.model.lock();
-                        model.block_list().block_with_id(block_id).is_some_and(
-                            |block| {
+                        model
+                            .block_list()
+                            .block_with_id(block_id)
+                            .is_some_and(|block| {
                                 block.agent_interaction_metadata().is_some_and(|metadata| {
                                     metadata.conversation_id() == conversation_id
                                         && metadata.subagent_task_id() == Some(task_id)
                                 })
-                            },
-                        )
+                            })
                     };
-                    if should_restore
-                        && !self.cli_subagent_views.contains_key(block_id)
-                    {
+                    if should_restore && !self.cli_subagent_views.contains_key(block_id) {
                         self.create_cli_subagent_view(
                             block_id.clone(),
                             *conversation_id,
@@ -8532,10 +8532,7 @@ impl TerminalView {
     /// The active local session's working directory as reported by the shell, WITHOUT
     /// checking that it still exists. Does no filesystem access, so it is safe to call
     /// from render paths (see `canonical_cwd_for_display`).
-    pub fn active_session_cwd_unchecked_if_local<C: ModelAsRef>(
-        &self,
-        ctx: &C,
-    ) -> Option<PathBuf> {
+    pub fn active_session_cwd_unchecked_if_local<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
         if self.active_session_is_local(ctx) == Some(true) {
             self.active_block_metadata
                 .as_ref()
@@ -9091,7 +9088,9 @@ impl TerminalView {
             && active_block
                 .requested_command_action_id()
                 .is_some_and(|action_id| executor.is_awaiting_completion(action_id));
-        eligible.then(|| active_block.ai_conversation_id()).flatten()
+        eligible
+            .then(|| active_block.ai_conversation_id())
+            .flatten()
     }
 
     /// Escape while the agent's own command runs: stop the agent turn and interrupt the command.
@@ -10166,6 +10165,14 @@ impl TerminalView {
     /// Emits if at least one terminal inputs is synced, so receivers of this
     /// event must determine how to process this event.
     /// Also emits an event for shared session viewers to notify the sharer of a write to pty request.
+    /// Whether anything consumes `emit_non_editor_typed_event`: input synced to other panes or a
+    /// shared session this one drives. Without either, a 50 MB paste is not copied for nothing
+    /// (#1255).
+    fn non_editor_typed_event_wanted(&self, ctx: &ViewContext<Self>) -> bool {
+        SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id())
+            || self.model.lock().shared_session_status().is_executor()
+    }
+
     fn emit_non_editor_typed_event(&self, chars: Vec<u8>, ctx: &mut ViewContext<Self>) {
         if SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id()) {
             ctx.emit(Event::SyncInput(SyncEvent {
@@ -10390,16 +10397,12 @@ impl TerminalView {
             pending_now,
         );
         let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
-            && self
-                .model
-                .lock()
-                .pending_session_id()
-                .is_some_and(|sid| {
-                    self.sessions
-                        .as_ref(ctx)
-                        .remote_server_setup_state(sid)
-                        .is_some_and(|state| state.is_in_progress())
-                });
+            && self.model.lock().pending_session_id().is_some_and(|sid| {
+                self.sessions
+                    .as_ref(ctx)
+                    .remote_server_setup_state(sid)
+                    .is_some_and(|state| state.is_in_progress())
+            });
         // #983: the window between the remote shell announcing itself (pending session) and its
         // bootstrap finishing is the same hazard as the setup itself. Without this, keys typed
         // during connect were dropped while setup was in flight but delivered once it resolved,
@@ -10463,7 +10466,10 @@ impl TerminalView {
             self.redetermine_global_focus(ctx);
             if !self.ssh_setup_drop_notified {
                 self.ssh_setup_drop_notified = true;
-                self.show_ssh_typing_toast("Typing is ignored while the SSH setup prompt is open", ctx);
+                self.show_ssh_typing_toast(
+                    "Typing is ignored while the SSH setup prompt is open",
+                    ctx,
+                );
             }
             return true;
         }
@@ -10494,7 +10500,11 @@ impl TerminalView {
     }
 
     /// Tells the user once that the held keys were too many to keep (#1292).
-    fn note_ssh_typeahead_outcome(&mut self, outcome: &SshTypeaheadPush, ctx: &mut ViewContext<Self>) {
+    fn note_ssh_typeahead_outcome(
+        &mut self,
+        outcome: &SshTypeaheadPush,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if *outcome == SshTypeaheadPush::Overflowed {
             self.show_ssh_typing_toast(
                 "Too much text was typed while the SSH session connected; it was discarded, not run",
@@ -10548,7 +10558,10 @@ impl TerminalView {
         self.reset_ssh_typeahead();
         self.ssh_typeahead_discard_burst = had_keys && mid_burst;
         if had_keys {
-            self.show_ssh_typing_toast("Text typed before the SSH prompt appeared was discarded", ctx);
+            self.show_ssh_typing_toast(
+                "Text typed before the SSH prompt appeared was discarded",
+                ctx,
+            );
         }
         true
     }
@@ -11586,7 +11599,9 @@ impl TerminalView {
             return true;
         }
 
-        let bytes_vec = bytes.to_vec();
+        let bytes_vec = self
+            .non_editor_typed_event_wanted(ctx)
+            .then(|| bytes.to_vec());
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         if handoff_route == UserBytesRoute::WriteCounted {
@@ -11594,7 +11609,9 @@ impl TerminalView {
         } else {
             self.write_to_pty(bytes, ctx);
         }
-        self.emit_non_editor_typed_event(bytes_vec, ctx);
+        if let Some(bytes_vec) = bytes_vec {
+            self.emit_non_editor_typed_event(bytes_vec, ctx);
+        }
         true
     }
 
@@ -11936,7 +11953,8 @@ impl TerminalView {
             ReportDisposition::Insert | ReportDisposition::InsertYoung => {
                 self.insert_typeahead_from_handoff(ctx);
                 if disposition == ReportDisposition::InsertYoung {
-                    self.input.update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
+                    self.input
+                        .update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
                 }
                 self.note_editor_took_over();
                 self.redetermine_terminal_focus(ctx);
@@ -12127,8 +12145,9 @@ impl TerminalView {
         }
         // #1174: text over the background-job cap is never parsed, so no verdict can land; do not
         // wait the whole cap for one.
-        self.input
-            .update(ctx, |input, ctx| input.abandon_detection_if_over_parse_cap(ctx));
+        self.input.update(ctx, |input, ctx| {
+            input.abandon_detection_if_over_parse_cap(ctx)
+        });
         let (can_run, pending) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
@@ -13230,7 +13249,9 @@ impl TerminalView {
                 keystroke.displayed(),
                 lowercase_title
             ),
-            None => format!("You can Phosphorize this {lowercase_title} for more Phosphor features."),
+            None => {
+                format!("You can Phosphorize this {lowercase_title} for more Phosphor features.")
+            }
         };
 
         model
@@ -13750,9 +13771,11 @@ impl TerminalView {
         }
         self.remove_vim_mode_banner(ctx);
         VimBannerSettings::handle(ctx).update(ctx, |banner_settings, model_ctx| {
-            report_if_error!(banner_settings
-                .vim_keybindings_banner_state
-                .set_value(BannerState::Dismissed, model_ctx));
+            report_if_error!(
+                banner_settings
+                    .vim_keybindings_banner_state
+                    .set_value(BannerState::Dismissed, model_ctx)
+            );
         });
     }
 
@@ -13772,7 +13795,6 @@ impl TerminalView {
             }
         }
     }
-
 
     #[cfg(feature = "local_fs")]
     fn remove_agent_setup_speedbump_banner(&mut self, ctx: &mut ViewContext<Self>) {
@@ -13815,9 +13837,11 @@ impl TerminalView {
             }
             AwsBedrockLoginBannerAction::DontShowAgain => {
                 AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-                    report_if_error!(ai_settings
-                        .aws_bedrock_login_banner_dismissed
-                        .set_value(true, ctx));
+                    report_if_error!(
+                        ai_settings
+                            .aws_bedrock_login_banner_dismissed
+                            .set_value(true, ctx)
+                    );
                 });
             }
             AwsBedrockLoginBannerAction::Dismiss => {
@@ -15505,8 +15529,9 @@ impl TerminalView {
                         let is_universal_developer_input_enabled =
                             InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
                         let is_in_agent_view = self.agent_view_controller.as_ref(ctx).is_active();
-                        let serialized_block =
-                            user_block_completed.serialized_block_without_output.get_with(|compute| {
+                        let serialized_block = user_block_completed
+                            .serialized_block_without_output
+                            .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });
@@ -15671,10 +15696,12 @@ impl TerminalView {
                 }
 
                 if let BlockType::User(block_completed) = block_type {
-                    let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
-                        let model = self.model.lock();
-                        compute(model.block_list())
-                    });
+                    let serialized_block = block_completed
+                        .serialized_block_without_output
+                        .get_with(|compute| {
+                            let model = self.model.lock();
+                            compute(model.block_list())
+                        });
                     if let Some(block_duration) = self.block_duration(serialized_block) {
                         self.maybe_send_block_completed_notification(
                             block_completed,
@@ -16637,7 +16664,6 @@ impl TerminalView {
             ctx.notify();
         });
     }
-
 
     /// Creates the [`SshRemoteServerChoiceView`] and inserts it as a
     /// rich content block pinned to the bottom of the block list.
@@ -17967,11 +17993,7 @@ impl TerminalView {
             .editor()
             .as_ref(ctx)
             .selected_text(ctx);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 }
 
@@ -18205,9 +18227,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            report_if_error!(settings
-                .nld_in_terminal_enabled_internal
-                .set_value(enable, ctx));
+            report_if_error!(
+                settings
+                    .nld_in_terminal_enabled_internal
+                    .set_value(enable, ctx)
+            );
         });
     }
 
@@ -19599,10 +19623,13 @@ impl TerminalView {
                     compute(model.block_list())
                 })
                 .to_owned();
-            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
-                let model = self.model.lock();
-                compute(model.block_list())
-            });
+            let serialized_block =
+                block_completed
+                    .serialized_block_without_output
+                    .get_with(|compute| {
+                        let model = self.model.lock();
+                        compute(model.block_list())
+                    });
             let exit_code = serialized_block.exit_code;
             let pwd = serialized_block.pwd.clone();
 
@@ -20551,6 +20578,12 @@ impl TerminalView {
         if self.swallow_input_during_ssh_setup(None, ctx) {
             if std::mem::take(&mut self.ssh_paste_to_hold) {
                 self.hold_ssh_paste(middle_click, ctx);
+            } else {
+                // Only the setup dialog drops a paste now; say why nothing happened (#1255).
+                self.show_error_toast(
+                    "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
+                    ctx,
+                );
             }
             return;
         }
@@ -20602,10 +20635,7 @@ impl TerminalView {
                     .session(self.view_id)
                     .is_some_and(|s| s.agent == CLIAgent::Claude);
                 if is_claude {
-                    self.write_user_bytes_to_pty(
-                        vec![escape_sequences::C0::ESC, b'v'],
-                        ctx,
-                    );
+                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::ESC, b'v'], ctx);
                     return;
                 }
 
@@ -20635,10 +20665,7 @@ impl TerminalView {
             // rather than from direct user input.
             // See https://cirw.in/blog/bracketed-paste for more info on bracketed paste
             // Both are done in one pass into one buffer (no regex, no intermediate copies).
-            self.write_user_bytes_to_pty(
-                paste_bytes_for_pty(&copied, needs_bracketed_paste),
-                ctx,
-            );
+            self.write_user_bytes_to_pty(paste_bytes_for_pty(&copied, needs_bracketed_paste), ctx);
         }
     }
 
@@ -20775,11 +20802,13 @@ impl TerminalView {
                             Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes));
                         url_content
                             .map(|url_content| {
-                                vec![MenuItemFields::new(crate::t!("menu-block-copy-url"))
-                                    .with_on_select_action(TerminalAction::ContextMenu(
-                                        ContextMenuAction::CopyUrl { url_content },
-                                    ))
-                                    .into_item()]
+                                vec![
+                                    MenuItemFields::new(crate::t!("menu-block-copy-url"))
+                                        .with_on_select_action(TerminalAction::ContextMenu(
+                                            ContextMenuAction::CopyUrl { url_content },
+                                        ))
+                                        .into_item(),
+                                ]
                             })
                             .unwrap_or_default()
                     }
@@ -21125,28 +21154,30 @@ impl TerminalView {
                         ))
                         .into_item(),
                 ]);
-                items.append(&mut vec![MenuItemFields::new(crate::t!(
-                    "menu-block-toggle-block-filter"
-                ))
-                .with_on_select_action(TerminalAction::ToggleBlockFilterOnSelectedOrLastBlock(
-                    ToggleBlockFilterSource::ContextMenu,
-                ))
-                .with_key_shortcut_label(keybinding_name_to_display_string(
-                    TOGGLE_BLOCK_FILTER_KEYBINDING,
-                    ctx,
-                ))
-                .into_item()]);
-                items.append(&mut vec![MenuItemFields::new(crate::t!(
-                    "menu-block-toggle-bookmark"
-                ))
-                .with_on_select_action(TerminalAction::ContextMenu(
-                    ContextMenuAction::ToggleBookmark,
-                ))
-                .with_key_shortcut_label(keybinding_name_to_display_string(
-                    "terminal:bookmark_selected_block",
-                    ctx,
-                ))
-                .into_item()]);
+                items.append(&mut vec![
+                    MenuItemFields::new(crate::t!("menu-block-toggle-block-filter"))
+                        .with_on_select_action(
+                            TerminalAction::ToggleBlockFilterOnSelectedOrLastBlock(
+                                ToggleBlockFilterSource::ContextMenu,
+                            ),
+                        )
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            TOGGLE_BLOCK_FILTER_KEYBINDING,
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
+                items.append(&mut vec![
+                    MenuItemFields::new(crate::t!("menu-block-toggle-bookmark"))
+                        .with_on_select_action(TerminalAction::ContextMenu(
+                            ContextMenuAction::ToggleBookmark,
+                        ))
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            "terminal:bookmark_selected_block",
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
 
                 items.append(&mut vec![
                     MenuItem::Separator,
@@ -21160,15 +21191,17 @@ impl TerminalView {
                         ))
                         .into_item(),
                 ]);
-                items.append(&mut vec![MenuItemFields::new(scroll_to_bottom_str)
-                    .with_on_select_action(TerminalAction::ContextMenu(
-                        ContextMenuAction::ScrollToBottomOfBlock,
-                    ))
-                    .with_key_shortcut_label(keybinding_name_to_display_string(
-                        "terminal:scroll_to_bottom_of_selected_block",
-                        ctx,
-                    ))
-                    .into_item()]);
+                items.append(&mut vec![
+                    MenuItemFields::new(scroll_to_bottom_str)
+                        .with_on_select_action(TerminalAction::ContextMenu(
+                            ContextMenuAction::ScrollToBottomOfBlock,
+                        ))
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            "terminal:scroll_to_bottom_of_selected_block",
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
 
                 items
             }
@@ -21349,12 +21382,14 @@ impl TerminalView {
         is_rprompt_shown: bool,
         position: PromptPosition,
     ) -> Vec<MenuItem<TerminalAction>> {
-        let mut items = vec![MenuItemFields::new(crate::t!("menu-block-copy-prompt"))
-            .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyPrompt {
-                position,
-                part: PromptPart::EntirePrompt,
-            }))
-            .into_item()];
+        let mut items = vec![
+            MenuItemFields::new(crate::t!("menu-block-copy-prompt"))
+                .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyPrompt {
+                    position,
+                    part: PromptPart::EntirePrompt,
+                }))
+                .into_item(),
+        ];
 
         if is_rprompt_shown {
             items.push(
@@ -25791,19 +25826,26 @@ impl TerminalView {
             ctx.focus(blocked_cli_subagent_view);
         } else if should_focus_terminal {
             self.focus_terminal(ctx);
-        } else { match self.active_ssh_remote_server_choice_block() { Some(ssh_choice_view) => {
-            ctx.focus(&ssh_choice_view);
-        } _ => if let (Some(active_ai_block_view_handle), false) =
-            (self.active_ai_block(ctx), is_input_visible)
-        {
-            ctx.focus(active_ai_block_view_handle);
-        } else if let Some(env_var_collection_block_handle) =
-            self.active_env_var_collection_block(ctx)
-        {
-            ctx.focus(env_var_collection_block_handle);
         } else {
-            self.focus_input_box(ctx);
-        }}}
+            match self.active_ssh_remote_server_choice_block() {
+                Some(ssh_choice_view) => {
+                    ctx.focus(&ssh_choice_view);
+                }
+                _ => {
+                    if let (Some(active_ai_block_view_handle), false) =
+                        (self.active_ai_block(ctx), is_input_visible)
+                    {
+                        ctx.focus(active_ai_block_view_handle);
+                    } else if let Some(env_var_collection_block_handle) =
+                        self.active_env_var_collection_block(ctx)
+                    {
+                        ctx.focus(env_var_collection_block_handle);
+                    } else {
+                        self.focus_input_box(ctx);
+                    }
+                }
+            }
+        }
     }
 
     fn close_context_menu(&mut self, ctx: &mut ViewContext<Self>, should_redetermine_focus: bool) {
@@ -26302,32 +26344,39 @@ impl TerminalView {
                 };
                 let initial_prompt = initial_prompt.clone();
 
-                match self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) { Some(pane_stack) => {
-                    let should_pop = pane_stack.as_ref(ctx).depth() > 1;
-                    if should_pop {
-                        pane_stack.update(ctx, |stack, ctx| {
-                            stack.pop(ctx);
-                        });
+                match self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) {
+                    Some(pane_stack) => {
+                        let should_pop = pane_stack.as_ref(ctx).depth() > 1;
+                        if should_pop {
+                            pane_stack.update(ctx, |stack, ctx| {
+                                stack.pop(ctx);
+                            });
+                        }
+
+                        let active_view = pane_stack.as_ref(ctx).active_view().clone();
+
+                        // If the active view is `self`, this cloud-mode terminal is the root of the
+                        // pane stack and has no parent terminal to host a local agent conversation.
+                        if active_view.id() == self.id() {
+                            log::warn!(
+                                "ExitAmbientAgentAndStartLocalAgent received but ambient-agent pane has no parent terminal"
+                            );
+                        } else {
+                            active_view.update(ctx, |view, ctx| {
+                                view.enter_agent_view_for_new_conversation(
+                                    initial_prompt,
+                                    origin,
+                                    ctx,
+                                );
+                            });
+                        }
                     }
-
-                    let active_view = pane_stack.as_ref(ctx).active_view().clone();
-
-                    // If the active view is `self`, this cloud-mode terminal is the root of the
-                    // pane stack and has no parent terminal to host a local agent conversation.
-                    if active_view.id() == self.id() {
+                    _ => {
                         log::warn!(
-                            "ExitAmbientAgentAndStartLocalAgent received but ambient-agent pane has no parent terminal"
+                            "ExitAmbientAgentAndStartLocalAgent received but no pane stack available; cannot start local agent without a parent terminal"
                         );
-                    } else {
-                        active_view.update(ctx, |view, ctx| {
-                            view.enter_agent_view_for_new_conversation(initial_prompt, origin, ctx);
-                        });
                     }
-                } _ => {
-                    log::warn!(
-                        "ExitAmbientAgentAndStartLocalAgent received but no pane stack available; cannot start local agent without a parent terminal"
-                    );
-                }}
+                }
 
                 ctx.notify();
             }
@@ -27004,9 +27053,11 @@ impl TerminalView {
             set_custom_keybinding(MOVE_LINE_END_BINDING_NAME, &CTRL_E_KEYSTROKE, ctx);
         }
         EmacsBindingsSettings::handle(ctx).update(ctx, |settings_model, settings_ctx| {
-            report_if_error!(settings_model
-                .emacs_bindings_banner_state
-                .set_value(BannerState::Dismissed, settings_ctx));
+            report_if_error!(
+                settings_model
+                    .emacs_bindings_banner_state
+                    .set_value(BannerState::Dismissed, settings_ctx)
+            );
         });
         self.is_emacs_bindings_banner_open = false;
         self.notify_notice_banner_changed(ctx);
@@ -31133,8 +31184,9 @@ impl TerminalSurface for TerminalView {
         // Never over text the user has typed since.
         if !command.is_empty() && self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
             let command = command.to_owned();
-            self.input
-                .update(ctx, |input, ctx| input.replace_buffer_content(&command, ctx));
+            self.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content(&command, ctx)
+            });
         }
     }
 
@@ -31248,8 +31300,7 @@ impl TerminalSurface for TerminalView {
 
         let model = self.model.lock();
         let active_block = model.block_list().active_block();
-        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command())
-        {
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
             return None;
         }
         let action_id = active_block.requested_command_action_id()?;
@@ -32381,9 +32432,8 @@ impl TypedActionView for TerminalView {
                         .is_some_and(|conversation| conversation.autoexecute_any_action());
                     // Turning autoexecute off accepts nothing.
                     if turning_on {
-                        accepted = ai_block.update(ctx, |ai_block, ctx| {
-                            ai_block.accept_pending_action(ctx)
-                        });
+                        accepted = ai_block
+                            .update(ctx, |ai_block, ctx| ai_block.accept_pending_action(ctx));
                     }
                 }
 
@@ -32592,9 +32642,10 @@ impl TypedActionView for TerminalView {
                     use ai::skills::SkillReference;
 
                     match skill_reference {
-                        SkillReference::Path(path) => match path.to_local_path() {
-                            Some(local_path) => {
-                                ctx.emit(Event::OpenCodeInWarp {
+                        SkillReference::Path(path) => {
+                            match path.to_local_path() {
+                                Some(local_path) => {
+                                    ctx.emit(Event::OpenCodeInWarp {
                                     source: CodeSource::Skill {
                                         reference: skill_reference.clone(),
                                         path: local_path.to_path_buf(),
@@ -32605,24 +32656,25 @@ impl TypedActionView for TerminalView {
                                             .open_file_layout
                                             .value(),
                                 });
+                                }
+                                // Remote skills are unaffected in practice today (issue #299
+                                // tracks the type, nothing populates a remote ParsedSkill into
+                                // the manager yet); this arm exists so the match is exhaustive
+                                // over what the type now allows.
+                                None => {
+                                    let window_id = ctx.window_id();
+                                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                        toast_stack.add_ephemeral_toast(
+                                            DismissibleToast::error(
+                                                "Remote skills cannot be edited".to_string(),
+                                            ),
+                                            window_id,
+                                            ctx,
+                                        );
+                                    });
+                                }
                             }
-                            // Remote skills are unaffected in practice today (issue #299
-                            // tracks the type, nothing populates a remote ParsedSkill into
-                            // the manager yet); this arm exists so the match is exhaustive
-                            // over what the type now allows.
-                            None => {
-                                let window_id = ctx.window_id();
-                                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                                    toast_stack.add_ephemeral_toast(
-                                        DismissibleToast::error(
-                                            "Remote skills cannot be edited".to_string(),
-                                        ),
-                                        window_id,
-                                        ctx,
-                                    );
-                                });
-                            }
-                        },
+                        }
                         SkillReference::BundledSkillId(_) => {
                             let window_id = ctx.window_id();
                             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
@@ -32718,12 +32770,9 @@ impl TypedActionView for TerminalView {
                 // the pending-context attachment that `TerminalView::try_enter_agent_view`
                 // performs -- so a block selected in the terminal would be dropped
                 // (and then hidden) instead of carried into the new conversation.
-                if let Err(e) = self.try_enter_agent_view(
-                    None,
-                    AgentViewEntryOrigin::Keybinding,
-                    None,
-                    ctx,
-                ) {
+                if let Err(e) =
+                    self.try_enter_agent_view(None, AgentViewEntryOrigin::Keybinding, None, ctx)
+                {
                     log::warn!("Failed to start new agent conversation from keybinding: {e:?}");
                 }
             }
@@ -33110,9 +33159,8 @@ impl View for TerminalView {
             // Only show one of these banners at a time, to avoid them visually
             // stacking on top of each other.
             let banner_position_id = Self::banner_position_id(self.id());
-            let banner_child = |banner: Box<dyn Element>| {
-                SavePosition::new(banner, &banner_position_id).finish()
-            };
+            let banner_child =
+                |banner: Box<dyn Element>| SavePosition::new(banner, &banner_position_id).finish();
             if self.is_slow_bootstrap_banner_open
                 && ContextFlag::ShowSlowShellStartupBanner.is_enabled()
             {
@@ -33827,7 +33875,8 @@ pub fn create_size_info_for_blocklist(
     // its first rows into the padded strip and lost them off the top. See
     // `LONG_RUNNING_TOP_PADDING_LINES`.
     let padding_x = PADDING_LEFT.into_pixels();
-    let padding_y = (cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.).into_pixels();
+    let padding_y =
+        (cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.).into_pixels();
 
     SizeInfo::new(
         pane_size,
@@ -34052,10 +34101,7 @@ fn ssh_bootstrap_interrupt_route(
 /// Pure rule for [`TerminalView::ssh_pre_init_abort_bytes`] (#1001): after the SSH hook (the
 /// remote command is running under a raw local tty) and before the remote shell's InitShell, a
 /// Ctrl-C is delivered as ssh's `~.` escape, which ends the client from raw mode.
-fn ssh_pre_init_abort_bytes(
-    ssh_hook_seen: bool,
-    remote_session_pending: bool,
-) -> Option<Vec<u8>> {
+fn ssh_pre_init_abort_bytes(ssh_hook_seen: bool, remote_session_pending: bool) -> Option<Vec<u8>> {
     (ssh_hook_seen && !remote_session_pending).then(|| b"~.".to_vec())
 }
 

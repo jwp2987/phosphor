@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::ai::agent::conversation::ConversationStatus;
 use warp_multi_agent_api as api;
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START, C0};
-use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
+use warpui::{Presenter, WindowInvalidation, notification::UserNotification};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::task::TaskId;
@@ -14,13 +14,13 @@ use crate::ai::agent::{
     AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputStatus, UserQueryMode,
 };
-use crate::ai::llms::{LLMId, LLMPreferences};
+use crate::ai::blocklist::SerializedBlockListItem;
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
     CLISubagentEvent, LongRunningCommandControlState, UserTakeOverReason,
 };
-use crate::ai::blocklist::SerializedBlockListItem;
+use crate::ai::llms::{LLMId, LLMPreferences};
 use warpui::App;
 
 use crate::pane_group::focus_state::PaneGroupFocusState;
@@ -37,14 +37,15 @@ use crate::editor::{AutosuggestionLocation, AutosuggestionType};
 use crate::settings::{AISettings, AppEditorSettings, RightClickBehavior, WarpPromptSeparator};
 use crate::tab::NewSessionMenuItem;
 
+use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::ai::blocklist::agent_view::toolbar_item::AgentToolbarItemKind;
 use crate::ai::blocklist::controller::response_stream::{ResponseStream, ResponseStreamId};
 use crate::ai::blocklist::{
-    agent_view::AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    FakeAIBlockModel, InputConfig, InputType,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, FakeAIBlockModel, InputConfig, InputType,
+    agent_view::AgentViewEntryOrigin,
 };
-use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::features::FeatureFlag;
+use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::event::{
     CLI_AGENT_NOTIFICATION_SENTINEL, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource,
     CLIAgentEventType,
@@ -54,7 +55,6 @@ use crate::terminal::cli_agent_sessions::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentRichInputCloseReason, CLIAgentSession,
     CLIAgentSessionContext, CLIAgentSessionStatus, CLIAgentSessionsModel,
 };
-use crate::terminal::CLIAgent;
 
 use crate::terminal::block_list_element::{
     BlockListMenuSource, SnackbarPoint, SnackbarTranslationMode,
@@ -69,7 +69,7 @@ use crate::terminal::model::ansi::{BootstrappedValue, PreexecValue};
 use crate::terminal::model::block::{
     AgentInteractionMetadata, AgentViewVisibility, BlockId, SerializedAIMetadata, SerializedBlock,
 };
-use crate::terminal::model::blocks::{insert_block, TotalIndex};
+use crate::terminal::model::blocks::{TotalIndex, insert_block};
 use crate::terminal::model::terminal_model::WithinBlock;
 use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState, HeldAgentCommand};
 use crate::terminal::view::load_ai_conversation::{
@@ -601,9 +601,7 @@ fn exiting_restored_cli_subagent_agent_view_inserts_entry_card() {
     });
 }
 
-fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(
-    origin: AgentViewEntryOrigin,
-) {
+fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(origin: AgentViewEntryOrigin) {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
@@ -658,10 +656,8 @@ fn skips_cli_subagent_view_restore_without_matching_ai_metadata() {
 
         let block_id = BlockId::from("cli-block-1".to_string());
         let task_id = TaskId::new("cli-task-1".to_string());
-        let conversation = build_restored_conversation_with_cli_subagent_for_test(
-            block_id.clone(),
-            task_id,
-        );
+        let conversation =
+            build_restored_conversation_with_cli_subagent_for_test(block_id.clone(), task_id);
         let mut serialized_blocks =
             serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
         clear_ai_metadata_for_serialized_blocks_for_test(&mut serialized_blocks);
@@ -724,7 +720,9 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
         initialize_app_for_terminal_view(&mut app);
         // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
         let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
 
         // First restore a history session with a CLI subagent, establishing a command block with matching metadata
         // and a RestoredReadOnly view, simulating the state after an SSH session is expanded in the agent view.
@@ -1701,9 +1699,11 @@ fn unregister_cli_agent_session_restores_unlocked_input_config() {
                 sessions.remove_session(view.view_id, ctx);
             });
             assert!(!view.has_active_cli_agent_input_session(ctx));
-            assert!(CLIAgentSessionsModel::as_ref(ctx)
-                .session(view.view_id)
-                .is_none());
+            assert!(
+                CLIAgentSessionsModel::as_ref(ctx)
+                    .session(view.view_id)
+                    .is_none()
+            );
         });
 
         terminal.read(&app, |view, ctx| {
@@ -1856,10 +1856,12 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         let terminal = add_window_with_terminal(&mut app, None);
 
         terminal.read(&app, |view, ctx| {
-            assert!(!view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                !view
+                    .keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
@@ -1869,10 +1871,11 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                view.keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
@@ -1882,10 +1885,12 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(!view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                !view
+                    .keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
     });
 }
@@ -1923,8 +1928,8 @@ fn test_clear_session_flag_state() {
     use warp_terminal::shell::ShellType;
 
     use crate::ai::blocklist::SerializedBlockListItem;
-    use crate::terminal::model::block::SerializedBlock;
     use crate::terminal::ShellHost;
+    use crate::terminal::model::block::SerializedBlock;
 
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -1991,9 +1996,11 @@ fn test_clear_session_flag_state() {
 }
 
 fn assert_block_has_find_match(find_model: &TerminalFindModel, block_index: BlockIndex) {
-    assert!(find_model
-        .block_list_find_run()
-        .is_some_and(|run| run.matches_for_block(block_index).next().is_some()));
+    assert!(
+        find_model
+            .block_list_find_run()
+            .is_some_and(|run| run.matches_for_block(block_index).next().is_some())
+    );
 }
 
 impl TerminalView {
@@ -2981,10 +2988,12 @@ fn test_stable_scrolling_during_grid_truncation() {
                 // Create a dummy, finished block and a long-running block.
                 model.simulate_block("ls", "foo");
                 model.simulate_long_running_block("cat", "");
-                assert!(model
-                    .block_list()
-                    .active_block()
-                    .is_active_and_long_running());
+                assert!(
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                );
 
                 // Add enough newlines so that the long-running block spans at
                 // least the viewport and surely exceeds the grid size.
@@ -5251,12 +5260,13 @@ fn inline_agent_view_exits_when_tagged_in_long_running_command_is_tagged_out() {
                 .set_is_agent_tagged_in(true);
 
             assert!(view.agent_view_controller().as_ref(ctx).is_inline());
-            assert!(view
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_agent_tagged_in());
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_tagged_in()
+            );
 
             let model = view.model.lock();
             assert!(view.is_input_box_visible(&model, ctx));
@@ -5372,9 +5382,10 @@ fn completed_user_controlled_lrc_resumes_when_not_suppressed() {
             crate::GlobalResourceHandlesProvider::new(global_resource_handles)
         });
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                history.start_new_conversation(view.view_id, false, false, ctx)
-            });
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
 
             view.model
                 .lock()
@@ -5389,7 +5400,10 @@ fn completed_user_controlled_lrc_resumes_when_not_suppressed() {
                     conversation_id,
                 );
                 active_block
-                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
                     .expect("command should become agent monitored");
                 active_block
                     .take_over_control_for_user(UserTakeOverReason::Stop {
@@ -5431,9 +5445,10 @@ fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                history.start_new_conversation(view.view_id, false, false, ctx)
-            });
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
 
             view.model
                 .lock()
@@ -5448,7 +5463,10 @@ fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
                     conversation_id,
                 );
                 active_block
-                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
                     .expect("command should become agent monitored");
                 // Mirrors rewind / stop tearing down the conversation.
                 active_block.set_user_control_with_stop_reason();
@@ -5717,10 +5735,12 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
                 let model = view.model.lock();
                 assert!(!view.should_render_use_agent_footer(&model, ctx));
                 let active_block_index = model.block_list().active_block_index();
-                assert!(model
-                    .block_list()
-                    .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                    .is_none());
+                assert!(
+                    model
+                        .block_list()
+                        .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
+                        .is_none()
+                );
                 // The block-list assertion above is now vacuous -- nothing inserts the
                 // footer there any more (§8 step 3) -- so assert what actually decides
                 // visibility: the window footer bar's per-frame predicate.
@@ -7046,18 +7066,20 @@ fn ctrl_c_does_not_accept_prompt_suggestion_banner() {
                 ctx,
             );
 
-            assert!(view
-                .inline_banners_state
-                .prompt_suggestions_banner
-                .is_some());
+            assert!(
+                view.inline_banners_state
+                    .prompt_suggestions_banner
+                    .is_some()
+            );
 
             // Ctrl-C should not accept the prompt suggestion.
             view.handle_action(&TerminalAction::CtrlC, ctx);
 
-            assert!(view
-                .inline_banners_state
-                .prompt_suggestions_banner
-                .is_some());
+            assert!(
+                view.inline_banners_state
+                    .prompt_suggestions_banner
+                    .is_some()
+            );
         });
     })
 }
@@ -7141,11 +7163,12 @@ fn linear_deeplink_does_not_auto_submit_when_already_in_agent_view() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(view
-                .agent_view_controller()
-                .as_ref(ctx)
-                .agent_view_state()
-                .is_fullscreen());
+            assert!(
+                view.agent_view_controller()
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .is_fullscreen()
+            );
         });
 
         // Now dispatch the Linear deeplink while already in fullscreen agent view.
@@ -7264,8 +7287,8 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
         });
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
 
@@ -7329,8 +7352,8 @@ fn stopping_a_conversation_at_an_idle_prompt_writes_no_ctrl_c() {
         });
 
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
             assert!(
@@ -7551,8 +7574,8 @@ fn ctrl_c_interrupts_agent_command_written_but_not_yet_preexeced() {
             });
         });
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
             let mut model = view.model.lock();
@@ -8017,7 +8040,9 @@ fn typing_while_an_approval_card_is_focused_goes_to_the_input_and_never_approves
             );
         });
 
-        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("x", ctx)
+        });
 
         assert_ne!(
             app.focused_view_id(window_id),
@@ -8115,7 +8140,9 @@ fn clicking_the_approval_card_keeps_focus_on_the_card() {
         );
 
         // Typing afterwards still moves to the input.
-        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("x", ctx)
+        });
         assert_ne!(app.focused_view_id(window_id), Some(card.id()));
         terminal.read(&app, |view, ctx| {
             assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
@@ -8699,8 +8726,8 @@ fn ctrl_c_after_transfer_takeover_does_not_cancel_conversation() {
         });
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
 
@@ -10324,7 +10351,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // Every stop on a user query marks exactly that query.
             view.select_less_recent_block(false /* is_shift_down */, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
 
             // Stopping on a shell block moves the mark off the query.
@@ -10335,13 +10365,19 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // The mark follows the cursor to the other query.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_1)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
 
             // Clamped at the oldest stop: the target stays identifiable even though
             // neither the cursor nor the viewport moves.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_1)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
 
             // Cmd-Down back through the stops, then past the newest one, which clears
@@ -10350,7 +10386,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
             assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
             assert!(navigation_ring_targets(view, ctx).is_empty());
             view.select_more_recent_block(true, false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
             view.select_more_recent_block(true, false, ctx);
             assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
@@ -10359,7 +10398,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // Re-mark a query, then exit the agent view below.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
         });
 
@@ -10683,7 +10725,12 @@ fn append_exchange_and_handle_event(
     view: &mut TerminalView,
     input: AIAgentInput,
     ctx: &mut ViewContext<TerminalView>,
-) -> (AIConversationId, TaskId, AIAgentExchangeId, ResponseStreamId) {
+) -> (
+    AIConversationId,
+    TaskId,
+    AIAgentExchangeId,
+    ResponseStreamId,
+) {
     append_exchange_with_inputs_and_handle_event(view, vec![input], ctx)
 }
 
@@ -10691,7 +10738,12 @@ fn append_exchange_with_inputs_and_handle_event(
     view: &mut TerminalView,
     inputs: Vec<AIAgentInput>,
     ctx: &mut ViewContext<TerminalView>,
-) -> (AIConversationId, TaskId, AIAgentExchangeId, ResponseStreamId) {
+) -> (
+    AIConversationId,
+    TaskId,
+    AIAgentExchangeId,
+    ResponseStreamId,
+) {
     let history_model = BlocklistAIHistoryModel::handle(ctx);
     let (conversation_id, task_id, exchange_id, response_stream_id) =
         history_model.update(ctx, |history_model, ctx| {
@@ -12873,7 +12925,9 @@ fn cmd_enter_from_terminal_with_selected_block_enters_agent_view_with_context() 
         // Starting a new conversation persists conversation history, which needs
         // GlobalResourceHandlesProvider registered (same idiom as elsewhere in this file).
         let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         app.add_singleton_model(ImportedConfigModel::new);
         app.update(|ctx| {
             crate::terminal::init(ctx);
@@ -14970,7 +15024,11 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
             view.write_user_bytes_to_pty(vec![0x03], ctx);
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"\x03ls".to_vec(), "abort first, then the held text");
+        assert_eq!(
+            written,
+            b"\x03ls".to_vec(),
+            "abort first, then the held text"
+        );
     })
 }
 
@@ -16470,7 +16528,11 @@ fn read_only_view_of_live_conversation_renders_its_ai_blocks() {
             assert!(!ai_view_ids.is_empty());
             let model = view.model.lock();
             let mut visible = 0;
-            for item in model.block_list().block_heights().cursor::<TotalIndex, ()>() {
+            for item in model
+                .block_list()
+                .block_heights()
+                .cursor::<TotalIndex, ()>()
+            {
                 if let crate::terminal::model::blocks::BlockHeightItem::RichContent(item) = item {
                     if ai_view_ids.contains(&item.view_id) {
                         assert!(!item.should_hide, "viewer AI block is hidden");
@@ -16555,11 +16617,13 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
         });
 
         viewer.update(&mut app, |view, _| {
-            view.model.lock().set_conversation_transcript_viewer_status(Some(
-                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
-                    conversation_id,
-                ),
-            ));
+            view.model
+                .lock()
+                .set_conversation_transcript_viewer_status(Some(
+                    ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                        conversation_id,
+                    ),
+                ));
         });
         // `is_hidden` reads the history model, not the (lock-holding) terminal model.
         let viewer_id = viewer.id();
@@ -16580,11 +16644,13 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
 
         // A viewer of a different conversation does not unhide this one.
         viewer.update(&mut app, |view, _| {
-            view.model.lock().set_conversation_transcript_viewer_status(Some(
-                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
-                    AIConversationId::new(),
-                ),
-            ));
+            view.model
+                .lock()
+                .set_conversation_transcript_viewer_status(Some(
+                    ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                        AIConversationId::new(),
+                    ),
+                ));
         });
         BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
             history.mark_terminal_view_as_read_only_live_viewer(viewer_id, AIConversationId::new());
@@ -16849,7 +16915,10 @@ fn subshell_banner_keeps_its_phosphorize_chip_after_tagging_the_agent_in_and_out
 
             view.tag_out_agent_for_user_long_running_command(ctx);
             assert!(
-                view.use_agent_footer.as_ref(ctx).warpify_mode(ctx).is_some(),
+                view.use_agent_footer
+                    .as_ref(ctx)
+                    .warpify_mode(ctx)
+                    .is_some(),
                 "tagging the agent in must not discard the subshell's warpify mode"
             );
             assert!(view.agent_shortcut_banner_visible(ctx));
@@ -18793,7 +18862,10 @@ fn type_into_a_command_the_handoff_does_not_own(
         view.typed_characters_on_terminal("x", ctx);
         let model = view.model.lock();
         let handoff = model.typeahead_handoff();
-        (handoff.state().clone(), handoff.editor_text_precedes_report())
+        (
+            handoff.state().clone(),
+            handoff.editor_text_precedes_report(),
+        )
     });
     let counted = counted.borrow().clone();
     let uncounted = uncounted.borrow().clone();
@@ -18810,7 +18882,10 @@ fn typeahead_handoff_adopts_keys_typed_into_a_command_it_does_not_own() {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let (state, literal, counted, uncounted) =
             type_into_a_command_the_handoff_does_not_own(&mut app, |_| {});
-        assert!(literal, "the editor cannot see the line the report will put in front");
+        assert!(
+            literal,
+            "the editor cannot see the line the report will put in front"
+        );
         assert_eq!(
             state,
             HandoffState::PtyOwned {
@@ -18888,7 +18963,11 @@ fn typeahead_handoff_does_not_adopt_keys_for_excluded_commands() {
         for (name, expect_literal, customize) in cases {
             let (state, literal, counted, _) =
                 type_into_a_command_the_handoff_does_not_own(&mut app, customize);
-            assert_eq!(state, HandoffState::EditorOwned, "{name}: must not be adopted");
+            assert_eq!(
+                state,
+                HandoffState::EditorOwned,
+                "{name}: must not be adopted"
+            );
             assert_eq!(literal, expect_literal, "{name}: literal insertion");
             assert!(counted.is_empty(), "{name}: no counted write: {counted:?}");
         }
@@ -18945,7 +19024,11 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             view.typed_characters_on_terminal("x", ctx);
             let mut model = view.model.lock();
             let handoff = model.typeahead_handoff_mut();
-            assert_eq!(handoff.state(), &HandoffState::AwaitingReport, "not adopted");
+            assert_eq!(
+                handoff.state(),
+                &HandoffState::AwaitingReport,
+                "not adopted"
+            );
             // The report answers the request written before the key.
             assert_eq!(handoff.on_report(), ReportDisposition::Insert);
             assert_eq!(handoff.state(), &HandoffState::EditorOwned);

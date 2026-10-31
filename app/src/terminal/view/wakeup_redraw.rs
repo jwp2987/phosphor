@@ -22,9 +22,9 @@ use std::sync::OnceLock;
 use warpui::color::ColorU;
 use warpui::{AppContext, SingletonEntity};
 
+use crate::terminal::TerminalModel;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::model::terminal_model::BlockIndex;
-use crate::terminal::TerminalModel;
 
 use super::TerminalView;
 

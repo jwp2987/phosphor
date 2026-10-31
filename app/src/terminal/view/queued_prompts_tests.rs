@@ -17,9 +17,9 @@ use warpui::{App, SingletonEntity, TypedActionView, ViewHandle};
 use super::queued_prompts_panel::{
     QueuedPromptsPanelAction, QueuedPromptsPanelEvent, QueuedPromptsPanelView,
 };
+use crate::ai::agent::ImageContext;
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::task::TaskId;
-use crate::ai::agent::ImageContext;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::block::FinishReason;
 use crate::ai::blocklist::block::cli_controller::CLISubagentEvent;
