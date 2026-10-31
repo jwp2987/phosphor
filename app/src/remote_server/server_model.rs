@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use warp_core::channel::ChannelState;
 use warp_core::SessionId;
 use warp_util::standardized_path::StandardizedPath;
@@ -141,6 +142,22 @@ pub const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 
 
 /// Unique identifier for a connected proxy session in daemon mode.
 pub type ConnectionId = uuid::Uuid;
+
+/// Whether this daemon splits large responses into `FrameChunk`s for a client that asked
+/// (#1244). `PHOSPHOR_REMOTE_SERVER_CHUNKED_RESPONSES=0` in the daemon's environment turns it off
+/// for every connection; the client then gets whole frames, as from an older daemon.
+fn chunked_responses_for(client_asked: bool) -> bool {
+    client_asked
+        && chunked_responses_enabled_from_env(
+            std::env::var("PHOSPHOR_REMOTE_SERVER_CHUNKED_RESPONSES")
+                .ok()
+                .as_deref(),
+        )
+}
+
+pub(crate) fn chunked_responses_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
 use super::protocol::{MAX_MESSAGE_SIZE, RequestId};
 use crate::ai::agent::FileLocations;
 use crate::ai::blocklist::{read_local_file_context, ReadFileContextResult};
@@ -382,6 +399,10 @@ pub struct ServerModel {
     /// a connection's `Uuid` to the channel the connection task drains to
     /// write `ServerMessage`s back to its proxy.
     connection_senders: HashMap<ConnectionId, async_channel::Sender<ServerMessage>>,
+    /// #1244: per connection, whether its client reassembles `FrameChunk`s. Owned by the
+    /// connection's writer task (which reads it on every send) and set here when the client's
+    /// `Initialize` announces the capability.
+    connection_chunking: HashMap<ConnectionId, Arc<AtomicBool>>,
     /// Per-connection set of repo roots for which we've already sent a
     /// snapshot in this connection's lifetime.
     /// Used to avoid sending duplicate snapshots on repeated
@@ -571,6 +592,7 @@ impl ServerModel {
         let (diff_state_watch_tx, diff_state_watch_rx) = async_channel::unbounded();
         let mut model = Self {
             connection_senders: HashMap::new(),
+            connection_chunking: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
             #[cfg(feature = "local_fs")]
             diff_state_subscribers: HashMap::new(),
@@ -1109,6 +1131,7 @@ impl ServerModel {
         self.unsubscribe_git_status(conn_id);
         // Guard against double-deregister (reader and writer tasks both call
         // this on connection close; the second call must be a safe no-op).
+        self.connection_chunking.remove(&conn_id);
         if self.connection_senders.remove(&conn_id).is_none() {
             return;
         }
@@ -1319,6 +1342,14 @@ impl ServerModel {
             Some(client_message::Message::SessionScoped(SessionScopedRequest { message })) => {
                 match message {
                     Some(session_scoped_request::Message::Initialize(msg)) => {
+                        // #1244: from here on the writer may split this connection's large
+                        // responses, if the client asked and the daemon allows it.
+                        if let Some(flag) = self.connection_chunking.get(&conn_id) {
+                            flag.store(
+                                chunked_responses_for(msg.chunked_responses),
+                                std::sync::atomic::Ordering::Release,
+                            );
+                        }
                         // Configure indexing before answering: the client may
                         // send an `IndexCodebase` immediately after the
                         // handshake, and it must not race an unconfigured
@@ -1636,8 +1667,16 @@ impl ServerModel {
             InitializeResponse {
                 server_version,
                 host_id: self.host_id.clone(),
+                chunked_responses: chunked_responses_for(msg.chunked_responses),
             },
         ))
+    }
+
+    /// Registers the flag the connection's writer reads to decide whether a large response is
+    /// split into `FrameChunk`s (#1244). Called by the connection task before any message of
+    /// that connection is handled.
+    pub fn register_connection_chunking(&mut self, conn_id: ConnectionId, flag: Arc<AtomicBool>) {
+        self.connection_chunking.insert(conn_id, flag);
     }
 
     // ── Remote codebase indexing (Delta D2, remote-daemon leg) ────────────
