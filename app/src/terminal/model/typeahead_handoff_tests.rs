@@ -1579,3 +1579,18 @@ fn conpty_still_commits_without_a_request_at_a_line_boundary() {
         ActiveDecision::Committed
     );
 }
+
+/// #1189: keys that are Held behind a young Enter are still typing; the ConPTY mid-line guard
+/// counted only keys written to the pty, so requests landed between held keys.
+/// Old code: `typing_a_line_on_conpty` stayed false after the held key.
+/// Not compiled/run when written.
+#[test]
+fn conpty_midline_guard_counts_held_keys() {
+    let mut handoff = conpty_young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
+    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+}
