@@ -11926,7 +11926,7 @@ impl TerminalView {
                 self.run_deferred_enter(true, ctx);
             }
             YoungSubmit::Wait => {
-                let rearm = Duration::from_millis(10);
+                let rearm = Duration::from_millis(2);
                 let deadline = Instant::now() + rearm;
                 let id = self.young_enter_wait_id;
                 ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
