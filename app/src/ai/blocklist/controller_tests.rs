@@ -1531,11 +1531,11 @@ fn stop_drops_a_deferred_tool_loop_compaction() {
     });
 }
 
-/// Results of a subagent task (not the conversation's root task) never carry the summary:
-/// the summary input belongs to the root task, and a request spanning two tasks would append
-/// one exchange per task. They go as a plain follow-up and the deferral is dropped.
+/// #1074 (e35f40c2c): the results of a subagent task (not the conversation's root task) carry
+/// the summary in that task, so a CLI/LRC subagent loop that never pauses is compacted too and
+/// resumes inside the subagent. (Before #1074 only root-task results carried it.)
 #[test]
-fn subagent_task_results_never_carry_the_auto_summary() {
+fn subagent_task_results_carry_the_auto_summary_in_their_own_task() {
     use crate::features::FeatureFlag;
 
     App::test((), |mut app| async move {
@@ -1555,11 +1555,59 @@ fn subagent_task_results_never_carry_the_auto_summary() {
                 super::FollowUpTrigger::Auto,
                 ctx,
             );
+            assert_eq!(
+                in_flight_summarization_flags(controller, ctx),
+                vec![Some(true)],
+                "the subagent's results go with the automatic summary"
+            );
+            let state = controller
+                .compaction_turn_state
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or_default();
+            assert!(state.auto_compacted(), "the turn's allowance is spent");
+            assert!(
+                !state.compaction_deferred_to_tool_results(),
+                "the deferral is consumed"
+            );
+        });
+    });
+}
+
+/// Results spanning several tasks have no single task to carry the summary (a request spanning
+/// two tasks would append one exchange per task): they go as a plain follow-up and the
+/// deferral is dropped. This is the case the pre-#1074 test of the subagent-only variant
+/// covered; it is still the rule.
+#[test]
+fn results_spanning_tasks_never_carry_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("root-call", &root_task_id),
+                );
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("subagent-call", &TaskId::new("subagent-task".to_owned())),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
             assert!(
                 in_flight_summarization_flags(controller, ctx)
                     .iter()
                     .all(Option::is_none),
-                "no summary request for a subagent's results"
+                "no summary request for results spanning tasks"
             );
             assert!(
                 !controller
