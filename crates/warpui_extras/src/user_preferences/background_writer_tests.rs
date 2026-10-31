@@ -131,3 +131,74 @@ fn failure_is_reported_once_and_surfaced_by_flush() {
         "reported on the transition to failing, not on every retry"
     );
 }
+
+/// A write that failed is kept pending and tried again (#1248): the stores skip a value equal to
+/// the one in memory, so a dropped write would never have been made again until some other
+/// setting changed. The failure is still reported once, on the transition.
+#[test]
+fn a_failed_write_is_retried_until_the_disk_takes_it() {
+    let writes: Writes = Arc::default();
+    let sink = writes.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempt_counter = attempts.clone();
+    let write: WriteFn = Arc::new(move |_: &Path, data: &str| {
+        if attempt_counter.fetch_add(1, Ordering::SeqCst) < 2 {
+            return Err(std::io::Error::other("disk full"));
+        }
+        sink.lock().unwrap().push(data.to_owned());
+        Ok(())
+    });
+    let failures = Arc::new(AtomicUsize::new(0));
+    let failure_counter = failures.clone();
+    let on_failure: FailureFn = Arc::new(move |_| {
+        failure_counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let writer = BackgroundWriter::new_with_retry_delay(
+        "settings.toml".into(),
+        Duration::from_millis(5),
+        Duration::from_millis(10),
+        write,
+        on_failure,
+    )
+    .unwrap();
+    writer.queue("a = 1".to_owned()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while writes.lock().unwrap().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        *writes.lock().unwrap(),
+        vec!["a = 1".to_owned()],
+        "the write that failed twice must land on the third attempt"
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(failures.load(Ordering::SeqCst), 1);
+    assert!(writer.flush().is_ok(), "the last write succeeded");
+}
+
+/// An older own write found on disk while nothing is pending was put there by someone else (a
+/// `git checkout` of the settings file) and is reloaded; only while a newer write is pending or
+/// in flight is the older content the echo of our own write (#1249). The newest write is always
+/// recognised.
+#[test]
+fn an_older_own_write_is_an_echo_only_while_a_newer_one_is_pending() {
+    let (writer, _writes) = recording_writer(Duration::from_secs(60), Duration::ZERO);
+    for version in 1..=3 {
+        writer.queue(format!("v = {version}")).unwrap();
+        writer.flush().unwrap();
+    }
+    assert!(writer.is_recent_write(b"v = 3"));
+    assert!(
+        !writer.is_recent_write(b"v = 1"),
+        "with nothing pending, an older own write on disk is a hand restore to reload"
+    );
+    assert!(!writer.is_recent_write(b"v = 2"));
+
+    // v = 4 waits out the 60 s debounce: the file legitimately still holds v = 3.
+    writer.queue("v = 4".to_owned()).unwrap();
+    assert!(writer.is_recent_write(b"v = 3"));
+    assert!(writer.is_recent_write(b"v = 1"));
+    writer.discard_pending();
+    assert!(!writer.is_recent_write(b"v = 1"));
+    assert!(writer.is_recent_write(b"v = 3"));
+}

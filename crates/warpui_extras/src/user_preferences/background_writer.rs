@@ -28,6 +28,13 @@ pub(super) const WRITE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// older write is recognised even after a newer one has been queued.
 const RECENT_WRITES_KEPT: usize = 8;
 
+/// How long after a failed write the next attempt waits; doubled per consecutive failure up to
+/// [`WRITE_RETRY_DELAY_MAX`]. A write that failed (disk full, a momentarily read-only mount) is
+/// kept pending rather than dropped: the stores skip a value equal to the one in memory, so a
+/// dropped write would never be made again unless some other setting changed.
+const WRITE_RETRY_DELAY: Duration = Duration::from_secs(1);
+const WRITE_RETRY_DELAY_MAX: Duration = Duration::from_secs(30);
+
 type Digest32 = [u8; 32];
 
 /// Writes `data` to the path, atomically.
@@ -45,6 +52,8 @@ struct State {
     flush_requested: bool,
     /// A write is running on the thread right now.
     in_flight: bool,
+    /// When a write that failed may be tried again; `pending` holds its data meanwhile.
+    retry_at: Option<Instant>,
     shutdown: bool,
     /// Digests of what we have written (or are writing), newest last.
     recent: VecDeque<Digest32>,
@@ -55,6 +64,8 @@ struct State {
 struct Shared {
     path: PathBuf,
     debounce: Duration,
+    /// The first retry delay after a failed write (see [`WRITE_RETRY_DELAY`]).
+    retry_delay: Duration,
     write: WriteFn,
     on_failure: FailureFn,
     state: Mutex<State>,
@@ -87,9 +98,21 @@ impl BackgroundWriter {
         write: WriteFn,
         on_failure: FailureFn,
     ) -> std::io::Result<Self> {
+        Self::new_with_retry_delay(path, debounce, WRITE_RETRY_DELAY, write, on_failure)
+    }
+
+    /// [`Self::new`] with the first retry delay after a failed write given explicitly.
+    pub(super) fn new_with_retry_delay(
+        path: PathBuf,
+        debounce: Duration,
+        retry_delay: Duration,
+        write: WriteFn,
+        on_failure: FailureFn,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             path,
             debounce,
+            retry_delay,
             write,
             on_failure,
             state: Mutex::new(State::default()),
@@ -166,14 +189,24 @@ impl BackgroundWriter {
         let mut state = self.shared.lock();
         state.pending = None;
         state.pending_since = None;
+        state.retry_at = None;
     }
 
-    /// Whether `contents` is byte-for-byte something this writer wrote (or is writing)
-    /// recently: the file watcher's echo of our own write, which must not be reloaded.
+    /// Whether `contents` is byte-for-byte the file watcher's echo of our own write, which must
+    /// not be reloaded: what this writer wrote last, or an older write of its own while a newer
+    /// one is still pending or in flight (the file legitimately holds the older one until the
+    /// newer rename lands). An older own write found on disk while nothing is pending was put
+    /// there by someone else (a `git checkout` of the settings file, a restored backup) and is a
+    /// foreign edit to reload, not an echo.
     #[allow(dead_code)] // only the TOML store needs this
     pub(super) fn is_recent_write(&self, contents: &[u8]) -> bool {
         let wanted = digest(contents);
-        self.shared.lock().recent.contains(&wanted)
+        let state = self.shared.lock();
+        let Some(newest) = state.recent.back() else {
+            return false;
+        };
+        *newest == wanted
+            || ((state.pending.is_some() || state.in_flight) && state.recent.contains(&wanted))
     }
 }
 
@@ -204,6 +237,7 @@ impl Drop for BackgroundWriter {
 fn run(shared: &Shared) {
     let mut state = shared.lock();
     let mut failing = false;
+    let mut retry_delay = shared.retry_delay;
     loop {
         while state.pending.is_none() && !state.shutdown {
             state = shared
@@ -215,7 +249,10 @@ fn run(shared: &Shared) {
             return;
         }
         if !state.flush_requested && !state.shutdown {
-            let deadline = state.pending_since.unwrap_or_else(Instant::now) + shared.debounce;
+            let mut deadline = state.pending_since.unwrap_or_else(Instant::now) + shared.debounce;
+            if let Some(retry_at) = state.retry_at {
+                deadline = deadline.max(retry_at);
+            }
             let now = Instant::now();
             if now < deadline {
                 state = shared
@@ -230,6 +267,7 @@ fn run(shared: &Shared) {
             continue;
         };
         state.pending_since = None;
+        state.retry_at = None;
         state.in_flight = true;
         // Recorded before the write: the watcher can report the rename before we get the
         // lock back.
@@ -243,6 +281,7 @@ fn run(shared: &Shared) {
         match result {
             Ok(()) => {
                 failing = false;
+                retry_delay = shared.retry_delay;
                 state.last_error = None;
             }
             Err(err) => {
@@ -252,6 +291,16 @@ fn run(shared: &Shared) {
                     shared.path.display()
                 );
                 state.last_error = Some(message.clone());
+                // Kept pending and retried with a growing delay, unless a newer rendering has
+                // replaced it meanwhile or a caller is waiting on this write: `flush` (and the
+                // quit path behind it) is told through the `Err` and must not wait on a disk
+                // that keeps failing.
+                if state.pending.is_none() && !state.flush_requested && !state.shutdown {
+                    state.pending = Some(data);
+                    state.pending_since = Some(Instant::now());
+                    state.retry_at = Some(Instant::now() + retry_delay);
+                    retry_delay = retry_delay.saturating_mul(2).min(WRITE_RETRY_DELAY_MAX);
+                }
                 if !failing {
                     failing = true;
                     // Not under the lock: the callback may take its own locks.
