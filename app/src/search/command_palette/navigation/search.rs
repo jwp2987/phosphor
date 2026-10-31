@@ -197,9 +197,13 @@ struct SearchableSessionStringRanges {
 type SearcherAction = <DataSource as SyncDataSource>::Action;
 
 pub trait SessionSearcher {
+    /// Searches `sessions`, the set of open sessions to match against. The caller supplies them
+    /// (usually a snapshot taken when the palette opened) because building them renders every
+    /// pane's prompt and locks every terminal model, which must not happen per keystroke.
     fn search(
         &self,
         _search_term: &str,
+        _sessions: &[SessionNavigationData],
         _app: &AppContext,
     ) -> anyhow::Result<Vec<QueryResult<SearcherAction>>>;
 
@@ -214,6 +218,7 @@ impl SessionSearcher for FuzzySessionSearcher {
     fn search(
         &self,
         search_term: &str,
+        sessions: &[SessionNavigationData],
         app: &AppContext,
     ) -> anyhow::Result<Vec<QueryResult<SearcherAction>>> {
         let active_session_id = match self.session_source_handle.as_ref(app) {
@@ -222,10 +227,12 @@ impl SessionSearcher for FuzzySessionSearcher {
         };
 
         // Sort sessions by last focus timestamp so sessions that were focused first are shown first.
-        let all_sessions =
-            SessionNavigationData::all_sessions(app).sorted_by_key(|x| x.last_focus_ts());
+        let all_sessions = sessions
+            .iter()
+            .sorted_by_key(|session| session.last_focus_ts())
+            .collect_vec();
 
-        Ok(filter_sessions(all_sessions.as_slice(), search_term)
+        Ok(filter_sessions(all_sessions.iter().copied(), search_term)
             .map(|matched_session| SearchItem::new(matched_session, active_session_id).into())
             .collect())
     }
@@ -273,25 +280,26 @@ mod full_text_searcher {
         fn search(
             &self,
             search_term: &str,
+            all_sessions: &[SessionNavigationData],
             app: &AppContext,
         ) -> anyhow::Result<Vec<QueryResult<SearcherAction>>> {
             let searcher = SESSION_SEARCH_SCHEMA.create_searcher(DEFAULT_MEMORY_BUDGET);
 
             let mut sessions = HashMap::new();
-            let documents =
-                SessionNavigationData::all_sessions(app)
-                    .enumerate()
-                    .map(|(idx, session)| {
-                        let (search_string, highlight) =
-                            searchable_session_string_and_ranges(&session);
-                        let search_id = SessionSearchId(idx);
+            let documents = all_sessions
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(idx, session)| {
+                    let (search_string, highlight) = searchable_session_string_and_ranges(&session);
+                    let search_id = SessionSearchId(idx);
 
-                        sessions.insert(search_id, (session, highlight, search_string.clone()));
-                        SessionSearchDocument {
-                            session: search_string,
-                            search_id: search_id.0 as u64,
-                        }
-                    });
+                    sessions.insert(search_id, (session, highlight, search_string.clone()));
+                    SessionSearchDocument {
+                        session: search_string,
+                        search_id: search_id.0 as u64,
+                    }
+                });
 
             searcher.build_index(documents)?;
 

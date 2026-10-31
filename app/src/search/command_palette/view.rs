@@ -527,6 +527,11 @@ impl View {
     }
 
     fn on_session_source_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        // Snapshot the open sessions once here, before the first query, rather than rebuilding
+        // every pane's prompt on every keystroke.
+        self.data_source_store
+            .update(ctx, |store, ctx| store.refresh_sessions(ctx));
+
         self.compute_recent_items_for_zero_state(ctx);
 
         self.search_bar.update(ctx, |search_bar, ctx| {
