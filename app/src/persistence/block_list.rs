@@ -16,6 +16,12 @@ use super::{model, schema};
 
 const MAX_TERMINAL_BLOCKS_TO_PERSIST_PER_SESSION: i64 = 100;
 
+/// Upper bound on the stylized output bytes persisted for one block (#1189). The line cap
+/// (`MAX_SERIALIZED_STYLIZED_OUTPUT_LINES`) alone allowed multi-MB rows (long styled lines);
+/// with 100 blocks per pane that bounded nothing per byte. Longer output keeps its head and
+/// tail halves and a one-line marker in between.
+pub(crate) const MAX_PERSISTED_OUTPUT_BYTES: usize = 256 * 1024;
+
 type PersistedBlocks = HashMap<PaneUuid, Vec<SerializedBlockListItem>>;
 
 /// An AI query read from the SQLite DB.
@@ -293,7 +299,13 @@ pub(super) fn save_block(
             }
         }
 
-        let block = create_block(pane_id, block, is_local_block);
+        let capped_output = cap_persisted_output(&block.stylized_output);
+        let block = create_block(
+            pane_id,
+            block,
+            capped_output.as_ref().unwrap_or(&block.stylized_output),
+            is_local_block,
+        );
         diesel::insert_into(schema::blocks::dsl::blocks)
             .values(block)
             .execute(conn)?;
@@ -301,18 +313,54 @@ pub(super) fn save_block(
     })
 }
 
+/// Returns `None` when `output` already fits in [`MAX_PERSISTED_OUTPUT_BYTES`]; otherwise the
+/// head and tail halves (each cut on a line boundary, so no escape sequence is split mid-way
+/// except inside an over-long single line) joined by a marker line. Stylized output separates
+/// lines with `\r\n`; the marker resets the SGR state so the head's styling cannot bleed into it.
+pub(crate) fn cap_persisted_output(output: &[u8]) -> Option<Vec<u8>> {
+    if output.len() <= MAX_PERSISTED_OUTPUT_BYTES {
+        return None;
+    }
+    let half = MAX_PERSISTED_OUTPUT_BYTES / 2;
+    // Head: up to and including the last '\n' within the first `half` bytes (or the raw cut
+    // when a single line is longer than that).
+    let head_end = output[..half]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(half, |i| i + 1);
+    // Tail: starts right after the first '\n' within the last `half` bytes.
+    let tail_floor = output.len() - half;
+    let tail_start = output[tail_floor..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or(tail_floor, |i| tail_floor + i + 1);
+    let omitted = tail_start.saturating_sub(head_end);
+    let marker = format!(
+        "\x1b[0m[... {omitted} bytes of output omitted to keep the saved session small ...]\x1b[0m\r\n"
+    );
+    let mut capped = Vec::with_capacity(head_end + marker.len() + (output.len() - tail_start));
+    capped.extend_from_slice(&output[..head_end]);
+    if !capped.is_empty() && !capped.ends_with(b"\n") {
+        capped.extend_from_slice(b"\x1b[0m\r\n");
+    }
+    capped.extend_from_slice(marker.as_bytes());
+    capped.extend_from_slice(&output[tail_start..]);
+    Some(capped)
+}
+
 // TODO(vorporeal): can move this to a `to_persisted_block()` function on `SerializedBlock`
 // to get it out of the persistence layer.
 fn create_block<'a>(
     pane_leaf_uuid: Vec<u8>,
     block: &'a SerializedBlock,
+    stylized_output: &'a Vec<u8>,
     is_local: bool,
 ) -> model::NewBlock<'a> {
     model::NewBlock {
         block_id: block.id.as_str(),
         pane_leaf_uuid,
         stylized_command: &block.stylized_command,
-        stylized_output: &block.stylized_output,
+        stylized_output,
         pwd: block.pwd.as_ref(),
         // This sqlite column still uses the legacy `git_branch` name, but it now stores the
         // block's git head for backwards compatibility with existing persisted data.
