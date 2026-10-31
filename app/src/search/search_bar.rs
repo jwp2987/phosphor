@@ -122,6 +122,11 @@ pub struct SearchBarState<T: Action + Clone> {
     /// Whether to run query when buffer is empty. This is useful for search panels that don't have
     /// a dedicated zero state.
     run_query_on_buffer_empty: bool,
+    /// Whether `set_visible_query_filter` skips its query while the zero state is showing. The
+    /// zero state renders its own items rather than mixer results, so the query would only delay
+    /// the first frame (#1194); the next edit runs a real one. Opt-in because other search bars
+    /// that reach their zero state this way may read the mixer's results for an empty buffer.
+    skip_query_in_zero_state: bool,
 
     /// The offset to apply to the initial selection when the search bar is opened.
     offset_initial_selection_by: isize,
@@ -189,6 +194,7 @@ impl<T: Action + Clone> SearchBarState<T> {
             ordering,
             max_results: SearchResultLimit::Unbounded,
             run_query_on_buffer_empty: false,
+            skip_query_in_zero_state: false,
             offset_initial_selection_by: 0,
         }
     }
@@ -202,6 +208,23 @@ impl<T: Action + Clone> SearchBarState<T> {
     pub fn run_query_on_buffer_empty(mut self) -> Self {
         self.run_query_on_buffer_empty = true;
         self
+    }
+
+    /// Skips the query `set_visible_query_filter` runs while the zero state is showing (see the
+    /// `skip_query_in_zero_state` field). Has no effect together with
+    /// [`Self::run_query_on_buffer_empty`].
+    pub fn skip_query_in_zero_state(mut self) -> Self {
+        self.skip_query_in_zero_state = true;
+        self
+    }
+
+    /// Whether a query run for `buffer_is_empty` in the current filter state would only feed a
+    /// zero state that does not show mixer results.
+    fn query_is_redundant(&self, buffer_is_empty: bool) -> bool {
+        self.skip_query_in_zero_state
+            && !self.run_query_on_buffer_empty
+            && buffer_is_empty
+            && self.query_filter.zero_state()
     }
 
     pub fn offset_initial_selection_by(&mut self, offset: isize) {
@@ -705,7 +728,16 @@ impl<T: Action + Clone> SearchBar<T> {
             });
         }
 
-        self.run_query(ctx);
+        let current_buffer_text = self
+            .editor_handle
+            .read(ctx, |editor, ctx| editor.buffer_text(ctx));
+        if !self
+            .state
+            .as_ref(ctx)
+            .query_is_redundant(current_buffer_text.is_empty())
+        {
+            self.run_query(ctx);
+        }
 
         // Update the editor placeholder text if necessary.
         self.update_placeholder_text(ctx);
@@ -714,10 +746,6 @@ impl<T: Action + Clone> SearchBar<T> {
         self.update_filter_autosuggestion_text(ctx);
 
         // Update the zero state show/hide flag.
-        let current_buffer_text = self
-            .editor_handle
-            .read(ctx, |editor, ctx| editor.buffer_text(ctx));
-
         self.state.update(ctx, |state, ctx| {
             state.should_show_zero_state =
                 current_buffer_text.is_empty() && state.query_filter.zero_state();
@@ -1058,3 +1086,7 @@ impl<T: Action + Clone> SearchBar<T> {
         self.state.as_ref(app).active_visible_query_filter()
     }
 }
+
+#[cfg(test)]
+#[path = "search_bar_tests.rs"]
+mod tests;

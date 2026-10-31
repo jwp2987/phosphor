@@ -13,7 +13,10 @@ use warp_core::ui::color::contrast::{high_enough_contrast, MinimumAllowedContras
 use warp_core::ui::theme::{mock_terminal_colors, Details, Fill, WarpTheme};
 use warpui::color::ColorU;
 
-use super::readable_chip_label_color;
+use super::{
+    ChipResult, ChipValue, ContextChipKind, chips_to_string, chips_to_string_borrowed,
+    readable_chip_label_color,
+};
 
 /// Builds a solid-background/foreground theme (colors as `0xRRGGBBAA`). The
 /// terminal palette does not affect text/surface contrast, so a mock is fine.
@@ -93,4 +96,30 @@ fn chip_label_color_preserves_muted_color_where_already_legible() {
         muted,
         "dark-theme chips should keep their muted (unchanged) color"
     );
+}
+
+fn chip(kind: ContextChipKind, value: Option<&str>) -> ChipResult {
+    ChipResult {
+        kind,
+        value: value.map(|value| ChipValue::Text(value.to_owned())),
+        on_click_values: vec!["main".to_owned(), "dev".to_owned()],
+    }
+}
+
+/// #1194: the borrowing formatter (used for every visible block's label on every frame) and the
+/// owning one produce the same text: chips without a value are skipped, adjacent Svn chips have
+/// no space between them, and branch chips get their `git:(..)` decoration.
+#[test]
+fn chips_to_string_borrowed_matches_the_owning_formatter() {
+    let chips = vec![
+        chip(ContextChipKind::WorkingDirectory, Some("~/repo")),
+        chip(ContextChipKind::Username, None),
+        chip(ContextChipKind::ShellGitBranch, Some("main")),
+        chip(ContextChipKind::SvnBranch, Some("trunk")),
+        chip(ContextChipKind::SvnDirtyItems, Some("3")),
+    ];
+    let borrowed = chips_to_string_borrowed(&chips);
+    assert_eq!(borrowed, "~/repo git:(main) svn:(trunk)\u{b1}3");
+    assert_eq!(borrowed, chips_to_string(chips.into_iter()));
+    assert_eq!(chips_to_string_borrowed(&[]), "");
 }
