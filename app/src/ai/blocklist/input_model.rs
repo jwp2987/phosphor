@@ -896,6 +896,39 @@ impl BlocklistAIInputModel {
         }
     }
 
+    /// Whether the input is typed inside an active agent view (#935, #1183, #1184): the
+    /// conversation is the context, so a shell verdict needs positive evidence.
+    pub fn in_active_agent_view(&self, app: &AppContext) -> bool {
+        FeatureFlag::AgentView.is_enabled()
+            && self
+                .agent_view_controller
+                .as_ref()
+                .is_some_and(|c| c.as_ref(app).is_active())
+    }
+
+    /// #1184: in an active agent view, a line the user submits unlocked whose first word is a
+    /// slash command spelling rather than a path (`/mod` after Esc closed the slash menu) is
+    /// text for the agent, never a command: bash would run it as a path, and a path that exists
+    /// would execute. Moves an unlocked Shell input to AI and returns true. A real path
+    /// (`/usr/bin/ls`), a locked Shell input (the user chose it) and any other view are left alone.
+    pub fn route_unmatched_slash_line_to_agent(
+        &mut self,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if self.input_config.is_locked
+            || !self.input_config.is_shell()
+            || !self.in_active_agent_view(ctx)
+            || !input_classifier::util::starts_with_slash_command_not_path(buffer_text)
+        {
+            return false;
+        }
+        self.abort_in_progress_detection();
+        self.apply_autodetected_input_type(InputType::AI, ctx);
+        self.settle_detection(buffer_text, ctx);
+        true
+    }
+
     /// Whether `buffer_text` is shell typeahead that may be decided Shell without a command head
     /// (#886): it still starts with the typeahead the shell handed back, and the *whole* buffer
     /// carries no prose evidence at all ([`input_classifier::util::has_no_prose_evidence`] --
@@ -939,9 +972,19 @@ impl BlocklistAIInputModel {
         if !self.is_detection_pending_for(&input.buffer_text, ctx) {
             return false;
         }
+        // #1185: classified without a trailing comment. #1183: in an agent conversation a line
+        // with no positive evidence of being a command is not decided Shell here, and an
+        // inherited Shell moves to the agent (never for typeahead, as with requests).
+        let classify_snapshot =
+            input_classifier::util::strip_trailing_comment(input).into_owned();
+        let no_command_evidence = self.in_active_agent_view(ctx)
+            && input_classifier::util::lacks_command_evidence_in_agent_conversation(
+                &classify_snapshot,
+            );
         let is_shell = self.is_shell_typeahead(&input.buffer_text)
             || self.is_first_word_denylisted(&input.buffer_text, ctx)
-            || input_classifier::util::is_unambiguous_shell_command(input);
+            || (!no_command_evidence
+                && input_classifier::util::is_unambiguous_shell_command(&classify_snapshot));
         if !is_shell {
             // The agent-ward half of F6: prose pasted or typed fast right after a shell command
             // inherits `Shell` and Enter would run it. Only text that reads as a request in
@@ -949,6 +992,7 @@ impl BlocklistAIInputModel {
             // never typeahead, a one-off shell keyword head (`echo a and b`) or an inherited AI.
             if self.input_config.is_shell()
                 && (self.reads_as_request(&input.buffer_text)
+                    || (no_command_evidence && self.typeahead_prefix.is_none())
                     || (head_unknown_to_shell
                         && self.reads_as_prose_with_unknown_head(&input.buffer_text)))
             {
@@ -957,6 +1001,7 @@ impl BlocklistAIInputModel {
                 self.settle_detection(&input.buffer_text, ctx);
             } else if self.input_config.input_type == InputType::AI
                 && head_known_to_shell
+                && !no_command_evidence
                 && !input.buffer_text.trim().contains('\n')
                 && !self.reads_as_request(&input.buffer_text)
             {
@@ -1285,7 +1330,18 @@ impl BlocklistAIInputModel {
         // got a stream error instead of their command); the rules are precision-first, so
         // anything merely *probably* a command still goes through the pipeline below. See
         // `input_classifier::util::is_unambiguous_shell_command`.
-        if input_classifier::util::is_unambiguous_shell_command(&input) {
+        //
+        // #1185: classified without a trailing ` # comment`; #1183: in an agent conversation not
+        // without positive evidence that the line is a plausible command.
+        let classify_snapshot =
+            input_classifier::util::strip_trailing_comment(&input).into_owned();
+        let in_active_agent_view = self.in_active_agent_view(ctx);
+        if input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)
+            && !(in_active_agent_view
+                && input_classifier::util::lacks_command_evidence_in_agent_conversation(
+                    &classify_snapshot,
+                ))
+        {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
             self.settle_detection(&input.buffer_text, ctx);
             return;
@@ -1339,13 +1395,6 @@ impl BlocklistAIInputModel {
                 _ => false,
             }
         };
-
-        // #935: only inside an active agent view does an unknown single word read as a message.
-        let in_active_agent_view = FeatureFlag::AgentView.is_enabled()
-            && self
-                .agent_view_controller
-                .as_ref()
-                .is_some_and(|c| c.as_ref(ctx).is_active());
 
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
         let handle = ctx
@@ -1421,7 +1470,8 @@ impl BlocklistAIInputModel {
                     futures_lite::future::yield_now().await;
 
                     let input =
-                        warp_completer::util::expand_aliases(input, &completion_context).await;
+                        warp_completer::util::expand_aliases(classify_snapshot, &completion_context)
+                            .await;
 
                     futures_lite::future::yield_now().await;
 

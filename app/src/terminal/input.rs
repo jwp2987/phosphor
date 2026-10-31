@@ -12640,6 +12640,14 @@ impl Input {
         // has been applied must not run the line as a shell command.
         self.redetect_slash_command_before_submit(ctx);
         let buffer_text = self.buffer_text(ctx);
+        // #1184: `/mod` left in the agent input after Esc closed the slash menu is not a slash
+        // command (the redetect above found none) and not a path: it goes to the agent as text,
+        // never to the shell. Runs on every Enter route (this is reached before any submit).
+        if self.ai_input_model.update(ctx, |model, ctx| {
+            model.route_unmatched_slash_line_to_agent(&buffer_text, ctx)
+        }) {
+            return;
+        }
         let snapshot = match &self.last_parsed_tokens {
             Some(parsed) if parsed.buffer_text == buffer_text => parsed.clone(),
             _ => decorations::ParsedTokensSnapshot {

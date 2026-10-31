@@ -19,7 +19,8 @@ use crate::{
     util::{
         first_token_forces_ai_override, is_unambiguous_shell_command,
         is_unknown_single_word_in_agent_conversation, known_command_head,
-        reads_as_request_to_agent,
+        lacks_command_evidence_in_agent_conversation, reads_as_request_to_agent,
+        strip_trailing_comment,
     },
 };
 
@@ -47,12 +48,18 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
         input: ParsedTokensSnapshot,
         context: &Context,
     ) -> InputClassificationResult {
+        // #1185: a trailing ` # comment` is not part of the command; classify without it.
+        let input = strip_trailing_comment(&input).into_owned();
+        // #1183: in an agent conversation a shell verdict needs positive evidence that the line
+        // is a plausible command. Computed once; the checks below consult it.
+        let no_command_evidence =
+            context.in_active_agent_view && lacks_command_evidence_in_agent_conversation(&input);
         // #808: an unambiguous shell command line never reaches a classifier at all, so neither
         // a model's opinion of its words nor the prose override below can send it to the agent.
         // `BlocklistAIInputModel::detect_and_set_input_type` runs the same check synchronously
         // before it even spawns the classification task; this one covers every other consumer
         // of a classifier (e.g. the `evaluate` tool).
-        if is_unambiguous_shell_command(&input) {
+        if !no_command_evidence && is_unambiguous_shell_command(&input) {
             return InputClassificationResult::new(
                 InputType::Shell,
                 InputClassifierDecisionSource::UnambiguousShellSyntax,
@@ -65,6 +72,12 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
             return InputClassificationResult::new(
                 InputType::AI,
                 InputClassifierDecisionSource::NoFirstTokenCommandEvidence,
+            );
+        }
+        if matches!(result.input_type, InputType::Shell) && no_command_evidence {
+            return InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::NoCommandEvidenceInAgentConversation,
             );
         }
         // #935: a lone word nothing on the session answers to, typed straight after an agent
@@ -94,6 +107,7 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
         // vetoed unless the line reads as a request. Unknown heads, session data that cannot say
         // keep the classifier's verdict, so prose still routes.
         if matches!(result.input_type, InputType::AI)
+            && !no_command_evidence
             && known_command_head(&input)
             && !reads_as_request_to_agent(&input.buffer_text)
         {
