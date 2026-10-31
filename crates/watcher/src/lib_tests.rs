@@ -77,8 +77,8 @@ fn events_after_the_window_start_a_new_batch() {
     assert_eq!(flushes.len(), 2);
 }
 
-/// Opens, closes, metadata changes and the `Both` half of a rename never start a window and are
-/// never reported, so reading a watched file or a paired rename cannot cause a spurious flush.
+/// Opens, closes and metadata changes never start a window and are never reported, so reading a
+/// watched file cannot cause a spurious flush.
 #[test]
 fn irrelevant_events_are_dropped() {
     let flushes = collect_flushes(Duration::from_millis(50), |tx| {
@@ -89,11 +89,6 @@ fn irrelevant_events_are_dropped() {
         .unwrap();
         tx.send(event(
             EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::Any)),
-            "/a",
-        ))
-        .unwrap();
-        tx.send(event(
-            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
             "/a",
         ))
         .unwrap();
@@ -115,4 +110,102 @@ fn pending_events_are_flushed_when_the_watcher_is_dropped() {
     });
     assert_eq!(flushes.len(), 1);
     assert_eq!(flushes[0][0].event.paths, vec![PathBuf::from("/new")]);
+}
+
+fn rename(mode: RenameMode, paths: &[&str]) -> DebouncedEvent {
+    let mut e = notify::Event::new(EventKind::Modify(ModifyKind::Name(mode)));
+    for p in paths {
+        e = e.add_path(PathBuf::from(p));
+    }
+    DebouncedEvent::new(e, Instant::now())
+}
+
+/// What a consumer sees for a raw event sequence on the event-driven path.
+fn consumer_view(events: Vec<DebouncedEvent>) -> BulkFilesystemWatcherEvent {
+    let events: Vec<_> = events
+        .into_iter()
+        .filter(|e| is_relevant_event(&e.event))
+        .collect();
+    deduplicate_and_merge_raw_notifier_events(&normalize_renames(events))
+        .expect("a rename produces an update")
+}
+
+fn moved(pairs: &[(&str, &str)]) -> HashMap<PathBuf, PathBuf> {
+    pairs
+        .iter()
+        .map(|(to, from)| (PathBuf::from(to), PathBuf::from(from)))
+        .collect()
+}
+
+/// `A -> B` as inotify reports it (From, To, Both) is one move, exactly what the stitched event
+/// of the old debouncer gave the consumer.
+#[test]
+fn a_paired_rename_is_one_move() {
+    let view = consumer_view(vec![
+        rename(RenameMode::From, &["/A"]),
+        rename(RenameMode::To, &["/B"]),
+        rename(RenameMode::Both, &["/A", "/B"]),
+    ]);
+    assert_eq!(view.moved, moved(&[("/B", "/A")]));
+    assert!(view.added.is_empty() && view.deleted.is_empty());
+}
+
+/// `A -> B -> C` collapses to `C <- A`, not `C <- B`.
+#[test]
+fn a_chained_rename_keeps_the_original_source() {
+    let view = consumer_view(vec![
+        rename(RenameMode::From, &["/A"]),
+        rename(RenameMode::To, &["/B"]),
+        rename(RenameMode::Both, &["/A", "/B"]),
+        rename(RenameMode::From, &["/B"]),
+        rename(RenameMode::To, &["/C"]),
+        rename(RenameMode::Both, &["/B", "/C"]),
+    ]);
+    assert_eq!(view.moved, moved(&[("/C", "/A")]));
+}
+
+/// A backend that reports only `Both` loses nothing, single or chained.
+#[test]
+fn both_only_backends_still_move() {
+    let single = consumer_view(vec![rename(RenameMode::Both, &["/A", "/B"])]);
+    assert_eq!(single.moved, moved(&[("/B", "/A")]));
+    let chained = consumer_view(vec![
+        rename(RenameMode::Both, &["/A", "/B"]),
+        rename(RenameMode::Both, &["/B", "/C"]),
+    ]);
+    assert_eq!(chained.moved, moved(&[("/C", "/A")]));
+}
+
+/// Without `normalize_renames` the same sequence is wrong: this pins why it exists.
+#[test]
+fn replaying_all_three_halves_would_misreport_a_chain() {
+    let raw = vec![
+        rename(RenameMode::From, &["/A"]),
+        rename(RenameMode::To, &["/B"]),
+        rename(RenameMode::Both, &["/A", "/B"]),
+        rename(RenameMode::From, &["/B"]),
+        rename(RenameMode::To, &["/C"]),
+        rename(RenameMode::Both, &["/B", "/C"]),
+    ];
+    let naive = deduplicate_and_merge_raw_notifier_events(&raw).unwrap();
+    assert_eq!(naive.moved, moved(&[("/C", "/B")]));
+}
+
+/// An unpaired `From` (a move out of the tree) is left alone for the merge.
+#[test]
+fn unpaired_halves_are_kept() {
+    let kept = normalize_renames(vec![rename(RenameMode::From, &["/A"])]);
+    assert_eq!(kept.len(), 1);
+}
+
+#[test]
+fn legacy_tick_is_coarse_but_never_longer_than_the_timeout() {
+    assert_eq!(
+        debouncer_tick(Duration::from_millis(500)),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        debouncer_tick(Duration::from_millis(10)),
+        Duration::from_millis(10)
+    );
 }

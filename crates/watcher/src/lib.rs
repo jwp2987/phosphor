@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     path::{Path, PathBuf},
-    sync::mpsc::{self, channel, RecvTimeoutError},
+    sync::mpsc::{self, RecvTimeoutError, channel},
     thread,
     time::{Duration, Instant},
 };
@@ -13,20 +13,19 @@ pub use home_watcher::{HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
 use anyhow::Result;
 use futures::channel::oneshot;
 use notify_debouncer_full::{
+    DebounceEventHandler, DebounceEventResult, DebouncedEvent, Debouncer, NoCache,
+    new_debouncer_opt,
     notify::{
-        self,
+        self, EventKind, RecommendedWatcher, RecursiveMode, WatchFilter, Watcher as _,
         event::{ModifyKind, RenameMode},
-        EventKind, RecommendedWatcher, RecursiveMode, WatchFilter, Watcher as _,
     },
-    DebounceEventHandler, DebounceEventResult, DebouncedEvent,
 };
 use warpui::{Entity, ModelContext};
 
 /// Whether a raw watcher event can change what [`deduplicate_and_merge_raw_notifier_events`]
 /// reports. Everything else (file opens/closes, metadata-only changes, backend meta events) must
 /// not start a debounce window, or an unrelated read of a watched file would wake the thread.
-/// `RenameMode::Both` is dropped because the `From` and `To` halves already carry the rename, and
-/// replaying all three would overwrite a chained rename's source.
+/// Renames are kept in every form; [`normalize_renames`] removes the redundant halves of pairs.
 fn is_relevant_event(event: &notify::Event) -> bool {
     if event.paths.is_empty() {
         return false;
@@ -34,9 +33,45 @@ fn is_relevant_event(event: &notify::Event) -> bool {
     match event.kind {
         EventKind::Create(_) | EventKind::Remove(_) => true,
         EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any) => true,
-        EventKind::Modify(ModifyKind::Name(mode)) => mode != RenameMode::Both,
+        EventKind::Modify(ModifyKind::Name(_)) => true,
         _ => false,
     }
+}
+
+/// Collapses a paired rename to the single event that carries both names.
+///
+/// Backends such as inotify report a rename `A -> B` as `From(A)`, `To(B)` and then `Both(A, B)`.
+/// [`deduplicate_and_merge_raw_notifier_events`] understands each form, but replaying all three
+/// records the move twice and a chained rename `A -> B -> C` then overwrites the source: the
+/// second `Both(B, C)` would be recorded as `C <- B` after `From/To` already produced `C <- A`.
+/// So for every `Both(a, b)` the `From(a)` and `To(b)` halves that precede it are removed. A
+/// backend that reports only `Both` is untouched, and an unpaired `From` or `To` (a move into or
+/// out of the watched tree) is kept for the merge to treat as before.
+fn normalize_renames(events: Vec<DebouncedEvent>) -> Vec<DebouncedEvent> {
+    let is_name = |event: &DebouncedEvent, mode: RenameMode| matches!(event.event.kind, EventKind::Modify(ModifyKind::Name(m)) if m == mode);
+    let mut drop = vec![false; events.len()];
+    for (index, event) in events.iter().enumerate() {
+        if !is_name(event, RenameMode::Both) || event.event.paths.len() < 2 {
+            continue;
+        }
+        let (from, to) = (&event.event.paths[0], &event.event.paths[1]);
+        let find = |mode: RenameMode, path: &PathBuf, drop: &[bool]| {
+            (0..index).rev().find(|&i| {
+                !drop[i] && is_name(&events[i], mode) && events[i].event.paths.first() == Some(path)
+            })
+        };
+        if let Some(i) = find(RenameMode::From, from, &drop) {
+            drop[i] = true;
+        }
+        if let Some(i) = find(RenameMode::To, to, &drop) {
+            drop[i] = true;
+        }
+    }
+    events
+        .into_iter()
+        .zip(drop)
+        .filter_map(|(event, dropped)| (!dropped).then_some(event))
+        .collect()
 }
 
 /// Event-driven debounce loop for one watcher.
@@ -52,6 +87,8 @@ fn run_debounce_loop(
     timeout: Duration,
     mut flush: impl FnMut(Vec<DebouncedEvent>, Vec<notify::Error>),
 ) {
+    let mut flush =
+        move |events: Vec<DebouncedEvent>, errors| flush(normalize_renames(events), errors);
     let mut events: Vec<DebouncedEvent> = Vec::new();
     let mut errors: Vec<notify::Error> = Vec::new();
     fn absorb(
@@ -110,8 +147,54 @@ enum BackgroundFileWatcherCommand {
     },
 }
 
+/// Environment variable that restores the polling `notify_debouncer_full` debouncer in place of
+/// the event-driven loop (any value other than empty or `0`).
+const LEGACY_DEBOUNCER_ENV: &str = "PHOSPHOR_WATCHER_LEGACY_DEBOUNCER";
+
+fn legacy_debouncer_requested() -> bool {
+    std::env::var(LEGACY_DEBOUNCER_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Shortest tick for the legacy debouncer's polling thread.
+const MIN_DEBOUNCER_TICK: Duration = Duration::from_millis(250);
+
+/// Tick of the legacy debouncer: half the timeout, at least `MIN_DEBOUNCER_TICK`, never above the
+/// timeout (which `new_debouncer_opt` rejects).
+fn debouncer_tick(timeout: Duration) -> Duration {
+    (timeout / 2).max(MIN_DEBOUNCER_TICK).min(timeout)
+}
+
+/// The platform watcher plus whichever debouncing sits behind it.
+enum Notifier {
+    /// Raw watcher feeding [`run_debounce_loop`] on its own thread.
+    EventDriven(RecommendedWatcher),
+    /// `notify_debouncer_full`'s polling debouncer (the kill-switch path).
+    Legacy(Debouncer<RecommendedWatcher, NoCache>),
+}
+
+impl Notifier {
+    fn watch_filtered(
+        &mut self,
+        path: &Path,
+        mode: RecursiveMode,
+        filter: WatchFilter,
+    ) -> notify::Result<()> {
+        match self {
+            Notifier::EventDriven(w) => w.watch_filtered(path, mode, filter),
+            Notifier::Legacy(d) => d.watch_filtered(path, mode, filter),
+        }
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        match self {
+            Notifier::EventDriven(w) => w.unwatch(path),
+            Notifier::Legacy(d) => d.unwatch(path),
+        }
+    }
+}
+
 struct BackgroundFileWatcher {
-    notifier: RecommendedWatcher,
+    notifier: Notifier,
     rx: mpsc::Receiver<BackgroundFileWatcherCommand>,
 }
 
@@ -121,6 +204,21 @@ impl BackgroundFileWatcher {
         handler: WatcherEventHandler,
         rx: mpsc::Receiver<BackgroundFileWatcherCommand>,
     ) -> Result<Self> {
+        if legacy_debouncer_requested() {
+            log::info!("{LEGACY_DEBOUNCER_ENV} set: using the polling filesystem debouncer");
+            let debouncer = new_debouncer_opt(
+                debounce_duration,
+                Some(debouncer_tick(debounce_duration)),
+                handler,
+                NoCache,
+                notify::Config::default(),
+            )?;
+            return Ok(Self {
+                notifier: Notifier::Legacy(debouncer),
+                rx,
+            });
+        }
+
         let (event_tx, event_rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let notifier = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -143,7 +241,10 @@ impl BackgroundFileWatcher {
                 });
             })?;
 
-        Ok(Self { notifier, rx })
+        Ok(Self {
+            notifier: Notifier::EventDriven(notifier),
+            rx,
+        })
     }
 
     /// Listen to streamed in commands to modify the internal notifier state.
