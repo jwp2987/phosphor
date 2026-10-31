@@ -53,6 +53,21 @@ fn read_text_with_retry(
 }
 
 impl LinuxClipboard {
+    /// The one text read every path uses: retries a timed-out read and records in `read_failed`
+    /// whether it ultimately timed out (#1173).
+    fn read_text_retrying(&mut self) -> Result<String, arboard::Error> {
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                let start = Instant::now();
+                let result = self.inner.get().text();
+                (result, start.elapsed())
+            },
+            || std::thread::sleep(TEXT_READ_RETRY_PAUSE),
+        );
+        self.read_failed = timed_out;
+        result
+    }
+
     pub fn new() -> Result<Self, arboard::Error> {
         Ok(Self {
             inner: LinuxClipboardInner::new()?,
@@ -114,7 +129,7 @@ impl Clipboard for LinuxClipboard {
     fn read_text_and_paths(&mut self) -> ClipboardContent {
         // One text read plus the syntactic path check; the HTML target and image probes are
         // skipped because paste never uses them (a multi-MB paste paid for them on every read).
-        let plain_text = match self.inner.get().text() {
+        let plain_text = match self.read_text_retrying() {
             Ok(text) => text,
             Err(err) => {
                 log::warn!("Failed to read from Linux clipboard: {err:?}");
@@ -130,7 +145,7 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn read_plain_text(&mut self) -> String {
-        self.inner.get().text().unwrap_or_default()
+        self.read_text_retrying().unwrap_or_default()
     }
 
     fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
@@ -243,15 +258,7 @@ impl LinuxClipboard {
         clipboard_kind: LinuxClipboardKind,
         include_images: bool,
     ) -> Result<ClipboardContent, arboard::Error> {
-        let (text_result, timed_out) = read_text_with_retry(
-            || {
-                let start = Instant::now();
-                let result = self.inner.get().text();
-                (result, start.elapsed())
-            },
-            || std::thread::sleep(TEXT_READ_RETRY_PAUSE),
-        );
-        self.read_failed = timed_out;
+        let text_result = self.read_text_retrying();
         let mut content = ClipboardContent {
             plain_text: text_result.as_ref().map(|s| s.clone()).unwrap_or_default(),
             ..Default::default()
