@@ -604,6 +604,7 @@ fn parse_dcs_ssh() {
                 session_id: Some(167303092612201),
                 remote_session_id: Some(167303092612202),
                 external_control_master: false,
+                raw_bootstrap: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -636,8 +637,37 @@ fn parse_dcs_ssh_with_external_control_master() {
                 session_id: Some(167303092612201),
                 remote_session_id: Some(167303092612202),
                 external_control_master: true,
+                raw_bootstrap: false,
             }
         ),
+        _ => panic!("incorrect dcs value"),
+    };
+}
+
+#[test]
+fn parse_dcs_ssh_with_raw_bootstrap() {
+    // #1172: the remote reports it can take the bootstrap as a counted raw read.
+    let bytes = hex_encoded_dcs_string(
+        r#"{
+                "hook": "SSH",
+                "value": {
+                    "socket_path": "/home/user/.ssh/cm-user@host:22",
+                    "remote_shell": "bash",
+                    "session_id": 167303092612201,
+                    "remote_session_id": 167303092612202,
+                    "external_control_master": false,
+                    "raw_bootstrap": true
+                }
+            }"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::SSH { value } => {
+            assert!(value.raw_bootstrap);
+            assert!(!value.external_control_master);
+        }
         _ => panic!("incorrect dcs value"),
     };
 }

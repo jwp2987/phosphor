@@ -193,6 +193,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         let IsLegacySSHSession::Yes {
             socket_path,
             external_control_master,
+            ..
         } = &info.is_legacy_ssh_session
         else {
             return;

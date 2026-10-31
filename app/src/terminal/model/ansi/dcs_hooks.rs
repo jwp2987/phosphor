@@ -413,6 +413,7 @@ impl DProtoHook {
                 "external_control_master" => {
                     value.external_control_master = v.parse::<bool>().unwrap_or(false)
                 }
+                "raw_bootstrap" => value.raw_bootstrap = v.parse::<bool>().unwrap_or(false),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to SSH hook");
                 }
@@ -988,6 +989,11 @@ pub struct SSHValue {
     /// to `false` for hooks emitted by older bootstrap scripts.
     #[serde(default)]
     pub external_control_master: bool,
+    /// `true` when the remote is a bash whose `head` supports `-c`, so the client may send the
+    /// bootstrap as a counted raw read instead of typing it through the line editor (#1172).
+    /// Defaults to `false` for hooks emitted by older bootstrap scripts and for other shells.
+    #[serde(default)]
+    pub raw_bootstrap: bool,
 }
 
 /// Received from the pty after the shell session has been initialized, marking

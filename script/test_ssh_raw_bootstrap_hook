@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""#1172: the ssh wrapper's remote preface reports `raw_bootstrap` in the SSH hook.
+
+The client may send the bash bootstrap as a counted raw read (`head -c N`) only when the remote
+is a bash whose `head` has `-c`; the remote decides, in the preface the wrapper sends as the ssh
+command. This extracts the real warp_ssh_helper from bash_body.sh and zsh_body.sh, runs it with a
+fake `ssh` that records the remote command, then runs that command with SHELL set to bash, zsh and
+sh and decodes the SSH hook it prints. Shells that are not installed are skipped. fish.sh is
+checked textually (its helper cannot be sourced standalone).
+
+Usage: script/test_ssh_raw_bootstrap_hook
+"""
+import binascii
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BOOT = os.path.join(ROOT, "app/assets/bundled/bootstrap")
+
+FAKE_SSH = """#!/bin/sh
+for a in "$@"; do [ "$a" = "-G" ] && { printf 'user u\\nhostname h\\nport 22\\n'; exit 0; }; done
+for a in "$@"; do [ "$a" = "-O" ] && exit 0; done
+for a in "$@"; do [ "$a" = "-T" ] && { echo 'warp-probe-%COMSPEC%-'; exit 0; }; done
+for a in "$@"; do [ "$a" = "-t" ] && { eval "last=\\${$#}"; printf '%s' "$last" > "$REC"; exit 0; }; done
+exit 0
+"""
+
+
+def helper_text(path):
+    lines = open(path).read().split("\n")
+    start = next(i for i, l in enumerate(lines) if l.strip().startswith("function warp_ssh_helper() {"))
+    end = next(
+        i
+        for i, l in enumerate(lines)
+        if i > start and l.strip().startswith(("function __warp_ssh_impl() {", "function ssh() {"))
+    )
+    return "\n".join(lines[start:end])
+
+
+def recorded_command(shell, fname, tmp):
+    fake = os.path.join(tmp, "bin")
+    os.makedirs(fake, exist_ok=True)
+    ssh = os.path.join(fake, "ssh")
+    open(ssh, "w").write(FAKE_SSH)
+    os.chmod(ssh, os.stat(ssh).st_mode | stat.S_IXUSR)
+    rec = os.path.join(tmp, "rec.txt")
+    prog = (
+        "export SSH_SOCKET_DIR=%s WARP_SESSION_ID=4242 WARP_SSH_REUSE_CONTROL_MASTER=0 WARP_HONOR_PS1=0 SHELL=/bin/sh\n"
+        "OSC_START=$'\\e]9278;' DCS_JSON_MARKER=d OSC_PARAM_SEPARATOR=';' OSC_END=$'\\a'\n"
+        "warp_hex_encode_string () { printf '%%s' \"$1\" | command -p od -An -v -tx1 | command -p tr -d ' \\n'; }\n"
+        "init_shell_hook () { :; }\n"
+        "%s\nwarp_ssh_helper u@h\n"
+    ) % (tmp, helper_text(os.path.join(BOOT, fname)))
+    script = os.path.join(tmp, "h.sh")
+    open(script, "w").write(prog)
+    env = dict(os.environ, REC=rec, PATH=fake + ":" + os.environ["PATH"])
+    subprocess.run([shell, script], env=env, stdin=subprocess.DEVNULL, capture_output=True)
+    return open(rec).read()
+
+
+def hook_for(remote_shell, command):
+    env = dict(os.environ, SHELL=remote_shell, WARP_SESSION_ID="4242")
+    out = subprocess.run(
+        ["bash", "-c", command], env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20
+    ).stdout
+    for m in re.finditer(rb"\x1b\]9278;d;([0-9a-f]+)\x07", out):
+        value = json.loads(binascii.unhexlify(m.group(1)))
+        if value.get("hook") == "SSH":
+            return value["value"]
+    return None
+
+
+def main():
+    failures = 0
+    for shell, fname in (("bash", "bash_body.sh"), ("zsh", "zsh_body.sh")):
+        if not shutil.which(shell):
+            print("SKIP %s (not installed)" % shell)
+            continue
+        tmp = tempfile.mkdtemp(prefix="raw_bootstrap_")
+        try:
+            command = recorded_command(shell, fname, tmp)
+            if not command:
+                print("FAIL %s: no remote command recorded" % shell)
+                failures += 1
+                continue
+            for remote, want in (("/bin/bash", True), ("/bin/zsh", False), ("/bin/sh", False)):
+                if not os.path.exists(remote):
+                    continue
+                value = hook_for(remote, command)
+                ok = value is not None and value.get("raw_bootstrap") is want
+                print("%s %s wrapper, remote %s: raw_bootstrap=%s (want %s)" % (
+                    "ok  " if ok else "FAIL", shell, remote, None if value is None else value.get("raw_bootstrap"), want))
+                if not ok:
+                    failures += 1
+        finally:
+            shutil.rmtree(tmp)
+    fish = open(os.path.join(BOOT, "fish.sh")).read()
+    ok = '\\"raw_bootstrap\\": %s}}" "${SHELL##*/}" "$warp_rb"' in fish and "warp_rb=true" in fish
+    print("%s fish wrapper reports raw_bootstrap" % ("ok  " if ok else "FAIL"))
+    failures += 0 if ok else 1
+    sys.exit(1 if failures else 0)
+
+
+main()

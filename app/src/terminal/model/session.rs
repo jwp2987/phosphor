@@ -616,6 +616,9 @@ pub enum IsLegacySSHSession {
         /// creating a Warp-owned one). Warp must not tear down such a
         /// master on session exit.
         external_control_master: bool,
+        /// The remote reported it can take the bootstrap as a counted raw read (#1172); see
+        /// `SSHValue::raw_bootstrap`.
+        raw_bootstrap: bool,
     },
     No,
 }
@@ -708,6 +711,7 @@ impl SessionInfo {
             Some(ssh_value) => IsLegacySSHSession::Yes {
                 socket_path: ssh_value.socket_path,
                 external_control_master: ssh_value.external_control_master,
+                raw_bootstrap: ssh_value.raw_bootstrap,
             },
             None => IsLegacySSHSession::No,
         };
@@ -2223,7 +2227,21 @@ pub mod testing {
             self.is_legacy_ssh_session = IsLegacySSHSession::Yes {
                 socket_path,
                 external_control_master: false,
+                raw_bootstrap: false,
             };
+            self
+        }
+
+        /// Marks an ssh session (see [`Self::with_ssh_socket_path`]) as one whose remote reported
+        /// it can take the bootstrap as a counted raw read (#1172).
+        pub fn with_raw_bootstrap(mut self, raw_bootstrap_value: bool) -> Self {
+            if let IsLegacySSHSession::Yes {
+                ref mut raw_bootstrap,
+                ..
+            } = self.is_legacy_ssh_session
+            {
+                *raw_bootstrap = raw_bootstrap_value;
+            }
             self
         }
 

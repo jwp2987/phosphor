@@ -3462,3 +3462,108 @@ fn powershell_bootstrap_lines_carry_no_control_characters() {
         });
     });
 }
+
+#[test]
+fn bash_counted_read_bootstrap_replaces_the_here_document_with_a_counted_read() {
+    // #1172: the body moves out of the here-document; what is before and after it is untouched.
+    let script = b"before\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body1\n body2\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"\n";
+    let rewritten = bash_counted_read_bootstrap(script).expect("has the here-document");
+    assert_eq!(
+        decode_script(&rewritten),
+        "before\n command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo\r body1\n body2\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"\n"
+    );
+}
+
+#[test]
+fn bash_counted_read_bootstrap_counts_bytes_not_characters() {
+    // `head -c` counts bytes; a multi-byte character in the body must be counted as its bytes.
+    let script = "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n \u{2328}\nEOM\n"
+        .as_bytes()
+        .to_vec();
+    let rewritten = bash_counted_read_bootstrap(&script).expect("has the here-document");
+    // " \u{2328}\n" is 1 + 3 + 1 bytes.
+    assert!(decode_script(&rewritten).contains("head -c 5)"));
+}
+
+#[test]
+fn bash_counted_read_bootstrap_leaves_other_scripts_alone() {
+    assert_eq!(bash_counted_read_bootstrap(b"echo hi\n"), None);
+    // An unterminated here-document is not rewritten either.
+    assert_eq!(
+        bash_counted_read_bootstrap(
+            b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\n"
+        ),
+        None
+    );
+}
+
+#[test]
+fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
+    // Guards the markers against edits to bash.sh: the real script (its `#include` line replaced
+    // by the body, as `script_for_shell` does before trimming) must be rewritable, and the byte
+    // count in the new command must be exactly the length of the body that follows it.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/bundled/bootstrap/");
+    let top = std::fs::read_to_string(format!("{dir}bash.sh")).expect("bash.sh");
+    let body = std::fs::read_to_string(format!("{dir}bash_body.sh")).expect("bash_body.sh");
+    let script = top.replace("#include bundled/bootstrap/bash_body.sh", body.trim_end());
+    let rewritten = bash_counted_read_bootstrap(script.as_bytes())
+        .expect("bash.sh must keep the here-document that bash_counted_read_bootstrap rewrites");
+    let text = decode_script(&rewritten);
+    let after_head = text.split("head -c ").nth(1).expect("a head -c command");
+    let count: usize = after_head
+        .split(')')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("a byte count");
+    let command_end = text.find("command -p stty echo\r").unwrap() + "command -p stty echo\r".len();
+    let tail_start = text
+        .find("\n stty sane\n")
+        .expect("the stty sane line after the body");
+    // The body runs from the end of the command to the newline that ended its last line.
+    assert_eq!(tail_start + 1 - command_end, count);
+    assert!(!text.contains("<< 'EOM'"));
+}
+
+#[test]
+fn counted_read_bootstrap_is_on_unless_switched_off() {
+    assert!(counted_read_bootstrap_enabled_from_env(None));
+    assert!(counted_read_bootstrap_enabled_from_env(Some("1")));
+    assert!(!counted_read_bootstrap_enabled_from_env(Some("0")));
+    assert!(!counted_read_bootstrap_enabled_from_env(Some(" off ")));
+}
+
+#[test]
+fn bootstrap_for_session_rewrites_only_bash_over_ssh_that_asked_for_it() {
+    let script: Cow<'static, [u8]> = Cow::Borrowed(
+        b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n",
+    );
+    let ssh_raw = SessionInfo::new_for_test()
+        .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+        .with_raw_bootstrap(true);
+    let rewritten = bootstrap_for_session(script.clone(), ShellType::Bash, &ssh_raw);
+    assert!(decode_script(&rewritten).contains("head -c 6)"));
+
+    // The remote did not report support: unchanged.
+    let ssh_plain = SessionInfo::new_for_test()
+        .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+        .with_raw_bootstrap(false);
+    assert_eq!(
+        bootstrap_for_session(script.clone(), ShellType::Bash, &ssh_plain),
+        script
+    );
+    // Another shell: unchanged.
+    assert_eq!(
+        bootstrap_for_session(script.clone(), ShellType::Zsh, &ssh_raw),
+        script
+    );
+    // Not an ssh session: unchanged.
+    assert_eq!(
+        bootstrap_for_session(
+            script.clone(),
+            ShellType::Bash,
+            &SessionInfo::new_for_test()
+        ),
+        script
+    );
+}
