@@ -429,6 +429,7 @@ mod binary_check_probes {
         preinstall: Result<PreinstallCheckResult, String>,
         preinstall_started_tx: Mutex<Option<oneshot::Sender<()>>>,
         detect_gate_rx: Mutex<Option<oneshot::Receiver<()>>>,
+        preinstall_gate_rx: Mutex<Option<oneshot::Receiver<()>>>,
         preinstall_calls: AtomicUsize,
     }
 
@@ -442,6 +443,7 @@ mod binary_check_probes {
                 preinstall,
                 preinstall_started_tx: Mutex::new(None),
                 detect_gate_rx: Mutex::new(None),
+                preinstall_gate_rx: Mutex::new(None),
                 preinstall_calls: AtomicUsize::new(0),
             }
         }
@@ -470,10 +472,14 @@ mod binary_check_probes {
         fn run_preinstall_check(&self) -> Fut<Result<PreinstallCheckResult, String>> {
             self.preinstall_calls.fetch_add(1, Ordering::SeqCst);
             let started = self.preinstall_started_tx.lock().unwrap().take();
+            let gate = self.preinstall_gate_rx.lock().unwrap().take();
             let result = self.preinstall.clone();
             Box::pin(async move {
                 if let Some(started) = started {
                     let _ = started.send(());
+                }
+                if let Some(gate) = gate {
+                    let _ = gate.await;
                 }
                 result
             })
@@ -548,6 +554,43 @@ mod binary_check_probes {
         assert_eq!(probes.preinstall, Some(supported()));
         assert_eq!(probes.check_result, Ok(true));
         assert!(!probes.has_old_binary);
+    }
+
+    #[test]
+    fn present_binary_is_reported_before_the_slower_probes_finish() {
+        // #1172: the preinstall probe here resolves only once the early signal has been
+        // received, so the signal must not wait for the other probes. On the old code the
+        // check result was only available after all four probes joined and this never completes.
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::Linux)), Ok(supported()));
+        let (release_tx, release_rx) = oneshot::channel();
+        *transport.preinstall_gate_rx.lock().unwrap() = Some(release_rx);
+        let transport = Arc::new(transport);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let for_thread = transport.clone();
+        std::thread::spawn(move || {
+            let (early_tx, early_rx) = oneshot::channel();
+            let probes = futures::executor::block_on(async {
+                futures::join!(
+                    run_binary_check_probes_staged(
+                        &*for_thread,
+                        SessionId::from(1u64),
+                        Some(early_tx)
+                    ),
+                    async {
+                        let early = early_rx.await.is_ok();
+                        let _ = release_tx.send(());
+                        early
+                    },
+                )
+            });
+            let _ = tx.send(probes);
+        });
+        let (probes, early) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the early signal waited for the slowest probe");
+        assert!(early);
+        assert_eq!(probes.check_result, Ok(true));
+        assert_eq!(probes.preinstall, Some(supported()));
     }
 
     #[test]
