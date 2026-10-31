@@ -11,14 +11,40 @@ use wgpu::{CommandEncoder, RenderPass, SurfaceTexture};
 
 use super::util::clear_to_background;
 
-/// The colour of the base layer's first rect when that rect is the opaque window background:
-/// it covers the whole surface (in device pixels), is one solid colour with full alpha, and has
-/// square corners, no border and no shadow. Clearing the surface to this colour and not drawing
-/// the rect produces the same pixels as clearing to transparent and drawing it (the rect
-/// shader's result for these inputs is the colour itself), one full-surface pass cheaper.
-pub(super) fn opaque_background(scene: &Scene, surface_size: Vector2F) -> Option<ColorU> {
-    let base = scene.layers().next()?;
-    let rect = base.rects.first()?;
+/// The window background the frame can be cleared to instead of drawing it: the first thing the
+/// frame draws is a rect that covers the whole surface (in device pixels) with one solid, fully
+/// opaque colour, square corners, no border and no shadow, in a layer that is not clipped.
+/// Clearing the surface to that colour and not drawing the rect produces the same pixels as
+/// clearing to transparent and drawing it (the rect shader's result for these inputs is the colour
+/// itself), one full-surface pass cheaper (#1232).
+///
+/// "First thing drawn" looks past what draws nothing: layers whose rects all draw nothing
+/// ([`crate::scene::Rect::draws_nothing`]) and that hold no glyphs, images or icons, and such
+/// rects at the front of the layer. The app's window background is the first drawn rect of the
+/// first layer that has any content, not of the base layer, which is empty.
+#[derive(Debug, PartialEq)]
+pub(super) struct OpaqueBackground {
+    /// Index of the layer (in `scene.layers()` order) whose first rect is the background.
+    pub(super) layer: usize,
+    pub(super) color: ColorU,
+}
+
+pub(super) fn opaque_background(scene: &Scene, surface_size: Vector2F) -> Option<OpaqueBackground> {
+    let (index, layer) = scene.layers().enumerate().find(|(_, layer)| {
+        !layer.glyphs.is_empty()
+            || !layer.images.is_empty()
+            || !layer.icons.is_empty()
+            || layer
+                .rects
+                .iter()
+                .any(|rect| rect.drop_shadow.is_some() || !rect.draws_nothing())
+    })?;
+    // Rects that draw nothing are not encoded, so the first rect that is drawn (its shadow, if it has
+    // one, is the instance before it) is instance 0 of the layer.
+    let rect = layer
+        .rects
+        .iter()
+        .find(|rect| rect.drop_shadow.is_some() || !rect.draws_nothing())?;
     let color = rect.background.start_color();
     let scaled = rect.bounds * scene.scale_factor();
     let covers_surface = scaled.origin().x() <= 0.
@@ -32,10 +58,13 @@ pub(super) fn opaque_background(scene: &Scene, surface_size: Vector2F) -> Option
         && rect.border.right_width() == 0.
         && rect.border.bottom_width() == 0.
         && rect.border.left_width() == 0.;
-    let unclipped = base
+    let unclipped = layer
         .clip_bounds
         .is_none_or(|clip| (clip * scene.scale_factor()).contains_rect(scaled));
-    (covers_surface && is_solid_opaque && is_plain && unclipped).then_some(color)
+    (covers_surface && is_solid_opaque && is_plain && unclipped).then_some(OpaqueBackground {
+        layer: index,
+        color,
+    })
 }
 
 /// The instance data of a frame. Owned by the renderer and reused from frame to frame, so the
@@ -140,17 +169,21 @@ impl<'a> Frame<'a> {
         // The window background becomes the clear colour and is not drawn as a rect (#1232).
         let mut clear_color = wgpu::Color::TRANSPARENT;
         if clear_to_background()
-            && let Some(background) = opaque_background(self.scene, surface_size)
-            && let Some(base) = self.layer_state.first_mut()
+            && let Some(OpaqueBackground { layer, color }) =
+                opaque_background(self.scene, surface_size)
+            && let Some(background_layer) = self.layer_state.get_mut(layer)
         {
-            let background = background.to_f32();
+            let background = color.to_f32();
             clear_color = wgpu::Color {
                 r: background.r() as f64,
                 g: background.g() as f64,
                 b: background.b() as f64,
                 a: background.a() as f64,
             };
-            base.rect_layer_state = base.rect_layer_state.take().and_then(rect::LayerState::without_first);
+            background_layer.rect_layer_state = background_layer
+                .rect_layer_state
+                .take()
+                .and_then(rect::LayerState::without_first);
         }
 
         let view = surface_texture
