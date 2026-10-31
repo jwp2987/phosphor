@@ -11,6 +11,7 @@
 //! configuration, routing the Agent's multi-agent calls to local providers.
 
 pub mod active_ai;
+pub mod append_coalesce;
 pub mod attachment_caps;
 pub mod chat_stream;
 pub mod command_snapshots;

@@ -697,6 +697,41 @@ impl BlockGrid {
         )
     }
 
+    /// Plain-text contents from the top of the grid, with secrets unobfuscated, but only as many
+    /// leading rows as are needed to produce at least `min_bytes` of text (or the whole grid if
+    /// it is smaller). Returns the text and whether rows beyond it were left out.
+    ///
+    /// This bounds the work (and the time the caller holds the terminal-model lock) by the
+    /// amount of text wanted rather than by the grid's size: the full-grid equivalent,
+    /// [`Self::contents_to_string_with_secrets_unobfuscated`], costs ~1 s on a 100k-row grid
+    /// (#1190). The text is a byte-for-byte prefix of the full-grid text up to a row boundary,
+    /// because it is produced by the same code over a prefix of the rows.
+    pub fn head_contents_with_secrets_unobfuscated(&self, min_bytes: usize) -> (String, bool) {
+        if self.is_empty() {
+            return (String::new(), false);
+        }
+        let last_row = self.len() - 1;
+        let columns = self.grid_handler.columns().saturating_sub(1);
+        let mut end_row = 1023usize.min(last_row);
+        loop {
+            let text = self.grid_handler.bounds_to_string(
+                Point::new(0, 0),
+                Point::new(end_row, columns),
+                false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::No,
+                false, /* force_secrets_obfuscated */
+                RespectDisplayedOutput::No,
+            );
+            if end_row >= last_row {
+                return (text, false);
+            }
+            if text.len() >= min_bytes {
+                return (text, true);
+            }
+            end_row = end_row.saturating_mul(2).min(last_row);
+        }
+    }
+
     /// Converts the grid into a string.
     /// If the include_escape_sequences field is true, we include the ansi escape sequences.
     /// Otherwise, we have a plaintext string.

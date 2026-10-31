@@ -78,9 +78,19 @@ fn write_skips_pty_permission_check(block_finished: Option<bool>) -> bool {
 ///
 /// Fallback: when output grids are empty (e.g. missing preexec / early-complete timing), extract
 /// the stdout portion from the command grid (everything after the first line).
+/// Most output text handed to the agent for one command. The request layer cuts tool output
+/// to 40,000 characters (`chat_stream::MAX_TOOL_RESPONSE_CHARS`); this is several times that so
+/// other consumers keep headroom, while bounding how much of a (possibly 100k-row) grid is
+/// formatted while the terminal-model lock is held (#1190).
+const AGENT_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+
 fn agent_shell_command_block_output(block: &Block) -> String {
-    let primary = block.output_with_secrets_unobfuscated();
+    let (mut primary, truncated) =
+        block.output_head_with_secrets_unobfuscated(AGENT_COMMAND_OUTPUT_MAX_BYTES);
     if !primary.trim().is_empty() {
+        if truncated {
+            primary.push_str(&output_truncated_marker(block, &primary));
+        }
         return primary;
     }
 
@@ -100,6 +110,17 @@ fn agent_shell_command_block_output(block: &Block) -> String {
         .map(|(_, output)| output.to_owned())
         .filter(|output| !output.trim().is_empty())
         .unwrap_or_default()
+}
+
+/// Tells the agent that rows after the ones shown were omitted, so a long `seq`/log dump isn't
+/// mistaken for the whole output.
+fn output_truncated_marker(block: &Block, shown: &str) -> String {
+    let shown_lines = shown.lines().count();
+    let total_lines = block.output_grid().len();
+    format!(
+        "\n…[output truncated: showing the first {shown_lines} of {total_lines} lines; \
+         pipe through head/tail/grep to see the rest]"
+    )
 }
 
 pub struct ShellCommandExecutor {
@@ -604,7 +625,14 @@ impl ShellCommandExecutor {
                 };
                 if block.finished() {
                     let command = block.command_with_secrets_unobfuscated(false);
-                    let output: String = block.output_with_secrets_unobfuscated();
+                    let output: String = {
+                        let (mut head, truncated) = block
+                            .output_head_with_secrets_unobfuscated(AGENT_COMMAND_OUTPUT_MAX_BYTES);
+                        if truncated {
+                            head.push_str(&output_truncated_marker(block, &head));
+                        }
+                        head
+                    };
                     let exit_code = block.exit_code();
                     let start_ts = block.start_ts().cloned();
                     let completed_ts = block.completed_ts().cloned();

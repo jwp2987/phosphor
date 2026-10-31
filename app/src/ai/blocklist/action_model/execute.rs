@@ -1336,7 +1336,9 @@ async fn read_binary_file_context(
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     let escaped_path = shell_quote_arg(path, shell_type);
     if shell_type == ShellType::PowerShell {
-        format!("if (Microsoft.PowerShell.Management\\Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}")
+        format!(
+            "if (Microsoft.PowerShell.Management\\Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}"
+        )
     } else {
         format!("test -f {escaped_path}")
     }
@@ -1361,8 +1363,58 @@ async fn is_file_path(path: &str, session: &Session) -> bool {
         .unwrap_or(false)
 }
 
+/// How long a "is this directory in a git repository?" answer is reused.
+///
+/// An agent turn typically fires several grep/glob calls against the same repo within a
+/// second or two; each uncached probe is a full command round trip (a whole ssh RTT on a
+/// remote session). Kept short so `git init` / deleting `.git` is noticed almost at once.
+const GIT_REPO_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Hard bound on cached probes so a long agent run over many directories cannot grow it.
+const GIT_REPO_PROBE_CACHE_MAX: usize = 256;
+
+type GitRepoProbeCache =
+    std::collections::HashMap<(warp_core::SessionId, String), (std::time::Instant, bool)>;
+
+static GIT_REPO_PROBE_CACHE: std::sync::LazyLock<parking_lot::Mutex<GitRepoProbeCache>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn cached_git_repo_probe(
+    cache: &GitRepoProbeCache,
+    key: &(warp_core::SessionId, String),
+    now: std::time::Instant,
+) -> Option<bool> {
+    let (at, value) = cache.get(key)?;
+    (now.saturating_duration_since(*at) < GIT_REPO_PROBE_TTL).then_some(*value)
+}
+
+fn store_git_repo_probe(
+    cache: &mut GitRepoProbeCache,
+    key: (warp_core::SessionId, String),
+    value: bool,
+    now: std::time::Instant,
+) {
+    if cache.len() >= GIT_REPO_PROBE_CACHE_MAX {
+        cache.retain(|_, (at, _)| now.saturating_duration_since(*at) < GIT_REPO_PROBE_TTL);
+        if cache.len() >= GIT_REPO_PROBE_CACHE_MAX {
+            cache.clear();
+        }
+    }
+    cache.insert(key, (now, value));
+}
+
 /// Returns true if git is installed and the given path is in a git repository.
+///
+/// Successful answers are cached per (session, path) for [`GIT_REPO_PROBE_TTL`]; errors are
+/// never cached.
 async fn is_git_repository(absolute_path: &str, session: &Session) -> anyhow::Result<bool> {
+    let key = (session.id(), absolute_path.to_owned());
+    if let Some(hit) = cached_git_repo_probe(
+        &GIT_REPO_PROBE_CACHE.lock(),
+        &key,
+        std::time::Instant::now(),
+    ) {
+        return Ok(hit);
+    }
     let git_command = build_is_git_repository_command(
         absolute_path,
         session.shell().shell_type().executor_syntax(),
@@ -1375,7 +1427,14 @@ async fn is_git_repository(absolute_path: &str, session: &Session) -> anyhow::Re
             ExecuteCommandOptions::default(),
         )
         .await?;
-    Ok(command_output.success())
+    let result = command_output.success();
+    store_git_repo_probe(
+        &mut GIT_REPO_PROBE_CACHE.lock(),
+        key,
+        result,
+        std::time::Instant::now(),
+    );
+    Ok(result)
 }
 
 fn get_server_output_id(
@@ -1524,5 +1583,49 @@ mod initiator_tests {
     fn a_user_accept_serialises() {
         assert!(ActionInitiator::User.is_out_of_band());
         assert!(!ActionInitiator::Agent.is_out_of_band());
+    }
+}
+
+#[cfg(test)]
+mod git_repo_probe_cache_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn key(dir: &str) -> (warp_core::SessionId, String) {
+        (warp_core::SessionId::default(), dir.to_owned())
+    }
+
+    #[test]
+    fn hit_within_ttl_miss_after() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        store_git_repo_probe(&mut cache, key("/r"), true, t0);
+        assert_eq!(
+            cached_git_repo_probe(&cache, &key("/r"), t0 + Duration::from_secs(1)),
+            Some(true)
+        );
+        assert_eq!(
+            cached_git_repo_probe(&cache, &key("/r"), t0 + GIT_REPO_PROBE_TTL),
+            None
+        );
+        assert_eq!(cached_git_repo_probe(&cache, &key("/other"), t0), None);
+    }
+
+    #[test]
+    fn negative_results_are_cached_too() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        store_git_repo_probe(&mut cache, key("/n"), false, t0);
+        assert_eq!(cached_git_repo_probe(&cache, &key("/n"), t0), Some(false));
+    }
+
+    #[test]
+    fn cache_is_bounded() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        for i in 0..(GIT_REPO_PROBE_CACHE_MAX * 3) {
+            store_git_repo_probe(&mut cache, key(&format!("/d{i}")), true, t0);
+        }
+        assert!(cache.len() <= GIT_REPO_PROBE_CACHE_MAX);
     }
 }

@@ -356,7 +356,18 @@ async fn run_grep(
         return Err(GrepError::new("No session provided to grep".to_string()));
     };
 
-    let is_file = is_file_path(&absolute_path, &session).await;
+    // The common case is a directory, where the git probe targets `absolute_path` itself. When
+    // the executor can run commands concurrently (remote sessions), probe both at once so the
+    // two serial round trips collapse into one; otherwise keep them serial.
+    let (is_file, speculative_git_probe) = if session.supports_parallel_command_execution() {
+        let (is_file, probe) = futures::join!(
+            is_file_path(&absolute_path, &session),
+            is_git_repository(&absolute_path, &session)
+        );
+        (is_file, Some(probe))
+    } else {
+        (is_file_path(&absolute_path, &session).await, None)
+    };
     let execute_directory = if is_file {
         // If path is a file, use its parent directory as the execution directory.
         // Use StandardizedPath instead of std::path::Path to avoid encoding a
@@ -376,13 +387,15 @@ async fn run_grep(
         Cow::Borrowed(absolute_path.as_str())
     };
 
-    // TODO(CODE-239): Cache the result of this check.
-    let is_grep_in_git_repo = is_git_repository(&execute_directory, &session)
-        .await
-        .unwrap_or_else(|e| {
-            log::error!("Failed to run command to check if in git repository: {e:?}");
-            false
-        });
+    // `is_git_repository` caches successful probes briefly (see `GIT_REPO_PROBE_TTL`).
+    let git_probe = match speculative_git_probe {
+        Some(probe) if !is_file => probe,
+        _ => is_git_repository(&execute_directory, &session).await,
+    };
+    let is_grep_in_git_repo = git_probe.unwrap_or_else(|e| {
+        log::error!("Failed to run command to check if in git repository: {e:?}");
+        false
+    });
     // These commands run through the session's command executor, not the user's prompt.
     let shell_type = session.shell().shell_type().executor_syntax();
 
