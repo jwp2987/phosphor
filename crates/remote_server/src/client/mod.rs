@@ -1118,20 +1118,7 @@ impl RemoteServerClient {
             }),
         );
 
-        // Generators are issued per keystroke and superseded by the next one; the caller
-        // cancels a superseded one by dropping this future. Without telling the server, the
-        // command keeps running remotely and its output streams back over the shared ssh
-        // connection, delaying interactive keystrokes (#1128). The guard sends an `Abort` on
-        // drop; the server drops the handler future, which kills the command's process group.
-        // A server that does not know the request (older, or already finished) ignores it.
-        let mut abort_guard = AbortOnDrop {
-            client: self,
-            request_id: Some(request_id.clone()),
-        };
-        let response = self.send_request(request_id, msg).await;
-        // Completed (including timeout, which sends its own `Abort`): nothing to cancel.
-        abort_guard.request_id = None;
-        let response = response?;
+        let response = self.send_request(request_id, msg).await?;
 
         match response.message {
             Some(server_message::Message::RunCommandResponse(resp)) => Ok(resp),
@@ -1147,6 +1134,13 @@ impl RemoteServerClient {
     /// Registers a oneshot channel keyed by `request_id`, sends the message
     /// through the outbound channel, and awaits the correlated response.
     /// Times out after `REQUEST_TIMEOUT` and sends an `Abort` to the server.
+    ///
+    /// Dropping the returned future before it completes also sends an `Abort` (#1128, #1241):
+    /// generators are superseded per keystroke, agent reads and searches are cancelled by Stop,
+    /// link probes by the next hover. Without telling the server the work runs to completion
+    /// remotely and its result crosses the shared ssh connection to be discarded. The server
+    /// drops the handler future, which kills the command's process group; a server that does
+    /// not know the request (older, or already finished) ignores it.
     async fn send_request(
         &self,
         request_id: RequestId,
@@ -1154,22 +1148,31 @@ impl RemoteServerClient {
     ) -> Result<ServerMessage, ClientError> {
         let (tx, rx) = oneshot::channel();
         self.pending_requests.insert(request_id.clone(), tx);
+        let mut abort_guard = AbortOnDrop {
+            client: self,
+            request_id: Some(request_id.clone()),
+        };
 
         // Check if the reader task has already marked the connection as dead.
         // The DashMap lock from `insert` above synchronizes with the lock from
         // `clear` in `reader_task`, so if `clear` ran before our insert the
         // flag is guaranteed to be visible here.
         if self.disconnected.load(Ordering::Acquire) {
+            abort_guard.request_id = None;
             self.pending_requests.clear();
             return Err(ClientError::Disconnected);
         }
 
         if self.outbound_tx.send(msg).await.is_err() {
+            abort_guard.request_id = None;
             self.pending_requests.remove(&request_id);
             return Err(ClientError::Disconnected);
         }
 
-        let result = match rx.with_timeout(REQUEST_TIMEOUT).await {
+        let result = rx.with_timeout(REQUEST_TIMEOUT).await;
+        // Settled one way or another: nothing is left to cancel on drop.
+        abort_guard.request_id = None;
+        let result = match result {
             Ok(Ok(inner)) => inner,
             Ok(Err(_)) => return Err(ClientError::ResponseChannelClosed),
             Err(_) => {
@@ -1409,7 +1412,8 @@ pub fn spawn_stderr_forwarder(
 }
 
 /// Sends an `Abort` for an in-flight request if dropped while still armed, i.e. when the
-/// future awaiting the response is cancelled before it completes.
+/// future awaiting the response is cancelled before it completes. Armed by `send_request` for
+/// every awaited request; disarmed on every settled path.
 struct AbortOnDrop<'a> {
     client: &'a RemoteServerClient,
     request_id: Option<RequestId>,
