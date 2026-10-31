@@ -132,7 +132,7 @@ fn test_malicious_histfile_path_does_not_execute_injected_commands() {
         let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
 
         // read_history for a WarpifiedRemote session calls read_history_from_file,
-        // which builds `cat '{escaped_path}'` and executes it via TestCommandExecutor
+        // which builds `tail -n N '{escaped_path}'` and executes it via TestCommandExecutor
         let _ = session.read_history(false).await;
 
         assert!(
@@ -983,4 +983,26 @@ mod subshell_remote_host {
         sessions.set_remote_host_id_for_descendants(OTHER.into(), Some(host()));
         assert_eq!(host_of(&sessions, SUDO), None);
     }
+}
+
+/// #1242: a remote history is read as its newest lines, not whole, unless the override says so.
+#[test]
+fn remote_history_is_read_as_a_bounded_tail() {
+    use super::{remote_history_max_lines_from_env, remote_history_read_command};
+
+    assert_eq!(remote_history_max_lines_from_env(None), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some("abc")), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some(" 1000 ")), Some(1000));
+    assert_eq!(remote_history_max_lines_from_env(Some("0")), None);
+
+    // The path is passed through already quoted; the command never re-interprets it.
+    let quoted = "'/home/u/.bash_history'";
+    assert_eq!(
+        remote_history_read_command(quoted, Some(50_000)),
+        "tail -n 50000 '/home/u/.bash_history'"
+    );
+    assert_eq!(
+        remote_history_read_command(quoted, None),
+        "cat '/home/u/.bash_history'"
+    );
 }

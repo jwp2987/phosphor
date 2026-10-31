@@ -650,6 +650,32 @@ impl Sessions {
     }
 }
 
+/// How many of the newest history lines a remote session reads at start (#1242). The whole file
+/// used to be `cat` through the shared ssh connection: a multi-MB history (unlimited
+/// `HISTFILESIZE`, zsh `SAVEHIST=100000`) was one bulk response queued ahead of the first
+/// completions, and on a slow link ahead of keystroke echo (#985). Large enough that an ordinary
+/// history is read whole; `PHOSPHOR_SSH_HISTORY_MAX_LINES` overrides it (0 = the whole file).
+const DEFAULT_REMOTE_HISTORY_MAX_LINES: usize = 50_000;
+
+/// `PHOSPHOR_SSH_HISTORY_MAX_LINES`: unset or unparsable is the default, `0` is unbounded.
+fn remote_history_max_lines_from_env(value: Option<&str>) -> Option<usize> {
+    match value.map(str::trim).and_then(|v| v.parse::<usize>().ok()) {
+        Some(0) => None,
+        Some(n) => Some(n),
+        None => Some(DEFAULT_REMOTE_HISTORY_MAX_LINES),
+    }
+}
+
+/// The remote command that reads a (shell-quoted) history file: its newest `max_lines` lines, or
+/// all of it. `tail -n` is POSIX and line-based, so an entry is never cut mid-line; the parsers
+/// drop a leading partial multi-line entry's continuation on their own.
+fn remote_history_read_command(quoted_history_file: &str, max_lines: Option<usize>) -> String {
+    match max_lines {
+        Some(max_lines) => format!("tail -n {max_lines} {quoted_history_file}"),
+        None => format!("cat {quoted_history_file}"),
+    }
+}
+
 impl From<SessionType> for command_corrections::SessionType {
     fn from(session_type: SessionType) -> Self {
         match session_type {
@@ -2008,13 +2034,16 @@ impl Session {
         // be typed into the PTY raw (#867).
         let quoted_history_file =
             shell_quote_arg(history_file, self.info.shell.shell_type().executor_syntax());
+        let command = remote_history_read_command(
+            &quoted_history_file,
+            remote_history_max_lines_from_env(
+                std::env::var("PHOSPHOR_SSH_HISTORY_MAX_LINES")
+                    .ok()
+                    .as_deref(),
+            ),
+        );
         let output_in_bytes = self
-            .execute_command(
-                format!("cat {quoted_history_file}").as_str(),
-                None,
-                env_vars,
-                ExecuteCommandOptions::default(),
-            )
+            .execute_command(&command, None, env_vars, ExecuteCommandOptions::default())
             .await
             .ok()?;
 
