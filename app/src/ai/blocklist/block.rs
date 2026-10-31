@@ -4309,6 +4309,20 @@ impl AIBlock {
             .collect()
     }
 
+    /// Whether `view_id` is one of [`Self::settled_action_card_view_ids`], without allocating.
+    /// The id comparison runs first so the common miss costs one comparison per card.
+    pub fn is_settled_action_card(&self, view_id: EntityId, app: &AppContext) -> bool {
+        self.requested_commands
+            .values()
+            .chain(self.requested_mcp_tools.values())
+            .map(|card| &card.view)
+            .filter(|view| view.id() == view_id)
+            .any(|view| {
+                !view.as_ref(app).is_editing()
+                    && Some(view_id) != self.pending_command_card_view_id(app)
+            })
+    }
+
     /// Returns the server output ID for this AI block, if available.
     pub fn server_output_id(&self, app: &AppContext) -> Option<ServerOutputId> {
         self.model.server_output_id(app)

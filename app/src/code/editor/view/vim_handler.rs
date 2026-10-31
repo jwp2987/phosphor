@@ -514,7 +514,7 @@ impl VimHandler for CodeEditorView {
     }
 
     fn cycle_search(&mut self, direction: &Direction, ctx: &mut ViewContext<Self>) {
-        let Some(find_bar) = &self.find_bar else {
+        let Some(find_bar) = self.ensure_find_bar(ctx) else {
             return;
         };
 

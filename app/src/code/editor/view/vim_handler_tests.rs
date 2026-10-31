@@ -2459,3 +2459,27 @@ fn quiescent_unfocused_editor_schedules_no_further_frames() {
         );
     });
 }
+
+/// #1267: an editor owns no find bar, go-to-line dialog or comment editor (three to four full
+/// text editors) until one is first used. Agent answers keep one editor per fenced code block.
+#[test]
+fn test_find_goto_and_comment_subviews_are_created_lazily() {
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor(FIND_BAR_TEST_TEXT, &mut app);
+        editor.read(&app, |view, _| {
+            assert!(view.find_bar.is_none());
+            assert!(view.goto_line_dialog.is_none());
+            assert!(view.active_comment_editor.is_none());
+            assert!(view.find_enabled);
+        });
+
+        editor.update(&mut app, |view, ctx| {
+            view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
+        });
+        editor.read(&app, |view, ctx| {
+            assert!(view.find_bar.as_ref().is_some_and(|bar| bar.as_ref(ctx).is_open()));
+            assert!(view.goto_line_dialog.is_none());
+        });
+    });
+}
