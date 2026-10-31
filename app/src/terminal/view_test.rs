@@ -3245,7 +3245,8 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
 /// scrollback history that lives in flat storage, not just the live grid rows.
 #[test]
 fn test_max_retained_lines_setting_bounds_retained_history() {
-    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    // Shipped builds enable this flag by default (`enabled_features()`); tests start with every
+    // flag off, so force it to move a finished block's scrollback into flat storage.
     let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);

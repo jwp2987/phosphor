@@ -851,7 +851,9 @@ where
                 warp_core::features::set_overrides(feature_flag_overrides);
 
                 let mut state = State::default();
-                let mut buf = [0u8; READ_BUFFER_SIZE];
+                // Heap (calloc) rather than stack: a stack array is memset up front and
+                // keeps ~256 KB resident per pane even when the pane is idle.
+                let mut buf = vec![0u8; READ_BUFFER_SIZE].into_boxed_slice();
 
                 // Keep track of whether we've "drained" read and write
                 // readiness.  Once we receive a read or write readiness event,

@@ -3360,7 +3360,8 @@ fn test_max_visible_columns_tracks_visible_blocks() {
 
 #[test]
 fn test_retained_lines_counts_flat_storage_history() {
-    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    // Shipped builds enable this flag by default (`enabled_features()`); tests start with every
+    // flag off, so force it to move a finished block's scrollback into flat storage.
     let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
     let mut block_list =
         new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
@@ -3496,4 +3497,38 @@ fn test_pixel_only_resize_skips_height_tree_rebuild() {
     };
     block_list.resize(&narrower, true);
     assert_eq!(block_list.sumtree_rebuild_count(), rebuilds_before + 1);
+}
+
+/// #1152: with `MaximizeFlatStorage` on (the shipped default), finishing a block compacts its
+/// content into flat storage, so a finished block with screens of output holds far less memory
+/// than the same block finished with the flag off. (That the flag is in the shipped default set
+/// is pinned by `maximize_flat_storage_is_enabled_by_default` in `lib_tests.rs`.)
+#[test]
+fn test_flat_storage_at_finish_reduces_finished_block_memory() {
+    let output = (0..100)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let measure = |flat: bool| {
+        let _flag = FeatureFlag::MaximizeFlatStorage.override_enabled(flat);
+        let mut block_list =
+            new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+        let index = insert_block(&mut block_list, "seq\n", &output);
+        insert_block(&mut block_list, "echo\n", "done\n");
+        let block = &block_list.blocks()[index.0];
+        (
+            block.grid_storage_lines(),
+            block.estimated_memory_usage_bytes(),
+        )
+    };
+    let (lines_off, bytes_off) = measure(false);
+    let (lines_on, bytes_on) = measure(true);
+    assert!(
+        lines_on < lines_off,
+        "flat storage must hold the finished rows: {lines_on} live lines vs {lines_off}"
+    );
+    assert!(
+        bytes_on < bytes_off,
+        "estimated memory must drop: {bytes_on} B vs {bytes_off} B"
+    );
 }

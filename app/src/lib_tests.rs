@@ -363,6 +363,18 @@ fn typeahead_handoff_is_enabled_by_default() {
     }
 }
 
+/// #1152: finished blocks are flattened by default. Reads process env, like the test above.
+#[test]
+fn maximize_flat_storage_is_enabled_by_default() {
+    if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
+        assert!(enabled_features().contains(&FeatureFlag::MaximizeFlatStorage));
+    }
+    // ... and `ZAP_DISABLED_FEATURES=maximize_flat_storage` is the kill switch.
+    let mut flags: HashSet<FeatureFlag> = [FeatureFlag::MaximizeFlatStorage].into_iter().collect();
+    apply_feature_env_overrides(&mut flags, None, Some("maximize-flat-storage"));
+    assert!(!flags.contains(&FeatureFlag::MaximizeFlatStorage));
+}
+
 #[test]
 fn disabled_features_wins_over_unstable_features() {
     let mut flags: HashSet<FeatureFlag> = [FeatureFlag::TypeaheadHandoff].into_iter().collect();
