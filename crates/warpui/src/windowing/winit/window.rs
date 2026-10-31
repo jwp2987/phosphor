@@ -878,6 +878,15 @@ impl Window {
         Ok(())
     }
 
+    /// Asks winit for another `RedrawRequested`, keeping the scene that was already built. Used to
+    /// retry a frame that was skipped before anything was presented, where the scene is still
+    /// valid (unlike [`platform::WindowContext::request_redraw`], which discards it).
+    pub(super) fn request_redraw_keeping_scene(&self) {
+        if let Some(inner) = self.inner.borrow().as_ref() {
+            inner.window.request_redraw();
+        }
+    }
+
     pub fn render(
         &self,
         new_scene: Option<Rc<Scene>>,

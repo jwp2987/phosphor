@@ -1,3 +1,4 @@
+mod draw_retry;
 mod key_events;
 
 #[cfg(test)]
@@ -9,6 +10,7 @@ use std::mem::ManuallyDrop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::notification::RequestPermissionsOutcome;
 
+use draw_retry::{DrawRetryState, RateLimitedSummary};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::AbortHandle;
 use instant::{Duration, Instant};
@@ -56,6 +58,9 @@ use self::key_events::{
 
 /// This is the time duration beyond which clicks get treated as separate single clicks instead of
 /// double-click, triple-click, etc.
+/// At most one WARN summary of transiently skipped frames per this interval.
+const SKIPPED_FRAME_LOG_INTERVAL: Duration = Duration::from_secs(10);
+
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 
 /// The debounce timeout for drag-and-drop files. Multiple DroppedFile events
@@ -173,6 +178,11 @@ struct WindowState {
     scroll_velocity: Option<ScrollVelocity>,
     /// Abort handle for momentum scrolling timer. Present only during the momentum phase.
     momentum_scroll_abort: Option<AbortHandle>,
+    /// Failure history for frames that could not be drawn; see [`draw_retry`].
+    draw_retry: DrawRetryState,
+    /// When set, a frame was skipped for a transient reason and a redraw must be requested once
+    /// this instant passes. Serviced at the top of [`EventLoop::handle_event`].
+    redraw_retry_at: Option<Instant>,
     /// For touch events, stores whether soft keyboard was requested during LeftMouseDown.
     /// This is needed because touch keyboard updates are deferred to LeftMouseUp, but the
     /// UI element only requests the keyboard during LeftMouseDown.
@@ -195,6 +205,8 @@ impl WindowState {
             last_touch_purpose: None,
             scroll_velocity: None,
             momentum_scroll_abort: None,
+            draw_retry: DrawRetryState::default(),
+            redraw_retry_at: None,
             #[cfg(target_family = "wasm")]
             pending_soft_keyboard_request: false,
         }
@@ -550,6 +562,9 @@ pub(super) struct EventLoop {
     /// signal that merely happened to arrive around the same time
     /// (jwp2987/phosphor#726).
     terminating_signal: Option<i32>,
+    /// Rate limits the WARN summary of frames skipped for transient reasons (acquire timeouts,
+    /// occlusion), which can repeat many times a second while a window stays occluded.
+    skipped_frame_log: RateLimitedSummary,
 }
 
 impl EventLoop {
@@ -574,12 +589,52 @@ impl EventLoop {
             #[cfg(target_family = "wasm")]
             soft_keyboard_manager: None,
             terminating_signal: None,
+            skipped_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
         }
+    }
+
+    /// Requests the redraws that skipped frames asked for (see [`draw_retry`]) once their delay
+    /// has passed, and, if any are still pending, makes the loop wake for the earliest one.
+    /// `handle_event` resets the control flow to `Wait` on every event, so this runs right after
+    /// that and re-arms the deadline each time.
+    fn service_redraw_retries(&mut self, window_target: &ActiveEventLoop) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut next_deadline: Option<Instant> = None;
+        for state in self.state.windows.values_mut() {
+            match state.redraw_retry_at {
+                Some(deadline) if deadline <= now => {
+                    state.redraw_retry_at = None;
+                    due.push(state.window_id);
+                }
+                Some(deadline) => {
+                    next_deadline = Some(next_deadline.map_or(deadline, |d| d.min(deadline)));
+                }
+                None => {}
+            }
+        }
+
+        for window_id in due {
+            let window = self
+                .ui_app
+                .read(|ctx| ctx.windows().platform_window(window_id));
+            if let Some(window) = window {
+                downcast_window(window.as_ref()).request_redraw_keeping_scene();
+            }
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(deadline) = next_deadline {
+            window_target.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = (next_deadline, window_target);
     }
 
     /// Handles a single [`winit::event::Event`].
     pub fn handle_event(&mut self, evt: Event<CustomEvent>, window_target: &ActiveEventLoop) {
         window_target.set_control_flow(ControlFlow::Wait);
+        self.service_redraw_retries(window_target);
 
         match evt {
             Event::NewEvents(StartCause::Init) => {
@@ -1064,6 +1119,7 @@ impl EventLoop {
         window_id: winit::window::WindowId,
         window_target: &ActiveEventLoop,
     ) {
+        let winit_window_id = window_id;
         let Some(window_id) = self
             .state
             .windows
@@ -1116,24 +1172,54 @@ impl EventLoop {
         })();
 
         match render_result {
-            Ok(_) => self.callbacks.for_window(window).frame_drawn(),
+            Ok(_) => {
+                if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                    state.draw_retry.on_frame_drawn();
+                }
+                self.callbacks.for_window(window).frame_drawn()
+            }
             Err(err) => {
-                log::warn!("Failed to render frame: {err:#}");
-                self.callbacks.for_window(window).frame_failed_to_draw();
+                let decision = match self.state.windows.get_mut(&winit_window_id) {
+                    Some(state) => state.draw_retry.on_frame_error(&err),
+                    None => draw_retry::FrameErrorDecision {
+                        counts_toward_exit: true,
+                        recreate_renderer: false,
+                        retry_after: None,
+                    },
+                };
 
-                match err {
-                    // If we failed to configure the surface, or...
-                    renderer::Error::SurfaceConfigureError { .. }
-                    // If the device was lost, or...
-                    | renderer::Error::SurfaceError(renderer::GetSurfaceTextureError::Lost)
-                    | renderer::Error::DeviceLost
-                    // If we ran into any other wgpu error -
-                    | renderer::Error::Unknown(_)=> {
-                        log::warn!("Recreating the renderer in an attempt to recover...");
-                        window.drop_renderer(Box::new(window_target.owned_display_handle()));
-                        window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
+                if decision.retry_after.is_some() && !decision.counts_toward_exit {
+                    // A skipped frame, not a render fault. `Timeout` costs a full second of
+                    // blocked main thread, so say so, but only once per interval.
+                    log::debug!("Skipping frame: {err:#}");
+                    if let Some(summary) = self.skipped_frame_log.record(Instant::now(), 0.) {
+                        log::warn!(
+                            "Skipped {} frame(s) that could not be drawn (last: {err:#}); \
+                             retrying",
+                            summary.count
+                        );
                     }
-                    _ => {}
+                } else {
+                    log::warn!("Failed to render frame: {err:#}");
+                }
+
+                // Skipped frames are not render faults and must not feed the crash-recovery
+                // exit (three consecutive reports call `process::exit(1)`).
+                if decision.counts_toward_exit {
+                    self.callbacks.for_window(window).frame_failed_to_draw();
+                }
+
+                if decision.recreate_renderer {
+                    log::warn!("Recreating the renderer in an attempt to recover...");
+                    window.drop_renderer(Box::new(window_target.owned_display_handle()));
+                    window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
+                }
+
+                if let Some(delay) = decision.retry_after {
+                    if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                        state.redraw_retry_at = Some(Instant::now() + delay);
+                    }
+                    self.service_redraw_retries(window_target);
                 }
             }
         }

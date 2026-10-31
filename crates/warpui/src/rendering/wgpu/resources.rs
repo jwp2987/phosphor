@@ -182,14 +182,23 @@ impl Resources {
             Err(error) => error,
         };
 
-        log::warn!("Encountered error while getting the next swap chain texture: {error:#}");
+        // Timeouts and occlusion are routine and can repeat while a window is hidden; the event
+        // loop retries them and logs a rate-limited summary, so don't warn on every one.
+        if matches!(
+            error,
+            GetSurfaceTextureError::Timeout | GetSurfaceTextureError::Occluded
+        ) {
+            log::debug!("Could not get the next swap chain texture: {error:#}");
+        } else {
+            log::warn!("Encountered error while getting the next swap chain texture: {error:#}");
+        }
         match error {
             GetSurfaceTextureError::Timeout
             | GetSurfaceTextureError::Validation
             | GetSurfaceTextureError::Occluded
             | GetSurfaceTextureError::ConfigurationError(_) => {
                 // Skip this frame and hope it resolves itself by the next one.
-                log::info!("Skipping rendering the current frame...");
+                log::debug!("Skipping rendering the current frame...");
                 Err(error)
             }
             GetSurfaceTextureError::Lost | GetSurfaceTextureError::Outdated => {
