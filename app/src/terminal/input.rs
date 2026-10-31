@@ -13785,7 +13785,10 @@ impl Input {
         let decision = enter_verdict_wait_decision(pending, waited);
         if decision != EnterVerdictWait::Wait {
             warpui::input_order::log_hop("verdict_wait_end", || {
-                format!("decision={decision:?} waited_ms={:.1}", waited.as_secs_f64() * 1000.)
+                format!(
+                    "decision={decision:?} waited_ms={:.1}",
+                    waited.as_secs_f64() * 1000.
+                )
             });
         }
         match decision {
