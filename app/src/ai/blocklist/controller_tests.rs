@@ -2358,7 +2358,9 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
 
 /// #1178: the facts under which a finished monitored command is reported to the model.
 mod monitored_completion {
-    use super::super::{silent_stop_reason, MonitoredCompletionFacts};
+    use super::super::{
+        MonitoredCompletionDecision, MonitoredCompletionFacts, silent_stop_reason,
+    };
     use super::*;
 
     fn idle_after_text_reply() -> MonitoredCompletionFacts {
@@ -2467,5 +2469,264 @@ mod monitored_completion {
             silent_stop_reason(Some(CancellationReason::ManuallyCancelled), &[interrupted]),
             None
         );
+    }
+
+    /// A request about the conversation is in flight or coming -- the model mid-reply, a tool
+    /// step, a compaction, a scheduled resume: the completion is held for that request's end,
+    /// never dropped. Fails on the old code, which only knew send-or-nothing.
+    #[test]
+    fn a_completion_while_a_request_is_in_flight_or_coming_is_deferred() {
+        use MonitoredCompletionDecision as D;
+        let base = idle_after_text_reply();
+        // Mid-reply the status is still `InProgress`.
+        assert_eq!(
+            MonitoredCompletionFacts {
+                stream_in_flight: true,
+                last_turn_succeeded: false,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                mid_compaction: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                has_unsent_actions: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                resume_scheduled: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+    }
+
+    /// Nothing coming and the turn did not end normally (the user stopped it, it failed), or
+    /// the block was already reported, or the pane is closed: dropped, whatever else is going on.
+    #[test]
+    fn a_stopped_or_failed_turn_with_nothing_coming_drops_the_completion() {
+        use MonitoredCompletionDecision as D;
+        assert_eq!(MonitoredCompletionFacts::default().decision(), D::Drop);
+        assert_eq!(
+            MonitoredCompletionFacts {
+                already_followed_up: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                suspended_for_close: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(idle_after_text_reply().decision(), D::Send);
+    }
+
+    /// The controller holds a completion that arrives while a stream is in flight, keeps it
+    /// across the command's own optimistic completion, and drops it when the user stops the
+    /// conversation. Fails on the old code: the first call returned false and nothing was kept.
+    #[test]
+    fn a_completion_during_the_models_reply_is_held_until_the_user_stops_or_the_turn_ends() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    assert!(
+                        !controller.follow_up_on_monitored_command_completed(
+                            conversation_id,
+                            &block_id,
+                            ctx
+                        ),
+                        "nothing is sent into a running stream"
+                    );
+                    assert!(
+                        controller.has_deferred_monitored_completion(conversation_id),
+                        "the completion is held for the stream's end"
+                    );
+                    // The command finishing is not the user acting: the hold survives.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::OptimisticCLISubagentCompletion,
+                        ctx,
+                    );
+                    assert!(controller.has_deferred_monitored_completion(conversation_id));
+                    // The user stopping (or sending a new prompt) drops it: nothing resumes on
+                    // their behalf.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                    assert!(!controller.has_deferred_monitored_completion(conversation_id));
+                });
+            });
+        });
+    }
+}
+
+/// The end-of-step decision behind the `FinishedAction` subscriber: every finished batch ends
+/// in a follow-up request or in a final status, and a stop nobody asked for is named.
+mod finished_batch {
+    use super::super::{FollowUpTrigger, plan_finished_batch};
+    use super::*;
+    use crate::ai::agent::{AIAgentActionResult, AIAgentActionResultType};
+    use crate::ai::agent::{ReadFilesResult, RequestCommandOutputResult};
+    use crate::terminal::model::block::BlockId;
+    use std::sync::Arc;
+
+    fn result_of(result: AIAgentActionResultType) -> Arc<AIAgentActionResult> {
+        Arc::new(AIAgentActionResult {
+            id: AIAgentActionId::from("call".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result,
+        })
+    }
+
+    fn completed(exit_code: i32, interrupted: bool) -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::Completed {
+                block_id: BlockId::new(),
+                command: "make test".to_owned(),
+                output: String::new(),
+                exit_code: exit_code.into(),
+                start_ts: None,
+                completed_ts: None,
+                interrupted,
+            },
+        ))
+    }
+
+    fn rejected() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::CancelledBeforeExecution,
+        ))
+    }
+
+    fn cancelled_read() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::ReadFiles(ReadFilesResult::Cancelled))
+    }
+
+    /// A finished command -- succeeded, failed, or exited 130 on its own -- goes back to the
+    /// model; the turn is not over.
+    #[test]
+    fn a_finished_result_sends_an_automatic_follow_up() {
+        for result in [completed(0, false), completed(2, false), completed(130, false)] {
+            let plan = plan_finished_batch(None, &[result], false, false);
+            assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+        }
+        // One finished result among cancelled ones is enough.
+        let plan = plan_finished_batch(None, &[rejected(), completed(0, false)], false, false);
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+    }
+
+    /// A user Reject or Stop ends the turn quietly: the user chose it.
+    #[test]
+    fn a_user_stop_ends_the_turn_without_a_notice() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert_eq!(plan.silent_stop, None);
+    }
+
+    /// A cancellation nobody asked for (a ^C into the command, a cancelled tool) ends the turn
+    /// with a visible reason (#1178): never a finished-looking turn with no message.
+    #[test]
+    fn an_unrequested_cancellation_ends_the_turn_with_a_reason() {
+        let plan = plan_finished_batch(None, &[completed(130, true)], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert!(
+            plan.silent_stop
+                .as_deref()
+                .is_some_and(|reason| reason.contains("make test")),
+            "{:?}",
+            plan.silent_stop
+        );
+        let plan = plan_finished_batch(None, &[cancelled_read()], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert!(plan.silent_stop.is_some());
+    }
+
+    /// An optimistic long-running-command completion or a revert is the terminal result:
+    /// `Success`, no follow-up, no notice -- whatever the results say.
+    #[test]
+    fn a_succeeded_cancellation_ends_the_turn_successfully() {
+        for reason in [
+            CancellationReason::OptimisticCLISubagentCompletion,
+            CancellationReason::Reverted,
+        ] {
+            let plan = plan_finished_batch(Some(reason), &[rejected()], false, false);
+            assert_eq!(plan.follow_up, None);
+            assert_eq!(plan.final_status, ConversationStatus::Success);
+            assert_eq!(plan.silent_stop, None);
+        }
+    }
+
+    /// A requested follow-up goes out even when nothing else would send one; a passive code
+    /// diff never autosends.
+    #[test]
+    fn manual_follow_up_and_passive_code_diff_override_the_results() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            true,
+        );
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::UserRequested));
+        let plan = plan_finished_batch(None, &[completed(0, false)], true, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Success);
+        assert_eq!(plan.silent_stop, None);
     }
 }

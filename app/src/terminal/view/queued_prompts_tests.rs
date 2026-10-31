@@ -2196,3 +2196,108 @@ fn queued_prompts_of_a_removed_conversation_come_back_into_the_input() {
         assert_eq!(queue_len(&app, conversation_id), 0);
     });
 }
+
+#[test]
+fn a_queued_lrc_prompt_waits_for_the_follow_up_of_a_finished_monitored_command() {
+    // The model answered the "still running" snapshot with text, so its turn ended while the
+    // command ran; a prompt the user typed meanwhile was queued as `LrcAutoQueue`. When the
+    // command finished, the controller resumed the conversation to report it (#1178) and the
+    // `FinishedSubagent` right behind that resume found the turn in progress and fired the row
+    // -- a same-conversation follow-up that cancelled the resume and lost the command's output.
+    // The controller now announces the resume and the view keeps the row for the resume's end,
+    // exactly as it does for `on_user_block_completed`'s take-over resume.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let command_block_id = BlockId::new();
+
+        let (conversation_id, task_id) = terminal.update(&mut app, |view, ctx| {
+            let block = view.insert_dummy_ai_block(
+                "run the migration".to_owned(),
+                "still running".to_owned(),
+                ctx,
+            );
+            let conversation_id = block.as_ref(ctx).conversation_id();
+            let terminal_view_id = view.view_id;
+            let task_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let conversation = history
+                    .conversation_mut(&conversation_id)
+                    .expect("dummy block creates its conversation");
+                conversation.update_status(ConversationStatus::Success, terminal_view_id, ctx);
+                conversation.create_optimistic_cli_subagent_task_for_test(&command_block_id)
+            });
+            (conversation_id, task_id)
+        });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                lrc_auto_query("queued during the command"),
+                ctx,
+            );
+        });
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "precondition: deferred while the command runs"
+        );
+
+        // The command finished. In the `BlockCompleted` hook's order: the subagent task is
+        // finished, the controller announces its resume, the resume puts the conversation back
+        // in progress (whose status event runs the handoff retry), then `FinishedSubagent` is
+        // delivered.
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .clear_optimistic_cli_subagent_task_for_test();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_ai_controller_event(
+                view.ai_controller.clone(),
+                &BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id },
+                ctx,
+            );
+        });
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::InProgress,
+        );
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "the queued row must not fire into the follow-up that reports the command"
+        );
+        assert_eq!(
+            queue_len(&app, conversation_id),
+            1,
+            "the row is kept, not dropped"
+        );
+
+        // The follow-up's own turn end drains the queue.
+        set_status(
+            &mut app,
+            &terminal,
+            conversation_id,
+            ConversationStatus::Success,
+        );
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(*ai_query_count.borrow(), 1);
+        assert_eq!(queue_len(&app, conversation_id), 0);
+    });
+}
