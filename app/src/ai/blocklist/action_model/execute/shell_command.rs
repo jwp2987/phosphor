@@ -1725,6 +1725,7 @@ fn action_result_for_write_to_long_running_shell_command(
             exit_code,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::WriteToLongRunningShellCommand(
             WriteToLongRunningShellCommandResult::CommandFinished {
                 block_id,
@@ -1770,6 +1771,7 @@ fn action_result_for_read_shell_command_output(
             block_id,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::ReadShellCommandOutput(
             ReadShellCommandOutputResult::CommandFinished {
                 command,
@@ -1816,6 +1818,7 @@ fn action_result_for_transfer_shell_command_control_to_user(
             exit_code,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::TransferShellCommandControlToUser(
             TransferShellCommandControlToUserResult::CommandFinished {
                 block_id,
