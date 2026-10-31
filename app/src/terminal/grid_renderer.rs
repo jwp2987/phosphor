@@ -47,7 +47,8 @@ use self::cell_type::{CellType, IsFocused, Secret};
 use super::block_filter::{BLOCK_FILTER_DOTTED_LINE_DASH, BLOCK_FILTER_DOTTED_LINE_WIDTH};
 use super::blockgrid_renderer::GridRenderParams;
 use super::model::char_or_str::CharOrStr;
-use super::model::grid::grid_handler::{ContainsPoint, GridHandler, Link};
+use super::model::grid::grid_handler::{ContainsPoint, Link};
+use super::model::grid::grid_source::GridSource;
 use super::model::grid::RespectDisplayedOutput;
 use super::model::image_map::{ImagePlacementData, StoredImageMetadata};
 use super::model::terminal_model::RangeInModel;
@@ -292,8 +293,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn render_grid<'a>(
-    grid: &GridHandler,
+pub fn render_grid<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     colors: &color::List,
@@ -470,8 +471,8 @@ pub fn render_grid<'a>(
 
 // TODO (kevin): Solidify highlighted_url and link_tool_tip into one single struct.
 #[allow(clippy::too_many_arguments)]
-fn render_grid_without_ligatures<'a>(
-    grid: &GridHandler,
+fn render_grid_without_ligatures<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     visible_rows: impl Iterator<Item = usize>,
@@ -917,8 +918,8 @@ fn render_grid_without_ligatures<'a>(
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn render_cell(
-    grid: &GridHandler,
+fn render_cell<G: GridSource>(
+    grid: &G,
     offset_row: usize,
     col: usize,
     cell: &Cell,
@@ -1006,8 +1007,8 @@ fn render_cell(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_grid_with_ligatures<'a>(
-    grid: &GridHandler,
+fn render_grid_with_ligatures<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     visible_rows: impl Iterator<Item = usize>,
@@ -2997,8 +2998,8 @@ struct DottedLineInfo {
 
 /// Renders dotted line(s) around a row to represent skipped lines when a block
 /// filter is active, if rows are skipped.
-fn maybe_render_dotted_lines(
-    grid: &GridHandler,
+fn maybe_render_dotted_lines<G: GridSource>(
+    grid: &G,
     row: usize,
     prev_row: Option<usize>,
     offset_row: usize,

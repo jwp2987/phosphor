@@ -1,5 +1,6 @@
 mod displayed_output;
 pub mod grid_handler;
+pub mod grid_source;
 mod grid_storage;
 mod indexing;
 mod selection_cursor;

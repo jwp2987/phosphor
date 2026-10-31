@@ -36,6 +36,8 @@ use warp_terminal::model::grid::CellType;
 use warp_terminal::model::grid::FlatStorage;
 use warp_terminal::model::grid::{HyperlinkId, HyperlinkRegistry};
 pub use warp_terminal::model::TermMode;
+
+pub use image::ImagePlacement;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warp_util::path::CleanPathResult;
 use warpui::color::ColorU;
