@@ -358,9 +358,27 @@ fn disabled_features_env_value_names_the_typeahead_handoff() {
 /// only checks the default when the opt-out variable is absent.
 #[test]
 fn typeahead_handoff_is_enabled_by_default() {
-    if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
-        assert!(enabled_features().contains(&FeatureFlag::TypeaheadHandoff));
+    if std::env::var_os("ZAP_DISABLED_FEATURES").is_none()
+        && std::env::var_os("ZAP_WINDOWS_TYPEAHEAD_HANDOFF").is_none()
+    {
+        assert_eq!(
+            enabled_features().contains(&FeatureFlag::TypeaheadHandoff),
+            !cfg!(windows)
+        );
     }
+}
+
+/// #1162: on Windows the hand-off is off unless opted in; elsewhere it is always on, and the
+/// Windows opt-in is ignored.
+#[test]
+fn typeahead_handoff_default_is_off_only_on_windows() {
+    assert!(typeahead_handoff_default_on(false, None));
+    assert!(typeahead_handoff_default_on(false, Some("0")));
+    assert!(!typeahead_handoff_default_on(true, None));
+    assert!(!typeahead_handoff_default_on(true, Some("0")));
+    assert!(!typeahead_handoff_default_on(true, Some("")));
+    assert!(typeahead_handoff_default_on(true, Some("1")));
+    assert!(typeahead_handoff_default_on(true, Some(" TRUE ")));
 }
 
 /// #1152: finished blocks are flattened by default. Reads process env, like the test above.

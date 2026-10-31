@@ -3157,6 +3157,14 @@ pub fn init_feature_flags() {
     features::mark_initialized();
 }
 
+/// Whether `FeatureFlag::TypeaheadHandoff` is on by default (#1162): everywhere except Windows,
+/// where `ZAP_WINDOWS_TYPEAHEAD_HANDOFF` set to `1` or `true` opts back in.
+fn typeahead_handoff_default_on(is_windows: bool, windows_opt_in: Option<&str>) -> bool {
+    !is_windows
+        || windows_opt_in
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true"))
+}
+
 /// Returns all feature flags which should be enabled in the current channel.
 pub fn enabled_features() -> HashSet<FeatureFlag> {
     // Enable features overridden for the given channel.
@@ -3203,7 +3211,15 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // The typeahead hand-off (#826/#827): default ON on every channel since 2026-10-18. It is
     // inserted here rather than gated by a Cargo feature so that it can be switched off at
     // runtime, without a rebuild, with `ZAP_DISABLED_FEATURES=typeahead_handoff` (below).
-    flags.insert(FeatureFlag::TypeaheadHandoff);
+    // #1162: not on Windows. On the managed Git Bash under ConPTY the hand-off's own traffic
+    // (requests, reports, the kill prefix and re-submits) loses and garbles keys typed while a
+    // command runs, where the same keys written straight to the pty are all delivered. The
+    // gate is process-wide because the flag is read in places that have no session at hand;
+    // `ZAP_WINDOWS_TYPEAHEAD_HANDOFF=1` turns it back on there for a bisect.
+    let windows_opt_in = std::env::var("ZAP_WINDOWS_TYPEAHEAD_HANDOFF").ok();
+    if typeahead_handoff_default_on(cfg!(windows), windows_opt_in.as_deref()) {
+        flags.insert(FeatureFlag::TypeaheadHandoff);
+    }
 
     // Finished blocks are compacted into flat storage (#1152). `GridHandler::finish` is the
     // only reader: without the flag a finished grid keeps up to a screen of 24-byte cells,
