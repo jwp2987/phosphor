@@ -964,6 +964,33 @@ pub fn establish_codebase_index_connection(database_url: &str) -> Result<SqliteC
     Ok(conn)
 }
 
+/// The log level for a message SQLite reports through its log hook.
+///
+/// `err_code` is an extended error code (https://www.sqlite.org/rescode.html#primary_result_codes_versus_extended_result_codes).
+/// In general, the least-significant byte of an extended error code is the primary error
+/// code it belongs to. Each primary error code can also be used where an extended error
+/// code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
+fn sqlite_log_level(err_code: i32) -> log::Level {
+    let primary_error_code = err_code & 0xFF;
+    match (primary_error_code, err_code) {
+        // This usually means that a schema change invalidated a prepared statement.
+        (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
+        // The WAL was replayed on open because the previous process did not shut down
+        // cleanly (killed, crashed, power loss). Recovery is routine and keeps the data
+        // (#1155), so it is informational.
+        (_, sqlite3::SQLITE_NOTICE_RECOVER_WAL) => log::Level::Info,
+        // These are used with sqlite3_log, in extensions.
+        (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
+        // According to the docs, this error means that the database file was moved (or deleted),
+        // so SQLite can't safely modify it and the rollback journal:
+        //     https://www.sqlite.org/rescode.html#readonly_dbmoved
+        // This is mostly outside of Zap's control (e.g. the user or some system program is
+        // moving around files in the user data directory), so downgrade to a warning.
+        (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
+        _ => log::Level::Error,
+    }
+}
+
 /// Set up SQLite [error logging](https://www.sqlite.org/errlog.html)
 ///
 /// ## Safety
@@ -980,19 +1007,7 @@ unsafe fn init_logging() { unsafe {
         // code it belongs to. Each primary error code can also be used where an extended error
         // code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
         let primary_error_code = err_code & 0xFF;
-        let level = match (primary_error_code, err_code) {
-            // This usually means that a schema change invalidated a prepared statement.
-            (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
-            // These are used with sqlite3_log, in extensions.
-            (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
-            // According to the docs, this error means that the database file was moved (or deleted),
-            // so SQLite can't safely modify it and the rollback journal:
-            //     https://www.sqlite.org/rescode.html#readonly_dbmoved
-            // This is mostly outside of Zap's control (e.g. the user or some system program is
-            // moving around files in the user data directory), so downgrade to a warning.
-            (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
-            _ => log::Level::Error,
-        };
+        let level = sqlite_log_level(err_code);
 
         // Safety: the message pointer came from the SQLite library, which promises that it's a
         // valid C string pointer.

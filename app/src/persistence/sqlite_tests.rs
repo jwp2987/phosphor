@@ -3440,3 +3440,20 @@ fn durability_pragmas_are_skipped_outside_wal_mode() {
         .value;
     assert_eq!(synchronous, 2, "FULL stays in place outside WAL mode");
 }
+
+/// #1155: SQLite's "WAL recovered" notice (283) is routine after an unclean exit and is
+/// logged at INFO; other notices keep their level.
+#[test]
+fn wal_recovery_notice_is_logged_at_info() {
+    use super::sqlite_log_level;
+    use libsqlite3_sys as sqlite3;
+    assert_eq!(
+        sqlite_log_level(sqlite3::SQLITE_NOTICE_RECOVER_WAL),
+        log::Level::Info
+    );
+    assert_eq!(
+        sqlite_log_level(sqlite3::SQLITE_NOTICE_RECOVER_ROLLBACK),
+        log::Level::Warn
+    );
+    assert_eq!(sqlite_log_level(sqlite3::SQLITE_CORRUPT), log::Level::Error);
+}
