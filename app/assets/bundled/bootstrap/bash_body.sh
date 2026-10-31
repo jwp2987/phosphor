@@ -1898,6 +1898,30 @@ fi' RETURN
         HISTIGNORE="*warp_run_generator_command*:*__phosphor_ap_*"
     fi
 
+    # Phosphor (#1283): drop systemd's OSC 3008 prompt hooks. We emulate a login shell, so on
+    # systemd >= 257 hosts /etc/profile.d/80-systemd-osc-context.sh has set
+    #     PS0='$(__systemd_osc_context_ps0)'
+    #     PROMPT_COMMAND+=(__systemd_osc_context_precmdline)
+    # and each of those forks four times plus a `sed` (a command substitution, a nested one for
+    # the machine/boot ids, another for the escaped cwd): ~4.5 ms on EVERY Enter (PS0, before
+    # the command starts) and again on every prompt. Phosphor does not consume OSC 3008 -- its
+    # own Preexec/Precmd hooks already mark command start and end -- so the cost buys nothing
+    # here. Only those two exact entries are removed; whatever else the user put in PS0 or
+    # PROMPT_COMMAND stays. PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT=1 keeps systemd's hooks. The
+    # functions stay defined so nothing else that names them breaks.
+    if [[ -z "${PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT:-}" ]] \
+        && builtin declare -F __systemd_osc_context_ps0 >/dev/null 2>&1; then
+        __phosphor_osc_ps0='$(__systemd_osc_context_ps0)'
+        PS0="${PS0//"$__phosphor_osc_ps0"/}"
+        unset __phosphor_osc_ps0
+        for __phosphor_osc_i in "${!PROMPT_COMMAND[@]}"; do
+            if [[ "${PROMPT_COMMAND[$__phosphor_osc_i]}" == "__systemd_osc_context_precmdline" ]]; then
+                unset "PROMPT_COMMAND[$__phosphor_osc_i]"
+            fi
+        done
+        unset __phosphor_osc_i
+    fi
+
     # If the user has PROMPT_COMMAND set in their bootstrap scripts,
     # save it into USER_PROMPT_COMMAND and install a precmd hook so we can
     # respect it. It behaves exactly the same as precmd (i.e. executed

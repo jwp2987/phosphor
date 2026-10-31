@@ -92,6 +92,61 @@ old = run('shopt -s | command -p cut -f 1').stdout.rstrip("\n")
 new = run(sh)
 check(new.stdout == old and new.returncode == 0, f"{len(old.splitlines())} options, padding kept")
 
+# --- systemd OSC 3008 hooks (#1283) ----------------------------------------------------------
+m = re.search(r"(    if \[\[ -z \"\$\{PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT:-\}\" \].*?\n        unset __phosphor_osc_i\n    fi\n)", text, re.S)
+assert m, "systemd OSC 3008 block not found"
+osc_block = m.group(1)
+print("systemd OSC 3008 hooks")
+fake_profile = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
+fake_profile.write("""
+__systemd_osc_context_ps0() { :; }
+__systemd_osc_context_precmdline() { :; }
+[ -n "$(declare -p PROMPT_COMMAND 2>/dev/null)" ] || PROMPT_COMMAND+=('')
+PROMPT_COMMAND+=(__systemd_osc_context_precmdline)
+PS0='$(__systemd_osc_context_ps0)'"${PS0:-}"
+""")
+fake_profile.close()
+
+
+def osc(pre, env="", strict=True):
+    script = ("set -eu\n" if strict else "") + f". {fake_profile.name}\n{pre}\n{env}\n{osc_block}\n"
+    script += 'printf "PS0=[%s]\\n" "${PS0-}"; declare -p PROMPT_COMMAND 2>/dev/null || echo NOPC'
+    return run(script)
+
+
+r = osc("")
+check(r.returncode == 0 and "PS0=[]" in r.stdout and "precmdline" not in r.stdout, "systemd hooks removed")
+r = run(f"""set -eu
+PS0='before '; PROMPT_COMMAND=(my_cmd)
+. {fake_profile.name}
+PS0="${{PS0}}after"; PROMPT_COMMAND+=(my_other)
+{osc_block}
+printf "PS0=[%s]\\n" "$PS0"; declare -p PROMPT_COMMAND""")
+check(r.returncode == 0 and "PS0=[before after]" in r.stdout and "my_cmd" in r.stdout
+      and "my_other" in r.stdout and "precmdline" not in r.stdout, "user PS0 / PROMPT_COMMAND kept")
+r = run(f"""set -eu
+PROMPT_COMMAND='my_cmd'
+. {fake_profile.name}
+{osc_block}
+declare -p PROMPT_COMMAND""")
+check(r.returncode == 0 and "my_cmd" in r.stdout and "precmdline" not in r.stdout, "string PROMPT_COMMAND promoted to array by systemd")
+r = osc("", "PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT=1")
+check("__systemd_osc_context_ps0" in r.stdout and "precmdline" in r.stdout, "PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT=1 keeps them")
+r = run(f"set -eu\nPS0='mine '\nPROMPT_COMMAND='mine_pc'\n{osc_block}\nprintf '[%s]' \"$PS0\"; declare -p PROMPT_COMMAND")
+check(r.returncode == 0 and "[mine ]" in r.stdout and "mine_pc" in r.stdout, "host without the systemd profile: unchanged")
+r = run(f"set -eu\n{osc_block}\necho done")
+check(r.returncode == 0 and "done" in r.stdout, "nothing set at all: no error under set -eu")
+# No fork through systemd's function: run an actual prompt cycle's PS0 expansion and count.
+r = run(f"""
+. {fake_profile.name}
+__systemd_osc_context_ps0() {{ echo called >> {fake_profile.name}.calls; }}
+{osc_block}
+: "${{PS0@P}}" """)
+check(not os.path.exists(fake_profile.name + ".calls"), "expanding PS0 no longer calls __systemd_osc_context_ps0")
+for f in (fake_profile.name, fake_profile.name + ".calls"):
+    if os.path.exists(f):
+        os.unlink(f)
+
 print()
 if failures:
     print("test_bash_bootstrap_builtins: FAILED")
