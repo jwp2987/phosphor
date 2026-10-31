@@ -39,7 +39,7 @@ use warpui::text_layout::{Line, StyleAndFont, TextStyle, DEFAULT_TOP_BOTTOM_RATI
 use warpui::units::{IntoLines as _, Lines, Pixels};
 use warpui::{AppContext, Element, EntityId, PaintContext, Scene, SingletonEntity};
 
-pub use self::cell_glyph_cache::CellGlyphCache;
+pub use self::cell_glyph_cache::{CellGlyphCache, SharedCellGlyphCache};
 use self::cell_type::{CellType, IsFocused, Secret};
 
 use super::block_filter::{BLOCK_FILTER_DOTTED_LINE_DASH, BLOCK_FILTER_DOTTED_LINE_WIDTH};

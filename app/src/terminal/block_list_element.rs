@@ -69,7 +69,7 @@ use warpui::{EntityId, ModelHandle, SingletonEntity as _};
 use super::block_list_viewport::{ClampingMode, InputMode, ScrollPosition, ViewportState};
 use super::blockgrid_renderer::GridRenderParams;
 use super::find::{BlockFindRenderData, TerminalFindModel};
-use super::grid_renderer::CellGlyphCache;
+use super::grid_renderer::{CellGlyphCache, SharedCellGlyphCache};
 
 use super::meta_shortcuts::handle_keystroke_despite_composing;
 use super::model::ansi::CursorShape;
@@ -3981,7 +3981,7 @@ impl Element for BlockListElement {
             size.cell_height_px().as_f32(),
         );
 
-        let mut glyphs = CellGlyphCache::default();
+        let mut glyphs = SharedCellGlyphCache::acquire();
         let mut grid_origin = origin;
 
         let block_list = model.block_list();
