@@ -7501,7 +7501,7 @@ fn test_enter_on_20k_char_paste_submits_without_waiting_for_the_parse() {
         let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
 
-        let pasted = vec!["word"; 4000].join(" ");
+        let pasted = vec!["word"; 4001].join(" ");
         assert!(pasted.len() >= 20_000);
         input.update(&mut app, |input, ctx| {
             input.ai_input_model().update(ctx, |ai_input, ctx| {
