@@ -752,7 +752,9 @@ impl<T: Action + Clone> SearchBar<T> {
     }
 
     fn on_mixer_results_changed(&mut self, ctx: &mut ViewContext<Self>) {
-        let results = self.mixer.read(ctx, |mixer, _ctx| mixer.results().clone());
+        let (results, appended) = self.mixer.read(ctx, |mixer, _ctx| {
+            (mixer.results().clone(), mixer.last_change_was_append())
+        });
         let create_query_result_renderer = self.create_query_result_renderer_fn;
 
         let (selection_start, query_results) = match self.state.as_ref(ctx).ordering {
@@ -781,7 +783,21 @@ impl<T: Action + Clone> SearchBar<T> {
             ctx.notify();
         });
 
-        self.handle_selection_update(selection_start, ctx);
+        // Late async results appended below what is already on screen must not move the
+        // user's selection (#1166).
+        let keep_selection = appended
+            && self.state.as_ref(ctx).selected_index.is_some_and(|index| {
+                index
+                    < self
+                        .state
+                        .as_ref(ctx)
+                        .query_result_renderers
+                        .as_ref()
+                        .map_or(0, Vec::len)
+            });
+        if !keep_selection {
+            self.handle_selection_update(selection_start, ctx);
+        }
 
         // Re-render the view with the updated results.
         ctx.notify();
