@@ -391,14 +391,12 @@ pub fn set_search_query(q: String) {
 /// searching "claude" surfaces a provider you've never heard of just because it happens to
 /// serve a Claude model, without needing to already know which provider hosts it.
 /// An empty query returns all entries in order. Returns an owned Vec so the UI side
-/// can take/iter it.
-pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)> {
+/// can take/iter it. Borrows from `catalog` (cloning every provider and its whole model
+/// map on each render of the settings page cost ~12 ms of main-thread time per render).
+pub fn filter_catalog<'a>(catalog: &'a Catalog, query: &str) -> Vec<(&'a String, &'a Provider)> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
-        return catalog
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        return catalog.iter().collect();
     }
     catalog
         .iter()
@@ -409,7 +407,6 @@ pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)>
                     .values()
                     .any(|m| m.id.to_lowercase().contains(&q) || m.name.to_lowercase().contains(&q))
         })
-        .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
 
@@ -756,5 +753,18 @@ mod quick_add_tests {
 
         // A query with no match anywhere (name or models) returns nothing.
         assert!(filter_catalog(&catalog, "no-such-thing-exists").is_empty());
+    }
+
+    #[test]
+    fn filter_catalog_borrows_instead_of_cloning_providers() {
+        let mut catalog = Catalog::new();
+        catalog.insert("anthropic".to_owned(), provider("Anthropic", &["claude"]));
+        for query in ["", "anthropic"] {
+            let filtered = filter_catalog(&catalog, query);
+            assert_eq!(filtered.len(), 1);
+            // The returned provider is the catalog's own entry, not a copy: rendering the
+            // settings page must not deep-clone every provider and model (#1139 perf).
+            assert!(std::ptr::eq(filtered[0].1, catalog.get("anthropic").unwrap()));
+        }
     }
 }

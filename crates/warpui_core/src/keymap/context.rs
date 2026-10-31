@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Context {
-    pub set: HashSet<&'static str>,
-    pub map: HashMap<&'static str, &'static str>,
+    pub set: FxHashSet<&'static str>,
+    pub map: FxHashMap<&'static str, &'static str>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
