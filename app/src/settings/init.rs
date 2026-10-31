@@ -550,7 +550,8 @@ fn init_platform_native_preferences() -> user_preferences::Model {
             Box::<user_preferences::in_memory::InMemoryPreferences>::default()
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd", feature = "integration_tests"))] {
             match user_preferences::file_backed::FileBackedUserPreferences::new(super::user_preferences_file_path()) {
-                Ok(prefs) => Box::new(prefs) as user_preferences::Model,
+                // Off-thread writes (#1203); flushed on quit in `terminate_persistence_writer`.
+                Ok(prefs) => Box::new(prefs.with_background_writer()) as user_preferences::Model,
                 Err(err) => {
                     crate::report_error!(anyhow::anyhow!(err));
                     Box::<user_preferences::in_memory::InMemoryPreferences>::default()

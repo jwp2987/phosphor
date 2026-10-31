@@ -17,7 +17,7 @@ pub enum ReloadOutcome {
     OwnWrite,
 }
 
-#[cfg(feature = "user_preferences-toml")]
+#[cfg(any(feature = "user_preferences-toml", feature = "user_preferences-file"))]
 mod background_writer;
 pub mod file_backed;
 pub mod in_memory;
