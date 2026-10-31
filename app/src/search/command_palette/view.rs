@@ -274,7 +274,12 @@ impl View {
             .flat_map(|name| ctx.get_binding_by_name(name).map(|binding| binding.id))
             .collect_vec();
 
-        let mixer = ctx.add_model(|_| CommandPaletteMixer::new());
+        let mixer = ctx.add_model(|_| {
+            let mut mixer = CommandPaletteMixer::new();
+            // Show sync results immediately; async sources (files, etc.) stream in below.
+            mixer.set_early_sync_commit(true);
+            mixer
+        });
         data_source_store.update(ctx, |store, ctx| {
             store.reset_search_mixer(mixer.clone(), false, ctx);
             ctx.notify();

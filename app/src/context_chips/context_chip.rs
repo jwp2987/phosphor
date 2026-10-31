@@ -535,6 +535,12 @@ impl Environment {
         self.git_branch.as_ref()
     }
 
+    #[cfg(test)]
+    pub fn with_git_branch(mut self, git_branch: impl Into<String>) -> Self {
+        self.git_branch = Some(git_branch.into());
+        self
+    }
+
     pub fn python_virtualenv(&self) -> Option<&String> {
         self.python_virtualenv.as_ref()
     }
