@@ -1798,7 +1798,7 @@ pub fn strip_trailing_comment(
         parsed_tokens: input
             .parsed_tokens
             .iter()
-            .filter(|token| token.token.span().end() <= end)
+            .filter(|token| token.token.span.end() <= end)
             .cloned()
             .collect(),
     })

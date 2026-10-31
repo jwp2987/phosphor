@@ -1141,7 +1141,7 @@ fn test_strip_trailing_comment_table() {
             stripped
                 .parsed_tokens
                 .iter()
-                .all(|token| token.token.span().end() <= stripped.buffer_text.len()),
+                .all(|token| token.token.span.end() <= stripped.buffer_text.len()),
             "{buffer:?}: tokens past the stripped text"
         );
     }
