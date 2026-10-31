@@ -586,13 +586,16 @@ pub trait Setting {
         // spurious writes caused by serialization differences (key ordering,
         // null-vs-missing fields, formatting) that don't represent actual
         // value changes.
+        // The closure is called again after `value` is written (moved), so it compares
+        // against its own copy.
+        let value_to_compare = value.clone();
         let stored_value_matches = || -> Result<bool> {
             let stored = preferences.read_value_with_hierarchy(key, Self::hierarchy())?;
             // Byte-identical to what we are about to write: unchanged by definition. This
             // also covers values whose typed round trip does not compare equal to
             // themselves (a lossy `Deserialize`, a NaN), which would otherwise look
             // changed on every call and rewrite the store each time (#1203).
-            if stored.as_deref() == Some(value.as_str()) {
+            if stored.as_deref() == Some(value_to_compare.as_str()) {
                 return Ok(true);
             }
             Ok(stored
