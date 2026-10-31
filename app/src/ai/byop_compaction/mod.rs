@@ -20,7 +20,10 @@ pub mod token;
 
 pub use commit::summarizable_history_tokens;
 pub use config::CompactionConfig;
-pub use overflow::{OverflowVerdict, is_overflow, overflow_verdict, turn_has_tool_calls, usable};
+pub use overflow::{
+    OverflowVerdict, is_overflow, overflow_verdict, turn_has_tool_calls, turn_has_visible_output,
+    usable,
+};
 
 /// What to do when a finished, tool-free turn is over the context threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,12 +205,31 @@ impl RequestSendOutcome {
 pub struct TurnCompactionState {
     auto_compacted: bool,
     compact_after_tool_results: bool,
+    /// The synthetic continue message was sent and its reply has not finished yet (#1102).
+    continue_pending: bool,
+    /// The continue message was already re-sent once after an empty reply (#1102).
+    continue_retried: bool,
+}
+
+/// What to do when the reply to the post-compaction continue message finishes
+/// ([`TurnCompactionState::on_continue_reply`], #1102).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinueReplyAction {
+    /// Nothing: not a continue reply, or it produced visible output or tool calls.
+    None,
+    /// The reply was empty (no text, no tool calls): send the continue message once more.
+    Retry,
+    /// The reply was empty again after the retry: end the turn with a visible error.
+    Fail,
 }
 
 impl TurnCompactionState {
     /// Nothing to remember; the controller may drop the entry.
     pub fn is_idle(&self) -> bool {
-        !self.auto_compacted && !self.compact_after_tool_results
+        !self.auto_compacted
+            && !self.compact_after_tool_results
+            && !self.continue_pending
+            && !self.continue_retried
     }
 
     /// Whether this turn's one auto-compaction allowance is spent.
@@ -273,6 +295,33 @@ impl TurnCompactionState {
     /// so nothing resumes on its behalf. The allowance is unchanged.
     pub fn on_conversation_stopped(&mut self) {
         self.compact_after_tool_results = false;
+    }
+
+    /// The synthetic continue message was just sent: its reply is judged by
+    /// [`Self::on_continue_reply`].
+    pub fn on_continue_sent(&mut self) {
+        self.continue_pending = true;
+    }
+
+    /// An agent turn finished. If it answers the continue message and
+    /// `produced_output` is false (a reasoning-only or blank reply: the turn would end
+    /// silently, #1102), retry the continue once, then fail visibly. Bounded: the retry flag
+    /// is cleared by any reply that produced output.
+    pub fn on_continue_reply(&mut self, produced_output: bool) -> ContinueReplyAction {
+        if !std::mem::take(&mut self.continue_pending) {
+            return ContinueReplyAction::None;
+        }
+        if produced_output {
+            self.continue_retried = false;
+            return ContinueReplyAction::None;
+        }
+        if self.continue_retried {
+            self.continue_retried = false;
+            ContinueReplyAction::Fail
+        } else {
+            self.continue_retried = true;
+            ContinueReplyAction::Retry
+        }
     }
 
     /// The user started a new turn (anything but the agent's own continue message): a fresh
