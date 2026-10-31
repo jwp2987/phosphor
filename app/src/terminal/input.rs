@@ -11699,6 +11699,20 @@ impl Input {
         }
     }
 
+    /// #1165: an Enter that is deferred (verdict wait, typeahead hand-off) submits exactly the
+    /// text visible when it was pressed. A completion still pending, or already queued, for that
+    /// text must not land meanwhile: the deferred-Enter bookkeeping reads anything that joins the
+    /// buffer after the Enter as text typed behind it (#1016) and replays it into the NEXT prompt
+    /// (`git checkout fe` + Tab + Enter ran, then `at` was prepended to the next command). The
+    /// first #1165 fix bumped the generation only when the command was written to the pty, which
+    /// a deferred Enter reaches after the completion has already been applied.
+    fn cancel_pending_completions_for_deferred_enter(&mut self) {
+        self.bump_input_generation();
+        if let Some(abort_handle) = self.completions_abort_handle.take() {
+            abort_handle.abort();
+        }
+    }
+
     /// Whether a result requested under `generation` was invalidated since (#1165).
     fn is_stale_generation(&self, generation: u64) -> bool {
         generation != self.input_generation
@@ -11714,7 +11728,7 @@ impl Input {
         editor_snapshot_when_completer_was_ran: EditorSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.is_stale_generation(generation) {
+        if self.is_stale_generation(generation) || self.verdict_wait.is_some() {
             return;
         }
         self.handle_completion_suggestions_results(
@@ -11733,7 +11747,7 @@ impl Input {
         editor_snapshot_when_completer_was_ran: EditorSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.is_stale_generation(generation) {
+        if self.is_stale_generation(generation) || self.verdict_wait.is_some() {
             return;
         }
         self.handle_enum_completion_results(results, editor_snapshot_when_completer_was_ran, ctx);
@@ -13366,6 +13380,7 @@ impl Input {
             text: text.clone(),
             queued: Vec::new(),
         });
+        self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
         self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
         true
@@ -13785,6 +13800,7 @@ impl Input {
         }
         let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();
         if deferred {
+            self.cancel_pending_completions_for_deferred_enter();
             self.begin_deferred_enter_activity(ctx);
             self.note_handoff_enter(ctx);
             ctx.emit(Event::TypeaheadHandoffEnterDeferred);

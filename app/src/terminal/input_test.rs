@@ -10963,6 +10963,105 @@ fn test_stale_completion_after_escape_keeps_menu_closed() {
     });
 }
 
+/// #1165: Tab, then Enter before the completion lands. The Enter waits for its classification
+/// verdict; the completion result then lands while it waits. It must not be applied: the Enter
+/// submits exactly the visible text, and nothing is queued to replay into the next prompt (the
+/// first fix bumped the generation only at pty write, so this result was applied, then read by
+/// the #1016 bookkeeping as text typed behind the Enter and replayed as `at` + next command).
+#[test]
+fn test_completion_landing_during_deferred_enter_is_dropped() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+
+        // Tab: the completion request starts against the visible text.
+        let (generation, snapshot) = input.update(&mut app, |input, ctx| {
+            (input.input_generation, editor_model_snapshot(input, ctx))
+        });
+        // Enter before the result lands: it waits for the verdict.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+        });
+
+        // The result lands while the Enter waits (both the request's own generation and a
+        // generation captured after the Enter must be refused).
+        let results = || {
+            build_suggestion_results(
+                vec![argument_suggestion("truevalue")],
+                (6, 10),
+                MatchStrategy::CaseInsensitive,
+            )
+        };
+        input.update(&mut app, |input, ctx| {
+            input.deliver_completion_suggestions_results(
+                generation,
+                results(),
+                CompletionsTrigger::Keybinding,
+                snapshot.clone(),
+                ctx,
+            );
+            let current = input.input_generation;
+            input.deliver_completion_suggestions_results(
+                current,
+                results(),
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "the submitted command is exactly the visible text"
+            );
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+        });
+        input.update(&mut app, |input, ctx| {
+            assert!(input.reconcile_verdict_wait(ctx));
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.text, line);
+            assert!(
+                wait.queued.is_empty(),
+                "nothing may be replayed into the next prompt"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_completion_in_same_generation_still_applies() {
     App::test((), |mut app| async move {
