@@ -66,6 +66,17 @@ pub enum FinishedStream {
     },
 }
 
+/// The one task every id in `task_ids` names, if there is exactly one (and at least one). The
+/// task a deferred summary rides in with a step's tool results (#1074): the root task or a
+/// CLI/LRC subagent's own task. `None` for results spanning tasks.
+pub fn single_task_id<'a, T: PartialEq>(
+    task_ids: impl IntoIterator<Item = &'a T>,
+) -> Option<&'a T> {
+    let mut ids = task_ids.into_iter();
+    let first = ids.next()?;
+    ids.all(|id| id == first).then_some(first)
+}
+
 /// What the controller does about compaction once a BYOP stream finishes cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FinishedStreamPlan {
@@ -209,6 +220,10 @@ pub struct TurnCompactionState {
     continue_pending: bool,
     /// The continue message was already re-sent once after an empty reply (#1102).
     continue_retried: bool,
+    /// The summary was already re-asked once for the current compaction after the model
+    /// answered it with a tool call (#1079); cleared once a summary commits or the allowance
+    /// is restored.
+    summary_retried: bool,
 }
 
 /// What to do when the reply to the post-compaction continue message finishes
@@ -230,6 +245,7 @@ impl TurnCompactionState {
             && !self.compact_after_tool_results
             && !self.continue_pending
             && !self.continue_retried
+            && !self.summary_retried
     }
 
     /// Whether this turn's one auto-compaction allowance is spent.
@@ -251,6 +267,16 @@ impl TurnCompactionState {
         if plan.restore_turn_allowance {
             self.auto_compacted = false;
         }
+        let summary_committed = matches!(
+            stream,
+            FinishedStream::Summary {
+                committed: true,
+                ..
+            }
+        );
+        if plan.restore_turn_allowance || summary_committed {
+            self.summary_retried = false;
+        }
         if plan.decision == AutoCompactionDecision::Compact {
             self.auto_compacted = true;
         }
@@ -261,19 +287,30 @@ impl TurnCompactionState {
     }
 
     /// The finished step's tool results are ready to go back to the model. Consumes a
-    /// deferral. `results_all_in_root_task`: every result answers a call of the
-    /// conversation's root task; results of a subagent task (a CLI/LRC subagent's own loop)
-    /// are sent as a plain follow-up and the deferral is dropped, so a summary never lands in
-    /// the middle of a subagent's work (subagent loops are not compacted: #1074). The next
-    /// finished stream re-checks the usage.
+    /// deferral. `results_in_one_task`: every result answers a call of the same task (the
+    /// root task, or a CLI/LRC subagent's own task, #1074); the summary request is then sent in
+    /// that task so a subagent loop is compacted like the main one and resumes inside the
+    /// subagent. Results spanning several tasks have no single task to carry the summary (a
+    /// request over two tasks appends one exchange per task, and only the last is tracked
+    /// by `added_exchanges_by_response`): they are sent as a plain follow-up and the deferral
+    /// is dropped. The next finished stream re-checks the usage.
     ///
     /// Does not spend the allowance: the controller calls [`Self::on_deferred_summary_sent`]
     /// once the request really went out.
-    pub fn on_tool_results_ready(&mut self, results_all_in_root_task: bool) -> ToolResultsRequest {
-        if !std::mem::take(&mut self.compact_after_tool_results) || !results_all_in_root_task {
+    pub fn on_tool_results_ready(&mut self, results_in_one_task: bool) -> ToolResultsRequest {
+        if !std::mem::take(&mut self.compact_after_tool_results) || !results_in_one_task {
             return ToolResultsRequest::FollowUp;
         }
         ToolResultsRequest::SummarizeWithResults
+    }
+
+    /// A summarize stream finished without a summary because the model answered it with a tool
+    /// call (providers that ignore `tool_choice`, #1079). Returns whether the summary may be
+    /// asked for once more with an explicit "no tools" instruction; the retry is part of the
+    /// same compaction, so it does not touch the allowance, and a second failure returns false
+    /// (the task then resumes uncompacted, as before) — it cannot loop.
+    pub fn claim_summary_retry(&mut self) -> bool {
+        !std::mem::replace(&mut self.summary_retried, true)
     }
 
     /// The [`ToolResultsRequest::SummarizeWithResults`] request was sent (or stashed by the
