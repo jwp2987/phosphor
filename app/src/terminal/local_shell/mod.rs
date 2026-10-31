@@ -101,37 +101,23 @@ impl LocalShellState {
 
         let shell_path = shell_starter.logical_shell_path().to_owned();
         let shell_type = shell_starter.shell_type();
-        let clone = shell_path.clone();
 
-        let command = match shell_type {
-            ShellType::Bash | ShellType::Zsh => "builtin echo $PATH",
-            ShellType::Fish => "env | grep PATH",
-            ShellType::PowerShell => "[Console]::Out.WriteLine($Env:PATH)",
-            // `$env.PATH` is a list once nushell has applied its env conversions, a string before.
-            ShellType::Nu => r#"print ($env.PATH | each { into string } | str join ":")"#,
-        };
-
-        // Execute a command to fetch the user's PATH var, and store it
-        // in the associated field
-        ctx.spawn(
-            async move { execute_command(shell_type, clone, None, command).await },
-            |me, res, _| match me {
-                LocalShellState::Loaded(local_shell_state) => {
-                    // Trim to remove trailing newline from `echo $PATH` output
-                    local_shell_state.path_env_var = res.ok().map(|s| s.trim().to_string());
-                }
-                LocalShellState::NotLoaded => {
-                    log::warn!("Tried to execute a command on LocalShell that wasn't loaded")
-                }
-            },
-        );
-
+        // The PATH probe runs the user's full login rc once more, competing with the first
+        // shell's bootstrap for CPU. Its only consumer is a user-triggered action (external
+        // secrets), so it is not started here; see `probe_path_env_var`.
         Self::Loaded(LocalShell {
             shell_type,
             shell_path,
             path_env_var: None,
             interactive_env_state: InteractiveEnvState::NotRequested,
         })
+    }
+
+    /// Records a PATH obtained from [`probe_path_env_var`] so later callers skip the probe.
+    pub fn set_path_env_var(&mut self, path: Option<String>) {
+        if let LocalShellState::Loaded(local_shell) = self {
+            local_shell.path_env_var = path;
+        }
     }
 
     pub fn local_shell_info(&self) -> Option<&LocalShell> {
@@ -195,6 +181,29 @@ impl LocalShellState {
             }
         }
     }
+}
+
+/// The command that prints the PATH of the given shell kind.
+#[cfg(feature = "local_tty")]
+fn path_probe_command(shell_type: ShellType) -> &'static str {
+    match shell_type {
+        ShellType::Bash | ShellType::Zsh => "builtin echo $PATH",
+        ShellType::Fish => "env | grep PATH",
+        ShellType::PowerShell => "[Console]::Out.WriteLine($Env:PATH)",
+        // `$env.PATH` is a list once nushell has applied its env conversions, a string before.
+        ShellType::Nu => r#"print ($env.PATH | each { into string } | str join ":")"#,
+    }
+}
+
+/// Runs the user's login shell once to read its PATH. Deferred until a caller needs it (it is
+/// a full login-shell startup); the result is `None` if the probe fails.
+#[cfg(feature = "local_tty")]
+pub async fn probe_path_env_var(shell_type: ShellType, shell_path: PathBuf) -> Option<String> {
+    execute_command(shell_type, shell_path, None, path_probe_command(shell_type))
+        .await
+        .ok()
+        // Trim to remove trailing newline from `echo $PATH` output
+        .map(|s| s.trim().to_string())
 }
 
 #[cfg(feature = "local_tty")]
