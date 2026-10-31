@@ -1,4 +1,5 @@
 use super::{FAST_PATH_OFF, FAST_PATH_ON, encode_layer, shader_source_with, shader_types};
+use std::borrow::Cow;
 use crate::elements::Fill;
 use crate::rendering;
 use crate::Scene;
