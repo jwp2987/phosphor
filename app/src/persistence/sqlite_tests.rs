@@ -3489,10 +3489,8 @@ fn read_ahead_of_time_matches_the_main_thread_read() {
             .expect("no signed-in user");
         let main = read_sqlite_data(&mut conn, None).expect("main-thread read");
         assert_eq!(skipped, 0);
-        assert_eq!(
-            format!("{:?}", ahead.app_state),
-            format!("{:?}", main.app_state)
-        );
+        // Not compared through `Debug`: `block_lists` is a `HashMap` whose print order varies.
+        assert_eq!(ahead.app_state, main.app_state);
         assert_eq!(ahead.nld_prompts, main.nld_prompts);
         assert_eq!(ahead.command_history.len(), main.command_history.len());
         assert_eq!(ahead.ai_queries.len(), main.ai_queries.len());

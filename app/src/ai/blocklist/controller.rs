@@ -521,10 +521,12 @@ pub(crate) fn plan_finished_batch(
     } else {
         None
     };
+    // An interrupted exit 130 is "successful" by exit code (`ExitCode::was_successful` accepts
+    // 130) but is a cancellation, so a turn ended by ^C must not read as a finished one (#1178).
     let final_status = if treat_as_success
         || results
             .iter()
-            .all(|result| result.result.is_successful())
+            .all(|result| result.result.is_successful() && !result.result.is_cancelled())
     {
         ConversationStatus::Success
     } else {

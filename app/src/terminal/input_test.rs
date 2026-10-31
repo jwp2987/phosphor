@@ -11822,7 +11822,13 @@ async fn input_with_shell_history(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history");
     std::fs::write(&path, histfile).unwrap();
+    // `History` is an app-wide singleton keyed by session id, and `new_for_test` gives every
+    // session id 0: a second call in one app would find that id already initialised (for the
+    // first call's shell) and never load this shell's history file.
+    static NEXT_SESSION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
+    let session_id = NEXT_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let session_info = SessionInfo::new_for_test()
+        .with_id(session_id)
         .with_shell_type(shell_type)
         .with_histfile(Some(path.to_str().unwrap().to_owned()));
     let terminal = add_window_with_bootstrapped_terminal(app, None, Some(session_info)).await;

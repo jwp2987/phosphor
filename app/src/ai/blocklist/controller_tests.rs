@@ -2548,6 +2548,11 @@ mod monitored_completion {
     fn a_completion_during_the_models_reply_is_held_until_the_user_stops_or_the_turn_ends() {
         App::test((), |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
+            // Stopping a conversation with a live exchange persists it, which reads this singleton.
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
             let terminal = add_window_with_terminal(&mut app, None);
             terminal.update(&mut app, |view, ctx| {
                 let terminal_view_id = view.id();
@@ -2629,6 +2634,11 @@ mod monitored_completion {
     fn a_held_completion_is_an_outstanding_report_until_the_user_stops_or_the_pane_closes() {
         App::test((), |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
+            // Stopping a conversation with a live exchange persists it, which reads this singleton.
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
             let terminal = add_window_with_terminal(&mut app, None);
             terminal.update(&mut app, |view, ctx| {
                 let terminal_view_id = view.id();

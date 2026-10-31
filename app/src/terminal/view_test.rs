@@ -5155,12 +5155,15 @@ fn test_scroll_position_doesnt_change_when_block_finished() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
 
+        // The completed event carries only the block's metadata (no output bytes: persistence
+        // reads those off the UI thread), so the long-running block is told apart by its id.
+        let long_running_block_id: Rc<RefCell<Option<BlockId>>> = Rc::new(RefCell::new(None));
         let (tx, rx) = async_channel::bounded(1);
         app.update(|ctx| {
+            let long_running_block_id = long_running_block_id.clone();
             ctx.subscribe_to_view(&terminal, move |_, event, _| {
                 if let Event::BlockCompleted { block, .. } = event {
-                    let output = std::str::from_utf8(&block.stylized_output).unwrap();
-                    if output.trim() == "lr" {
+                    if long_running_block_id.borrow().as_ref() == Some(&block.id) {
                         tx.try_send(()).expect("Can send over channel");
                     }
                 }
@@ -5188,6 +5191,8 @@ fn test_scroll_position_doesnt_change_when_block_finished() {
             ));
 
             // Finish the block.
+            *long_running_block_id.borrow_mut() =
+                Some(view.model.lock().block_list().active_block().id().clone());
             view.model.lock().finish_block();
 
             scroll_position_before_finished
