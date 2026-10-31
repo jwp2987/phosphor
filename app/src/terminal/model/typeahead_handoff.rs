@@ -12,7 +12,9 @@
 //! This module is pure. `TerminalModel` owns one [`TypeaheadHandoff`] under the model lock; the
 //! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
 
+use std::collections::VecDeque;
 use std::mem;
+use std::sync::Arc;
 use std::time::Duration;
 
 use instant::Instant;
@@ -28,6 +30,53 @@ use crate::ai::agent::conversation::AIConversationId;
 /// is held until the prompt arrives, then routed like an Enter in the editor; if no prompt comes
 /// within this window the command is running and the Enter is written as typeahead.
 pub const YOUNG_ENTER_WINDOW: Duration = Duration::from_millis(600);
+
+/// The shortest a held young Enter waits for the prompt. The window runs from the last activity
+/// (command write, precmd, preexec), not from the Enter, so an Enter typed late in the window
+/// waits only for what is left of it; this floor is the lag between the shell logging its precmd
+/// and the app processing it, which is all the race in [`YOUNG_ENTER_WINDOW`] needs.
+pub const YOUNG_ENTER_MIN_HOLD: Duration = Duration::from_millis(150);
+
+/// The shortest a young Enter is held once round trips have been measured: the lag between the
+/// shell logging its precmd and the app having processed it on this machine (a pty read, a parse
+/// and a main-thread hop), with room for one slow frame.
+pub const YOUNG_ENTER_FLOOR: Duration = Duration::from_millis(20);
+
+/// How many round trips the hold's measured bound is the p90 of. A rolling window, so a stalled
+/// machine's huge sample ages out instead of inflating the hold for the session.
+const RTT_WINDOW: usize = 16;
+
+/// The hold is this many measured round trips (p90). The late precmd of #933 was emitted before
+/// the Enter was typed, so it is in flight for at most one trip (one way, plus the shell's own
+/// work, which a request's round trip includes); two more trips absorb jitter.
+const RTT_HOLD_FACTOR: u32 = 3;
+
+/// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
+/// `cat` owns the foreground, or a program is reading a password (canonical tty, echo off), in
+/// the top-level shell or a Phosphorized subshell. Unix only; where nothing is installed, or the
+/// answer is unknown (over ssh the local tty says nothing about the remote shell), it is `false`.
+#[derive(Clone, Default)]
+pub struct ForegroundProbe(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl ForegroundProbe {
+    pub fn new(probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self(Some(probe))
+    }
+
+    fn foreground_is_plain_program(&self) -> bool {
+        self.0.as_ref().is_some_and(|probe| probe())
+    }
+}
+
+impl std::fmt::Debug for ForegroundProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "ForegroundProbe(installed)"
+        } else {
+            "ForegroundProbe(none)"
+        })
+    }
+}
 
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
@@ -237,6 +286,14 @@ pub struct TypeaheadHandoff {
     tracks_view_precmds: bool,
     /// The last command written, prompt or preexec seen (see [`YOUNG_ENTER_WINDOW`]).
     last_activity_at: Option<Instant>,
+    /// Whether the pty's foreground process group is provably not a shell at a prompt. A line
+    /// typed into such a program cannot be a #933 line typed at an unnoticed prompt.
+    foreground_probe: ForegroundProbe,
+    /// When each outstanding hand-off request was written, oldest first (reports come back in
+    /// order, so the front is the one a report answers).
+    rtt_pending: VecDeque<Instant>,
+    /// The last [`RTT_WINDOW`] request-to-report round trips of this session.
+    rtt_samples: VecDeque<Duration>,
     /// The user's Enter, and every key typed after it, held while the pty owns input and the
     /// command that was written may already have finished (#933). Nothing in it was written.
     young_hold: Option<Vec<u8>>,
@@ -278,6 +335,48 @@ pub struct HeldAgentCommand {
 impl TypeaheadHandoff {
     pub fn state(&self) -> &HandoffState {
         &self.state
+    }
+
+    pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
+        self.foreground_probe = probe;
+    }
+
+    /// The p90 of the measured request-to-report round trips, `None` before any.
+    fn rtt_p90(&self) -> Option<Duration> {
+        if self.rtt_samples.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<Duration> = self.rtt_samples.iter().copied().collect();
+        sorted.sort_unstable();
+        let index = (sorted.len() * 9).div_ceil(10).saturating_sub(1);
+        sorted.get(index).copied()
+    }
+
+    /// How long the view should wait for the prompt before releasing the hold just started. The
+    /// race of #933 can only be a precmd already in flight, which lands within about one round
+    /// trip, so with measurements it is [`RTT_HOLD_FACTOR`] times their p90, between
+    /// [`YOUNG_ENTER_FLOOR`] and what is left of [`YOUNG_ENTER_WINDOW`] counted from the last
+    /// activity. Before any round trip was measured it is that remainder, never less than
+    /// [`YOUNG_ENTER_MIN_HOLD`]. A prompt or report arriving first releases the hold at once.
+    pub fn young_hold_wait(&self, now: Instant) -> Duration {
+        let left = self.last_activity_at.map_or(Duration::ZERO, |at| {
+            YOUNG_ENTER_WINDOW.saturating_sub(now.saturating_duration_since(at))
+        });
+        match self.rtt_p90() {
+            Some(p90) => p90
+                .saturating_mul(RTT_HOLD_FACTOR)
+                .min(left)
+                .clamp(YOUNG_ENTER_FLOOR, YOUNG_ENTER_WINDOW),
+            None => left.clamp(YOUNG_ENTER_MIN_HOLD, YOUNG_ENTER_WINDOW),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_rtt_for_test(&mut self, rtt: Duration) {
+        if self.rtt_samples.len() >= RTT_WINDOW {
+            self.rtt_samples.pop_front();
+        }
+        self.rtt_samples.push_back(rtt);
     }
 
     /// Whether keys typed on the terminal go to the pty (or are held for it) rather than being
@@ -348,6 +447,10 @@ impl TypeaheadHandoff {
     /// A request (legacy or the hand-off's own) is written: its report, once every report ahead
     /// of it is in, covers the untracked bytes written before it.
     fn on_request_written(&mut self) {
+        if self.rtt_pending.len() >= RTT_WINDOW {
+            self.rtt_pending.pop_front();
+        }
+        self.rtt_pending.push_back(Instant::now());
         self.requests_outstanding = self.requests_outstanding.saturating_add(1);
         if self.untracked_line_bytes && self.untracked_cover_after_reports.is_none() {
             self.untracked_cover_after_reports = Some(self.requests_outstanding);
@@ -357,6 +460,12 @@ impl TypeaheadHandoff {
     /// A report arrived: once it is the one that answers a request written after the untracked
     /// bytes, they are back in the editor.
     fn on_report_received(&mut self) {
+        if let Some(written_at) = self.rtt_pending.pop_front() {
+            if self.rtt_samples.len() >= RTT_WINDOW {
+                self.rtt_samples.pop_front();
+            }
+            self.rtt_samples.push_back(written_at.elapsed());
+        }
         self.requests_outstanding = self.requests_outstanding.saturating_sub(1);
         if let Some(remaining) = self.untracked_cover_after_reports.as_mut() {
             *remaining = remaining.saturating_sub(1);
@@ -793,6 +902,9 @@ impl TypeaheadHandoff {
                     || self.last_activity_at.is_some_and(|at| {
                         now.saturating_duration_since(at) < YOUNG_ENTER_WINDOW
                     }))
+                // A plain program in the foreground means the shell is waiting on it, not at a
+                // prompt: the Enter is for that program, not a line the app has yet to notice.
+                && !self.foreground_probe.foreground_is_plain_program()
         )
     }
 

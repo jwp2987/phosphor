@@ -1365,3 +1365,117 @@ fn a_deferral_whose_report_never_comes_is_given_up() {
     assert!(!handoff.editor_text_precedes_report());
     assert!(!handoff.give_up_uncovered_deferral(id));
 }
+
+#[test]
+fn an_enter_into_a_plain_foreground_program_is_not_held() {
+    // The command was written just now, but `cat` owns the foreground: the shell is not at a
+    // prompt, so the Enter is for `cat` and must not wait for one (#1131).
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| true)));
+    type_and_flush(&mut handoff, b"hello");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.take_young_hold_started(), None);
+    assert!(!handoff.has_young_hold());
+}
+
+#[test]
+fn a_password_enter_in_a_subshell_is_released_at_once_and_needs_no_timer() {
+    // `sudo -i` / `ksu` inside a Phosphorized shell: the foreground is a login hop, but the tty
+    // is reading a password (canonical, echo off), which the probe reports as "not at a prompt".
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| true)));
+    type_and_flush(&mut handoff, b"hunter2");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    // No hold was started, so the view arms no timer for it.
+    assert_eq!(handoff.take_young_hold_started(), None);
+}
+
+#[test]
+fn a_prompt_arriving_first_resolves_a_held_enter_without_its_timer() {
+    // #933: the precmd is the event that settles the race; the timer only backs it up.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(handoff.expire_young_hold(id), None);
+}
+
+#[test]
+fn the_hold_scales_with_the_measured_round_trip() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    // No samples yet: the unmeasured behaviour.
+    handoff.last_activity_at = Some(now - Duration::from_millis(100));
+    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
+    // A local-ish 5 ms trip: 3 x 5 ms = 15 ms, raised to the floor.
+    for _ in 0..8 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    // A remote 80 ms trip scales it: 240 ms.
+    let mut remote = young_after_submit();
+    remote.last_activity_at = Some(now - Duration::from_millis(100));
+    for _ in 0..8 {
+        remote.record_rtt_for_test(Duration::from_millis(80));
+    }
+    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(240));
+    // Never past what is left of the window.
+    remote.last_activity_at = Some(now - Duration::from_millis(500));
+    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(100));
+}
+
+#[test]
+fn one_stalled_sample_does_not_inflate_the_hold_and_ages_out() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    handoff.last_activity_at = Some(now);
+    for _ in 0..9 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    handoff.record_rtt_for_test(Duration::from_secs(30));
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    for _ in 0..16 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    assert_eq!(handoff.rtt_samples.len(), 16);
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+}
+
+#[test]
+fn a_request_to_report_round_trip_is_sampled() {
+    let mut handoff = awaiting_report();
+    assert_eq!(handoff.rtt_samples.len(), 0);
+    handoff.on_report();
+    assert_eq!(handoff.rtt_samples.len(), 1);
+    assert!(handoff.rtt_pending.is_empty());
+}
+
+#[test]
+fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
+    // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or
+    // unknown), so the young Enter keeps waiting for the prompt.
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| false)));
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(handoff.take_young_hold_started().is_some());
+}
+
+#[test]
+fn a_held_enter_waits_only_for_what_is_left_of_the_window() {
+    let mut handoff = young_after_submit();
+    let now = Instant::now();
+    handoff.last_activity_at = Some(now - Duration::from_millis(500));
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
+    handoff.last_activity_at = Some(now - Duration::from_millis(100));
+    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
+    handoff.last_activity_at = Some(now);
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_WINDOW);
+    handoff.last_activity_at = None;
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_MIN_HOLD);
+}

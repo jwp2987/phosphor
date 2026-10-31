@@ -916,7 +916,7 @@ fn on_shell_determined<S: TerminalSurface>(
         }
     };
 
-    #[cfg(feature = "integration_tests")]
+    #[cfg(any(unix, feature = "integration_tests"))]
     let pid = pty.get_pid();
     #[cfg(unix)]
     let fd = pty.get_fd();
@@ -967,6 +967,13 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        // #1131: a plain program in the foreground, or a password being read, means no prompt is
+        // waiting for a held Enter.
+        model.lock().typeahead_handoff_mut().set_foreground_probe(
+            crate::terminal::model::typeahead_handoff::ForegroundProbe::new(Arc::new(move || {
+                super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
+            })),
+        );
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)
