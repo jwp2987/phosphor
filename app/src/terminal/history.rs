@@ -208,16 +208,139 @@ impl CommandHistorySummary {
     }
 }
 
+/// Hashes and compares like the command string, so a history entry can key a map without a
+/// second copy of the command text.
+#[derive(Debug, Clone)]
+struct CommandKey(Arc<HistoryEntry>);
+
+impl PartialEq for CommandKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.command == other.0.command
+    }
+}
+
+impl Eq for CommandKey {}
+
+impl std::hash::Hash for CommandKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Must hash exactly like `str` for `Borrow<str>` lookups to work.
+        self.0.command.as_str().hash(state);
+    }
+}
+
+impl std::borrow::Borrow<str> for CommandKey {
+    fn borrow(&self) -> &str {
+        self.0.command.as_str()
+    }
+}
+
+/// The history file for a host, already mapped to entries (joined with the persisted command
+/// metadata) together with its command index. Built on the background thread so the main
+/// thread only swaps it in (#1140).
+struct LoadedHistoryFile {
+    entries: Vec<Arc<HistoryEntry>>,
+    /// Command -> index into `entries`. The history file is deduplicated before it gets here,
+    /// so every command occurs once.
+    index: HashMap<CommandKey, usize>,
+}
+
+impl LoadedHistoryFile {
+    fn build(commands: Vec<String>, summaries: Option<&HashSet<CommandHistorySummary>>) -> Self {
+        let entries: Vec<Arc<HistoryEntry>> = commands
+            .into_iter()
+            .map(|command| {
+                summaries
+                    .and_then(|summaries| summaries.get(command.as_str()))
+                    .map(|summary| summary.most_recent_entry.clone())
+                    .unwrap_or_else(|| HistoryEntry::command_only(command))
+            })
+            .map(Arc::new)
+            .collect();
+        let index = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (CommandKey(entry.clone()), idx))
+            .collect();
+        Self { entries, index }
+    }
+}
+
+/// Where each command sits in a host's `history_file_commands ++ session_commands`.
+#[derive(Debug, Default)]
+struct HostCommandIndex {
+    /// History file commands (unique, immutable once loaded).
+    histfile: HashMap<CommandKey, usize>,
+    /// Number of history file entries `histfile` covers.
+    histfile_indexed_len: usize,
+    /// Session commands -> every index into the concatenation they occupy.
+    session: HashMap<String, Vec<usize>>,
+    /// Number of `session_commands` entries `session` covers.
+    session_indexed_len: usize,
+}
+
+impl HostCommandIndex {
+    fn with_histfile(histfile: HashMap<CommandKey, usize>, histfile_len: usize) -> Self {
+        Self {
+            histfile,
+            histfile_indexed_len: histfile_len,
+            ..Default::default()
+        }
+    }
+
+    /// Brings the index up to date with the lists it describes. `session_commands` only ever
+    /// grows, so this indexes just the entries added since the last call. If the history file
+    /// list changed underneath the index (it never does outside of tests that build a
+    /// `History` by hand) the index is rebuilt.
+    fn sync(&mut self, histfile: &[Arc<HistoryEntry>], session_commands: &[Arc<HistoryEntry>]) {
+        if self.histfile_indexed_len != histfile.len()
+            || self.session_indexed_len > session_commands.len()
+        {
+            *self = Self::default();
+            self.histfile = histfile
+                .iter()
+                .enumerate()
+                .map(|(idx, entry)| (CommandKey(entry.clone()), idx))
+                .collect();
+            self.histfile_indexed_len = histfile.len();
+        }
+        for (position, entry) in session_commands
+            .iter()
+            .enumerate()
+            .skip(self.session_indexed_len)
+        {
+            self.session
+                .entry(entry.command.clone())
+                .or_default()
+                .push(histfile.len() + position);
+        }
+        self.session_indexed_len = session_commands.len();
+    }
+
+    /// Every index in the concatenation holding exactly `command`.
+    fn positions_of<'a>(&'a self, command: &str) -> impl Iterator<Item = usize> + 'a {
+        self.histfile
+            .get(command)
+            .copied()
+            .into_iter()
+            .chain(self.session.get(command).into_iter().flatten().copied())
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct History {
     /// For each ShellHost, the de-duped commands from the sqlite "commands" table is stored here.
     /// Each time a history file is read, it gets "joined" to the commands in here to add the
     /// execution metadata from the most recent run.
-    persisted_commands_summary: HashMap<ShellHost, HashSet<CommandHistorySummary>>,
+    persisted_commands_summary: HashMap<ShellHost, Arc<HashSet<CommandHistorySummary>>>,
+
+    /// Incremental `command -> position` index over `history_file_commands ++ session_commands`
+    /// for each host, so appending a command does not rehash the whole history (#1140).
+    command_indices: HashMap<ShellHost, HostCommandIndex>,
 
     /// Entries from the history file for the host.  Immutable once loaded and
-    /// shared between sessions.
-    history_file_commands: HashMap<ShellHost, Vec<Arc<HistoryEntry>>>,
+    /// shared between sessions (an `Arc` so an off-thread autosuggestion scan can hold the
+    /// list without copying it, #1140).
+    history_file_commands: HashMap<ShellHost, Arc<Vec<Arc<HistoryEntry>>>>,
 
     /// Global history entries across all sessions for each host.  Only grows.  Deduping
     /// is handled by marking session_skip_indices.
@@ -511,7 +634,10 @@ impl History {
         }
 
         Self {
-            persisted_commands_summary,
+            persisted_commands_summary: persisted_commands_summary
+                .into_iter()
+                .map(|(host, summaries)| (host, Arc::new(summaries)))
+                .collect(),
             ..Default::default()
         }
     }
@@ -620,8 +746,14 @@ impl History {
                 let host_clone = host.clone();
                 // Dedupe on the background thread together with the read: with a very large
                 // history file the O(N) hash pass is noticeable on the main thread (#874).
+                // The mapping to entries and the command index are built there too, so the
+                // callback below only swaps the finished structures in (#1140).
+                let summaries = self.persisted_commands_summary.get(&host).cloned();
                 ctx.spawn(
-                    async move { dedupe_from_last(read_history_file_future.await) },
+                    async move {
+                        let commands = dedupe_from_last(read_history_file_future.await);
+                        LoadedHistoryFile::build(commands, summaries.as_deref())
+                    },
                     move |me, history_file_commands, ctx| {
                         // `session_commands_to_append` are commands executed by the user while the
                         // history file was being loaded.
@@ -681,38 +813,26 @@ impl History {
         }
     }
 
-    /// Parses the given `history_file_commands` into `HistoryEntry`'s and sets the
-    /// `history_file_commands` entry for the session with the given ID.
+    /// Installs the already-mapped `history_file_commands` for the host.
     ///
     /// `session_commands_to_append` are commands that have been executed by the user while loading
     /// history file commands; these commands are inserted directly into the session history.
     fn load_history_file_commands(
         &mut self,
-        history_file_commands: Vec<String>,
+        history_file_commands: LoadedHistoryFile,
         session_commands_to_append: Option<Vec<Arc<HistoryEntry>>>,
         session_ids: HashSet<SessionId>,
         host: ShellHost,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Already deduplicated (keeping the last occurrence) by the background task in
-        // `init_session_with`.
-        let deduped_history_file_commands = history_file_commands;
-
-        let mut start_index = deduped_history_file_commands.len();
-        self.history_file_commands.insert(
+        let LoadedHistoryFile { entries, index } = history_file_commands;
+        let mut start_index = entries.len();
+        self.command_indices.insert(
             host.clone(),
-            deduped_history_file_commands
-                .into_iter()
-                .map(|command| {
-                    self.persisted_commands_summary
-                        .get(&host)
-                        .and_then(|summaries| summaries.get(command.as_str()))
-                        .map(|summary| summary.most_recent_entry.clone())
-                        .unwrap_or_else(|| HistoryEntry::command_only(command))
-                })
-                .map(Arc::new)
-                .collect(),
+            HostCommandIndex::with_histfile(index, entries.len()),
         );
+        self.history_file_commands
+            .insert(host.clone(), Arc::new(entries));
 
         if let Some(session_commands_to_append) = session_commands_to_append {
             start_index += session_commands_to_append.len();
@@ -737,33 +857,73 @@ impl History {
                 .insert(*session_id, session_start_index);
         }
 
-        self.session_commands.entry(host).or_default();
+        self.session_commands.entry(host.clone()).or_default();
 
         for session_id in session_ids {
             // Dedupe commands for the new session
             // There could be duplicate live commands from other sessions of the same host
-            let mut seen_commands: HashSet<&str> = HashSet::new();
-            let mut skip_index_set: HashSet<usize> = HashSet::new();
-            self.session_skip_indices.insert(session_id, HashSet::new());
-            for (idx, &entry) in self
-                .commands(session_id)
-                .unwrap_or_else(|| {
-                    log::warn!("History commands are empty for session {session_id:?}");
-                    Vec::new()
-                })
-                .iter()
-                .enumerate()
-                .rev()
-            {
-                if seen_commands.contains(entry.command.as_str()) {
-                    skip_index_set.insert(idx);
-                } else {
-                    seen_commands.insert(entry.command.as_str());
-                }
-            }
+            let skip_index_set = self.initial_skip_indices(session_id, &host, session_start_index);
             self.session_skip_indices.insert(session_id, skip_index_set);
             ctx.emit(HistoryEvent::Initialized(session_id));
         }
+    }
+
+    /// The skip indices a new session starts with: every entry of the session's visible
+    /// history (see [`Self::commands`]) whose command is repeated later on, so only the last
+    /// occurrence is shown.
+    ///
+    /// The history file is already unique and always visible, so instead of hashing all of it
+    /// this walks only the session commands and looks the history file up through the index
+    /// (#1140). Indices are positions in the visible list, exactly as they always were.
+    fn initial_skip_indices(
+        &mut self,
+        session_id: SessionId,
+        host: &ShellHost,
+        session_start_index: usize,
+    ) -> HashSet<usize> {
+        let (Some(histfile_commands), Some(session_commands)) = (
+            self.history_file_commands.get(host),
+            self.session_commands.get(host),
+        ) else {
+            log::warn!("History commands are empty for session {session_id:?}");
+            return HashSet::new();
+        };
+        let histfile_len = histfile_commands.len();
+        let index = self.command_indices.entry(host.clone()).or_default();
+        index.sync(histfile_commands, session_commands);
+
+        let visible_session_commands: Vec<&HistoryEntry> = session_commands
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| (histfile_len + position, entry.as_ref()))
+            .filter(|(idx, entry)| {
+                // Same visibility rule as `visible_commands`; nothing is skipped yet.
+                if *idx < session_start_index && !entry.is_for_restored_block {
+                    return true;
+                }
+                match entry.session_id {
+                    Some(history_session_id) => history_session_id == session_id,
+                    None => true,
+                }
+            })
+            .map(|(_, entry)| entry)
+            .collect();
+
+        let mut skip_index_set: HashSet<usize> = HashSet::new();
+        let mut seen_commands: HashSet<&str> = HashSet::new();
+        // Indices into the visible list: the history file first, then the visible session
+        // commands.
+        for (visible_idx, entry) in visible_session_commands.iter().enumerate().rev() {
+            if !seen_commands.insert(entry.command.as_str()) {
+                skip_index_set.insert(histfile_len + visible_idx);
+            }
+        }
+        for command in seen_commands {
+            if let Some(&histfile_idx) = index.histfile.get(command) {
+                skip_index_set.insert(histfile_idx);
+            }
+        }
+        skip_index_set
     }
 
     /// Returns true iff this session's history is ready to be queried.
@@ -849,19 +1009,20 @@ impl History {
                     return;
                 };
 
+                // Look up where each new command already sits instead of hashing every entry
+                // of the history (#1140). Existing entries equal to a new command are skipped.
+                let index = self.command_indices.entry(shell_host.clone()).or_default();
+                index.sync(history_file_commands, session_commands);
+
                 let skip_indices = &mut self.session_skip_indices;
-                let mut last_index = 0;
-                for (idx, h) in history_file_commands
-                    .iter()
-                    .chain(session_commands.iter())
-                    .enumerate()
-                {
-                    // Mark to skip this command if it exists already
-                    if commands_set.contains(h.command.as_str()) {
+                for command in &commands_set {
+                    for idx in index.positions_of(command) {
                         skip_indices.entry(session_id).or_default().insert(idx);
                     }
-                    last_index = idx;
                 }
+
+                let total_len = history_file_commands.len() + session_commands.len();
+                let last_index = total_len.saturating_sub(1);
 
                 for command in commands {
                     session_commands.push(Arc::new(command));
@@ -925,41 +1086,31 @@ impl History {
             log::warn!("Session commands for session {session_id:?} are empty.");
             return None;
         };
-        // Indices are into the concatenation `histfile_commands ++ session_commands`, which is
-        // what `session_skip_indices` refers to. Enumerate each half separately (offsetting the
-        // second) rather than `chain(..).enumerate()`: `Chain` is not `ExactSizeIterator`, so
-        // the latter could not be walked from the back.
-        let histfile_len = histfile_commands.len();
-        let entries = histfile_commands.iter().enumerate().chain(
-            session_commands
-                .iter()
-                .enumerate()
-                .map(move |(idx, h)| (idx + histfile_len, h)),
-        );
-        Some(
-            entries
-                .filter(move |(idx, h)| {
-                    if skip_indices.contains(idx) {
-                        return false;
-                    }
-                    // Restored blocks may appear before the session start index because they may be
-                    // loaded before the history file has been read. However, restored block commands
-                    // have the same semantics as post-start index session commands -- they should only
-                    // be shown in the session where they were restored.
-                    if *idx < session_start_index && !h.is_for_restored_block {
-                        // This history entry was from before the session's history
-                        // started, so we include it.
-                        return true;
-                    }
-                    // Otherwise, we need to check if the history entry is from this session.
-                    match h.session_id {
-                        Some(history_session_id) => history_session_id == session_id,
-                        // No session id, so command is from the history file
-                        None => true,
-                    }
-                })
-                .map(|(_, h)| h),
-        )
+        Some(visible_entries(
+            histfile_commands,
+            session_commands,
+            skip_indices,
+            session_start_index,
+            session_id,
+        ))
+    }
+
+    /// An owned, `Send` copy of what [`Self::visible_commands`] walks, for a scan that has to
+    /// run off the main thread (#1140). The history file is shared (it is immutable); only the
+    /// session commands and the skip set are copied, and both are bounded by the commands run
+    /// this session, not by the size of the history file.
+    pub fn visible_commands_snapshot(
+        &self,
+        session_id: SessionId,
+    ) -> Option<VisibleHistorySnapshot> {
+        let shell_host = self.session_id_to_shell_host.get(&session_id)?;
+        Some(VisibleHistorySnapshot {
+            session_id,
+            session_start_index: self.session_start_indices.get(&session_id).copied()?,
+            skip_indices: self.session_skip_indices.get(&session_id)?.clone(),
+            histfile_commands: self.history_file_commands.get(shell_host)?.clone(),
+            session_commands: self.session_commands.get(shell_host)?.clone(),
+        })
     }
 
     /// An O(1) upper bound on how many commands [`Self::visible_commands`] can yield for the
@@ -1038,6 +1189,74 @@ impl History {
                 }
             }
         }
+    }
+}
+
+/// The entries of `histfile_commands ++ session_commands` visible to `session_id`, oldest
+/// first, as [`History::visible_commands`] yields them.
+fn visible_entries<'a>(
+    histfile_commands: &'a [Arc<HistoryEntry>],
+    session_commands: &'a [Arc<HistoryEntry>],
+    skip_indices: &'a HashSet<usize>,
+    session_start_index: usize,
+    session_id: SessionId,
+) -> impl DoubleEndedIterator<Item = &'a Arc<HistoryEntry>> + 'a {
+    // Indices are into the concatenation `histfile_commands ++ session_commands`, which is
+    // what `session_skip_indices` refers to. Enumerate each half separately (offsetting the
+    // second) rather than `chain(..).enumerate()`: `Chain` is not `ExactSizeIterator`, so
+    // the latter could not be walked from the back.
+    let histfile_len = histfile_commands.len();
+    let entries = histfile_commands.iter().enumerate().chain(
+        session_commands
+            .iter()
+            .enumerate()
+            .map(move |(idx, h)| (idx + histfile_len, h)),
+    );
+    entries
+        .filter(move |(idx, h)| {
+            if skip_indices.contains(idx) {
+                return false;
+            }
+            // Restored blocks may appear before the session start index because they may be
+            // loaded before the history file has been read. However, restored block commands
+            // have the same semantics as post-start index session commands -- they should only
+            // be shown in the session where they were restored.
+            if *idx < session_start_index && !h.is_for_restored_block {
+                // This history entry was from before the session's history
+                // started, so we include it.
+                return true;
+            }
+            // Otherwise, we need to check if the history entry is from this session.
+            match h.session_id {
+                Some(history_session_id) => history_session_id == session_id,
+                // No session id, so command is from the history file
+                None => true,
+            }
+        })
+        .map(|(_, h)| h)
+}
+
+/// An owned copy of a session's visible history, see [`History::visible_commands_snapshot`].
+#[derive(Debug)]
+pub struct VisibleHistorySnapshot {
+    session_id: SessionId,
+    session_start_index: usize,
+    skip_indices: HashSet<usize>,
+    histfile_commands: Arc<Vec<Arc<HistoryEntry>>>,
+    session_commands: Vec<Arc<HistoryEntry>>,
+}
+
+impl VisibleHistorySnapshot {
+    /// The same entries, in the same order, as [`History::visible_commands`] at the time the
+    /// snapshot was taken.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &Arc<HistoryEntry>> + '_ {
+        visible_entries(
+            &self.histfile_commands,
+            &self.session_commands,
+            &self.skip_indices,
+            self.session_start_index,
+            self.session_id,
+        )
     }
 }
 

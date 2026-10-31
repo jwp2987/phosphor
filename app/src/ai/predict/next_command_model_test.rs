@@ -517,3 +517,110 @@ fn test_feature_flag_arg_is_valid_with_no_whitespace_before_arg() {
         assert!(is_valid);
     });
 }
+
+/// Generated history (oldest first) with a handful of `rare ...` commands buried under many
+/// that do not match, so a `rare` prefix has to walk far back to find them.
+fn history_with_buried_matches(filler: usize) -> Vec<Arc<HistoryEntry>> {
+    let mut entries = vec![
+        HistoryEntry::with_pwd_and_exit_code("rare one", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("rare two", "/elsewhere", 0),
+        HistoryEntry::with_pwd_and_exit_code("rare one", "/elsewhere", 0),
+    ];
+    entries.extend((0..filler).map(|i| {
+        HistoryEntry::with_pwd_and_exit_code(format!("filler {i}"), "/repo".to_owned(), 0)
+    }));
+    entries.into_iter().map(Arc::new).collect()
+}
+
+/// The UI-thread scan gives up (returning `None`, to be finished off-thread) exactly when the
+/// walk needs more entries than the budget, and whenever it does finish its answer is the
+/// unbudgeted one.
+#[test]
+fn budgeted_autosuggestion_scan_defers_long_walks_and_agrees_otherwise() {
+    let history = history_with_buried_matches(500);
+    let excluded = HashSet::new();
+    let unbudgeted = find_potential_autosuggestions_from_history(
+        history.iter(),
+        "rare",
+        Some("/repo"),
+        &excluded,
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert_eq!(
+        commands(unbudgeted.clone()),
+        vec!["rare one", "rare one", "rare two"],
+        "same-dir first, then the rest, each deduped to its newest"
+    );
+
+    // The matches sit 500+ entries back: a small budget must defer ...
+    for budget in [1, 10, 499, 500] {
+        assert!(
+            scan_history_for_autosuggestions(
+                history.iter(),
+                "rare",
+                Some("/repo"),
+                &excluded,
+                MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+                Some(budget),
+            )
+            .is_none(),
+            "budget {budget}"
+        );
+    }
+    // ... and one that covers the whole history finishes with the identical list.
+    for budget in [503, 504, 10_000] {
+        let within_budget = scan_history_for_autosuggestions(
+            history.iter(),
+            "rare",
+            Some("/repo"),
+            &excluded,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+            Some(budget),
+        )
+        .expect("the budget covers the history");
+        assert_eq!(commands(within_budget), commands(unbudgeted.clone()));
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn similar_history_context_cache_reuses_result_per_block_until_ttl() {
+    use std::cell::Cell;
+    use std::time::Instant;
+
+    let cache = SimilarHistoryContextCache::default();
+    let calls = Cell::new(0);
+    let compute = || {
+        calls.set(calls.get() + 1);
+        Vec::new()
+    };
+    let start = Instant::now();
+    let pwd = Some("/repo".to_owned());
+    let exit_ok = ExitCode::from(0);
+
+    // Every keystroke after the same block: one query.
+    for keystroke in 0..5 {
+        let now = start + Duration::from_millis(keystroke * 100);
+        cache.get_or_compute_at(now, "ls", &pwd, exit_ok, None, compute);
+    }
+    assert_eq!(calls.get(), 1);
+
+    // A different block (command, pwd or exit code) re-queries ...
+    cache.get_or_compute_at(start, "pwd", &pwd, exit_ok, None, compute);
+    assert_eq!(calls.get(), 2);
+    cache.get_or_compute_at(start, "pwd", &None, exit_ok, None, compute);
+    assert_eq!(calls.get(), 3);
+    cache.get_or_compute_at(start, "pwd", &None, ExitCode::from(1), None, compute);
+    assert_eq!(calls.get(), 4);
+
+    // ... and so does the same block once the entry has aged out.
+    cache.get_or_compute_at(
+        start + SIMILAR_HISTORY_CONTEXT_CACHE_TTL,
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
+    assert_eq!(calls.get(), 5);
+}

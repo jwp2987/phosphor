@@ -359,6 +359,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+#[cfg(feature = "local_fs")]
+use crate::ai::predict::next_command_model::SimilarHistoryContextCache;
 use string_offset::ByteOffset;
 
 /// Drop target data for dropping content on the [`Input`].
@@ -1764,6 +1767,10 @@ pub struct Input {
     /// data collection when the command completes, but state is cleared when the command is executed.
     last_intelligent_autosuggestion_result: Option<IntelligentAutosuggestionResult>,
     next_command_model: ModelHandle<NextCommandModel>,
+    /// The similar-history lookup the autosuggestion future makes for the last completed
+    /// block, remembered so it runs once per block rather than once per keystroke (#1140).
+    #[cfg(feature = "local_fs")]
+    similar_history_context_cache: Arc<SimilarHistoryContextCache>,
 
     /// The last block that the user ran. This is used for generating autosuggestions.
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -3561,6 +3568,8 @@ impl Input {
             was_intelligent_autosuggestion_accepted: false,
             last_intelligent_autosuggestion_result: None,
             next_command_model,
+            #[cfg(feature = "local_fs")]
+            similar_history_context_cache: Default::default(),
             last_user_block_completed: None,
             hoverable_handle: Default::default(),
             terminal_view_id,
@@ -8627,8 +8636,10 @@ impl Input {
         // harmless).
         let ignored_suggestions = IgnoredSuggestionsModel::as_ref(ctx)
             .get_ignored_suggestions_for_type(SuggestionType::ShellCommand);
+        // Walks only the newest slice of history here; a prefix that needs more (few matches)
+        // is finished inside the future below, off the UI thread (#1140).
         let reverse_chronological_potential_autosuggestions =
-            NextCommandModel::get_reverse_chronological_potential_autosuggestions(
+            NextCommandModel::get_potential_autosuggestions_within_budget(
                 &buffer_text,
                 &completer_data,
                 &ignored_suggestions,
@@ -8640,6 +8651,8 @@ impl Input {
         });
         #[cfg(feature = "local_fs")]
         let conn = self.conn.clone();
+        #[cfg(feature = "local_fs")]
+        let similar_history_context_cache = self.similar_history_context_cache.clone();
         // Resolve the last completed block's lazily-computed fields now, synchronously, since the
         // spawned future below doesn't have access to the terminal model to resolve them later.
         #[cfg(feature = "local_fs")]
@@ -8675,22 +8688,29 @@ impl Input {
                         if let Some((last_command, last_serialized_block)) =
                             &last_user_block_completed_data
                         {
-                            let similar_history_contexts = {
-                                let mut conn = conn.lock();
-                                NextCommandModel::get_similar_history_context(
-                                    &mut conn,
+                            let similar_history_contexts = similar_history_context_cache
+                                .get_or_compute(
                                     last_command,
                                     &last_serialized_block.pwd,
                                     last_serialized_block.exit_code,
                                     last_serialized_block.shell_host.as_ref(),
-                                    0,
-                                )
-                            };
+                                    || {
+                                        let mut conn = conn.lock();
+                                        NextCommandModel::get_similar_history_context(
+                                            &mut conn,
+                                            last_command,
+                                            &last_serialized_block.pwd,
+                                            last_serialized_block.exit_code,
+                                            last_serialized_block.shell_host.as_ref(),
+                                            0,
+                                        )
+                                    },
+                                );
                             if !similar_history_contexts.is_empty() {
                                 let mut history_next_command_counts =
                                     counter::Counter::<String>::new();
                                 // Find the most likely next command after a similar context, out of those that have a matching prefix and aren't ignored.
-                                for history_context in &similar_history_contexts {
+                                for history_context in similar_history_contexts.iter() {
                                     if history_context
                                         .next_command
                                         .command
@@ -8728,7 +8748,8 @@ impl Input {
                     // If we have no suggestion from similar historical context, fallback to the most recent
                     // command with a matching prefix run in the same pwd (if exists, otherwise just most recent command anywhere with matching prefix).
                     for reverse_chronological_command in
-                        reverse_chronological_potential_autosuggestions.unwrap_or_default()
+                        reverse_chronological_potential_autosuggestions
+                            .resolve(&buffer_text, &ignored_suggestions)
                     {
                         if !ignored_suggestions.contains(&reverse_chronological_command.command)
                             && is_command_valid(
