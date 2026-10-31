@@ -68,7 +68,10 @@ use warpui::{
 use warpui::{EntityId, ModelHandle, SingletonEntity as _};
 
 use super::block_list_viewport::{ClampingMode, InputMode, ScrollPosition, ViewportState};
-use super::blockgrid_renderer::GridRenderParams;
+use super::blockgrid_renderer::{
+    block_list_paint_from_snapshot, DeferredGridDraw, GridRenderParams, GridSnapshotCache,
+    GridSnapshotKey,
+};
 use super::find::{BlockFindRenderData, TerminalFindModel};
 use super::grid_renderer::{CellGlyphCache, SharedCellGlyphCache};
 
@@ -900,6 +903,9 @@ pub struct BlockListElement {
     /// If `Some()`, lays out and renders the element next to the cursor.
     cursor_hint_text_element: Option<Box<dyn Element>>,
 
+    /// Snapshots of the block grids painted last frame; see [`GridSnapshotCache`].
+    grid_snapshots: GridSnapshotCache,
+
     /// Voice input toggle key code for CLI agent footer integration.
     #[cfg(feature = "voice_input")]
     voice_input_toggle_key_code: Option<KeyCode>,
@@ -1186,6 +1192,7 @@ impl BlockListElement {
             input_size_at_last_frame,
             block_footer_elements: HashMap::new(),
             cursor_hint_text_element,
+            grid_snapshots: GridSnapshotCache::default(),
             cli_subagent_views,
             cli_subagent_active_drag_block_ids,
             inline_menu_positioner,
@@ -2790,6 +2797,8 @@ impl BlockListElement {
         cursor_hint_text: Option<&mut Box<dyn Element>>,
         image_metadata: &HashMap<u32, StoredImageMetadata>,
         agent_view_state: &AgentViewState,
+        deferred_grid_draws: &mut Option<Vec<DeferredGridDraw>>,
+        grid_snapshots: &mut GridSnapshotCache,
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
@@ -2845,23 +2854,48 @@ impl BlockListElement {
             let size_info = &block_grid_params.grid_render_params.size_info;
             if block.should_display_rprompt(size_info) {
                 let rprompt_origin = prompt_origin + block.rprompt_render_offset(size_info);
-                block.rprompt_grid().draw(
-                    rprompt_origin,
-                    element_origin,
-                    glyphs,
-                    COMMAND_ALPHA,
-                    None,
-                    None,
-                    hovered_secret,
-                    None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
-                    None,
-                    Properties::default(),
-                    block_grid_params,
-                    None,
-                    image_metadata,
-                    ctx,
-                    app,
-                );
+                let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+                    let draw = block.rprompt_grid().capture_draw(
+                        rprompt_origin,
+                        element_origin,
+                        COMMAND_ALPHA,
+                        None,
+                        None,
+                        hovered_secret,
+                        None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
+                        None,
+                        Properties::default(),
+                        block_grid_params,
+                        None,
+                        grid_snapshots,
+                        GridSnapshotKey {
+                            block_index,
+                            grid: GridType::Rprompt,
+                        },
+                        ctx.scene.insertion_point(),
+                    )?;
+                    draws.push(draw);
+                    Some(())
+                });
+                if deferred.is_none() {
+                    block.rprompt_grid().draw(
+                        rprompt_origin,
+                        element_origin,
+                        glyphs,
+                        COMMAND_ALPHA,
+                        None,
+                        None,
+                        hovered_secret,
+                        None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
+                        None,
+                        Properties::default(),
+                        block_grid_params,
+                        None,
+                        image_metadata,
+                        ctx,
+                        app,
+                    );
+                }
             }
         }
 
@@ -2891,29 +2925,60 @@ impl BlockListElement {
             .and_then(|data: &BlockFindRenderData<'_>| {
                 data.focused_range_for_grid(GridType::PromptAndCommand)
             });
-        block.prompt_and_command_grid().draw(
-            command_origin,
-            element_origin,
-            glyphs,
-            COMMAND_ALPHA,
-            highlighted_url
-                .filter(|url| url.is_in_command_content() && url.block_index == block_index)
-                .map(|url| &url.inner),
-            link_tool_tip
-                .filter(|url| url.is_in_command_content() && url.block_index == block_index)
-                .map(|url| &url.inner),
-            hovered_secret,
-            find_render_data
-                .as_ref()
-                .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
-            command_focused_range.as_ref(),
-            command_grid_properties,
-            block_grid_params,
-            command_grid_visible_cursor_shape(block),
-            image_metadata,
-            ctx,
-            app,
-        );
+        let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+            let draw = block.prompt_and_command_grid().capture_draw(
+                command_origin,
+                element_origin,
+                COMMAND_ALPHA,
+                highlighted_url
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                link_tool_tip
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                hovered_secret,
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
+                command_focused_range.as_ref(),
+                command_grid_properties,
+                block_grid_params,
+                command_grid_visible_cursor_shape(block),
+                grid_snapshots,
+                GridSnapshotKey {
+                    block_index,
+                    grid: GridType::PromptAndCommand,
+                },
+                ctx.scene.insertion_point(),
+            )?;
+            draws.push(draw);
+            Some(())
+        });
+        if deferred.is_none() {
+            block.prompt_and_command_grid().draw(
+                command_origin,
+                element_origin,
+                glyphs,
+                COMMAND_ALPHA,
+                highlighted_url
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                link_tool_tip
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                hovered_secret,
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
+                command_focused_range.as_ref(),
+                command_grid_properties,
+                block_grid_params,
+                command_grid_visible_cursor_shape(block),
+                image_metadata,
+                ctx,
+                app,
+            );
+        }
 
         // Only render the cursor in the command grid if the command grid is active and if it's
         // long running. This is to avoid jitter where a cursor just flickers while the pty is
@@ -2981,30 +3046,65 @@ impl BlockListElement {
             let output_focused_range = find_render_data
                 .as_ref()
                 .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
-            block.output_grid().draw(
-                *grid_origin,
-                viewport_origin,
-                glyphs,
-                255,
-                highlighted_url
-                    .filter(|url| url.is_output_grid() && url.block_index == block_index)
-                    .map(|url| &url.inner),
-                link_tool_tip
-                    .filter(|url| !url.is_in_command_content() && url.block_index == block_index)
-                    .map(|url| &url.inner),
-                hovered_secret,
-                // Render find matches in output grid
-                find_render_data
-                    .as_ref()
-                    .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
-                output_focused_range.as_ref(),
-                output_grid_properties,
-                block_grid_params,
-                output_grid_visible_cursor_shape(block),
-                image_metadata,
-                ctx,
-                app,
-            );
+            let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+                let draw = block.output_grid().capture_draw(
+                    *grid_origin,
+                    viewport_origin,
+                    255,
+                    highlighted_url
+                        .filter(|url| url.is_output_grid() && url.block_index == block_index)
+                        .map(|url| &url.inner),
+                    link_tool_tip
+                        .filter(|url| {
+                            !url.is_in_command_content() && url.block_index == block_index
+                        })
+                        .map(|url| &url.inner),
+                    hovered_secret,
+                    find_render_data
+                        .as_ref()
+                        .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
+                    output_focused_range.as_ref(),
+                    output_grid_properties,
+                    block_grid_params,
+                    output_grid_visible_cursor_shape(block),
+                    grid_snapshots,
+                    GridSnapshotKey {
+                        block_index,
+                        grid: GridType::Output,
+                    },
+                    ctx.scene.insertion_point(),
+                )?;
+                draws.push(draw);
+                Some(())
+            });
+            if deferred.is_none() {
+                block.output_grid().draw(
+                    *grid_origin,
+                    viewport_origin,
+                    glyphs,
+                    255,
+                    highlighted_url
+                        .filter(|url| url.is_output_grid() && url.block_index == block_index)
+                        .map(|url| &url.inner),
+                    link_tool_tip
+                        .filter(|url| {
+                            !url.is_in_command_content() && url.block_index == block_index
+                        })
+                        .map(|url| &url.inner),
+                    hovered_secret,
+                    // Render find matches in output grid
+                    find_render_data
+                        .as_ref()
+                        .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
+                    output_focused_range.as_ref(),
+                    output_grid_properties,
+                    block_grid_params,
+                    output_grid_visible_cursor_shape(block),
+                    image_metadata,
+                    ctx,
+                    app,
+                );
+            }
 
             if block.is_output_cursor_visible()
             // Don't draw the Zap cursor when rich input is hiding
@@ -4064,6 +4164,10 @@ impl Element for BlockListElement {
 
         let mut glyphs = SharedCellGlyphCache::acquire();
         let mut grid_origin = origin;
+        // Block grids are captured here, under the lock, and painted after it is released (see
+        // `DeferredGridDraw`); the pty reader parses the next output meanwhile.
+        self.grid_snapshots.begin_frame();
+        let mut deferred_grid_draws = block_list_paint_from_snapshot().then(Vec::new);
 
         let block_list = model.block_list();
         let total_block_height = block_list.block_heights().summary().height;
@@ -4416,6 +4520,8 @@ impl Element for BlockListElement {
                         self.cursor_hint_text_element.as_mut(),
                         &model.image_id_to_metadata,
                         agent_view_state,
+                        &mut deferred_grid_draws,
+                        &mut self.grid_snapshots,
                         ctx,
                         app,
                     );
@@ -4772,6 +4878,14 @@ impl Element for BlockListElement {
                     cli_subagent_view.paint(view_origin, ctx, app);
                     ctx.scene.stop_layer();
                 }
+            }
+        }
+
+        drop(model);
+        if let Some(draws) = &deferred_grid_draws {
+            // Later insertion points move when an earlier one is spliced, hence the reverse.
+            for draw in draws.iter().rev() {
+                draw.paint(&mut glyphs, &block_grid_params, ctx, app);
             }
         }
 
