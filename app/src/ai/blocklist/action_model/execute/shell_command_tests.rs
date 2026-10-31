@@ -923,3 +923,47 @@ fn unwraps_nushell_in_band_generator_calls() {
         " warp_run_generator_command 42 r#'git status'#"
     ));
 }
+
+// #1129: a line over the tty line-mode limit is silently cut short on the way to `cat`; the
+// agent has to be told, since the bytes cannot be delivered exactly.
+#[test]
+fn a_line_over_the_line_mode_limit_gets_a_note() {
+    let mut input = b"short\n".to_vec();
+    input.extend(std::iter::repeat_n(b'a', MAX_LINE_MODE_LINE_BYTES + 1));
+    input.push(b'\n');
+    let note = long_line_write_note(&input).expect("a 1024-byte line must be flagged");
+    assert!(note.contains("1024"), "{note}");
+    assert!(note.contains("truncates"), "{note}");
+}
+
+#[test]
+fn lines_within_the_limit_get_no_note() {
+    // Many lines and a lot of data, none long: byte-exact through any tty.
+    let mut input = Vec::new();
+    for _ in 0..5000 {
+        input.extend(std::iter::repeat_n(b'a', MAX_LINE_MODE_LINE_BYTES));
+        input.extend_from_slice(b"\r\n");
+    }
+    assert_eq!(longest_line_bytes(&input), MAX_LINE_MODE_LINE_BYTES);
+    assert_eq!(long_line_write_note(&input), None);
+    assert_eq!(long_line_write_note(b""), None);
+}
+
+#[test]
+fn the_note_is_appended_to_a_snapshot() {
+    let snapshot = AIAgentActionResultType::WriteToLongRunningShellCommand(
+        WriteToLongRunningShellCommandResult::Snapshot {
+            block_id: "b".to_owned().into(),
+            grid_contents: "screen".to_owned(),
+            cursor: String::new(),
+            is_alt_screen_active: false,
+            is_preempted: false,
+        },
+    );
+    match with_long_line_note(snapshot, "NOTE: x") {
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::Snapshot { grid_contents, .. },
+        ) => assert_eq!(grid_contents, "screen\nNOTE: x"),
+        other => panic!("{other:?}"),
+    }
+}
