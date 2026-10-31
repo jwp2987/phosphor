@@ -220,6 +220,10 @@ impl GrepExecutor {
             .current_working_directory()
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
+        // Fail closed on a `~` we cannot resolve on a remote session (#1288).
+        if super::session_tilde_unresolved(self.active_session.as_ref(ctx), path, ctx) {
+            return false;
+        }
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
         let absolute_path = host_native_absolute_path(&path, &shell, &current_working_directory);
 

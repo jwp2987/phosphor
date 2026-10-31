@@ -558,6 +558,15 @@ fn v4a_move(file: &str, move_to: &str) -> FileEdit {
     })
 }
 
+/// A local-session context whose working directory is `cwd`.
+fn session_in(cwd: &Option<String>) -> crate::ai::blocklist::SessionContext {
+    let session = crate::ai::blocklist::SessionContext::new_for_test();
+    match cwd {
+        Some(cwd) => session.with_cwd_for_test(cwd),
+        None => session,
+    }
+}
+
 /// A V4A rename writes its `move_to` destination, but the auto-approve path used to build its
 /// guard list from `FileEdit::file()` — the SOURCE — so renaming an innocuous file onto a
 /// protected config was auto-approved under an auto-write setting. Every destination below is
@@ -606,8 +615,7 @@ fn test_can_apply_file_edits_move_to_protected_path_denied() {
                 let result = model.can_apply_file_edits(
                     &convo_id,
                     &edits,
-                    &None,
-                    cwd,
+                    &session_in(&cwd),
                     Some(terminal_view_id),
                     ctx,
                 );
@@ -646,8 +654,7 @@ fn test_can_apply_file_edits_move_to_protected_path_denied() {
             let result = model.can_apply_file_edits(
                 &convo_id,
                 &batch,
-                &None,
-                &project_cwd,
+                &session_in(&project_cwd),
                 Some(terminal_view_id),
                 ctx,
             );
@@ -692,8 +699,7 @@ fn test_can_apply_file_edits_ordinary_rename_still_autoapproves() {
                 let result = model.can_apply_file_edits(
                     &convo_id,
                     &edits,
-                    &None,
-                    &cwd,
+                    &session_in(&cwd),
                     Some(terminal_view_id),
                     ctx,
                 );
@@ -722,8 +728,7 @@ fn test_can_apply_file_edits_ordinary_rename_still_autoapproves() {
             let result = model.can_apply_file_edits(
                 &convo_id,
                 &edits,
-                &None,
-                &cwd,
+                &session_in(&cwd),
                 Some(terminal_view_id),
                 ctx,
             );
@@ -2886,4 +2891,119 @@ fn test_can_autoexecute_command_denylist_follows_indirect_execution() {
             );
         }
     })
+}
+
+#[cfg(unix)]
+mod remote_home_1288 {
+    use super::*;
+    use crate::ai::blocklist::SessionContext;
+    use crate::ai::blocklist::permissions::{
+        file_edit_guard_paths_in_session, file_edits_have_unresolvable_tilde,
+        file_edits_touch_protected_path,
+    };
+
+    fn create(path: &str) -> FileEdit {
+        FileEdit::Create {
+            file: Some(path.to_owned()),
+            content: Some("x".to_owned()),
+        }
+    }
+
+    /// The guard must see the REMOTE home's spelling of `~/x`. The old code resolved it with the
+    /// local home (`dirs::home_dir()`), so `/home/remoteuser/x` never appeared in the list.
+    #[test]
+    fn guard_paths_resolve_tilde_against_the_remote_home() {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser/proj",
+        );
+        let paths = file_edit_guard_paths_in_session(&[create("~/x")], &session);
+        assert!(
+            paths.contains(&PathBuf::from("/home/remoteuser/x")),
+            "got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("/home/localuser")),
+            "no local-home spelling may appear: {paths:?}"
+        );
+    }
+
+    /// The protected-path verdict is computed on the remote session's path.
+    #[test]
+    fn protected_write_is_detected_on_the_remote_path() {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser",
+        );
+        assert!(file_edits_touch_protected_path(
+            &[create("~/.ssh/authorized_keys")],
+            &session
+        ));
+        assert!(!file_edits_touch_protected_path(
+            &[create("~/tmp-r18-1288/a.txt")],
+            &session
+        ));
+    }
+
+    /// Unknown remote home: fail closed. Old code had no such check and judged the LOCAL
+    /// home's path.
+    #[test]
+    fn unknown_remote_home_is_unresolvable_and_never_auto_applies() {
+        let session = SessionContext::new_remote_with_home_for_test(None, "/srv");
+        let edits = [create("~/tmp-r18-1288/a.txt")];
+        assert!(file_edits_have_unresolvable_tilde(&edits, &session));
+        assert!(file_edits_touch_protected_path(&edits, &session));
+        // An absolute path needs no home.
+        assert!(!file_edits_have_unresolvable_tilde(
+            &[create("/srv/a.txt")],
+            &session
+        ));
+        // A local session never has an unresolvable tilde.
+        let local = SessionContext::new_local_with_cwd_for_test("/srv");
+        assert!(!file_edits_have_unresolvable_tilde(&edits, &local));
+    }
+
+    #[test]
+    fn can_apply_file_edits_denies_unresolvable_tilde_even_under_always_allow() {
+        App::test((), |mut app| async move {
+            let PermissionsTestState {
+                terminal_view_id,
+                convo_id,
+                permissions,
+                profile_model,
+                ..
+            } = initialize_permissions_test(&mut app);
+            profile_model.update(&mut app, |model, ctx| {
+                model.set_apply_code_diffs(
+                    *model.active_profile(Some(terminal_view_id), ctx).id(),
+                    &ActionPermission::AlwaysAllow,
+                    ctx,
+                );
+            });
+            let edits = [create("~/tmp-r18-1288/a.txt")];
+            let known = SessionContext::new_remote_with_home_for_test(
+                Some("/home/remoteuser"),
+                "/home/remoteuser",
+            );
+            let unknown = SessionContext::new_remote_with_home_for_test(None, "/srv");
+            permissions.read(&app, |model, ctx| {
+                let allowed = model.can_apply_file_edits(
+                    &convo_id,
+                    &edits,
+                    &known,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(allowed.is_allowed(), "known remote home: {allowed:?}");
+                let denied = model.can_apply_file_edits(
+                    &convo_id,
+                    &edits,
+                    &unknown,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(!denied.is_allowed(), "unknown remote home: {denied:?}");
+            });
+        })
+    }
 }

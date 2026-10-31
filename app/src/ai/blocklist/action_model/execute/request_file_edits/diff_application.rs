@@ -20,7 +20,6 @@ use crate::{
     ai::{
         agent::{AIIdentifiers, FileEdit},
         blocklist::SessionContext,
-        paths::host_native_absolute_path,
     },
     auth::AuthState,
     safe_debug, safe_warn, send_telemetry_on_executor,
@@ -368,6 +367,27 @@ where
     let mut file_renames: HashMap<String, String> = HashMap::new();
     let mut result = DiffResult::default();
 
+    // A `~` path on a remote session whose home is unknown would resolve against the LOCAL
+    // home and read or write a different file than the model named. Refuse the whole batch
+    // rather than guess (#1288).
+    let unresolvable: Vec<String> = edits
+        .iter()
+        .flat_map(|edit| edit.written_paths())
+        .filter(|path| session_context.tilde_unresolvable(path))
+        .map(str::to_owned)
+        .collect();
+    if !unresolvable.is_empty() {
+        for file in unresolvable {
+            result.errors.push(DiffApplicationError::ReadFailed {
+                file,
+                message: "the remote host's home directory is not known, so `~` cannot be \
+                          resolved; retry with an absolute path"
+                    .to_owned(),
+            });
+        }
+        return result;
+    }
+
     for edit in edits {
         match edit {
             FileEdit::Edit(diff) => {
@@ -520,11 +540,7 @@ async fn apply_replace_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(file_content) => {
@@ -577,11 +593,7 @@ async fn apply_create_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(_) => {
@@ -623,11 +635,7 @@ async fn apply_delete_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(file_content) => {
@@ -668,11 +676,7 @@ async fn apply_search_replace<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::NotFound => {
@@ -778,11 +782,7 @@ async fn apply_v4a_update<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     let file_content = match read_file(absolute_path.clone()).await {
         FileReadResult::NotFound => {
@@ -821,13 +821,7 @@ async fn apply_v4a_update<F, Fut>(
     // `move_to` through meant `~` was never expanded and a relative destination landed
     // against the PROCESS cwd rather than the session's, so the guard and the writer named
     // different files (#682).
-    let rename_to = rename_to.map(|target| {
-        host_native_absolute_path(
-            &target,
-            session_context.shell(),
-            session_context.current_working_directory(),
-        )
-    });
+    let rename_to = rename_to.map(|target| session_context.resolve_path(&target));
 
     // Check if we're renaming to an existing file.
     let rename_target_content = if let Some(target_absolute) = &rename_to {

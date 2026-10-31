@@ -2896,3 +2896,42 @@ mod synthetic_result_resumes {
         assert_eq!(spent, MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN);
     }
 }
+
+#[cfg(unix)]
+mod remote_home_1288 {
+    use crate::ai::blocklist::SessionContext;
+
+    #[test]
+    fn resolve_path_uses_the_remote_home_not_the_local_one() {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser/proj",
+        );
+        assert_eq!(session.resolve_path("~/x"), "/home/remoteuser/x");
+        assert_eq!(session.resolve_path("~"), "/home/remoteuser");
+        assert_eq!(session.resolve_path("y"), "/home/remoteuser/proj/y");
+        assert_eq!(session.resolve_path("/etc/z"), "/etc/z");
+        assert!(!session.tilde_unresolvable("~/x"));
+    }
+
+    #[test]
+    fn unknown_remote_home_is_flagged_for_tilde_paths_only() {
+        let session = SessionContext::new_remote_with_home_for_test(None, "/srv");
+        assert!(session.tilde_unresolvable("~/x"));
+        assert!(session.tilde_unresolvable("~"));
+        assert!(!session.tilde_unresolvable("/srv/x"));
+        assert!(!session.tilde_unresolvable("rel/x"));
+    }
+
+    #[test]
+    fn a_local_session_expands_with_the_local_home() {
+        let session = SessionContext::new_local_with_cwd_for_test("/srv");
+        assert!(!session.tilde_unresolvable("~/x"));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                session.resolve_path("~/x"),
+                home.join("x").to_string_lossy()
+            );
+        }
+    }
+}
