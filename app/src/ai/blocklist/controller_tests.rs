@@ -1785,7 +1785,8 @@ fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
 /// tool call (providers whose genai adapter ignores `tool_choice`). The call is dropped, and
 /// the narration is this stream's own AgentOutput — but it is not a summary, so nothing is
 /// committed: the head (the step's calls and results included) stays visible. The deferred
-/// summary still resumes the task: exactly one continue request.
+/// summary is then asked for once more without tools (#1079, e35f40c2c) instead of resuming
+/// the task uncompacted: one retry request, no continue request yet.
 #[test]
 fn narration_before_a_dropped_tool_call_is_not_committed_as_the_summary() {
     drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::NarrationThenToolCall);
@@ -2288,7 +2289,27 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                     })
                 })
                 .count();
-            assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+            if outcome == SummaryStreamOutcome::NarrationThenToolCall {
+                // #1079 (e35f40c2c): a summary the model answered with a tool call is asked for
+                // once more, without tools, and the task resumes only after that one commits.
+                assert_eq!(continue_requests, 0, "no continue before the retried summary");
+                let retries = controller
+                    .in_flight_response_streams
+                    .streams_for_test()
+                    .filter(|stream| {
+                        stream.as_ref(ctx).params_for_test().input.iter().any(|input| {
+                            matches!(
+                                input,
+                                AIAgentInput::SummarizeConversation { prompt: Some(prompt), .. }
+                                    if prompt.as_str() == crate::ai::byop_compaction::prompt::SUMMARY_RETRY_INSTRUCTION
+                            )
+                        })
+                    })
+                    .count();
+                assert_eq!(retries, 1, "the summary is asked for once more, without tools");
+            } else {
+                assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+            }
 
             if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
                 // What the continue request sends: the summary first, then the kept turn's
