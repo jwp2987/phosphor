@@ -41,6 +41,9 @@ lazy_static! {
     static ref EMPTY_COMMAND_REGISTRY: Arc<CommandRegistry> = Arc::new(CommandRegistry::empty());
 }
 
+/// Attempts at one remote directory listing before it is given up as empty (and not cached).
+const REMOTE_LISTING_ATTEMPTS: usize = 2;
+
 type DirectoryEntryMap = dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>;
 
 /// How long a non-local session's directory listings are reused across keystrokes (#1130).
@@ -373,17 +376,23 @@ impl SessionContext {
                 None => (Vec::new(), false),
             };
         }
-        (self.list_remote_directory_entries(directory).await, true)
+        self.list_remote_directory_entries(directory).await
     }
 
+    /// Returns the entries and whether the result may be cached. Only a listing the remote shell
+    /// actually produced (success, or a failure with an exit code such as a half-typed path that
+    /// does not exist yet) is cacheable. A transport error (the remote-server connection dropped
+    /// under a request in flight, a ControlMaster timeout), a killed command and a truncated
+    /// listing say nothing about the directory, and caching their empty result made Tab show no
+    /// menu for the whole cache window after a proxy restart (#1289).
     async fn list_remote_directory_entries(
         &self,
         directory: &TypedPath<'_>,
-    ) -> Vec<EngineDirEntry> {
+    ) -> (Vec<EngineDirEntry>, bool) {
         match self.session.session_type() {
             // Local listings never reach here: `list_directory_entries_internal` routes
             // them through `list_local_directory_entries` (off the shared worker pool).
-            SessionType::Local => Vec::new(),
+            SessionType::Local => (Vec::new(), true),
             SessionType::WarpifiedRemote { .. } => {
                 let env_vars = self
                     .session
@@ -393,44 +402,58 @@ impl SessionContext {
 
                 let Some(ls_command) = ls_script_for_dir(directory, self.session.shell_dialect())
                 else {
-                    return vec![];
+                    return (vec![], true);
                 };
 
                 // The in-band command executor doesn't support executing from
                 // from an arbitrary directory, so we need to cd into the
                 // directory we want within the ls script.
-                let command_output_result = self
-                    .session
-                    .execute_command(
-                        &ls_command,
-                        None,
-                        env_vars,
-                        ExecuteCommandOptions::default(),
-                    )
-                    .await;
+                // One retry on a transport error: the session swaps its executor when the
+                // remote-server proxy dies or comes back (#1171), so a request caught by the
+                // swap fails once and the second attempt runs on the current executor.
+                let mut command_output_result = Err(anyhow::anyhow!("not run"));
+                for _ in 0..REMOTE_LISTING_ATTEMPTS {
+                    command_output_result = self
+                        .session
+                        .execute_command(
+                            &ls_command,
+                            None,
+                            env_vars.clone(),
+                            ExecuteCommandOptions::default(),
+                        )
+                        .await;
+                    if command_output_result.is_ok() {
+                        break;
+                    }
+                }
 
                 match command_output_result {
                     Ok(command_output) => match command_output.status {
                         CommandExitStatus::Success => {
-                            parse_ls_script_output(command_output.output()).unwrap_or_else(|| {
-                                log::warn!(
-                                    "Executing `ls` on remote box returned malformed or truncated output: `{:?}`",
-                                    AsciiDebug(command_output.output())
-                                );
-                                vec![]
-                            })
+                            match parse_ls_script_output(command_output.output()) {
+                                Some(entries) => (entries, true),
+                                None => {
+                                    log::warn!(
+                                        "Executing `ls` on remote box returned malformed or truncated output: `{:?}`",
+                                        AsciiDebug(command_output.output())
+                                    );
+                                    (vec![], false)
+                                }
+                            }
                         }
                         CommandExitStatus::Failure => {
                             safe_warn!(
                                 safe: ("Executing `ls` on remote box failed with non-zero status code."),
                                 full: ("Executing `ls` on remote box failed with error: {}", &String::from_utf8_lossy(command_output.output()))
                             );
-                            vec![]
+                            // An exit code is the shell's own verdict on this directory; no
+                            // exit code means the command was killed from outside.
+                            (vec![], command_output.exit_code.is_some())
                         }
                     },
                     Err(err) => {
                         log::warn!("Executing `ls` on remote box failed with error {err:?}");
-                        vec![]
+                        (vec![], false)
                     }
                 }
             }
