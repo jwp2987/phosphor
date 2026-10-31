@@ -537,10 +537,13 @@ fn run_deferred_restore_job(
     blocks: Vec<SerializedBlock>,
     mailbox: Arc<DeferredRestoreMailbox>,
 ) {
+    // The scratch list's events go nowhere: finishing a block on it emits `BlockCompleted`, which
+    // on the terminal's own listener reached the view mid-session for a block that was not
+    // completing. Only the wakeup below, once a block is in the mailbox, is for the view.
     for serialized in blocks {
         let mut scratch = BlockList::new_internal(
             config.sizes.clone(),
-            config.event_proxy.clone(),
+            ChannelEventListener::detached(),
             config.background_executor.clone(),
             config.show_warp_bootstrap_input,
             config.show_in_band_command_blocks,
