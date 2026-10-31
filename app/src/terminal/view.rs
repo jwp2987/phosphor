@@ -3014,6 +3014,12 @@ pub struct TerminalView {
     /// paths never stat or canonicalize per frame.
     display_cwd_cache: RefCell<Option<(PathBuf, PathBuf)>>,
 
+    /// Memoizes `last_completed_command_text` as (block id, title) for the newest finished
+    /// block: the vertical tab list asks for it on every render, and rebuilding the text of a
+    /// 1 MB command each time cost ~10 ms per frame (#1191). A finished block's command does
+    /// not change.
+    last_completed_command_title_cache: RefCell<Option<(BlockId, Option<String>)>>,
+
     /// The ID of the containing window.
     window_id: WindowId,
 
@@ -4669,6 +4675,7 @@ impl TerminalView {
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
             display_cwd_cache: RefCell::new(None),
+            last_completed_command_title_cache: RefCell::new(None),
             ai_input_model,
             ai_context_model,
             window_id,

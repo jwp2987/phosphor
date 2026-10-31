@@ -60,13 +60,23 @@ impl TerminalView {
             {
                 // Phosphor (#1052): a multi-line command titles the tab with its first line
                 // and an ellipsis, as its running title did; the layout would glue the lines.
+                if let Some((id, title)) = self.last_completed_command_title_cache.borrow().as_ref()
+                {
+                    if id == block.id() {
+                        return title.clone();
+                    }
+                }
                 let cmd = block.command_to_string();
                 let title = single_line_title(&cmd);
-                if title.trim().is_empty() {
+                let title = if title.trim().is_empty() {
                     None
                 } else {
                     Some(title.into_owned())
+                };
+                if let Ok(mut cache) = self.last_completed_command_title_cache.try_borrow_mut() {
+                    *cache = Some((block.id().clone(), title.clone()));
                 }
+                title
             } else {
                 None
             }

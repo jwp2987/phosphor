@@ -370,6 +370,55 @@ fn test_text_matches_the_char_iterator_across_edits_undo_and_redo() -> Result<()
     })
 }
 
+/// #1191: the windowed editor layout proves "no row can wrap" from these two O(1)/cheap facts,
+/// so they must track edits, deletions and undo.
+#[test]
+fn test_is_ascii_and_is_tab_free_track_the_visible_text() -> Result<()> {
+    App::test((), |mut app| async move {
+        let buffer = app.add_model(|_| Buffer::new("plain ascii\nsecond line"));
+        buffer.update(&mut app, |buffer, ctx| {
+            assert!(buffer.is_ascii());
+            assert!(buffer.is_tab_free());
+
+            // A multi-byte char breaks "ASCII"; deleting it restores it.
+            buffer.edit_for_test(
+                vec![to_char_index_range(5..5)],
+                "\u{e9}",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert!(!buffer.is_ascii());
+            assert!(buffer.is_tab_free());
+            buffer.undo(ctx);
+            assert!(buffer.is_ascii());
+
+            // A tab breaks "tab free"; it is still ASCII.
+            buffer.edit_for_test(
+                vec![to_char_index_range(0..0)],
+                "\t",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert!(buffer.is_ascii());
+            assert!(!buffer.is_tab_free());
+            buffer.undo(ctx);
+            assert!(buffer.is_ascii());
+
+            // An empty buffer is both.
+            let len = buffer.len().as_usize();
+            buffer.edit_for_test(
+                vec![to_char_index_range(0..len)],
+                "",
+                EditOrigin::UserInitiated,
+                ctx,
+            )?;
+            assert!(buffer.is_ascii());
+            assert!(buffer.is_tab_free());
+            Ok(())
+        })
+    })
+}
+
 /// Style updates splice fragments without changing the visible text or the version
 /// vector, so the memoised text stays valid and stays correct across them.
 #[test]
