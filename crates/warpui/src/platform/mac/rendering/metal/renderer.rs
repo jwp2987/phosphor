@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Write;
@@ -569,7 +569,7 @@ impl<'a> Frame<'a> {
             );
         }
 
-        let mut per_rect_uniforms = Vec::new();
+        let mut per_rect_uniforms = Vec::with_capacity(layer.rects.len());
         for rect in &layer.rects {
             let scale_factor = self.scene.scale_factor();
             let bounds = rect.bounds * scale_factor;
@@ -719,8 +719,8 @@ impl<'a> Frame<'a> {
 
         let scale_factor = self.scene.scale_factor();
 
-        let mut texture_to_glyph: HashMap<TextureId, Vec<shader::PerGlyphUniforms>> =
-            HashMap::new();
+        let mut texture_to_glyph: FxHashMap<TextureId, Vec<shader::PerGlyphUniforms>> =
+            FxHashMap::default();
         for glyph in &layer.glyphs {
             let glyph_position = glyph.position * scale_factor;
             let subpixel_alignment = SubpixelAlignment::new(glyph_position);

@@ -1,14 +1,132 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 
 use wgpu::{
-    util::BufferInitDescriptor, Buffer, BufferAddress, BufferDescriptor, Device,
-    COPY_BUFFER_ALIGNMENT,
+    util::BufferInitDescriptor, Buffer, BufferAddress, BufferDescriptor, BufferUsages, Device,
+    Queue, COPY_BUFFER_ALIGNMENT,
 };
 
 use super::Error;
+
+/// Whether the instance (per-rect, per-glyph, per-image) vertex buffers are kept across frames
+/// and refilled with `Queue::write_buffer`, instead of a fresh mapped buffer being created and
+/// dropped for each of them every frame. `PHOSPHOR_WGPU_PER_FRAME_BUFFERS=1` restores the
+/// per-frame buffers, for bisecting a driver problem.
+pub fn reuse_instance_buffers() -> bool {
+    static REUSE: OnceLock<bool> = OnceLock::new();
+    *REUSE.get_or_init(|| {
+        reuse_unless_disabled(std::env::var("PHOSPHOR_WGPU_PER_FRAME_BUFFERS").ok().as_deref())
+    })
+}
+
+fn reuse_unless_disabled(per_frame_buffers_flag: Option<&str>) -> bool {
+    per_frame_buffers_flag.is_none_or(|flag| flag == "0")
+}
+
+/// A vertex buffer that outlives the frame. `write_buffer` is ordered on the queue after the
+/// previous frame's submission, so refilling it while that frame's draws may still be executing
+/// is safe by the wgpu queue-timeline rules.
+struct PersistentBuffer {
+    buffer: Buffer,
+    capacity: BufferAddress,
+}
+
+/// The vertex buffer one pipeline draws its instances from in the current frame: either the
+/// buffer kept across frames or, when [`reuse_instance_buffers`] is off, this frame's own.
+#[derive(Default)]
+pub struct InstanceBuffers {
+    persistent: Option<PersistentBuffer>,
+    this_frame: Option<Buffer>,
+}
+
+impl InstanceBuffers {
+    pub fn begin_frame(&mut self) {
+        self.this_frame = None;
+    }
+
+    /// Makes `contents` the instance data for this frame. On failure no buffer is available and
+    /// the pipeline draws nothing this frame, as before.
+    pub fn upload(
+        &mut self,
+        label: &'static str,
+        device: &Device,
+        queue: &Queue,
+        device_lost: &Arc<AtomicBool>,
+        contents: &[u8],
+    ) {
+        if reuse_instance_buffers() {
+            if let Err(error) = upload_persistent(
+                &mut self.persistent,
+                label,
+                device,
+                queue,
+                device_lost,
+                contents,
+            ) {
+                log::warn!("Failed to upload {label}: {error:#}");
+                self.persistent = None;
+            }
+        } else {
+            self.this_frame = create_buffer_init(
+                device,
+                device_lost,
+                &BufferInitDescriptor {
+                    label: Some(label),
+                    contents,
+                    usage: BufferUsages::VERTEX,
+                },
+            )
+            .ok();
+        }
+    }
+
+    pub fn vertex_buffer(&self) -> Option<&Buffer> {
+        self.this_frame
+            .as_ref()
+            .or_else(|| self.persistent.as_ref().map(|persistent| &persistent.buffer))
+    }
+}
+
+/// Writes `contents` into the persistent buffer in `slot`, creating or growing it first when it
+/// is missing or too small. `contents.len()` must be a multiple of `COPY_BUFFER_ALIGNMENT`, which
+/// the instance types guarantee (see the `const` asserts next to them).
+fn upload_persistent(
+    slot: &mut Option<PersistentBuffer>,
+    label: &'static str,
+    device: &Device,
+    queue: &Queue,
+    device_lost: &Arc<AtomicBool>,
+    contents: &[u8],
+) -> Result<(), Error> {
+    let needed = (contents.len() as BufferAddress).max(COPY_BUFFER_ALIGNMENT);
+    if slot
+        .as_ref()
+        .is_none_or(|persistent| persistent.capacity < needed)
+    {
+        let capacity = needed.next_power_of_two();
+        let buffer = create_buffer(
+            device,
+            &BufferDescriptor {
+                label: Some(label),
+                size: capacity,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )?;
+        if device_lost.load(Ordering::SeqCst) {
+            return Err(Error::DeviceLost);
+        }
+        *slot = Some(PersistentBuffer { buffer, capacity });
+    }
+    if let Some(persistent) = slot.as_ref() {
+        if !contents.is_empty() {
+            queue.write_buffer(&persistent.buffer, 0, contents);
+        }
+    }
+    Ok(())
+}
 
 /// Calls the provided function, capturing and returning any validation errors
 /// detected by wgpu.
@@ -101,3 +219,7 @@ fn create_buffer(device: &Device, desc: &BufferDescriptor<'_>) -> Result<Buffer,
         None => Ok(buffer),
     }
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

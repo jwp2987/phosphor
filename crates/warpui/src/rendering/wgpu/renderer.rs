@@ -25,6 +25,7 @@ pub struct Renderer {
     rect_pipeline: rect::Pipeline,
     glyph_pipeline: glyph::Pipeline,
     image_pipeline: image::Pipeline,
+    per_frame_state: frame::PerFrameState,
 }
 
 impl Renderer {
@@ -58,6 +59,7 @@ impl Renderer {
             rect_pipeline,
             glyph_pipeline,
             image_pipeline,
+            per_frame_state: frame::PerFrameState::default(),
         }
     }
 
@@ -93,6 +95,7 @@ impl Renderer {
                 &self.rect_pipeline,
                 &mut self.glyph_pipeline,
                 &mut self.image_pipeline,
+                &mut self.per_frame_state,
             )
         }) {
             (_, Some(error)) => return Err(error),
