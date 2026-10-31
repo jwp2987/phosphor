@@ -5548,28 +5548,77 @@ fn forget_terminal_view_keeps_a_done_conversation_without_a_sqlite_writer() {
     });
 }
 
-/// #1202: with persistence on and a writer present, the done conversation leaves memory and
-/// stays in the history list, to be reloaded from SQLite.
+/// #1202/#1252: with persistence on and a writer present, the done conversation leaves memory
+/// once the writer has answered the barrier queued behind its last write, and stays in the
+/// history list to be reloaded from SQLite.
 #[test]
-fn forget_terminal_view_evicts_a_done_conversation_that_sqlite_holds() {
+fn forget_terminal_view_evicts_a_done_conversation_once_sqlite_has_written_it() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);
-        let _receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
         let history_model =
             app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let view = EntityId::new();
         let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+        while receiver.try_recv().is_ok() {}
 
         history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
 
         history_model.read(&app, |model, _| {
             assert!(
+                model.conversation(&id).is_some(),
+                "not evicted before the writer has caught up"
+            );
+        });
+        let Ok(ModelEvent::WriteBarrier(barrier)) = receiver.try_recv() else {
+            panic!("a write barrier must be queued behind the conversation's writes");
+        };
+        barrier.reached();
+        for _ in 0..50 {
+            futures_lite::future::yield_now().await;
+            if history_model.read(&app, |model, _| model.conversation(&id).is_none()) {
+                break;
+            }
+        }
+        history_model.read(&app, |model, _| {
+            assert!(
                 model.conversation(&id).is_none(),
-                "a persisted, done conversation is dropped from memory"
+                "a persisted, done conversation is dropped from memory once written"
             );
             assert!(
                 model.all_conversations_metadata.contains_key(&id),
                 "it stays in the history list"
+            );
+        });
+    });
+}
+
+/// #1252: a barrier the writer never answers (it stopped, or dropped the event) keeps the
+/// conversation in memory rather than evicting a copy SQLite may not hold.
+#[test]
+fn forget_terminal_view_keeps_the_conversation_while_the_writer_has_not_answered() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+        while receiver.try_recv().is_ok() {}
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+        let Ok(ModelEvent::WriteBarrier(barrier)) = receiver.try_recv() else {
+            panic!("a write barrier must be queued");
+        };
+        // The writer went away with the barrier unanswered.
+        drop(barrier);
+        for _ in 0..10 {
+            futures_lite::future::yield_now().await;
+        }
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "an unanswered barrier must not evict"
             );
         });
     });

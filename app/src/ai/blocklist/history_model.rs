@@ -36,7 +36,7 @@ use crate::ai::byop_readiness::{
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::input_suggestions::HistoryOrder;
 use crate::persistence::model::AgentConversationData;
-use crate::persistence::{ModelEvent, PersistedTaskRetention};
+use crate::persistence::{ModelEvent, PersistedTaskRetention, WriteBarrier};
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::view::blocklist_filter;
@@ -2743,7 +2743,7 @@ impl BlocklistAIHistoryModel {
         self.active_conversation_for_terminal_view
             .remove(&terminal_view_id);
         if !skip_eviction && conversations_reload_from_sqlite {
-            self.evict_idle_historical_conversations(candidate_ids);
+            self.evict_once_written(candidate_ids, ctx);
         }
         self.terminal_view_created_at.remove(&terminal_view_id);
         self.ambient_agent_terminal_view_ids
@@ -2766,6 +2766,47 @@ impl BlocklistAIHistoryModel {
                 .get()
                 .model_event_sender
                 .is_some()
+    }
+
+    /// Evicts `candidate_ids` once the SQLite writer has written everything queued before now
+    /// (#1252). A conversation's last full-replace write may still be in the writer's queue when
+    /// its tab closes; a reopen in that window would reload the previous row, and that copy's next
+    /// write would delete the newer tasks. The barrier is answered in event order, so the
+    /// conversations are evicted only when their rows are current; a barrier that cannot be queued
+    /// (the channel is full) or is never answered (the writer stopped) leaves them in memory. The
+    /// eviction conditions are re-checked when the answer arrives.
+    fn evict_once_written(
+        &mut self,
+        candidate_ids: Vec<AIConversationId>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if candidate_ids.is_empty() {
+            return;
+        }
+        let Some(sender) = GlobalResourceHandlesProvider::as_ref(ctx)
+            .get()
+            .model_event_sender
+            .clone()
+        else {
+            return;
+        };
+        let (barrier, written) = WriteBarrier::new();
+        if sender.try_send(ModelEvent::WriteBarrier(barrier)).is_err() {
+            log::info!(
+                "SQLite writer channel is full or closed; {} closed-tab conversation(s) stay in \
+                 memory",
+                candidate_ids.len()
+            );
+            return;
+        }
+        ctx.spawn(
+            async move { written.await.is_ok() },
+            move |me, written, _ctx| {
+                if written {
+                    me.evict_idle_historical_conversations(candidate_ids);
+                }
+            },
+        );
     }
 
     /// Drops the heavy `AIConversation` objects (every task, tool result and command output the

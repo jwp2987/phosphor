@@ -1,5 +1,4 @@
 use crate::network::NetworkStatus;
-use crate::persistence::ModelEvent;
 // Zap Wave 3-1: the `AuthClient` trait and the
 // `workspace:debug_create_anonymous_user` debug action were physically
 // removed together with the auth subsystem.
@@ -212,20 +211,10 @@ fn save_app_snapshot_now(ctx: &mut AppContext) {
 
     // Only compute the app state if we're definitely going to use it.
     let app_state = get_app_state(ctx);
-    let event = ModelEvent::Snapshot(app_state);
 
-    // Never block the UI thread on a full writer channel (#1155). A newer snapshot always
-    // follows the next state change, and the writer drops all but the latest snapshot
-    // anyway, so a snapshot that does not fit is safe to skip.
-    match model_event_sender.try_send(event) {
-        Ok(()) => {}
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-            log::debug!("SQLite writer channel is full; skipping this session snapshot");
-        }
-        Err(err @ std::sync::mpsc::TrySendError::Disconnected(_)) => {
-            log::error!("Error trying to send model event {err:?}");
-        }
-    }
+    // Never block the UI thread on a full writer channel (#1155), and never skip the snapshot
+    // either: the last one before a quit has no successor to make up for it (#1251).
+    crate::persistence::send_snapshot_nonblocking(&model_event_sender, app_state);
 }
 
 fn toggle_debug_network_status(_: &(), ctx: &mut AppContext) {

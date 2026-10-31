@@ -3517,3 +3517,38 @@ fn read_ahead_of_time_is_not_used_for_a_signed_in_user() {
             .is_none()
     );
 }
+
+/// #1252: a `WriteBarrier` is answered only after the events queued before it were written, so a
+/// caller that waits for it reads a database that holds them.
+#[test]
+fn write_barrier_is_answered_after_the_events_queued_before_it() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let metadata = test_workspace_metadata("/tmp/barrier-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        })
+        .expect("upsert event should send");
+    let (barrier, written) = crate::persistence::WriteBarrier::new();
+    writer
+        .sender
+        .send(ModelEvent::WriteBarrier(barrier))
+        .expect("barrier should send");
+    futures::executor::block_on(written).expect("the writer answers the barrier");
+
+    let mut conn = setup_database(&database_path).expect("database should reopen");
+    let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
+    assert_eq!(restored.len(), 1, "the write queued before the barrier is on disk");
+    assert_eq!(restored[0].path, metadata.path);
+
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+}
