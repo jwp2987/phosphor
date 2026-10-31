@@ -548,6 +548,9 @@ void init_warp_nswindow(NSWindow<WarpWindowProtocol> *window, bool testMode, boo
             if ([self.contentView keyDownImpl:event]) {
                 return YES;
             }
+            // Not handled by Warp, so we fall through to super and AppKit may then call keyDown:
+            // for this same event; keyDownImpl already inserted its text, so skip that second pass.
+            [(WarpHostView *)self.contentView skipRedeliveryOf:event];
         }
     }
 

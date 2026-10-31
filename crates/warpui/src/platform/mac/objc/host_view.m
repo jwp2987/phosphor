@@ -132,6 +132,13 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     // new in-progress text) in the same keystroke. Without this, the trailing
     // unmarkText in keyDownImpl would clobber that new marked text.
     BOOL imeTouchedMarkedTextDuringInterpret;
+
+    // The key-down that WarpWindow's performKeyEquivalent: already ran through keyDownImpl
+    // without Warp handling it (so AppKit will deliver it again via keyDown:). Identified by
+    // timestamp + keyCode; cleared once the redelivery is skipped. See skipRedeliveryOf:.
+    BOOL hasPreDeliveredKeyDown;
+    NSTimeInterval preDeliveredTimestamp;
+    unsigned short preDeliveredKeyCode;
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -238,7 +245,22 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 }
 
 - (void)keyDown:(NSEvent *)event {
+    // performKeyEquivalent: may already have delivered this exact event via keyDownImpl (text
+    // inserted, KeyDown dispatched) and then returned NO, making AppKit call keyDown: for it.
+    // Delivering it again would type the character twice.
+    if (hasPreDeliveredKeyDown) {
+        hasPreDeliveredKeyDown = NO;
+        if ([event timestamp] == preDeliveredTimestamp && [event keyCode] == preDeliveredKeyCode) {
+            return;
+        }
+    }
     [self keyDownImpl:event];
+}
+
+- (void)skipRedeliveryOf:(NSEvent *)event {
+    hasPreDeliveredKeyDown = YES;
+    preDeliveredTimestamp = [event timestamp];
+    preDeliveredKeyCode = [event keyCode];
 }
 
 - (BOOL)keyDownImpl:(NSEvent *)event {

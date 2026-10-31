@@ -15,4 +15,7 @@
 - (void)setAsyncCallback:(BOOL)shouldAsync;
 - (void)setPresentsWithTransaction:(BOOL)presentsWithTransaction;
 - (BOOL)keyDownImpl:(NSEvent *)event;
+// Marks `event` (already run through keyDownImpl without being handled) so the keyDown: that
+// AppKit then sends for it is skipped instead of delivering the key a second time.
+- (void)skipRedeliveryOf:(NSEvent *)event;
 @end
