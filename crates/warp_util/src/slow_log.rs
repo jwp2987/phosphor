@@ -133,6 +133,80 @@ impl SlowLog {
     }
 }
 
+/// Calling thread's CPU time and fault counters, sampled around an operation so a multi-second
+/// stall can be told apart: burning CPU (a real algorithmic cost) versus waiting (a lock, I/O,
+/// page faults, or the whole host starving the process) (#1293). Zeroed where unsupported.
+#[derive(Clone, Copy, Default)]
+pub struct ThreadUsage {
+    cpu: Duration,
+    major_faults: i64,
+    involuntary_switches: i64,
+}
+
+impl ThreadUsage {
+    pub fn now() -> Self {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `ts` is a valid out-pointer for the duration of the call.
+            let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) } == 0;
+            let cpu = if ok {
+                Duration::new(
+                    ts.tv_sec.max(0) as u64,
+                    ts.tv_nsec.clamp(0, 999_999_999) as u32,
+                )
+            } else {
+                Duration::ZERO
+            };
+            let mut major_faults = 0;
+            let mut involuntary_switches = 0;
+            #[cfg(target_os = "linux")]
+            {
+                // SAFETY: zeroed `rusage` is a valid value and is a valid out-pointer.
+                let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+                if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut ru) } == 0 {
+                    major_faults = ru.ru_majflt as i64;
+                    involuntary_switches = ru.ru_nivcsw as i64;
+                }
+            }
+            Self {
+                cpu,
+                major_faults,
+                involuntary_switches,
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            Self::default()
+        }
+    }
+
+    /// One-line summary of what this thread did since `start`, for a stall of `wall`.
+    pub fn describe_since(&self, start: &ThreadUsage, wall: Duration) -> String {
+        let cpu = self.cpu.saturating_sub(start.cpu);
+        format!(
+            "thread cpu {} ms of {} ms wall ({}), major faults {}, involuntary switches {}",
+            cpu.as_millis(),
+            wall.as_millis(),
+            classify_stall(wall, cpu),
+            self.major_faults - start.major_faults,
+            self.involuntary_switches - start.involuntary_switches,
+        )
+    }
+}
+
+/// Whether a stall of `wall` that used `cpu` on the thread was computing or waiting.
+pub fn classify_stall(wall: Duration, cpu: Duration) -> &'static str {
+    if cpu.saturating_mul(2) >= wall {
+        "cpu-bound"
+    } else {
+        "waiting: blocked or descheduled"
+    }
+}
+
 /// Truncate `text` to its first line, at most `max` chars, with an ellipsis if
 /// anything was cut, so a command can be identified in a log without dumping it.
 pub fn truncate_for_log(text: &str, max: usize) -> String {

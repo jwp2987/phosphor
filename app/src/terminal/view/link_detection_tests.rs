@@ -3,7 +3,7 @@ use std::iter;
 use warp_util::path::CleanPathResult;
 
 use super::super::TerminalView;
-use super::{path_without_trailing_sentence_punctuation, GridHighlightedLink};
+use super::{GridHighlightedLink, path_without_trailing_sentence_punctuation};
 use crate::terminal::model::grid::grid_handler::PossiblePath;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinModel;
@@ -216,8 +216,8 @@ fn compute_valid_paths_keeps_trailing_fullwidth_punctuation_when_it_is_the_filen
 
 #[test]
 fn new_hover_cancels_previous_file_link_scan() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     let (abort, registration) = futures::future::AbortHandle::new_pair();
     let cancelled = Arc::new(AtomicBool::new(false));

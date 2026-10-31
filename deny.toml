@@ -20,6 +20,9 @@ unused-ignored-advisory = "warn"
 ignore = [
     # ---- vulnerabilities -------------------------------------------------
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 timing variability. Only via p256/elliptic-curve 0.13 for local ECDSA: aws-sigv4 sigv4a (not used by STS or Bedrock, which sign with SigV4 HMAC), aws-config credentials-login, and tink-hybrid (warp_managed_secrets). No remotely timed private-key operation. The fix needs aws-sigv4 >= 1.6 / p256 0.14, and aws-sigv4 1.6 + aws-config 1.13 declare MSRV 1.94.1 against our 1.92.0 toolchain. Drop with the toolchain bump." },
+    { id = "RUSTSEC-2026-0367", reason = "zip < 9 SUID bits on ZipArchive::extract. Only zip 7.2 via candle-core 0.9 (input_classifier, onnx_candle) remains; our own crates are on zip 9. candle only opens npz/pth weight archives with ZipArchive::by_name and never calls extract; the model is bundled in-repo. candle 0.11 still pins zip 8. Drop when candle moves to zip >= 9." },
+    { id = "RUSTSEC-2026-0368", reason = "zip < 9 symlink targets outside the destination on ZipArchive::extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
+    { id = "RUSTSEC-2026-0369", reason = "zip < 9 permissions applied through symlinks on extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
 
     # ---- unmaintained ----------------------------------------------------
     { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained, but considered to be complete." },

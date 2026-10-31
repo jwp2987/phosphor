@@ -1,24 +1,24 @@
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use serde::{Serialize, Serializer};
 use url::Url;
 use warp_core::channel::ChannelState;
 
-use warpui::{platform::Cursor, ViewContext};
+use warpui::{ViewContext, platform::Cursor};
 
 use crate::{
     send_telemetry_from_ctx,
     server::telemetry::{LinkOpenMethod, TelemetryEvent},
     terminal::{
+        TerminalModel,
         model::{
+            RespectObfuscatedSecrets,
             grid::grid_handler::{ContentGeneration, Link},
             index::Point,
             terminal_model::{WithinBlock, WithinModel},
-            RespectObfuscatedSecrets,
         },
-        TerminalModel,
     },
     uri::link_policy::is_openable_url_scheme,
 };
