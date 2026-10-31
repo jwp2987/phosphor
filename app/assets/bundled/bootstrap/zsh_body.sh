@@ -122,7 +122,8 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # Note that because the JSON string may contain characters that we don't control (including
       # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
       # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
-      local msg=$(warp_hex_encode_string "$1")
+      __warp_hex_encode_to "$1"
+      local msg=$__warp_hex
       # We send the InitShell hook via OSCs when on WSL and via DCSs otherwise.
       if [ "${WARP_USING_WINDOWS_CON_PTY-}" = true ]; then
         __warp_emit "$OSC_START$DCS_JSON_MARKER$OSC_PARAM_SEPARATOR$msg$OSC_END"
@@ -311,7 +312,8 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # warp_precmd. _warp_repair_hooks reads this to tell whether a prompt cycle
       # skipped that precmd (and so owes one) or already ran it.
       _WARP_PRECMD_PENDING=1
-      local warp_escaped_command="$(warp_escape_json $1)"
+      local warp_escaped_command
+      __warp_ej_var warp_escaped_command "$1"
       warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID}}"
       warp_maybe_send_reset_grid_osc
 
@@ -509,7 +511,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
         escaped_pwd=$(warp_escape_json "$(builtin pwd -P)")
       else
-        escaped_pwd=$(warp_escape_json "$PWD")
+        __warp_ej_var escaped_pwd "$PWD"
       fi
 
       local escaped_virtual_env=""
@@ -525,11 +527,11 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # user's rcfiles and have a fully-populated PATH.
       if [[ -n ${WARP_BOOTSTRAPPED-} ]]; then
         if [[ -n ${VIRTUAL_ENV:-} ]]; then
-          escaped_virtual_env=$(warp_escape_json $VIRTUAL_ENV)
+          __warp_ej_var escaped_virtual_env "$VIRTUAL_ENV"
         fi
 
         if [[ -n ${CONDA_DEFAULT_ENV:-} ]]; then
-          escaped_conda_env=$(warp_escape_json $CONDA_DEFAULT_ENV)
+          __warp_ej_var escaped_conda_env "$CONDA_DEFAULT_ENV"
         fi
 
           # Get the Node.js version, but only when the Node.js Version chip is enabled.
@@ -599,12 +601,14 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         local git_branch=""
         local git_head=""
         if command -v git >/dev/null 2>&1; then
-          git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
-          # The git branch the user is on, or the git commit hash if they're not on a branch.
-          git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+          if ! __warp_git_head_fast; then
+            git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
+            # The git branch the user is on, or the git commit hash if they're not on a branch.
+            git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+          fi
         fi
-        escaped_git_head=$(warp_escape_json "$git_head")
-        escaped_git_branch=$(warp_escape_json "$git_branch")
+        __warp_ej_var escaped_git_head "$git_head"
+        __warp_ej_var escaped_git_branch "$git_branch"
       fi
 
 
@@ -682,6 +686,79 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
   }
 
+  # Phosphor (#1170): warp_escape_json NAME VALUE, but assigns the escaped VALUE to the variable NAME
+  # instead of printing it. zsh's warp_escape_json has no fast path: every `$(warp_escape_json ...)`
+  # forks a subshell plus sed and tr, 5 times per command in Preexec/Precmd. A value of safe
+  # characters is kept as is; one with quotes, backslashes, tabs, newlines or carriage returns is
+  # escaped with parameter substitutions; anything else (other control characters, DEL, bytes that
+  # are not valid text) takes the sed path in warp_escape_json, so the result is always exactly
+  # what warp_escape_json prints.
+  __warp_ej_var () {
+    emulate -L zsh
+    local v=${2-}
+    if [[ $v == *[^[:alnum:]\ ._/@+:,=%~\(\)-]* ]]; then
+      v=${v//\\/\\\\}
+      v=${v//\"/\\\"}
+      v=${v//$'\t'/\\t}
+      v=${v//$'\n'/\\n}
+      v=${v//$'\r'/\\r}
+      if [[ $v == *[[:cntrl:]]* ]]; then
+        v=$(warp_escape_json "${2-}")
+      fi
+    fi
+    typeset -g "$1=$v"
+  }
+
+  # Phosphor (#1170): sets git_branch and git_head the way `git symbolic-ref --short HEAD`, then
+  # `git rev-parse --short HEAD`, would, but without forking when the answer is in .git/HEAD. Those
+  # two git processes ran on every prompt (about 4 ms in a repo, 2 in a plain directory). Returns 1,
+  # leaving the answer to git exactly as before, for anything it cannot answer with certainty:
+  # GIT_* variables that change discovery, a .git file (worktree, submodule), a bare repo or the
+  # .git directory itself, a repo owned by someone else (git refuses it), reftable (HEAD is
+  # `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose short
+  # name git would qualify because a tag of the same name exists (a packed one is checked with git
+  # once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a symlinked
+  # directory is followed the way git (which uses the physical path) follows it.
+  __warp_git_head_fast () {
+    emulate -L zsh
+    [[ -z ${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_CEILING_DIRECTORIES+x}${GIT_DISCOVERY_ACROSS_FILESYSTEM+x}${GIT_NAMESPACE+x}${GIT_COMMON_DIR+x} ]] || return 1
+    local __p=. __n=0 __gd= __line=
+    while (( __n++ < 64 )); do
+      if [[ -d $__p/.git ]]; then
+        __gd=$__p/.git
+        break
+      fi
+      if [[ -e $__p/.git || ( -f $__p/HEAD && -d $__p/refs ) ]]; then
+        return 1
+      fi
+      if [[ $__p/.. -ef $__p ]]; then
+        # Reached / without finding a repo: git would print nothing for both.
+        git_branch=
+        git_head=
+        return 0
+      fi
+      __p=$__p/..
+    done
+    [[ -n $__gd && -O $__gd && -O $__p && -d $__gd/objects && -d $__gd/refs && -r $__gd/HEAD ]] || return 1
+    builtin read -r __line 2>/dev/null < "$__gd/HEAD" || return 1
+    case $__line in
+      "ref: refs/heads/.invalid") return 1 ;;
+      "ref: refs/heads/"?*) __line=${__line#ref: refs/heads/} ;;
+      *) return 1 ;;
+    esac
+    if [[ -e $__gd/$__line || -e $__gd/refs/$__line || -e $__gd/refs/tags/$__line ]]; then
+      return 1
+    fi
+    if [[ -e $__gd/packed-refs && ${__warp_git_checked-} != "$PWD|$__line" ]]; then
+      # A packed tag of the same name cannot be seen without reading the whole file, so ask
+      # git once per directory and branch instead of on every prompt.
+      [[ $(warp_git symbolic-ref --short HEAD 2> /dev/null) == "$__line" ]] || return 1
+      typeset -g __warp_git_checked="$PWD|$__line"
+    fi
+    git_branch=$__line
+    git_head=$__line
+  }
+
   warp_escape_ps1 () {
       # Turns out that the processed prompt is a complicated data structure that includes lots of
       # information that's passed to the shell (including the actual shell, version, working directory
@@ -702,6 +779,26 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   # Accepts one argument: DCS JSON string
   warp_hex_encode_string () {
     builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+  }
+
+  # Phosphor (#1170): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
+  # runs three times per command and the `printf | od | tr` pipeline above costs a subshell and
+  # two processes each time, 3-5 ms in all. With nomultibyte `#c` is the byte value, so the output
+  # is the same bytes `od` prints. A long message (the Bootstrapped hook is tens of KB) goes to
+  # `od`, which beats a shell loop at that size. emulate -L zsh makes the loop immune to the
+  # user's options (ksharrays, shwordsplit, errreturn, printexitvalue...).
+  __warp_hex_encode_to () {
+    emulate -L zsh
+    setopt nomultibyte
+    local s=${1-} c out=
+    if (( ${#s} > 2048 )); then
+      typeset -g __warp_hex=$(warp_hex_encode_string "$s")
+      return 0
+    fi
+    for c in ${(s::)s}; do
+      out+=${(l:2::0:)${$(( [##16] #c ))}}
+    done
+    typeset -g __warp_hex=${(L)out}
   }
 
   # We set precmd and preexec hooks in order to set the title for the idle

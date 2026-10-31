@@ -131,7 +131,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # Note that because the JSON string may contain characters that we don't control (including
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
-        encoded_message=$(warp_hex_encode_string "${1-}")
+        __warp_hex_encode_to "${1-}"
+        encoded_message=$__warp_hex
         # We send the InitShell hook via OSCs when on WSL or MSYS2 or SSH from Windows and via DCSs otherwise.
         # Note that $WARP_USING_WINDOWS_CON_PTY is set in the init shell script.
         if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
@@ -365,7 +366,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_via_kv_pairs_end
         else
-          local truncated_command=$(warp_escape_json "$BASH_COMMAND")
+          local truncated_command
+          __warp_ej_var truncated_command "$BASH_COMMAND"
           warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$truncated_command\", \"session_id\": ${WARP_SESSION_ID:-}}}"
         fi
         warp_maybe_send_reset_grid_osc
@@ -651,7 +653,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           fi
 
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
-            escaped_ps1=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
+            # Phosphor (#1170): the encoding below costs 5 processes (~3 ms), and the rendered prompt
+            # is the same on most prompts, so keep the last one's result. The encoding depends on
+            # nothing but $deref_ps1, so reusing it is exact.
+            if [[ ${__warp_ps1_cache_valid-} != 1 || $deref_ps1 != "${__warp_ps1_cache_in-}" ]]; then
+              __warp_ps1_cache_out=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
+              __warp_ps1_cache_in=$deref_ps1
+              __warp_ps1_cache_valid=1
+            fi
+            escaped_ps1=$__warp_ps1_cache_out
           fi
         fi
 
@@ -704,7 +714,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # In WSL, avoid symlinks b/c on Windows `std::fs` is unable to resolve symlink inside WSL containers.
             escaped_pwd=$(warp_escape_json "$(builtin pwd -P)")
           else
-            escaped_pwd=$(warp_escape_json "$PWD")
+            __warp_ej_var escaped_pwd "$PWD"
           fi
         fi
 
@@ -722,11 +732,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # user's rcfiles and have a fully-populated PATH.
         if [[ -n "${WARP_BOOTSTRAPPED:-}" ]]; then
           if [[ -n "${VIRTUAL_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
-              escaped_virtual_env=$(warp_escape_json "$VIRTUAL_ENV")
+              __warp_ej_var escaped_virtual_env "$VIRTUAL_ENV"
           fi
 
           if [[ -n "${CONDA_DEFAULT_ENV:-}" ]] && [ "${WARP_IN_MSYS2:-}" = false ]; then
-              escaped_conda_env=$(warp_escape_json "$CONDA_DEFAULT_ENV")
+              __warp_ej_var escaped_conda_env "$CONDA_DEFAULT_ENV"
           fi
 
           # Get the Node.js version, but only when the Node.js Version chip is enabled.
@@ -790,13 +800,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           # available to their session, it is unlikely they will be looking for git branch
           # information from the prompt.
           if command -v git >/dev/null 2>&1; then
-            git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
-            # The git branch the user is on, or the git commit hash if they're not on a branch.
-            git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+            if ! __warp_git_head_fast; then
+              git_branch=$(warp_git symbolic-ref --short HEAD 2> /dev/null)
+              # The git branch the user is on, or the git commit hash if they're not on a branch.
+              git_head="${git_branch:-$(warp_git rev-parse --short HEAD 2> /dev/null)}"
+            fi
           fi
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
-            escaped_git_head=$(warp_escape_json "$git_head")
-            escaped_git_branch=$(warp_escape_json "$git_branch")
+            __warp_ej_var escaped_git_head "$git_head"
+            __warp_ej_var escaped_git_branch "$git_branch"
           fi
         fi
 
@@ -905,6 +917,78 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         LC_ALL=C command -p sed -E 's/(["\\])/\\\1/g; s/'$'\b''/\\b/g; s/'$'\t''/\\t/g; s/'$'\f''/\\f/g; s/'$'\r''/\\r/g;'"${WARP_ESCAPE_JSON_CTRL_SED-} "'$!s/$/\\n/' <<<"$*" | LC_ALL=C command -p tr -d '\n'
     }
 
+    # Phosphor (#1170): warp_escape_json NAME VALUE, but assigns the escaped VALUE to the variable NAME
+    # instead of printing it. `$(warp_escape_json ...)` forks a subshell on every call even when the
+    # value needs no escaping, and Preexec/Precmd call it 5 times per command. A value of safe
+    # characters is kept as is; one with quotes, backslashes, tabs, newlines or carriage returns is
+    # escaped with parameter substitutions; anything else (other control characters, DEL) takes the
+    # sed path in warp_escape_json, so the result is always exactly what warp_escape_json prints.
+    __warp_ej_var () {
+        local __v=${2-}
+        case $__v in
+            *[![:alnum:]\ ._/@+:,=%~\(\)-]*)
+                __v=${__v//\\/\\\\}
+                __v=${__v//\"/\\\"}
+                __v=${__v//$'\t'/\\t}
+                __v=${__v//$'\n'/\\n}
+                __v=${__v//$'\r'/\\r}
+                if [[ $__v == *[[:cntrl:]]* ]]; then
+                    __v=$(warp_escape_json "${2-}")
+                fi
+                ;;
+        esac
+        builtin printf -v "$1" '%s' "$__v"
+    }
+
+    # Phosphor (#1170): sets git_branch and git_head the way `git symbolic-ref --short HEAD`, then
+    # `git rev-parse --short HEAD`, would, but without forking when the answer is in .git/HEAD. Those
+    # two git processes ran on every prompt (about 4 ms in a repo, 2 in a plain directory). Returns 1,
+    # leaving the answer to git exactly as before, for anything it cannot answer with certainty:
+    # GIT_* variables that change discovery, a .git file (worktree, submodule), a bare repo or the
+    # .git directory itself, a repo owned by someone else (git refuses it), reftable (HEAD is
+    # `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose short
+    # name git would qualify because a tag of the same name exists (a packed one is checked with git
+    # once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a symlinked
+    # directory is followed the way git (which uses the physical path) follows it.
+    __warp_git_head_fast () {
+        [[ -z ${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_CEILING_DIRECTORIES+x}${GIT_DISCOVERY_ACROSS_FILESYSTEM+x}${GIT_NAMESPACE+x}${GIT_COMMON_DIR+x} ]] || return 1
+        local __p=. __n=0 __gd= __line=
+        while (( __n++ < 64 )); do
+            if [[ -d $__p/.git ]]; then
+                __gd=$__p/.git
+                break
+            fi
+            if [[ -e $__p/.git || ( -f $__p/HEAD && -d $__p/refs ) ]]; then
+                return 1
+            fi
+            if [[ $__p/.. -ef $__p ]]; then
+                # Reached / without finding a repo: git would print nothing for both.
+                git_branch=
+                git_head=
+                return 0
+            fi
+            __p=$__p/..
+        done
+        [[ -n $__gd && -O $__gd && -O $__p && -d $__gd/objects && -d $__gd/refs && -r $__gd/HEAD ]] || return 1
+        builtin read -r __line 2>/dev/null < "$__gd/HEAD" || return 1
+        case $__line in
+            "ref: refs/heads/.invalid") return 1 ;;
+            "ref: refs/heads/"?*) __line=${__line#ref: refs/heads/} ;;
+            *) return 1 ;;
+        esac
+        if [[ -e $__gd/$__line || -e $__gd/refs/$__line || -e $__gd/refs/tags/$__line ]]; then
+            return 1
+        fi
+        if [[ -e $__gd/packed-refs && ${__warp_git_checked-} != "$PWD|$__line" ]]; then
+            # A packed tag of the same name cannot be seen without reading the whole file, so ask
+            # git once per directory and branch instead of on every prompt.
+            [[ $(warp_git symbolic-ref --short HEAD 2> /dev/null) == "$__line" ]] || return 1
+            __warp_git_checked="$PWD|$__line"
+        fi
+        git_branch=$__line
+        git_head=$__line
+    }
+
     # Turns out that the processed prompt is a complicated data structure that includes lots of 
     # information that's passed to the shell (including the actual shell, version, working directory
     # and, well, the prompt itself). What is more, prompt can also include emojis - unicode characters
@@ -924,6 +1008,25 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # Accepts one argument: DCS JSON string
     warp_hex_encode_string () {
       builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+    }
+
+    # Phosphor (#1170): hex-encodes $1 into $__warp_hex without forking. warp_send_json_message
+    # runs three times per command (Preexec, CommandFinished, Precmd) and the `printf | od | tr`
+    # pipeline above costs a subshell and two processes each time, 2.5-5 ms in all. Under LC_ALL=C
+    # the string is indexed byte by byte, so the output is the same bytes `od` prints. Bash 3.2's
+    # printf sign-extends a byte >= 0x80 to ffffffXX, hence the `${__c: -2}`. A long message (the
+    # Bootstrapped hook is tens of KB) goes to `od`, which beats a shell loop at that size.
+    __warp_hex_encode_to () {
+      local LC_ALL=C __s=${1-} __i __c
+      __warp_hex=
+      if (( ${#__s} > 2048 )); then
+        __warp_hex=$(warp_hex_encode_string "$__s")
+        return 0
+      fi
+      for (( __i = 0; __i < ${#__s}; __i++ )); do
+        builtin printf -v __c '%02x' "'${__s:__i:1}"
+        __warp_hex+=${__c: -2}
+      done
     }
 
     # Returns encoded InitShell hook

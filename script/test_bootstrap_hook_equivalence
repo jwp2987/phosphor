@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""The fork-free hook helpers in the bash/zsh/fish bootstraps must report exactly what
+the commands they replaced reported (#1170).
+
+WHY THIS EXISTS
+---------------
+Every command at a Phosphor prompt costs three hook messages, and each used to be built
+with forks: `printf | od | tr` to hex-encode the message, `$(warp_escape_json ...)` (a
+subshell plus sed and tr) for five values, `git symbolic-ref` and `git rev-parse` for the
+branch, and in bash a four-process re-encode of an unchanged PS1; fish also ran the
+user's prompt twice. #1170 replaced them with shell builtins. The bootstrap runs for
+every user, in every shell and rc configuration, so the replacements are only acceptable
+if the DCS payloads the app decodes are byte-for-byte what the old code produced. This
+script pins that, with no build (python3 and the shells under test):
+
+  1. TABLE TESTS. The real helper functions are extracted from the bootstrap files and run
+     over every byte value, tricky strings and long inputs, against an independent Python
+     reference (bytes.hex(); the JSON escaping the sed script documents), in the shell's
+     default state and in a hostile one (bash `set -eu`; zsh ksharrays, shwordsplit,
+     nomultibyte, errreturn, nounset, printexitvalue...).
+  2. END TO END. The assembled bootstrap (as bootstrap.rs builds it) runs in a pty and the
+     Precmd payload is checked for a table of working directories (quotes, backslashes,
+     control characters, invalid UTF-8, unicode, repos, worktrees, a symlinked cwd, detached
+     HEAD, a tag with the branch's name, packed refs, bare and empty .git) against the real
+     `git` the old code called. GIT_TRACE counts git processes, which proves the fast path
+     is taken where it must be (plain directory, branch checked out, subdirectory, symlink)
+     and that git is still called where the in-shell answer would not be certain.
+  3. fish only: the user's fish_prompt runs once per prompt, not twice, when the user's
+     prompt is honored.
+
+USAGE
+    script/test_bootstrap_hook_equivalence [--bash PATH] [--zsh PATH] [--fish PATH]
+
+--bash lets you run the table tests against another bash (e.g. /bin/bash 3.2 on macOS).
+A shell that is not installed is reported as not installed and left out. Exit 0 when every
+check passes, 1 otherwise.
+"""
+
+import json
+import os
+import pty
+import random
+import re
+import select
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOT = os.path.join(ASSETS, "bundled", "bootstrap")
+HOOK_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)\x9c")
+
+args = sys.argv[1:]
+SHELLS = {"bash": shutil.which("bash"), "zsh": shutil.which("zsh"), "fish": shutil.which("fish")}
+while args:
+    if args[0] in ("--bash", "--zsh", "--fish") and len(args) >= 2:
+        SHELLS[args[0][2:]] = args[1]
+        args = args[2:]
+    else:
+        sys.exit(__doc__)
+GIT = shutil.which("git")
+
+failures = []
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def read(name):
+    with open(os.path.join(BOOT, name)) as f:
+        return f.read()
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------------------
+# 1. Table tests
+# ---------------------------------------------------------------------------------------
+
+def ref_json(b):
+    """What warp_escape_json prints (see its comment): \\ and " escaped, \\b \\t \\f \\r \\n
+    short escapes, every other C0 control and DEL as \\u00XX, all other bytes unchanged."""
+    out = bytearray()
+    short = {8: b"\\b", 9: b"\\t", 10: b"\\n", 12: b"\\f", 13: b"\\r", 34: b'\\"', 92: b"\\\\"}
+    for c in b:
+        if c in short:
+            out += short[c]
+        elif c < 32 or c == 127:
+            out += b"\\u%04x" % c
+        else:
+            out.append(c)
+    return bytes(out)
+
+
+def cases():
+    rnd = random.Random(1170)
+    out = [bytes([c]) for c in range(1, 256)]
+    out += [b"", b"a b", b"plain/path-1.2_3@x+y:z,w=1%~(p)", b'q"uo\\te', b"\r\n", b"a\n", b"\n\n", b"x\x7fy",
+            b"\xc3\xa9\xe6\x97\xa5", b"\xe9\xff", b"-n", b"&", b"\\&", b"%s", b"a\\nb", b"tab\there"]
+    alpha = [bytes([c]) for c in range(1, 128)] + [b"\xc3\xa9", b"\xff", b"a", b"b", b"/", b" "] * 8
+    for _ in range(250):
+        out.append(b"".join(rnd.choice(alpha) for _ in range(rnd.choice([2, 5, 20, 60]))))
+    for n in (2047, 2048, 2049, 6000):
+        out.append((b'a"b\\c\xc3\xa9\x01' * (n // 8 + 1))[:n])
+    return out
+
+
+def grab(text, pattern):
+    m = re.search(pattern, text, re.S | re.M)
+    if not m:
+        sys.exit("test setup: pattern not found in bootstrap: " + pattern[:60])
+    return m.group(0)
+
+
+def run_table(shell, interp, driver, args):
+    # Argument bytes reach the shell untouched (no NUL), whatever the locale.
+    r = subprocess.run(interp + [driver] + args, capture_output=True, env={**os.environ, "LANG": "C.UTF-8"}, timeout=120)
+    return r.stdout.split(b"\n"), r.stderr
+
+
+def table_tests():
+    cs = cases()
+    hexes = [c.hex().encode() for c in cs]
+    escs = [ref_json(c) for c in cs]
+    tmp = tempfile.mkdtemp(prefix="phosphor-1170-")
+    try:
+        if SHELLS["bash"]:
+            body = read("bash_body.sh")
+            ctrl = grab(body, r"^    WARP_ESCAPE_JSON_CTRL_SED=.*?unset warp_ctrl_octal warp_ctrl_char warp_ctrl_hex\n")
+            funcs = "".join(grab(body, r"^    %s \(\) \{\n.*?^    \}\n" % n)
+                            for n in ("warp_escape_json", "__warp_ej_var", "warp_hex_encode_string", "__warp_hex_encode_to"))
+            for label, pre in (("default", ""), ("set -eu", "set -eu\n")):
+                path = os.path.join(tmp, "bash.sh")
+                with open(path, "w") as f:
+                    f.write(pre + ctrl + funcs + """
+mode=$1; shift
+for v in "$@"; do
+  if [ "$mode" = hex ]; then __warp_hex_encode_to "$v"; printf '%s\\n' "$__warp_hex"
+  else __warp_ej_var out "$v"; printf '%s\\n' "$out"; fi
+done
+""")
+                print("bash helpers (%s, %s)" % (SHELLS["bash"], label))
+                for mode, want in (("hex", hexes), ("json", escs)):
+                    got, err = run_table("bash", [SHELLS["bash"]], path, [mode.encode()] + cs)
+                    bad = [(c, g, w) for c, g, w in zip(cs, got, want) if g != w]
+                    check(not bad and len(got) == len(cs) + 1, "%s: %d inputs match the reference" % (mode, len(cs)),
+                          "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
+        else:
+            print("bash: not installed")
+
+        if SHELLS["zsh"]:
+            body = read("zsh_body.sh")
+            ctrl = grab(body, r"^  WARP_ESCAPE_JSON_CTRL_SED=.*?unset warp_ctrl_code\n")
+            funcs = "".join(grab(body, r"^  %s \(\) \{\n.*?^  \}\n" % n)
+                            for n in ("warp_escape_json", "__warp_ej_var", "warp_hex_encode_string", "__warp_hex_encode_to"))
+            for label, pre in (("default", ""),
+                               ("ksharrays shwordsplit nomultibyte errreturn nounset printexitvalue",
+                                "setopt ksharrays shwordsplit nomultibyte errreturn nounset printexitvalue warncreateglobal\n")):
+                path = os.path.join(tmp, "zsh.sh")
+                with open(path, "w") as f:
+                    f.write(ctrl + funcs + pre + """
+mode=$1; shift
+for v in "$@"; do
+  if [[ $mode == hex ]]; then __warp_hex_encode_to "$v"; print -r -- "$__warp_hex"
+  else __warp_ej_var out "$v"; print -r -- "$out"; fi
+done
+""")
+                print("zsh helpers (%s)" % label)
+                for mode, want in (("hex", hexes), ("json", escs)):
+                    got, err = run_table("zsh", [SHELLS["zsh"]], path, [mode.encode()] + cs)
+                    bad = [(c, g, w) for c, g, w in zip(cs, got, want) if g != w]
+                    check(not bad and len(got) == len(cs) + 1, "%s: %d inputs match the reference" % (mode, len(cs)),
+                          "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
+        else:
+            print("zsh: not installed")
+
+        if SHELLS["fish"]:
+            body = read("fish.sh")
+            ctrl = grab(body, r"^set -g WARP_ESCAPE_JSON_CTRL_SED ''\n.*?^set -e warp_ctrl_hex\n")
+            funcs = "".join(grab(body, r"^function %s *\n.*?^end\n" % n) for n in ("warp_escape_json", "warp_hex_encode_string"))
+            path = os.path.join(tmp, "fish.fish")
+            with open(path, "w") as f:
+                f.write(ctrl + funcs + """
+set -l mode $argv[1]
+for v in $argv[2..-1]
+  if test $mode = hex
+    warp_hex_encode_string $v; echo
+  else
+    warp_escape_json $v; echo
+  end
+end
+""")
+            print("fish helpers (%s)" % SHELLS["fish"])
+            # fish drops empty arguments from `$argv[2..-1]` iteration only if they are absent, not empty.
+            for mode, want in (("hex", hexes), ("json", escs)):
+                got, err = run_table("fish", [SHELLS["fish"], "-N"], path, [mode.encode()] + cs)
+                bad = [(c, g, w) for c, g, w in zip(cs, got, want) if g != w]
+                check(not bad and len(got) == len(cs) + 1, "%s: %d inputs match the reference" % (mode, len(cs)),
+                      "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
+        else:
+            print("fish: not installed")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------------------
+# 2. End to end
+# ---------------------------------------------------------------------------------------
+
+def make_tree(R):
+    """Working directories for the Precmd table. Returns {name: (path bytes, needs_git)}."""
+    env = {**os.environ, "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a",
+           "GIT_COMMITTER_EMAIL": "a@b", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_CEILING_DIRECTORIES", "GIT_NAMESPACE", "GIT_COMMON_DIR"):
+        env.pop(k, None)
+
+    def sh(cmd, cwd=R):
+        subprocess.run(cmd, shell=True, cwd=cwd, check=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    for d in ("plain", "ctl\ttab", "ctl\x07bell\x7fdel", "trail\n", "q\"uo\\te", "uni cødé 日本"):
+        os.makedirs(os.path.join(R, d))
+    bad_name_ok = True
+    try:
+        os.makedirs(os.path.join(R.encode(), b"bad\xe9\xffutf"))
+    except OSError:
+        bad_name_ok = False  # APFS refuses names that are not valid UTF-8
+    if GIT:
+        sh("git init -q -b feat/x repo && cd repo && git commit -q --allow-empty -m i && mkdir sub "
+           "&& git worktree add -q ../wt -b wtb")
+        sh("git init -q -b main detached && cd detached && git commit -q --allow-empty -m i && git checkout -q --detach")
+        sh("git init -q -b brt tagclash && cd tagclash && git commit -q --allow-empty -m i && git tag brt")
+        sh("git init -q -b rel packed && cd packed && git commit -q --allow-empty -m i && git tag rel && git pack-refs --all")
+        sh("git init -q -b 'q\"b' quoted && cd quoted && git commit -q --allow-empty -m i")
+        sh("git clone -q --bare repo bare.git")
+        sh("mkdir -p emptygit/.git emptygit/inner")
+        os.symlink("repo/sub", os.path.join(R, "link"))
+        os.makedirs(os.path.join(R, "repo", "ctl\ttab"))
+    # name -> (path, must the fast path avoid git?, must git be called?)
+    t = {
+        "plain": ("plain", True, False),
+        "quote and backslash": ('q"uo\\te', True, False),
+        "unicode": ("uni cødé 日本", True, False),
+        "tab": ("ctl\ttab", True, False),
+        "bell and DEL": ("ctl\x07bell\x7fdel", True, False),
+        "trailing newline": ("trail\n", True, False),
+    }
+    if GIT:
+        t.update({
+            "branch with a slash": ("repo", True, False),
+            "subdirectory": ("repo/sub", True, False),
+            "subdirectory with a tab": ("repo/ctl\ttab", True, False),
+            "symlinked cwd": ("link", True, False),
+            "worktree": ("wt", False, True),
+            "detached HEAD": ("detached", False, True),
+            "tag named like the branch": ("tagclash", False, True),
+            "packed refs": ("packed", False, True),
+            "branch with a quote": ("quoted", True, False),
+            "bare repo": ("bare.git", False, True),
+            "empty .git": ("emptygit", False, False),
+            "inside empty .git": ("emptygit/inner", False, False),
+        })
+    t2 = {k: (v[0].encode() if isinstance(v[0], str) else v[0],) + v[1:] for k, v in t.items()}
+    if bad_name_ok:
+        t2["invalid UTF-8"] = (b"bad\xe9\xffutf", True, False)
+    return t2
+
+
+def git_expect(path):
+    """The values the old code computed: `git symbolic-ref --short HEAD`, else `rev-parse --short HEAD`."""
+    if not GIT:
+        return "", ""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    for k in ("GIT_DIR", "GIT_WORK_TREE"):
+        env.pop(k, None)
+
+    def g(*a):
+        r = subprocess.run([GIT] + list(a), cwd=path, capture_output=True, env=env)
+        return r.stdout.decode(errors="replace").rstrip("\n") if r.returncode == 0 else ""
+    branch = g("symbolic-ref", "--short", "HEAD")
+    return branch, branch or g("rev-parse", "--short", "HEAD")
+
+
+def typed_cd(shell, path):
+    if shell == "fish":
+        segs, cur = [], b""
+        for ch in path:
+            if 32 <= ch < 127 and ch not in b"'\\":
+                cur += bytes([ch])
+            else:
+                if cur:
+                    segs.append(b"'" + cur + b"'")
+                    cur = b""
+                segs.append(b"\\x%02x" % ch)
+        if cur:
+            segs.append(b"'" + cur + b"'")
+        return b"cd -- " + b"".join(segs)
+    out = b"".join(bytes([c]) if 32 <= c < 127 and c not in b"'\\" else b"\\x%02x" % c for c in path)
+    return b"cd -- $'" + out + b"'"
+
+
+class Shell:
+    def __init__(self, kind, home, cwd, path_env, honor="0", rc_extra="", git_trace=None):
+        self.kind = kind
+        self.home = home
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": path_env, "TERM": "xterm-256color",
+               "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "WARP_HONOR_PS1": honor,
+               "WARP_PROMPT_NODE_VERSION_ENABLED": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        if git_trace:
+            env["GIT_TRACE"] = git_trace  # one "built-in: git ..." line per git process the shell starts
+        sid = "4242"
+        if kind == "bash":
+            init = read("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc")
+            with open(rc, "w") as f:
+                f.write(rc_extra + init + "\n" + assemble(read("bash.sh")) + "\n")
+            argv = [SHELLS["bash"], "--noprofile", "--rcfile", rc, "-i"]
+        elif kind == "fish":
+            init = read("fish_init_shell.sh").replace("@@WARP_SESSION_ID@@", sid).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc.fish")
+            with open(rc, "w") as f:
+                f.write(rc_extra + init + "\n" + assemble(read("fish.sh")) + "\n")
+            argv = [SHELLS["fish"], "-N", "-C", "source " + rc]
+        else:
+            zd = os.path.join(home, "zdot")
+            os.makedirs(zd)
+            for n in (".zshrc", ".zshenv"):
+                open(os.path.join(zd, n), "w").close()
+            self.body = os.path.join(home, "body.sh")
+            with open(self.body, "w") as f:
+                f.write(assemble(read("zsh_body.sh")).replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n")
+            env["ZDOTDIR"] = zd
+            env["PS1"] = "%# "
+            argv = [SHELLS["zsh"], "-g", "--no-rcs", "-i"]
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        self.buf = b""
+        self.broken = False
+        if kind == "zsh":
+            self.pump(1.5)
+            os.write(self.fd, ("unsetopt ZLE; WARP_SESSION_ID=%s; WARP_USING_WINDOWS_CON_PTY=false; source %s\r"
+                               % (sid, shlex.quote(self.body))).encode())
+        self.broken = not self.pump(20, lambda: any(n == "Bootstrapped" for n, _ in self.hooks()))
+        self.pump(1.5)
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            self.buf += data
+        return until() if until else False
+
+    def hooks(self):
+        out = []
+        for m in HOOK_RE.finditer(self.buf):
+            try:
+                j = json.loads(bytes.fromhex(m.group(1).decode()).decode(errors="replace"))
+            except ValueError:
+                out.append(("INVALID", {}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def cycle(self, line, timeout=10):
+        """Type a line; return the hooks it produced, waiting for its Precmd."""
+        if self.broken:
+            return []
+        n = len(self.hooks())
+        before = sum(1 for h, _ in self.hooks() if h == "Precmd")
+        os.write(self.fd, line + b"\r")
+        if not self.pump(timeout, lambda: sum(1 for h, _ in self.hooks() if h == "Precmd") > before):
+            self.broken = True
+        self.pump(0.15)
+        return self.hooks()[n:]
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def count_git(path):
+    """Number of git processes recorded in a GIT_TRACE file."""
+    try:
+        with open(path, errors="replace") as f:
+            return len(re.findall(r"(?:built-in|exec): git", f.read()))
+    except OSError:
+        return 0
+
+
+def count_lines(path):
+    try:
+        with open(path) as f:
+            return len(f.read().splitlines())
+    except OSError:
+        return 0
+
+
+def e2e(kind):
+    base = tempfile.mkdtemp(prefix="phosphor-1170-")
+    R = os.path.realpath(base)
+    try:
+        tree = make_tree(R)
+        log = os.path.join(base, "git.log")
+        path_env = "/usr/local/bin:/usr/bin:/bin"
+        home = os.path.join(base, "home")
+        os.makedirs(home)
+        print("%s end to end (%s)" % (kind, SHELLS[kind]))
+        # fish's default prompt runs git itself (fish_vcs_prompt); the trace must only see the bootstrap's.
+        extra = "function fish_prompt\n  echo -n '> '\nend\n" if kind == "fish" else ""
+        sh = Shell(kind, home, R, path_env, rc_extra=extra, git_trace=log)
+        try:
+            check(not sh.broken, "bootstraps")
+            for name, (rel, no_git, want_git) in tree.items():
+                full = os.path.join(R.encode(), rel)
+                if kind == "fish" and name == "invalid UTF-8":
+                    continue  # fish cannot hold a cwd that is not valid UTF-8 in every version
+                hooks = sh.cycle(typed_cd(kind, full))
+                names = [h for h, _ in hooks]
+                pre = [v for h, v in hooks if h == "Precmd"]
+                check("INVALID" not in names and names[-1:] == ["Precmd"] and pre,
+                      "%s: cd emits valid hooks ending in Precmd (got %s)" % (name, names))
+                if not pre:
+                    continue
+                want_branch, want_head = git_expect(full)
+                got = pre[-1]
+                want_pwd = full.decode(errors="replace")
+                check(got.get("pwd") == want_pwd, "%s: pwd" % name, "got %r\nwant %r" % (got.get("pwd"), want_pwd))
+                check((got.get("git_branch"), got.get("git_head")) == (want_branch, want_head),
+                      "%s: git branch/head %r/%r" % (name, want_branch, want_head),
+                      "got %r/%r" % (got.get("git_branch"), got.get("git_head")))
+                if GIT:
+                    # The prompt cycle for a second command in the same directory.
+                    before = count_git(log)
+                    sh.cycle(b"true")
+                    calls = count_git(log) - before
+                    if no_git:
+                        check(calls == 0, "%s: no git process per prompt (saw %d)" % (name, calls))
+                    elif want_git:
+                        check(calls > 0, "%s: git is still asked (saw %d)" % (name, calls))
+            # A payload for a command with characters that need escaping.
+            hooks = sh.cycle(b"echo 'he said \"hi\" \\ x'")
+            pre = [v for h, v in hooks if h == "Preexec"]
+            check(pre and pre[0].get("command") == "echo 'he said \"hi\" \\ x'", "Preexec command round-trips",
+                  repr(pre))
+        finally:
+            sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def fish_prompt_runs():
+    """With the user's prompt honored, fish_prompt must run once per prompt (it used to run twice)."""
+    base = tempfile.mkdtemp(prefix="phosphor-1170-")
+    try:
+        home = os.path.join(base, "home")
+        os.makedirs(home)
+        counter = os.path.join(base, "prompt.count")
+        extra = "function fish_prompt\n  echo x >> %s\n  echo -n '> '\nend\n" % shlex.quote(counter)
+        print("fish prompt runs")
+        for honor in ("1", "0"):
+            sh = Shell("fish", home, base, "/usr/local/bin:/usr/bin:/bin", honor=honor, rc_extra=extra)
+            try:
+                sh.pump(1.0)
+                start = count_lines(counter)
+                for _ in range(4):
+                    sh.cycle(b"true")
+                runs = count_lines(counter) - start
+                check(runs <= 4, "WARP_HONOR_PS1=%s: fish_prompt ran %d times for 4 prompts (at most 4)" % (honor, runs))
+            finally:
+                sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+table_tests()
+for kind in ("bash", "zsh", "fish"):
+    if SHELLS[kind]:
+        e2e(kind)
+if SHELLS["fish"]:
+    fish_prompt_runs()
+
+print()
+if failures:
+    print("test_bootstrap_hook_equivalence: FAILED (%d)" % len(failures))
+    sys.exit(1)
+print("test_bootstrap_hook_equivalence: ok")
