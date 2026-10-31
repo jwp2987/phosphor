@@ -89,7 +89,7 @@ impl ReadMCPResourceExecutor {
             let AIAgentAction {
                 action:
                     AIAgentActionType::ReadMCPResource {
-                        server_id: _,
+                        server_id,
                         name,
                         uri,
                     },
@@ -118,20 +118,34 @@ impl ReadMCPResourceExecutor {
 
             let uri = resource.uri.clone();
 
-            let Some(reconnecting_peer) = templatable_mcp_client.server_with_resource(resource)
+            // The server the call named, when it named one (`tools::mcp::parse_read_resource`
+            // resolves it); otherwise any server that has the URI.
+            let Some(reconnecting_peer) =
+                templatable_mcp_client.server_with_resource(resource, *server_id)
             else {
                 return ActionExecution::Sync(AIAgentActionResultType::ReadMCPResource(
                     ReadMCPResourceResult::Error("MCP server for resource not found".to_owned()),
                 ));
             };
 
+            // Bounded like a tool call: `read_resource` itself has no deadline, and a server
+            // that accepts the request and never answers would otherwise hold the turn until
+            // the user stops it.
+            let timeout = reconnecting_peer.tool_call_timeout();
             ActionExecution::new_async(
                 async move {
-                    reconnecting_peer
+                    let read = reconnecting_peer
                         // `ReadResourceRequestParams` (was `…Param`) is
                         // `#[non_exhaustive]` in rmcp 1.x; use its constructor.
-                        .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
-                        .await
+                        .read_resource(rmcp::model::ReadResourceRequestParams::new(uri));
+                    let deadline = warpui::r#async::Timer::after(timeout);
+                    futures::pin_mut!(read, deadline);
+                    match futures::future::select(read, deadline).await {
+                        futures::future::Either::Left((result, _)) => result,
+                        futures::future::Either::Right(_) => {
+                            Err(read_resource_timeout_error(timeout))
+                        }
+                    }
                 },
                 |res, _ctx| handle_read_resource_result(res),
             )
@@ -149,6 +163,20 @@ impl ReadMCPResourceExecutor {
 
 impl Entity for ReadMCPResourceExecutor {
     type Event = ();
+}
+
+/// The error the model sees when a resource read ran out of time. Says the outcome is unknown
+/// and not to retry on its own, like a timed-out tool call (`mcp::tool_call`).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn read_resource_timeout_error(timeout: std::time::Duration) -> rmcp::ServiceError {
+    rmcp::ServiceError::McpError(rmcp::model::ErrorData::internal_error(
+        format!(
+            "MCP resource read timed out after {} seconds without an answer from the server. \
+             The server may be stuck; do not retry automatically.",
+            timeout.as_secs()
+        ),
+        None,
+    ))
 }
 
 /// Handles the result of a read_resource request, converting it to an AIAgentActionResultType.

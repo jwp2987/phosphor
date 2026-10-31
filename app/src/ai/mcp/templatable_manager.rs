@@ -252,22 +252,27 @@ impl TemplatableMCPServerManager {
             .flat_map(|server| server.tools.iter())
     }
 
-    /// Returns a reconnecting peer for a server that has the given resource.
+    /// Returns a reconnecting peer for a server that has the given resource. With
+    /// `installation_uuid`, only that server qualifies: two servers can expose the same URI,
+    /// and the active-server map has no order, so a request that named its server must not be
+    /// answered by whichever other server comes first.
     ///
     /// The returned peer will automatically reconnect if the underlying transport is closed.
     #[cfg(not(target_family = "wasm"))]
     pub fn server_with_resource(
         &self,
         resource: &rmcp::model::Resource,
+        installation_uuid: Option<Uuid>,
     ) -> Option<super::reconnecting_peer::ReconnectingPeer> {
         let spawner = self.spawner.as_ref()?;
         self.active_servers
             .iter()
-            .find(|(_, server)| {
-                server
-                    .resources
-                    .iter()
-                    .any(|other_resource| resource.uri == other_resource.uri)
+            .find(|(uuid, server)| {
+                installation_uuid.is_none_or(|wanted| **uuid == wanted)
+                    && server
+                        .resources
+                        .iter()
+                        .any(|other_resource| resource.uri == other_resource.uri)
             })
             .map(|(installation_uuid, server)| {
                 super::reconnecting_peer::ReconnectingPeer::new(
