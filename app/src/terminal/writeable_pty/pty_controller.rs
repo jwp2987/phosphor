@@ -24,6 +24,7 @@ use crate::terminal::view::LINEFEED_REGEX;
 use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::long_command_file;
+use crate::terminal::writeable_pty::posix_long_command;
 use crate::terminal::{
     bootstrap,
     line_editor_status::{LineEditorStatus, LineEditorStatusEvent},
@@ -1599,6 +1600,18 @@ impl<T: EventLoopSender> PtyController<T> {
             }
         }
         let _ = shell_type;
+        // A bash with no bracketed paste is typed the command key by key, which stalls for a
+        // huge one (#1129); the shell decodes it from one short line instead.
+        if shell_type == ShellType::Bash
+            && !self.is_bracketed_paste_enabled
+            && posix_long_command::needs_wrapper(&command)
+        {
+            let line = posix_long_command::wrapper_line(&command);
+            self.terminal_model
+                .lock()
+                .set_command_display_override(line.clone(), command);
+            return line;
+        }
         command
     }
 

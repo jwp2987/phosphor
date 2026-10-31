@@ -555,6 +555,13 @@ impl ShellCommandExecutor {
                 let target_command = block.command_with_secrets_unobfuscated(false);
                 let (input, mode) =
                     pty_write_for_target_command(Some(&target_command), input, *mode);
+                // A shell at its prompt reads with a line editor, which has no line limit; any
+                // other program may be in the tty's line mode, which silently truncates (#1129).
+                let long_line_note = if is_interactive_shell_invocation(&target_command) {
+                    None
+                } else {
+                    long_line_write_note(&input)
+                };
                 // Drop immutable borrow.
                 drop(model);
 
@@ -581,7 +588,11 @@ impl ShellCommandExecutor {
                             });
                         }
 
-                        action_result_for_write_to_long_running_shell_command(result)
+                        let result = action_result_for_write_to_long_running_shell_command(result);
+                        match &long_line_note {
+                            Some(note) => with_long_line_note(result, note),
+                            None => result,
+                        }
                     },
                 )
             }
@@ -1606,6 +1617,92 @@ fn action_result_for_requested_command(
                 RequestCommandOutputResult::CancelledBeforeExecution,
             )
         }
+    }
+}
+
+/// The longest line, in bytes, that is safe to write to a program reading in the tty's line mode
+/// (`cat`, `read`, `sort`...). macOS caps a line at `MAX_CANON` (1024 bytes with its newline),
+/// Linux at 4095; the rest of a longer line is silently dropped. The macOS figure applies when
+/// the program runs on a Mac reached over ssh, so it is the one used (#1129).
+const MAX_LINE_MODE_LINE_BYTES: usize = 1023;
+
+/// The length of the longest line (bytes between newlines) in `input`.
+fn longest_line_bytes(input: &[u8]) -> usize {
+    input
+        .split(|&byte| byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line).len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// A warning for the agent when `input` has a line the terminal may truncate on its way to a
+/// program in line mode, e.g. `cat > file` fed a minified or base64 blob. Nothing is changed
+/// about the write: the bytes cannot be delivered exactly through that limit, so the agent is
+/// told, instead of finding a short file later (#1129).
+fn long_line_write_note(input: &[u8]) -> Option<String> {
+    let longest = longest_line_bytes(input);
+    (longest > MAX_LINE_MODE_LINE_BYTES).then(|| {
+        format!(
+            "NOTE: this input has a line of {longest} bytes. If the running program reads in the \
+             terminal's line mode (cat, read, sort, ...), the terminal truncates any line over \
+             1023 bytes (macOS) or 4095 bytes (Linux) without an error, so the data may have \
+             arrived cut short. Check the result; to write long lines, run a command that \
+             creates the file in one go (a here-doc or printf in the shell) or send the data \
+             in lines under 1000 bytes (for example base64 -w 76 and then `base64 -d`)."
+        )
+    })
+}
+
+/// Appends `note` to the output of a write-to-command result.
+fn with_long_line_note(result: AIAgentActionResultType, note: &str) -> AIAgentActionResultType {
+    fn append(text: &mut String, note: &str) {
+        if !text.ends_with('\n') && !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(note);
+    }
+    match result {
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::CommandFinished {
+                block_id,
+                mut output,
+                exit_code,
+                start_ts,
+                completed_ts,
+            },
+        ) => {
+            append(&mut output, note);
+            AIAgentActionResultType::WriteToLongRunningShellCommand(
+                WriteToLongRunningShellCommandResult::CommandFinished {
+                    block_id,
+                    output,
+                    exit_code,
+                    start_ts,
+                    completed_ts,
+                },
+            )
+        }
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::Snapshot {
+                block_id,
+                mut grid_contents,
+                cursor,
+                is_alt_screen_active,
+                is_preempted,
+            },
+        ) => {
+            append(&mut grid_contents, note);
+            AIAgentActionResultType::WriteToLongRunningShellCommand(
+                WriteToLongRunningShellCommandResult::Snapshot {
+                    block_id,
+                    grid_contents,
+                    cursor,
+                    is_alt_screen_active,
+                    is_preempted,
+                },
+            )
+        }
+        other => other,
     }
 }
 
