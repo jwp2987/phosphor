@@ -89,19 +89,39 @@ pub fn respect_system_theme(theme_settings: &ThemeSettings) -> RespectSystemThem
 
 /// Returns the current theme kind based on the theme settings and the system theme.
 pub fn derived_theme_kind(theme_settings: &ThemeSettings, system_theme: SystemTheme) -> ThemeKind {
-    let respect_system_theme = respect_system_theme(theme_settings);
+    derived_theme_kind_with(theme_settings, || system_theme)
+}
+
+/// Like [`derived_theme_kind`], but only asks for the system theme when the user follows it.
+/// Querying it can touch the desktop portal, so it must not run when the setting is off.
+pub fn derived_theme_kind_with(
+    theme_settings: &ThemeSettings,
+    system_theme: impl FnOnce() -> SystemTheme,
+) -> ThemeKind {
+    resolve_theme_kind(
+        respect_system_theme(theme_settings),
+        theme_settings.theme_kind.value(),
+        system_theme,
+    )
+}
+
+fn resolve_theme_kind(
+    respect_system_theme: RespectSystemTheme,
+    fixed_theme: &ThemeKind,
+    system_theme: impl FnOnce() -> SystemTheme,
+) -> ThemeKind {
     match respect_system_theme {
-        RespectSystemTheme::On(selected_system_themes) => match system_theme {
+        RespectSystemTheme::On(selected_system_themes) => match system_theme() {
             SystemTheme::Light => selected_system_themes.light.clone(),
             SystemTheme::Dark => selected_system_themes.dark.clone(),
         },
-        RespectSystemTheme::Off => theme_settings.theme_kind.value().clone(),
+        RespectSystemTheme::Off => fixed_theme.clone(),
     }
 }
 
 /// Return the current theme kind based on the theme settings and active app context.
 pub fn active_theme_kind(theme_settings: &ThemeSettings, app: &AppContext) -> ThemeKind {
-    derived_theme_kind(theme_settings, app.system_theme())
+    derived_theme_kind_with(theme_settings, || app.system_theme())
 }
 
 #[cfg(test)]

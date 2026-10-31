@@ -655,6 +655,14 @@ impl EventLoop {
                     }
                 }
 
+                // Start the system color scheme query off-thread before the app initializes,
+                // so reading it never blocks the UI thread on D-Bus.
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                super::linux::prefetch_system_theme(
+                    self.proxy.clone(),
+                    &self.ui_app.background_executor(),
+                );
+
                 if let Some(init_fn) = self.init_fn.take() {
                     self.callbacks.initialize_app(init_fn);
                 }

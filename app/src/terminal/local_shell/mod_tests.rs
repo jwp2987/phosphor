@@ -61,3 +61,47 @@ fn success_and_other_errors_are_cached() {
     let (_, state) = state_after_capture(Err(anyhow::anyhow!("missing markers")));
     assert!(matches!(state, InteractiveEnvState::Ready(None)));
 }
+
+#[test]
+fn path_probe_command_is_defined_for_every_shell() {
+    use crate::terminal::shell::ShellType;
+    for shell in [
+        ShellType::Bash,
+        ShellType::Zsh,
+        ShellType::Fish,
+        ShellType::PowerShell,
+        ShellType::Nu,
+    ] {
+        assert!(super::path_probe_command(shell)
+            .to_lowercase()
+            .contains("path"));
+    }
+}
+
+#[test]
+fn set_path_env_var_fills_a_loaded_shell_and_ignores_not_loaded() {
+    use super::{LocalShell, LocalShellState};
+    use crate::terminal::shell::ShellType;
+
+    let mut state = LocalShellState::Loaded(LocalShell {
+        shell_type: ShellType::Bash,
+        shell_path: "/bin/bash".into(),
+        path_env_var: None,
+        interactive_env_state: InteractiveEnvState::NotRequested,
+    });
+    // Constructing the state no longer probes: PATH stays unset until a caller needs it.
+    assert_eq!(state.local_shell_info().unwrap().get_path_env_var(), &None);
+    state.set_path_env_var(Some("/usr/bin".to_owned()));
+    assert_eq!(
+        state
+            .local_shell_info()
+            .unwrap()
+            .get_path_env_var()
+            .as_deref(),
+        Some("/usr/bin")
+    );
+
+    let mut not_loaded = LocalShellState::NotLoaded;
+    not_loaded.set_path_env_var(Some("/x".to_owned()));
+    assert!(not_loaded.local_shell_info().is_none());
+}

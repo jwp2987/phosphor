@@ -31,7 +31,7 @@ use crate::{
 };
 #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
 use crate::{
-    terminal::local_shell::LocalShellState,
+    terminal::local_shell::{probe_path_env_var, LocalShellState},
     view_components::{DismissibleToast, ToastLink},
     workspace::{ToastStack, WorkspaceAction},
 };
@@ -93,43 +93,64 @@ impl EnvVarCollectionView {
 
             let shell_type = local_shell_state.get_shell_type();
             let shell_path = local_shell_state.get_shell_path().clone();
-            let path_env_var = local_shell_state.get_path_env_var().clone();
+            let cached_path_env_var = local_shell_state.get_path_env_var().clone();
 
             self.secrets_dialog.update(ctx, |_, dialog_ctx| {
                 let _ = dialog_ctx.spawn(
                     async move {
-                        secret_manager
+                        // The PATH probe is a full login-shell startup, so it runs here on
+                        // first use instead of at app launch.
+                        let (probed, path_env_var) = match cached_path_env_var {
+                            Some(path) => (None, Some(path)),
+                            None => {
+                                let probed =
+                                    probe_path_env_var(shell_type, shell_path.clone()).await;
+                                (probed.clone(), probed)
+                            }
+                        };
+                        let result = secret_manager
                             .verify_installed_and_fetch_secrets(
                                 shell_type,
                                 shell_path,
                                 path_env_var,
                             )
-                            .await
+                            .await;
+                        (probed, result)
                     },
-                    move |view, result, dialog_ctx| match result {
-                        Ok(secrets) => {
-                            view.setup(secrets, dialog_ctx);
+                    move |view, (probed, result), dialog_ctx| {
+                        if probed.is_some() {
+                            LocalShellState::handle(dialog_ctx).update(dialog_ctx, |state, _| {
+                                state.set_path_env_var(probed);
+                            });
                         }
-                        Err(e) => {
-                            let error_message_and_command =
-                                secret_manager_clone.get_toast_message_and_link(e);
-
-                            let mut toast =
-                                DismissibleToast::error(error_message_and_command.message);
-
-                            if let (Some(link), Some(link_message)) = (
-                                error_message_and_command.link,
-                                error_message_and_command.link_message,
-                            ) {
-                                toast = toast.with_link(
-                                    ToastLink::new(link_message)
-                                        .with_onclick_action(WorkspaceAction::OpenLink(link)),
-                                );
+                        match result {
+                            Ok(secrets) => {
+                                view.setup(secrets, dialog_ctx);
                             }
+                            Err(e) => {
+                                let error_message_and_command =
+                                    secret_manager_clone.get_toast_message_and_link(e);
 
-                            ToastStack::handle(dialog_ctx).update(dialog_ctx, |toast_stack, ctx| {
-                                toast_stack.add_persistent_toast(toast, window_id, ctx);
-                            })
+                                let mut toast =
+                                    DismissibleToast::error(error_message_and_command.message);
+
+                                if let (Some(link), Some(link_message)) = (
+                                    error_message_and_command.link,
+                                    error_message_and_command.link_message,
+                                ) {
+                                    toast = toast.with_link(
+                                        ToastLink::new(link_message)
+                                            .with_onclick_action(WorkspaceAction::OpenLink(link)),
+                                    );
+                                }
+
+                                ToastStack::handle(dialog_ctx).update(
+                                    dialog_ctx,
+                                    |toast_stack, ctx| {
+                                        toast_stack.add_persistent_toast(toast, window_id, ctx);
+                                    },
+                                )
+                            }
                         }
                     },
                 );

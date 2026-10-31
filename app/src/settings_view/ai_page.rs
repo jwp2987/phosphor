@@ -4220,25 +4220,42 @@ impl TypedActionView for AISettingsPageView {
             }
             AISettingsPageAction::EnsureModelsDevLoaded => {
                 use crate::ai::agent_providers::models_dev;
-                let had_disk = models_dev::load_from_disk();
-                if !had_disk || models_dev::is_stale() {
-                    let client = http_client::Client::new();
+                // The widget constructor dispatches this at startup (and again on every
+                // page rebuild). Never read/parse the 6 MB catalog on the main thread:
+                // skip when it is already in memory, coalesce concurrent loads, and do
+                // the disk read on a background thread.
+                if models_dev::is_loaded_and_fresh() {
+                    ctx.notify();
+                } else if models_dev::try_begin_load() {
                     ctx.spawn(
-                        async move { models_dev::fetch_and_cache(client).await },
-                        |view, result, ctx| match result {
-                            Ok(()) => {
-                                models_dev::set_fetch_failed(false);
-                                view.rebuild_current_page(ctx);
-                            }
-                            Err(e) => {
-                                log::warn!("[models.dev] fetch failed: {e}");
-                                models_dev::set_fetch_failed(true);
+                        async move { models_dev::load_from_disk() },
+                        |_view, had_disk, ctx| {
+                            if had_disk && !models_dev::is_stale() {
+                                models_dev::finish_load();
+                                // Widgets read the catalog at render time.
                                 ctx.notify();
+                                return;
                             }
+                            let client = http_client::Client::new();
+                            ctx.spawn(
+                                async move { models_dev::fetch_and_cache(client).await },
+                                |view: &mut Self, result, ctx| {
+                                    models_dev::finish_load();
+                                    match result {
+                                        Ok(()) => {
+                                            models_dev::set_fetch_failed(false);
+                                            view.rebuild_current_page(ctx);
+                                        }
+                                        Err(e) => {
+                                            log::warn!("[models.dev] fetch failed: {e}");
+                                            models_dev::set_fetch_failed(true);
+                                            ctx.notify();
+                                        }
+                                    }
+                                },
+                            );
                         },
                     );
-                } else {
-                    ctx.notify();
                 }
             }
             AISettingsPageAction::RefreshModelsDev => {
