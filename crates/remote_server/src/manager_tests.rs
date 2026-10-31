@@ -641,3 +641,25 @@ fn a_reconnect_attempt_that_finishes_in_time_is_passed_through() {
         ));
     assert!(matches!(err, Err(ConnectAndHandshakeError::Connect(_))));
 }
+
+/// #1171: a reconnect attempt invalidates the previous stream's generation, so the end handler of
+/// a stream left behind by a timed-out attempt (which compares its captured generation with this
+/// map) no longer marks the session disconnected over `Reconnecting`.
+/// Old code: no generation existed; the stale end handler always called `mark_session_disconnected`.
+/// Not compiled/run when written.
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn a_new_connection_attempt_invalidates_the_previous_streams_generation() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(7u64);
+        manager.update(&mut app, |manager, _ctx| {
+            let stale = manager.bump_connection_generation(session_id);
+            assert_eq!(manager.connection_generation.get(&session_id), Some(&stale));
+            let fresh = manager.bump_connection_generation(session_id);
+            assert_ne!(stale, fresh);
+            assert_ne!(manager.connection_generation.get(&session_id), Some(&stale));
+            assert_eq!(manager.connection_generation.get(&session_id), Some(&fresh));
+        });
+    });
+}

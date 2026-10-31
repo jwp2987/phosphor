@@ -5,7 +5,7 @@ use super::{
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
     COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
-    StreamedTextChange, accept_within_debounce, cancel_explanation_for_reason,
+    AcceptSource, StreamedTextChange, accept_is_debounced, accept_within_debounce, cancel_explanation_for_reason,
     denylisted_command_message, enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
@@ -581,4 +581,15 @@ fn accept_inside_the_debounce_window_is_ignored() {
     assert!(!accept_within_debounce(Some(Duration::from_secs(5))));
     // A card that was never rendered awaiting approval (programmatic accepts) is not debounced.
     assert!(!accept_within_debounce(None));
+}
+
+// #1195 follow-up: a click on Run inside the window was silently ignored; only keys are debounced.
+// Old code: no `accept_is_debounced`; the click went through the same debounce as Enter.
+#[test]
+fn a_click_on_run_is_never_debounced() {
+    use std::time::Duration;
+    let early = Some(Duration::from_millis(10));
+    assert!(accept_is_debounced(AcceptSource::Key, early));
+    assert!(!accept_is_debounced(AcceptSource::Pointer, early));
+    assert!(!accept_is_debounced(AcceptSource::Key, None));
 }

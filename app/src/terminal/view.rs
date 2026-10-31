@@ -10028,6 +10028,16 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // #1179: arrows, Home/End, Page keys etc. never reach an agent-driven command's pty (the
+        // bytes would be read as typeahead by the shell after it ends and then wiped). Ctrl-C /
+        // Ctrl-D keep their own route to the command.
+        if !is_abort_key(bytes) && self.agent_owns_command_pty() {
+            safe_warn!(
+                safe: ("agent owns the command pty. ignoring control seq on terminal."),
+                full: ("agent owns the command pty. ignoring control seq on terminal: {:?}", bytes)
+            );
+            return;
+        }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
@@ -20135,16 +20145,20 @@ impl TerminalView {
         if self.swallow_input_during_ssh_setup(None, ctx) {
             return;
         }
+        // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
+        // the agent's input, exactly as typed characters are. Computed before the model lock.
+        let agent_owns_pty = self.agent_owns_command_pty();
         let (should_paste_in_input, needs_bracketed_paste) = {
             let mut model = self.model.lock();
             (
                 // If the block list isn't bootstrapped yet, there could be something in the .rc file waiting for input,
                 // and we want the paste to go there if the editor isn't focused.
-                self.is_input_box_visible(&model, ctx)
+                (self.is_input_box_visible(&model, ctx)
                     && (self.input.as_ref(ctx).editor().is_focused(ctx)
                         || model.block_list().is_bootstrapped())
                     && !(FeatureFlag::TypeaheadHandoff.is_enabled()
-                        && model.typeahead_handoff().routes_keys_to_pty()),
+                        && model.typeahead_handoff().routes_keys_to_pty()))
+                    || agent_owns_pty,
                 model.needs_bracketed_paste(),
             )
         };
@@ -26933,7 +26947,7 @@ impl TerminalView {
     }
 
     fn page_up(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() && !self.agent_owns_command_pty() {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page up defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_UP);
@@ -26944,7 +26958,7 @@ impl TerminalView {
     }
 
     fn page_down(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.is_long_running() && !self.agent_owns_command_pty() {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page down defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_DOWN);
@@ -26955,7 +26969,9 @@ impl TerminalView {
     }
 
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        if (self.is_long_running() && !self.agent_owns_command_pty())
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -26964,7 +26980,9 @@ impl TerminalView {
     }
 
     fn move_end(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        if (self.is_long_running() && !self.agent_owns_command_pty())
+            || self.typeahead_handoff_routes_keys_to_pty()
+        {
             let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {

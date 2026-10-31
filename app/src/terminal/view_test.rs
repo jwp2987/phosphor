@@ -18871,3 +18871,37 @@ fn paste_bytes_for_pty_exact_bytes() {
         b"\x1b[200~x\ry\x1b[201~".to_vec()
     );
 }
+
+/// #1179 follow-up: a paste while the agent runs an ordinary command is steer text for the agent's
+/// input, and arrows / Page keys never reach the command's pty. Old code: `paste` and
+/// `control_sequence_on_terminal` wrote to the pty, so `pty_writes` was non-empty.
+/// Not compiled/run when written.
+#[test]
+fn paste_and_control_sequences_during_an_agent_driven_command_do_not_reach_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        app.update(|ctx| {
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("pasted".to_string()));
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.paste(false, ctx);
+            view.control_sequence_on_terminal(b"\x1b[A", ctx);
+            view.page_up(ctx);
+            view.move_home(ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(view.input().as_ref(ctx).buffer_text(ctx).contains("pasted"));
+        });
+    })
+}

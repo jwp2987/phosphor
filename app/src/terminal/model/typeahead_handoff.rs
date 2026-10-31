@@ -896,6 +896,11 @@ impl TypeaheadHandoff {
         if let Some(hold) = &mut self.young_hold {
             hold.extend_from_slice(bytes);
             self.young_hold_chunks.push(bytes.len());
+            // #1189: held keys are still typing; the ConPTY mid-line guard must see them, or a
+            // request is written between them once the hold is released.
+            if reaches_shell_line {
+                self.last_line_bytes_at = Some(Instant::now());
+            }
             return UserBytesRoute::Held;
         }
         if self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now()) {
@@ -1103,6 +1108,9 @@ impl TypeaheadHandoff {
             }
             HandoffState::HoldAfterEnter { held, .. } => {
                 held.extend_from_slice(bytes);
+                if reaches_shell_line {
+                    self.last_line_bytes_at = Some(Instant::now());
+                }
                 UserBytesRoute::Held
             }
             // In `AwaitingReport` such a write is a key typed into a command drained behind the
