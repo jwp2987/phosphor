@@ -8,18 +8,28 @@ use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 use wgpu::{CommandEncoder, RenderPass, SurfaceTexture};
 
+/// The instance data of a frame. Owned by the renderer and reused from frame to frame, so the
+/// vectors keep their capacity and the vertex buffers are refilled rather than recreated.
 #[derive(Default)]
-struct PerFrameState {
+pub(super) struct PerFrameState {
     rect: rect::PerFrameState,
     glyph: glyph::PerFrameState,
     image: image::PerFrameState,
+}
+
+impl PerFrameState {
+    fn begin_frame(&mut self) {
+        self.rect.begin_frame();
+        self.glyph.begin_frame();
+        self.image.begin_frame();
+    }
 }
 
 /// Struct responsible for rendering a frame by issuing draw calls.
 pub(super) struct Frame<'a> {
     scene: &'a Scene,
     layer_state: Vec<LayerState<'a>>,
-    per_frame_state: PerFrameState,
+    per_frame_state: &'a mut PerFrameState,
     rect_pipeline: &'a rect::Pipeline,
     glyph_pipeline: &'a mut glyph::Pipeline,
     image_pipeline: &'a mut image::Pipeline,
@@ -32,11 +42,12 @@ impl<'a> Frame<'a> {
         rect_pipeline: &'a rect::Pipeline,
         glyph_pipeline: &'a mut glyph::Pipeline,
         image_pipeline: &'a mut image::Pipeline,
+        per_frame_state: &'a mut PerFrameState,
     ) -> Self {
         glyph_pipeline.update_config(&scene.rendering_config().glyphs);
 
         let mut layer_state = vec![];
-        let mut per_frame_state = PerFrameState::default();
+        per_frame_state.begin_frame();
 
         for layer in scene.layers() {
             let rect_layer_state =
@@ -56,16 +67,19 @@ impl<'a> Frame<'a> {
         rect::Pipeline::finalize_per_frame_state(
             &mut per_frame_state.rect,
             &ctx.resources.device,
+            &ctx.resources.queue,
             &ctx.resources.device_lost,
         );
         glyph::Pipeline::finalize_per_frame_state(
             &mut per_frame_state.glyph,
             &ctx.resources.device,
+            &ctx.resources.queue,
             &ctx.resources.device_lost,
         );
         image::Pipeline::finalize_per_frame_state(
             &mut per_frame_state.image,
             &ctx.resources.device,
+            &ctx.resources.queue,
             &ctx.resources.device_lost,
         );
 

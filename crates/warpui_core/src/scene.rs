@@ -21,6 +21,8 @@ pub struct Scene {
     active_layer_index_stack: Vec1<ZIndex>,
     layers: Vec1<Layer>,
     overlay_layers: Vec<Layer>,
+    /// Sizes the layers of this scene are pre-allocated to as they are started.
+    capacity_hints: SceneCapacityHints,
     #[cfg(debug_assertions)]
     /// Custom panic location, set with [`Scene::set_location_for_panic_logging`]
     panic_location: Option<&'static std::panic::Location<'static>>,
@@ -53,7 +55,58 @@ pub enum ClipBounds {
     None,
 }
 
+/// How many primitives of each kind a layer held. A frame's layers are usually the same shape as
+/// the previous frame's (the same elements, with different content), so sizing a layer's vectors
+/// up front from the last frame avoids the reallocations the vectors would otherwise go through as
+/// they grow from empty on every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerCapacity {
+    rects: usize,
+    glyphs: usize,
+    images: usize,
+    icons: usize,
+}
+
+impl LayerCapacity {
+    fn of(layer: &Layer) -> Self {
+        Self {
+            rects: layer.rects.len(),
+            glyphs: layer.glyphs.len(),
+            images: layer.images.len(),
+            icons: layer.icons.len(),
+        }
+    }
+}
+
+/// The [`LayerCapacity`] of every layer of a scene, in the order the layers were started.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneCapacityHints {
+    layers: Vec<LayerCapacity>,
+    overlay_layers: Vec<LayerCapacity>,
+}
+
+impl SceneCapacityHints {
+    fn normal(&self, index: usize) -> LayerCapacity {
+        self.layers.get(index).copied().unwrap_or_default()
+    }
+
+    fn overlay(&self, index: usize) -> LayerCapacity {
+        self.overlay_layers.get(index).copied().unwrap_or_default()
+    }
+}
+
 impl Layer {
+    fn with_capacity(clip_bounds: Option<RectF>, capacity: LayerCapacity) -> Self {
+        Layer {
+            clip_bounds,
+            rects: Vec::with_capacity(capacity.rects),
+            glyphs: Vec::with_capacity(capacity.glyphs),
+            images: Vec::with_capacity(capacity.images),
+            icons: Vec::with_capacity(capacity.icons),
+            ..Default::default()
+        }
+    }
+
     fn record_hit_rect(&mut self, rect: RectF) {
         if let Some(intersected) = self
             .clip_bounds
@@ -385,14 +438,34 @@ impl ZIndex {
 
 impl Scene {
     pub fn new(scale_factor: f32, rendering_config: rendering::Config) -> Self {
+        Self::with_capacity_hints(scale_factor, rendering_config, SceneCapacityHints::default())
+    }
+
+    /// A scene whose layers are pre-allocated to the sizes in `capacity_hints`, normally the
+    /// [`Self::capacity_hints`] of the previous frame's scene. Only the allocation differs: the
+    /// primitives recorded, and their order, are the same as with [`Self::new`].
+    pub fn with_capacity_hints(
+        scale_factor: f32,
+        rendering_config: rendering::Config,
+        capacity_hints: SceneCapacityHints,
+    ) -> Self {
         Self {
             scale_factor,
             rendering_config,
             active_layer_index_stack: vec1![ZIndex::Normal(0)],
-            layers: vec1![Layer::default()],
+            layers: vec1![Layer::with_capacity(None, capacity_hints.normal(0))],
             overlay_layers: Vec::new(),
+            capacity_hints,
             #[cfg(debug_assertions)]
             panic_location: None,
+        }
+    }
+
+    /// The sizes of this scene's layers, to pre-allocate the next frame's scene with.
+    pub fn capacity_hints(&self) -> SceneCapacityHints {
+        SceneCapacityHints {
+            layers: self.layers.iter().map(LayerCapacity::of).collect(),
+            overlay_layers: self.overlay_layers.iter().map(LayerCapacity::of).collect(),
         }
     }
 
@@ -472,21 +545,21 @@ impl Scene {
     }
 
     pub fn start_layer(&mut self, bounds: ClipBounds) {
-        let layer = self.create_layer(bounds);
+        let clip_bounds = self.clip_bounds_for_new_layer(bounds);
 
         match *self.active_layer_index_stack.last() {
-            ZIndex::Normal(_) => self.push_normal_layer(layer),
-            ZIndex::Overlay(_) => self.push_overlay_layer(layer),
+            ZIndex::Normal(_) => self.push_normal_layer(clip_bounds),
+            ZIndex::Overlay(_) => self.push_overlay_layer(clip_bounds),
         }
     }
 
     pub(crate) fn start_overlay_layer(&mut self, bounds: ClipBounds) {
-        let layer = self.create_layer(bounds);
-        self.push_overlay_layer(layer);
+        let clip_bounds = self.clip_bounds_for_new_layer(bounds);
+        self.push_overlay_layer(clip_bounds);
     }
 
-    fn create_layer(&mut self, bounds: ClipBounds) -> Layer {
-        let clip_bounds = match bounds {
+    fn clip_bounds_for_new_layer(&mut self, bounds: ClipBounds) -> Option<RectF> {
+        match bounds {
             ClipBounds::ActiveLayer => self.active_layer().clip_bounds,
             ClipBounds::BoundedBy(bounds) => Some(bounds),
             ClipBounds::BoundedByActiveLayerAnd(bounds) => {
@@ -503,24 +576,25 @@ impl Scene {
                 }
             }
             ClipBounds::None => None,
-        };
-
-        Layer {
-            clip_bounds,
-            ..Default::default()
         }
     }
 
-    fn push_normal_layer(&mut self, layer: Layer) {
-        self.active_layer_index_stack
-            .push(ZIndex::Normal(self.layers.len()));
-        self.layers.push(layer);
+    fn push_normal_layer(&mut self, clip_bounds: Option<RectF>) {
+        let index = self.layers.len();
+        self.active_layer_index_stack.push(ZIndex::Normal(index));
+        self.layers.push(Layer::with_capacity(
+            clip_bounds,
+            self.capacity_hints.normal(index),
+        ));
     }
 
-    fn push_overlay_layer(&mut self, layer: Layer) {
-        self.active_layer_index_stack
-            .push(ZIndex::Overlay(self.overlay_layers.len()));
-        self.overlay_layers.push(layer);
+    fn push_overlay_layer(&mut self, clip_bounds: Option<RectF>) {
+        let index = self.overlay_layers.len();
+        self.active_layer_index_stack.push(ZIndex::Overlay(index));
+        self.overlay_layers.push(Layer::with_capacity(
+            clip_bounds,
+            self.capacity_hints.overlay(index),
+        ));
     }
 
     pub fn set_active_layer_click_through(&mut self) {

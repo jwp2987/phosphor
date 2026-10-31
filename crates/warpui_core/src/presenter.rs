@@ -613,7 +613,15 @@ impl Presenter {
         ctx: &mut AppContext,
     ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
         crate::profiling::zone!("paint");
-        let mut scene = Scene::new(scale_factor, ctx.rendering_config());
+        // Layers are the same shape frame to frame, so the last scene says how big to make them.
+        let mut scene = match self.scene.as_deref() {
+            Some(previous) => Scene::with_capacity_hints(
+                scale_factor,
+                ctx.rendering_config(),
+                previous.capacity_hints(),
+            ),
+            None => Scene::new(scale_factor, ctx.rendering_config()),
+        };
         let mut repaint_at = None;
         let mut repaint_needs_layout = false;
         let mut pending_assets = HashSet::new();
