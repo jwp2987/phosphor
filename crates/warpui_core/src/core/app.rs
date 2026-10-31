@@ -243,7 +243,7 @@ impl App {
             window_id,
             responder_chain,
             action,
-            log::Level::Info,
+            log::Level::Debug,
         );
     }
 
@@ -1541,7 +1541,7 @@ impl AppContext {
         arg: &dyn Any,
     ) -> bool {
         let responder_chain = self.responder_chain_for_view(window_id, view_id);
-        self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Info)
+        self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Debug)
     }
 
     /// Returns the responder chain for `view_id` in `window_id`: the view hierarchy from
@@ -1595,7 +1595,7 @@ impl AppContext {
         action: &dyn Action,
     ) {
         let responder_chain = self.responder_chain_for_view(window_id, view_id);
-        self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
+        self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Debug);
     }
 
     pub fn dispatch_action(
@@ -1676,7 +1676,7 @@ impl AppContext {
         }
 
         if !any_action_handled {
-            log::warn!("Action {name:?} was dispatched, but no view handled it");
+            log::debug!("Action {name:?} was dispatched, but no view handled it");
         }
 
         self.dispatch_global_action(name, arg);
@@ -1763,7 +1763,7 @@ impl AppContext {
         self.typed_actions.insert(action_type, handlers);
 
         if !handled {
-            log::warn!("Action {action:?} was dispatched, but no view handled it");
+            log::debug!("Action {action:?} was dispatched, but no view handled it");
         }
 
         self.flush_effects();
@@ -1784,7 +1784,7 @@ impl AppContext {
         arg: &dyn Any,
     ) {
         if let Some((name, mut handlers)) = self.global_actions.remove_entry(name) {
-            if name == "workspace:save_app" {
+            if matches!(name, "workspace:save_app" | "root_view:update_quake_mode_state") {
                 log::debug!("dispatching global action for {}", &name);
             } else {
                 log::info!("dispatching global action for {}", &name);
@@ -2128,7 +2128,7 @@ impl AppContext {
                     window_id,
                     &responder_chain[0..=i],
                     action.as_ref(),
-                    log::Level::Info,
+                    log::Level::Debug,
                 ),
                 _ => false,
             };
@@ -2268,7 +2268,7 @@ impl AppContext {
                     window_id,
                     &responder_chain[0..=i],
                     action.as_ref(),
-                    log::Level::Info,
+                    log::Level::Debug,
                 ),
                 _ => false,
             };
@@ -2306,7 +2306,7 @@ impl AppContext {
                     window_id,
                     &responder_chain[0..=i],
                     action.as_ref(),
-                    log::Level::Info,
+                    log::Level::Debug,
                 ),
             };
 
@@ -4402,7 +4402,7 @@ impl AppContext {
             _ => {
                 // Update last user action timestamp for non-hover events
                 App::record_last_active_timestamp();
-                log::Level::Info
+                log::Level::Debug
             }
         };
         let dispatch_result = presenter.borrow_mut().dispatch_event(event, self);
@@ -4417,7 +4417,7 @@ impl AppContext {
                 if let Some(app) = weak_app.upgrade() {
                     let mut app = app.borrow_mut();
                     if app.notify_tasks.remove(&timer_id).is_some() {
-                        log::info!(
+                        log::debug!(
                             "notifying view observers and updating windows for timer id {timer_id}"
                         );
                         app.notify_view_observers(window_id, view_to_notify.view_id);

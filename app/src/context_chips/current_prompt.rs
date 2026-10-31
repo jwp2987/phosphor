@@ -403,14 +403,16 @@ impl CurrentPrompt {
         // generator and from the watcher alike. The debug line above is invisible at
         // the default Info level, which is why "the value never arrives" could not be
         // told apart from "the value arrives empty". Info for the git chips only.
-        if matches!(
-            chip_kind,
-            ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus
-        ) {
-            log::info!("[chips] update_chip_value {chip_kind:?} -> {value:?}");
-        }
+        // #1143: only when the value actually changes; unchanged refreshes repeat
+        // thousands of times per session.
         if let Some(state) = self.states.get_mut(chip_kind) {
             if state.last_computed_value != value {
+                if matches!(
+                    chip_kind,
+                    ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus
+                ) {
+                    log::info!("[chips] update_chip_value {chip_kind:?} -> {value:?}");
+                }
                 state.last_computed_value = value;
                 state.update_status = ChipUpdateStatus::Ready;
                 let _ = self.update_tx.try_send(());
@@ -1687,7 +1689,7 @@ impl CurrentPrompt {
             return;
         };
 
-        log::info!(
+        log::debug!(
             "[chips] apply_git_repo_metadata: current_branch_name={:?}",
             metadata.current_branch_name
         );

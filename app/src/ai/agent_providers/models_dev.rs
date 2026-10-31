@@ -467,7 +467,16 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
                     // silently vanish from the merged chip under `extend`'s last-wins
                     // semantics. Keep the first (catalog iterates providers in BTreeMap/id
                     // order, so this is deterministic) and log instead of losing it quietly.
-                    log::warn!(
+                    // Called on every render of the chip row; warn once per process.
+                    static WARNED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    let log_level = if WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        log::Level::Debug
+                    } else {
+                        log::Level::Warn
+                    };
+                    log::log!(
+                        log_level,
                         "quick_add_catalog: model id {model_id:?} appears in multiple Vertex-family providers (already merged before reaching {id:?}); keeping the first, dropping this one"
                     );
                     continue;
