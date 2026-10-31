@@ -2450,6 +2450,67 @@ mod typeahead_handoff {
             assert!(!handoff.editor_text_precedes_report());
         });
     }
+
+    /// #1104: keys written behind a legacy request stay in the shell's line when its report
+    /// comes back; one more request is written behind them, and only once.
+    #[test]
+    fn a_report_that_missed_untracked_keys_is_followed_by_a_drain_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness), vec![REQUEST.to_vec()]);
+            {
+                let mut model = harness.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.note_untracked_line_bytes();
+                // The report of the first request: it missed the keys.
+                handoff.on_report();
+                assert!(handoff.drain_pending());
+            }
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            assert_eq!(written(&harness), vec![REQUEST.to_vec(), REQUEST.to_vec()]);
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            assert_eq!(
+                written(&harness).len(),
+                2,
+                "the second request covers the keys; no third"
+            );
+            let mut model = harness.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            assert!(handoff.editor_text_precedes_report());
+            handoff.on_report();
+            assert!(!handoff.editor_text_precedes_report());
+        });
+    }
+
+    /// #1104: a command the hand-off does not own (an agent's, a queued prompt) must not kill
+    /// untracked user keys in the shell's line before a request has collected them: the request
+    /// is written first, the command right behind it.
+    #[test]
+    fn a_queued_command_goes_out_behind_a_request_that_collects_untracked_keys() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_untracked_line_bytes();
+            fire_queued_command(&mut app, &harness);
+            assert_eq!(
+                written(&harness),
+                vec![
+                    REQUEST.to_vec(),
+                    bytes_to_execute_command("queued", SHELL, false)
+                ]
+            );
+        });
+    }
 }
 
 /// nushell cannot eval a string, so its bootstrap is always a file: the app types a space-led

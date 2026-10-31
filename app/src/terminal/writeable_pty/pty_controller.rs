@@ -455,12 +455,13 @@ impl<T: EventLoopSender> PtyController<T> {
             .active_session_id()
             .and_then(|id| self.sessions.as_ref(ctx).get(id))
             .and_then(|session| session.shell().input_reporting_sequence());
-        let decision = {
+        let (decision, at_prompt) = {
             let mut model = self.terminal_model.lock();
             let at_prompt = model.is_at_prompt_for_typeahead_request();
-            model
+            let decision = model
                 .typeahead_handoff_mut()
-                .on_line_editor_active(at_prompt, input_reporting_seq.is_some())
+                .on_line_editor_active(at_prompt, input_reporting_seq.is_some());
+            (decision, at_prompt)
         };
 
         match decision {
@@ -479,6 +480,36 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.execute_next_queued_write(ctx);
             }
             ActiveDecision::Legacy | ActiveDecision::Drain => {
+                // #1104: a report came back while user bytes written behind its request are
+                // still in the shell's line. The shell reports its line as of the request and
+                // clears it, so those bytes would stay there; one more request, behind them,
+                // collects them. Queued commands go out behind it, not ahead of the bytes.
+                let drain_request = if is_retry && decision == ActiveDecision::Legacy {
+                    input_reporting_seq.filter(|_| {
+                        self.terminal_model
+                            .lock()
+                            .typeahead_handoff_mut()
+                            .drain_request_due(at_prompt, true)
+                    })
+                } else {
+                    None
+                };
+                if let Some(bytes) = drain_request {
+                    self.pending_writes.push_front(PtyWrite::Bytes {
+                        bytes: Cow::Owned(bytes.to_vec()),
+                    });
+                } else if self.handoff_held_command_pending
+                    && self
+                        .terminal_model
+                        .lock()
+                        .typeahead_handoff()
+                        .holds_queued_writes()
+                {
+                    // A command held behind untracked user bytes stays held until a request
+                    // behind them is written; its kill prefix would destroy them unreported.
+                    self.handoff_request_waiting = true;
+                    return;
+                }
                 self.handoff_request_waiting = false;
                 self.execute_next_queued_write(ctx);
             }

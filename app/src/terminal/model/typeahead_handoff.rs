@@ -157,6 +157,10 @@ pub enum ReportDisposition {
     /// before the app knew the shell was back at its prompt (#933): the Enter is routed like any
     /// Enter in the editor.
     InsertThenSubmitYoung,
+    /// Insert it, but keep the Enter deferred: the shell's line still holds user bytes this
+    /// report did not cover (written behind the request, #1104). A further request is written
+    /// behind them, and the Enter runs on the report that answers it.
+    InsertKeepDeferred,
     /// Leave it stored and insert it when the editor next takes over, so it is not wiped with a
     /// submitted command's text.
     Stash,
@@ -255,6 +259,13 @@ pub struct TypeaheadHandoff {
     untracked_cover_after_reports: Option<u32>,
     /// Whether the Enter deferred behind the report ends such a line.
     deferred_young: bool,
+    /// Identifies a deferred Enter that waits for a report covering untracked bytes (#1104). If
+    /// that report never comes (a program ate the request), the view gives the Enter up when its
+    /// timer for this id fires.
+    uncovered_deferral_id: Option<u64>,
+    /// A deferral was just armed, so the view must start its timer.
+    uncovered_deferral_started: bool,
+    uncovered_deferral_seq: u64,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -377,7 +388,88 @@ impl TypeaheadHandoff {
                 wrote_user_bytes: true,
                 ..
             }
-        )
+        ) || self.untracked_bytes_uncovered()
+    }
+
+    /// Untracked user bytes (#1089) are in the shell's line and no request has been written
+    /// behind them (#1104): a queued command's kill prefix would destroy them unreported.
+    fn untracked_bytes_uncovered(&self) -> bool {
+        self.untracked_line_bytes
+            && self.untracked_cover_after_reports.is_none()
+            && matches!(
+                self.state,
+                HandoffState::EditorOwned | HandoffState::AwaitingReport
+            )
+    }
+
+    /// Whether the editor owns input and a report has left untracked bytes in the shell's line
+    /// that no request covers yet, so the view should ask the controller to write one (#1104).
+    pub fn drain_pending(&self) -> bool {
+        self.state == HandoffState::EditorOwned && self.untracked_bytes_uncovered()
+    }
+
+    /// Whether a request must be written now, because untracked bytes sit in the shell's line
+    /// behind every request written so far (#1104): the shell reports its line as of the request
+    /// and clears it, so what was typed after it would stay there, to be killed by the next
+    /// command's kill prefix or to prefix the next line. Records the request as written when it
+    /// is due. `at_prompt` and `can_request` are as for [`Self::on_line_editor_active`].
+    pub fn drain_request_due(&mut self, at_prompt: bool, can_request: bool) -> bool {
+        let owner_allows = matches!(
+            self.state,
+            HandoffState::EditorOwned
+                | HandoffState::HoldAfterEnter {
+                    released: false,
+                    ..
+                }
+        );
+        if !(at_prompt
+            && can_request
+            && owner_allows
+            && self.untracked_line_bytes
+            && self.untracked_cover_after_reports.is_none())
+        {
+            return false;
+        }
+        self.on_request_written();
+        true
+    }
+
+    /// The id of a deferral the view must arm a patience timer for (see
+    /// [`Self::give_up_uncovered_deferral`]), once.
+    pub fn take_uncovered_deferral_started(&mut self) -> Option<u64> {
+        if mem::take(&mut self.uncovered_deferral_started) {
+            self.uncovered_deferral_id
+        } else {
+            None
+        }
+    }
+
+    fn arm_uncovered_deferral(&mut self) {
+        self.uncovered_deferral_seq = self.uncovered_deferral_seq.wrapping_add(1);
+        self.uncovered_deferral_id = Some(self.uncovered_deferral_seq);
+        self.uncovered_deferral_started = true;
+    }
+
+    /// The patience timer of deferral `id` ran out: the report covering the untracked bytes
+    /// never came (a program ate the request), so the Enter runs as it did before #1104 rather
+    /// than wait forever. Returns whether it was released; the caller then runs the Enter.
+    pub fn give_up_uncovered_deferral(&mut self, id: u64) -> bool {
+        if self.uncovered_deferral_id != Some(id)
+            || !matches!(
+                self.state,
+                HandoffState::HoldAfterEnter {
+                    released: false,
+                    ..
+                }
+            )
+        {
+            return false;
+        }
+        self.uncovered_deferral_id = None;
+        self.forget_untracked_line_bytes();
+        self.deferred_young = false;
+        self.mark_released();
+        true
     }
 
     /// Whether the pty owns input and some Enter written to it is not answered by a prompt
@@ -580,6 +672,9 @@ impl TypeaheadHandoff {
     pub fn on_line_editor_active(&mut self, at_prompt: bool, can_request: bool) -> ActiveDecision {
         match self.owner() {
             Owner::Editor => ActiveDecision::Legacy,
+            Owner::Hold { released: false } if self.drain_request_due(at_prompt, can_request) => {
+                ActiveDecision::SendRequest
+            }
             Owner::AwaitingReport | Owner::Hold { .. } => ActiveDecision::Drain,
             Owner::Pty {
                 wrote_user_bytes,
@@ -872,8 +967,20 @@ impl TypeaheadHandoff {
     /// Enter was pressed in the editor. Returns whether the submit must be deferred because a
     /// report is outstanding; keys typed from now on are held.
     pub fn defer_enter(&mut self) -> bool {
-        if self.state != HandoffState::AwaitingReport {
+        // #1104: also while the editor owns input but a request is outstanding that does not
+        // cover untracked bytes in the shell's line: submitting now would write the kill prefix
+        // and the command behind that request, the line would run without its head, and the
+        // report would land in the fresh editor as a fragment.
+        let behind_uncovered_report = self.state == HandoffState::EditorOwned
+            && self.untracked_line_bytes
+            && self.requests_outstanding > 0;
+        if self.state != HandoffState::AwaitingReport && !behind_uncovered_report {
             return false;
+        }
+        if behind_uncovered_report {
+            self.arm_uncovered_deferral();
+        } else {
+            self.uncovered_deferral_id = None;
         }
         self.deferred_young = self.young_line;
         self.state = HandoffState::HoldAfterEnter {
@@ -909,7 +1016,14 @@ impl TypeaheadHandoff {
                     ReportDisposition::Insert
                 }
             }
+            Owner::Hold { released: false } if self.untracked_line_bytes => {
+                // This report left bytes behind it in the shell's line (#1104): a request
+                // written after them will report them. The Enter waits for that report.
+                self.arm_uncovered_deferral();
+                ReportDisposition::InsertKeepDeferred
+            }
             Owner::Hold { released: false } => {
+                self.uncovered_deferral_id = None;
                 self.mark_released();
                 if mem::take(&mut self.deferred_young) {
                     self.young_line = false;
@@ -1024,6 +1138,7 @@ impl TypeaheadHandoff {
         match self.owner() {
             // The report is still outstanding; the editor keeps waiting for it.
             Owner::Hold { released: false } => {
+                self.uncovered_deferral_id = None;
                 self.state = HandoffState::AwaitingReport;
                 true
             }
