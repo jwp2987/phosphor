@@ -1840,6 +1840,25 @@ enum DenyExecutionReason {
     HistoryNotAppendable,
 }
 
+/// Whether `buffer_text`, verbatim, ran in `session_id`'s shell before and exited 0 (#1203): the
+/// history matcher's exact, successful case, cheap enough for Enter to decide on at once (one pass
+/// over the session's visible history, newest first). A line that reads as a request to the agent
+/// is never pinned to the shell by its history (#965), as in the matcher.
+fn history_ran_exactly_before(history: &History, session_id: SessionId, buffer_text: &str) -> bool {
+    let line = buffer_text.trim();
+    if line.is_empty() || input_classifier::util::reads_as_request_to_agent(line) {
+        return false;
+    }
+    history
+        .visible_commands(session_id)
+        .is_some_and(|entries| {
+            entries.rev().any(|entry| {
+                entry.command.trim() == line
+                    && entry.exit_code.is_some_and(|code| code.value() == 0)
+            })
+        })
+}
+
 /// The notice for a command the shell cannot take now. A running command blocks user
 /// submissions, as before; a shell that is not ready yet (still bootstrapping, or its history not
 /// initialised) used to drop the Enter with only a log line (#1216). An empty Enter gets none.
@@ -12877,11 +12896,19 @@ impl Input {
             && input_classifier::util::effective_head_word(&snapshot.buffer_text)
                 .zip(self.active_session(ctx))
                 .is_some_and(|(word, session)| session.knows_command_word(&word) == Some(true));
+        // #1203: a line this session's shell ran before, verbatim and successfully, is a command
+        // (#965's request shapes excepted). Decided here, synchronously, instead of by the history
+        // matcher the Enter would otherwise wait up to its budget for.
+        let ran_before_exactly = prompt_session_is_the_target
+            && self.active_block_session_id().is_some_and(|session_id| {
+                history_ran_exactly_before(History::as_ref(ctx), session_id, &snapshot.buffer_text)
+            });
         self.ai_input_model.update(ctx, |model, ctx| {
             model.settle_pending_detection_for_submit(
                 &snapshot,
                 head_unknown_to_shell,
                 head_known_to_shell,
+                ran_before_exactly,
                 ctx,
             );
         });

@@ -1031,6 +1031,7 @@ fn settle_for_submit_with_head(
             &snapshot_without_parse(buffer_text),
             head_unknown_to_shell,
             false,
+            false,
             ctx,
         )
     })
@@ -1505,6 +1506,7 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
                     &snapshot_without_parse(text),
                     false,
                     known,
+                    false,
                     ctx,
                 );
             });
@@ -1751,5 +1753,38 @@ fn a_verdict_that_changes_nothing_does_not_notify_without_a_waiter() {
         let snapshot = parsed(PREFILTERED_COMMAND).await;
         request_detection(&mut app, &input_model, snapshot);
         assert_eq!(counter.read(&app, |c, _| c.0), 0);
+    });
+}
+
+/// #1203: a line the session's shell ran before, verbatim and successfully, settles to Shell at
+/// Enter without waiting for the history matcher; the caller's statement is taken only with
+/// command evidence (#1183), and without it the line waits for its verdict as before.
+#[test]
+fn pending_line_that_ran_before_exactly_settles_to_shell_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let enter = |app: &mut App, text: &str, ran_before: bool| {
+            inherit_ai(app, &input_model);
+            input_model.update(app, |model, ctx| {
+                model.note_detection_requested(text.to_owned());
+                model.settle_pending_detection_for_submit(
+                    &snapshot_without_parse(text),
+                    false,
+                    false,
+                    ran_before,
+                    ctx,
+                );
+            });
+            input_model.read(app, |model, _| model.input_type())
+        };
+        // `yesterday` is a prose word, so the pre-filter leaves this to the classifier; history
+        // decides it at once.
+        assert_eq!(enter(&mut app, "git log --since yesterday", true), InputType::Shell);
+        assert_eq!(
+            enter(&mut app, "git log --since yesterday", false),
+            InputType::AI,
+            "without the history statement the inherited type stands until the verdict"
+        );
     });
 }

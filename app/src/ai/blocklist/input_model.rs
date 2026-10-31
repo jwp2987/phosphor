@@ -1032,6 +1032,7 @@ impl BlocklistAIInputModel {
         input: &ParsedTokensSnapshot,
         head_unknown_to_shell: bool,
         head_known_to_shell: bool,
+        ran_before_exactly: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         if !self.detection_pending_for_buffer_text(&input.buffer_text, ctx) {
@@ -1046,10 +1047,15 @@ impl BlocklistAIInputModel {
             && input_classifier::util::lacks_command_evidence_in_agent_conversation(
                 &classify_snapshot,
             );
+        // #1203: `ran_before_exactly` is the caller's statement that this exact line ran in the
+        // session's shell before and succeeded (the matcher's exact, exit-0 case, decided here
+        // synchronously instead of by the Enter waiting for it); #1183's evidence rule applies to
+        // it as to any Shell decision made here.
         let is_shell = self.is_shell_typeahead(&input.buffer_text)
             || self.is_first_word_denylisted(&input.buffer_text, ctx)
             || (!no_command_evidence
-                && input_classifier::util::is_unambiguous_shell_command(&classify_snapshot));
+                && (ran_before_exactly
+                    || input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)));
         if !is_shell {
             // The agent-ward half of F6: prose pasted or typed fast right after a shell command
             // inherits `Shell` and Enter would run it. Only text that reads as a request in

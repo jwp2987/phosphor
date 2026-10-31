@@ -1299,3 +1299,55 @@ fn test_make_with_described_non_targets_lacks_evidence_in_agent_conversation() {
         assert!(!lacks_command_evidence_in_agent_conversation(&token));
     });
 }
+
+/// #1203: a known CLI whose first argument is one of its own subcommands is unambiguous even when
+/// that subcommand is an English word, so `git status` and `systemctl status nginx` settle to
+/// Shell at the keystroke or at Enter instead of waiting for the classifier. Any OTHER prose word
+/// in the body, a prose veto, or a head without a subcommand table leaves the line to the
+/// classifier exactly as before; the prose corpus must not move.
+#[test]
+fn test_is_unambiguous_shell_command_rule3_known_subcommand_is_the_only_prose_word() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "git status",
+            "git status --short",
+            "systemctl status nginx",
+            "systemctl restart nginx.service",
+            "docker ps",
+            "git log --oneline",
+            "git commit -m 'fix the login bug'",
+            "cargo build --release",
+        ] {
+            assert!(
+                is_unambiguous_shell_command_for(buffer).await,
+                "{buffer:?} is a known CLI with its own subcommand"
+            );
+        }
+        for buffer in [
+            // Another prose word besides the subcommand: the classifier decides, as before.
+            "git log --since yesterday",
+            "npm install everything",
+            // The prose vetoes still apply.
+            "git status please?",
+            "git commit the fix",
+            "git add this that it",
+            "docker run the image",
+            // No subcommand table, or not a subcommand.
+            "find large files",
+            "make commit port",
+            "git can memory my to",
+            "systemctl please restart nginx",
+        ] {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "{buffer:?} must stay with the classifier"
+            );
+        }
+        for buffer in PROSE_WITH_COMMAND_HEADS {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "prose corpus line {buffer:?} must not become unambiguous"
+            );
+        }
+    });
+}

@@ -1049,7 +1049,22 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     if remaining.is_empty() && !is_explicit_path && !has_assignment_prefix {
         return false;
     }
-    !remaining.iter().any(is_prose_word)
+    if !remaining.iter().any(is_prose_word) {
+        return true;
+    }
+    // Rule 3 (#1203): a known CLI whose first argument is one of its own subcommands is a command
+    // line even when that subcommand is an English word (`git status`, `systemctl status nginx`,
+    // `docker ps`): the word is the CLI's, not the user's. Only the subcommand may read as prose;
+    // any other prose word in the body (`git log --since yesterday`, `npm install everything`)
+    // leaves the line to the classifier, as before. The prose vetoes above (a function word, the
+    // article, sentence punctuation, a trailing `?`) have already said no by this point.
+    is_known_command
+        && known_subcommands(head).is_some_and(|subcommands| {
+            remaining
+                .first()
+                .is_some_and(|first| !first.quoted && subcommands.contains(&first.text.as_str()))
+        })
+        && !remaining.iter().skip(1).any(is_prose_word)
 }
 
 /// Fork-original (#832): true iff `buffer_text` carries one of the prose vetoes that
