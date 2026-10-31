@@ -108,6 +108,23 @@ pub fn foreground_is_plain_program(fd: RawFd, shell_pid: i32) -> bool {
         .is_some_and(|names| names.iter().all(|name| !is_shell_or_login_hop(name)))
 }
 
+/// Whether the shell is provably not about to read a line at a prompt, so a young Enter is not
+/// the #933 race (a line typed at a prompt the app has not noticed yet): either a plain program
+/// owns the foreground (see [`foreground_is_plain_program`]), or the tty is canonical with echo
+/// off, which is a program reading a password (`sudo`, `su`, `ksu`, `ssh`, `read -s`, in the
+/// top-level shell or a Phosphorized subshell). A shell at its prompt is never in that state:
+/// readline/zle run the tty non-canonical, and a shell between commands has restored echo.
+/// Over ssh the local tty is raw (non-canonical), so a remote prompt is never mistaken for one.
+pub fn shell_provably_not_at_prompt(fd: RawFd, shell_pid: i32) -> bool {
+    foreground_is_plain_program(fd, shell_pid)
+        || fetch_termial_attributes(fd).is_ok_and(|termios| is_canonical_without_echo(&termios))
+}
+
+pub(crate) fn is_canonical_without_echo(termios: &Termios) -> bool {
+    termios.local_flags.contains(termios::LocalFlags::ICANON)
+        && !termios.local_flags.contains(termios::LocalFlags::ECHO)
+}
+
 /// Shells, and programs that put a shell (possibly on another machine) behind the pty.
 pub(crate) fn is_shell_or_login_hop(comm: &str) -> bool {
     const NAMES: &[&str] = &[

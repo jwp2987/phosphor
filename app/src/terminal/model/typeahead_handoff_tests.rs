@@ -1252,6 +1252,33 @@ fn an_enter_into_a_plain_foreground_program_is_not_held() {
 }
 
 #[test]
+fn a_password_enter_in_a_subshell_is_released_at_once_and_needs_no_timer() {
+    // `sudo -i` / `ksu` inside a Phosphorized shell: the foreground is a login hop, but the tty
+    // is reading a password (canonical, echo off), which the probe reports as "not at a prompt".
+    let mut handoff = young_after_submit();
+    handoff.set_foreground_probe(ForegroundProbe::new(Arc::new(|| true)));
+    type_and_flush(&mut handoff, b"hunter2");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    // No hold was started, so the view arms no timer for it.
+    assert_eq!(handoff.take_young_hold_started(), None);
+}
+
+#[test]
+fn a_prompt_arriving_first_resolves_a_held_enter_without_its_timer() {
+    // #933: the precmd is the event that settles the race; the timer only backs it up.
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(handoff.expire_young_hold(id), None);
+}
+
+#[test]
 fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
     // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or
     // unknown), so the young Enter keeps waiting for the prompt.

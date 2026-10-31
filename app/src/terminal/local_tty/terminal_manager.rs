@@ -967,10 +967,11 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
-        // #1131: a plain program in the foreground means no prompt is waiting for a held Enter.
+        // #1131: a plain program in the foreground, or a password being read, means no prompt is
+        // waiting for a held Enter.
         model.lock().typeahead_handoff_mut().set_foreground_probe(
             crate::terminal::model::typeahead_handoff::ForegroundProbe::new(Arc::new(move || {
-                super::terminal_attributes::foreground_is_plain_program(fd, pid as i32)
+                super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
             })),
         );
         manager.pty_controller.update(ctx, |controller, _| {

@@ -36,9 +36,10 @@ pub const YOUNG_ENTER_WINDOW: Duration = Duration::from_millis(600);
 /// and the app processing it, which is all the race in [`YOUNG_ENTER_WINDOW`] needs.
 pub const YOUNG_ENTER_MIN_HOLD: Duration = Duration::from_millis(150);
 
-/// Asks the platform whether the pty's foreground process group provably cannot be a shell at
-/// its prompt (a plain program such as `cat` runs in the foreground, and the shell waits for
-/// it). Unix only; where nothing is installed, or the answer is unknown, it is `false`.
+/// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
+/// `cat` owns the foreground, or a program is reading a password (canonical tty, echo off), in
+/// the top-level shell or a Phosphorized subshell. Unix only; where nothing is installed, or the
+/// answer is unknown (over ssh the local tty says nothing about the remote shell), it is `false`.
 #[derive(Clone, Default)]
 pub struct ForegroundProbe(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
 
