@@ -2662,6 +2662,48 @@ fn an_empty_continue_reply_retries_once_then_fails() {
     assert_eq!(state.on_continue_reply(false), A::Retry);
 }
 
+/// A stopped or failed continue request is no longer "mid compaction" (#1238): a monitored
+/// command's completion report is not held for a reply that will never come, and the state
+/// goes idle. Fails on the old code, where only a clean reply or a new user turn cleared it.
+#[test]
+fn a_stopped_or_failed_continue_request_is_no_longer_pending() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_continue_sent();
+    assert!(state.is_mid_compaction());
+    state.on_conversation_stopped();
+    assert!(!state.is_mid_compaction());
+    assert!(state.is_idle());
+
+    state.on_continue_sent();
+    state.on_request_failed();
+    assert!(!state.is_mid_compaction());
+    assert!(state.is_idle());
+}
+
+/// A failed request drops a tool-loop deferral but leaves the allowance as it was (#1238).
+#[test]
+fn a_failed_request_drops_the_deferral_but_not_the_allowance() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    assert!(
+        state
+            .on_stream_finished(turn(true, Some(true)))
+            .compact_after_tool_results
+    );
+    state.on_request_failed();
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(state.is_idle());
+
+    state.on_stream_finished(turn(false, Some(true)));
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(
+        state.auto_compacted(),
+        "a failed summary did not compact; no second try"
+    );
+}
+
 /// A new user turn forgets a pending continue, so an unrelated empty reply is not retried.
 #[test]
 fn a_new_user_turn_drops_the_pending_continue() {

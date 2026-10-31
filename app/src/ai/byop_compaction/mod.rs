@@ -328,10 +328,21 @@ impl TurnCompactionState {
     }
 
     /// The user stopped the conversation (Stop / Ctrl-C / a superseding submission) or
-    /// closed its pane: drop the deferral. A stopped summary stream never finishes cleanly,
-    /// so nothing resumes on its behalf. The allowance is unchanged.
+    /// closed its pane: drop the deferral, and a continue message whose reply was stopped is
+    /// no longer owed one. A stopped summary stream never finishes cleanly, so nothing resumes
+    /// on its behalf. The allowance is unchanged.
     pub fn on_conversation_stopped(&mut self) {
         self.compact_after_tool_results = false;
+        self.continue_pending = false;
+    }
+
+    /// A request of this conversation failed for good (no retry or resume is coming): nothing
+    /// about it is still on its way, so neither a deferral nor a pending continue reply may be
+    /// waited on. The allowance is unchanged: a summary that failed did not compact, and
+    /// restoring it could re-run a summary that fails the same way every turn (#1238).
+    pub fn on_request_failed(&mut self) {
+        self.compact_after_tool_results = false;
+        self.continue_pending = false;
     }
 
     /// A deferred summary is owed to the next tool results, or the continue message sent after a

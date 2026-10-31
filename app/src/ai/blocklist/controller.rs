@@ -412,6 +412,68 @@ pub(crate) fn silent_stop_reason(
         })
 }
 
+/// What the controller does once every action of a conversation's step has finished: the
+/// decision behind the `FinishedAction` subscriber, pure so the end-of-step behaviour matrix is
+/// testable without a provider. A step always ends in exactly one of: a follow-up request that
+/// carries its results, or a final status with -- when nobody asked for the stop -- a visible
+/// reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FinishedBatchPlan {
+    /// Send the step's results back to the model, and why. `None`: the turn ends here.
+    pub follow_up: Option<FollowUpTrigger>,
+    /// Without a follow-up, the status the turn ends in. `Cancelled` for any mix of cancelled,
+    /// failed and successful results: an imperfect heuristic that practically speaking has no
+    /// effect, since a batch with a non-cancelled result sends a follow-up instead.
+    pub final_status: ConversationStatus,
+    /// Without a follow-up, the stop reason to show when nobody asked for the stop (#1178).
+    pub silent_stop: Option<String>,
+}
+
+/// See [`FinishedBatchPlan`]. `is_passive_code_diff`: the step is an entirely passive code
+/// diff whose last result is its edit (no autosend). `has_manual_follow_up`: the user asked
+/// for a follow-up once the actions complete.
+pub(crate) fn plan_finished_batch(
+    cancellation_reason: Option<CancellationReason>,
+    results: &[Arc<AIAgentActionResult>],
+    is_passive_code_diff: bool,
+    has_manual_follow_up: bool,
+) -> FinishedBatchPlan {
+    // A `Succeeded` cancellation (an optimistic long-running-command completion or a revert)
+    // is itself the terminal result, so it neither triggers a follow-up nor counts as a
+    // cancellation. Derived from `CancellationReason::conversation_outcome`, the single source
+    // of truth for the reason -> status mapping, rather than re-tested per reason.
+    let treat_as_success = matches!(
+        cancellation_reason.map(|reason| reason.conversation_outcome()),
+        Some(CancellationOutcome::Succeeded)
+    );
+    let follow_up = if has_manual_follow_up {
+        Some(FollowUpTrigger::UserRequested)
+    } else if !is_passive_code_diff
+        && !treat_as_success
+        && results
+            .iter()
+            .any(|result| result.result.should_trigger_request_upon_completion())
+    {
+        Some(FollowUpTrigger::Auto)
+    } else {
+        None
+    };
+    let final_status = if treat_as_success
+        || results
+            .iter()
+            .all(|result| result.result.is_successful())
+    {
+        ConversationStatus::Success
+    } else {
+        ConversationStatus::Cancelled
+    };
+    FinishedBatchPlan {
+        follow_up,
+        final_status,
+        silent_stop: silent_stop_reason(cancellation_reason, results),
+    }
+}
+
 /// The block whose command `result` reports as finished, for the tools that read or drive a
 /// running command. A `RequestCommandOutput` completion is the command's own action and is not
 /// one: its block is reported by the request that carries it.
@@ -796,7 +858,7 @@ enum WhichTask {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FollowUpTrigger {
+pub(crate) enum FollowUpTrigger {
     Auto,
     UserRequested,
 }
@@ -933,22 +995,13 @@ impl BlocklistAIController {
                 });
             let has_manual_follow_up = me.pending_passive_follow_ups.contains(conversation_id);
 
-            // A `Succeeded` cancellation (an optimistic long-running-command
-            // completion or a revert) is itself the terminal result, so it neither
-            // triggers a follow-up nor counts as a cancellation. Derived from
-            // `CancellationReason::conversation_outcome`, the single source of truth
-            // for the reason -> status mapping, rather than re-tested per reason.
-            let treat_as_success = matches!(
-                cancellation_reason.map(|reason| reason.conversation_outcome()),
-                Some(CancellationOutcome::Succeeded)
+            let plan = plan_finished_batch(
+                *cancellation_reason,
+                finished_action_results,
+                is_passive_code_diff,
+                has_manual_follow_up,
             );
-            let should_trigger_follow_up_request = (!is_passive_code_diff
-                && !treat_as_success
-                && finished_action_results
-                    .iter()
-                    .any(|result| result.result.should_trigger_request_upon_completion()))
-                || has_manual_follow_up;
-            if !should_trigger_follow_up_request {
+            let Some(trigger) = plan.follow_up else {
                 // No follow-up carries this step's results, so a tool-loop compaction
                 // deferred to them (#1059) has nothing to ride on; drop it rather than let it
                 // fire on some unrelated later follow-up.
@@ -981,36 +1034,18 @@ impl BlocklistAIController {
                     //
                     // If the user does end up following up on the passive diff-originated conversation,
                     // the status will once again be updated to `InProgress`.
-                    // #1178: no request follows and nobody asked for that: say so instead of
-                    // leaving a finished-looking turn with no message.
-                    let silent_stop =
-                        silent_stop_reason(*cancellation_reason, finished_action_results);
-                    let updated_conversation_status = if finished_action_results
-                        .iter()
-                        .all(|result| result.result.is_successful())
-                        || treat_as_success
-                    {
-                        ConversationStatus::Success
-                    } else {
-                        // This is an imperfect heuristic that practically speaking should have no effect.
-                        //
-                        // If we actually need to differentiate between the state of a conversation
-                        // where actions completed with mixed result statuses (e.g. a mix of
-                        // cancelled, error, and success) _and_ we don't automatically send back action
-                        // results to the agent, then it'd be worth considering adding a new status
-                        // variant.
-                        ConversationStatus::Cancelled
-                    };
                     history_model.update(ctx, |history_model, ctx| {
                         history_model.update_conversation_status(
                             me.terminal_view_id,
                             *conversation_id,
-                            updated_conversation_status,
+                            plan.final_status,
                             ctx,
                         );
                     });
 
-                    if let Some(reason) = silent_stop {
+                    // #1178: no request follows and nobody asked for that: say so instead of
+                    // leaving a finished-looking turn with no message.
+                    if let Some(reason) = plan.silent_stop {
                         ctx.emit(BlocklistAIControllerEvent::AgentStopped {
                             conversation_id: *conversation_id,
                             reason,
@@ -1049,11 +1084,6 @@ impl BlocklistAIController {
                     }
                 }
                 return;
-            }
-            let trigger = if has_manual_follow_up {
-                FollowUpTrigger::UserRequested
-            } else {
-                FollowUpTrigger::Auto
             };
             // Prefers resending a BYOP request that readiness stashed (it contains
             // the user's original prompt); otherwise falls back to the original
@@ -2381,6 +2411,22 @@ impl BlocklistAIController {
                     "Failed to send follow-up with action results for conversation \
                      {conversation_id:?}: {e:#}"
                 );
+                // The results are drained and no request carries them, so the turn would
+                // otherwise stay `InProgress` with nothing pending, running or in flight: a
+                // silent hang. End it visibly instead; the user can resume by hand.
+                let terminal_view_id = self.terminal_view_id;
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    history_model.update_conversation_status_with_error_message(
+                        terminal_view_id,
+                        conversation_id,
+                        ConversationStatus::Error,
+                        Some(format!(
+                            "The tool results could not be sent back to the model: {e:#}. Send \
+                             a message (for example \"continue\") to resume."
+                        )),
+                        ctx,
+                    );
+                });
             }
         }
         // The allowance is spent only by a summary that really went out (a response stream is
@@ -4648,6 +4694,13 @@ impl BlocklistAIController {
                                 ctx,
                             );
                         });
+                        // Nothing more is coming for this request: a continue reply or a
+                        // deferred summary waited on through it is not owed any more (#1238).
+                        if !recovery_pending {
+                            self.update_compaction_turn_state(conversation_id, |state| {
+                                state.on_request_failed()
+                            });
+                        }
                     }
                 }
             }

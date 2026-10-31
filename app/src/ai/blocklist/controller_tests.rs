@@ -2609,3 +2609,124 @@ mod monitored_completion {
         });
     }
 }
+
+/// The end-of-step decision behind the `FinishedAction` subscriber: every finished batch ends
+/// in a follow-up request or in a final status, and a stop nobody asked for is named.
+mod finished_batch {
+    use super::super::{FollowUpTrigger, plan_finished_batch};
+    use super::*;
+    use crate::ai::agent::{AIAgentActionResult, AIAgentActionResultType};
+    use crate::ai::agent::{ReadFilesResult, RequestCommandOutputResult};
+    use crate::terminal::model::block::BlockId;
+    use std::sync::Arc;
+
+    fn result_of(result: AIAgentActionResultType) -> Arc<AIAgentActionResult> {
+        Arc::new(AIAgentActionResult {
+            id: AIAgentActionId::from("call".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result,
+        })
+    }
+
+    fn completed(exit_code: i32, interrupted: bool) -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::Completed {
+                block_id: BlockId::new(),
+                command: "make test".to_owned(),
+                output: String::new(),
+                exit_code: exit_code.into(),
+                start_ts: None,
+                completed_ts: None,
+                interrupted,
+            },
+        ))
+    }
+
+    fn rejected() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::CancelledBeforeExecution,
+        ))
+    }
+
+    fn cancelled_read() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::ReadFiles(ReadFilesResult::Cancelled))
+    }
+
+    /// A finished command -- succeeded, failed, or exited 130 on its own -- goes back to the
+    /// model; the turn is not over.
+    #[test]
+    fn a_finished_result_sends_an_automatic_follow_up() {
+        for result in [completed(0, false), completed(2, false), completed(130, false)] {
+            let plan = plan_finished_batch(None, &[result], false, false);
+            assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+        }
+        // One finished result among cancelled ones is enough.
+        let plan = plan_finished_batch(None, &[rejected(), completed(0, false)], false, false);
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+    }
+
+    /// A user Reject or Stop ends the turn quietly: the user chose it.
+    #[test]
+    fn a_user_stop_ends_the_turn_without_a_notice() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert_eq!(plan.silent_stop, None);
+    }
+
+    /// A cancellation nobody asked for (a ^C into the command, a cancelled tool) ends the turn
+    /// with a visible reason (#1178): never a finished-looking turn with no message.
+    #[test]
+    fn an_unrequested_cancellation_ends_the_turn_with_a_reason() {
+        let plan = plan_finished_batch(None, &[completed(130, true)], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert!(
+            plan.silent_stop
+                .as_deref()
+                .is_some_and(|reason| reason.contains("make test")),
+            "{:?}",
+            plan.silent_stop
+        );
+        let plan = plan_finished_batch(None, &[cancelled_read()], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert!(plan.silent_stop.is_some());
+    }
+
+    /// An optimistic long-running-command completion or a revert is the terminal result:
+    /// `Success`, no follow-up, no notice -- whatever the results say.
+    #[test]
+    fn a_succeeded_cancellation_ends_the_turn_successfully() {
+        for reason in [
+            CancellationReason::OptimisticCLISubagentCompletion,
+            CancellationReason::Reverted,
+        ] {
+            let plan = plan_finished_batch(Some(reason), &[rejected()], false, false);
+            assert_eq!(plan.follow_up, None);
+            assert_eq!(plan.final_status, ConversationStatus::Success);
+            assert_eq!(plan.silent_stop, None);
+        }
+    }
+
+    /// A requested follow-up goes out even when nothing else would send one; a passive code
+    /// diff never autosends.
+    #[test]
+    fn manual_follow_up_and_passive_code_diff_override_the_results() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            true,
+        );
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::UserRequested));
+        let plan = plan_finished_batch(None, &[completed(0, false)], true, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Success);
+        assert_eq!(plan.silent_stop, None);
+    }
+}
