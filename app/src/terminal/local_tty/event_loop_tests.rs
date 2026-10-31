@@ -809,6 +809,27 @@ fn user_write_age_is_taken_once_and_replies_do_not_start_it() {
     assert_eq!(state.take_user_write_age(later), None);
 }
 
+/// #1138: every read within the echo window of a user write is the keystroke's echo, not only the
+/// first one (a TUI answers a key with the character and then the cursor position), and a query
+/// reply opens no window.
+#[test]
+fn reads_within_the_echo_window_all_follow_the_user_write() {
+    let mut state = State::default();
+    let start = Instant::now();
+    assert!(!state.read_follows_user_write(start));
+
+    state.note_write_finished(true, start);
+    assert!(!state.read_follows_user_write(start));
+
+    state.note_write_finished(false, start);
+    assert!(state.read_follows_user_write(start + Duration::from_millis(2)));
+    // The first read took the round-trip age; the second read is still the echo.
+    assert!(state.take_user_write_age(start + Duration::from_millis(2)).is_some());
+    assert!(state.read_follows_user_write(start + Duration::from_millis(5)));
+    assert!(state.read_follows_user_write(start + USER_WRITE_ECHO_WINDOW));
+    assert!(!state.read_follows_user_write(start + USER_WRITE_ECHO_WINDOW + Duration::from_millis(1)));
+}
+
 /// An event loop over a flooding pty, with the sending half of its channel, the number of reads
 /// made, the number of reads made when the first byte was written to the pty, and the bytes
 /// written.

@@ -53,6 +53,57 @@ fn gate_floor_restarts_with_each_delivery() {
     assert!(!gate.may_bypass(second + Duration::from_millis(1), true));
 }
 
+#[test]
+fn gate_delays_an_urgent_item_inside_the_floor_only_to_the_floor() {
+    let start = Instant::now();
+    let mut gate = BypassGate::new(FLOOR);
+    assert_eq!(gate.bypass_delay(start, true), Some(Duration::ZERO));
+    assert_eq!(gate.bypass_delay(start, false), None);
+
+    gate.record_delivery(start);
+    assert_eq!(
+        gate.bypass_delay(start + Duration::from_millis(1), true),
+        Some(Duration::from_millis(3))
+    );
+    assert_eq!(gate.bypass_delay(start + FLOOR, true), Some(Duration::ZERO));
+    assert_eq!(
+        gate.bypass_delay(start + Duration::from_millis(10), true),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(gate.bypass_delay(start + Duration::from_millis(1), false), None);
+}
+
+/// #1138: the second write of a keystroke's echo (vim sends the character, then the cursor
+/// position) lands inside the floor. It must be delivered when the floor ends, not at the
+/// (deliberately huge) period's trailing edge, which is what it used to wait for.
+#[test]
+fn urgent_item_inside_the_floor_is_delivered_at_the_floor_not_the_period() {
+    let (tx, rx) = async_channel::unbounded();
+    let floor = Duration::from_millis(50);
+    let mut stream = Box::pin(throttle_with_bypass(Duration::from_secs(30), floor, rx));
+    future::block_on(async {
+        tx.send(Item {
+            id: 1,
+            urgent: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(stream.next().await.unwrap().id, 1);
+        let delivered = Instant::now();
+
+        tx.send(Item {
+            id: 2,
+            urgent: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(stream.next().await.unwrap().id, 2);
+        let waited = delivered.elapsed();
+        assert!(waited >= Duration::from_millis(40), "{waited:?}");
+        assert!(waited < Duration::from_secs(5), "{waited:?}");
+    });
+}
+
 /// An urgent item arriving mid-period is delivered long before the (deliberately huge) period
 /// ends. With the plain trailing-edge throttle this would wait for the whole period.
 #[test]

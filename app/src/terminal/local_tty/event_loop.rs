@@ -37,6 +37,12 @@ const PTY_PARSE_SLOW: Duration = Duration::from_millis(16);
 const PTY_WRITE_SLOW: Duration = Duration::from_millis(16);
 /// Write -> first output read: includes the shell's and, over ssh, the network's round trip.
 const PTY_ECHO_SLOW: Duration = Duration::from_millis(50);
+
+/// How long after user input reaches the pty its output still counts as the keystroke's echo and
+/// is redrawn without waiting for the wakeup throttle (#1138). Long enough to cover a LAN ssh
+/// round trip and a TUI's multi-write response; a flood that starts within the window (Enter on
+/// `cat bigfile`) is only capped by the throttle's floor until the window closes.
+const USER_WRITE_ECHO_WINDOW: Duration = Duration::from_millis(300);
 static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "pty parse (terminal model lock held)",
     PTY_PARSE_SLOW,
@@ -134,6 +140,9 @@ pub struct State {
     /// When the last user input (not a query reply) finished reaching the pty and no output has
     /// been read since. Times the keystroke round trip for the input-order log (#1092).
     user_write_finished_at: Option<Instant>,
+    /// When the last user input finished reaching the pty, kept across reads: every read within
+    /// [`USER_WRITE_ECHO_WINDOW`] of it is part of the keystroke's echo (#1138).
+    last_user_write_at: Option<Instant>,
     /// When the oldest user input not yet fully written was received by this loop. Times the
     /// receive -> pty write leg for the slow-operation log (#1146).
     user_input_received_at: Option<Instant>,
@@ -184,6 +193,7 @@ impl Default for State {
             withheld_since: None,
             hung_up: false,
             user_write_finished_at: None,
+            last_user_write_at: None,
             user_input_received_at: None,
         }
     }
@@ -405,6 +415,7 @@ impl State {
     fn note_write_finished(&mut self, is_reply: bool, at: Instant) {
         if !is_reply {
             self.user_write_finished_at = Some(at);
+            self.last_user_write_at = Some(at);
             if let Some(received) = self.user_input_received_at.take() {
                 SLOW_PTY_WRITE.report(
                     at.saturating_duration_since(received),
@@ -427,6 +438,15 @@ impl State {
         self.user_write_finished_at
             .take()
             .map(|at| now.saturating_duration_since(at))
+    }
+
+    /// Whether output read at `now` belongs to the echo of a keystroke: user input reached the
+    /// pty within [`USER_WRITE_ECHO_WINDOW`]. Unlike [`Self::take_user_write_age`] this holds for
+    /// every read in the window, not only the first, because a program answers a key in several
+    /// writes (the character, then the cursor position; the echo, then the prompt redraw).
+    fn read_follows_user_write(&self, now: Instant) -> bool {
+        self.last_user_write_at
+            .is_some_and(|at| now.saturating_duration_since(at) <= USER_WRITE_ECHO_WINDOW)
     }
 }
 
@@ -747,11 +767,11 @@ where
         }
 
         // #1092: time the first output after a keystroke reached the pty (counts only).
-        let mut follows_user_write = false;
+        let now = Instant::now();
+        let follows_user_write = bytes_processed > 0 && state.read_follows_user_write(now);
         if bytes_processed > 0
-            && let Some(age) = state.take_user_write_age(Instant::now())
+            && let Some(age) = state.take_user_write_age(now)
         {
-            follows_user_write = true;
             warpui::input_order::log_pty_read_after_write(bytes_processed, age);
             SLOW_PTY_ECHO.report(age, Instant::now(), log::Level::Warn, || {
                 format!("{bytes_processed} bytes read after the pty write")

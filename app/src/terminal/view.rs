@@ -661,8 +661,9 @@ pub const MAX_WAKEUPS_PER_SECOND: u64 = 60;
 pub const WAKEUP_THROTTLE_PERIOD: Duration =
     Duration::from_micros(1000 * 1000 / MAX_WAKEUPS_PER_SECOND);
 
-/// Echo of a keystroke may skip the rest of the wakeup throttle period, but only if the previous
-/// wakeup was at least this long ago, so output floods stay at the 60 Hz cadence (#1138).
+/// Echo of a keystroke skips the rest of the wakeup throttle period; one arriving sooner than this
+/// after the previous wakeup is delivered when this floor ends, so output that follows a keystroke
+/// is never drawn faster than this while a flood stays at the 60 Hz cadence (#1138).
 pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
