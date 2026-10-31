@@ -28,8 +28,12 @@ fn output_json_carries_intercepted_sentinel_and_fields() {
         total_candidates: 3,
         relevant_files: vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()],
         sources: vec![SOURCE_REPO_OUTLINE.to_owned()],
+        error: None,
+        truncated: Some("truncated: 2 of 3".to_owned()),
     };
     let v = output_to_json(&out);
+    assert_eq!(v["truncated"], "truncated: 2 of 3");
+    assert!(v.get("error").is_none());
     assert_eq!(v["_byop_intercepted"], serde_json::json!(true));
     assert_eq!(v["query"], "q");
     assert_eq!(v["status"], "ok");
@@ -208,4 +212,37 @@ fn non_parse_error_keeps_status_error_shape() {
     assert_eq!(v["_byop_intercepted"], serde_json::json!(true));
     assert_eq!(v["status"], "error");
     assert!(v.get("error").is_none());
+}
+
+// --- #1276: timeout, failure reporting, truncation -------------------------------
+
+#[test]
+fn with_deadline_gives_up_on_a_stalled_call() {
+    // A call that never completes must yield `None` (reported as a timeout), not hang.
+    let stalled = futures::executor::block_on(relevant_files::with_deadline(
+        std::future::pending::<()>(),
+        std::time::Duration::from_millis(20),
+    ));
+    assert_eq!(stalled, None);
+    let ready = futures::executor::block_on(relevant_files::with_deadline(
+        async { 7 },
+        std::time::Duration::from_secs(5),
+    ));
+    assert_eq!(ready, Some(7));
+}
+
+#[test]
+fn files_within_budget_counts_lines_kept_by_the_char_cut() {
+    let user = "# Query\nq\n\n# Files\n- a.rs\n- b.rs\n- c.rs\n\nReturn ONLY the JSON.";
+    // Everything fits.
+    assert_eq!(relevant_files::files_within_budget(user, 1000), (3, 3));
+    // The cut lands inside c.rs: only a.rs and b.rs survive.
+    let cut = user.find("- c.rs").unwrap() + 3;
+    assert_eq!(relevant_files::files_within_budget(user, cut), (2, 3));
+}
+
+#[test]
+fn truncation_note_only_when_the_list_was_cut() {
+    assert_eq!(truncation_note(3, 3), None);
+    assert_eq!(truncation_note(2, 3).as_deref(), Some("truncated: 2 of 3"));
 }

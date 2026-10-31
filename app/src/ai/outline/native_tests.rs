@@ -53,3 +53,23 @@ fn first_request_marks_only_its_repo_as_wanted() {
         });
     })
 }
+
+/// #1276: a failed outline build is retried by a later request, but only after the backoff;
+/// before, `Failed` was terminal.
+#[test]
+fn failed_outline_retries_only_after_the_backoff() {
+    use std::time::Duration;
+
+    use instant::Instant;
+
+    use super::retry_backoff_elapsed;
+
+    let backoff = Duration::from_secs(60);
+    // Just failed: inside the window, so repeated tool calls do not rebuild.
+    assert!(!retry_backoff_elapsed(Some(Instant::now()), backoff));
+    // Failed long ago: the next request rebuilds.
+    let long_ago = Instant::now().checked_sub(Duration::from_secs(120));
+    assert!(retry_backoff_elapsed(long_ago, backoff));
+    // Unknown failure time retries.
+    assert!(retry_backoff_elapsed(None, backoff));
+}

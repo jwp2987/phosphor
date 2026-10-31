@@ -60,9 +60,24 @@ pub struct RepoOutlines {
     /// Whether `request_outline` is allowed to start builds (false in tests and
     /// dev/integration builds, mirroring the old `DetectedGitRepo` subscription).
     build_on_demand: bool,
+
+    /// When each repo's last build failed, for the retry backoff (see
+    /// [`OUTLINE_RETRY_BACKOFF`]).
+    failed_at: HashMap<PathBuf, Instant>,
 }
 
 const REPO_WATCHER_DEBOUNCE_DURATION: Duration = Duration::from_secs(10);
+
+/// How long a repo whose outline build failed is left alone before the next reader request
+/// rebuilds it (#1276). Requests inside the window do nothing, so a persistently failing repo
+/// is retried at most once per window, never on every tool call.
+const OUTLINE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Whether a failed build, recorded at `failed_at`, is old enough to be retried. An unknown
+/// failure time retries immediately.
+fn retry_backoff_elapsed(failed_at: Option<Instant>, backoff: Duration) -> bool {
+    failed_at.is_none_or(|at| at.elapsed() >= backoff)
+}
 
 impl RepoOutlines {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
@@ -119,6 +134,7 @@ impl RepoOutlines {
             request_tx,
             requested: Default::default(),
             build_on_demand,
+            failed_at: Default::default(),
         }
     }
 
@@ -133,6 +149,7 @@ impl RepoOutlines {
             request_tx: async_channel::unbounded().0,
             requested: Default::default(),
             build_on_demand: false,
+            failed_at: Default::default(),
         }
     }
 
@@ -142,8 +159,21 @@ impl RepoOutlines {
     /// and non-blocking, safe to call from `&AppContext` on any path; the build
     /// itself starts asynchronously, so the first caller sees no outline yet.
     pub fn request_outline(&self, path: &Path) {
-        if self.build_on_demand && self.get_outline_internal(path).is_none() {
+        if self.build_on_demand
+            && (self.get_outline_internal(path).is_none() || self.outline_retry_due(path))
+        {
             let _ = self.request_tx.try_send(path.to_path_buf());
+        }
+    }
+
+    /// Whether `path`'s outline build failed and the backoff since has elapsed, so a new
+    /// request should rebuild it instead of leaving it `Failed` forever.
+    fn outline_retry_due(&self, path: &Path) -> bool {
+        match self.get_outline_internal(path) {
+            Some((OutlineStatus::Failed, key)) => {
+                retry_backoff_elapsed(self.failed_at.get(&key).copied(), OUTLINE_RETRY_BACKOFF)
+            }
+            _ => false,
         }
     }
 
@@ -165,7 +195,7 @@ impl RepoOutlines {
 
     fn index_repo(&mut self, repository: ModelHandle<Repository>, ctx: &mut ModelContext<Self>) {
         let repo_path = repository.as_ref(ctx).root_dir().to_local_path_lossy();
-        if self.get_outline_internal(&repo_path).is_none()
+        if (self.get_outline_internal(&repo_path).is_none() || self.outline_retry_due(&repo_path))
             && self.should_build_outlines(ctx)
             && !self.outline_queue.contains(&repo_path)
         {
@@ -174,6 +204,7 @@ impl RepoOutlines {
                 status: OutlineStatus::Pending,
                 subscriber_id: None,
             };
+            self.failed_at.remove(&repo_path);
             self.outlines.insert(repo_path.clone(), outline_state);
             self.outline_queue.push_back(repo_path);
             self.compute_next_outline(ctx);
@@ -354,6 +385,7 @@ impl RepoOutlines {
                                 );
                                 if let Some(outline_state) = me.outlines.get_mut(&root_path_clone) {
                                     outline_state.status = OutlineStatus::Failed;
+                                    me.failed_at.insert(root_path_clone.clone(), Instant::now());
                                 }
                             }
                         };
