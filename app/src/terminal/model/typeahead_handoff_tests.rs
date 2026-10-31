@@ -1279,6 +1279,56 @@ fn a_prompt_arriving_first_resolves_a_held_enter_without_its_timer() {
 }
 
 #[test]
+fn the_hold_scales_with_the_measured_round_trip() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    // No samples yet: the unmeasured behaviour.
+    handoff.last_activity_at = Some(now - Duration::from_millis(100));
+    assert_eq!(handoff.young_hold_wait(now), Duration::from_millis(500));
+    // A local-ish 5 ms trip: 3 x 5 ms = 15 ms, raised to the floor.
+    for _ in 0..8 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    // A remote 80 ms trip scales it: 240 ms.
+    let mut remote = young_after_submit();
+    remote.last_activity_at = Some(now - Duration::from_millis(100));
+    for _ in 0..8 {
+        remote.record_rtt_for_test(Duration::from_millis(80));
+    }
+    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(240));
+    // Never past what is left of the window.
+    remote.last_activity_at = Some(now - Duration::from_millis(500));
+    assert_eq!(remote.young_hold_wait(now), Duration::from_millis(100));
+}
+
+#[test]
+fn one_stalled_sample_does_not_inflate_the_hold_and_ages_out() {
+    let now = Instant::now();
+    let mut handoff = young_after_submit();
+    handoff.last_activity_at = Some(now);
+    for _ in 0..9 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    handoff.record_rtt_for_test(Duration::from_secs(30));
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+    for _ in 0..16 {
+        handoff.record_rtt_for_test(Duration::from_millis(5));
+    }
+    assert_eq!(handoff.rtt_samples.len(), 16);
+    assert_eq!(handoff.young_hold_wait(now), YOUNG_ENTER_FLOOR);
+}
+
+#[test]
+fn a_request_to_report_round_trip_is_sampled() {
+    let mut handoff = awaiting_report();
+    assert_eq!(handoff.rtt_samples.len(), 0);
+    handoff.on_report();
+    assert_eq!(handoff.rtt_samples.len(), 1);
+    assert!(handoff.rtt_pending.is_empty());
+}
+
+#[test]
 fn an_enter_is_still_held_while_the_shell_may_own_the_foreground() {
     // #933: the probe says "not provably a plain program" (the shell's own group, an ssh hop, or
     // unknown), so the young Enter keeps waiting for the prompt.

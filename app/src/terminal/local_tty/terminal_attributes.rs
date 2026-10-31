@@ -117,12 +117,12 @@ pub fn foreground_is_plain_program(fd: RawFd, shell_pid: i32) -> bool {
 /// Over ssh the local tty is raw (non-canonical), so a remote prompt is never mistaken for one.
 pub fn shell_provably_not_at_prompt(fd: RawFd, shell_pid: i32) -> bool {
     foreground_is_plain_program(fd, shell_pid)
-        || fetch_termial_attributes(fd).is_ok_and(|termios| is_canonical_without_echo(&termios))
+        || fetch_termial_attributes(fd)
+            .is_ok_and(|termios| is_canonical_without_echo(termios.local_flags))
 }
 
-pub(crate) fn is_canonical_without_echo(termios: &Termios) -> bool {
-    termios.local_flags.contains(termios::LocalFlags::ICANON)
-        && !termios.local_flags.contains(termios::LocalFlags::ECHO)
+pub(crate) fn is_canonical_without_echo(flags: termios::LocalFlags) -> bool {
+    flags.contains(termios::LocalFlags::ICANON) && !flags.contains(termios::LocalFlags::ECHO)
 }
 
 /// Shells, and programs that put a shell (possibly on another machine) behind the pty.

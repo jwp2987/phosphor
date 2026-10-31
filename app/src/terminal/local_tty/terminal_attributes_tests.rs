@@ -1,4 +1,18 @@
-use super::{is_shell_or_login_hop, parse_proc_stat};
+use super::{is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat};
+use nix::sys::termios::LocalFlags;
+
+#[test]
+fn only_a_canonical_tty_with_echo_off_is_a_password_read() {
+    let cooked = LocalFlags::ICANON | LocalFlags::ECHO;
+    assert!(is_canonical_without_echo(LocalFlags::ICANON));
+    assert!(is_canonical_without_echo(
+        LocalFlags::ICANON | LocalFlags::ISIG
+    ));
+    // A running program with echo on, readline at a prompt (raw, echo off), and ssh (raw).
+    assert!(!is_canonical_without_echo(cooked));
+    assert!(!is_canonical_without_echo(LocalFlags::ISIG));
+    assert!(!is_canonical_without_echo(LocalFlags::empty()));
+}
 
 #[test]
 fn shells_and_login_hops_are_not_plain_programs() {
