@@ -105,11 +105,14 @@ fn retry_delay(consecutive_skips: u32) -> Duration {
     (BASE_RETRY_DELAY * (1u32 << shift)).min(MAX_RETRY_DELAY)
 }
 
-/// A pending "redraw this window again" request armed by a skipped frame.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct PendingRedraw {
-    pub window_id: winit::window::WindowId,
-    pub deadline: Instant,
+/// A frame whose redraw (scene build, acquire, encode, present) took longer than this is slow.
+const SLOW_FRAME: Duration = Duration::from_millis(50);
+/// Waiting longer than this for the swapchain to hand out an image delays every key behind it.
+const SLOW_ACQUIRE: Duration = Duration::from_millis(8);
+
+/// Whether a frame deserves a slow-frame diagnostic.
+pub(super) fn is_slow_frame(total: Duration, acquire: Option<Duration>) -> bool {
+    total > SLOW_FRAME || acquire.is_some_and(|acquire| acquire > SLOW_ACQUIRE)
 }
 
 /// Collapses a stream of events into at most one summary per `interval`, carrying the number of

@@ -166,3 +166,15 @@ fn test_desired_frame_latency_only_overrides_dx12() {
         assert_eq!(desired_frame_latency(backend), None, "{backend:?}");
     }
 }
+
+#[test]
+fn test_resolve_auto_no_vsync_prefers_immediate_then_mailbox_then_fifo() {
+    use PresentMode::*;
+    assert_eq!(
+        resolve_auto_no_vsync(&[Fifo, Mailbox, Immediate]),
+        Immediate
+    );
+    assert_eq!(resolve_auto_no_vsync(&[Fifo, Mailbox]), Mailbox);
+    assert_eq!(resolve_auto_no_vsync(&[Fifo]), Fifo);
+    assert_eq!(resolve_auto_no_vsync(&[]), Fifo);
+}

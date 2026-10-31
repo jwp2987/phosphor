@@ -887,6 +887,13 @@ impl Window {
         }
     }
 
+    /// How long the last surface texture acquire took, for slow-frame diagnostics.
+    pub(super) fn last_acquire_wait(&self) -> Option<std::time::Duration> {
+        let inner = self.inner.borrow();
+        let resources = &inner.as_ref()?.rendering_resources.as_ref()?.resources;
+        Some(resources.last_acquire_wait())
+    }
+
     pub fn render(
         &self,
         new_scene: Option<Rc<Scene>>,

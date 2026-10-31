@@ -122,3 +122,12 @@ fn rate_limiter_reports_first_event_then_batches() {
         Some(Summary { count: 2, max: 3.0 })
     );
 }
+
+#[test]
+fn slow_frame_thresholds() {
+    let ms = Duration::from_millis;
+    assert!(!is_slow_frame(ms(16), None));
+    assert!(!is_slow_frame(ms(50), Some(ms(8))));
+    assert!(is_slow_frame(ms(51), None));
+    assert!(is_slow_frame(ms(10), Some(ms(9))));
+}

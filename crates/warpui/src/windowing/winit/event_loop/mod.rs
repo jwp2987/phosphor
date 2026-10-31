@@ -10,7 +10,7 @@ use std::mem::ManuallyDrop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::notification::RequestPermissionsOutcome;
 
-use draw_retry::{DrawRetryState, RateLimitedSummary};
+use draw_retry::{is_slow_frame, DrawRetryState, RateLimitedSummary};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::AbortHandle;
 use instant::{Duration, Instant};
@@ -565,6 +565,8 @@ pub(super) struct EventLoop {
     /// Rate limits the WARN summary of frames skipped for transient reasons (acquire timeouts,
     /// occlusion), which can repeat many times a second while a window stays occluded.
     skipped_frame_log: RateLimitedSummary,
+    /// Same, for frames that drew but took long or waited long for the swapchain.
+    slow_frame_log: RateLimitedSummary,
 }
 
 impl EventLoop {
@@ -590,6 +592,7 @@ impl EventLoop {
             soft_keyboard_manager: None,
             terminating_signal: None,
             skipped_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
+            slow_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
         }
     }
 
@@ -1156,6 +1159,7 @@ impl EventLoop {
             })
         }
 
+        let redraw_start = Instant::now();
         let render_result = (|| {
             // Before building the scene, make sure the window size is up-to-date, to ensure
             // that the scene is built at a size that matches the size we're about to render at.
@@ -1170,6 +1174,35 @@ impl EventLoop {
             self.callbacks
                 .with_mutable_app_context(|ctx| window.render(new_scene, ctx.font_cache()))
         })();
+
+        let redraw_elapsed = redraw_start.elapsed();
+        let acquire_wait = window.last_acquire_wait();
+        log::debug!(
+            "Frame {}: total={:.1}ms acquire={:.1}ms",
+            if render_result.is_ok() {
+                "drawn"
+            } else {
+                "failed"
+            },
+            redraw_elapsed.as_secs_f64() * 1e3,
+            acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3),
+        );
+        if is_slow_frame(redraw_elapsed, acquire_wait) {
+            let slowest_ms = redraw_elapsed
+                .max(acquire_wait.unwrap_or_default())
+                .as_secs_f64()
+                * 1e3;
+            if let Some(summary) = self.slow_frame_log.record(Instant::now(), slowest_ms) {
+                log::warn!(
+                    "{} slow frame(s) (redraw >50ms or swapchain acquire >8ms) since the last \
+                     report, slowest {:.1}ms; latest: total={:.1}ms acquire={:.1}ms",
+                    summary.count,
+                    summary.max,
+                    redraw_elapsed.as_secs_f64() * 1e3,
+                    acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3),
+                );
+            }
+        }
 
         match render_result {
             Ok(_) => {
