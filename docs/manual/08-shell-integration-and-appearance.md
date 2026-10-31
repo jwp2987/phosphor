@@ -168,6 +168,15 @@ connection is shown as closed within about 3 minutes. It does so only when
 `ssh -G <host>` reports `serveraliveinterval 0`, so a `ServerAliveInterval` from
 your ssh config or command line always wins. Applies to new tabs.
 
+`warpify.ssh.obscure_keystroke_timing` (default `true`): OpenSSH 9.5 and later
+send interactive keystrokes on a 20 ms tick (`ObscureKeystrokeTiming`), which
+adds up to 20 ms per key but hides your typing rhythm from a network observer.
+Setting this `false` makes the wrapper pass `-o ObscureKeystrokeTiming=no` to the
+connections it starts, only when `ssh -G <host>` reports the option as `yes`,
+so your own ssh config always wins. A session with the remote-server extension
+connected is already un-obscured by OpenSSH itself (it only obscures while a
+single session channel is open). Applies to new tabs.
+
 `warpify.ssh.reuse_existing_control_master` (default `false`) makes the wrapper
 attach to a live ControlMaster you already run for that host — resolved with
 `ssh -G` and probed with `ssh -O check` — instead of creating a Phosphor-owned
@@ -314,6 +323,7 @@ dead — until issue #632.
 | `warpify.ssh.use_ssh_tmux_wrapper` | Use the tmux control-mode wrapper instead of the ControlMaster wrapper. macOS/Linux only. New tabs only | `false` | same page → *Use Tmux Phosphorization* |
 | `warpify.ssh.reuse_existing_control_master` | Attach to your own live ControlMaster instead of creating one. Legacy wrapper only; new tabs only | `false` | same page → *Reuse existing SSH ControlMaster* |
 | `warpify.ssh.keepalive` | Add ssh keepalives (30 s x 6) when your ssh config sets none. New tabs only | `true` | settings file only |
+| `warpify.ssh.obscure_keystroke_timing` | Keep OpenSSH's 20 ms keystroke tick (`ObscureKeystrokeTiming`); `false` turns it off when your ssh config does not set it. New tabs only | `true` | settings file only |
 | `warpify.ssh.split_inherits_ssh` | Opt-in: splitting an SSH pane opens the new pane on the same host and remote directory | `false` | same page → *Splits from SSH sessions open on the same host* |
 | `warpify.ssh.ssh_extension_install_mode` | `always_ask` / `always_install` / `never_install` | `always_ask` | same page → *Install SSH extension* |
 | `warpify.ssh.enable_legacy_ssh_wrapper` | **Deprecated.** Setting it `false` runs a one-time migration that disables `enable_ssh_warpification` | `true` | do not use |

@@ -58,6 +58,7 @@ impl InflightLimit {
         semaphore.acquire_owned().await.ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn available(&self) -> Option<usize> {
         self.0.as_ref().map(|s| s.available_permits())
     }
