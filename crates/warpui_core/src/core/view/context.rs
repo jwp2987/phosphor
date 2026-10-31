@@ -395,17 +395,6 @@ impl<'a, T: Entity> ViewContext<'a, T> {
         });
     }
 
-    /// Like [`Self::emit`], but the event is delivered before every ordinary pending effect
-    /// (notifications, focus changes, other events) instead of behind them, and after the urgent
-    /// events already queued, which keep their order. For events that gate input latency, such as
-    /// bytes bound for the pty, where waiting behind unrelated UI work is a visible delay (#1176).
-    pub fn emit_urgent(&mut self, payload: T::Event) {
-        self.app.push_urgent_effect(Effect::Event {
-            entity_id: self.view_id,
-            payload: Box::new(payload),
-        });
-    }
-
     /// When all else fails, `emit_a11y_content` comes to the rescue! In our UI framework, some stuff is just an Event, and not an Action. Sometimes a different View emits the event, while another one handles it… So instead of solving this, we simply use `emit_a11y_content(&mut self, content: AccessibilityContent)` on demand, meaning, whenever something meaningful happens and it’s not related to Action or View focusing, we should emit a11y content. A good example for this is announcing that a new update is available.
     ///
     /// ### When and how to use it?
