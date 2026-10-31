@@ -69,3 +69,77 @@ fn test_click_through_layer_does_not_cover_lower_layers() {
 
     assert!(!scene.is_covered(Point::new(10., 10., ZIndex::new(0))));
 }
+
+fn draw_sample_frame(scene: &mut Scene) {
+    for i in 0..3 {
+        scene.draw_rect_with_hit_recording(RectF::new(vec2f(i as f32, 0.), vec2f(1., 1.)));
+    }
+    scene.start_layer(ClipBounds::None);
+    for i in 0..5 {
+        scene.draw_glyph(vec2f(i as f32, 10.), i, FontId(0), 12., ColorU::black());
+    }
+    scene.start_overlay_layer(ClipBounds::None);
+    scene.draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(2., 2.)));
+    scene.stop_layer();
+    scene.stop_layer();
+}
+
+fn primitives(scene: &Scene) -> Vec<(Option<RectF>, Vec<RectF>, Vec<(GlyphKey, Vector2F)>)> {
+    scene
+        .layers()
+        .map(|layer| {
+            (
+                layer.clip_bounds,
+                layer.rects.iter().map(|rect| rect.bounds).collect(),
+                layer
+                    .glyphs
+                    .iter()
+                    .map(|glyph| (glyph.glyph_key, glyph.position))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Pre-allocating from the previous frame's hints changes only capacities: the same drawing
+/// sequence records the same primitives, in the same layers, in the same order.
+#[test]
+fn capacity_hints_do_not_change_the_recorded_scene() {
+    let mut first = Scene::new(1., rendering::Config::default());
+    draw_sample_frame(&mut first);
+
+    let mut hinted = Scene::with_capacity_hints(
+        1.,
+        rendering::Config::default(),
+        first.capacity_hints(),
+    );
+    draw_sample_frame(&mut hinted);
+
+    assert_eq!(primitives(&first), primitives(&hinted));
+    assert_eq!(first.layer_count(), hinted.layer_count());
+    assert_eq!(first.capacity_hints(), hinted.capacity_hints());
+}
+
+#[test]
+fn capacity_hints_reserve_each_layer_up_front() {
+    let mut first = Scene::new(1., rendering::Config::default());
+    draw_sample_frame(&mut first);
+
+    let mut hinted = Scene::with_capacity_hints(
+        1.,
+        rendering::Config::default(),
+        first.capacity_hints(),
+    );
+    assert!(hinted.layers.first().rects.capacity() >= 3);
+    hinted.start_layer(ClipBounds::None);
+    assert!(hinted.active_layer().glyphs.capacity() >= 5);
+    hinted.start_overlay_layer(ClipBounds::None);
+    assert!(hinted.active_layer().rects.capacity() >= 1);
+
+    // A scene with no history (or more layers than last frame) still works, just unreserved.
+    let mut fresh = Scene::new(1., rendering::Config::default());
+    fresh.start_layer(ClipBounds::None);
+    fresh.start_layer(ClipBounds::None);
+    fresh.start_layer(ClipBounds::None);
+    assert_eq!(fresh.layer_count(), 4);
+}
