@@ -355,6 +355,12 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
             return Decision::agent(Rule::NoEvidenceInConversation);
         }
         if !(installed || head_is_curated || head_is_keyword || head_is_path) {
+            // A line that closes on `please` is addressed to someone, whatever paths or flags it
+            // carries: no command takes a trailing `please` (#1290: `XTOOLS ~/dir/fn.sh please`
+            // was autodetected as a command in a conversation and failed in the shell).
+            if closes_with_please(args) && !has_shell_structure(text) {
+                return Decision::agent(Rule::UnknownHeadInConversation);
+            }
             // Shell data around an unknown head (`mytool --json`) is the classifier's call, as
             // before; bare words around it are a message to the agent.
             if args.iter().any(is_data_shaped_word) || has_shell_structure(text) {
@@ -426,6 +432,15 @@ fn is_ambiguous_lone_head(head_lower: &str) -> bool {
         || REQUEST_OPENER_HEADS.contains(&head_lower)
         || AMBIGUOUS_LONE_HEADS.contains(&head_lower))
         && !is_known_shell_command_word(head_lower)
+}
+
+/// Whether the last argument is an unquoted `please` (a trailing `.`, `!` or `,` is ignored) and
+/// something precedes it.
+fn closes_with_please(args: &[ShellWord]) -> bool {
+    args.len() >= 2
+        && args.last().is_some_and(|word| {
+            !word.quoted && strip_sentence_punctuation(&word.text).eq_ignore_ascii_case("please")
+        })
 }
 
 fn is_question_or_opener_head(head_lower: &str) -> bool {

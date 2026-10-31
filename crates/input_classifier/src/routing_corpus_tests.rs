@@ -441,6 +441,45 @@ fn undecided_is_reserved_for_the_classifier() {
     }
 }
 
+/// #1290: in a conversation, a line that closes on `please` is a message to the agent even when
+/// its unknown head carries paths (`XTOOLS ~/dir/fn.sh please` ran in the shell: "command not
+/// found"). Checked against `route` directly rather than the corpus, which stage 1 also replays
+/// against the pre-#1234 procedure. A bare data-shaped line with no `please` stays the
+/// classifier's, an installed head keeps its own rule, and the plain terminal is unchanged.
+#[test]
+fn unknown_head_with_paths_and_a_closing_please_goes_to_the_agent() {
+    for line in [
+        "XTOOLS ~/tmp-ssh-matrix/fn.sh ~/tmp-ssh-matrix please",
+        "XTOOLS /Users/winters/tmp-ssh-matrix/fn.sh please",
+        "mytool --json please",
+        "mytool ./out.txt please.",
+    ] {
+        for head in [Head::Absent, Head::Unknown] {
+            let case = Case::model(line, "#1290").in_conversation().head(head);
+            for at_enter in [false, true] {
+                let decision = routing::route(
+                    &snapshot(&case, !at_enter),
+                    &routing_context(&case, at_enter),
+                );
+                assert_eq!(
+                    decision.route,
+                    Route::Agent,
+                    "{} ({}): {}",
+                    describe(&case),
+                    if at_enter { "Enter" } else { "keystroke" },
+                    decision.rule
+                );
+            }
+        }
+    }
+    // Without the `please` the line is still the classifier's.
+    let case = Case::model("XTOOLS ~/tmp-ssh-matrix/fn.sh ~/tmp-ssh-matrix", "#1290")
+        .in_conversation()
+        .head(Head::Absent);
+    let decision = routing::route(&snapshot(&case, true), &routing_context(&case, false));
+    assert_eq!(decision.route, Route::Undecided, "{}", decision.rule);
+}
+
 /// The rule names are stable identifiers for the debug log.
 #[test]
 fn every_rule_names_itself() {

@@ -53,7 +53,8 @@ use super::CustomEvent;
 use super::windows::{add_network_connection_listener, WindowsNetworkConnectionPoint};
 
 use self::key_events::{
-    convert_keyboard_input_event, text_fallback_event_for_unconverted_key, KeyConversion,
+    convert_keyboard_input_event, text_fallback_event_for_unconverted_key,
+    typed_characters_follow_keydown, KeyConversion,
 };
 
 /// This is the time duration beyond which clicks get treated as separate single clicks instead of
@@ -1347,14 +1348,21 @@ impl EventLoop {
                 // that include the cmd key because they are assumed to be
                 // intended as OS-level or application-level shortcuts. This matches the behavior
                 // on macOS.)
-                let cmd_pressed = match &event {
-                    crate::event::Event::KeyDown { keystroke, .. } => keystroke.cmd,
-                    _ => false,
+                let (cmd_pressed, ctrl_pressed, alt_pressed) = match &event {
+                    crate::event::Event::KeyDown { keystroke, .. } => {
+                        (keystroke.cmd, keystroke.ctrl, keystroke.alt)
+                    }
+                    _ => (false, false, false),
                 };
 
                 let mut window_callbacks = self.callbacks.for_window(window.as_ref());
                 let result = window_callbacks.dispatch_event(event);
-                if !result.handled && !cmd_pressed {
+                if typed_characters_follow_keydown(
+                    result.handled,
+                    cmd_pressed,
+                    ctrl_pressed,
+                    alt_pressed,
+                ) {
                     if let Some(chars) = chars {
                         window_callbacks.dispatch_event(TypedCharacters { chars });
                     }

@@ -1,4 +1,7 @@
-use super::{get_input_key, text_fallback_event_for_unconverted_key, us_qwerty_fallback_for_chord};
+use super::{
+    get_input_key, text_fallback_event_for_unconverted_key, typed_characters_follow_keydown,
+    us_qwerty_fallback_for_chord,
+};
 use winit::event::ElementState;
 use winit::keyboard::{
     Key::Character, KeyCode, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr,
@@ -256,4 +259,16 @@ fn us_qwerty_fallback_returns_none_for_unidentified_physical_key() {
             "unidentified key should not have a chord fallback (shift={shift})",
         );
     }
+}
+
+// #1290: an unhandled Ctrl chord must not type its bare letter (winit's `text` ignores Ctrl).
+#[test]
+fn unhandled_ctrl_chord_does_not_type_its_letter() {
+    // (handled, cmd, ctrl, alt)
+    assert!(!typed_characters_follow_keydown(false, false, true, false));
+    assert!(!typed_characters_follow_keydown(false, true, false, false));
+    assert!(!typed_characters_follow_keydown(true, false, false, false));
+    // A plain unhandled key still types, and Ctrl+Alt (AltGr on Windows) still produces text.
+    assert!(typed_characters_follow_keydown(false, false, false, false));
+    assert!(typed_characters_follow_keydown(false, false, true, true));
 }

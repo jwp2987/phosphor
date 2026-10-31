@@ -437,6 +437,21 @@ fn us_qwerty_fallback_for_chord(
     })
 }
 
+/// Whether an unhandled key down is followed by a `TypedCharacters` event carrying the key's text.
+///
+/// winit's `KeyEvent::text` ignores Ctrl (Ctrl-U carries "u"), so an unhandled Ctrl chord used to
+/// type its bare letter: Ctrl-U with the agent's approval card focused inserted a literal "u"
+/// into the agent input (#1290). Like Cmd (matching macOS), a Ctrl chord is a shortcut, never
+/// text. Ctrl+Alt stays text: Windows reports AltGr that way and it produces real characters.
+pub(crate) fn typed_characters_follow_keydown(
+    handled: bool,
+    cmd: bool,
+    ctrl: bool,
+    alt: bool,
+) -> bool {
+    !handled && !cmd && !(ctrl && !alt)
+}
+
 #[cfg(test)]
 #[path = "key_events_tests.rs"]
 mod tests;
