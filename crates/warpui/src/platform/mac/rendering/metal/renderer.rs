@@ -99,7 +99,7 @@ impl<'a> RenderPass<'a> {
             None
         };
 
-        self.drawable.present();
+        warpui_core::profiling::present_frame(|| self.drawable.present());
         captured
     }
 

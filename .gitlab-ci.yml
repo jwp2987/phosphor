@@ -477,7 +477,7 @@ build-windows-profiling:
     - New-Item -ItemType Directory -Force dist | Out-Null
     # The .pdb is what WPA / Superluminal / samply read; ship it next to the exe.
     - Copy-Item target\profiling\phosphor-oss.exe dist\phosphor-oss-profiling.exe
-    - Copy-Item target\profiling\phosphor_oss.pdb dist\phosphor-oss-profiling.pdb -ErrorAction Continue
+    - Get-ChildItem target\profiling\*.pdb | Where-Object { $_.Name -like "phosphor*oss.pdb" } | Select-Object -First 1 | Copy-Item -Destination dist\phosphor-oss-profiling.pdb
     - Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
   artifacts:
     name: phosphor-windows-profiling

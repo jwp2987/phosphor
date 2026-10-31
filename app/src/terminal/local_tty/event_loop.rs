@@ -558,6 +558,7 @@ where
         buf: &mut [u8],
         can_read: &mut bool,
     ) -> io::Result<()> {
+        warpui::profiling::zone!("pty_read");
         let mut bytes_in_buffer = 0;
         let mut bytes_processed = 0;
 
@@ -622,14 +623,17 @@ where
             // Read the active block BEFORE parsing: replies are generated, and the
             // command may finish, synchronously inside `parse_bytes`.
             let executing_block = executing_block_id(terminal);
-            state.parser.parse_bytes(
-                terminal.deref_mut(),
-                &buf[..bytes_in_buffer],
-                &mut ReplyWriter {
-                    replies: &mut terminal_response_sequences,
-                    ledger: &self.reply_ledger,
-                },
-            );
+            {
+                warpui::profiling::zone!("parse");
+                state.parser.parse_bytes(
+                    terminal.deref_mut(),
+                    &buf[..bytes_in_buffer],
+                    &mut ReplyWriter {
+                        replies: &mut terminal_response_sequences,
+                        ledger: &self.reply_ledger,
+                    },
+                );
+            }
             let evicted = state.queue_response(terminal_response_sequences, executing_block);
             if !evicted.is_empty() {
                 let mut ledger = self.reply_ledger.lock();
@@ -668,6 +672,7 @@ where
 
     #[inline]
     fn pty_write(&mut self, state: &mut State, can_write: &mut bool) -> io::Result<()> {
+        warpui::profiling::zone!("pty_write");
         state.ensure_next();
 
         'write_many: while let Some(mut current) = state.take_current() {
