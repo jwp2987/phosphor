@@ -135,6 +135,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             }
             RemoteServerManagerEvent::SessionConnecting { .. }
             | RemoteServerManagerEvent::SessionDisconnected { .. }
+            | RemoteServerManagerEvent::SessionConnectionLost { .. }
             | RemoteServerManagerEvent::SessionReconnected { .. }
             | RemoteServerManagerEvent::SessionDeregistered { .. }
             | RemoteServerManagerEvent::HostConnected { .. }
