@@ -33,6 +33,7 @@ use warp_util::standardized_path::StandardizedPath;
 fn test_model() -> ServerModel {
     ServerModel {
         connection_senders: HashMap::new(),
+        connection_chunking: HashMap::new(),
         snapshot_sent_roots_by_connection: HashMap::new(),
         #[cfg(feature = "local_fs")]
         diff_state_subscribers: HashMap::new(),

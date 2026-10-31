@@ -1686,7 +1686,18 @@ fn subagent_finished_queue_delivery_covers_each_case() {
     use super::{SkippedTurnEndDrain as Skipped, SubagentFinishedQueueDelivery as Delivery};
     // Arguments: has_active_subagent, skipped_turn_end, conversation_cancelled,
     // turn_in_progress, auto_resumed_on_block_completion, last_finish_reason.
-    let decide = super::subagent_finished_queue_delivery;
+    // No completion report outstanding: the cases below predate that input (#1264).
+    let decide = |active, skipped, cancelled, in_progress, auto_resumed, reason| {
+        super::subagent_finished_queue_delivery(
+            active,
+            false,
+            skipped,
+            cancelled,
+            in_progress,
+            auto_resumed,
+            reason,
+        )
+    };
     let owed = Some(Skipped::Owed);
     let complete = Some(FinishReason::Complete);
 
