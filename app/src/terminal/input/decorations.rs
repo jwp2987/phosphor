@@ -96,8 +96,10 @@ impl Input {
         &self,
         ctx: &AppContext,
     ) -> CompletionSessionContext {
+        // Highlighting and input detection parse every token of the line on every edit; on a
+        // non-local session `for_decoration` keeps that from running remote generators (#1130).
         self.completion_session_context(ctx)
-            .map(CompletionSessionContext::Session)
+            .map(|context| CompletionSessionContext::Session(context.for_decoration()))
             .unwrap_or_else(|| CompletionSessionContext::Empty(EmptyCompletionContext::new()))
     }
 

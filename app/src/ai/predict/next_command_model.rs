@@ -785,8 +785,8 @@ async fn is_arg_valid(
             // unclassified command, and a generator timeout all return `true` -- and a stale
             // suggestion beats suppressing every suggestion.
             //
-            // Generators are deliberately NOT covered by this: `completer::suggestions` already
-            // branches on session type and runs the generator on the remote, so it stays exact.
+            // Generators are covered too (#1130): running one on a remote session costs a command
+            // on the shared ssh connection per candidate per keystroke, so they fail open as well.
             let can_validate_paths_locally = ctx.session.is_local();
             let mut skipped_remote_path_validation = false;
             for arg_type in arg_types_to_validate {
@@ -822,6 +822,13 @@ async fn is_arg_valid(
                         }
                     }
                     ArgType::Generator(_) => {
+                        // A generator on a non-local session is a command on the shared ssh
+                        // connection, run once per candidate per keystroke (#1130). Fail open,
+                        // like paths above (#621).
+                        if !can_validate_paths_locally {
+                            skipped_remote_path_validation = true;
+                            continue;
+                        }
                         has_generator_arg_type = true;
                     }
                 };

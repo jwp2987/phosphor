@@ -12,10 +12,15 @@ use warp_completer::signatures::CommandRegistry;
 use warp_util::path::ShellDialect;
 use warpui::App;
 
+use std::time::Instant;
+
+use super::{
+    invalidate_shared_directory_cache, shared_directory_cache_at, SHARED_DIRECTORY_CACHE_TTL,
+};
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, SessionInfo,
+    command_executor::testing::TestCommandExecutor, BootstrapSessionType, SessionId, SessionInfo,
 };
 use crate::test_util::{Stub, VirtualFS};
 
@@ -748,4 +753,97 @@ pub fn test_parse_ls_script_output_truncated_mid_file_entry_fails() {
     let output = b"./dir\0\0./whole_file.txt\0./partial_fil";
 
     assert_eq!(super::parse_ls_script_output(output), None);
+}
+
+fn remote_session_with_id(id: u64) -> Session {
+    Session::new(
+        SessionInfo::new_for_test()
+            .with_session_type(BootstrapSessionType::WarpifiedRemote)
+            .with_id(id),
+        Arc::new(TestCommandExecutor::default()),
+    )
+}
+
+/// #1130: `SessionContext::new` runs on every keystroke. For a remote session the directory
+/// cache must be the same allocation across contexts (it used to be a fresh map per context, so
+/// it never hit across keystrokes and each one re-listed the directory over ssh).
+#[test]
+pub fn test_remote_contexts_share_directory_cache_for_same_cwd() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/remote/shared-cache-same-cwd");
+        let first = test_session_context(remote_session_with_id(9_130_001), cwd.clone(), &app);
+        let second = test_session_context(remote_session_with_id(9_130_001), cwd, &app);
+        assert!(Arc::ptr_eq(
+            &first.cached_directory_entries,
+            &second.cached_directory_entries
+        ));
+    });
+}
+
+/// Local sessions keep a private cache per context: behaviour there is unchanged.
+#[test]
+pub fn test_local_contexts_do_not_share_directory_cache() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/local/not-shared");
+        let first = test_session_context(Session::test(), cwd.clone(), &app);
+        let second = test_session_context(Session::test(), cwd, &app);
+        assert!(!Arc::ptr_eq(
+            &first.cached_directory_entries,
+            &second.cached_directory_entries
+        ));
+    });
+}
+
+#[test]
+pub fn test_shared_directory_cache_resets_on_cwd_change_and_invalidate() {
+    let id = SessionId::from(9_130_010);
+    let a = TypedPathBuf::from("/remote/a");
+    let b = TypedPathBuf::from("/remote/b");
+    let now = Instant::now();
+
+    let first = shared_directory_cache_at(id, &a, now);
+    assert!(Arc::ptr_eq(&first, &shared_directory_cache_at(id, &a, now)));
+
+    // A different cwd gets a different cache.
+    let other_cwd = shared_directory_cache_at(id, &b, now);
+    assert!(!Arc::ptr_eq(&first, &other_cwd));
+    assert!(Arc::ptr_eq(
+        &other_cwd,
+        &shared_directory_cache_at(id, &b, now)
+    ));
+
+    // Block completion / submit drops it, so `mkdir`/`touch` in the shell is seen.
+    invalidate_shared_directory_cache(id);
+    assert!(!Arc::ptr_eq(
+        &other_cwd,
+        &shared_directory_cache_at(id, &b, now)
+    ));
+}
+
+#[test]
+pub fn test_shared_directory_cache_expires_after_ttl() {
+    let id = SessionId::from(9_130_011);
+    let cwd = TypedPathBuf::from("/remote/ttl");
+    // Created in the past so the lookup at the real "now" is past the TTL; never advance the
+    // clock forward, which would sweep other tests' slots.
+    let Some(past) = Instant::now().checked_sub(SHARED_DIRECTORY_CACHE_TTL * 2) else {
+        return;
+    };
+    let old = shared_directory_cache_at(id, &cwd, past);
+    let fresh = shared_directory_cache_at(id, &cwd, Instant::now());
+    assert!(!Arc::ptr_eq(&old, &fresh));
+}
+
+/// #1130: highlighting on a remote session must not expose a generator context; local keeps it.
+#[test]
+pub fn test_for_decoration_disables_generators_only_on_remote_sessions() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/remote/decoration");
+        let remote = test_session_context(remote_session_with_id(9_130_020), cwd.clone(), &app);
+        assert!(remote.generator_context().is_some());
+        assert!(remote.for_decoration().generator_context().is_none());
+
+        let local = test_session_context(Session::test(), cwd, &app);
+        assert!(local.for_decoration().generator_context().is_some());
+    });
 }

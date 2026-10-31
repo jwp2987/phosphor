@@ -14724,6 +14724,10 @@ impl Input {
         block_completed_event: BlockCompletedEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        // The finished command may have created or removed files (#1130).
+        if let Some(session_id) = self.active_block_session_id() {
+            crate::completer::invalidate_shared_directory_cache(session_id);
+        }
         // We clear the input box after executing a command here instead of where we
         // execute a command to avoid the input box flashing when its contents are
         // cleared. For the multiline input box case, this also caused contents to go
@@ -14950,6 +14954,7 @@ impl Input {
         let session_id = self
             .active_block_session_id()
             .expect("session_id should be set (via bootstrap) before executing command");
+        crate::completer::invalidate_shared_directory_cache(session_id);
 
         // If the SelectedWorkflowState is populated with a workflow, we count this as a workflow execution.
         let (workflow_id, workflow_command) = {

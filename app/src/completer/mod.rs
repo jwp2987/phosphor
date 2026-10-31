@@ -6,6 +6,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -22,7 +23,7 @@ use warp_util::path::{EscapeChar, ShellDialect, ShellFamily};
 use warpui::{AppContext, SingletonEntity};
 
 use crate::safe_warn;
-use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionType};
+use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionId, SessionType};
 use crate::util::AsciiDebug;
 use crate::workflows::aliases::WorkflowAliases;
 
@@ -36,6 +37,61 @@ lazy_static! {
         file_type: EngineFileType::Directory,
     };
     static ref EMPTY_COMMAND_REGISTRY: Arc<CommandRegistry> = Arc::new(CommandRegistry::empty());
+}
+
+type DirectoryEntryMap = dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>;
+
+/// How long a non-local session's directory listings are reused across keystrokes (#1130).
+const SHARED_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(2);
+
+struct SharedDirectoryCacheSlot {
+    cwd: TypedPathBuf,
+    created: Instant,
+    entries: Arc<DirectoryEntryMap>,
+}
+
+lazy_static! {
+    /// One directory-listing cache per NON-LOCAL session, shared by every `SessionContext`
+    /// built for it. `SessionContext::new` runs on every keystroke (autosuggestion, completions,
+    /// highlighting), so a per-context cache never hit across keystrokes and each one
+    /// re-listed the directory over the shared ssh connection (#1130, the #985 mechanism).
+    /// A slot is reused only while the cwd matches and it is younger than
+    /// [`SHARED_DIRECTORY_CACHE_TTL`]; block completion and command submit drop it so files
+    /// created by a command are visible to the next completion.
+    static ref SHARED_DIRECTORY_CACHES: parking_lot::Mutex<HashMap<SessionId, SharedDirectoryCacheSlot>> =
+        parking_lot::Mutex::new(HashMap::new());
+}
+
+fn shared_directory_cache_at(
+    session_id: SessionId,
+    cwd: &TypedPathBuf,
+    now: Instant,
+) -> Arc<DirectoryEntryMap> {
+    let mut caches = SHARED_DIRECTORY_CACHES.lock();
+    // Expired slots (including those of closed sessions) are dead weight; sweep them.
+    caches
+        .retain(|_, slot| now.saturating_duration_since(slot.created) < SHARED_DIRECTORY_CACHE_TTL);
+    if let Some(slot) = caches.get(&session_id)
+        && slot.cwd == *cwd
+    {
+        return slot.entries.clone();
+    }
+    let entries = Arc::new(DirectoryEntryMap::default());
+    caches.insert(
+        session_id,
+        SharedDirectoryCacheSlot {
+            cwd: cwd.clone(),
+            created: now,
+            entries: entries.clone(),
+        },
+    );
+    entries
+}
+
+/// Drops the session's shared directory-listing cache. Called when a block completes or a
+/// command is submitted: the command may have created or removed files.
+pub fn invalidate_shared_directory_cache(session_id: SessionId) {
+    SHARED_DIRECTORY_CACHES.lock().remove(&session_id);
 }
 
 /// Coalescing gate for one directory path, used by
@@ -82,7 +138,7 @@ pub struct SessionContext {
     /// Upstream carries the `Arc` (pin `02b53fcd8`, same field). This fork descends from
     /// `0dbd3d56` ("Initial public release of Warp"), which predates that fix, so this is an
     /// unported upstream change rather than something the fork broke.
-    cached_directory_entries: Arc<dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>>,
+    cached_directory_entries: Arc<DirectoryEntryMap>,
 
     /// Per-path coalescing gates for `refresh_directory_entries`. `Arc` for the same
     /// load-bearing reason as `cached_directory_entries` above: these are useless unless
@@ -91,9 +147,25 @@ pub struct SessionContext {
 
     /// Snapshot of all Zap workflow aliases.
     workflow_aliases: HashMap<String, String>,
+
+    /// When set, `generator_context()` is `None`: no completion generator or alias command is
+    /// ever run. Used for highlighting/input detection on non-local sessions, where every
+    /// generator is a command on the shared ssh connection (#1130).
+    generators_disabled: bool,
 }
 
 impl SessionContext {
+    /// A context for highlighting and input-type detection. On a non-local session it runs no
+    /// generators (they would be remote commands, per token, per keystroke); highlighting of
+    /// generator-only arguments may be slightly less precise there. Local sessions are
+    /// returned unchanged.
+    pub fn for_decoration(mut self) -> Self {
+        if !self.session.is_local() {
+            self.generators_disabled = true;
+        }
+        self
+    }
+
     /// Lists `directory` fresh from disk and caches the results, coalescing concurrent
     /// refreshes of the same path so only one listing is actually performed.
     ///
@@ -373,7 +445,11 @@ impl GeneratorContext for SessionContext {
 
 impl CompletionContext for SessionContext {
     fn generator_context(&self) -> Option<&dyn GeneratorContext> {
-        Some(self)
+        if self.generators_disabled {
+            None
+        } else {
+            Some(self)
+        }
     }
 
     fn path_completion_context(&self) -> Option<&dyn PathCompletionContext> {
@@ -473,6 +549,14 @@ impl SessionContext {
             Default::default()
         };
 
+        let session: Arc<Session> = session.into();
+        // Non-local listings cost a remote command, so they outlive this context (per cwd).
+        let cached_directory_entries = if session.is_local() {
+            Arc::new(Default::default())
+        } else {
+            shared_directory_cache_at(session.id(), &current_working_directory, Instant::now())
+        };
+
         cfg_if::cfg_if! {
             if #[cfg(feature = "completions_v2")] {
                 use crate::plugin::{PluginHost, service::CallJsFunctionService};
@@ -481,22 +565,24 @@ impl SessionContext {
                     .as_ref(ctx)
                     .plugin_service_caller::<CallJsFunctionService>();
                 Self {
-                    session: session.into(),
+                    session,
                     command_registry,
                     current_working_directory,
                     js_ctx: js_function_caller.map(js::SessionJsExecutionContext::new),
-                    cached_directory_entries: Arc::new(Default::default()),
+                    cached_directory_entries,
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
+                    generators_disabled: false,
                 }
             } else {
                 Self {
-                    session: session.into(),
+                    session,
                     command_registry,
                     current_working_directory,
-                    cached_directory_entries: Arc::new(Default::default()),
+                    cached_directory_entries,
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
+                    generators_disabled: false,
                 }
             }
         }
