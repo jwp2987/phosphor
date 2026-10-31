@@ -1411,6 +1411,7 @@ settings-appearance-pane-focus-follows-mouse-label = 焦点跟随鼠标
 settings-appearance-block-compact-label = 紧凑模式
 settings-appearance-block-jump-bottom-label = 显示「跳到命令块底部」按钮
 settings-appearance-block-show-dividers-label = 显示命令块分隔线
+settings-appearance-block-show-duration-label = 使用 shell 提示符时显示命令运行时长
 
 # Text / Fonts
 settings-appearance-font-agent-label = Agent 字体

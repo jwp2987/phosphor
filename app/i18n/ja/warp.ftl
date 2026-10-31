@@ -1369,6 +1369,7 @@ settings-appearance-pane-focus-follows-mouse-label = マウスにフォーカス
 settings-appearance-block-compact-label = コンパクトモード
 settings-appearance-block-jump-bottom-label = ブロック下部へジャンプボタンを表示
 settings-appearance-block-show-dividers-label = ブロックの区切り線を表示
+settings-appearance-block-show-duration-label = シェルプロンプト使用時にコマンドの実行時間を表示
 
 # Text / Fonts
 settings-appearance-font-agent-label = エージェントフォント

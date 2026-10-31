@@ -27695,30 +27695,21 @@ impl TerminalView {
         .finish()
     }
 
-    fn render_label_element(
+    /// The command run time ("(3.2s)", live while the command runs, hover tooltip with the
+    /// start/end times), shared by the Phosphor-prompt block label above and the shell-prompt
+    /// (PS1) block header drawn by `BlockListElement` (#1145). `None` when the block has no
+    /// duration to show yet and is not executing.
+    pub(super) fn render_duration_element(
         index: BlockIndex,
         model: &TerminalModel,
         mouse_state: Option<&MouseStateHandle>,
-        sessions: &Sessions,
-        padding_x: Pixels,
         tool_tip_below_button: bool,
         appearance: &Appearance,
-    ) -> Box<dyn Element> {
+    ) -> Option<Box<dyn Element>> {
         let terminal_theme_prompt: ColorU = appearance
             .theme()
             .sub_text_color(appearance.theme().background())
             .into();
-
-        let prompt = Text::new_inline(
-            Self::block_prompt(model, sessions, index),
-            appearance.monospace_font_family(),
-            appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
-        )
-        .with_style(Properties::default().weight(appearance.monospace_font_weight()))
-        .with_color(terminal_theme_prompt)
-        .finish();
-
-        let mut label_row = Flex::row().with_child(prompt);
 
         let is_live = Self::is_block_duration_live(model, index);
         if let Some(duration_string) = Self::block_duration_text(model, index) {
@@ -27739,7 +27730,7 @@ impl TerminalView {
                 duration
             };
 
-            label_row.add_child(if let Some(state) = mouse_state {
+            Some(if let Some(state) = mouse_state {
                 Hoverable::new(state.clone(), |state| {
                     let mut stack = Stack::new().with_child(duration);
                     if state.is_hovered() {
@@ -27776,12 +27767,12 @@ impl TerminalView {
                 .finish()
             } else {
                 duration
-            });
+            })
         } else if Self::is_block_executing(model, index) {
             // Block is executing but less than 1 second has elapsed — no duration text to
             // show yet. Add an invisible LiveElement to kick off the repaint timer so the
             // counter appears as soon as 1s elapses. See issue #426.
-            label_row.add_child(
+            Some(
                 LiveElement::new(
                     ConstrainedBox::new(Empty::new().finish())
                         .with_width(0.)
@@ -27790,7 +27781,45 @@ impl TerminalView {
                     LIVE_COMMAND_DURATION_REPAINT_INTERVAL,
                 )
                 .finish(),
-            );
+            )
+        } else {
+            None
+        }
+    }
+
+    fn render_label_element(
+        index: BlockIndex,
+        model: &TerminalModel,
+        mouse_state: Option<&MouseStateHandle>,
+        sessions: &Sessions,
+        padding_x: Pixels,
+        tool_tip_below_button: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let terminal_theme_prompt: ColorU = appearance
+            .theme()
+            .sub_text_color(appearance.theme().background())
+            .into();
+
+        let prompt = Text::new_inline(
+            Self::block_prompt(model, sessions, index),
+            appearance.monospace_font_family(),
+            appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+        )
+        .with_style(Properties::default().weight(appearance.monospace_font_weight()))
+        .with_color(terminal_theme_prompt)
+        .finish();
+
+        let mut label_row = Flex::row().with_child(prompt);
+
+        if let Some(duration) = Self::render_duration_element(
+            index,
+            model,
+            mouse_state,
+            tool_tip_below_button,
+            appearance,
+        ) {
+            label_row.add_child(duration);
         }
 
         SavePosition::new(
