@@ -38,6 +38,16 @@ pub(super) struct LayerState {
     len: usize,
 }
 
+impl LayerState {
+    /// The same draw without its first instance, or `None` if that was the only one.
+    pub(super) fn without_first(self) -> Option<Self> {
+        (self.len > 1).then(|| Self {
+            start_offset: self.start_offset + 1,
+            len: self.len - 1,
+        })
+    }
+}
+
 impl Pipeline {
     pub(super) fn new(
         uniform_bind_group_layout: &BindGroupLayout,
