@@ -255,6 +255,19 @@ pub(crate) fn accept_within_debounce(shown_for: Option<Duration>) -> bool {
     shown_for.is_some_and(|shown_for| shown_for < ACCEPT_DEBOUNCE)
 }
 
+/// Where an accept came from. Only a key can be the tail of an Enter the user was already typing
+/// when the card appeared; a click is always a decision (#1195).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptSource {
+    Key,
+    Pointer,
+}
+
+/// Whether an accept from `source` is ignored by the debounce: keys only.
+pub(crate) fn accept_is_debounced(source: AcceptSource, shown_for: Option<Duration>) -> bool {
+    source == AcceptSource::Key && accept_within_debounce(shown_for)
+}
+
 /// Whether an action in `status` can be accepted by the user: only one that is `Blocked` on
 /// their confirmation. A queued action waits behind another; a running, finished, errored,
 /// timed-out or untracked one has nothing left to accept (#1095).
@@ -488,6 +501,9 @@ pub enum RequestedCommandViewEvent {
 #[derive(Debug, Clone)]
 pub enum RequestedCommandViewAction {
     Accept,
+    /// Run was clicked (button or menu item). Unlike Enter it is a deliberate pointer decision,
+    /// so it is never swallowed by the accept debounce (#1195).
+    AcceptClick,
     AcceptAndAutoExecute,
     ToggleAcceptMenu,
     Reject,
@@ -666,7 +682,7 @@ impl RequestedCommandView {
                 ENTER_ACCEPT_REQUESTED_COMMAND_KEYSTROKE.clone(),
             )),
             ButtonSize::InlineActionHeader,
-            RequestedCommandViewAction::Accept,
+            RequestedCommandViewAction::AcceptClick,
             RequestedCommandViewAction::ToggleAcceptMenu,
             Icon::Check,
             true,
@@ -1162,6 +1178,10 @@ impl RequestedCommandView {
     /// Only then is the reviewed text recorded on the model, which refuses any user accept of
     /// an elided command without that record.
     pub(crate) fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.try_accept_from(AcceptSource::Key, ctx)
+    }
+
+    fn try_accept_from(&mut self, source: AcceptSource, ctx: &mut ViewContext<Self>) -> bool {
         // #1095: a card whose action is no longer awaiting confirmation (running, finished,
         // errored, timed out) is never accepted again, whatever path the Accept came from.
         if !self.awaits_user_accept(ctx) {
@@ -1172,7 +1192,8 @@ impl RequestedCommandView {
             return false;
         }
         // #1195: an Enter already in flight when the card appeared is not a decision.
-        if accept_within_debounce(
+        if accept_is_debounced(
+            source,
             self.awaiting_accept_since
                 .get()
                 .map(|since| since.elapsed()),
@@ -1386,7 +1407,7 @@ impl RequestedCommandView {
                 REQUESTED_COMMAND_ACCEPT_LABEL,
                 accept_keystroke.as_str(),
             )
-            .with_on_select_action(RequestedCommandViewAction::Accept)
+            .with_on_select_action(RequestedCommandViewAction::AcceptClick)
             .into_item();
 
             let auto_item = MenuItemFields::new_with_label("Auto-approve", auto_keystroke.as_str())
@@ -2932,6 +2953,9 @@ impl TypedActionView for RequestedCommandView {
         match action {
             RequestedCommandViewAction::Accept => {
                 self.try_accept(ctx);
+            }
+            RequestedCommandViewAction::AcceptClick => {
+                self.try_accept_from(AcceptSource::Pointer, ctx);
             }
             RequestedCommandViewAction::AcceptAndAutoExecute => {
                 if self.try_accept(ctx) {
