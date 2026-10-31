@@ -3511,8 +3511,18 @@ fn test_flat_storage_at_finish_reduces_finished_block_memory() {
         .join("\r\n");
     let measure = |flat: bool| {
         let _flag = FeatureFlag::MaximizeFlatStorage.override_enabled(flat);
-        let mut block_list =
-            new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+        // A realistic grid. The 10x7 default fixture has so few, so narrow, live rows that
+        // flat storage's per-row index bookkeeping outweighs the cells it frees (the old
+        // assertion failed there by 704 B); the saving is the live rows' cells.
+        let block_sizes = BlockSize {
+            size: SizeInfo::new_without_font_metrics(40, 200),
+            ..test_utils::block_size()
+        };
+        let mut block_list = new_bootstrapped_block_list(
+            Some(block_sizes),
+            None,
+            ChannelEventListener::new_for_test(),
+        );
         let index = insert_block(&mut block_list, "seq\n", &output);
         insert_block(&mut block_list, "echo\n", "done\n");
         let block = &block_list.blocks()[index.0];
