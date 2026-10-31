@@ -11,6 +11,9 @@ use super::{shell::ShellType, ModelEvent, ModelEventDispatcher};
 /// we assume there are multiple queued typeahead commands and wait to request input.
 /// This prevents Zap sending an escape sequence to an arbitrary running program.
 ///
+/// The fallback: a shell that enables bracketed paste when its line editor starts reading ends
+/// the wait at that signal instead ([`LineEditorStatus::note_shell_reading_line`], #1208).
+///
 /// To avoid flickering, this must be less than `BACKGROUND_OUTPUT_RENDER_DELAY_MS`,
 /// which is the delay before a background block is rendered.
 const LINE_EDITOR_ACTIVATION_DELAY: Duration = Duration::from_millis(50);
@@ -70,6 +73,25 @@ impl LineEditorStatus {
     /// This is meant to be called when a command is written to the PTY.
     pub(super) fn did_execute_command(&mut self, ctx: &mut ModelContext<Self>) {
         self.set_line_editor_inactive(ctx);
+    }
+
+    /// The shell's line editor announced that it is reading (readline/zle enable bracketed paste
+    /// as they start a line, #1208): an activation still pending from the prompt's hook is due
+    /// now, not at the end of [`LINE_EDITOR_ACTIVATION_DELAY`]. Without a pending activation the
+    /// signal proves nothing (a program enabling bracketed paste itself) and the fallback stands.
+    pub(super) fn note_shell_reading_line(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.is_line_editor_active || self.mark_line_editor_active_abort_handle.is_none() {
+            return;
+        }
+        abort_if_running(self.mark_line_editor_active_abort_handle.take());
+        self.is_line_editor_active = true;
+        ctx.emit(LineEditorStatusEvent::Active);
+    }
+
+    /// Arms the activation delay as a precmd does, without the model event.
+    #[cfg(test)]
+    pub(crate) fn arm_activation_for_test(&mut self, ctx: &mut ModelContext<Self>) {
+        self.mark_line_editor_active_after_delay(LINE_EDITOR_ACTIVATION_DELAY, ctx);
     }
 
     fn handle_model_event(&mut self, event: &ModelEvent, ctx: &mut ModelContext<Self>) {
@@ -154,3 +176,7 @@ pub enum LineEditorStatusEvent {
 impl Entity for LineEditorStatus {
     type Event = LineEditorStatusEvent;
 }
+
+#[cfg(test)]
+#[path = "line_editor_status_tests.rs"]
+mod tests;

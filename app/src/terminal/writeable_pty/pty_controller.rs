@@ -233,6 +233,20 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(true);
+                // #1208: readline and zle enable bracketed paste as they start reading a line, so
+                // the shell is at its prompt now, not 50 ms after precmd. Only while the hand-off
+                // can vouch that no typeahead line is queued ahead of a write: readline would
+                // run that line first and the write would land in the program it starts.
+                if FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && !me
+                        .terminal_model
+                        .lock()
+                        .typeahead_handoff()
+                        .has_unanswered_lines()
+                {
+                    me.line_editor_status
+                        .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
