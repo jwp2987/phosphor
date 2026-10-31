@@ -2573,6 +2573,7 @@ impl AgentProvidersWidget {
                     .collect();
                 let (visible_matching, hidden_matching): (Vec<_>, Vec<_>) = filtered
                     .into_iter()
+                    .map(|(id, provider)| (id.clone(), provider))
                     .partition(|(cat_id, _)| models_dev::effectively_visible(cat_id, &overrides));
 
                 let total = visible_matching.len();

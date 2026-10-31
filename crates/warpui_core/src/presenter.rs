@@ -20,6 +20,7 @@ use crate::{
 };
 use instant::Instant;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
@@ -158,13 +159,13 @@ pub enum CursorUpdate {
 #[derive(Default, Clone)]
 pub struct PositionCache {
     /// A stack of pending positions to cache
-    pending_positions: Vec<HashMap<String, RectF>>,
+    pending_positions: Vec<FxHashMap<String, RectF>>,
 
     /// The positions that have been committed to the cache.
-    committed_positions: HashMap<String, RectF>,
+    committed_positions: FxHashMap<String, RectF>,
 
     /// Positions that are only cached for a single frame
-    single_frame_positions: HashSet<String>,
+    single_frame_positions: FxHashSet<String>,
 
     /// Positions for a drop target. These positions are always cleared on every frame.
     drop_target_positions: Vec<DropTargetPosition>,
@@ -182,7 +183,7 @@ impl PositionCache {
 
     /// Starts a new namespace for position id caching.
     pub fn start(&mut self) {
-        self.pending_positions.push(HashMap::new());
+        self.pending_positions.push(FxHashMap::default());
     }
 
     /// Ends the current namespace for position id caching, and commits all

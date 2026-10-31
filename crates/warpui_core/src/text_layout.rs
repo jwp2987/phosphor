@@ -20,11 +20,11 @@ use rangemap::RangeMap;
 use smallvec::SmallVec;
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     hash::{Hash, Hasher},
     ops::Range,
     sync::Arc,
 };
+use rustc_hash::FxHashMap;
 use vec1::{vec1, Vec1};
 
 type StyleRun = (Range<usize>, StyleAndFont);
@@ -63,15 +63,15 @@ pub enum TextAlignment {
 }
 
 struct TextCache<T> {
-    prev_frame: Mutex<HashMap<CacheKeyValue, Arc<T>>>,
-    curr_frame: RwLock<HashMap<CacheKeyValue, Arc<T>>>,
+    prev_frame: Mutex<FxHashMap<CacheKeyValue, Arc<T>>>,
+    curr_frame: RwLock<FxHashMap<CacheKeyValue, Arc<T>>>,
 }
 
 impl<T> TextCache<T> {
     pub fn new() -> Self {
         Self {
-            prev_frame: Mutex::new(HashMap::new()),
-            curr_frame: RwLock::new(HashMap::new()),
+            prev_frame: Mutex::new(FxHashMap::default()),
+            curr_frame: RwLock::new(FxHashMap::default()),
         }
     }
 

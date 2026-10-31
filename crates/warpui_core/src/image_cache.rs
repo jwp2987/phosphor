@@ -5,13 +5,14 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     error,
-    hash::{DefaultHasher, Hash, Hasher},
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, LazyLock, Mutex,
     },
 };
+use rustc_hash::FxHasher;
 use strum_macros::EnumIter;
 
 use crate::{
@@ -1197,7 +1198,7 @@ impl ImageCache {
     pub fn evict_image(&self, asset_source: &AssetSource) {
         let mut cache = self.images.write();
 
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 
@@ -1241,7 +1242,7 @@ impl ImageCache {
         fit_type: FitType,
         animated_image_behavior: AnimatedImageBehavior,
     ) {
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 
@@ -1610,7 +1611,7 @@ impl ImageCache {
         asset_cache: &AssetCache,
         mut deferred: Option<&mut DeferredOut>,
     ) -> AssetState<Image> {
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 
