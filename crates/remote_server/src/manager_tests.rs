@@ -579,3 +579,65 @@ mod binary_check_probes {
         assert_eq!(probes.preinstall, None);
     }
 }
+
+// ---------------------------------------------------------------------------
+// classify_proxy_exit / bound_reconnect_attempt (#1171)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn proxy_death_with_a_live_control_master_is_not_a_user_exit() {
+    // The proxy was killed (exit status seen within the 200 ms wait) but the
+    // ssh ControlPath socket is still there: the user is still on the box.
+    // Old code keyed on `exit_status.is_some()` alone and said "user exited".
+    assert_eq!(classify_proxy_exit(Some(true), true), ProxyExit::ProxyOnly);
+    assert_eq!(classify_proxy_exit(Some(true), false), ProxyExit::ProxyOnly);
+}
+
+#[test]
+fn a_gone_control_socket_means_the_user_exited() {
+    assert_eq!(
+        classify_proxy_exit(Some(false), true),
+        ProxyExit::UserExited
+    );
+    assert_eq!(
+        classify_proxy_exit(Some(false), false),
+        ProxyExit::UserExited
+    );
+}
+
+#[test]
+fn without_a_control_master_the_old_exit_status_heuristic_applies() {
+    assert_eq!(classify_proxy_exit(None, true), ProxyExit::UserExited);
+    assert_eq!(classify_proxy_exit(None, false), ProxyExit::ProxyOnly);
+}
+
+#[test]
+fn a_hung_reconnect_attempt_times_out_into_an_initialize_error() {
+    // A short injected timeout stands in for RECONNECT_ATTEMPT_TIMEOUT; the
+    // future never resolves, so only the outer bound can end it.
+    let started = std::time::Instant::now();
+    let result: Result<(), ConnectAndHandshakeError> = futures::executor::block_on(
+        bound_reconnect_attempt(futures::future::pending(), Duration::from_millis(50)),
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    match result {
+        Err(ConnectAndHandshakeError::Initialize(e)) => {
+            assert!(e.to_string().contains("timed out"), "{e}")
+        }
+        _ => panic!("expected a timeout error"),
+    }
+}
+
+#[test]
+fn a_reconnect_attempt_that_finishes_in_time_is_passed_through() {
+    let ok: Result<u32, ConnectAndHandshakeError> = futures::executor::block_on(
+        bound_reconnect_attempt(async { Ok(7) }, Duration::from_secs(5)),
+    );
+    assert!(matches!(ok, Ok(7)));
+    let err: Result<u32, ConnectAndHandshakeError> =
+        futures::executor::block_on(bound_reconnect_attempt(
+            async { Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("boom"))) },
+            Duration::from_secs(5),
+        ));
+    assert!(matches!(err, Err(ConnectAndHandshakeError::Connect(_))));
+}

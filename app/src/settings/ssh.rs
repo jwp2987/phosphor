@@ -54,5 +54,19 @@ define_settings_group!(SshSettings,
             toml_path: "warpify.ssh.split_inherits_ssh",
             description: "Whether splitting a pane whose active session is an SSH session opens the new pane on the same host (it runs the same ssh command, then changes to the same remote directory). Off by default.",
         },
+        // #1171: without ServerAlive* a silently dead link (laptop sleep, wifi handover) is
+        // never noticed while idle and takes ~15 min to notice with unacked data. The shell
+        // wrapper adds `ServerAliveInterval=30 ServerAliveCountMax=6` (180 s tolerance) ONLY
+        // when `ssh -G` reports the interval as 0, so a user's own ssh config always wins.
+        keepalive: SshKeepalive {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+            private: false,
+            storage_key: "SshKeepalive",
+            toml_path: "warpify.ssh.keepalive",
+            description: "Whether the SSH wrapper adds ServerAliveInterval=30 / ServerAliveCountMax=6 to connections whose ssh configuration does not set ServerAliveInterval, so a silently dead connection is detected within about 3 minutes. Your own ssh configuration always wins. New tabs only.",
+        },
     ]
 );

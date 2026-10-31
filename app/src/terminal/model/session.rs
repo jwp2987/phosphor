@@ -212,6 +212,21 @@ impl Sessions {
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(None);
+                        // The client is gone for good (or the ssh session is
+                        // ending): never keep handing completions to it.
+                        session.fall_back_to_control_master_executor();
+                    }
+                }
+                RemoteServerManagerEvent::SessionConnectionLost {
+                    session_id: sid, ..
+                } => {
+                    // The proxy died but the ssh session lives: keep
+                    // completions/suggestions working over the ControlMaster
+                    // while the manager reconnects in the background; the
+                    // `SessionReconnected` arm below swaps back.
+                    if let Some(session) = sessions.sessions.get(sid) {
+                        session.set_remote_host_id(None);
+                        session.fall_back_to_control_master_executor();
                     }
                 }
                 RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
@@ -1197,6 +1212,35 @@ impl Session {
     /// backed by the reconnected client.
     pub fn set_command_executor(&self, executor: Arc<dyn CommandExecutor>) {
         *self.command_executor.write() = executor;
+    }
+
+    /// Swaps this legacy-ssh session's command executor back to the
+    /// ControlMaster-based [`RemoteCommandExecutor`], e.g. after the
+    /// remote-server proxy died (#1171). Returns `true` if the executor was
+    /// replaced; `false` for a non-ssh session or when it is already the
+    /// ControlMaster executor (so repeated events log and swap only once).
+    #[cfg(feature = "local_tty")]
+    pub fn fall_back_to_control_master_executor(&self) -> bool {
+        let IsLegacySSHSession::Yes { socket_path, .. } = &self.info.is_legacy_ssh_session else {
+            return false;
+        };
+        let mut executor = self.command_executor.write();
+        if executor
+            .as_ref()
+            .as_any()
+            .downcast_ref::<RemoteCommandExecutor>()
+            .is_some()
+        {
+            return false;
+        }
+        let wsl_distro = self.info.wsl_name().map(ToOwned::to_owned);
+        *executor = Arc::new(RemoteCommandExecutor::new(socket_path.clone(), wsl_distro));
+        log::info!(
+            "Remote-server client lost for ssh session {:?}; \
+             command executor fell back to the ControlMaster",
+            self.info.session_id
+        );
+        true
     }
 
     /// Returns true if the session is employing in-band command execution to run generators.

@@ -35,6 +35,11 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 2;
 /// Delay between reconnection attempts.
 #[cfg(not(target_family = "wasm"))]
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+/// Outer bound on one reconnect attempt (connect + `Initialize`). Without it
+/// the only bound was the 120 s `Initialize` request timeout, so two attempts
+/// could sit in `Reconnecting` for ~4 minutes.
+#[cfg(not(target_family = "wasm"))]
+const RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Brief timeout for awaiting a child process's exit status after a
 /// spontaneous disconnect. Gives the `remote-server-proxy` subprocess time
 /// to report its exit code and signal status before we give up and report
@@ -66,6 +71,50 @@ enum ConnectAndHandshakeError {
     /// `client.initialize()` handshake failed.
     #[error("initialize: {0:#}")]
     Initialize(anyhow::Error),
+}
+
+/// Why the `remote-server-proxy` child went away, as far as reconnecting is
+/// concerned.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyExit {
+    /// The ssh session itself is gone (the user typed `exit`, or the master
+    /// died), so there is nothing to reconnect to.
+    UserExited,
+    /// Only the proxy (or the network path under it) went away while the ssh
+    /// session lives; worth a bounded background reconnect.
+    ProxyOnly,
+}
+
+/// Classifies a proxy exit. `master_socket_present` is whether the ssh
+/// ControlPath socket still exists (`None` when the session has no
+/// ControlMaster). The socket, not the proxy's exit, tells whether the user
+/// left: a killed or crashed proxy used to be indistinguishable from `exit`
+/// and permanently disabled remote completions for the session (#1171).
+#[cfg(not(target_family = "wasm"))]
+fn classify_proxy_exit(master_socket_present: Option<bool>, child_exited: bool) -> ProxyExit {
+    match master_socket_present {
+        Some(true) => ProxyExit::ProxyOnly,
+        Some(false) => ProxyExit::UserExited,
+        // No ControlMaster to ask: keep the old heuristic.
+        None if child_exited => ProxyExit::UserExited,
+        None => ProxyExit::ProxyOnly,
+    }
+}
+
+/// Runs one reconnect attempt under an outer `timeout`, turning an expiry
+/// into an `Initialize` error so it flows through the normal failure/retry
+/// path. Dropping the future drops the proxy child (`kill_on_drop`).
+#[cfg(not(target_family = "wasm"))]
+async fn bound_reconnect_attempt<T>(
+    attempt: impl std::future::Future<Output = Result<T, ConnectAndHandshakeError>>,
+    timeout: Duration,
+) -> Result<T, ConnectAndHandshakeError> {
+    attempt.with_timeout(timeout).await.unwrap_or_else(|_| {
+        Err(ConnectAndHandshakeError::Initialize(anyhow::anyhow!(
+            "reconnect attempt timed out after {timeout:?}"
+        )))
+    })
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -377,6 +426,15 @@ pub enum RemoteServerManagerEvent {
         /// the exit status could not be determined.
         exit_status: Option<RemoteServerExitStatus>,
     },
+    /// The remote-server proxy died while the ssh session itself is still up
+    /// and a background reconnect is starting. Not final: `SessionReconnected`
+    /// or `SessionDisconnected` follows. Subscribers that hold a client for
+    /// this session should stop using it (the session's command executor is
+    /// swapped back to the ControlMaster one meanwhile).
+    SessionConnectionLost {
+        session_id: SessionId,
+        host_id: HostId,
+    },
     /// A reconnection attempt succeeded. Downstream owners (e.g.
     /// `RemoteServerCommandExecutor`) should swap their client reference
     /// to the new one carried in `client`.
@@ -589,6 +647,7 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::SessionConnectionFailed { session_id, .. }
             | RemoteServerManagerEvent::SessionDisconnected { session_id, .. }
             | RemoteServerManagerEvent::SessionReconnected { session_id, .. }
+            | RemoteServerManagerEvent::SessionConnectionLost { session_id, .. }
             | RemoteServerManagerEvent::SessionDeregistered { session_id }
             | RemoteServerManagerEvent::NavigatedToDirectory { session_id, .. }
             | RemoteServerManagerEvent::SetupStateChanged { session_id, .. }
@@ -1955,6 +2014,9 @@ impl RemoteServerManager {
             ctx.background_executor()
                 .spawn(async move {
                     let exit_status = Self::await_exit_status(_child, session_id).await;
+                    // A stat of the local ControlPath socket: microseconds,
+                    // and off the entity-model thread.
+                    let master_socket_present = control_path.as_ref().map(|p| p.exists());
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             me.finish_mark_session_disconnected(
@@ -1964,6 +2026,7 @@ impl RemoteServerManager {
                                 control_path,
                                 transport,
                                 exit_status,
+                                master_socket_present,
                                 ctx,
                             );
                         })
@@ -1996,6 +2059,7 @@ impl RemoteServerManager {
         control_path: Option<PathBuf>,
         transport: Arc<dyn RemoteTransport>,
         exit_status: Option<RemoteServerExitStatus>,
+        master_socket_present: Option<bool>,
         ctx: &mut ModelContext<Self>,
     ) {
         // The session may have been deregistered (or otherwise reset) while
@@ -2011,22 +2075,20 @@ impl RemoteServerManager {
         }
         self.sessions.remove(&session_id);
 
-        // If the child process has already exited (`exit_status.is_some()`),
-        // it means the remote daemon is really gone — e.g. the user typed
-        // `exit` in the remote shell, and ssh ControlMaster tore down all
-        // slave channels together, so `remote-server-proxy` exited too. In
-        // this case, an immediate reconnect will most likely fail and would
-        // instead make the terminal pane hang for 2-4 seconds before fully
-        // ending; so we skip auto-reconnect and go straight to the
-        // Disconnected path. Only `exit_status.is_none()` (child still
-        // running, or the wait timed out) — a "true transient network
-        // blip" — keeps the reconnect logic.
-        let child_already_exited = exit_status.is_some();
+        // Did the user leave, or did only the proxy die? A proxy exit alone
+        // proves nothing: `exit` in the remote shell makes ssh tear down the
+        // master and every channel (proxy included), but a killed/crashed
+        // proxy or daemon looks identical from here. The ControlPath socket
+        // tells them apart; reconnecting after a real `exit` would just hang
+        // the pane for 2-4 s. See `classify_proxy_exit`.
+        let proxy_exit = classify_proxy_exit(master_socket_present, exit_status.is_some());
+        let child_already_exited = proxy_exit == ProxyExit::UserExited;
         let Some(auth_context) = self.auth_context.clone().filter(|_| !child_already_exited) else {
             if child_already_exited {
                 log::info!(
                     "Spontaneous disconnect for session {session_id:?}: \
-                     child already exited (exit_status={exit_status:?}), \
+                     ssh session gone (exit_status={exit_status:?}, \
+                     master_socket_present={master_socket_present:?}), \
                      skipping reconnect"
                 );
             } else {
@@ -2052,6 +2114,12 @@ impl RemoteServerManager {
             "Spontaneous disconnect for session {session_id:?}, \
              will attempt reconnect (transport={transport:?})"
         );
+        // Let the session fall back to the ControlMaster executor right away
+        // so completions keep working while we reconnect in the background.
+        ctx.emit(RemoteServerManagerEvent::SessionConnectionLost {
+            session_id,
+            host_id: host_id.clone(),
+        });
 
         // Clear stale repo metadata and host index so downstream
         // models don't hold onto data from the dead server process.
@@ -2133,12 +2201,15 @@ impl RemoteServerManager {
                     return;
                 }
 
-                match Self::run_connect_and_handshake(
-                    session_id,
-                    &*transport_clone,
-                    &auth_context_for_task,
-                    &spawner,
-                    &executor,
+                match bound_reconnect_attempt(
+                    Self::run_connect_and_handshake(
+                        session_id,
+                        &*transport_clone,
+                        &auth_context_for_task,
+                        &spawner,
+                        &executor,
+                    ),
+                    RECONNECT_ATTEMPT_TIMEOUT,
                 )
                 .await
                 {
