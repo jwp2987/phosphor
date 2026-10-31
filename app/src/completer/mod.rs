@@ -465,8 +465,15 @@ impl PathCompletionContext for SessionContext {
         // connected yet, the command executor may be an InBand fallback that
         // sends escape sequences to a raw remote shell. Return empty without
         // caching so we retry after the remote server handshake finishes.
+        //
+        // Not for a bootstrapped subshell (#1239): a root shell Phosphorized inside an ssh
+        // session is `WarpifiedRemote` too, and its in-band executor is its final one, so
+        // waiting for a handshake that is not coming withheld every path completion from it.
         if let SessionType::WarpifiedRemote { host_id: None } = self.session.session_type() {
-            if FeatureFlag::SshRemoteServer.is_enabled() && !self.session.is_legacy_ssh_session() {
+            if FeatureFlag::SshRemoteServer.is_enabled()
+                && !self.session.is_legacy_ssh_session()
+                && self.session.subshell_info().is_none()
+            {
                 return Arc::new(vec![]);
             }
         }

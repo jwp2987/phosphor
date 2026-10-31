@@ -764,6 +764,14 @@ impl<S> TerminalManager<S> {
         if !*SshSettings::as_ref(ctx).keepalive.value() {
             env_vars.insert(OsString::from("WARP_SSH_KEEPALIVE"), OsString::from("0"));
         }
+        // #1243: likewise only the opt-out is exported; the wrapper leaves the ssh default alone
+        // for every other launch path.
+        if !*SshSettings::as_ref(ctx).obscure_keystroke_timing.value() {
+            env_vars.insert(
+                OsString::from("WARP_SSH_OBSCURE_KEYSTROKE_TIMING"),
+                OsString::from("0"),
+            );
+        }
 
         // Only meaningful when the legacy ControlMaster wrapper is active.
         let reuse_ssh_control_master = enable_ssh_wrapper

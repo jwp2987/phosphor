@@ -132,7 +132,7 @@ fn test_malicious_histfile_path_does_not_execute_injected_commands() {
         let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
 
         // read_history for a WarpifiedRemote session calls read_history_from_file,
-        // which builds `cat '{escaped_path}'` and executes it via TestCommandExecutor
+        // which builds `tail -n N '{escaped_path}'` and executes it via TestCommandExecutor
         let _ = session.read_history(false).await;
 
         assert!(
@@ -940,4 +940,130 @@ fn deferred_name_enumeration_is_redundant_only_for_a_local_powershell_session() 
         );
         assert!(!session.deferred_name_enumeration_is_redundant());
     });
+}
+
+/// #1239: a subshell Phosphorized inside an ssh session (`sudo -s`, `ksu`) runs on that session's
+/// host, but the remote-server manager only ever names the ssh session itself. The subshell takes
+/// the host id of its nearest ancestor that has one, and follows that ancestor's connection.
+mod subshell_remote_host {
+    use std::path::PathBuf;
+
+    use warp_core::HostId;
+
+    use super::*;
+
+    const SSH: u64 = 100;
+    const SUDO: u64 = 101;
+    const SU: u64 = 102;
+    const OTHER: u64 = 200;
+
+    fn host() -> HostId {
+        HostId::new("host-1239".to_owned())
+    }
+
+    /// `ssh` -> `sudo -s` -> `su -`, plus an unrelated remote session.
+    fn sessions() -> Sessions {
+        let mut sessions = Sessions::new_for_test();
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SSH)
+                .with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock")),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SUDO)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SSH.into())
+                .with_subshell_spawned_by("sudo -s"),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SU)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SUDO.into())
+                .with_subshell_spawned_by("su -"),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(OTHER)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote),
+        );
+        sessions
+    }
+
+    fn host_of(sessions: &Sessions, id: u64) -> Option<HostId> {
+        sessions.get(id.into()).unwrap().remote_host_id()
+    }
+
+    #[test]
+    fn a_subshell_inherits_the_host_of_the_nearest_connected_ancestor() {
+        let sessions = sessions();
+        assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), None);
+
+        sessions.get(SSH.into()).unwrap().set_remote_host_id(Some(host()));
+        // The direct child and the grandchild both resolve to the ssh session's host.
+        assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), Some(host()));
+        assert_eq!(sessions.inherited_remote_host_id(Some(SUDO.into())), Some(host()));
+        // No chain, or a chain that leads to a session without a host, resolves to nothing.
+        assert_eq!(sessions.inherited_remote_host_id(None), None);
+        assert_eq!(sessions.inherited_remote_host_id(Some(OTHER.into())), None);
+    }
+
+    #[test]
+    fn the_ssh_sessions_connection_events_reach_its_subshells_only() {
+        let sessions = sessions();
+        sessions.set_remote_host_id_for_descendants(SSH.into(), Some(host()));
+        assert_eq!(host_of(&sessions, SUDO), Some(host()));
+        assert_eq!(host_of(&sessions, SU), Some(host()));
+        // The root is the caller's business, and an unrelated session is untouched.
+        assert_eq!(host_of(&sessions, SSH), None);
+        assert_eq!(host_of(&sessions, OTHER), None);
+
+        // A lost connection clears the whole chain below the ssh session.
+        sessions.set_remote_host_id_for_descendants(SSH.into(), None);
+        assert_eq!(host_of(&sessions, SUDO), None);
+        assert_eq!(host_of(&sessions, SU), None);
+    }
+
+    #[test]
+    fn a_cycle_in_the_spawning_chain_terminates() {
+        let mut sessions = Sessions::new_for_test();
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SUDO)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SU.into()),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SU)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SUDO.into()),
+        );
+        assert_eq!(sessions.inherited_remote_host_id(Some(SUDO.into())), None);
+        sessions.set_remote_host_id_for_descendants(OTHER.into(), Some(host()));
+        assert_eq!(host_of(&sessions, SUDO), None);
+    }
+}
+
+/// #1242: a remote history is read as its newest lines, not whole, unless the override says so.
+#[test]
+fn remote_history_is_read_as_a_bounded_tail() {
+    use super::{remote_history_max_lines_from_env, remote_history_read_command};
+
+    assert_eq!(remote_history_max_lines_from_env(None), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some("abc")), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some(" 1000 ")), Some(1000));
+    assert_eq!(remote_history_max_lines_from_env(Some("0")), None);
+
+    // The path is passed through already quoted; the command never re-interprets it.
+    let quoted = "'/home/u/.bash_history'";
+    assert_eq!(
+        remote_history_read_command(quoted, Some(50_000)),
+        "tail -n 50000 '/home/u/.bash_history'"
+    );
+    assert_eq!(
+        remote_history_read_command(quoted, None),
+        "cat '/home/u/.bash_history'"
+    );
 }

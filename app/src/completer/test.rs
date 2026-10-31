@@ -918,3 +918,60 @@ async fn fast_local_listing_returns_entries() {
     .await;
     assert_eq!(entries.map(|e| e.len()), Some(1));
 }
+
+/// #1239: a subshell Phosphorized inside an ssh session (`sudo -s`, `ksu`) is a `WarpifiedRemote`
+/// session with no host id of its own and no ssh socket, and its in-band executor is its final
+/// one. The pre-connect guard (empty listing until the remote-server handshake) must not apply
+/// to it: it withheld every path completion from root shells over ssh.
+#[cfg(unix)]
+#[test]
+pub fn test_remote_subshell_lists_directory_entries_before_any_host_id() {
+    use crate::terminal::shell::ShellType;
+    use warp_core::features::FeatureFlag;
+
+    App::test((), |app| async move {
+        let _remote_server = FeatureFlag::SshRemoteServer.override_enabled(true);
+        VirtualFS::test(
+            "test_remote_subshell_lists_directory_entries_before_any_host_id",
+            |dirs, mut sandbox| {
+                sandbox.mkdir("etc");
+                sandbox.touch(vec![Stub::EmptyFile("root.txt")]);
+                let cwd = TypedPathBuf::from(dirs.tests().to_string_lossy().as_bytes());
+
+                let subshell = Session::new(
+                    SessionInfo::new_for_test()
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_shell_type(ShellType::Bash)
+                        .with_spawning_session_id(SessionId::from(7u64))
+                        .with_subshell_spawned_by("sudo -s"),
+                    Arc::new(TestCommandExecutor::default()),
+                );
+                let ctx = test_session_context(subshell, cwd.clone(), &app);
+                let mut entries = HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(
+                    warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone())),
+                ));
+                entries.remove(&EngineDirEntry::test_dir("."));
+                assert_eq!(
+                    entries,
+                    HashSet::from_iter([
+                        EngineDirEntry::test_dir("etc"),
+                        EngineDirEntry::test_file("root.txt"),
+                    ])
+                );
+
+                // The ssh session itself, before its handshake, still gets the (uncached) empty
+                // answer: its executor is about to be replaced.
+                let connecting = Session::new(
+                    SessionInfo::new_for_test()
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_shell_type(ShellType::Bash),
+                    Arc::new(TestCommandExecutor::default()),
+                );
+                let ctx = test_session_context(connecting, cwd.clone(), &app);
+                assert!(
+                    warpui::r#async::block_on(ctx.list_directory_entries(cwd)).is_empty()
+                );
+            },
+        );
+    });
+}

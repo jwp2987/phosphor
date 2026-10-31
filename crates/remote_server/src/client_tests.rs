@@ -1009,3 +1009,62 @@ async fn dropping_run_command_future_sends_abort_for_its_request() {
         other => panic!("Expected Abort, got {other:?}"),
     }
 }
+
+/// #1241: the abort-on-drop guard covers every awaited request, not only `run_command`. An
+/// agent read cancelled by Stop (or a link probe superseded by the next hover) must stop the
+/// remote work too, or its result crosses the shared ssh connection to be thrown away.
+#[tokio::test]
+async fn dropping_any_request_future_sends_abort_for_its_request() {
+    use futures::FutureExt as _;
+
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, _server_write) = tokio::io::split(server_stream);
+    let mut server_read = server_read.compat();
+
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    let pending = client.read_file_context(ReadFileContextRequest {
+        files: vec![],
+        max_file_bytes: None,
+        max_batch_bytes: None,
+    });
+    assert!(pending.now_or_never().is_none());
+    let read = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    assert!(matches!(
+        &read.message,
+        Some(client_message::Message::HostScoped(HostScopedRequest {
+            message: Some(host_scoped_request::Message::ReadFileContext(_)),
+        }))
+    ));
+    let abort = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    match &abort.message {
+        Some(client_message::Message::Notification(Notification {
+            message: Some(notification::Message::Abort(a)),
+        })) => assert_eq!(a.request_id_to_abort, read.request_id),
+        other => panic!("Expected Abort, got {other:?}"),
+    }
+    // The dropped request no longer waits for a response.
+    assert!(client.pending_requests.is_empty());
+
+    // A request that completes sends no Abort: the next frame the server sees is the next
+    // request, not a stale cancellation.
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    tokio::spawn(mock_server_with(
+        server_read.compat(),
+        server_write.compat_write(),
+        |_| server_message::Message::ListDirectoryResponse(ListDirectoryResponse::default()),
+    ));
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    client.list_directory("/tmp".to_string()).await.unwrap();
+    assert!(client.pending_requests.is_empty());
+}
