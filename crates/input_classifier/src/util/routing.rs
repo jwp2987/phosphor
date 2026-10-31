@@ -284,8 +284,14 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
     // the session is asked instead (#1185: `write` lacked evidence only because no parse had
     // described it).
     let installed = head_described || ctx.head_known_to_shell == Some(true);
-    let head_is_curated = is_known_shell_command_word(head);
-    let head_is_keyword = is_one_off_shell_command_keyword(head);
+    // #1291: in a conversation `sudo`/`doas` in front of a command is a wrapper like `env`, `time`
+    // and `timeout`: the evidence is the command it runs, not the privilege word. Alone or with
+    // only options (`sudo`, `sudo -s`) there is nothing wrapped and the keyword stands.
+    let wrapped_index = effective_head_index(&words, first_index).filter(|&index| {
+        in_conversation && index > first_index && matches!(head_lower.as_str(), "sudo" | "doas")
+    });
+    let head_is_curated = wrapped_index.is_none() && is_known_shell_command_word(head);
+    let head_is_keyword = wrapped_index.is_none() && is_one_off_shell_command_keyword(head);
     let head_is_path = is_explicit_path_token(head);
     // Known absent: the session says so, or a complete and current command index does not
     // describe it (#696). `None` from the session with no index to fall back on is "cannot say".
@@ -352,6 +358,19 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
             return Decision::undecided(Rule::Model);
         }
         if no_evidence {
+            return Decision::agent(Rule::NoEvidenceInConversation);
+        }
+        // #1291: `sudo rm the old logs for me` is addressed to the agent; running it would hand
+        // the prose to `rm` as root. Commands that take free text and one-off keywords
+        // (`sudo echo tell me`) carry English arguments as a matter of course.
+        if let Some(index) = wrapped_index
+            && !has_shell_structure(text)
+            && !is_one_off_shell_command_keyword(&words[index].text)
+            && !takes_free_text(&words, index)
+            && words[index..].iter().any(|word| {
+                !word.quoted && STRONG_PROSE_WORDS.contains(&word.text.to_lowercase().as_str())
+            })
+        {
             return Decision::agent(Rule::NoEvidenceInConversation);
         }
         if !(installed || head_is_curated || head_is_keyword || head_is_path) {

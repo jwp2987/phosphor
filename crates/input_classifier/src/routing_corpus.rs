@@ -907,6 +907,23 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("ls -la /tmp", "#1183").in_conversation(),
     Case::cmd("python3 x.py", "#1183").in_conversation(),
     Case::cmd("sudo systemctl restart nginx", "#1183").in_conversation(),
+    // -- #1291: in a conversation `sudo` is judged on what it wraps, like env/time/timeout.
+    Case::cmd("sudo apt update", "#1291").in_conversation(),
+    Case::cmd("sudo -s", "#1291").in_conversation(),
+    Case::cmd("sudo", "#1291").in_conversation(),
+    Case::cmd("sudo rm the old logs for me", "#1291")
+        .in_conversation()
+        .expect(Expect::Agent)
+        .v1_xfail("#1291: the `sudo` keyword makes the line a command whatever it wraps"),
+    Case::cmd("sudo please fix my wifi", "#1291")
+        .in_conversation()
+        .expect(Expect::Agent)
+        .v1_xfail("#1291: the `sudo` keyword makes the line a command whatever it wraps"),
+    // The plain terminal runs an installed head in the shell (owner rule), sudo included.
+    Case::cmd(
+        "sudo rm the old logs for me",
+        "#1291 (plain terminal unchanged)",
+    ),
     Case::cmd("for i in a b; do echo $i; done", "#1183").in_conversation(),
     Case::cmd("ls | grep a", "#1183").in_conversation(),
     Case::cmd("./run.sh --fast", "#1183").in_conversation(),
