@@ -61,3 +61,36 @@ fn early_bootstrap_flush_is_on_unless_switched_off() {
     assert!(!early_bootstrap_flush_from_env(Some("off")));
     assert!(!early_bootstrap_flush_from_env(Some("no")));
 }
+
+/// #1266: a passed binary check waits for a speculative connect that is still in flight instead
+/// of racing it with a second connect; once it failed, or when it never ran, the probe-driven
+/// connect starts as before.
+#[test]
+fn a_passed_check_waits_for_an_in_flight_speculative_connect() {
+    use super::{CheckPassedAction, SpeculativeConnect, check_passed_action};
+
+    assert_eq!(
+        check_passed_action(SpeculativeConnect::InFlight),
+        CheckPassedAction::WaitForSpeculativeConnect
+    );
+    assert_eq!(
+        check_passed_action(SpeculativeConnect::Failed),
+        CheckPassedAction::StartConnect
+    );
+    assert_eq!(
+        check_passed_action(SpeculativeConnect::Off),
+        CheckPassedAction::StartConnect
+    );
+}
+
+#[test]
+fn speculative_connect_is_on_unless_switched_off() {
+    use super::speculative_connect_from_env;
+
+    assert!(speculative_connect_from_env(None));
+    assert!(speculative_connect_from_env(Some("")));
+    assert!(speculative_connect_from_env(Some("1")));
+    assert!(!speculative_connect_from_env(Some("0")));
+    assert!(!speculative_connect_from_env(Some(" off ")));
+    assert!(!speculative_connect_from_env(Some("false")));
+}

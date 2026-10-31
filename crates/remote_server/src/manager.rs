@@ -67,6 +67,12 @@ const RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(not(target_family = "wasm"))]
 const EXIT_STATUS_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// Bound on a speculative connect (#1266): a proxy spawn that hangs (ssh with a dead master,
+/// a daemon that never binds its socket) must not keep the attempt, and its ssh child, alive
+/// past the point where the probe-driven setup has long made its own decision.
+#[cfg(not(target_family = "wasm"))]
+const SPECULATIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Parameters that travel together through the reconnection flow.
 #[cfg(not(target_family = "wasm"))]
 struct ReconnectParams {
@@ -426,6 +432,11 @@ pub enum RemoteServerManagerEvent {
         /// The error message from the failed phase.
         error: String,
     },
+    /// A speculative connect (#1266, started alongside the binary probes without waiting for
+    /// their verdict) did not succeed. Not a failure of the session: the probe-driven setup
+    /// decides what happens next, and no setup state changes on this event. Never emitted for
+    /// an attempt that was cancelled.
+    SessionSpeculativeConnectFailed { session_id: SessionId },
     /// This session's connection dropped. Carries `host_id` so consumers
     /// don't need to look it up from the already-transitioned state.
     /// This session's underlying connection is no longer usable: the
@@ -880,6 +891,11 @@ pub struct RemoteServerManager {
     connected_at: HashMap<SessionId, Instant>,
     /// Consecutive connections of a session that died within `STABLE_CONNECTION_AFTER`.
     short_lived_connections: HashMap<SessionId, u32>,
+    /// The speculative connect attempt (#1266) currently allowed to install a connection for a
+    /// session, by attempt id. An attempt whose id is no longer here (cancelled, or superseded
+    /// by a probe-driven `connect_session`) abandons its connection instead of installing it.
+    speculative_attempts: HashMap<SessionId, u64>,
+    next_speculative_attempt: u64,
     /// Last accepted `RemoteAgentContextSnapshot` per host, used by
     /// `accept_remote_agent_context_snapshot_revision` to drop stale/
     /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
@@ -913,6 +929,8 @@ impl RemoteServerManager {
             connection_generation: HashMap::new(),
             connected_at: HashMap::new(),
             short_lived_connections: HashMap::new(),
+            speculative_attempts: HashMap::new(),
+            next_speculative_attempt: 0,
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
         }
@@ -1014,7 +1032,16 @@ impl RemoteServerManager {
                             if let Some(p) = &platform {
                                 me.session_platforms.insert(session_id, p.clone());
                             }
-                            if let Err(error) = &check_result {
+                            // #1266: a speculative connect may already have connected this
+                            // session; a probe that failed on the side is then not a setup
+                            // failure to show.
+                            let connected = matches!(
+                                me.sessions.get(&session_id),
+                                Some(RemoteSessionState::Connected { .. })
+                            );
+                            if let Err(error) = &check_result
+                                && !connected
+                            {
                                 ctx.emit(RemoteServerManagerEvent::SetupStateChanged {
                                     session_id,
                                     state: RemoteServerSetupState::Failed {
@@ -1166,6 +1193,8 @@ impl RemoteServerManager {
                 state: RemoteServerSetupState::Initializing,
             });
 
+            // A speculative attempt still in flight (#1266) is superseded by this connect.
+            self.speculative_attempts.remove(&session_id);
             self.sessions
                 .insert(session_id, RemoteSessionState::Connecting);
             if let Some(connection_label) = connection_label {
@@ -1192,6 +1221,7 @@ impl RemoteServerManager {
                         &auth_context_for_task,
                         &spawner,
                         &executor,
+                        None,
                     )
                     .await
                     {
@@ -1235,13 +1265,157 @@ impl RemoteServerManager {
         }
     }
 
-    /// Shared connect + handshake logic used by both `connect_session` and
-    /// `attempt_reconnect`.
+    /// Starts a connect + handshake for a session WITHOUT waiting for the binary probes (#1266),
+    /// so that on a host where the extension is installed the connect overlaps the probe stage
+    /// instead of following it. Differs from [`Self::connect_session`] in what it tells the
+    /// world: no `SessionConnecting`, no `SetupStateChanged` on start or on failure, and a
+    /// failure ends in [`RemoteServerManagerEvent::SessionSpeculativeConnectFailed`] instead of
+    /// `SessionConnectionFailed` -- the probe-driven setup owns the user-visible outcome.
+    /// Success is indistinguishable from a normal connect (`SessionConnected`, `Ready`).
+    /// Bounded by [`SPECULATIVE_CONNECT_TIMEOUT`]; cancellable with
+    /// [`Self::cancel_speculative_connect`].
+    #[cfg(not(target_family = "wasm"))]
+    pub fn connect_session_speculative<T>(
+        &mut self,
+        session_id: SessionId,
+        transport: T,
+        auth_context: Arc<RemoteServerAuthContext>,
+        connection_label: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) where
+        T: RemoteTransport + 'static,
+    {
+        log::info!("Starting speculative remote server connection for session {session_id:?}");
+        self.next_speculative_attempt = self.next_speculative_attempt.wrapping_add(1);
+        let attempt = self.next_speculative_attempt;
+        self.speculative_attempts.insert(session_id, attempt);
+        self.sessions
+            .insert(session_id, RemoteSessionState::Connecting);
+        if let Some(connection_label) = connection_label {
+            self.session_labels.insert(session_id, connection_label);
+        }
+        self.auth_context = Some(Arc::clone(&auth_context));
+
+        let spawner = self.spawner.clone();
+        let executor = ctx.background_executor().clone();
+        let transport: Arc<dyn RemoteTransport> = Arc::new(transport);
+        let auth_context_for_task = Arc::clone(&auth_context);
+        let identity_key = auth_context.remote_server_identity_key();
+        ctx.background_executor()
+            .spawn(async move {
+                let result = bound_reconnect_attempt(
+                    Self::run_connect_and_handshake(
+                        session_id,
+                        &*transport,
+                        &auth_context_for_task,
+                        &spawner,
+                        &executor,
+                        Some(attempt),
+                    ),
+                    SPECULATIVE_CONNECT_TIMEOUT,
+                )
+                .await;
+                let _ = spawner
+                    .spawn(move |me, ctx| {
+                        me.finish_speculative_connect(
+                            session_id,
+                            attempt,
+                            result,
+                            identity_key,
+                            transport,
+                            ctx,
+                        );
+                    })
+                    .await;
+            })
+            .detach();
+    }
+
+    /// The end of a speculative connect (#1266). An attempt that is no longer the session's
+    /// current one (cancelled, or superseded by a probe-driven connect) changes nothing and
+    /// says nothing.
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_speculative_connect(
+        &mut self,
+        session_id: SessionId,
+        attempt: u64,
+        result: Result<HostId, ConnectAndHandshakeError>,
+        identity_key: String,
+        transport: Arc<dyn RemoteTransport>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.speculative_attempts.get(&session_id) != Some(&attempt) {
+            log::info!(
+                "Speculative remote server connection for session {session_id:?} was \
+                 superseded; discarding its result"
+            );
+            return;
+        }
+        self.speculative_attempts.remove(&session_id);
+        match result {
+            Ok(host_id) => {
+                log::info!(
+                    "Speculative remote server connection for session {session_id:?} succeeded"
+                );
+                self.mark_session_connected(session_id, host_id, identity_key, transport, ctx);
+            }
+            Err(e) => {
+                log::info!(
+                    "Speculative remote server connection for session {session_id:?} did not \
+                     succeed ({e}); the binary probes decide"
+                );
+                // Never through `finish_mark_session_disconnected`: a speculative miss is not a
+                // connection that died, so it counts for nothing in #1250's short-lived tally.
+                if matches!(
+                    self.sessions.get(&session_id),
+                    Some(
+                        RemoteSessionState::Connecting
+                            | RemoteSessionState::Initializing { .. }
+                            | RemoteSessionState::Disconnected
+                    )
+                ) {
+                    self.sessions.remove(&session_id);
+                }
+                ctx.emit(RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id });
+            }
+        }
+    }
+
+    /// Abandons a session's speculative connect (#1266), if one is in flight: its connection,
+    /// ready or not, is dropped (killing the proxy child) and its result is never reported.
+    /// Returns whether there was one.
+    pub fn cancel_speculative_connect(&mut self, session_id: SessionId) -> bool {
+        if self.speculative_attempts.remove(&session_id).is_none() {
+            return false;
+        }
+        if matches!(
+            self.sessions.get(&session_id),
+            Some(
+                RemoteSessionState::Connecting
+                    | RemoteSessionState::Initializing { .. }
+                    | RemoteSessionState::Disconnected
+            )
+        ) {
+            self.sessions.remove(&session_id);
+        }
+        true
+    }
+
+    /// Whether a speculative connect (#1266) is in flight for the session.
+    pub fn has_speculative_connect(&self, session_id: SessionId) -> bool {
+        self.speculative_attempts.contains_key(&session_id)
+    }
+
+    /// Shared connect + handshake logic used by `connect_session`, `attempt_reconnect` and
+    /// `connect_session_speculative`.
     /// 1. Calls `transport.connect()` to establish streams.
     /// 2. Transitions the session to `Initializing` and starts draining the
     ///    event channel.
     /// 3. Runs the initialize handshake with the current auth token, if any.
     /// Returns `Ok(host_id)` on success, or a phase-tagged error.
+    /// `speculative_attempt` (#1266) is the attempt id a speculative connect must still hold
+    /// in `speculative_attempts` when its connection is ready to be installed; otherwise the
+    /// connection is dropped unused, exactly as for a session deregistered meanwhile.
     #[cfg(not(target_family = "wasm"))]
     async fn run_connect_and_handshake(
         session_id: SessionId,
@@ -1249,6 +1423,7 @@ impl RemoteServerManager {
         auth_context: &RemoteServerAuthContext,
         spawner: &ModelSpawner<Self>,
         executor: &Arc<warpui::r#async::executor::Background>,
+        speculative_attempt: Option<u64>,
     ) -> Result<HostId, ConnectAndHandshakeError> {
         // Phase 1: Connect (establish streams, create client).
         let connect_start = std::time::Instant::now();
@@ -1274,6 +1449,11 @@ impl RemoteServerManager {
         let was_inserted = spawner
             .spawn(move |me, ctx| {
                 if !me.sessions.contains_key(&session_id) {
+                    return false;
+                }
+                if speculative_attempt.is_some_and(|attempt| {
+                    me.speculative_attempts.get(&session_id) != Some(&attempt)
+                }) {
                     return false;
                 }
                 me.sessions.insert(
@@ -1463,6 +1643,7 @@ impl RemoteServerManager {
         self.connection_generation.remove(&session_id);
         self.connected_at.remove(&session_id);
         self.short_lived_connections.remove(&session_id);
+        self.speculative_attempts.remove(&session_id);
 
         // Remove the session entry. Dropping the `RemoteSessionState`
         // here drops the transport's owned `Child` (if any), which
@@ -2299,6 +2480,7 @@ impl RemoteServerManager {
                         &auth_context_for_task,
                         &spawner,
                         &executor,
+                        None,
                     ),
                     RECONNECT_ATTEMPT_TIMEOUT,
                 )

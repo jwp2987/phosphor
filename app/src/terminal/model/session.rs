@@ -246,6 +246,7 @@ impl Sessions {
                     ctx.notify();
                 }
                 RemoteServerManagerEvent::SessionConnecting { .. }
+                | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. }
                 | RemoteServerManagerEvent::SessionDeregistered { .. }
                 | RemoteServerManagerEvent::SessionConnectionFailed { .. }
                 | RemoteServerManagerEvent::HostConnected { .. }

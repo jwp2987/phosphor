@@ -690,3 +690,172 @@ fn short_lived_connections_count_up_and_a_stable_one_resets() {
         u32::MAX
     );
 }
+
+/// #1266: a speculative connect is identified by its attempt id. Cancelling it drops the
+/// connection it had started (the proxy child goes with the state) and makes a late result
+/// of that attempt inert, so a probe-driven connect started afterwards is never clobbered.
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn a_cancelled_speculative_connect_is_dropped_and_its_late_result_is_inert() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(9u64);
+        let other = SessionId::from(10u64);
+        manager.update(&mut app, |manager, _ctx| {
+            manager.speculative_attempts.insert(session_id, 1);
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            assert!(manager.has_speculative_connect(session_id));
+            assert!(!manager.has_speculative_connect(other));
+
+            assert!(manager.cancel_speculative_connect(session_id));
+            assert!(!manager.has_speculative_connect(session_id));
+            assert!(!manager.sessions.contains_key(&session_id));
+            // Nothing to cancel the second time.
+            assert!(!manager.cancel_speculative_connect(session_id));
+
+            // A probe-driven connect takes the session over; the cancelled attempt's id no
+            // longer matches, so `run_connect_and_handshake` refuses to install for it.
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            assert_ne!(manager.speculative_attempts.get(&session_id), Some(&1));
+        });
+    });
+}
+
+/// #1266: cancelling never touches a session that already connected (the attempt succeeded and
+/// was promoted by `mark_session_connected`); only the attempt bookkeeping goes.
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn cancelling_after_a_speculative_success_keeps_the_connection() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(11u64);
+        manager.update(&mut app, |manager, _ctx| {
+            manager.speculative_attempts.insert(session_id, 3);
+            manager.sessions.insert(
+                session_id,
+                RemoteSessionState::AwaitingExitStatus {
+                    control_path: None,
+                    host_id: HostId::new("h".to_string()),
+                },
+            );
+            assert!(manager.cancel_speculative_connect(session_id));
+            assert!(matches!(
+                manager.sessions.get(&session_id),
+                Some(RemoteSessionState::AwaitingExitStatus { .. })
+            ));
+        });
+    });
+}
+
+/// A transport that is never used: `finish_speculative_connect` only stores it on success.
+#[derive(Debug)]
+#[cfg(not(target_family = "wasm"))]
+struct NullTransport;
+
+#[cfg(not(target_family = "wasm"))]
+impl RemoteTransport for NullTransport {
+    fn detect_platform(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RemotePlatform, String>> + Send>>
+    {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn run_preinstall_check(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PreinstallCheckResult, String>> + Send>,
+    > {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn check_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn check_has_old_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send>> {
+        Box::pin(async { Err(anyhow::anyhow!("unused")) })
+    }
+
+    fn install_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn connect(
+        &self,
+        _executor: Arc<warpui::r#async::executor::Background>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Connection>> + Send>>
+    {
+        Box::pin(async { Err(anyhow::anyhow!("unused")) })
+    }
+
+    fn remove_remote_server_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// #1266: a failed speculative attempt that is still the current one clears its own entry and
+/// reports; a stale one (superseded by a probe-driven connect) changes nothing and stays silent.
+#[test]
+#[cfg(not(target_family = "wasm"))]
+fn a_failed_speculative_connect_reports_only_while_it_is_current() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(12u64);
+        let failures = Rc::new(RefCell::new(0usize));
+        let seen = failures.clone();
+        app.subscribe_to_model(&manager, move |_, event, _| {
+            if let RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. } = event {
+                *seen.borrow_mut() += 1;
+            }
+        });
+        let transport: Arc<dyn RemoteTransport> = Arc::new(NullTransport);
+        manager.update(&mut app, |manager, ctx| {
+            manager.speculative_attempts.insert(session_id, 5);
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            // Stale attempt: a probe-driven connect replaced it meanwhile.
+            manager.finish_speculative_connect(
+                session_id,
+                4,
+                Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("127"))),
+                "id".to_string(),
+                transport.clone(),
+                ctx,
+            );
+            assert!(manager.has_speculative_connect(session_id));
+            assert!(manager.sessions.contains_key(&session_id));
+            // The current attempt: entry gone, failure reported.
+            manager.finish_speculative_connect(
+                session_id,
+                5,
+                Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("127"))),
+                "id".to_string(),
+                transport,
+                ctx,
+            );
+            assert!(!manager.has_speculative_connect(session_id));
+            assert!(!manager.sessions.contains_key(&session_id));
+            // A speculative miss is not a connection that died: #1250's tally is untouched.
+            assert!(!manager.connected_at.contains_key(&session_id));
+            assert!(!manager.short_lived_connections.contains_key(&session_id));
+        });
+        assert_eq!(*failures.borrow(), 1);
+    });
+}
