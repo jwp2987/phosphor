@@ -10352,7 +10352,12 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
             input.user_insert("true", ctx);
             // The Enter is waiting; two characters typed behind it are still in the buffer, for
             // the wait's reconcile to take out (it moves them into the queue, never both).
-            input.start_verdict_wait("true".to_string(), None);
+            input.start_verdict_wait(
+                "true".to_string(),
+                EnterHold::Verdict {
+                    since: Instant::now(),
+                },
+            );
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
         });
@@ -10384,7 +10389,12 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert("true", ctx);
-            input.start_verdict_wait("true".to_string(), None);
+            input.start_verdict_wait(
+                "true".to_string(),
+                EnterHold::Verdict {
+                    since: Instant::now(),
+                },
+            );
             // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
             // reach the editor before the wait is reconciled.
             for key in ["e", "c", "h", "o"] {
@@ -10604,11 +10614,8 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
             assert!(input.detection_pending_for_buffer(ctx));
         });
 
-        // The first wait's tick fires late, with a start time that reads as over the budget.
-        input.update(&mut app, |input, ctx| {
-            let started = Instant::now() - ENTER_VERDICT_BUDGET * 2;
-            input.resume_verdict_wait(stale_id, first.to_string(), started, ctx);
-        });
+        // The first wait's tick fires late: it finds another wait and leaves it alone.
+        input.update(&mut app, |input, ctx| input.tick_enter_hold(stale_id, ctx));
         input.read(&app, |input, ctx| {
             let wait = input
                 .verdict_wait
@@ -10617,6 +10624,26 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
             assert_eq!(wait.text, second);
             assert!(input.detection_pending_for_buffer(ctx));
             assert!(!input.last_enter_submitted_shell_command);
+        });
+
+        // The later wait's own tick decides it: past the budget it submits on the Enter-time
+        // rules and drops the late verdict.
+        let current_id = input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().expect("waiting");
+            wait.hold = EnterHold::Verdict {
+                since: Instant::now() - ENTER_VERDICT_BUDGET * 2,
+            };
+            let id = wait.id;
+            input.tick_enter_hold(id, ctx);
+            id
+        });
+        assert_ne!(current_id, stale_id);
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the budget is spent");
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the late verdict is dropped"
+            );
         });
     });
 }
@@ -11263,7 +11290,7 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
         input.read(&app, |input, _| {
             let wait = input.verdict_wait.as_ref().expect("the Enter must hold");
-            assert!(wait.completion_hold.is_some());
+            assert!(wait.holds_for_tab_completion());
         });
         assert!(
             executed.borrow().is_empty(),
@@ -11327,8 +11354,9 @@ fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         input.update(&mut app, |input, ctx| {
             input.input_enter(ctx);
-            input.verdict_wait.as_mut().unwrap().completion_hold =
-                Some(Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2);
+            input.verdict_wait.as_mut().unwrap().hold = EnterHold::TabCompletion {
+                since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2,
+            };
             input.poll_completion_hold(ctx);
         });
         assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);

@@ -1324,10 +1324,21 @@ struct VerdictWait {
     id: u64,
     text: String,
     queued: Vec<AfterEnterInput>,
-    /// Set while the Enter holds for the Tab completion in flight for `text` (#1165): when the
-    /// hold began. The Enter then submits the completed line (or the visible text on an
-    /// ambiguous, empty, failed or late result).
-    completion_hold: Option<Instant>,
+    hold: EnterHold,
+}
+
+/// Why the Enter of a [`VerdictWait`] is held, and since when. Each hold is released by its own
+/// event (the verdict notification, the completion result) or decided by the shared backstop tick
+/// ([`Input::tick_enter_hold`]) against its own budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnterHold {
+    /// The classification verdict for `text` has not landed (#933): the Enter submits on it, or
+    /// on the Enter-time rules once `ENTER_VERDICT_BUDGET` is spent (#1158).
+    Verdict { since: Instant },
+    /// The local Tab completion in flight for `text` has not landed (#1165): the Enter then
+    /// submits the completed line (or the visible text on an ambiguous, empty, failed or late
+    /// result), after the completed line's own verdict wait.
+    TabCompletion { since: Instant },
 }
 
 /// The Tab (`CompletionsTrigger::Keybinding`) completion request in flight, so an Enter that
@@ -1362,6 +1373,19 @@ struct HandoffEnterMark {
 }
 
 impl VerdictWait {
+    /// Whether the Enter holds for a Tab completion (#1165).
+    fn holds_for_tab_completion(&self) -> bool {
+        self.tab_completion_since().is_some()
+    }
+
+    /// When the Enter began holding for a Tab completion, if it does.
+    fn tab_completion_since(&self) -> Option<Instant> {
+        match self.hold {
+            EnterHold::Verdict { .. } => None,
+            EnterHold::TabCompletion { since } => Some(since),
+        }
+    }
+
     /// The text typed behind the Enter, without the Enters (they have nothing to submit).
     fn queued_text(&self) -> String {
         self.queued
@@ -11816,7 +11840,7 @@ impl Input {
         if let Some(wait) = self.verdict_wait.as_ref() {
             // #1165: the Tab completion an Enter holds for. Anything else that lands while an
             // Enter waits is dropped.
-            if wait.completion_hold.is_some()
+            if wait.holds_for_tab_completion()
                 && completions_trigger == CompletionsTrigger::Keybinding
             {
                 self.finish_completion_hold(
@@ -13453,10 +13477,11 @@ impl Input {
         };
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
-        self.start_verdict_wait(text.clone(), None);
+        let since = Instant::now();
+        self.start_verdict_wait(text.clone(), EnterHold::Verdict { since });
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
-        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        self.wait_for_verdict_then_enter(text, since, ctx);
         true
     }
 
@@ -13504,7 +13529,7 @@ impl Input {
         if self
             .verdict_wait
             .as_ref()
-            .is_some_and(|wait| wait.completion_hold.is_some())
+            .is_some_and(VerdictWait::holds_for_tab_completion)
         {
             if self.reconcile_verdict_wait(ctx) {
                 if let Some(wait) = self.verdict_wait.as_mut() {
@@ -13540,22 +13565,27 @@ impl Input {
             return false;
         }
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
-        self.start_verdict_wait(text, Some(Instant::now()));
+        self.start_verdict_wait(
+            text,
+            EnterHold::TabCompletion {
+                since: Instant::now(),
+            },
+        );
         self.begin_deferred_enter_activity(ctx);
         self.poll_completion_hold(ctx);
         true
     }
 
-    /// Starts the wait of the Enter just pressed on `text` (#933; `completion_hold` is set for the
-    /// Tab completion hold, #1165) and returns its id (#1206).
-    fn start_verdict_wait(&mut self, text: String, completion_hold: Option<Instant>) -> u64 {
+    /// Starts the wait of the Enter just pressed on `text`, held for `hold`, and returns its id
+    /// (#1206).
+    fn start_verdict_wait(&mut self, text: String, hold: EnterHold) -> u64 {
         self.next_verdict_wait_id = self.next_verdict_wait_id.wrapping_add(1);
         let id = self.next_verdict_wait_id;
         self.verdict_wait = Some(VerdictWait {
             id,
             text,
             queued: Vec::new(),
-            completion_hold,
+            hold,
         });
         id
     }
@@ -13565,19 +13595,32 @@ impl Input {
         self.verdict_wait.as_ref().map(|wait| wait.id)
     }
 
-    /// The backstop tick of wait `id` (#1206). A tick armed for a wait that was voided or released
-    /// since finds another wait, or none, and must not touch it: that wait has its own ticks.
-    fn resume_verdict_wait(
-        &mut self,
-        id: u64,
-        text: String,
-        started: Instant,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if self.verdict_wait_id() != Some(id) {
+    /// Arms the backstop tick of the current wait: 2 ms, the granularity both budgets are decided
+    /// at. The releasing event (verdict notification, completion result) normally runs first.
+    fn arm_enter_hold_tick(&mut self, timer: &'static str, ctx: &mut ViewContext<Self>) {
+        let Some(id) = self.verdict_wait_id() else {
             return;
+        };
+        let rearm = std::time::Duration::from_millis(2);
+        let deadline = Instant::now() + rearm;
+        ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
+            log_late_timer_wake(timer, deadline);
+            me.tick_enter_hold(id, ctx);
+        });
+    }
+
+    /// The backstop tick of wait `id` (#1206): decides the hold it was armed for, by its kind. A
+    /// tick armed for a wait that was voided or released since finds another wait, or none, and
+    /// must not touch it: that wait has its own ticks.
+    fn tick_enter_hold(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
+            return;
+        };
+        let (hold, text) = (wait.hold, wait.text.clone());
+        match hold {
+            EnterHold::Verdict { since } => self.wait_for_verdict_then_enter(text, since, ctx),
+            EnterHold::TabCompletion { .. } => self.poll_completion_hold(ctx),
         }
-        self.wait_for_verdict_then_enter(text, started, ctx);
     }
 
     /// Moves what was typed behind a held Enter out of the buffer, ends the hold at the budget,
@@ -13587,7 +13630,7 @@ impl Input {
         let Some(held_since) = self
             .verdict_wait
             .as_ref()
-            .and_then(|wait| wait.completion_hold)
+            .and_then(VerdictWait::tab_completion_since)
         else {
             return;
         };
@@ -13600,16 +13643,7 @@ impl Input {
             self.finish_completion_hold(None, ctx);
             return;
         }
-        let Some(id) = self.verdict_wait_id() else {
-            return;
-        };
-        let rearm = std::time::Duration::from_millis(2);
-        ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
-            // #1206: only the hold this tick was armed for.
-            if me.verdict_wait_id() == Some(id) {
-                me.poll_completion_hold(ctx);
-            }
-        });
+        self.arm_enter_hold_tick("completion hold", ctx);
     }
 
     /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
@@ -13629,7 +13663,7 @@ impl Input {
         let Some(held_since) = self
             .verdict_wait
             .as_ref()
-            .and_then(|wait| wait.completion_hold)
+            .and_then(VerdictWait::tab_completion_since)
         else {
             return;
         };
@@ -13681,14 +13715,15 @@ impl Input {
                 self.request_input_detection_for_current_buffer(ctx);
             }
         }
+        let since = Instant::now();
         if let Some(wait) = self.verdict_wait.as_mut() {
-            wait.completion_hold = None;
+            wait.hold = EnterHold::Verdict { since };
             wait.text = text.clone();
         }
         if self.verdict_needed_before_submit(ctx).is_some() {
             self.ai_input_model
                 .update(ctx, |model, _| model.clear_typeahead_provenance());
-            self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+            self.wait_for_verdict_then_enter(text, since, ctx);
         } else {
             self.submit_held_enter(ctx);
         }
@@ -13721,7 +13756,7 @@ impl Input {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return;
         };
-        if wait.completion_hold.is_some() {
+        if wait.holds_for_tab_completion() {
             return;
         }
         let text = wait.text.clone();
@@ -13783,7 +13818,10 @@ impl Input {
                 // The user edited the waiting text itself: the Enter is void. Keep what was
                 // typed behind it in the editor rather than losing it.
                 let wait = self.verdict_wait.take();
-                if wait.as_ref().is_some_and(|w| w.completion_hold.is_some()) {
+                if wait
+                    .as_ref()
+                    .is_some_and(VerdictWait::holds_for_tab_completion)
+                {
                     // The held Enter is void (Ctrl-C, an edit): so is its completion.
                     self.tab_completion_request = None;
                     self.cancel_pending_completions_for_deferred_enter();
@@ -13856,17 +13894,7 @@ impl Input {
                 }
                 self.submit_held_enter(ctx);
             }
-            EnterVerdictWait::Wait => {
-                let Some(id) = self.verdict_wait_id() else {
-                    return;
-                };
-                let rearm = std::time::Duration::from_millis(2);
-                let deadline = Instant::now() + rearm;
-                ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
-                    log_late_timer_wake("verdict wait", deadline);
-                    me.resume_verdict_wait(id, text, started, ctx)
-                });
-            }
+            EnterVerdictWait::Wait => self.arm_enter_hold_tick("verdict wait", ctx),
         }
     }
 
