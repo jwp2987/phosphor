@@ -1,6 +1,10 @@
 //! Utilities for filtering which tasks and exchanges should be shown in the blocklist.
 
-use crate::ai::agent::{conversation::AIConversation, task::Task, AIAgentExchange};
+use crate::ai::agent::{
+    conversation::{AIConversation, AIConversationId},
+    task::Task,
+    AIAgentExchange,
+};
 
 /// Returns whether a task's exchanges should be shown in the blocklist.
 pub fn should_show_task_in_blocklist(task: &Task) -> bool {
@@ -44,6 +48,36 @@ pub(crate) fn exchanges_for_blocklist(conversation: &AIConversation) -> Vec<&AIA
         })
         .flatten()
         .collect()
+}
+
+/// What `update_context_blocks_and_exchanges` derives the render context from, at a granularity
+/// that doesn't change between streamed text deltas: the selected conversation, how many
+/// exchanges and tasks it has, and whether the streaming exchange is a navigable user query.
+/// Used to skip the O(conversation) rebuild on `UpdatedStreamingExchange` (#1137).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RenderContextSignature {
+    conversation_id: AIConversationId,
+    exchange_count: usize,
+    task_count: usize,
+    is_user_query: bool,
+}
+
+impl RenderContextSignature {
+    pub(crate) fn new(conversation: &AIConversation, is_user_query: bool) -> Self {
+        Self {
+            conversation_id: conversation.id(),
+            exchange_count: conversation.exchange_count(),
+            task_count: conversation.all_tasks().count(),
+            is_user_query,
+        }
+    }
+
+    /// Records `self` in `last` and returns whether it differs from what was there.
+    pub(crate) fn changed_since(self, last: &mut Option<Self>) -> bool {
+        let changed = *last != Some(self);
+        *last = Some(self);
+        changed
+    }
 }
 
 #[cfg(test)]

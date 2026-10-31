@@ -1777,6 +1777,12 @@ pub struct Input {
     /// Cached hint key to ensure it remains stable during shell initialization hooks.
     cached_agent_mode_hint_key: Option<&'static str>,
 
+    /// The `selected_conversation_status_for_hint` value the placeholder was last derived from,
+    /// so `UpdatedStreamingExchange` (one per streamed delta) only rebuilds the hint and
+    /// notifies the editor when the hint's inputs actually changed (#1137).
+    last_hint_conversation_status:
+        Option<Option<crate::ai::agent::conversation::ConversationStatus>>,
+
     /// Cached result of the last `check_slash_menu_disabled_state` computation, so we can
     /// skip re-notifying the slash button / button bar when the disabled state hasn't
     /// actually changed. Without this, every editor event (including each typed character)
@@ -3172,6 +3178,24 @@ impl Input {
                 if event.terminal_view_id() != Some(terminal_view_id) {
                     return;
                 }
+                // #1137: one of these arrives per streamed delta. The hint only depends on
+                // the selected conversation's status/title/emptiness, which don't change
+                // between deltas, so skip the rebuild and the editor/Input invalidation.
+                let hint_status = me
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .selected_conversation_status_for_hint(ctx);
+                let is_streaming_delta = matches!(
+                    event,
+                    BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
+                );
+                if !hint_inputs_changed(
+                    &mut me.last_hint_conversation_status,
+                    hint_status,
+                    is_streaming_delta,
+                ) {
+                    return;
+                }
                 me.set_zero_state_hint_text(ctx);
                 ctx.notify();
             },
@@ -3585,6 +3609,7 @@ impl Input {
             inline_history_menu_view,
             inline_terminal_menu_positioner,
             cached_agent_mode_hint_key: None,
+            last_hint_conversation_status: None,
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
@@ -16228,6 +16253,19 @@ impl Input {
             .as_ref(app)
             .cli_display_chip_kinds(app)
     }
+}
+
+/// Decides whether a hint-affecting history event needs a placeholder rebuild. Always records
+/// the status the hint is derived from; a streaming delta is skipped when it is unchanged
+/// (#1137), every other event always rebuilds.
+fn hint_inputs_changed(
+    last: &mut Option<Option<crate::ai::agent::conversation::ConversationStatus>>,
+    now: Option<crate::ai::agent::conversation::ConversationStatus>,
+    is_streaming_delta: bool,
+) -> bool {
+    let unchanged = last.as_ref() == Some(&now);
+    *last = Some(now);
+    !(is_streaming_delta && unchanged)
 }
 
 #[cfg(test)]

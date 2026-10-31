@@ -1294,16 +1294,12 @@ impl BlocklistAIInputModel {
             return;
         }
 
-        // If we have a session, gather the command history entries allowed to force Shell for
-        // this buffer (#832, see `shell_history_candidates`). `History::commands` returns
-        // entries in ascending (oldest-first) order, so downstream matching reverses them to
-        // iterate newest-first.
-        let history_entries = session_id.map(|sid| {
-            shell_history_candidates(
-                History::as_ref(ctx).commands(sid).into_iter().flatten(),
-                &input.buffer_text,
-            )
-        });
+        // If we have a session, snapshot its command history (shared `Arc`s, oldest-first: no
+        // entry is deep-copied). The #832/#965 filtering in `shell_history_candidates` scans
+        // every entry (shell-word splitting per entry), so it runs in the spawned future below,
+        // off the main thread, not once per keystroke on it (#1137, like #811 did for
+        // autosuggestion). Matching iterates the result newest-first.
+        let history_entries = session_id.and_then(|sid| History::as_ref(ctx).commands_shared(sid));
 
         // Gather agent prompt history (ascending / oldest-first). Ported from the pin
         // (`02b53fcd8`) for #312; off by default, matching the pin's own default-off
@@ -1366,6 +1362,10 @@ impl BlocklistAIInputModel {
                     // close matches against command history and agent prompt history.
                     // TODO(vorporeal): decide if we still want to do this with NldImprovements.
                     if let Some(history_entries) = history_entries {
+                        let history_entries = shell_history_candidates(
+                            history_entries.iter().map(|entry| entry.as_ref()),
+                            &buffer_cloned,
+                        );
                         // Iterate commands newest-first so the first match is the
                         // most-recent matching command.
                         let command_match = most_recent_close_match(

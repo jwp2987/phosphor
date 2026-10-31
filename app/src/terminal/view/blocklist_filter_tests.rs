@@ -79,3 +79,20 @@ fn test_exchanges_for_blocklist_excludes_warp_docs_subagent_exchanges() {
             .contains(&MessageId::new(SUBTASK_OUTPUT_MESSAGE_ID.to_string()))
     }));
 }
+
+#[test]
+fn render_context_signature_ignores_text_deltas_but_not_structure() {
+    use super::RenderContextSignature;
+
+    let conversation = create_restored_conversation(
+        api::message::tool_call::subagent::Metadata::Cli(Default::default()),
+    );
+    let mut last = None;
+    // First time: nothing cached, so rebuild.
+    assert!(RenderContextSignature::new(&conversation, false).changed_since(&mut last));
+    // Same structure (what every text delta looks like): skip.
+    assert!(!RenderContextSignature::new(&conversation, false).changed_since(&mut last));
+    // The user-query flag flipping forces a rebuild.
+    assert!(RenderContextSignature::new(&conversation, true).changed_since(&mut last));
+    assert!(!RenderContextSignature::new(&conversation, true).changed_since(&mut last));
+}

@@ -2945,6 +2945,8 @@ pub struct TerminalView {
     pending_env_var_collection: Option<EnvVarCollectionObject>,
 
     ai_render_context: Rc<RefCell<BlocklistAIRenderContext>>,
+    /// Last structure `update_context_blocks_and_exchanges` ran for on a streaming delta (#1137).
+    streaming_render_context_signature: Option<blocklist_filter::RenderContextSignature>,
 
     // TODO(suraj): consider flattening this to the [`SharedSessionKind`]
     // and adding a `Unshared` variant to it. This would require [`SharedSessionKind::Sharer`]
@@ -4608,6 +4610,7 @@ impl TerminalView {
             passive_suggestions_models,
             ai_action_model,
             ai_render_context,
+            streaming_render_context_signature: None,
             shared_session: None,
             pending_share_source: None,
             auto_stop_sharing_on_cli_end: false,
@@ -6713,8 +6716,9 @@ impl TerminalView {
                 // Streaming exchanges can gain a displayable user query after mount. Keep the
                 // navigable-user-query flag in sync so Cmd-Up treats the segment as a stop once
                 // the query is renderable.
+                let mut is_user_query = false;
                 if let Some(ai_block) = self.ai_block_for_exchange(exchange_id).cloned() {
-                    let is_user_query = ai_block.as_ref(ctx).has_user_input(ctx);
+                    is_user_query = ai_block.as_ref(ctx).has_user_input(ctx);
                     self.model
                         .lock()
                         .block_list_mut()
@@ -6723,7 +6727,24 @@ impl TerminalView {
                             is_user_query,
                         );
                 }
-                self.update_context_blocks_and_exchanges(ctx);
+                // The context block / exchange id sets only change when the conversation's
+                // structure or the user-query flag does, not on each text delta, so skip the
+                // O(conversation) rebuild otherwise (#1137).
+                let selected_conversation =
+                    self.ai_context_model.as_ref(ctx).selected_conversation(ctx);
+                let signature_changed = match selected_conversation {
+                    Some(conversation) => {
+                        blocklist_filter::RenderContextSignature::new(conversation, is_user_query)
+                            .changed_since(&mut self.streaming_render_context_signature)
+                    }
+                    None => {
+                        self.streaming_render_context_signature = None;
+                        true
+                    }
+                };
+                if signature_changed {
+                    self.update_context_blocks_and_exchanges(ctx);
+                }
                 self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
             }
             BlocklistAIHistoryEvent::SetActiveConversation { .. } => {

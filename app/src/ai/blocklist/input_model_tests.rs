@@ -1610,3 +1610,18 @@ fn huge_buffer_never_changes_input_type() {
         });
     }
 }
+
+#[test]
+fn shell_history_candidates_accepts_shared_snapshot_entries() {
+    // #1137: the filter now runs in the spawned future over `Arc<HistoryEntry>` snapshots
+    // (`History::commands_shared`), not over borrowed entries on the main thread. Same result,
+    // same oldest-first order.
+    let snapshot: Vec<std::sync::Arc<HistoryEntry>> = vec![
+        std::sync::Arc::new(history_entry("ls -a", Some(0))),
+        std::sync::Arc::new(history_entry("say hello", Some(0))),
+        std::sync::Arc::new(history_entry("ls -l", Some(0))),
+    ];
+    let candidates = shell_history_candidates(snapshot.iter().map(|entry| entry.as_ref()), "ls -");
+    let commands: Vec<&str> = candidates.iter().map(|(c, _)| c.as_str()).collect();
+    assert_eq!(commands, ["ls -a", "ls -l"]);
+}

@@ -662,8 +662,10 @@ impl AgentInputFooter {
                     }
                     BlocklistAIHistoryEvent::UpdatedTodoList { .. }
                     | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
-                    | BlocklistAIHistoryEvent::AppendedExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. } => {
+                    // `UpdatedStreamingExchange` is deliberately absent: context usage is
+                    // only written at stream end (arrives via the status event), and this
+                    // arm would re-render the footer and selector per delta (#1137).
+                    | BlocklistAIHistoryEvent::AppendedExchange { .. } => {
                         me.update_context_window_button(ctx);
                         me.model_selector.update(ctx, |_, ctx| ctx.notify());
                         ctx.notify();

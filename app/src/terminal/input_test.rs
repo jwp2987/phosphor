@@ -10579,3 +10579,36 @@ fn typeahead_report_goes_in_front_of_editor_text_and_keeps_the_cursor() {
         assert_eq!(cursor_byte_offset(&input, &app), cursor + 1);
     });
 }
+
+#[test]
+fn hint_inputs_changed_skips_unchanged_streaming_deltas() {
+    use crate::ai::agent::conversation::ConversationStatus;
+    let mut last = None;
+    // First delta with nothing cached must rebuild.
+    assert!(hint_inputs_changed(
+        &mut last,
+        Some(ConversationStatus::InProgress),
+        true
+    ));
+    // Subsequent deltas with the same status are skipped.
+    assert!(!hint_inputs_changed(
+        &mut last,
+        Some(ConversationStatus::InProgress),
+        true
+    ));
+    // A status change rebuilds even on a delta.
+    assert!(hint_inputs_changed(
+        &mut last,
+        Some(ConversationStatus::Success),
+        true
+    ));
+    // Non-delta events always rebuild, even when unchanged.
+    assert!(hint_inputs_changed(
+        &mut last,
+        Some(ConversationStatus::Success),
+        false
+    ));
+    // The conversation becoming hint-less (None) is a change.
+    assert!(hint_inputs_changed(&mut last, None, true));
+    assert!(!hint_inputs_changed(&mut last, None, true));
+}
