@@ -114,7 +114,9 @@ pub struct RequestParams {
     pub conversation_token: Option<ServerConversationToken>,
     pub forked_from_conversation_token: Option<ServerConversationToken>,
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
-    pub tasks: Vec<warp_multi_agent_api::Task>,
+    /// Shared, immutable snapshot of the active tasks: cloning `RequestParams` or
+    /// `ConversationData` is a refcount bump, not a copy of the whole history (#1156).
+    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
     pub existing_suggestions: Option<Suggestions>,
     pub metadata: Option<RequestMetadata>,
     pub session_context: SessionContext,
@@ -288,7 +290,7 @@ pub type ResponseStream = Pin<Box<dyn Stream<Item = Event>>>;
 #[derive(Debug, Clone)]
 pub struct ConversationData {
     pub id: AIConversationId,
-    pub tasks: Vec<warp_multi_agent_api::Task>,
+    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
     pub server_conversation_token: Option<ServerConversationToken>,
     pub forked_from_conversation_token: Option<ServerConversationToken>,
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
@@ -378,7 +380,7 @@ impl RequestParams {
             forked_from_conversation_token: None,
             ambient_agent_task_id: None,
             byop_target_task_id: tasks.first().map(|task| task.id.clone()),
-            tasks,
+            tasks: Arc::new(tasks),
             existing_suggestions: None,
             metadata: None,
             session_context: SessionContext::new_for_test(),

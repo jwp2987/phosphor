@@ -769,7 +769,7 @@ impl ResponseStream {
         );
         Self {
             id: ResponseStreamId(Uuid::new_v4().to_string()),
-            params: params.clone(),
+            params,
             start_time,
             time_to_latest_event: TimeDelta::seconds(0),
             cancellation_tx: Some(cancellation_tx),
