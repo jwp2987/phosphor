@@ -653,7 +653,15 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           fi
 
           if [ "${WARP_IN_MSYS2:-}" = false ]; then
-            escaped_ps1=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
+            # Phosphor (#1170): the encoding below costs 5 processes (~3 ms), and the rendered prompt
+            # is the same on most prompts, so keep the last one's result. The encoding depends on
+            # nothing but $deref_ps1, so reusing it is exact.
+            if [[ ${__warp_ps1_cache_valid-} != 1 || $deref_ps1 != "${__warp_ps1_cache_in-}" ]]; then
+              __warp_ps1_cache_out=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
+              __warp_ps1_cache_in=$deref_ps1
+              __warp_ps1_cache_valid=1
+            fi
+            escaped_ps1=$__warp_ps1_cache_out
           fi
         fi
 
