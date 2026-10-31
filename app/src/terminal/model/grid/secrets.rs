@@ -22,6 +22,13 @@ impl GridHandler {
         self.secrets.len()
     }
 
+    /// True if the grid holds any detected secret, obfuscated or not. When false,
+    /// [`Self::secret_at_displayed_point`] is `None` for every point, so per-cell lookups can be
+    /// skipped.
+    pub fn has_secrets(&self) -> bool {
+        !self.secrets.is_empty()
+    }
+
     pub fn get_secret_obfuscation(&self) -> ObfuscateSecrets {
         self.secret_obfuscation_mode
     }

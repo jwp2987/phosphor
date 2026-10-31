@@ -566,6 +566,9 @@ fn render_grid_without_ligatures<'a>(
 
     let hovered_secret_range = hovered_secret
         .and_then(|handle| grid.secret_by_handle(handle).map(|secret| secret.range()));
+    // With no secrets in the grid the per-cell lookup below can only return `None`, so don't run
+    // it for every cell of every frame.
+    let redact_secrets = obfuscate_secrets.should_redact_secret() && grid.has_secrets();
     let marked_text = grid.marked_text();
     let mut marked_text = marked_text
         .iter()
@@ -809,7 +812,7 @@ fn render_grid_without_ligatures<'a>(
                 has_seen_cell_in_link = true;
             }
 
-            if obfuscate_secrets.should_redact_secret() {
+            if redact_secrets {
                 if let Some((handle, secret)) =
                     grid.secret_at_displayed_point(Point::new(offset_row, col))
                 {
@@ -1091,6 +1094,9 @@ fn render_grid_with_ligatures<'a>(
 
     let hovered_secret_range = hovered_secret
         .and_then(|handle| grid.secret_by_handle(handle).map(|secret| secret.range()));
+    // With no secrets in the grid the per-cell lookup below can only return `None`, so don't run
+    // it for every cell of every frame.
+    let redact_secrets = obfuscate_secrets.should_redact_secret() && grid.has_secrets();
     let marked_text = grid.marked_text();
     let mut marked_text = marked_text
         .iter()
@@ -1368,7 +1374,7 @@ fn render_grid_with_ligatures<'a>(
                 has_seen_cell_in_link = true;
             }
 
-            if obfuscate_secrets.should_redact_secret() {
+            if redact_secrets {
                 if let Some((handle, secret)) =
                     grid.secret_at_displayed_point(Point::new(offset_row, col))
                 {

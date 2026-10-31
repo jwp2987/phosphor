@@ -608,6 +608,37 @@ fn test_secrets_serialization() {
 }
 
 #[test]
+fn test_has_secrets_tracks_whether_the_renderer_needs_secret_lookups() {
+    let mut blockgrid = mock_blockgrid("foo zach@warp.dev bar");
+    blockgrid.maybe_enable_secret_obfuscation(ObfuscateSecrets::Yes);
+
+    // No secret has been detected/marked: every per-cell lookup is `None`, so the renderer may
+    // skip them.
+    assert!(!blockgrid.grid_handler().has_secrets());
+    assert!(blockgrid
+        .grid_handler()
+        .secret_at_displayed_point(Point::new(0, 4))
+        .is_none());
+
+    blockgrid.grid_handler_mut().mark_secret_range(
+        Point::new(0, 4)..=Point::new(0, 16),
+        IsObfuscated::Yes,
+        "zach@warp.dev".to_string(),
+        SecretLevel::User,
+    );
+
+    // Once a secret exists the renderer must look every cell up, so redaction still applies.
+    assert!(blockgrid.grid_handler().has_secrets());
+    assert!(blockgrid
+        .grid_handler()
+        .secret_at_displayed_point(Point::new(0, 4))
+        .is_some());
+
+    blockgrid.grid_handler_mut().clear_secrets();
+    assert!(!blockgrid.grid_handler().has_secrets());
+}
+
+#[test]
 fn test_finds_url_in_grid() {
     // Test url in one line.
     let blockgrid = mock_blockgrid("https://google.com");
