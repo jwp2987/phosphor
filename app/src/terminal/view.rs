@@ -11873,6 +11873,62 @@ impl TerminalView {
         }
     }
 
+    /// #1215: starts the patience timer of an Enter deferred behind the hand-off's own
+    /// outstanding report, if one was just armed. When it fires the report is not coming; the
+    /// Enter is given up WITHOUT running (the shell's line still holds the head of the typed
+    /// text): the editor keeps its text, the keys held behind the Enter join it as text, and a
+    /// notice says so. A late report is then inserted in front, like any legacy report.
+    fn arm_report_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .take_report_deferral_started();
+        let Some(id) = id else {
+            return;
+        };
+        ctx.spawn(
+            Timer::after(TYPEAHEAD_REPORT_PATIENCE),
+            move |me, _, ctx| {
+                let held = me
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .give_up_report_deferral(id);
+                let Some(held) = held else {
+                    return;
+                };
+                log::warn!(
+                    "Enter not run: the shell did not report its line within {} ms; the text \
+                     stays in the input",
+                    TYPEAHEAD_REPORT_PATIENCE.as_millis()
+                );
+                me.input.update(ctx, |input, ctx| {
+                    input.clear_handoff_enter_mark();
+                    let text = text_for_editor(&held);
+                    if !text.is_empty() {
+                        input.system_insert(&text, ctx);
+                    }
+                });
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::new(
+                            "Enter not run: the shell did not report its line. The text is in \
+                             the input; press Enter to run it"
+                                .to_string(),
+                            ToastFlavor::Default,
+                        ),
+                        window_id,
+                        ctx,
+                    );
+                });
+                me.note_editor_took_over();
+                me.redetermine_terminal_focus(ctx);
+            },
+        );
+    }
+
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
     /// there since the request.
     fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) {
@@ -26335,6 +26391,7 @@ impl TerminalView {
             }
             InputEvent::TypeaheadHandoffEnterDeferred => {
                 self.arm_uncovered_deferral_timer(ctx);
+                self.arm_report_deferral_timer(ctx);
                 if ctx.is_self_or_child_focused() {
                     self.focus_terminal(ctx);
                 }
@@ -33846,6 +33903,12 @@ const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// (#1104) before it runs as it did without the deferral. Reports normally take milliseconds;
 /// this only bounds a request a program ate.
 const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+
+/// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
+/// it is given up without running (#1215). A report is one request round trip (ms locally, well
+/// under a second over ssh); seconds without one mean a program consumed the request or the shell
+/// is not answering.
+const TYPEAHEAD_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.

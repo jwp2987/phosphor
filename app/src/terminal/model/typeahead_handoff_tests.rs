@@ -958,6 +958,33 @@ fn without_a_held_enter_the_editor_owns_keys_while_the_request_is_outstanding() 
     assert!(!handoff.wants_terminal_focus());
 }
 
+/// #1215: an Enter deferred behind the hand-off's own report arms a patience deferral; giving it
+/// up hands input back to the editor with the held keys, without running anything. A report that
+/// arrives first ends the deferral, so a late give-up finds nothing.
+#[test]
+fn an_enter_behind_an_unanswered_report_is_given_up_without_running() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let id = handoff
+        .take_report_deferral_started()
+        .expect("the plain report deferral arms a patience timer");
+    assert_eq!(handoff.take_report_deferral_started(), None, "armed once");
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    assert_eq!(handoff.give_up_report_deferral(id), Some(b"ls".to_vec()));
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+    assert_eq!(handoff.give_up_report_deferral(id), None, "over already");
+
+    let mut answered = awaiting_report();
+    assert!(answered.defer_enter());
+    let id = answered.take_report_deferral_started().expect("armed");
+    assert_eq!(answered.on_report(), ReportDisposition::InsertThenSubmit);
+    assert_eq!(
+        answered.give_up_report_deferral(id),
+        None,
+        "the report released the Enter; the late timer must not touch the submit"
+    );
+}
+
 #[test]
 fn a_young_line_is_submitted_only_on_an_actual_verdict() {
     let wait = YOUNG_DETECTION_CAP / 2;

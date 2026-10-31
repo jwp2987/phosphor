@@ -353,6 +353,13 @@ pub struct TypeaheadHandoff {
     /// A deferral was just armed, so the view must start its timer.
     uncovered_deferral_started: bool,
     uncovered_deferral_seq: u64,
+    /// Identifies an Enter deferred behind the hand-off's own outstanding report (#1215). If
+    /// that report never comes, the view gives the Enter up when its timer for this id fires,
+    /// without running it.
+    report_deferral_id: Option<u64>,
+    /// A report deferral was just armed, so the view must start its timer.
+    report_deferral_started: bool,
+    report_deferral_seq: u64,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -604,6 +611,50 @@ impl TypeaheadHandoff {
         self.uncovered_deferral_seq = self.uncovered_deferral_seq.wrapping_add(1);
         self.uncovered_deferral_id = Some(self.uncovered_deferral_seq);
         self.uncovered_deferral_started = true;
+    }
+
+    /// The id of a report deferral the view must arm a patience timer for (see
+    /// [`Self::give_up_report_deferral`]), once.
+    pub fn take_report_deferral_started(&mut self) -> Option<u64> {
+        if mem::take(&mut self.report_deferral_started) {
+            self.report_deferral_id
+        } else {
+            None
+        }
+    }
+
+    fn arm_report_deferral(&mut self) {
+        self.report_deferral_seq = self.report_deferral_seq.wrapping_add(1);
+        self.report_deferral_id = Some(self.report_deferral_seq);
+        self.report_deferral_started = true;
+    }
+
+    /// The patience timer of report deferral `id` ran out (#1215): the report the Enter waited
+    /// for is not coming (a program ate the request, the shell hung). The Enter is given up
+    /// WITHOUT running: the shell's line still holds the head of what the user typed, so the
+    /// editor's text would run as a fragment. Input goes back to the editor; a late report is then
+    /// inserted in front of it like any legacy report. Returns the keys held behind the Enter,
+    /// for the view to put in the editor; `None` when the deferral is over already.
+    pub fn give_up_report_deferral(&mut self, id: u64) -> Option<Vec<u8>> {
+        if self.report_deferral_id != Some(id) {
+            return None;
+        }
+        let HandoffState::HoldAfterEnter {
+            released: false, ..
+        } = &self.state
+        else {
+            return None;
+        };
+        self.report_deferral_id = None;
+        self.uncovered_deferral_id = None;
+        self.deferred_young = false;
+        self.young_hold = None;
+        match mem::take(&mut self.state) {
+            HandoffState::HoldAfterEnter { held, .. } => Some(held),
+            HandoffState::EditorOwned | HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport => {
+                None
+            }
+        }
     }
 
     /// The patience timer of deferral `id` ran out: the report covering the untracked bytes
@@ -1196,8 +1247,10 @@ impl TypeaheadHandoff {
         }
         if behind_uncovered_report {
             self.arm_uncovered_deferral();
+            self.report_deferral_id = None;
         } else {
             self.uncovered_deferral_id = None;
+            self.arm_report_deferral();
         }
         self.deferred_young = self.young_line;
         self.state = HandoffState::HoldAfterEnter {
@@ -1236,11 +1289,13 @@ impl TypeaheadHandoff {
             Owner::Hold { released: false } if self.untracked_line_bytes => {
                 // This report left bytes behind it in the shell's line (#1104): a request
                 // written after them will report them. The Enter waits for that report.
+                self.report_deferral_id = None;
                 self.arm_uncovered_deferral();
                 ReportDisposition::InsertKeepDeferred
             }
             Owner::Hold { released: false } => {
                 self.uncovered_deferral_id = None;
+                self.report_deferral_id = None;
                 self.mark_released();
                 if mem::take(&mut self.deferred_young) {
                     self.young_line = false;
@@ -1356,6 +1411,7 @@ impl TypeaheadHandoff {
             // The report is still outstanding; the editor keeps waiting for it.
             Owner::Hold { released: false } => {
                 self.uncovered_deferral_id = None;
+                self.report_deferral_id = None;
                 self.state = HandoffState::AwaitingReport;
                 true
             }
