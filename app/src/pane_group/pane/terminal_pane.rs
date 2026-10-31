@@ -701,6 +701,16 @@ fn handle_terminal_view_event(
                     return;
                 }
 
+                // Windows kills the console shells when a session end is merely queried, before
+                // the user has chosen; closing their panes would quit the app, and a cancelled
+                // restart would then have lost everything running in it. Keep the pane (it shows
+                // the shell-terminated banner) while a session end is queried, under way (so the
+                // saved session still has the tab) or just cancelled (jwp2987/phosphor#1103).
+                if warpui::platform::session_end_gate::keep_exited_pane_open() {
+                    log::info!("Keeping the pane of an exited shell open: Windows session end");
+                    return;
+                }
+
                 group.close_pane(pane_id, ctx);
             }
             Event::CloseRequested => {

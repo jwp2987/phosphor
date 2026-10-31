@@ -708,6 +708,13 @@ impl EventLoop {
                 {
                     self.terminating_signal = Some(signal);
                     window_target.exit();
+                    // `WM_ENDSESSION(TRUE)` is waiting inside its window procedure for the shutdown
+                    // and winit's `LoopExiting` cannot come until that returns, so run the exit
+                    // sequence here; it ends the process (jwp2987/phosphor#1075).
+                    #[cfg(windows)]
+                    if super::windows::session_end::take_inline_shutdown_request() {
+                        self.run_exit_sequence();
+                    }
                 }
             }
             Event::UserEvent(CustomEvent::UpdateUIApp(callback)) => {
@@ -1008,55 +1015,58 @@ impl EventLoop {
                 }
             }
             Event::WindowEvent { window_id, event } => self.handle_window_event(window_id, event),
-            Event::LoopExiting => {
-                // Hide all open windows such that, if the application takes a
-                // second or two to clean up before exiting, this isn't visible
-                // to the end user.
-                self.ui_app.update(|ctx| {
-                    use crate::SingletonEntity as _;
-                    crate::windowing::WindowManager::handle(ctx).update(
-                        ctx,
-                        |window_manager, _| {
-                            window_manager.hide_app();
-                        },
-                    );
-                });
-
-                #[cfg(windows)]
-                if let Some(network_listener) = self.state.network_connection_listener.take() {
-                    network_listener.clean_up();
-                }
-
-                self.callbacks.app_will_terminate();
-
-                #[cfg(windows)]
-                super::windows::session_end::notify_shutdown_complete();
-
-                // A signal-initiated quit ends the way the signal would have
-                // (jwp2987/phosphor#685); otherwise this returns. Uses this exit's
-                // own attribution (set only by `CustomEvent::TerminateFromSignal`,
-                // right before the `exit()` call that got us here), not
-                // `exit_after_signal_shutdown`'s process-wide latch: a key binding or
-                // menu quit reaches this same handler and must not re-raise a signal
-                // that merely happened to arrive around the same time, rather than
-                // actually being what drove this exit (jwp2987/phosphor#726).
-                #[cfg(not(target_family = "wasm"))]
-                crate::platform::termination_signals::exit_after_signal_shutdown_for(
-                    self.terminating_signal.take(),
-                );
-
-                // On non-web platforms, immediately terminate the process instead of returning
-                // from the event loop.  This matches the behavior of
-                // `[NSApp terminate]` on macOS, and may avoid some at-exit
-                // crashes that produce noise in our crash reporting data.
-                // On web, it's not possible to exit cleanly, so just return from the event loop
-                // instead.
-                #[cfg(not(target_family = "wasm"))]
-                std::process::exit(0);
-            }
+            Event::LoopExiting => self.run_exit_sequence(),
 
             _ => {}
         }
+    }
+
+    /// The app's exit sequence, run on winit's `LoopExiting`: hide the windows, `app_will_terminate`,
+    /// then end the process. On Windows a `WM_ENDSESSION(TRUE)` shutdown runs it earlier, from the
+    /// `TerminateFromSignal` handler, because the process must be done before that message returns
+    /// (jwp2987/phosphor#1075).
+    fn run_exit_sequence(&mut self) {
+        // Hide all open windows such that, if the application takes a
+        // second or two to clean up before exiting, this isn't visible
+        // to the end user.
+        self.ui_app.update(|ctx| {
+            use crate::SingletonEntity as _;
+            crate::windowing::WindowManager::handle(ctx).update(ctx, |window_manager, _| {
+                window_manager.hide_app();
+            });
+        });
+
+        #[cfg(windows)]
+        if let Some(network_listener) = self.state.network_connection_listener.take() {
+            network_listener.clean_up();
+        }
+
+        self.callbacks.app_will_terminate();
+
+        #[cfg(windows)]
+        super::windows::session_end::notify_shutdown_complete();
+
+        // A signal-initiated quit ends the way the signal would have
+        // (jwp2987/phosphor#685); otherwise this returns. Uses this exit's
+        // own attribution (set only by `CustomEvent::TerminateFromSignal`,
+        // right before the `exit()` call that got us here), not
+        // `exit_after_signal_shutdown`'s process-wide latch: a key binding or
+        // menu quit reaches this same handler and must not re-raise a signal
+        // that merely happened to arrive around the same time, rather than
+        // actually being what drove this exit (jwp2987/phosphor#726).
+        #[cfg(not(target_family = "wasm"))]
+        crate::platform::termination_signals::exit_after_signal_shutdown_for(
+            self.terminating_signal.take(),
+        );
+
+        // On non-web platforms, immediately terminate the process instead of returning
+        // from the event loop.  This matches the behavior of
+        // `[NSApp terminate]` on macOS, and may avoid some at-exit
+        // crashes that produce noise in our crash reporting data.
+        // On web, it's not possible to exit cleanly, so just return from the event loop
+        // instead.
+        #[cfg(not(target_family = "wasm"))]
+        std::process::exit(0);
     }
 
     fn redraw_window(
