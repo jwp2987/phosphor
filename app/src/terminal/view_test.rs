@@ -18964,3 +18964,55 @@ fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes()
         });
     })
 }
+
+/// In the block list a wakeup lays out and paints the existing tree (layout reads block heights
+/// and paint reads the blocks live) and re-renders only when a render input changed. See
+/// `wakeup_redraw`.
+#[test]
+fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+        let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
+
+        let size_info = terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+            *view.size_info
+        });
+
+        app.update(enclose!((presenter, invalidation) move |ctx| {
+            presenter.borrow_mut().invalidate(invalidation, ctx);
+            presenter.borrow_mut().build_scene(
+                vec2f(size_info.pane_width_px, size_info.pane_height_px),
+                1.,
+                None,
+                ctx,
+            );
+        }));
+
+        terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::input(&mut *view.model.lock(), 'x');
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Relayout));
+
+            // Entering the alt screen changes what `render` builds: the next wakeup re-renders.
+            ansi::Handler::set_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+        });
+    })
+}

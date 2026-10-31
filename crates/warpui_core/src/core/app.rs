@@ -3369,6 +3369,17 @@ impl AppContext {
             .paint_only_redraw_requested = true;
     }
 
+    /// Asks `window_id` for a frame that lays out and paints the existing element tree without
+    /// re-rendering any view (what a window resize or a loaded asset asks for). For a view whose
+    /// element reads its content at layout and paint time, this is how new content reaches the
+    /// screen without `View::render` rebuilding the tree first.
+    pub fn request_redraw(&mut self, window_id: WindowId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .redraw_requested = true;
+    }
+
     /// Test-only: marks the window as needing a redraw for the same reason a
     /// paint-only timer (`PaintContext::repaint_after_paint_only`/
     /// `repaint_at_paint_only`, e.g. a blinking cursor) does when it fires — lets

@@ -30,7 +30,7 @@ pub mod rich_content;
 mod shared_session;
 mod shell_terminated_banner;
 mod wakeup_redraw;
-use wakeup_redraw::{RenderFingerprint, WakeupRedraw};
+use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
@@ -2670,6 +2670,9 @@ pub struct TerminalView {
     last_rendered_fingerprint: Cell<Option<RenderFingerprint>>,
     /// The redraw the most recent terminal wakeup asked for.
     last_wakeup_redraw: Option<WakeupRedraw>,
+    /// The footer inputs as of the last time a wakeup notified the agent footer views; see
+    /// `wakeup_redraw::FooterFingerprint`.
+    last_footer_fingerprint: Option<FooterFingerprint>,
     /// Whether a settle check after a paint-only wakeup is already scheduled.
     alt_screen_settle_check_pending: bool,
 
@@ -4573,6 +4576,7 @@ impl TerminalView {
             alt_screen_scroll_top: Lines::zero(),
             last_rendered_fingerprint: Cell::new(None),
             last_wakeup_redraw: None,
+            last_footer_fingerprint: None,
             alt_screen_settle_check_pending: false,
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
@@ -12160,19 +12164,18 @@ impl TerminalView {
             }
         }
 
-        // The alt screen is painted straight from the model, so while nothing the element tree
-        // was built from has changed, new output only needs a paint (see `wakeup_redraw`). The
-        // block list always needs layout: its layout derives from block heights.
-        let redraw = {
+        // While nothing the element tree was built from has changed, new output needs only a
+        // paint in the alt screen (painted straight from the model) and only layout and paint in
+        // the block list (whose layout derives from block heights); see `wakeup_redraw`.
+        let (redraw, footer) = {
             let model = self.model.lock();
-            if model.is_alt_screen_active() {
+            (
                 wakeup_redraw::decide(
                     self.last_rendered_fingerprint.get(),
                     self.render_fingerprint(&model, ctx),
-                )
-            } else {
-                WakeupRedraw::Full
-            }
+                ),
+                self.footer_fingerprint(&model, ctx),
+            )
         };
         self.last_wakeup_redraw = Some(redraw);
 
@@ -12188,12 +12191,17 @@ impl TerminalView {
 
         match redraw {
             WakeupRedraw::Full => {
-                self.use_agent_footer.update(ctx, |footer, ctx| {
-                    footer.notify_and_notify_children(ctx);
-                });
+                self.notify_use_agent_footer(footer, ctx);
 
                 // Need to re-render both the alt screen and the blocklist on keypresses.
                 ctx.notify();
+            }
+            WakeupRedraw::Relayout => {
+                if self.last_footer_fingerprint != Some(footer) {
+                    self.notify_use_agent_footer(footer, ctx);
+                }
+                let window_id = ctx.window_id();
+                ctx.request_redraw(window_id);
             }
             WakeupRedraw::PaintOnly => {
                 let window_id = ctx.window_id();
@@ -12201,6 +12209,14 @@ impl TerminalView {
                 self.schedule_alt_screen_settle_check(ctx);
             }
         }
+    }
+
+    /// Re-renders the agent footer views and records the inputs they were re-rendered with.
+    fn notify_use_agent_footer(&mut self, footer: FooterFingerprint, ctx: &mut ViewContext<Self>) {
+        self.last_footer_fingerprint = Some(footer);
+        self.use_agent_footer.update(ctx, |footer, ctx| {
+            footer.notify_and_notify_children(ctx);
+        });
     }
 
     /// After a paint-only wakeup, checks once the output has settled whether that paint changed a
@@ -12222,9 +12238,11 @@ impl TerminalView {
                         != Some(me.render_fingerprint(&model, ctx))
             };
             if stale {
-                me.use_agent_footer.update(ctx, |footer, ctx| {
-                    footer.notify_and_notify_children(ctx);
-                });
+                let footer = {
+                    let model = me.model.lock();
+                    me.footer_fingerprint(&model, ctx)
+                };
+                me.notify_use_agent_footer(footer, ctx);
                 ctx.notify();
             }
         });
@@ -27770,6 +27788,18 @@ impl TerminalView {
             .is_waterfall_gap_mode()
     }
 
+    /// The input mode `render` lays the view out in. When in agent view, layout is always pinned
+    /// to the bottom.
+    fn current_input_mode(&self, app: &AppContext) -> InputMode {
+        if FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(app).is_fullscreen()
+        {
+            InputMode::PinnedToBottom
+        } else {
+            *InputModeSettings::as_ref(app).input_mode.value()
+        }
+    }
+
     pub fn get_terminal_view_render_context(
         &self,
         model: &TerminalModel,
@@ -32525,14 +32555,7 @@ impl View for TerminalView {
         let model = self.model.lock();
         let ambient_agent_task_id_for_details_panel =
             self.ambient_agent_task_id_for_details_panel_from_model(&model, app);
-        let input_mode = if FeatureFlag::AgentView.is_enabled()
-            && self.agent_view_controller.as_ref(app).is_fullscreen()
-        {
-            // When in agent view, layout is always pin to bottom.
-            InputMode::PinnedToBottom
-        } else {
-            *InputModeSettings::as_ref(app).input_mode.value()
-        };
+        let input_mode = self.current_input_mode(app);
         let viewport = self.viewport_state(model.block_list(), input_mode, app);
         let is_alt_screen_active = { model.is_alt_screen_active() };
         // Compute callout positioning early while we have the model lock.

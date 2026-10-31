@@ -88,6 +88,7 @@ fn test_position_cache_caching() {
 /// Shared layout/paint call counters for [`CountingElement`], read back by tests.
 #[derive(Default)]
 struct RepaintCounts {
+    render_calls: Cell<u32>,
     layout_calls: Cell<u32>,
     paint_calls: Cell<u32>,
 }
@@ -154,6 +155,9 @@ impl Entity for CountingRootView {
 
 impl crate::core::View for CountingRootView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        self.counts
+            .render_calls
+            .set(self.counts.render_calls.get() + 1);
         Box::new(CountingElement {
             counts: self.counts.clone(),
             size: None,
@@ -269,6 +273,42 @@ fn test_request_paint_only_redraw_skips_layout_until_a_view_is_notified() {
         });
         assert_eq!(counts.layout_calls.get(), layout_calls_baseline + 1);
         assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 2);
+    })
+}
+
+/// `AppContext::request_redraw` lays out and paints the existing tree without re-rendering any
+/// view (the block list uses it for pty output while nothing its tree was built from changed).
+#[test]
+fn test_request_redraw_lays_out_and_paints_without_re_rendering() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let render_calls_baseline = counts.render_calls.get();
+        let layout_calls_baseline = counts.layout_calls.get();
+        let paint_calls_baseline = counts.paint_calls.get();
+
+        app.update(|ctx| {
+            ctx.request_redraw(window_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(
+            counts.render_calls.get(),
+            render_calls_baseline,
+            "a requested redraw must not re-render the view"
+        );
+        assert_eq!(counts.layout_calls.get(), layout_calls_baseline + 1);
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 1);
+
+        app.update(|ctx| {
+            ctx.simulate_view_updated(window_id, root_view_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(counts.render_calls.get(), render_calls_baseline + 1);
     })
 }
 
