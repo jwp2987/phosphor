@@ -66,3 +66,29 @@ fn selected_system_themes_sync_when_custom_paths_are_under_theme_root() {
 
     assert!(setting.current_value_is_syncable());
 }
+
+#[test]
+fn system_theme_is_not_queried_when_not_following_it() {
+    let mut queried = false;
+    let kind = resolve_theme_kind(RespectSystemTheme::Off, &ThemeKind::Dark, || {
+        queried = true;
+        SystemTheme::Light
+    });
+    assert_eq!(kind, ThemeKind::Dark);
+    assert!(
+        !queried,
+        "portal query must not run when RespectSystemTheme is off"
+    );
+}
+
+#[test]
+fn system_theme_is_queried_when_following_it() {
+    let themes = SelectedSystemThemes {
+        light: ThemeKind::Light,
+        dark: ThemeKind::Dark,
+    };
+    let kind = resolve_theme_kind(RespectSystemTheme::On(themes), &ThemeKind::Light, || {
+        SystemTheme::Dark
+    });
+    assert_eq!(kind, ThemeKind::Dark);
+}

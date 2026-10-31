@@ -2,6 +2,7 @@
 //! desktop environment's appearance settings.
 
 use std::ops::Deref as _;
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt as _;
@@ -10,7 +11,7 @@ use zbus::{proxy, zvariant};
 
 use crate::{
     platform::SystemTheme,
-    r#async::{block_on, executor::Background, FutureExt as _},
+    r#async::{executor::Background, FutureExt as _},
     windowing::winit::app::CustomEvent,
 };
 
@@ -149,25 +150,115 @@ async fn watch_desktop_settings_changes_internal(
         if let (&COLOR_SCHEME_SETTINGS_NAMESPACE, &COLOR_SCHEME_SETTINGS_KEY) =
             (args.interface_name(), args.setting_name())
         {
+            // Refresh the cache before telling the UI to re-read it.
+            match desktop_settings_proxy
+                .read(COLOR_SCHEME_SETTINGS_NAMESPACE, COLOR_SCHEME_SETTINGS_KEY)
+                .await
+            {
+                Ok(value) => THEME_CACHE.set(SystemColorScheme::from(&value).into()),
+                Err(err) => {
+                    log::warn!("Failed to re-read system color scheme: {err:#}");
+                    THEME_CACHE.set(SystemColorScheme::from(args.new_setting_value()).into());
+                }
+            }
             let _ = event_proxy.send_event(CustomEvent::SystemThemeChanged);
         }
     }
     Ok(())
 }
 
-/// Retrieves the system color scheme, blocking for up to 200ms to get the
-/// value via dbus.
+/// How long the UI thread may wait for the first (prefetched) answer. Only reached when the
+/// user asked to follow the system theme (see `derived_theme_kind_with`) and only until the
+/// background prefetch lands (~5-10 ms on a desktop with a portal); a missing or slow portal
+/// costs at most this once, instead of the old 200 ms on every lookup.
+const FIRST_ANSWER_WAIT: Duration = Duration::from_millis(50);
+
+/// How long the background prefetch waits for the portal before giving up.
+const PREFETCH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Last known system color scheme, filled by [`prefetch_system_theme`] and kept current by
+/// the `SettingChanged` watcher, so lookups never touch D-Bus on the calling thread.
+#[derive(Debug, Default)]
+struct ThemeCache {
+    value: Mutex<Option<SystemTheme>>,
+    ready: Condvar,
+}
+
+impl ThemeCache {
+    const fn new() -> Self {
+        Self {
+            value: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn set(&self, theme: SystemTheme) {
+        if let Ok(mut v) = self.value.lock() {
+            *v = Some(theme);
+        }
+        self.ready.notify_all();
+    }
+
+    fn get(&self) -> Option<SystemTheme> {
+        self.value.lock().ok().and_then(|v| *v)
+    }
+
+    /// Returns the cached value, waiting up to `timeout` for the first one to arrive.
+    fn get_or_wait(&self, timeout: Duration) -> Option<SystemTheme> {
+        let guard = self.value.lock().ok()?;
+        if guard.is_some() {
+            return *guard;
+        }
+        let (guard, _) = self
+            .ready
+            .wait_timeout_while(guard, timeout, |v| v.is_none())
+            .ok()?;
+        *guard
+    }
+}
+
+static THEME_CACHE: ThemeCache = ThemeCache::new();
+
+/// Returns the system color scheme from the cache. Never queries D-Bus on the calling
+/// thread; errors only if the first background answer has not arrived within
+/// [`FIRST_ANSWER_WAIT`] (the caller falls back to light and is told to re-read via
+/// `SystemThemeChanged` once the answer lands).
 pub fn get_system_theme() -> Result<SystemTheme, zbus::Error> {
-    block_on(async {
-        query_system_theme_from_dbus()
-            .with_timeout(Duration::from_millis(200))
-            .await
-            .unwrap_or_else(|_| {
-                Err(zbus::Error::from(zbus::fdo::Error::TimedOut(
-                    "Failed to get a response within 200ms".to_owned(),
-                )))
-            })
+    THEME_CACHE.get_or_wait(FIRST_ANSWER_WAIT).ok_or_else(|| {
+        zbus::Error::from(zbus::fdo::Error::TimedOut(
+            "system color scheme not fetched yet".to_owned(),
+        ))
     })
+}
+
+/// Queries the system color scheme once, off-thread, at process start and caches it. If the
+/// answer differs from the light fallback callers used while waiting, injects a
+/// `SystemThemeChanged` event so the UI re-reads it.
+pub fn prefetch_system_theme(event_proxy: EventLoopProxy<CustomEvent>, background: &Background) {
+    background
+        .spawn(async move {
+            let theme = match query_system_theme_from_dbus()
+                .with_timeout(PREFETCH_TIMEOUT)
+                .await
+            {
+                Ok(Ok(theme)) => theme,
+                Ok(Err(err)) => {
+                    log::info!("Unable to fetch Linux system color scheme: {err:#}");
+                    SystemTheme::Light
+                }
+                Err(_) => {
+                    log::info!(
+                        "Unable to fetch Linux system color scheme: no response within {PREFETCH_TIMEOUT:?}"
+                    );
+                    SystemTheme::Light
+                }
+            };
+            THEME_CACHE.set(theme);
+            if theme != SystemTheme::Light {
+                let _ = event_proxy.send_event(CustomEvent::SystemThemeChanged);
+            }
+        })
+        .detach();
 }
 
 /// Queries the current D-Bus session bus to get the system color scheme.
@@ -179,3 +270,7 @@ async fn query_system_theme_from_dbus() -> Result<SystemTheme, zbus::Error> {
         .await?;
     Ok(SystemColorScheme::from(&owned_val).into())
 }
+
+#[cfg(test)]
+#[path = "desktop_settings_tests.rs"]
+mod tests;
