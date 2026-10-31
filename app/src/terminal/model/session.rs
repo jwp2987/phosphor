@@ -2424,6 +2424,16 @@ fn command_may_change_known_commands(command: &str) -> bool {
             })
 }
 
+/// Whether `dir` is an existing local directory with no `.git` (directory or file) in it or any
+/// ancestor, i.e. `git branch` there is certain to fail. Anything uncertain -- a missing path, or
+/// `GIT_DIR` set in our environment -- returns `false` so git is still consulted.
+fn local_dir_is_outside_git_repo(dir: &Path) -> bool {
+    if std::env::var_os("GIT_DIR").is_some() || !dir.is_dir() {
+        return false;
+    }
+    !dir.ancestors().any(|ancestor| ancestor.join(".git").exists())
+}
+
 #[cfg(test)]
 #[path = "session_test.rs"]
 mod test;
