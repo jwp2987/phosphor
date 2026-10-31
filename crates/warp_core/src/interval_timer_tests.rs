@@ -29,3 +29,15 @@ fn test_timing_info() {
     );
     assert!(stats[1].marginal_duration_ms >= 10);
 }
+
+#[test]
+fn startup_summary_lists_each_phase_and_the_total() {
+    let mut timer = IntervalTimer::new();
+    timer.mark_interval_end("a");
+    timer.mark_interval_end("b");
+
+    let summary = timer.startup_summary();
+    assert!(summary.starts_with("startup timing: a="), "{summary}");
+    assert!(summary.contains(" b="), "{summary}");
+    assert!(summary.contains(" total="), "{summary}");
+}

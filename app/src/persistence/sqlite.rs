@@ -2422,10 +2422,43 @@ fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
 /// * [`ModelEvent::ReconstructAndResume`]
 /// * [`ModelEvent::Terminate`]
 fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> anyhow::Result<()> {
+    let slow_start = instant::Instant::now();
+    let kind = model_event_kind(&event);
     let result = handle_model_event_unsettled(event, connection);
     // Whatever the outcome, the next write must start from autocommit (#971).
     settle_stray_transaction(connection);
+    SLOW_DB_WRITE.finish(slow_start, || {
+        format!("event={kind}, ok={}", result.is_ok())
+    });
     result
+}
+
+/// A database write that holds the single writer this long delays every write behind it (#1146).
+const DB_WRITE_SLOW: std::time::Duration = std::time::Duration::from_millis(100);
+static SLOW_DB_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "sqlite write",
+    DB_WRITE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
+/// A payload-free name for the slow-write log; `Debug` would dump the whole event.
+fn model_event_kind(event: &ModelEvent) -> &'static str {
+    match event {
+        ModelEvent::SaveBlock(_) => "SaveBlock",
+        ModelEvent::DeleteBlocks(_) => "DeleteBlocks",
+        ModelEvent::Snapshot(_) => "Snapshot",
+        ModelEvent::UpsertWorkflows(_) => "UpsertWorkflows",
+        ModelEvent::UpsertNotebooks(_) => "UpsertNotebooks",
+        ModelEvent::UpsertFolders(_) => "UpsertFolders",
+        ModelEvent::UpsertGenericStringObject { .. }
+        | ModelEvent::UpsertGenericStringObjects(_) => "UpsertGenericStringObject",
+        ModelEvent::UpdateMultiAgentConversation { .. } => "UpdateMultiAgentConversation",
+        ModelEvent::UpsertCodebaseIndexMetadata { .. }
+        | ModelEvent::UpsertCodebaseIndexNodes { .. }
+        | ModelEvent::UpsertCodebaseIndexEmbeddings { .. }
+        | ModelEvent::UpsertCodebaseIndexNodeSummaries { .. } => "UpsertCodebaseIndex",
+        _ => "other",
+    }
 }
 
 fn handle_model_event_unsettled(

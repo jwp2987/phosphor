@@ -432,6 +432,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             .duration_since(setup_start)
             .as_millis()
             .min(u64::MAX as u128) as u64;
+        // #1146: the end of the per-connect stage timings (see the manager's setup, install and
+        // connect lines): the shell bootstrap was held this long behind the ssh init.
+        log::info!(
+            "remote-server setup done for session {session_id:?}: bootstrap flushed \
+             {duration_ms} ms after ssh init (installed_binary={})",
+            self.did_install
+        );
         let (remote_os, remote_arch) = self
             .remote_platform
             .as_ref()

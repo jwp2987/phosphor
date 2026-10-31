@@ -85,6 +85,37 @@ lazy_static! {
     static ref LAST_USER_ACTION_UNIX_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
 }
 
+/// Anything on the UI thread that holds it this long is a visible hitch (#1146).
+const UI_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Slow-operation loggers for the UI thread. One per kind so a sustained slow
+/// frame cannot hide a slow action. Rate limited; see `warp_util::slow_log`.
+static SLOW_ACTION: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "UI action dispatch",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_EVENT: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "UI event dispatch",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_VIEW_UPDATE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "view update",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_MODEL_UPDATE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "model update",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "frame layout+paint",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 #[derive(Clone)]
 pub struct App(Rc<RefCell<AppContext>>);
 
@@ -1607,6 +1638,7 @@ impl AppContext {
         log_level: log::Level,
     ) -> bool {
         log::log!(log_level, "dispatching action for {name:?}");
+        let slow_start = Instant::now();
         self.pending_flushes += 1;
 
         let mut any_action_handled = false;
@@ -1682,6 +1714,7 @@ impl AppContext {
         self.dispatch_global_action(name, arg);
 
         self.flush_effects();
+        SLOW_ACTION.finish(slow_start, || format!("action {name:?}"));
         any_action_handled
     }
 
@@ -1702,6 +1735,7 @@ impl AppContext {
             action.type_name()
         );
 
+        let slow_start = Instant::now();
         let action_type: ActionType = action.into();
         // If there are no handlers registered for the given action, then we can return early
         // without needing to look at the responder chain at all, since no views will handle it
@@ -1767,6 +1801,9 @@ impl AppContext {
         }
 
         self.flush_effects();
+        SLOW_ACTION.finish(slow_start, || {
+            format!("typed action {}", action.type_name())
+        });
         handled
     }
 
@@ -3185,8 +3222,16 @@ impl AppContext {
         }
     }
 
-    /// Builds a new scene for the given window.
+    /// Builds a new scene for the given window, logging (rate limited) if layout +
+    /// paint took long enough to be a visible hitch.
     fn build_scene(&mut self, window_id: WindowId, window: &dyn WindowContext) -> Rc<Scene> {
+        let slow_start = Instant::now();
+        let scene = self.build_scene_inner(window_id, window);
+        SLOW_FRAME.finish(slow_start, || format!("window {window_id:?}"));
+        scene
+    }
+
+    fn build_scene_inner(&mut self, window_id: WindowId, window: &dyn WindowContext) -> Rc<Scene> {
         // Make the window being rendered available to window-blind theme
         // accessors for the duration of this render pass (view rendering happens
         // inside the `presenter.invalidate`/`build_scene` calls below). The guard
@@ -4405,7 +4450,10 @@ impl AppContext {
                 log::Level::Debug
             }
         };
+        let slow_start = Instant::now();
+        let event_kind = crate::event::EventDiscriminants::from(&event);
         let dispatch_result = presenter.borrow_mut().dispatch_event(event, self);
+        SLOW_EVENT.finish(slow_start, || format!("event {event_kind:?}"));
 
         // Iterate through all timers, and put a task onto the main thread for each
         // to call back and notify the view when the timer triggers.
@@ -5605,10 +5653,14 @@ impl UpdateModel for AppContext {
         T: Entity,
         F: FnOnce(&mut T, &mut ModelContext<T>) -> S,
     {
+        let slow_start = Instant::now();
         let mut model = self.take_model_for_update(handle.id());
         let mut ctx = ModelContext::new(self, handle.id());
         let result = update(downcast_model_mut(&mut model), &mut ctx);
         self.finish_model_update(handle.id(), model);
+        SLOW_MODEL_UPDATE.finish(slow_start, || {
+            format!("model {}", std::any::type_name::<T>())
+        });
         result
     }
 }
@@ -5637,10 +5689,14 @@ impl UpdateView for AppContext {
     {
         let window_id = handle.window_id(self);
         let view_id = handle.id();
+        let slow_start = Instant::now();
         let mut view = self.take_view_for_update(window_id, view_id)?;
         let mut ctx = ViewContext::new(self, window_id, view_id);
         let result = update(downcast_view_mut(&mut view), &mut ctx);
         self.finish_view_update(window_id, view_id, view);
+        SLOW_VIEW_UPDATE.finish(slow_start, || {
+            format!("view {}", std::any::type_name::<T>())
+        });
         Ok(result)
     }
 }

@@ -13,6 +13,15 @@ use crate::remote_server::proto::run_command_response;
 use crate::terminal::model::session::command_executor::{CommandExecutor, ExecuteCommandOptions};
 use crate::terminal::shell::Shell;
 
+/// A remote generator/background command slower than this is worth a log line (#1146): it
+/// shares the ssh connection with the user's keystrokes (#985).
+const REMOTE_COMMAND_SLOW: std::time::Duration = std::time::Duration::from_secs(2);
+static SLOW_REMOTE_COMMAND: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "remote command (remote-server executor)",
+    REMOTE_COMMAND_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 /// `CommandExecutor` implementation that executes commands via a persistent
 /// `warp remote-server` process running on the remote host over SSH.
 ///
@@ -61,6 +70,7 @@ impl CommandExecutor for RemoteServerCommandExecutor {
         environment_variables: Option<HashMap<String, String>>,
         _execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
+        let slow_start = instant::Instant::now();
         let response = self
             .client
             .run_command(
@@ -71,6 +81,14 @@ impl CommandExecutor for RemoteServerCommandExecutor {
             )
             .await
             .map_err(|e| anyhow!("Remote command failed (session={:?}): {e}", self.session_id))?;
+
+        SLOW_REMOTE_COMMAND.finish(slow_start, || {
+            format!(
+                "executor=remote_server, session={:?}, command={:?}",
+                self.session_id,
+                warp_util::slow_log::truncate_for_log(command, 80)
+            )
+        });
 
         match response.result {
             Some(run_command_response::Result::Success(success)) => {

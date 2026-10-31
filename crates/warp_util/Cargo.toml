@@ -29,6 +29,7 @@ serde_json.workspace = true
 pin-project.workspace = true
 futures-util.workspace = true
 event-listener.workspace = true
+instant.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -12,6 +12,15 @@ use crate::terminal::shell::Shell;
 use super::shared::shell_escape_single_quotes;
 use super::{CommandExecutor, CommandOutput, ExecuteCommandOptions};
 
+/// A remote generator/background command slower than this is worth a log line (#1146): it
+/// shares the ssh connection with the user's keystrokes (#985).
+const REMOTE_COMMAND_SLOW: std::time::Duration = std::time::Duration::from_secs(2);
+static SLOW_REMOTE_COMMAND: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "remote command (ControlMaster executor)",
+    REMOTE_COMMAND_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 /// `CommandExecutor` implementation that executes the given `command` in a forked process
 /// that establishes a one-off SSH session with the same remote host as the active SSH session
 /// using SSH's ControlMaster/ControlPath feature. This is typically used to run generator
@@ -41,6 +50,8 @@ impl CommandExecutor for RemoteCommandExecutor {
         environment_variables: Option<HashMap<String, String>>,
         _execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
+        let slow_start = instant::Instant::now();
+        let logged_command = command;
         // We can't use `.env` and `.current_dir` here to set the PATH and current dir respectively
         // since this is run locally. We just need the subprocess to send the bytes over the
         // ssh connection. That's why we explicitly set the path and cwd as part of command_str.
@@ -94,14 +105,22 @@ impl CommandExecutor for RemoteCommandExecutor {
         command.args(ssh_args);
         // A superseded generator is cancelled by dropping this future; `kill_on_drop` then kills
         // the local ssh client, closing its channel on the shared connection (#1128).
-        command
+        let result = command
             .env("SHELL", "/bin/sh")
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output()
             .await
             .map(|output| output.into())
-            .map_err(|e| anyhow!(e))
+            .map_err(|e| anyhow!(e));
+        // Only the generator text (truncated), never `command_str`, which embeds env values.
+        SLOW_REMOTE_COMMAND.finish(slow_start, || {
+            format!(
+                "executor=control_master, command={:?}",
+                warp_util::slow_log::truncate_for_log(logged_command, 80)
+            )
+        });
+        result
     }
 
     fn as_any(&self) -> &dyn Any {

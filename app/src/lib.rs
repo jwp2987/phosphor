@@ -1786,6 +1786,7 @@ fn initialize_app(
                 // startup timing table to stderr. Doesn't affect telemetry logic; for
                 // developer use only.
                 timer.print_trace_to_stderr_if_enabled();
+                log::info!("{}", timer.startup_summary());
                 timer.compute_stats()
             });
             let event = TelemetryEvent::AppStartup(AppStartupInfo {
@@ -1829,6 +1830,7 @@ fn initialize_app(
             IntervalTimer::handle(ctx).update(ctx, |timer, _| {
                 timer.mark_interval_end("FIRST_FRAME_DRAWN");
                 timer.print_trace_to_stderr_if_enabled();
+                log::info!("{}", timer.startup_summary());
             });
         });
     }
