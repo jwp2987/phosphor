@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Table test (#1164): the bash bootstrap's fork-free replacements must give the same
+answers as the commands they replaced.
+
+The replaced forks (sort -V, cat|sed on os-release, cut on `shopt -s`) are now builtin code
+in app/assets/bundled/bootstrap/bash_body.sh. This extracts that code from the real file and
+runs it, under `set -eu` (the hostile-rc case), against the old command on a table of inputs.
+Needs only python3 and bash; exit 0 when all agree.
+
+USAGE
+    script/test_bash_bootstrap_builtins [path/to/bash]
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BODY = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash_body.sh")
+BASH = sys.argv[1] if len(sys.argv) > 1 else (shutil.which("bash") or "/bin/bash")
+text = open(BODY).read()
+failures = []
+
+
+def run(script, **kw):
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True, **kw)
+
+
+def check(cond, what):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+
+
+# --- warp_at_least_bash_version vs `sort -rVC` -------------------------------------------
+m = re.search(r"^\s*warp_at_least_bash_version \(\) \{\n.*?\n    \}\n", text, re.S | re.M)
+assert m, "warp_at_least_bash_version not found"
+func = m.group(0)
+print("warp_at_least_bash_version")
+for have in ["3.2.57(1)-release", "4.0.44(1)-release", "4.3.48(1)-release", "4.4.0(1)-release",
+             "4.4.23(1)-release", "5.0.0(1)-release", "5.2.15(1)-release", "5.3.9(1)-release"]:
+    for want in ["4.0", "4.4"]:
+        # Old definition, evaluated against a fake BASH_VERSION.
+        old = run(
+            f'BASH_VERSION="{have}"; printf "%s\\n%s\\n" "$BASH_VERSION" "{want}" | '
+            f"sort -rVC && echo 1 || echo 0"
+        ).stdout.strip()
+        vi = have.split("(")[0].split(".")
+        new = run(
+            f"set -eu\nFAKE_VI=({vi[0]} {vi[1]} {vi[2]})\n{func.replace('BASH_VERSINFO', 'FAKE_VI')}\nwarp_at_least_bash_version {want}"
+        )
+        check(new.stdout.strip() == old and new.returncode == 0, f"{have} >= {want}: {old}")
+
+# --- os-release NAME= extraction vs cat|sed -----------------------------------------------
+m = re.search(r'(        linux_distribution=""\n.*?unset __warp_os_line\n)', text, re.S)
+assert m, "os-release block not found"
+block = m.group(1)
+print("os-release NAME extraction")
+cases = {
+    "plain": 'NAME="Ubuntu"\nVERSION="22.04"\n',
+    "no trailing newline": 'NAME="Fedora Linux"',
+    "unquoted": "NAME=Arch\nID=arch\n",
+    "empty": 'NAME=""\n',
+    "lone quote": 'NAME="\n',
+    "two matches": 'NAME="A"\nNAME="B"\n',
+    "embedded quote": 'NAME="Say "hi""\n',
+    "backslash and tab": 'NAME="a\\b\tc"\n',
+    "other keys only": 'PRETTY_NAME="X"\nID=x\n',
+    "empty file": "",
+    "crlf": 'NAME="Win"\r\n',
+}
+for name, content in cases.items():
+    with tempfile.NamedTemporaryFile("wb", delete=False) as f:
+        f.write(content.encode())
+        path = f.name
+    old = run(f"""cat {path} | sed -nE 's/^NAME="(.*)"$/\\1/p'""").stdout
+    old = old.rstrip("\n")
+    new = run(
+        f'set -eu\nos_release_file={path}\n{block}\nprintf "%s" "$linux_distribution"'
+    )
+    check(new.stdout == old and new.returncode == 0, f"{name}: {old!r}")
+    os.unlink(path)
+
+# --- shopt -s | cut -f 1 --------------------------------------------------------------------
+m = re.search(r'(        local shell_options=""\n.*?done <<< "\$\(builtin shopt -s\)"\n)', text, re.S)
+assert m, "shopt block not found"
+print("shopt option names")
+sh = f'set -eu\nf() {{\n{m.group(1)}\nprintf "%s" "$shell_options"\n}}\nf'
+old = run('shopt -s | command -p cut -f 1').stdout.rstrip("\n")
+new = run(sh)
+check(new.stdout == old and new.returncode == 0, f"{len(old.splitlines())} options, padding kept")
+
+print()
+if failures:
+    print("test_bash_bootstrap_builtins: FAILED")
+    sys.exit(1)
+print("test_bash_bootstrap_builtins: ok")

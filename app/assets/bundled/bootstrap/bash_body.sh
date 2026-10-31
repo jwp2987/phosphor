@@ -929,7 +929,13 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # To match rest of our codebase, it returns "1" if the bash version is higher or equal, and 
     # 0 otherwise.
     warp_at_least_bash_version () {
-      if [[ $(builtin printf '%s\n%s\n' "$BASH_VERSION" "$1" | command -p sort -rVC ; builtin echo $?) -eq 0 ]]; then
+      # Phosphor (#1164): compare against BASH_VERSINFO instead of forking `sort -V` (twice per
+      # shell start). Callers pass "major.minor".
+      local __warp_want_major="${1%%.*}"
+      local __warp_want_minor="${1#*.}"
+      if [[ "$1" != *.* ]]; then __warp_want_minor=0; fi
+      __warp_want_minor="${__warp_want_minor%%.*}"
+      if (( BASH_VERSINFO[0] > __warp_want_major || (BASH_VERSINFO[0] == __warp_want_major && BASH_VERSINFO[1] >= __warp_want_minor) )); then
         builtin echo "1"
       else 
         builtin echo "0"
@@ -1772,7 +1778,13 @@ fi' RETURN
         fi
     done
 
-  if kernel_name="$(uname)"; then
+  # Phosphor (#1164): $OSTYPE answers this without forking uname; anything else asks uname.
+  case "${OSTYPE-}" in
+    darwin*) kernel_name="Darwin" ;;
+    linux*) kernel_name="Linux" ;;
+    *) kernel_name="$(uname)" || kernel_name="" ;;
+  esac
+  if [[ -n "$kernel_name" ]]; then
     if [[ "$kernel_name" == "Darwin" ]]; then
       os_category="MacOS"
     elif [[ "$kernel_name" == "Linux" ]]; then
@@ -1786,7 +1798,19 @@ fi' RETURN
         os_release_file="$fallback_os_release_filepath"
       fi
       if test -f "$os_release_file"; then
-        linux_distribution="$(cat $os_release_file | sed -nE 's/^NAME="(.*)"$/\1/p')"
+        # The NAME="..." value(s) of the file, read without cat|sed (one line per match; trailing
+        # newlines dropped like $(...) does).
+        linux_distribution=""
+        {
+          while IFS= builtin read -r __warp_os_line || [[ -n "$__warp_os_line" ]]; do
+            if [[ "$__warp_os_line" == NAME=\"*\" ]]; then
+              __warp_os_line="${__warp_os_line#NAME=\"}"
+              linux_distribution="$linux_distribution${__warp_os_line%\"}"$'\n'
+            fi
+          done
+        } 2>/dev/null < "$os_release_file" || builtin true
+        while [[ "$linux_distribution" == *$'\n' ]]; do linux_distribution="${linux_distribution%$'\n'}"; done
+        unset __warp_os_line
       fi
     fi
   fi
@@ -1827,7 +1851,15 @@ fi' RETURN
           local escaped_keywords="$(warp_escape_json "$keywords")"
         fi
 
-        local shell_options="`shopt -s | command -p cut -f 1`"
+        # Phosphor (#1164): the option names (field 1 of `shopt -s`, padding kept) via parameter
+        # expansion instead of a cut fork.
+        local shell_options=""
+        local __warp_so_sep=""
+        local __warp_so_line
+        while IFS= builtin read -r __warp_so_line; do
+          shell_options="$shell_options$__warp_so_sep${__warp_so_line%%$'\t'*}"
+          __warp_so_sep=$'\n'
+        done <<< "$(builtin shopt -s)"
         # Provide terminal logic access to the value of HISTCONTROL via shell
         # options.  Prefix the fake option with "!" to avoid conflicts with
         # real bash options.
@@ -1849,8 +1881,18 @@ fi' RETURN
           local escaped_shell_options=$(warp_escape_json "$shell_options")
         fi
 
-        local _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER)
-        local _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
+        # Phosphor (#1164): InitShell already resolved both (bash_init_shell.sh leaves them in
+        # __warp_init_*); only fork whoami/hostname again when this shell was not initialised
+        # that way (subshell/in-band flows).
+        local _user _hostname
+        if [[ -n "${__warp_init_user+set}" ]]; then
+          _user="$__warp_init_user"
+          _hostname="${__warp_init_hostname-}"
+        else
+          _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo ${USER-}) || _user=""
+          _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n) || _hostname=""
+        fi
+        unset __warp_init_user __warp_init_hostname
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Bootstrapped"
           warp_send_hook_kv_pair "histfile" "$HISTFILE"
