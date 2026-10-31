@@ -604,9 +604,53 @@ def preexec_hex_tests():
         shutil.rmtree(base, ignore_errors=True)
 
 
+
+def debug_trap_tests():
+    """#1283: the DEBUG trap skips the call into bash-preexec once the first command of a line has
+    cleared the interactive-mode flag. What bash-preexec does for a line must not change: one
+    Preexec per line (also for a compound line and a `while :` loop, #1094), `$_` for the first
+    command, the PROMPT_COMMAND repair (#807), and the trap still arming for the next line."""
+    if not SHELLS["bash"]:
+        return
+    print("bash DEBUG trap (%s)" % SHELLS["bash"])
+    base = tempfile.mkdtemp(prefix="phosphor-1283-trap-")
+    try:
+        os.makedirs(os.path.join(base, "home"))
+        sh = Shell("bash", os.path.join(base, "home"), base, "/usr/local/bin:/usr/bin:/bin")
+        check(not sh.broken, "bootstraps")
+        for line, want in ((b"echo a; echo b; echo c", "echo a"), (b"for i in 1 2 3; do :; done", None),
+                           (b"while :; do break; done", None), (b"true", "true")):
+            hooks = sh.cycle(line)
+            pre = [v for h, v in hooks if h == "Preexec"]
+            check(len(pre) == 1 and (want is None or pre[0].get("command") in (want, line.decode())),
+                  "exactly one Preexec for %r" % line.decode(), repr(pre)[:200])
+        # The skip itself: count entries into bash-preexec for a line of six commands (the line's first
+        # command and one more are entered; each further command used to be as well).
+        sh.cycle(b'__bp_calls=0; eval "$(declare -f __bp_preexec_invoke_exec | sed \'s/^__bp_preexec_invoke_exec /__bp_orig_invoke /\')"; '
+                 b'__bp_preexec_invoke_exec() { __bp_calls=$((__bp_calls+1)); __bp_orig_invoke "$@"; }')
+        sh.buf = b""
+        sh.cycle(b":; :; :; :; :; echo CALLS=$__bp_calls")
+        calls = re.findall(rb"CALLS=(\d+)", sh.buf)
+        check(calls and int(calls[-1]) <= 2, "bash-preexec is entered a constant number of times (2; was 9) for a line of six commands",
+              "calls=%r" % calls)
+        sh.cycle(b"echo one two")
+        sh.buf = b""
+        sh.cycle(b"echo got:$_")
+        check(b"got:two" in sh.buf, "$_ reaches the first command of the next line", sh.buf[-200:].decode(errors="replace"))
+        sh.cycle(b"PROMPT_COMMAND='echo pc'")
+        hooks = sh.cycle(b"true")
+        hooks2 = sh.cycle(b"true")
+        check(not sh.broken and any(h == "Precmd" for h, _ in hooks + hooks2) and any(h == "Preexec" for h, _ in hooks2),
+              "a reassigned PROMPT_COMMAND is repaired and Preexec still fires (#807)")
+        sh.close()
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 table_tests()
 history_tests()
 preexec_hex_tests()
+debug_trap_tests()
 for kind in ("bash", "zsh", "fish"):
     if SHELLS[kind]:
         e2e(kind)

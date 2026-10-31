@@ -414,7 +414,14 @@
              return 1;
          fi
 
-         trap '__bp_preexec_invoke_exec "$_"' DEBUG
+ #### Phosphor (#1283): the DEBUG trap fires before every simple command of a typed line, and the
+ #### full path (__warp_run_relaxed + __bp_preexec_invoke_exec_impl, ~25 builtins) cost 120-250 us each
+ #### just to return: an agent command's ~35-command wrapper paid 5-9 ms before it started. Once the
+ #### first command of the line has cleared __bp_preexec_interactive_mode, the impl returns without
+ #### effect unless the PROMPT_COMMAND repair below is due, so the trap tests exactly that first and
+ #### skips the call (an unset mode and an installed, intact PROMPT_COMMAND hook). $_ is saved first:
+ #### the test would overwrite it before the function sees it.
+         trap '__warp_bp_u=$_; [[ -z ${__bp_preexec_interactive_mode:-} && ( -z ${__bp_prompt_command_installed:-} || "${PROMPT_COMMAND[*]:-}" == *__bp_precmd_invoke_cmd* ) ]] || __bp_preexec_invoke_exec "$__warp_bp_u"' DEBUG
 
          # Preserve any prior DEBUG trap as a preexec function
          local prior_trap

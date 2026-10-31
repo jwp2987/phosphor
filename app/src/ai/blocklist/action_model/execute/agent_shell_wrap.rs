@@ -95,7 +95,11 @@ fn var_list() -> String {
 /// inherit the functions, so inside one (`BASH_SUBSHELL` / `ZSH_SUBSHELL` above zero) the guard
 /// exits for real: it only has to protect the user's own shell. `builtin exit` / `command exit`
 /// bypass the guard and are caught by the detection instead.
-const POSIX_GUARD_SAVE: &str = r#"__phosphor_ap_gx=$(typeset -f exit 2>/dev/null); __phosphor_ap_gl=$(typeset -f logout 2>/dev/null); function exit { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "${1:-$__phosphor_ap_s}"; fi; return "${1:-0}"; }; function logout { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "$__phosphor_ap_s"; fi; return 0; }"#;
+///
+/// The saved text is only taken (a command substitution, i.e. a fork) when the user has such a
+/// function at all: `typeset -f` answers that in-process, so the usual command pays no fork here
+/// (#1283).
+const POSIX_GUARD_SAVE: &str = r#"__phosphor_ap_gx=; __phosphor_ap_gl=; if typeset -f exit >/dev/null 2>&1; then __phosphor_ap_gx=$(typeset -f exit 2>/dev/null); fi; if typeset -f logout >/dev/null 2>&1; then __phosphor_ap_gl=$(typeset -f logout 2>/dev/null); fi; function exit { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "${1:-$__phosphor_ap_s}"; fi; return "${1:-0}"; }; function logout { __phosphor_ap_s=$?; if [ "${BASH_SUBSHELL:-${ZSH_SUBSHELL:-0}}" != 0 ]; then builtin exit "$__phosphor_ap_s"; fi; return 0; }"#;
 
 /// Undoes [`POSIX_GUARD_SAVE`]. Keep identical to the loop in the bootstrap backstops.
 pub(crate) const POSIX_GUARD_RESTORE: &str = r#"unset -f exit logout; if [ -n "$__phosphor_ap_gx" ]; then eval "$__phosphor_ap_gx"; fi; if [ -n "$__phosphor_ap_gl" ]; then eval "$__phosphor_ap_gl"; fi; unset __phosphor_ap_gx __phosphor_ap_gl"#;
