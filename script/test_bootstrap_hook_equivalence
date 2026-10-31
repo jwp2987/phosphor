@@ -153,14 +153,24 @@ def table_tests():
             body = read("bash_body.sh")
             ctrl = grab(body, r"^    WARP_ESCAPE_JSON_CTRL_SED=.*?unset warp_ctrl_octal warp_ctrl_char warp_ctrl_hex\n")
             funcs = "".join(grab(body, r"^    %s \(\) \{\n.*?^    \}\n" % n)
-                            for n in ("warp_escape_json", "__warp_ej_var", "warp_hex_encode_string", "__warp_hex_encode_to"))
-            for label, pre in (("default", ""), ("set -eu", "set -eu\n")):
+                            for n in ("warp_escape_json", "__warp_ej_var", "warp_hex_encode_string", "__warp_hex_encode_to",
+                                      "warp_escape_ps1", "__warp_escape_ps1_to"))
+            # #1203: prompts the fork-free PS1 encode must reproduce byte for byte, as rendered
+            # (`${PS1@P}`): echo's option spellings, backslashes (interpreted only under xpg_echo),
+            # trailing and embedded newlines, multibyte, and sizes around both loop crossovers.
+            ps1s = cs + [b"-n", b"-e", b"-E", b"-neE", b"-x", b"-", b"a\\nb\\tc\\\\d", b"\\c dropped", b"\\0101",
+                         b"user@host:~/src (main)$ ", b"\n\n> ", b"line1\nline2\n\n\n", b"\xe2\x9d\xaf \xf0\x9f\x90\x9a ",
+                         b"\x1b[32m\xe2\x9e\x9c\x1b[0m ", (b"\x1b[1;34m~/x\x1b[0m " * 60)[:600], (b"p\xc3\xa9 " * 700)[:2100],
+                         (b"q\n" * 1500)[:3000]]
+            for label, pre in (("default", ""), ("set -eu", "set -eu\n"), ("xpg_echo", "shopt -s xpg_echo\n")):
                 path = os.path.join(tmp, "bash.sh")
                 with open(path, "w") as f:
                     f.write(pre + ctrl + funcs + """
 mode=$1; shift
 for v in "$@"; do
   if [ "$mode" = hex ]; then __warp_hex_encode_to "$v"; printf '%s\\n' "$__warp_hex"
+  elif [ "$mode" = ps1 ]; then
+    old=$(warp_escape_ps1 "$(builtin echo "$v")"); __warp_escape_ps1_to "$v"; printf '%s\\n%s\\n' "$old" "$__warp_hex"
   else __warp_ej_var out "$v"; printf '%s\\n' "$out"; fi
 done
 """)
@@ -170,6 +180,11 @@ done
                     bad = [(c, g, w) for c, g, w in zip(cs, got, want) if g != w]
                     check(not bad and len(got) == len(cs) + 1, "%s: %d inputs match the reference" % (mode, len(cs)),
                           "first mismatch: %r\n got  %r\n want %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
+                got, err = run_table("bash", [SHELLS["bash"]], path, [b"ps1"] + ps1s)
+                pairs = list(zip(got[0::2], got[1::2]))
+                bad = [(c, o, n) for c, (o, n) in zip(ps1s, pairs) if o != n]
+                check(not bad and len(got) == 2 * len(ps1s) + 1, "ps1: %d prompts encode as the old pipeline did" % len(ps1s),
+                      "first mismatch: %r\n old %r\n new %r\n%s" % (bad[0] + (err[-300:],)) if bad else err[-300:].decode(errors="replace"))
         else:
             print("bash: not installed")
 

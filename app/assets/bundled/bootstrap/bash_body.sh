@@ -657,7 +657,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             # is the same on most prompts, so keep the last one's result. The encoding depends on
             # nothing but $deref_ps1, so reusing it is exact.
             if [[ ${__warp_ps1_cache_valid-} != 1 || $deref_ps1 != "${__warp_ps1_cache_in-}" ]]; then
-              __warp_ps1_cache_out=$(warp_escape_ps1 "$(builtin echo "$deref_ps1")")
+              __warp_escape_ps1_to "$deref_ps1"
+              __warp_ps1_cache_out=$__warp_hex
               __warp_ps1_cache_in=$deref_ps1
               __warp_ps1_cache_valid=1
             fi
@@ -1019,9 +1020,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # bash 5.3 the loop costs 0.27 ms for 64 bytes, 1 ms for 256, 2.4 ms for 512 and 10 ms for 2000,
     # while the od pipeline costs 2.3-3.6 ms at any size, so the crossover is near 512 bytes.
     __warp_hex_encode_to () {
-      local LC_ALL=C __s=${1-} __i __c
+      local LC_ALL=C __s=${1-} __i __c __limit=${2:-512}
       __warp_hex=
-      if (( ${#__s} > 512 )); then
+      if (( ${#__s} > __limit )); then
         __warp_hex=$(warp_hex_encode_string "$__s")
         return 0
       fi
@@ -1029,6 +1030,32 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         builtin printf -v __c '%02x' "'${__s:__i:1}"
         __warp_hex+=${__c: -2}
       done
+    }
+
+    # Phosphor (#1203): what `warp_escape_ps1 "$(builtin echo "$1")"` printed, without the three
+    # processes and two subshells it cost on every change of the rendered prompt (the Warp prompt
+    # depends on the cwd, so every `cd` paid them, ~4 ms). Reproduced step by step: `builtin echo`
+    # prints its argument verbatim unless the argument is nothing but its options; `$(...)` strips
+    # every trailing newline; the here-string adds one; `tr` turns each newline into a space; `od`
+    # prints the bytes. Under xpg_echo `echo` interprets backslash escapes with details (`\0nnn`
+    # NULs, a bare `\x`) a `printf -v` cannot reproduce byte for byte, so that rare option keeps the
+    # pipeline. The byte loop is given 2048 bytes before the od pipeline takes over, four times the
+    # usual crossover: a prompt is rarely longer, and a fork is what this avoids. Pinned against the
+    # old pipeline in script/test_bootstrap_hook_equivalence.
+    __warp_escape_ps1_to () {
+      if shopt -q xpg_echo; then
+        __warp_hex=$(warp_escape_ps1 "$(builtin echo "${1-}")")
+        return 0
+      fi
+      local LC_ALL=C __p=${1-}
+      if [[ $__p =~ ^-[neE]+$ ]]; then
+        __p=
+      fi
+      while [[ $__p == *$'\n' ]]; do
+        __p=${__p%$'\n'}
+      done
+      __p="${__p//$'\n'/ } "
+      __warp_hex_encode_to "$__p" 2048
     }
 
     # Returns encoded InitShell hook
