@@ -317,7 +317,9 @@ impl Matcher {
         pending.keystrokes.push(keystroke);
 
         let mut retain_pending = false;
-        for binding in self.keymap.bindings() {
+        // Only bindings whose trigger begins with the first pending keystroke can match, so look
+        // at just those (in precedence order) rather than every binding.
+        for binding in self.keymap.bindings_starting_with(&pending.keystrokes[0]) {
             if let Trigger::Keystrokes(keystrokes) = &binding.trigger {
                 if keystrokes.starts_with(&pending.keystrokes)
                     && binding.context_predicate.eval(ctx)

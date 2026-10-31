@@ -35,6 +35,20 @@ pub struct Keymap {
     // a `[WarpDelegate menuNeedsUpdate]` selector.
     fixed_custom_action_bindings: Vec<FixedBinding>,
     editable_custom_action_bindings: Vec<Tracked<EditableBinding>>,
+
+    /// Keystroke-triggered bindings grouped by the first keystroke of their effective trigger,
+    /// each group in the same precedence order as [`Keymap::bindings`]. Lets key matching look at
+    /// only the bindings that can possibly match instead of scanning every binding per key. It
+    /// holds positions, not enablement: `is_enabled` is evaluated at lookup time (it must not be
+    /// cached). Rebuilt by every method that adds a binding or changes a trigger.
+    first_keystroke_index: HashMap<Keystroke, Vec<BindingSlot>>,
+}
+
+/// Where a binding lives inside [`Keymap`].
+#[derive(Clone, Copy, Debug)]
+enum BindingSlot {
+    Editable(usize),
+    Fixed(usize),
 }
 
 // Custom actions should be identified by a unique integer called their tag.
@@ -369,10 +383,62 @@ where
 impl Keymap {
     #[cfg(test)]
     pub fn new(fixed_bindings: Vec<FixedBinding>) -> Self {
-        Self {
+        let mut keymap = Self {
             fixed_bindings,
             ..Default::default()
+        };
+        keymap.rebuild_first_keystroke_index();
+        keymap
+    }
+
+    /// Rebuilds [`Keymap::first_keystroke_index`] from the current bindings and triggers. Walks
+    /// the bindings in the order [`Keymap::bindings`] yields them (editable, newest first, then
+    /// fixed, newest first) so each group keeps precedence order.
+    fn rebuild_first_keystroke_index(&mut self) {
+        self.first_keystroke_index.clear();
+        for (idx, binding) in self.editable_bindings.iter().enumerate().rev() {
+            if let Trigger::Keystrokes(keystrokes) = binding.as_lens().trigger {
+                if let Some(first) = keystrokes.first() {
+                    self.first_keystroke_index
+                        .entry(first.clone())
+                        .or_default()
+                        .push(BindingSlot::Editable(idx));
+                }
+            }
         }
+        for (idx, binding) in self.fixed_bindings.iter().enumerate().rev() {
+            if let Trigger::Keystrokes(keystrokes) = binding.trigger() {
+                if let Some(first) = keystrokes.first() {
+                    self.first_keystroke_index
+                        .entry(first.clone())
+                        .or_default()
+                        .push(BindingSlot::Fixed(idx));
+                }
+            }
+        }
+    }
+
+    /// The enabled bindings whose keystroke trigger starts with `first`, in the same relative
+    /// order as [`Keymap::bindings`]. Any binding it omits cannot match a pending keystroke
+    /// sequence that begins with `first`.
+    fn bindings_starting_with<'a>(
+        &'a self,
+        first: &Keystroke,
+    ) -> impl Iterator<Item = BindingLens<'a>> + use<'a> {
+        self.first_keystroke_index
+            .get(first)
+            .into_iter()
+            .flatten()
+            .filter_map(move |slot| match *slot {
+                BindingSlot::Editable(idx) => {
+                    let lens = self.editable_bindings[idx].as_lens();
+                    lens.is_enabled().then(|| lens.as_binding())
+                }
+                BindingSlot::Fixed(idx) => {
+                    let binding = &self.fixed_bindings[idx];
+                    binding.is_enabled().then(|| binding.as_lens())
+                }
+            })
     }
 
     /// Returns the earliest-registered currently-enabled binding with the given name.
@@ -396,6 +462,7 @@ impl Keymap {
                 self.fixed_custom_action_bindings.push(binding.clone());
             }
         }
+        self.rebuild_first_keystroke_index();
     }
 
     /// Add editable bindings to the keymap
@@ -416,6 +483,7 @@ impl Keymap {
                 .or_default()
                 .push(idx);
         }
+        self.rebuild_first_keystroke_index();
     }
 
     /// Updates the custom trigger for a given editable binding.
@@ -430,6 +498,7 @@ impl Keymap {
         for binding in self.editable_bindings.iter_mut().filter(|b| b.name == name) {
             binding.custom_trigger = trigger.clone();
         }
+        self.rebuild_first_keystroke_index();
     }
 
     /// Fetch an iterator of editable bindings

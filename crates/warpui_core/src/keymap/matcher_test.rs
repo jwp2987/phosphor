@@ -307,6 +307,166 @@ fn shadowing_fixed_binding_outlives_clearing_the_editable_one() {
     );
 }
 
+/// The first-keystroke index (#1177) must be a pure speed-up: for every first keystroke it yields
+/// exactly the bindings of a full scan whose trigger starts with it, in the same order.
+#[test]
+fn first_keystroke_index_matches_a_full_scan() {
+    #[derive(Debug)]
+    struct Act;
+
+    let mut keymap = Keymap::new(vec![
+        FixedBinding::new("a", Act, id!("a")),
+        FixedBinding::new("b", Act, id!("a")),
+        FixedBinding::new("a b", Act, id!("a")),
+        FixedBinding::empty("nothing", Act, id!("a")),
+        FixedBinding::new("a", Act, id!("b")),
+    ]);
+    keymap.register_editable_bindings([
+        EditableBinding::new("e1", "E1", Act).with_key_binding("a"),
+        EditableBinding::new("e2", "E2", Act).with_key_binding("b c"),
+        EditableBinding::new("e3", "E3", Act).with_key_binding("a c"),
+    ]);
+
+    let assert_index_matches_scan = |keymap: &Keymap| {
+        for key in ["a", "b", "c", "x"] {
+            let first = Keystroke::parse(key).unwrap();
+            let expected: Vec<_> = keymap
+                .bindings()
+                .filter(|binding| match binding.trigger {
+                    Trigger::Keystrokes(keystrokes) => keystrokes.first() == Some(&first),
+                    _ => false,
+                })
+                .map(|binding| binding.id)
+                .collect();
+            let actual: Vec<_> = keymap
+                .bindings_starting_with(&first)
+                .map(|binding| binding.id)
+                .collect();
+            assert_eq!(actual, expected, "bindings starting with {key:?}");
+        }
+    };
+    assert_index_matches_scan(&keymap);
+
+    // Remapping and clearing an editable binding re-indexes it.
+    keymap.update_custom_trigger(
+        "e1",
+        Some(Trigger::Keystrokes(vec![Keystroke::parse("c").unwrap()])),
+    );
+    assert_index_matches_scan(&keymap);
+    keymap.update_custom_trigger("e3", Some(Trigger::Empty));
+    assert_index_matches_scan(&keymap);
+    keymap.update_custom_trigger("e1", None);
+    keymap.update_custom_trigger("e3", None);
+    assert_index_matches_scan(&keymap);
+
+    // Bindings registered later are indexed too.
+    keymap
+        .register_editable_bindings([EditableBinding::new("e4", "E4", Act).with_key_binding("c")]);
+    assert_index_matches_scan(&keymap);
+}
+
+/// Precedence among bindings that share a first keystroke is unchanged: editable beats fixed,
+/// and a more recently registered binding beats an older one.
+#[test]
+fn shared_first_keystroke_keeps_precedence_order() {
+    #[derive(Debug, PartialEq)]
+    enum Action {
+        OldFixed,
+        NewFixed,
+        Editable,
+        Other,
+    }
+
+    let mut ctx = Context::default();
+    ctx.set.insert("a");
+    let view_id = EntityId::new();
+
+    let mut fixed_only = Matcher::new(Keymap::new(vec![
+        FixedBinding::new("a", Action::OldFixed, id!("a")),
+        FixedBinding::new("b", Action::Other, id!("a")),
+        FixedBinding::new("a", Action::NewFixed, id!("a")),
+    ]));
+    assert_eq!(
+        fixed_only
+            .test_keystroke("a", view_id, &ctx)
+            .unwrap()
+            .as_action::<Action>(),
+        &Action::NewFixed
+    );
+
+    let mut keymap = Keymap::new(vec![FixedBinding::new("a", Action::NewFixed, id!("a"))]);
+    keymap.register_editable_bindings([EditableBinding::new("e", "E", Action::Editable)
+        .with_key_binding("a")
+        .with_context_predicate(id!("a"))]);
+    let mut matcher = Matcher::new(keymap);
+    assert_eq!(
+        matcher
+            .test_keystroke("a", view_id, &ctx)
+            .unwrap()
+            .as_action::<Action>(),
+        &Action::Editable
+    );
+}
+
+/// A custom trigger set after bindings are registered moves the binding to its new first key.
+#[test]
+fn custom_trigger_moves_binding_between_first_keystrokes() {
+    #[derive(Debug, PartialEq)]
+    enum Action {
+        Moved,
+    }
+
+    let ctx = Context::default();
+    let view_id = EntityId::new();
+    let mut keymap = Keymap::default();
+    keymap.register_editable_bindings([
+        EditableBinding::new("moved", "Moved", Action::Moved).with_key_binding("a")
+    ]);
+    let mut matcher = Matcher::new(keymap);
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_some());
+
+    matcher.set_custom_trigger(
+        "moved".to_owned(),
+        Trigger::Keystrokes(vec![Keystroke::parse("c").unwrap()]),
+    );
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_none());
+    assert!(matcher.test_keystroke("c", view_id, &ctx).is_some());
+
+    matcher.remove_custom_trigger("moved");
+    assert!(matcher.test_keystroke("c", view_id, &ctx).is_none());
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_some());
+}
+
+/// `is_enabled` is evaluated on every lookup, never cached in the index.
+#[test]
+fn indexed_binding_respects_enabled_predicate_at_lookup_time() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ENABLED: AtomicBool = AtomicBool::new(true);
+    fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Action {
+        Gated,
+    }
+
+    let ctx = Context::default();
+    let view_id = EntityId::new();
+    let mut keymap = Keymap::default();
+    keymap.register_editable_bindings([EditableBinding::new("gated", "Gated", Action::Gated)
+        .with_key_binding("a")
+        .with_enabled(enabled)]);
+    let mut matcher = Matcher::new(keymap);
+
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_some());
+    ENABLED.store(false, Ordering::Relaxed);
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_none());
+    ENABLED.store(true, Ordering::Relaxed);
+    assert!(matcher.test_keystroke("a", view_id, &ctx).is_some());
+}
+
 impl Matcher {
     fn test_keystroke(
         &mut self,
