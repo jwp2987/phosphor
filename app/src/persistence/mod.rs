@@ -51,7 +51,9 @@ use crate::server::experiments::ServerExperiment;
 use crate::server::ids::SyncId;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::terminal::history::PersistedCommand;
-use crate::terminal::model::block::{SerializedAgentViewVisibility, SerializedBlock};
+use crate::terminal::model::block::{
+    DeferredBlockContent, SerializedAgentViewVisibility, SerializedBlock,
+};
 use crate::terminal::model::session::SessionId;
 use crate::workflows::WorkflowObject;
 use crate::workspaces::user_profiles::UserProfileWithUID;
@@ -373,6 +375,9 @@ pub struct BlockCompleted {
     /// Indicates if the block was created locally (e.g. not in a remote session)
     pub is_local: bool,
     pub block: Arc<SerializedBlock>,
+    /// When set, `block` carries no command or output bytes: the SQLite writer fills them in from
+    /// this (the slow conversion to text, kept off the UI thread).
+    pub deferred_content: Option<DeferredBlockContent>,
 }
 
 #[derive(Debug)]

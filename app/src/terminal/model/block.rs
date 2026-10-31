@@ -7,6 +7,7 @@ use warp_core::features::FeatureFlag;
 
 use super::grid::grid_handler::{GridHandler, PerformResetGridChecks};
 use super::grid::{Cursor, RespectDisplayedOutput};
+use super::header_grid::CommandSnapshot;
 use super::header_grid::HeaderGrid;
 use super::header_grid::PromptEndPoint;
 use super::image_map::StoredImageMetadata;
@@ -667,45 +668,16 @@ impl From<&Block> for BlockType {
                     // itself.
                     let index = block.block_index;
                     let id = block.id().clone();
-                    // The with-output block is built on the metadata-only one, so the command
-                    // (about 60 ms to serialize when it is 1 MB) is serialized once, not twice.
-                    // The block is finished, so both reads see the same command either way.
-                    let without_output = lazy_block_field!(id, |block: &Block| Arc::new(
-                        SerializedBlock::from_block_without_output(block)
-                    ));
-                    let with_output = {
-                        let id = id.clone();
-                        let without_output = without_output.clone();
-                        Lazy::deferred(move |block_list: &BlockList| {
-                            match block_list.block_with_id(&id) {
-                                Some(block) => {
-                                    Arc::new(SerializedBlock::from_block_reusing_metadata(
-                                        block,
-                                        without_output.get(block_list),
-                                    ))
-                                }
-                                None => {
-                                    report_error!(
-                                        "Tried to lazily compute a UserBlockCompleted field for a block that no longer exists",
-                                        extra: {
-                                            "block_id" => ?id,
-                                            "compute_call" => "serialized_block",
-                                        }
-                                    );
-                                    debug_assert!(
-                                        false,
-                                        "The block should always exist for lazy computation"
-                                    );
-                                    Default::default()
-                                }
-                            }
-                        })
-                    };
                     BlockType::User(UserBlockCompleted::new(
                         index,
                         block.event_proxy.eviction_stamp(),
-                        with_output,
-                        without_output,
+                        lazy_block_field!(id, |block: &Block| Arc::new(SerializedBlock::from(
+                            block
+                        ))),
+                        lazy_block_field!(id, |block: &Block| Arc::new(
+                            SerializedBlock::from_block_metadata_only(block)
+                        )),
+                        lazy_block_field!(id, DeferredBlockContent::capture),
                         lazy_block_field!(id, Block::command_to_string),
                         lazy_block_field!(id, Block::compute_command_with_obfuscated_secrets),
                         lazy_block_field!(id, Block::compute_output_truncated),
@@ -1976,6 +1948,13 @@ impl Block {
     pub fn command_with_secrets_unobfuscated(&self, include_escape_sequences: bool) -> String {
         self.header_grid
             .command_with_secrets_unobfuscated(include_escape_sequences)
+    }
+
+    /// A copy of the command grid that converts to the same text as
+    /// `command_with_secrets_unobfuscated(true)`, for converting off the UI thread.
+    pub fn command_snapshot_with_secrets_unobfuscated(&self) -> CommandSnapshot {
+        self.header_grid
+            .command_snapshot_with_secrets_unobfuscated()
     }
 
     pub fn command_should_show_as_empty_when_finished(&self) -> bool {

@@ -51,11 +51,13 @@ fn test_deduplicate_snapshots() {
     let completed_block_1 = BlockCompleted {
         pane_id: vec![1, 2, 3],
         block: Arc::new(SerializedBlock::default()),
+        deferred_content: None,
         is_local: true,
     };
     let completed_block_2 = BlockCompleted {
         pane_id: vec![4, 5, 6],
         block: Arc::new(SerializedBlock::default()),
+        deferred_content: None,
         is_local: true,
     };
     let snapshot_1 = AppState {
@@ -118,6 +120,7 @@ fn test_deduplicate_no_snapshots() {
     let original_events = vec![ModelEvent::SaveBlock(BlockCompleted {
         pane_id: vec![1, 2, 3],
         block: Default::default(),
+        deferred_content: None,
         is_local: true,
     })];
     let filtered_events = deduplicate_events(original_events);

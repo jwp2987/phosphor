@@ -12,7 +12,7 @@ use warp_util::lazy::Lazy;
 use crate::server::ids::SyncId;
 use crate::server::telemetry::ImageProtocol;
 use crate::terminal::model::block::BlockMetadata;
-use crate::terminal::model::block::SerializedBlock;
+use crate::terminal::model::block::{DeferredBlockContent, SerializedBlock};
 use crate::terminal::model::blocks::BlockList;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::terminal_model::HandlerEvent;
@@ -377,10 +377,16 @@ pub struct UserBlockCompleted {
     pub serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
 
     /// The same block's metadata (exit code, pwd, session id, timestamps, shell host, ...) but
-    /// with `stylized_output` left empty. Building `serialized_block` serializes up to 5000 output
-    /// lines with SGR escapes, which is wasted work (on the main thread, under the model lock)
-    /// for the many consumers that only need metadata. Use this unless the output is required.
+    /// with `stylized_command` and `stylized_output` left empty. Building `serialized_block`
+    /// serializes the whole command and up to 5000 output lines with SGR escapes, which is wasted
+    /// work (on the main thread, under the model lock) for the many consumers that only need
+    /// metadata. Use this unless the command or output bytes are required; persistence gets them
+    /// from `persisted_content`.
     pub serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
+
+    /// The block's command and output, copied so persistence can turn them into bytes off the UI
+    /// thread. `serialized_block_without_output` carries neither.
+    pub persisted_content: Lazy<DeferredBlockContent, BlockList>,
 
     /// The input lines for a block without any escape sequences.
     pub command: Lazy<String, BlockList>,
@@ -419,6 +425,7 @@ impl UserBlockCompleted {
         eviction_stamp: EvictionStamp,
         serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
         serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
+        persisted_content: Lazy<DeferredBlockContent, BlockList>,
         command: Lazy<String, BlockList>,
         command_with_obfuscated_secrets: Lazy<String, BlockList>,
         output_truncated: Lazy<String, BlockList>,
@@ -433,6 +440,7 @@ impl UserBlockCompleted {
             eviction_stamp,
             serialized_block,
             serialized_block_without_output,
+            persisted_content,
             command,
             command_with_obfuscated_secrets,
             output_truncated,
@@ -459,11 +467,16 @@ impl UserBlockCompleted {
         num_output_lines: u64,
         num_output_lines_truncated: u64,
     ) -> Self {
+        let persisted_content = DeferredBlockContent::from_bytes(
+            serialized_block.stylized_command.clone(),
+            serialized_block.stylized_output.clone(),
+        );
         Self::new(
             index,
             EvictionStamp::default(),
             Lazy::provided(Arc::new(serialized_block.without_output())),
             Lazy::provided(serialized_block),
+            Lazy::provided(persisted_content),
             Lazy::provided(command),
             Lazy::provided(command_with_obfuscated_secrets),
             Lazy::provided(output_truncated),

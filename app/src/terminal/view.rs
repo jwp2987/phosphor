@@ -523,7 +523,7 @@ use crate::terminal::{
     input::{
         AfterEnterInput, Event as InputEvent, INPUT_A11Y_HELPER_KEY, INPUT_A11Y_LABEL_KEY, Input,
     },
-    model::block::SerializedBlock,
+    model::block::{DeferredBlockContent, SerializedBlock},
     shell::ShellType,
     terminal_size_element::TerminalSizeElement,
     TerminalModel,
@@ -1750,6 +1750,9 @@ pub enum Event {
     SendNotification(BlockNotification),
     BlockCompleted {
         block: Arc<SerializedBlock>,
+        /// When set, `block` has no command or output bytes and these hold them (to be
+        /// converted off the UI thread by the SQLite writer).
+        persisted_content: Option<DeferredBlockContent>,
         is_local: bool,
     },
     Pane(PaneEvent),
@@ -15657,27 +15660,42 @@ impl TerminalView {
 
                     // Emit the event to the parent view. This will save the block to sqlite if
                     // session restoration is enabled.
-                    // Only the SaveBlock consumer needs the (up to 5000 line) serialized
-                    // output; skip building it when nothing will persist it. Mirrors the gate
-                    // in `terminal_pane.rs`'s `Event::BlockCompleted` handler.
-                    let block_to_emit = if *GeneralSettings::as_ref(ctx).restore_session
-                        && AppExecutionMode::as_ref(ctx).can_save_session()
-                    {
-                        block_completed.serialized_block.get_with(|compute| {
-                            let model = self.model.lock();
-                            compute(model.block_list())
-                        })
-                    } else {
-                        serialized_block
-                    };
-                    ctx.emit(Event::BlockCompleted {
-                        block: block_to_emit.clone(),
-                        is_local: !self.is_block_considered_remote(
-                            serialized_block.session_id,
-                            Some(block_completed.command.get_with(|compute| {
+                    // Only the SaveBlock consumer needs the command and the (up to 5000 line)
+                    // output as bytes; skip capturing them when nothing will persist them.
+                    // Mirrors the gate in `terminal_pane.rs`'s `Event::BlockCompleted` handler.
+                    // Capturing copies the two grids under the lock; the slow conversion to
+                    // text happens on the SQLite writer thread (a 1 MB command was ~60 ms here).
+                    let persisted_content = (*GeneralSettings::as_ref(ctx).restore_session
+                        && AppExecutionMode::as_ref(ctx).can_save_session())
+                    .then(|| {
+                        block_completed
+                            .persisted_content
+                            .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
-                            })),
+                            })
+                            .clone()
+                    });
+                    // The command text is only read by the organisation's remote-session regex
+                    // policy; with no policy it is never looked at (see #1191).
+                    let workspaces = UserWorkspaces::as_ref(ctx);
+                    let command_for_policy = (!workspaces.is_ai_allowed_in_remote_sessions()
+                        && !workspaces.get_remote_session_regex_list().is_empty())
+                    .then(|| {
+                        block_completed
+                            .command
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .as_str()
+                    });
+                    ctx.emit(Event::BlockCompleted {
+                        block: serialized_block.clone(),
+                        persisted_content,
+                        is_local: !self.is_block_considered_remote(
+                            serialized_block.session_id,
+                            command_for_policy,
                             ctx,
                         ),
                     });
@@ -15686,6 +15704,7 @@ impl TerminalView {
                     // via a BlockCompleted event but don't affect focus or input.
                     ctx.emit(Event::BlockCompleted {
                         block: serialized_block.clone(),
+                        persisted_content: None,
                         is_local: !self.is_block_considered_remote(
                             serialized_block.session_id,
                             None,
@@ -15697,6 +15716,7 @@ impl TerminalView {
                     self.redetermine_terminal_focus(ctx);
                     ctx.emit(Event::BlockCompleted {
                         block: serialized_block.clone(),
+                        persisted_content: None,
                         is_local: !self.is_block_considered_remote(
                             serialized_block.session_id,
                             None,

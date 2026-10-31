@@ -2656,8 +2656,17 @@ fn handle_model_event_unsettled(
         ModelEvent::SaveBlock(BlockCompleted {
             pane_id,
             block,
+            deferred_content,
             is_local,
-        }) => save_block(connection, pane_id, &block, is_local).context("error saving block"),
+        }) => {
+            // The command and output are turned into bytes here, on the writer thread, rather
+            // than on the UI thread when the block finished.
+            let block = match &deferred_content {
+                Some(content) => Arc::new(content.materialize(&block)),
+                None => block,
+            };
+            save_block(connection, pane_id, &block, is_local).context("error saving block")
+        }
         ModelEvent::DeleteBlocks(pane_id) => {
             // Delete the blocks even if the setting is off so users can still remove
             // panes and have their data deleted locally.
