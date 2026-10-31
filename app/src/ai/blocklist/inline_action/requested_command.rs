@@ -115,6 +115,10 @@ const REQUESTED_COMMAND_READ_TO_END_LABEL: &str = "Read to the end to run";
 /// How long the full view must be on screen before an accept counts. A held or repeated Enter,
 /// or a double press, cannot reveal and approve a command in one motion.
 const FULL_VIEW_DWELL: Duration = Duration::from_millis(500);
+/// An Accept that arrives this soon after the card first showed it awaiting approval is ignored:
+/// an Enter the user was already typing when the card appeared must not approve a command they
+/// never read (#1195).
+const ACCEPT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 const LOADING_MESSAGE: &str = "Generating command...";
 const COMMAND_WAITING_FOR_USER_MESSAGE: &str = "OK if I run this command and read the output?";
@@ -242,6 +246,13 @@ pub(crate) fn enter_accepts_requested_command_context() -> ContextPredicate {
     id!(RequestedCommandView::ui_name())
         & id!(REQUESTED_ACTION_ACCEPTABLE_KEYMAP_CONTEXT)
         & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
+}
+
+/// Whether an Accept is inside the debounce window after the card first showed it awaiting
+/// approval (#1195). `shown_for` is how long the card has been awaiting; `None` (never rendered
+/// that way) is not debounced.
+pub(crate) fn accept_within_debounce(shown_for: Option<Duration>) -> bool {
+    shown_for.is_some_and(|shown_for| shown_for < ACCEPT_DEBOUNCE)
 }
 
 /// Whether an action in `status` can be accepted by the user: only one that is `Blocked` on
@@ -533,6 +544,8 @@ pub struct RequestedCommandView {
     /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
     /// full view is scrolled to its end -- see [`Self::review_state`].
     full_view_opened: Option<(String, Instant)>,
+    /// When the card was first rendered awaiting the user's Accept; `None` while it is not (#1195).
+    awaiting_accept_since: Cell<Option<Instant>>,
     /// Whether this card is in edit mode, shared with the action model, which refuses user
     /// accepts that bypass the card while it is set (issue #847).
     edit_flag: Rc<Cell<bool>>,
@@ -894,6 +907,7 @@ impl RequestedCommandView {
             explanation: ExplanationState::Idle,
             explanation_request: None,
             full_view_opened: None,
+            awaiting_accept_since: Cell::new(None),
             edit_flag: Rc::new(Cell::new(false)),
             user_committed_edit: false,
             approval_preview: RefCell::new(ApprovalPreviewCache::default()),
@@ -975,6 +989,16 @@ impl RequestedCommandView {
             .as_ref(app)
             .get_action_status(&self.action_id);
         accepts_user_decision(status.as_ref())
+    }
+
+    /// Records when the card first showed itself awaiting approval, and forgets it once it no
+    /// longer is (#1195). Called from `render`, hence the `Cell`.
+    fn note_awaiting_accept(&self, app: &AppContext) {
+        if !self.awaits_user_accept(app) {
+            self.awaiting_accept_since.set(None);
+        } else if self.awaiting_accept_since.get().is_none() {
+            self.awaiting_accept_since.set(Some(Instant::now()));
+        }
     }
 
     /// The [`RejectDisposition`] for this card's action in its current status.
@@ -1143,6 +1167,18 @@ impl RequestedCommandView {
         if !self.awaits_user_accept(ctx) {
             log::info!(
                 "Not accepting requested action {:?}: it is not awaiting confirmation",
+                self.action_id
+            );
+            return false;
+        }
+        // #1195: an Enter already in flight when the card appeared is not a decision.
+        if accept_within_debounce(
+            self.awaiting_accept_since
+                .get()
+                .map(|since| since.elapsed()),
+        ) {
+            log::info!(
+                "Not accepting requested action {:?}: the card appeared a moment ago",
                 self.action_id
             );
             return false;
@@ -2538,6 +2574,7 @@ impl View for RequestedCommandView {
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        self.note_awaiting_accept(app);
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
         let action_status = self

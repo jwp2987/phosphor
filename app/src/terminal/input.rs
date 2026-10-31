@@ -1991,6 +1991,9 @@ pub struct Input {
     /// If simply looking for if the editor contents empty, check the editor view directly instead
     /// of using this flag.
     is_editor_empty_on_last_edit: bool,
+    /// When the user last typed into the editor (#1195): a card that appears just after must not
+    /// take focus from the keys still arriving.
+    last_user_typed_at: Option<Instant>,
     /// Typeahead hand-off: the next Enter runs as a shell command (see
     /// `input_enter_as_shell_command`).
     shell_command_submit_pending: bool,
@@ -3761,6 +3764,7 @@ impl Input {
             last_hint_conversation_status: None,
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
+            last_user_typed_at: None,
             shell_command_submit_pending: false,
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
@@ -9485,6 +9489,9 @@ impl Input {
                 ) {
                     self.model.lock().set_is_input_dirty(true);
                 }
+                if matches!(edit_origin, EditOrigin::UserTyped) {
+                    self.last_user_typed_at = Some(Instant::now());
+                }
 
                 // `@`-context attachments are a cache of the `@ref` text in this buffer, and
                 // they lock the input in AI mode (`has_locking_attachment`). Make the lock follow
@@ -14301,6 +14308,11 @@ impl Input {
 
     /// Whether this input's queued-prompt inline editor is currently focused.
     #[allow(dead_code)] // consumed by the focus wiring in a follow-up increment
+    /// How long ago the user last typed into the editor, if ever (#1195).
+    pub fn since_last_user_typed(&self) -> Option<std::time::Duration> {
+        self.last_user_typed_at.map(|at| at.elapsed())
+    }
+
     pub(crate) fn is_queued_prompt_inline_editor_focused(&self, ctx: &AppContext) -> bool {
         self.queued_prompts_panel
             .as_ref()

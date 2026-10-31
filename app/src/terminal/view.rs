@@ -9614,6 +9614,14 @@ impl TerminalView {
         if self.is_agent_input_focused_with_text(ctx) {
             return;
         }
+        // #1195: nor while the user is still typing there -- an empty input a moment after a
+        // keystroke (a submit, a backspace) is not idle, and an Enter already on its way would
+        // approve a command they never read. The card stays up; focus stays in the input.
+        if self.input.as_ref(ctx).editor().as_ref(ctx).is_focused()
+            && input_typed_recently(self.input.as_ref(ctx).since_last_user_typed())
+        {
+            return;
+        }
         let target_needs_attention = block.as_ref(ctx).is_blocked_on_user_confirmation(ctx);
         if target_needs_attention || !self.is_any_ai_block_focused(ctx) {
             block.update(ctx, |block, ctx| block.try_steal_focus(ctx));
@@ -34129,6 +34137,15 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .map(|name| dir.join(name))
         .find(|path| path.is_file())
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
+}
+
+/// How recently the user must have typed in the agent input for an appearing approval card to
+/// leave focus where it is (#1195).
+const RECENT_TYPING_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Whether the user typed within [`RECENT_TYPING_WINDOW`] (`since_last_typed` is how long ago).
+fn input_typed_recently(since_last_typed: Option<std::time::Duration>) -> bool {
+    since_last_typed.is_some_and(|since| since < RECENT_TYPING_WINDOW)
 }
 
 /// Whether `TerminalView::is_input_box_visible` should hide the input box for the active AI

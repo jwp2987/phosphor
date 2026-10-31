@@ -115,6 +115,23 @@ fn expanded_running_commands_still_hides_the_input() {
     assert!(should_hide_input_for_blocked_ai_block(true));
 }
 
+// #1195: an approval card that appears while the user is typing must not take focus from the
+// agent input; an idle input (never typed, or typed long ago) keeps today's focus grab.
+#[test]
+fn recent_typing_keeps_focus_in_the_agent_input() {
+    use std::time::Duration;
+    assert!(input_typed_recently(Some(Duration::ZERO)));
+    assert!(input_typed_recently(Some(Duration::from_millis(999))));
+}
+
+#[test]
+fn idle_input_lets_the_approval_card_take_focus() {
+    use std::time::Duration;
+    assert!(!input_typed_recently(None));
+    assert!(!input_typed_recently(Some(Duration::from_millis(1000))));
+    assert!(!input_typed_recently(Some(Duration::from_secs(30))));
+}
+
 fn tool_call_message_with_tool_for_test(
     id: &str,
     call_id: &str,
