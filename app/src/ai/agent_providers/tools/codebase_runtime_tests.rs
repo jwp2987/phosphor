@@ -169,3 +169,37 @@ fn codebase_symbol_serde_round_trip() {
         serde_json::from_str(r#"{"name":"bar","file_path":"y.rs","line_number":1}"#).unwrap();
     assert_eq!(no_prefix.type_prefix, None);
 }
+
+/// #1276: the codebase tools index the directory of the conversation's own session
+/// (`SessionContext`), not whichever window/pane is active. Two conversations with different
+/// cwds resolve to their own directory.
+#[test]
+fn local_cwd_for_session_uses_the_conversations_own_cwd() {
+    use crate::ai::blocklist::SessionContext;
+
+    let a = SessionContext::new_local_with_cwd_for_test("/work/repo-x/src");
+    let b = SessionContext::new_local_with_cwd_for_test("/work/repo-y");
+    assert_eq!(
+        local_cwd_for_session(&a),
+        Some(std::path::PathBuf::from("/work/repo-x/src"))
+    );
+    assert_eq!(
+        local_cwd_for_session(&b),
+        Some(std::path::PathBuf::from("/work/repo-y"))
+    );
+}
+
+/// #1276: a remote session's cwd is a path on another host. Even when the same path exists
+/// locally it must never be looked up in the local repository index.
+#[test]
+fn local_cwd_for_session_is_none_for_remote_sessions() {
+    use crate::ai::blocklist::SessionContext;
+
+    let remote =
+        SessionContext::new_warpified_remote_for_test(true).with_cwd_for_test("/work/repo-x");
+    assert_eq!(local_cwd_for_session(&remote), None);
+    let legacy = SessionContext::new_legacy_ssh_for_test().with_cwd_for_test("/work/repo-x");
+    assert_eq!(local_cwd_for_session(&legacy), None);
+    // Unknown cwd: nothing to index (no fallback to the active window).
+    assert_eq!(local_cwd_for_session(&SessionContext::new_for_test()), None);
+}

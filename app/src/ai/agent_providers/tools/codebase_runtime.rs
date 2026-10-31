@@ -192,31 +192,43 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
     })
 }
 
-/// Builds the request-scoped symbol snapshot from the active repository's local
-/// `RepoOutlines` index.
+/// The local directory a codebase tool should index for the conversation that owns
+/// `session_context`: its own session's cwd, never the active window's (#1276).
+///
+/// `None` for a remote session (its cwd is a path on another host, and must not be looked
+/// up in the local repository index even if the same path exists locally) and for a
+/// session whose cwd is not known yet.
+pub fn local_cwd_for_session(
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<std::path::PathBuf> {
+    if session_context.is_remote() {
+        return None;
+    }
+    session_context
+        .current_working_directory()
+        .as_deref()
+        .map(std::path::PathBuf::from)
+}
+
+/// Builds the request-scoped symbol snapshot from the conversation's own repository's local
+/// `RepoOutlines` index (resolved from `session_context`, not the active window).
 ///
 /// Reuses the exact outline → symbol projection of
 /// `ai_context_menu::code::data_source::CodeSymbolCache::ensure_symbols_cached`. Returns an
 /// empty vec when no repository is detected or its outline isn't `Complete` yet (the tool then
 /// reports a graceful `no_index` status). Pure local: no cloud, no proto, no server API.
 #[cfg(not(target_family = "wasm"))]
-pub fn collect_codebase_symbols(app: &warpui::AppContext) -> Vec<CodebaseSymbol> {
-    use std::path::Path;
-
+pub fn collect_codebase_symbols(
+    app: &warpui::AppContext,
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Vec<CodebaseSymbol> {
     use repo_metadata::repositories::DetectedRepositories;
     use warpui::SingletonEntity as _;
 
     use crate::ai::outline::{OutlineStatus, RepoOutlines};
-    use crate::workspace::ActiveSession;
 
-    let Some(git_repo_path) = app
-        .windows()
-        .state()
-        .active_window
-        .and_then(|window_id| ActiveSession::as_ref(app).path_if_local(window_id))
-        .and_then(|current_dir| {
-            DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
-        })
+    let Some(git_repo_path) = local_cwd_for_session(session_context)
+        .and_then(|current_dir| DetectedRepositories::as_ref(app).get_root_for_path(&current_dir))
     else {
         return Vec::new();
     };
@@ -256,7 +268,10 @@ pub fn collect_codebase_symbols(app: &warpui::AppContext) -> Vec<CodebaseSymbol>
 
 /// WASM has no local repository / outline index; the snapshot is always empty.
 #[cfg(target_family = "wasm")]
-pub fn collect_codebase_symbols(_app: &warpui::AppContext) -> Vec<CodebaseSymbol> {
+pub fn collect_codebase_symbols(
+    _app: &warpui::AppContext,
+    _session_context: &crate::ai::blocklist::SessionContext,
+) -> Vec<CodebaseSymbol> {
     Vec::new()
 }
 

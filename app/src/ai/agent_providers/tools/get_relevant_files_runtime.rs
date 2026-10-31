@@ -327,8 +327,8 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
     })
 }
 
-/// Builds the request-scoped snapshot from the active repository's local `RepoOutlines`
-/// index plus the BYOP one-shot context.
+/// Builds the request-scoped snapshot from the conversation's own repository's local
+/// `RepoOutlines` index (resolved from `session_context`, not the active window; #1276) plus the BYOP one-shot context.
 ///
 /// Returns `None` (the tool then reports a graceful `no_context` status, or is filtered
 /// out of the tools array) when any prerequisite is missing: no BYOP active-AI one-shot
@@ -342,27 +342,20 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
 pub fn collect_relevant_files_snapshot(
     app: &warpui::AppContext,
     terminal_view_id: Option<warpui::EntityId>,
+    session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<RelevantFilesSnapshot> {
-    use std::path::Path;
-
     use repo_metadata::repositories::DetectedRepositories;
     use warpui::SingletonEntity as _;
 
     use crate::ai::outline::{OutlineStatus, RepoOutlines};
-    use crate::workspace::ActiveSession;
 
     // A BYOP active-AI one-shot must be configured, or there's nothing to run the
     // relevance filter with. Resolve it first (cheap) before touching the outline.
     let prepared = relevant_files::prepare_context(app, terminal_view_id)?;
 
-    let git_repo_path = app
-        .windows()
-        .state()
-        .active_window
-        .and_then(|window_id| ActiveSession::as_ref(app).path_if_local(window_id))
-        .and_then(|current_dir| {
-            DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
-        })?;
+    let git_repo_path = super::codebase_runtime::local_cwd_for_session(session_context).and_then(
+        |current_dir| DetectedRepositories::as_ref(app).get_root_for_path(&current_dir),
+    )?;
 
     // Lazy outline: first use in this repo kicks off the build (None until done).
     RepoOutlines::as_ref(app).request_outline(&git_repo_path);
@@ -395,6 +388,7 @@ pub fn collect_relevant_files_snapshot(
 pub fn collect_relevant_files_snapshot(
     _app: &warpui::AppContext,
     _terminal_view_id: Option<warpui::EntityId>,
+    _session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<RelevantFilesSnapshot> {
     None
 }
