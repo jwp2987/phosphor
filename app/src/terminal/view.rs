@@ -29,6 +29,8 @@ pub(crate) mod plugin_instructions_block;
 pub mod rich_content;
 mod shared_session;
 mod shell_terminated_banner;
+mod wakeup_redraw;
+use wakeup_redraw::{RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
@@ -372,7 +374,7 @@ use serde_json::json;
 use shared_session::{SharedSessionAdapter, Viewer};
 use std::any::Any;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -664,6 +666,10 @@ pub const WAKEUP_THROTTLE_PERIOD: Duration =
 pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
 
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
+
+/// How long after a paint-only wakeup the view checks whether that paint changed a render input
+/// (see `wakeup_redraw`). Long enough for a program's screen redraw to have finished arriving.
+const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
 /// banner's freshly saved position (#958). Must be longer than one frame.
@@ -2659,6 +2665,13 @@ pub struct TerminalView {
     /// Lines from the top of the content we are scrolled in the alt screen.
     alt_screen_scroll_top: Lines,
 
+    /// The render inputs the current element tree was built from; see `wakeup_redraw`.
+    last_rendered_fingerprint: Cell<Option<RenderFingerprint>>,
+    /// The redraw the most recent terminal wakeup asked for.
+    last_wakeup_redraw: Option<WakeupRedraw>,
+    /// Whether a settle check after a paint-only wakeup is already scheduled.
+    alt_screen_settle_check_pending: bool,
+
     /// Scroll state for scrolling horizontally.
     horizontal_clipped_scroll_state: ClippedScrollStateHandle,
 
@@ -4554,6 +4567,9 @@ impl TerminalView {
             blocklist_vertical_scroll_state: Default::default(),
             alt_screen_vertical_scroll_state: Default::default(),
             alt_screen_scroll_top: Lines::zero(),
+            last_rendered_fingerprint: Cell::new(None),
+            last_wakeup_redraw: None,
+            alt_screen_settle_check_pending: false,
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             rich_content_drag_selecting: Default::default(),
@@ -12130,6 +12146,22 @@ impl TerminalView {
             }
         }
 
+        // The alt screen is painted straight from the model, so while nothing the element tree
+        // was built from has changed, new output only needs a paint (see `wakeup_redraw`). The
+        // block list always needs layout: its layout derives from block heights.
+        let redraw = {
+            let model = self.model.lock();
+            if model.is_alt_screen_active() {
+                wakeup_redraw::decide(
+                    self.last_rendered_fingerprint.get(),
+                    self.render_fingerprint(&model, ctx),
+                )
+            } else {
+                WakeupRedraw::Full
+            }
+        };
+        self.last_wakeup_redraw = Some(redraw);
+
         // The active block height could have changed since the last time it was calculated, as
         // one cause of the Wakeup signal is the long-running process timer. Make sure that the
         // model is up-to-date with the current height information.
@@ -12139,12 +12171,49 @@ impl TerminalView {
             model.block_list_mut().update_active_block_height();
         }
         self.maybe_emit_terminal_view_state_changed_for_long_running_block(ctx);
-        self.use_agent_footer.update(ctx, |footer, ctx| {
-            footer.notify_and_notify_children(ctx);
-        });
 
-        // Need to re-render both the alt screen and the blocklist on keypresses.
-        ctx.notify();
+        match redraw {
+            WakeupRedraw::Full => {
+                self.use_agent_footer.update(ctx, |footer, ctx| {
+                    footer.notify_and_notify_children(ctx);
+                });
+
+                // Need to re-render both the alt screen and the blocklist on keypresses.
+                ctx.notify();
+            }
+            WakeupRedraw::PaintOnly => {
+                let window_id = ctx.window_id();
+                ctx.request_paint_only_redraw(window_id);
+                self.schedule_alt_screen_settle_check(ctx);
+            }
+        }
+    }
+
+    /// After a paint-only wakeup, checks once the output has settled whether that paint changed a
+    /// render input, and re-renders if so. The agent footer paints with the background color
+    /// sampled during the alt screen's paint, so the color a full-screen program settles on is
+    /// only known after the frame that drew it; a program that draws its screen in one chunk and
+    /// then waits for a key would otherwise leave the footer on the previous color.
+    fn schedule_alt_screen_settle_check(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.alt_screen_settle_check_pending {
+            return;
+        }
+        self.alt_screen_settle_check_pending = true;
+        ctx.spawn(Timer::after(ALT_SCREEN_SETTLE_DELAY), |me, _, ctx| {
+            me.alt_screen_settle_check_pending = false;
+            let stale = {
+                let model = me.model.lock();
+                model.is_alt_screen_active()
+                    && me.last_rendered_fingerprint.get()
+                        != Some(me.render_fingerprint(&model, ctx))
+            };
+            if stale {
+                me.use_agent_footer.update(ctx, |footer, ctx| {
+                    footer.notify_and_notify_children(ctx);
+                });
+                ctx.notify();
+            }
+        });
     }
 
     /// This function is invoked whenever we detect an SSH ControlMaster error,
@@ -32465,6 +32534,9 @@ impl View for TerminalView {
                 .active_block()
                 .is_active_and_long_running()
         };
+        // What the tree built below is derived from; `handle_terminal_wakeup` compares against it.
+        self.last_rendered_fingerprint
+            .set(Some(self.render_fingerprint(&model, app)));
 
         let mut column = match input_mode {
             InputMode::PinnedToTop => Flex::column().with_reverse_orientation(),

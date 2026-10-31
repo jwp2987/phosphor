@@ -3356,6 +3356,19 @@ impl AppContext {
         self.build_scene(window_id, window.as_ctx());
     }
 
+    /// Asks `window_id` for a frame that re-runs paint only: the element tree and its layout from
+    /// the last frame are kept, exactly as for a paint-only timer repaint
+    /// (`PaintContext::repaint_after_paint_only`, see issue #703). For a view whose element reads
+    /// its content at paint time, this is how new content reaches the screen without the view
+    /// being re-rendered and the whole window re-laid out. If anything else invalidates the
+    /// window before the frame, that frame is a full one, as usual.
+    pub fn request_paint_only_redraw(&mut self, window_id: WindowId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .paint_only_redraw_requested = true;
+    }
+
     /// Test-only: marks the window as needing a redraw for the same reason a
     /// paint-only timer (`PaintContext::repaint_after_paint_only`/
     /// `repaint_at_paint_only`, e.g. a blinking cursor) does when it fires — lets
@@ -3363,10 +3376,7 @@ impl AppContext {
     /// a real timer. See issue #703.
     #[cfg(test)]
     pub fn simulate_paint_only_redraw(&mut self, window_id: WindowId) {
-        self.window_invalidations
-            .entry(window_id)
-            .or_default()
-            .paint_only_redraw_requested = true;
+        self.request_paint_only_redraw(window_id);
     }
 
     /// Test-only: marks a view as needing to be re-rendered, the same way

@@ -233,6 +233,45 @@ fn test_app_build_scene_skips_layout_only_for_paint_only_redraw() {
     })
 }
 
+/// `AppContext::request_paint_only_redraw` is the non-timer way to ask for a paint-only frame
+/// (a terminal whose alt-screen grid is read at paint time uses it for pty output). It must take
+/// the same layout-skipping path as a paint-only timer, and a later real invalidation must still
+/// lay out.
+#[test]
+fn test_request_paint_only_redraw_skips_layout_until_a_view_is_notified() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let layout_calls_baseline = counts.layout_calls.get();
+        let paint_calls_baseline = counts.paint_calls.get();
+
+        app.update(|ctx| {
+            ctx.request_paint_only_redraw(window_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(
+            counts.layout_calls.get(),
+            layout_calls_baseline,
+            "a requested paint-only redraw must not re-run layout"
+        );
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 1);
+
+        // A notified view in the same frame as a paint-only request wins: full layout.
+        app.update(|ctx| {
+            ctx.request_paint_only_redraw(window_id);
+            ctx.simulate_view_updated(window_id, root_view_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(counts.layout_calls.get(), layout_calls_baseline + 1);
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 2);
+    })
+}
+
 /// #841/#842: a frame that finds the window zero-sized (unmapped/minimized)
 /// still runs `Presenter::invalidate`, which swaps the notified views' elements for
 /// fresh, never-laid-out ones, and consumes the invalidation. The next frame must

@@ -18905,3 +18905,62 @@ fn paste_and_control_sequences_during_an_agent_driven_command_do_not_reach_the_p
         });
     })
 }
+
+/// In the alt screen a wakeup only repaints the existing element tree (the grid is read at paint
+/// time), unless the tree is stale: before the first render, or once a render input such as the
+/// alt screen itself being active has changed. See `wakeup_redraw`.
+#[test]
+fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+        let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
+
+        let size_info = terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::set_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            // Nothing has been rendered since the alt screen opened: the tree is stale.
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+            *view.size_info
+        });
+
+        app.update(enclose!((presenter, invalidation) move |ctx| {
+            presenter.borrow_mut().invalidate(invalidation, ctx);
+            presenter.borrow_mut().build_scene(
+                vec2f(size_info.pane_width_px, size_info.pane_height_px),
+                1.,
+                None,
+                ctx,
+            );
+        }));
+
+        terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::input(view.model.lock().alt_screen_mut(), 'x');
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::PaintOnly));
+
+            // Leaving the alt screen changes what `render` builds: the next wakeup re-renders.
+            ansi::Handler::unset_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+        });
+    })
+}
