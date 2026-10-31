@@ -94,6 +94,30 @@ the `.pdb` beside the exe, and use CPU Usage (Precise) to see why the UI thread 
 (ready-thread and context-switch analysis). Installing WPR/WPA or Superluminal on the VM is an
 environment change: ask first.
 
+What worked on the Windows test VM without installing anything (round 18, #1224, #1225):
+
+* **samply 0.13.1 does not work there.** Unelevated `samply record` starts, never launches the
+  target and hangs (it needs the kernel ETW session). Do not spend time on it.
+* **Tracy works, headless, on the VM itself.** Take `tracy-capture.exe` and `tracy-csvexport.exe`
+  from the Tracy release that matches the client (`tracy-client-sys` 0.26.1 vendors Tracy 0.12.2:
+  `windows-0.12.2.zip`), copy them to the VM, start the profiling exe, then
+  `tracy-capture.exe -o run.tracy -a 127.0.0.1 -f`; kill the app when done (that ends the
+  capture) and run `tracy-csvexport.exe -u run.tracy > run.csv` (UTF-16; `iconv -f UTF-16`).
+  `-u` gives one row per zone with `ns_since_start` and `exec_time_ns`, enough to print a
+  timeline around a key.
+* **A VM has no invariant TSC**: the profiling exe exits at once with "Tracy Profiler
+  initialization failure: CPU doesn't support invariant TSC". Set
+  `TRACY_NO_INVARIANT_CHECK=1` in its environment.
+* **The bare `phosphor-oss-profiling.exe` needs its neighbours.** Without `conpty.dll`,
+  `dxcompiler.dll`, `dxil.dll`, `x64\OpenConsole.exe` and the runtime DLLs beside it the window
+  fails with "No usable wgpu adapter was found" and the process exits 0. Copy the installed
+  `Programs\Phosphor` directory and replace the exe.
+* **`pwsh.ps1` next to the exe is what the app sources**, so a bootstrap change can be tried
+  without a rebuild: replace that file, restart the app.
+* `RUST_LOG=warp::input_order=debug,warpui::windowing::winit::event_loop=debug` gives the
+  `frame_drawn` hop (millisecond timestamp, total and swapchain-acquire time per frame) on the
+  same clock as the `keydown` and `pty_write` lines.
+
 ## 6. Memory
 
 * Allocation hot spots / leaks on Linux: `heaptrack ./phosphor-oss-profiling`, then
