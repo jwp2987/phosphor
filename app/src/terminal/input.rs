@@ -3722,6 +3722,10 @@ impl Input {
                 | BlocklistAIInputEvent::LockChanged { .. } => {
                     // Results requested under the other input mode no longer apply.
                     me.bump_input_generation();
+                    // #1284: the bump just dropped any ghost in flight, and nothing else asks
+                    // again until the next keystroke; a verdict landing after the last key left
+                    // the line without one.
+                    me.maybe_generate_autosuggestion(ctx);
                     // Close slash command menu if we're now in locked shell mode
                     if me.is_locked_in_shell_mode(ctx)
                         && me.suggestions_mode_model.as_ref(ctx).is_slash_commands()
@@ -8875,9 +8879,17 @@ impl Input {
     fn maybe_generate_autosuggestion(&mut self, ctx: &mut ViewContext<Self>) {
         let editor = self.editor.as_ref(ctx);
 
+        let ai_input_model = self.ai_input_model.as_ref(ctx);
+        // #1284: an UNLOCKED AI input is autodetection's guess, not the user's choice. In an agent
+        // view the live type is the previous submit's (AI) until Enter settles the line, so gating
+        // on it alone suppressed every history ghost for a shell line typed there. Only a locked
+        // AI input (or autodetection off) means the user is writing a prompt.
+        let ai_input_is_a_guess = ai_input_model.is_ai_input_enabled()
+            && !ai_input_model.is_input_type_locked()
+            && ai_input_model.should_run_input_autodetection(ctx);
         let should_generate_autosuggestion = !editor.active_autosuggestion()
             && self.enable_autosuggestions_setting
-            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
+            && (!ai_input_model.is_ai_input_enabled() || ai_input_is_a_guess);
 
         if should_generate_autosuggestion {
             let buffer_text = editor.buffer_text(ctx);
@@ -8904,7 +8916,15 @@ impl Input {
         };
         self.abort_latest_autosuggestion_future();
 
-        if FeatureFlag::PartialNextCommandSuggestions.is_enabled() && is_next_command_enabled(ctx) {
+        // #1284: generated while the input is (still) an unlocked AI guess: offer only a command
+        // this shell ran before. The completer fallback and the next-command model would put
+        // file-path or AI ghosts on prose.
+        let history_only = self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
+
+        if !history_only
+            && FeatureFlag::PartialNextCommandSuggestions.is_enabled()
+            && is_next_command_enabled(ctx)
+        {
             let Some(session) = self.active_session(ctx) else {
                 return;
             };
@@ -9077,7 +9097,7 @@ impl Input {
                     // If we have no command anywhere in history with a matching prefix, fallback to the first completer result.
                     // The completer parses one command line, so on a multi-line buffer (e.g. a paste)
                     // it yields a ghost fragment such as `-E` for the last line (#1013).
-                    if !completer_autosuggestion_allowed(&buffer_text) {
+                    if history_only || !completer_autosuggestion_allowed(&buffer_text) {
                         return AutoSuggestionResult {
                             generation: Some(generation),
                             buffer_text,
