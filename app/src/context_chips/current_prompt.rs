@@ -47,6 +47,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+use warpui::windowing::WindowManager;
 use warpui::WeakModelHandle;
 use warpui::{
     r#async::{SpawnedFutureHandle, Timer},
@@ -72,9 +73,6 @@ const GATED_POLL_MIN_INTERVAL: Duration = Duration::from_secs(30);
 /// round trip on the shared connection (and, on the ControlMaster executor, queues ahead of
 /// keystroke-driven completions).
 const REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(120);
-/// How often a deferred poll re-checks whether its terminal is back in the foreground. The check
-/// is a flag read; the refresh itself runs on the first check that finds the terminal shown.
-const BACKGROUND_RECHECK_DELAY: Duration = Duration::from_secs(5);
 /// A poll tick is not allowed to start a chip command within this long of editor activity: typing
 /// wins over bookkeeping.
 const TYPING_QUIET_PERIOD: Duration = Duration::from_millis(1500);
@@ -86,13 +84,17 @@ enum PollDecision {
     Run,
     /// Skip this tick and look again after the given delay.
     Defer(Duration),
+    /// The terminal is not on screen (hidden tab, unfocused or minimised window): do not look
+    /// again on a timer at all. [`CurrentPrompt::resume_parked_polls`] restarts the poll when the
+    /// tab is shown or the window regains focus, so a background tab costs zero wakeups.
+    Park,
 }
 
 /// Decides whether a due slow-poll tick runs its chip command now. `since_editor_activity` is the
 /// time since the last input-editor event of this terminal, if any.
 fn poll_decision(in_foreground: bool, since_editor_activity: Option<Duration>) -> PollDecision {
     if !in_foreground {
-        return PollDecision::Defer(BACKGROUND_RECHECK_DELAY);
+        return PollDecision::Park;
     }
     if since_editor_activity.is_some_and(|elapsed| elapsed < TYPING_QUIET_PERIOD) {
         return PollDecision::Defer(TYPING_RECHECK_DELAY);
@@ -151,6 +153,8 @@ pub struct ChipState {
     update_status: ChipUpdateStatus,
     /// Future handle for periodically-refreshing chips.
     refresh_handle: Option<SpawnedFutureHandle>,
+    /// The poll is waiting for its terminal to come back on screen (no timer is armed).
+    parked: bool,
     /// Future handle for asynchronous generators.
     generator_handle: Option<SpawnedFutureHandle>,
     /// Future handle for asynchronous on-click generators.
@@ -189,6 +193,7 @@ impl ChipState {
             availability: ChipAvailability::Enabled,
             update_status: ChipUpdateStatus::Idle,
             refresh_handle: None,
+            parked: false,
             generator_handle: None,
             on_click_generator_handle: None,
             should_render: kind.should_render("", &Default::default()),
@@ -197,6 +202,7 @@ impl ChipState {
     }
 
     fn clear_abort_handlers(&mut self) {
+        self.parked = false;
         if let Some(refresh_handle) = self.refresh_handle.take() {
             refresh_handle.abort();
         }
@@ -416,10 +422,15 @@ impl CurrentPrompt {
                 me.update_states_with_new_context(ctx);
             }
         });
+        // A hidden tab's slow polls are parked, not timed; the window regaining focus restarts them.
+        ctx.subscribe_to_model(&WindowManager::handle(ctx), |me, _, ctx| {
+            me.resume_parked_polls(ctx);
+        });
         // A WeakViewHandle is used here to avoid leaking the terminal model
         let weak_editor_handle = editor.downgrade();
         ctx.subscribe_to_view(&editor, move |me, _, ctx| {
             me.last_editor_activity = Some(Instant::now());
+            me.resume_parked_polls(ctx);
             if !me.active(ctx) {
                 return;
             }
@@ -1184,7 +1195,10 @@ impl CurrentPrompt {
             );
 
             match self.states.get_mut(chip_kind) {
-                Some(state) => state.refresh_handle = Some(future),
+                Some(state) => {
+                    state.refresh_handle = Some(future);
+                    state.parked = false;
+                }
                 None => log::warn!("Missing state for {chip_kind:?}"),
             }
         }
@@ -1217,6 +1231,14 @@ impl CurrentPrompt {
             PollDecision::Run => {
                 self.fetch_chip_value_at_interval(chip_kind, None, None, true, ctx)
             }
+            PollDecision::Park => {
+                if let Some(state) = self.states.get_mut(chip_kind) {
+                    if let Some(handle) = state.refresh_handle.take() {
+                        handle.abort();
+                    }
+                    state.parked = true;
+                }
+            }
             PollDecision::Defer(delay) => {
                 let chip_kind_clone = chip_kind.clone();
                 let future = ctx.spawn(
@@ -1231,6 +1253,27 @@ impl CurrentPrompt {
                     None => log::warn!("Missing state for {chip_kind:?}"),
                 }
             }
+        }
+    }
+
+    /// Restarts the polls parked by [`PollDecision::Park`] once the terminal is back on screen
+    /// (called when its tab is shown, its window regains focus, or the editor reports activity).
+    /// Each restarted poll runs at once, so a chip is fresh the moment its tab is shown.
+    pub fn resume_parked_polls(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.states.values().any(|state| state.parked) || !self.terminal_in_foreground(ctx) {
+            return;
+        }
+        let parked: Vec<ContextChipKind> = self
+            .states
+            .iter_mut()
+            .filter(|(_, state)| state.parked)
+            .map(|(kind, state)| {
+                state.parked = false;
+                kind.clone()
+            })
+            .collect();
+        for kind in parked {
+            self.handle_poll_tick(&kind, ctx);
         }
     }
 

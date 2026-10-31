@@ -16683,6 +16683,15 @@ impl View for Input {
                 ctx.notify();
             }
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
+            // Showing this tab restarts the git/slow chip polls that were parked while it was
+            // hidden, so the chips are fresh the moment the tab is on screen.
+            let dynamic_prompt = match self.prompt_type.as_ref(ctx) {
+                PromptType::Dynamic { prompt } => Some(prompt.clone()),
+                PromptType::Static { .. } => None,
+            };
+            if let Some(prompt) = dynamic_prompt {
+                prompt.update(ctx, |prompt, ctx| prompt.resume_parked_polls(ctx));
+            }
         }
     }
 

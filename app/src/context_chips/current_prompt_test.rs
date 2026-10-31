@@ -57,7 +57,7 @@ use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use super::{
     effective_command_timeout, effective_poll_interval, poll_decision, ActiveChipSurfaces,
     ChipState, ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext,
-    BACKGROUND_RECHECK_DELAY, DEFAULT_CHIP_COMMAND_TIMEOUT, REMOTE_POLL_INTERVAL,
+    DEFAULT_CHIP_COMMAND_TIMEOUT, REMOTE_POLL_INTERVAL,
     TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
 };
 use std::time::Duration;
@@ -1466,15 +1466,13 @@ fn poll_runs_when_foreground_and_idle() {
 }
 
 #[test]
-fn poll_defers_for_background_terminals() {
-    assert_eq!(
-        poll_decision(false, None),
-        PollDecision::Defer(BACKGROUND_RECHECK_DELAY)
-    );
+fn poll_parks_for_background_terminals() {
+    // Parked, not re-timed: a hidden tab arms no timer until it is shown again.
+    assert_eq!(poll_decision(false, None), PollDecision::Park);
     // Hidden wins over idle: a hidden tab never starts a chip command.
     assert_eq!(
         poll_decision(false, Some(Duration::from_secs(60))),
-        PollDecision::Defer(BACKGROUND_RECHECK_DELAY)
+        PollDecision::Park
     );
 }
 
@@ -1515,4 +1513,51 @@ fn chip_commands_always_run_under_a_timeout() {
     assert_eq!(effective_command_timeout(Some(short)), short);
     let long = DEFAULT_CHIP_COMMAND_TIMEOUT * 2;
     assert_eq!(effective_command_timeout(Some(long)), long);
+}
+
+#[test]
+fn parked_poll_stays_parked_while_the_terminal_is_not_on_screen() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::ShellGitBranch],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, ctx| {
+            // A terminal whose window is not the active one is in the background.
+            current_prompt.terminal_window_id = Some(warpui::WindowId::new());
+            current_prompt.terminal_view_id = Some(warpui::EntityId::new());
+            let mut state = ChipState::new(&ContextChipKind::ShellGitBranch);
+            state.parked = true;
+            current_prompt
+                .states
+                .insert(ContextChipKind::ShellGitBranch, state);
+
+            // Window focus / editor activity elsewhere must not restart a hidden tab's poll.
+            current_prompt.resume_parked_polls(ctx);
+            let state = &current_prompt.states[&ContextChipKind::ShellGitBranch];
+            assert!(state.parked, "a background terminal's poll stays parked");
+            assert!(state.refresh_handle.is_none(), "and arms no timer");
+
+            // Clearing the chips drops the parked flag so a later resume cannot revive them.
+            current_prompt.clear_chips();
+            assert!(!current_prompt.states[&ContextChipKind::ShellGitBranch].parked);
+        });
+    });
 }
