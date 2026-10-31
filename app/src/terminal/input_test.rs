@@ -10579,3 +10579,238 @@ fn typeahead_report_goes_in_front_of_editor_text_and_keeps_the_cursor() {
         assert_eq!(cursor_byte_offset(&input, &app), cursor + 1);
     });
 }
+
+/// Starts a single-result Tab completion for `cd A\ p` the way `run_completions_async` would,
+/// returning the generation it captured and the snapshot of the editor it ran against.
+fn start_stale_completion_scenario(
+    input: &ViewHandle<Input>,
+    app: &mut App,
+) -> (u64, EditorSnapshot) {
+    input.update(app, |input, ctx| {
+        input.clear_buffer_and_reset_undo_stack(ctx);
+        input.user_insert("cd A\\ p", ctx);
+        (input.input_generation, editor_model_snapshot(input, ctx))
+    })
+}
+
+fn single_completion_result() -> Option<SuggestionResults> {
+    build_suggestion_results(
+        vec![argument_suggestion("A\\ path\\ with\\ spaces")],
+        (3, 7),
+        MatchStrategy::CaseInsensitive,
+    )
+}
+
+#[test]
+fn test_stale_completion_after_submit_is_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        let (generation, snapshot) = start_stale_completion_scenario(&input, &mut app);
+        // Enter: the command is submitted, then the fresh prompt receives the same text again
+        // (typeahead), so the buffer-text check alone would accept the stale result.
+        input.update(&mut app, |input, ctx| {
+            input.bump_input_generation();
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("cd A\\ p", ctx);
+            input.deliver_completion_suggestions_results(
+                generation,
+                single_completion_result(),
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "cd A\\ p");
+        });
+    });
+}
+
+#[test]
+fn test_stale_completion_after_escape_keeps_menu_closed() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        let (generation, snapshot) = start_stale_completion_scenario(&input, &mut app);
+        input.update(&mut app, |input, ctx| {
+            input.editor_escape(ctx);
+            input.deliver_completion_suggestions_results(
+                generation,
+                build_suggestion_results(
+                    vec![
+                        argument_suggestion("A\\ dir"),
+                        argument_suggestion("A\\ desktop"),
+                    ],
+                    (3, 7),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+            assert!(input.completions_abort_handle.is_none());
+        });
+    });
+}
+
+#[test]
+fn test_completion_in_same_generation_still_applies() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        let (generation, snapshot) = start_stale_completion_scenario(&input, &mut app);
+        input.update(&mut app, |input, ctx| {
+            input.deliver_completion_suggestions_results(
+                generation,
+                single_completion_result(),
+                CompletionsTrigger::Keybinding,
+                snapshot,
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "cd A\\ path\\ with\\ spaces ");
+        });
+    });
+}
+
+#[test]
+fn test_generation_bumps_on_escape_clear_and_replace() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            let g = input.input_generation;
+            input.editor_escape(ctx);
+            assert!(input.is_stale_generation(g));
+
+            let g = input.input_generation;
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            assert!(input.is_stale_generation(g));
+
+            let g = input.input_generation;
+            input.replace_buffer_content("ls", ctx);
+            assert!(input.is_stale_generation(g));
+
+            // Typing does not invalidate a request that is already in flight.
+            let g = input.input_generation;
+            input.user_insert("x", ctx);
+            assert!(!input.is_stale_generation(g));
+        });
+    });
+}
+
+#[test]
+fn test_stale_autosuggestion_result_is_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        let deliver = |input: &mut Input, generation: u64, ctx: &mut ViewContext<Input>| {
+            input.on_autosuggestion_result(
+                AutoSuggestionResult {
+                    buffer_text: "git ch".to_owned(),
+                    autosuggestion_result: Some("git checkout".to_owned()),
+                    generation: Some(generation),
+                },
+                ctx,
+            );
+        };
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("git ch", ctx);
+            // Stale: requested before an Enter, delivered into a buffer with the same text.
+            let stale = input.input_generation;
+            input.bump_input_generation();
+            deliver(input, stale, ctx);
+            assert_eq!(input.editor.as_ref(ctx).current_autosuggestion_text(), None);
+
+            // A result from the current generation applies.
+            let current = input.input_generation;
+            deliver(input, current, ctx);
+            assert_eq!(
+                input.editor.as_ref(ctx).current_autosuggestion_text(),
+                Some("eckout")
+            );
+        });
+    });
+}
+
+#[test]
+fn test_stale_next_command_and_enum_results_are_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            // Next-command suggestions are gated by the generation recorded at request time.
+            input.next_command_request_generation = input.input_generation;
+            assert!(!input.is_stale_generation(input.next_command_request_generation));
+            input.bump_input_generation();
+            assert!(input.is_stale_generation(input.next_command_request_generation));
+
+            // A stale dynamic-enum result must not touch the menu state.
+            let stale = input.input_generation;
+            input.bump_input_generation();
+            let snapshot = editor_model_snapshot(input, ctx);
+            input.deliver_enum_completion_results(stale, Ok(vec!["a".into()]), snapshot, ctx);
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_closed());
+        });
+    });
+}
+
+#[test]
+fn test_manual_completion_aborts_previous_run_without_completions_while_typing() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */ None,
+        )
+        .await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            // A previous run is in flight; a new run must supersede it whatever the
+            // completions-while-typing setting says.
+            let (handle, _registration) = futures::stream::AbortHandle::new_pair();
+            input.completions_abort_handle = Some(handle.clone());
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("cd A", ctx);
+            input.open_completion_suggestions(CompletionsTrigger::Keybinding, ctx);
+            assert!(handle.is_aborted());
+        });
+    });
+}
