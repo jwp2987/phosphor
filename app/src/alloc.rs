@@ -9,6 +9,9 @@ cfg_if! {
     } else if #[cfg(feature = "jemalloc")] {
         #[global_allocator]
         static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+    } else if #[cfg(all(target_env = "musl", feature = "mimalloc"))] {
+        #[global_allocator]
+        static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
     }
 }
 

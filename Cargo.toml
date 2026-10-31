@@ -537,6 +537,22 @@ lto = "thin"
 [profile.rlto]
 inherits = "release-lto"
 
+# Hot-loop crates (terminal parser/grid, UI core layout, completer) get a single codegen unit so
+# LLVM can inline within the crate; scoped per package to bound the build-time/memory cost (#1157).
+# Package overrides are per-profile, so `rlto` repeats the `release-lto` ones.
+[profile.release-lto.package.warpui_core]
+codegen-units = 1
+[profile.release-lto.package.warp_terminal]
+codegen-units = 1
+[profile.release-lto.package.warp_completer]
+codegen-units = 1
+[profile.rlto.package.warpui_core]
+codegen-units = 1
+[profile.rlto.package.warp_terminal]
+codegen-units = 1
+[profile.rlto.package.warp_completer]
+codegen-units = 1
+
 # A custom release-like profile that forces debug assertions on.
 [profile.release-lto-debug_assertions]
 inherits = "release-lto"
@@ -561,6 +577,14 @@ opt-level = "s"
 # cross-crate size optimization, so 1 was paying a lot of compile time for little extra size.
 # Ported from upstream `1e4b86a81` (#720); matches the pin (4111d08f9:Cargo.toml).
 codegen-units = 4
+
+# The Linux CLI / remote-server tarball (`phosphor-cli-linux-*`, downloaded once onto ssh hosts
+# by `crates/remote_server/src/setup.rs`). It runs the completer/generator requests behind every
+# managed ssh prompt, so it is built for speed (opt-level 3) rather than the size-leaning
+# `release-cli`. Same codegen-units/LTO/strip/debug settings as `release-cli` (#1157).
+[profile.release-remote]
+inherits = "release-cli"
+opt-level = 3
 
 # A custom CLI release-like profile that forces debug assertions on, used for
 # dev/local channel CLI bundles.
