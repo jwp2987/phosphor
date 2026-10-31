@@ -315,8 +315,9 @@ impl HeaderGrid {
             return CommandSnapshot(None);
         };
         // No row limit, so the start is the command start (see `command_to_string_internal`).
+        let origin = Point::new(0, 0);
         let start_point = command_start_point.max_point(
-            &Point::new(0, 0),
+            &origin,
             self.prompt_and_command_grid.grid_handler().columns(),
         );
         CommandSnapshot(Some((
