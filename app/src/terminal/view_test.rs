@@ -14200,6 +14200,7 @@ fn terminal_with_real_async_agent_command(
                 requires_result: true,
             },
             conversation_id,
+            /*execution*/ None,
             ctx,
         );
     });
@@ -14212,6 +14213,61 @@ fn terminal_with_real_async_agent_command(
         );
     });
     (terminal, conversation_id, action_id)
+}
+
+/// Stop aborts the work of a running non-shell tool (a read, a search, an MCP call), not just
+/// its result. The spawned execution used to run to completion and be thrown away on arrival;
+/// over ssh that was remote work streaming back over the shared connection (#1241). Fails on
+/// the old code: the handle was never kept, so nothing was aborted.
+#[test]
+fn stopping_the_conversation_aborts_a_running_tools_execution() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_with_agent_command(&mut app, true);
+        let action_id = AIAgentActionId::from("grep-call".to_owned());
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let execution = action_model.update(&mut app, |action_model, ctx| {
+            let execution = ctx.spawn(futures::future::pending::<()>(), |_, (), _| {});
+            action_model.start_running_async_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::Grep {
+                        queries: vec!["needle".to_owned()],
+                        path: ".".to_owned(),
+                    },
+                    requires_result: true,
+                },
+                conversation_id,
+                Some(execution.clone()),
+                ctx,
+            );
+            execution
+        });
+        assert!(!execution.abort_handle().is_aborted());
+
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+        });
+
+        assert!(
+            execution.abort_handle().is_aborted(),
+            "the tool's spawned execution is aborted, not left to finish"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_none_or(|status| !status.is_running()),
+                "the cancelled action is no longer running"
+            );
+        });
+    })
 }
 
 /// Closing a pane whose agent is running a command with a real async action: exactly one ^C and
