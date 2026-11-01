@@ -233,6 +233,7 @@ impl TerminalDriver {
         model
             .block_list()
             .block_with_id(block_id)
+            .filter(|block| !block.is_restore_pending())
             .map(SerializedBlock::from)
     }
 

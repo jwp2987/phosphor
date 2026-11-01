@@ -318,22 +318,32 @@ pub(super) fn save_block(
 /// except inside an over-long single line) joined by a marker line. Stylized output separates
 /// lines with `\r\n`; the marker resets the SGR state so the head's styling cannot bleed into it.
 pub(crate) fn cap_persisted_output(output: &[u8]) -> Option<Vec<u8>> {
-    if output.len() <= MAX_PERSISTED_OUTPUT_BYTES {
+    const OMITTED_MARKER: &[u8] = b"bytes of output omitted to keep the saved session small";
+    // The capped form is a little longer than the cap (marker plus resets). Capping it again
+    // would drop more output and replace the old marker, so an already-capped block is left
+    // as it is (#1253).
+    if output.len() <= MAX_PERSISTED_OUTPUT_BYTES
+        || (output.len() <= MAX_PERSISTED_OUTPUT_BYTES + 512
+            && output
+                .windows(OMITTED_MARKER.len())
+                .any(|w| w == OMITTED_MARKER))
+    {
         return None;
     }
     let half = MAX_PERSISTED_OUTPUT_BYTES / 2;
-    // Head: up to and including the last '\n' within the first `half` bytes (or the raw cut
-    // when a single line is longer than that).
+    // Head: up to and including the last '\n' within the first `half` bytes (or, when a single
+    // line is longer than that, a raw cut moved back to a character and escape boundary).
     let head_end = output[..half]
         .iter()
         .rposition(|b| *b == b'\n')
-        .map_or(half, |i| i + 1);
-    // Tail: starts right after the first '\n' within the last `half` bytes.
+        .map_or_else(|| safe_head_cut(output, half), |i| i + 1);
+    // Tail: starts right after the first '\n' within the last `half` bytes (or a raw cut moved
+    // forward past a partial character or escape sequence).
     let tail_floor = output.len() - half;
     let tail_start = output[tail_floor..]
         .iter()
         .position(|b| *b == b'\n')
-        .map_or(tail_floor, |i| tail_floor + i + 1);
+        .map_or_else(|| safe_tail_cut(output, tail_floor), |i| tail_floor + i + 1);
     let omitted = tail_start.saturating_sub(head_end);
     let marker = format!(
         "\x1b[0m[... {omitted} bytes of output omitted to keep the saved session small ...]\x1b[0m\r\n"
@@ -346,6 +356,52 @@ pub(crate) fn cap_persisted_output(output: &[u8]) -> Option<Vec<u8>> {
     capped.extend_from_slice(marker.as_bytes());
     capped.extend_from_slice(&output[tail_start..]);
     Some(capped)
+}
+
+/// If `pos` falls inside a CSI sequence (`ESC [` parameters, not yet at its final byte), the
+/// index of the `ESC` that starts it.
+fn csi_start_containing(output: &[u8], pos: usize) -> Option<usize> {
+    let window_start = pos.saturating_sub(64);
+    let esc = output[window_start..pos].iter().rposition(|b| *b == 0x1b)? + window_start;
+    if output.get(esc + 1) != Some(&b'[') {
+        return None;
+    }
+    // Parameter and intermediate bytes only, up to `pos`; a final byte (0x40..=0x7e) ended it.
+    output[esc + 2..pos]
+        .iter()
+        .all(|b| (0x20..=0x3f).contains(b))
+        .then_some(esc)
+}
+
+/// A cut for the end of the head, at or before `cut`, that splits neither a UTF-8 character nor
+/// a CSI sequence.
+fn safe_head_cut(output: &[u8], mut cut: usize) -> usize {
+    // Back up over continuation bytes, then over the lead byte of the split character.
+    while cut > 0 && output.get(cut).is_some_and(|b| b & 0xc0 == 0x80) {
+        cut -= 1;
+    }
+    if let Some(esc) = csi_start_containing(output, cut) {
+        cut = esc;
+    }
+    cut
+}
+
+/// A cut for the start of the tail, at or after `cut`, that starts neither inside a UTF-8
+/// character nor inside a CSI sequence.
+fn safe_tail_cut(output: &[u8], mut cut: usize) -> usize {
+    if csi_start_containing(output, cut).is_some() {
+        while cut < output.len() && (0x20..=0x3f).contains(&output[cut]) {
+            cut += 1;
+        }
+        // Skip the final byte too.
+        if cut < output.len() {
+            cut += 1;
+        }
+    }
+    while cut < output.len() && output[cut] & 0xc0 == 0x80 {
+        cut += 1;
+    }
+    cut
 }
 
 // TODO(vorporeal): can move this to a `to_persisted_block()` function on `SerializedBlock`
