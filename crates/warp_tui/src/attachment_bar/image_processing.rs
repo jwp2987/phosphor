@@ -140,7 +140,11 @@ pub(super) async fn read_clipboard_content() -> Result<ClipboardContent, String>
     blocking::unblock(|| -> Result<ClipboardContent, String> {
         let mut clipboard = warpui::platform::create_system_clipboard()
             .map_err(|_| "The system clipboard is unavailable.".to_owned())?;
-        Ok(clipboard.read())
+        // Already on a blocking-pool thread, never the UI thread (#1405).
+        Ok(warpui::clipboard::read_content_blocking(
+            &mut *clipboard,
+            warpui::clipboard::ReadKind::Full,
+        ))
     })
     .await
 }

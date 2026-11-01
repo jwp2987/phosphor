@@ -2249,7 +2249,7 @@ fn context_menu_copy_blocks_prefers_selected_blocks_over_lingering_text_selectio
 
             terminal_view.context_menu_copy_blocks(ctx);
 
-            let copied = ctx.clipboard().read().plain_text;
+            let copied = warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text;
             assert!(
                 copied.contains("output_b"),
                 "expected the selected block B to be copied, got {copied:?}"
@@ -13214,7 +13214,7 @@ fn ai_block_copy_output_does_not_clobber_clipboard_when_nothing_streamed() {
 
         ai_block.update(&mut app, |_block, ctx| {
             assert_eq!(
-                ctx.clipboard().read().plain_text,
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
                 "sentinel",
                 "copying output before anything has streamed must not overwrite the clipboard \
                  with an empty string"

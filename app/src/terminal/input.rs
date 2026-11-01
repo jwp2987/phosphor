@@ -11087,7 +11087,7 @@ impl Input {
             return;
         }
         // Read from app clipboard
-        let content = ctx.clipboard().read();
+        let content = warpui::clipboard::read_full_blocking(ctx.clipboard());
         self.process_paste_content(content, ctx);
     }
 

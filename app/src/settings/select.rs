@@ -180,14 +180,19 @@ impl SelectionSettings {
         &self,
         ctx: &mut AppContext,
     ) -> Option<ClipboardContent> {
-        self.linux_selection_clipboard_enabled()
-            .then(|| ctx.clipboard().read_from_primary_clipboard())
+        self.linux_selection_clipboard_enabled().then(|| {
+            warpui::clipboard::read_content_blocking(
+                ctx.clipboard(),
+                warpui::clipboard::ReadKind::Primary,
+            )
+        })
     }
 
     /// The off-UI-thread form of [`Self::read_for_middle_click_paste`] (#1331): a reader to run on
-    /// a worker thread, or `None` when the paste is disabled or the platform cannot read the
-    /// selection off the UI thread (callers then use `read_for_middle_click_paste`, which also
-    /// answers `None` when the paste is disabled).
+    /// a worker thread, or `None` when the paste is disabled or the platform reads inline
+    /// (callers then use `read_for_middle_click_paste`, which also answers `None` when the paste
+    /// is disabled). Linux/FreeBSD read the primary selection; every other platform reads the
+    /// clipboard the same way (#1405: the non-Linux middle click is no longer a UI-thread read).
     pub fn background_reader_for_middle_click_paste(
         &self,
         ctx: &mut AppContext,
@@ -201,7 +206,7 @@ impl SelectionSettings {
             }
             return ctx.clipboard().background_primary_reader();
         }
-        None
+        ctx.clipboard().background_full_reader()
     }
 
     /// Which flavor an off-thread middle-click read needs, or `None` when the paste is disabled
@@ -248,7 +253,8 @@ impl SelectionSettings {
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             self.maybe_read_from_linux_selection_clipboard(ctx)
         } else {
-            Some(ctx.clipboard().read()).filter(|content| content.is_empty().not())
+            Some(warpui::clipboard::read_full_blocking(ctx.clipboard()))
+                .filter(|content| content.is_empty().not())
         }
     }
 

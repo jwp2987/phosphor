@@ -1,79 +1,121 @@
 use super::*;
 
+fn image(bytes: Vec<u8>) -> ImageData {
+    ImageData {
+        data: bytes,
+        mime_type: "image/png".to_owned(),
+        filename: None,
+    }
+}
+
 #[test]
-fn default_probes_follow_read() {
+fn in_memory_availability_needs_no_read() {
     let mut clipboard = InMemoryClipboard::default();
+    assert_eq!(
+        clipboard.availability(ClipboardTarget::Clipboard),
+        Availability::Empty
+    );
     assert!(!clipboard.has_content());
-    assert_eq!(clipboard.read_plain_text(), "");
 
     clipboard.write(ClipboardContent {
         plain_text: "hello".to_owned(),
-        images: Some(vec![ImageData {
-            data: vec![1, 2, 3],
-            mime_type: "image/png".to_owned(),
-            filename: None,
-        }]),
+        images: Some(vec![image(vec![1, 2, 3])]),
         ..Default::default()
     });
     assert!(clipboard.has_content());
-    assert_eq!(clipboard.read_plain_text(), "hello");
-    let without_images = clipboard.read_without_images();
-    assert_eq!(without_images.plain_text, "hello");
-    assert!(without_images.images.is_none());
-    // The stored clipboard still has its image.
-    assert!(clipboard.read().has_image_data());
 }
 
 #[test]
 fn image_only_clipboard_has_content() {
     let mut clipboard = InMemoryClipboard::default();
     clipboard.write(ClipboardContent {
-        images: Some(vec![ImageData {
-            data: vec![1],
-            mime_type: "image/png".to_owned(),
-            filename: None,
-        }]),
+        images: Some(vec![image(vec![1])]),
         ..Default::default()
     });
     assert!(clipboard.has_content());
-    assert!(clipboard.read_without_images().images.is_none());
 }
 
-/// A clipboard whose `read` must never run: `has_content` answers from a cheap probe (#1306).
-struct ProbeOnlyClipboard;
+/// A clipboard whose reader must never be created: `has_content` answers from a cheap query
+/// (#1306, #1405).
+struct QueryOnlyClipboard(Availability);
 
-impl Clipboard for ProbeOnlyClipboard {
+impl Clipboard for QueryOnlyClipboard {
     fn write(&mut self, _contents: ClipboardContent) {}
-    fn read(&mut self) -> ClipboardContent {
-        panic!("has_content must not read or decode clipboard content");
+    fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
+        panic!("an availability query must not read or decode clipboard content");
     }
-    fn has_content(&mut self) -> bool {
-        true
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
+        self.0
     }
     #[cfg(target_family = "wasm")]
     fn save(&mut self, _content: ClipboardContent) {}
 }
 
 #[test]
-fn has_content_override_does_not_read() {
-    assert!(ProbeOnlyClipboard.has_content());
+fn has_content_follows_availability_and_never_reads() {
+    assert!(QueryOnlyClipboard(Availability::HasContent).has_content());
+    assert!(!QueryOnlyClipboard(Availability::Empty).has_content());
+    // A platform that cannot tell without reading must not disable "Paste".
+    assert!(QueryOnlyClipboard(Availability::Unknown).has_content());
 }
 
 #[test]
-fn background_readers_default_to_none() {
-    // Platforms without a thread-safe read keep the synchronous path (#1305).
-    struct Plain;
-    impl Clipboard for Plain {
-        fn write(&mut self, _contents: ClipboardContent) {}
-        fn read(&mut self) -> ClipboardContent {
-            ClipboardContent::default()
-        }
-        #[cfg(target_family = "wasm")]
-        fn save(&mut self, _content: ClipboardContent) {}
+fn text_and_paths_read_drops_html_and_images_but_full_keeps_them() {
+    let mut clipboard = InMemoryClipboard::default();
+    clipboard.write(ClipboardContent {
+        plain_text: "hello".to_owned(),
+        html: Some("<b>hello</b>".to_owned()),
+        images: Some(vec![image(vec![1])]),
+        ..Default::default()
+    });
+    let text = read_content_blocking(&mut clipboard, ReadKind::TextAndPaths);
+    assert_eq!(text.plain_text, "hello");
+    assert!(text.html.is_none() && text.images.is_none());
+    let full = read_content_blocking(&mut clipboard, ReadKind::Full);
+    assert!(full.html.is_some() && full.has_image_data());
+}
+
+#[test]
+fn legacy_readers_are_absent_for_inline_clipboards() {
+    // An inline snapshot has nothing to move off the calling thread (#1405).
+    let mut clipboard = InMemoryClipboard::default();
+    assert!(clipboard.background_text_reader().is_none());
+    assert!(clipboard.background_full_reader().is_none());
+    assert!(clipboard.background_primary_reader().is_none());
+}
+
+#[test]
+fn request_ids_are_unique_and_increasing() {
+    let mut clipboard = InMemoryClipboard::default();
+    let a = request_read(&mut clipboard, ReadKind::Full);
+    let b = request_read(&mut clipboard, ReadKind::Full);
+    assert!(b.id > a.id);
+    assert_eq!(a.kind, ReadKind::Full);
+}
+
+#[test]
+fn unavailable_is_empty_content_in_the_older_vocabulary() {
+    assert!(matches!(
+        BackgroundTextRead::from(ReadOutcome::Unavailable),
+        BackgroundTextRead::Content(content) if content.is_empty()
+    ));
+    assert!(matches!(
+        BackgroundTextRead::from(ReadOutcome::TimedOut),
+        BackgroundTextRead::TimedOut
+    ));
+    assert!(ReadOutcome::TimedOut.into_content().is_empty());
+}
+
+#[test]
+fn ready_request_resolves_through_into_future() {
+    let mut clipboard = InMemoryClipboard::default();
+    clipboard.write(ClipboardContent::plain_text("later".to_owned()));
+    let request = request_read(&mut clipboard, ReadKind::TextAndPaths);
+    assert!(matches!(request.start, ReadStart::Ready(_)));
+    match futures::executor::block_on(request.into_future()) {
+        ReadOutcome::Content(content) => assert_eq!(content.plain_text, "later"),
+        other => panic!("expected content, got {other:?}"),
     }
-    assert!(Plain.background_text_reader().is_none());
-    assert!(Plain.background_full_reader().is_none());
-    assert!(!Plain.has_content());
 }
 
 #[test]
@@ -142,15 +184,24 @@ fn slow_earlier_write_never_overwrites_a_later_one() {
 }
 
 #[test]
-fn in_memory_clipboard_has_no_background_writer() {
+fn write_without_a_writer_thread_still_lands_and_reports() {
+    // One write API (#1405): a platform with a cheap write is written inline, `on_done` fires, and
+    // the caller never needs its own synchronous fallback.
     let mut clipboard = InMemoryClipboard::default();
-    let back = write_in_background(
+    let done = std::sync::Arc::new(Mutex::new(None));
+    let done_in = done.clone();
+    let result = write_in_background(
         &mut clipboard,
         ClipboardContent::plain_text("x".into()),
         ClipboardTarget::Clipboard,
-        |_| {},
+        move |outcome| *done_in.lock() = Some(outcome),
     );
-    assert_eq!(back.unwrap_err().plain_text, "x");
+    assert!(result.is_ok());
+    assert_eq!(*done.lock(), Some(WriteOutcome::Written));
+    assert_eq!(
+        read_content_blocking(&mut clipboard, ReadKind::Full).plain_text,
+        "x"
+    );
 }
 
 #[test]
@@ -234,10 +285,12 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
             &TRACKER,
             2,
             slow,
+            ReadRequestId::next(),
+            ReadKind::Full,
             Box::new(move || {
                 RAN.fetch_add(1, Ordering::SeqCst);
                 let _ = rx.lock().recv();
-                BackgroundTextRead::Content(ClipboardContent::default())
+                ReadOutcome::Content(ClipboardContent::default())
             }),
         );
         handles.push(std::thread::spawn(reader));
@@ -250,12 +303,14 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
         &TRACKER,
         2,
         slow,
+        ReadRequestId::next(),
+        ReadKind::Full,
         Box::new(|| {
             RAN.fetch_add(1, Ordering::SeqCst);
-            BackgroundTextRead::Content(ClipboardContent::default())
+            ReadOutcome::Content(ClipboardContent::default())
         }),
     );
-    assert!(matches!(third(), BackgroundTextRead::TimedOut));
+    assert!(matches!(third(), ReadOutcome::TimedOut));
     assert_eq!(RAN.load(Ordering::SeqCst), 2);
     release_tx.send(()).unwrap();
     release_tx.send(()).unwrap();
@@ -276,9 +331,11 @@ fn abandoning_pending_reads_reports_the_blocked_readers() {
         &TRACKER,
         2,
         std::time::Duration::from_secs(60),
+        ReadRequestId::next(),
+        ReadKind::Full,
         Box::new(move || {
             let _ = release_rx.recv();
-            BackgroundTextRead::Content(ClipboardContent::default())
+            ReadOutcome::Content(ClipboardContent::default())
         }),
     );
     assert_eq!(TRACKER.abandon_pending(), 0, "nothing is blocked yet");
@@ -294,26 +351,23 @@ fn abandoning_pending_reads_reports_the_blocked_readers() {
     release_tx.send(()).unwrap();
     // The abandoned read still returns what it read (another paste may be waiting on one made
     // before the abandon); it is only logged.
-    assert!(matches!(
-        handle.join().unwrap(),
-        BackgroundTextRead::Content(_)
-    ));
+    assert!(matches!(handle.join().unwrap(), ReadOutcome::Content(_)));
     assert_eq!(TRACKER.in_flight(), 0);
 }
 
 #[test]
 fn over_cap_paste_is_refused_not_truncated() {
     let big = ClipboardContent::plain_text("x".repeat(11));
-    match cap_paste_size(BackgroundTextRead::Content(big), 10) {
-        BackgroundTextRead::TooLarge(n) => assert_eq!(n, 11),
+    match cap_paste_size(ReadOutcome::Content(big), 10) {
+        ReadOutcome::TooLarge(n) => assert_eq!(n, 11),
         _ => panic!("expected TooLarge"),
     }
     // Exactly at the cap is admitted whole, as are paths and html counted together.
     match cap_paste_size(
-        BackgroundTextRead::Content(ClipboardContent::plain_text("x".repeat(10))),
+        ReadOutcome::Content(ClipboardContent::plain_text("x".repeat(10))),
         10,
     ) {
-        BackgroundTextRead::Content(c) => assert_eq!(c.plain_text.len(), 10),
+        ReadOutcome::Content(c) => assert_eq!(c.plain_text.len(), 10),
         _ => panic!("expected Content"),
     }
     let mixed = ClipboardContent {
@@ -322,12 +376,16 @@ fn over_cap_paste_is_refused_not_truncated() {
         ..Default::default()
     };
     assert!(matches!(
-        cap_paste_size(BackgroundTextRead::Content(mixed), 10),
-        BackgroundTextRead::TooLarge(12)
+        cap_paste_size(ReadOutcome::Content(mixed), 10),
+        ReadOutcome::TooLarge(12)
     ));
     assert!(matches!(
-        cap_paste_size(BackgroundTextRead::TimedOut, 10),
-        BackgroundTextRead::TimedOut
+        cap_paste_size(ReadOutcome::TimedOut, 10),
+        ReadOutcome::TimedOut
+    ));
+    assert!(matches!(
+        cap_paste_size(ReadOutcome::Unavailable, 10),
+        ReadOutcome::Unavailable
     ));
 }
 
@@ -342,27 +400,14 @@ impl Clipboard for WorkerClipboard {
         self.text = content.plain_text;
     }
 
-    fn read(&mut self) -> ClipboardContent {
-        // A synchronous read on the UI thread is exactly what #1380 removes.
-        assert_ne!(
-            std::thread::current().id(),
-            self.main_thread,
-            "the read must not run on the calling thread"
-        );
-        ClipboardContent::plain_text(self.text.clone())
-    }
-
-    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
+    fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
         let text = self.text.clone();
         let main_thread = self.main_thread;
-        Some(Box::new(move || {
+        Box::new(move || {
+            // A read on the UI thread is exactly what #1380 and #1405 remove.
             assert_ne!(std::thread::current().id(), main_thread);
-            BackgroundTextRead::Content(ClipboardContent::plain_text(text))
-        }))
-    }
-
-    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
-        self.background_full_reader()
+            ReadOutcome::Content(ClipboardContent::plain_text(text))
+        })
     }
 
     #[cfg(target_family = "wasm")]
@@ -370,22 +415,45 @@ impl Clipboard for WorkerClipboard {
 }
 
 #[test]
-fn read_in_background_runs_the_reader_off_the_calling_thread() {
+fn request_read_runs_the_reader_off_the_calling_thread() {
     let mut clipboard = WorkerClipboard {
         text: "from the worker".to_owned(),
         main_thread: std::thread::current().id(),
     };
     for kind in [ReadKind::Full, ReadKind::TextAndPaths] {
-        match read_in_background(&mut clipboard, kind) {
-            StartedRead::Pending(pending) => match futures::executor::block_on(pending) {
-                BackgroundTextRead::Content(content) => {
+        match request_read(&mut clipboard, kind).start {
+            ReadStart::Pending(pending) => match futures::executor::block_on(pending) {
+                ReadOutcome::Content(content) => {
                     assert_eq!(content.plain_text, "from the worker")
                 }
-                _ => panic!("expected content"),
+                other => panic!("expected content, got {other:?}"),
             },
-            StartedRead::Ready(_) => panic!("a platform with a worker reader must not read here"),
+            ReadStart::Ready(_) => panic!("a platform with a worker reader must not read here"),
         }
     }
+}
+
+#[test]
+fn read_in_background_adapter_stays_pending_for_worker_clipboards() {
+    let mut clipboard = WorkerClipboard {
+        text: "adapter".to_owned(),
+        main_thread: std::thread::current().id(),
+    };
+    match read_in_background(&mut clipboard, ReadKind::TextAndPaths) {
+        StartedRead::Pending(pending) => match futures::executor::block_on(pending) {
+            BackgroundTextRead::Content(content) => assert_eq!(content.plain_text, "adapter"),
+            _ => panic!("expected content"),
+        },
+        StartedRead::Ready(_) => panic!("must read on a worker"),
+    }
+    // The reader form handed to the paste paths is a worker reader too.
+    let reader = clipboard
+        .background_text_reader()
+        .expect("worker clipboards hand out a reader");
+    assert!(matches!(
+        std::thread::spawn(reader).join().unwrap(),
+        BackgroundTextRead::Content(_)
+    ));
 }
 
 #[test]
@@ -398,4 +466,51 @@ fn read_in_background_without_a_worker_reader_answers_at_once() {
         }
         _ => panic!("expected an immediate read"),
     }
+}
+
+/// A reader that ignores the owner's silence reports `TimedOut`; the blocking helper passes that
+/// through instead of turning it into an empty paste.
+#[test]
+fn a_timed_out_reader_is_reported_not_hidden() {
+    struct Silent;
+    impl Clipboard for Silent {
+        fn write(&mut self, _contents: ClipboardContent) {}
+        fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
+            Box::new(|| ReadOutcome::TimedOut)
+        }
+        fn reads_inline(&self) -> bool {
+            true
+        }
+        #[cfg(target_family = "wasm")]
+        fn save(&mut self, _content: ClipboardContent) {}
+    }
+    assert!(matches!(
+        read_outcome_blocking(&mut Silent, ReadKind::Full),
+        ReadOutcome::TimedOut
+    ));
+    assert!(read_content_blocking(&mut Silent, ReadKind::Full).is_empty());
+}
+
+#[test]
+fn oversize_content_is_refused_by_every_read_path() {
+    struct Huge;
+    impl Clipboard for Huge {
+        fn write(&mut self, _contents: ClipboardContent) {}
+        fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
+            Box::new(|| {
+                ReadOutcome::Content(ClipboardContent::plain_text(
+                    "x".repeat(MAX_PASTE_BYTES + 1),
+                ))
+            })
+        }
+        fn reads_inline(&self) -> bool {
+            true
+        }
+        #[cfg(target_family = "wasm")]
+        fn save(&mut self, _content: ClipboardContent) {}
+    }
+    assert!(matches!(
+        read_outcome_blocking(&mut Huge, ReadKind::Full),
+        ReadOutcome::TooLarge(n) if n == MAX_PASTE_BYTES + 1
+    ));
 }

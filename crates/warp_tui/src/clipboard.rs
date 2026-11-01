@@ -101,7 +101,13 @@ fn set_native_text(text: &str) -> anyhow::Result<()> {
 pub(crate) fn read_from_clipboard() -> anyhow::Result<String> {
     let mut clipboard = warpui::platform::create_system_clipboard()
         .map_err(|error| error.context("native OS clipboard is unavailable"))?;
-    Ok(clipboard.read().plain_text)
+    // The headless TUI has no async paste path yet (#1405): a bounded blocking read through the
+    // same reader the GUI uses (first-answer deadline, blocked-reader cap, size cap).
+    Ok(warpui::clipboard::read_content_blocking(
+        &mut *clipboard,
+        warpui::clipboard::ReadKind::TextAndPaths,
+    )
+    .plain_text)
 }
 
 fn write_osc52_sequences(text: &str, in_tmux: bool, writer: &mut impl Write) -> io::Result<()> {
