@@ -149,6 +149,11 @@ impl HydrationState {
         self.sizing_dirty.replace(false)
     }
 
+    /// The font or size changed, so every parked width estimate is stale.
+    pub(super) fn mark_restyled(&self) {
+        self.sizing_dirty.set(true);
+    }
+
     /// Takes the "more hydration pending" flag.
     pub(super) fn take_more_pending(&self) -> bool {
         self.more_pending.replace(false)
@@ -210,6 +215,17 @@ impl RenderState {
         matches!(self.width_setting, WidthSetting::InfiniteWidth)
             && matches!(self.layout_mode, LayoutMode::Pixels)
             && !eager_layout_forced()
+    }
+
+    /// A relayout-requiring style change (font family, size, line height...) arrived: the
+    /// paragraphs this editor parked dehydrated carry width estimates measured with the old font,
+    /// and a pending full relayout re-estimates them. Invalidates content sizing now so the next
+    /// element update refreshes it, whatever order the relayout and the hydration pass land in.
+    /// A no-op for editors that do not park paragraphs.
+    pub(super) fn note_restyled_for_parked_paragraphs(&self) {
+        if self.lazy_paragraphs_enabled() {
+            self.hydration.mark_restyled();
+        }
     }
 
     /// Takes (and clears) the flags the hydration pass raised, so the model can refresh content
@@ -480,6 +496,7 @@ fn dehydrated_in(content: &SumTree<BlockItem>, range: &YRange, limit: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::model::StyleUpdateAction;
     use crate::render::model::test_utils::{TEST_STYLES, layout};
     use crate::render::model::{BlockSpacing, OffsetMap, Paragraph};
 
@@ -663,6 +680,28 @@ mod tests {
         assert!(sizing_dirty);
         assert!(!more_pending);
         // The flag is consumed.
+        assert_eq!(state.take_hydration_flags(), (false, false));
+    }
+
+    /// A font-size change makes every parked width estimate stale: sizing is invalidated at the
+    /// style change itself, and a change that needs no relayout leaves it alone.
+    #[test]
+    fn a_font_size_change_invalidates_sizing_for_parked_lines() {
+        let mut state = state_with_rows(40);
+        assert_eq!(state.take_hydration_flags(), (false, false));
+
+        let mut repaint_only = TEST_STYLES;
+        repaint_only.cursor_width += 1.;
+        let action = state.update_styles(repaint_only);
+        assert!(matches!(action, StyleUpdateAction::Repaint), "{action:?}");
+        assert_eq!(state.take_hydration_flags(), (false, false));
+
+        let mut bigger = state.styles().clone();
+        bigger.base_text.font_size += 2.;
+        let action = state.update_styles(bigger);
+        assert!(matches!(action, StyleUpdateAction::Relayout), "{action:?}");
+        assert_eq!(state.take_hydration_flags(), (true, false));
+        // Consumed.
         assert_eq!(state.take_hydration_flags(), (false, false));
     }
 

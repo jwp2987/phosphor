@@ -2483,6 +2483,13 @@ impl RenderState {
             };
 
             self.styles = new_styles;
+            if matches!(action, StyleUpdateAction::Relayout) {
+                // Parked (dehydrated) paragraphs hold widths estimated from the OLD font until the
+                // relayout the caller now submits replaces them. Say so at the style change
+                // itself (#1340): content sizing is refreshed with the next element update
+                // instead of relying on a hydration to notice the difference.
+                self.note_restyled_for_parked_paragraphs();
+            }
             return action;
         }
         StyleUpdateAction::None

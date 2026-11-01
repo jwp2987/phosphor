@@ -10980,30 +10980,28 @@ impl TerminalView {
     /// Holds the text of a paste that arrived during an ssh connect (#1292), as typing is held.
     fn hold_ssh_paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         let shell_dialect = Some(self.shell_dialect_from_app(ctx));
-        if !middle_click {
-            // The paste is an entry of the pane queue behind the connect gate, with a
-            // `PasteReading` gate of its own until the read answers: the keys typed meanwhile
-            // queue behind it, in order, and it is routed when it drains (#1405).
-            if self.paste_queue.queue.try_peek().is_none() {
-                log::warn!("ssh hold: input queue busy, a paste was not held");
+        // A middle click reads the primary selection (the clipboard off Linux); `None` when the
+        // setting disables the paste, which holds nothing.
+        let kind = if middle_click {
+            let kind = SelectionSettings::handle(ctx)
+                .update(ctx, |selection, _| selection.middle_click_read_kind());
+            let Some(kind) = kind else {
                 return;
-            }
-            self.ssh_hold_ensure_gate(ctx);
-            self.start_async_paste_read(
-                warpui::clipboard::ReadKind::TextAndPaths,
-                false,
-                true,
-                shell_dialect,
-                ctx,
-            );
+            };
+            kind
+        } else {
+            warpui::clipboard::ReadKind::TextAndPaths
+        };
+        // The paste is an entry of the pane queue behind the connect gate, with a
+        // `PasteReading` gate of its own until the read answers: the keys typed meanwhile
+        // queue behind it, in order, and it is routed when it drains (#1405). An empty answer
+        // holds nothing.
+        if self.paste_queue.queue.try_peek().is_none() {
+            log::warn!("ssh hold: input queue busy, a paste was not held");
             return;
         }
-        let copied = TerminalView::middle_click_paste_content(shell_dialect, ctx);
-        if copied.is_empty() {
-            return;
-        }
-        let outcome = self.ssh_hold_push(HeldInput::Paste(copied), ctx);
-        self.note_ssh_typeahead_outcome(&outcome, ctx);
+        self.ssh_hold_ensure_gate(ctx);
+        self.start_async_paste_read(kind, false, true, shell_dialect, ctx);
     }
 
     /// True while a host-key / password / 2FA prompt is showing before any remote session exists:
@@ -13653,25 +13651,16 @@ impl TerminalView {
         shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
     ) -> String {
-        // Image data is never used here, so don't read or decode it.
-        let content = warpui::clipboard::read_content_blocking(
+        // Image data is never used here, so don't read or decode it. The test clipboard reads
+        // inline, so the request is answered already.
+        let request = warpui::clipboard::request_read(
             ctx.clipboard(),
             warpui::clipboard::ReadKind::TextAndPaths,
         );
-        clipboard_content_with_escaped_paths(content, shell_dialect, false)
-    }
-
-    fn middle_click_paste_content(
-        shell_dialect: Option<ShellDialect>,
-        ctx: &mut ViewContext<Self>,
-    ) -> String {
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
-        });
-
-        content
-            .map(|content| clipboard_content_with_escaped_paths(content, shell_dialect, false))
-            .unwrap_or_default()
+        let warpui::clipboard::ReadStart::Ready(outcome) = request.start else {
+            panic!("the test clipboard reads inline");
+        };
+        clipboard_content_with_escaped_paths(outcome.into_content(), shell_dialect, false)
     }
 
     /// The (rows, cursor row, cursor column) of the active block's output: it changes whenever
@@ -22510,26 +22499,13 @@ impl TerminalView {
             );
             return;
         }
-        let copied = TerminalView::middle_click_paste_content(shell_dialect, ctx);
-
-        if should_paste_in_input {
-            // We put everything from the clipboard into the input box, even
-            // if it includes non-printable characters.
-            self.input.update(ctx, |input, ctx| {
-                input.paste_insert(&copied, ctx);
-            });
-        } else {
-            // We need to replace newlines (either \n or \r\n) with \r, as
-            // otherwise programs that don't support bracketed paste might
-            // misinterpret newlines as a ^J sequence.
-            // See: https://github.com/vercel/hyper/issues/1448#issuecomment-367890105
-            //
-            // If bracketed paste is enabled in the current grid, we also surround the paste with
-            // `\x1b[200~` and `\x1b[201~` so that the application knows the text came from paste,
-            // rather than from direct user input.
-            // See https://cirw.in/blog/bracketed-paste for more info on bracketed paste
-            // Both are done in one pass into one buffer (no regex, no intermediate copies).
-            self.write_user_bytes_to_pty(paste_bytes_for_pty(&copied, needs_bracketed_paste), ctx);
+        // A middle click no worker reader took: the paste is disabled (nothing to read), or the
+        // platform reads inline and the request is answered at once. Either way the read goes
+        // through the pane queue like any paste, routed (input or pty) when it drains (#1405).
+        let kind = SelectionSettings::handle(ctx)
+            .update(ctx, |selection, _| selection.middle_click_read_kind());
+        if let Some(kind) = kind {
+            self.start_async_paste_read(kind, false, false, shell_dialect, ctx);
         }
     }
 
@@ -23352,7 +23328,8 @@ impl TerminalView {
     /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
     /// clipboard and target semantics, and is disabled while the clipboard is empty.
     fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
-        let is_clipboard_empty = !ctx.clipboard().has_content();
+        // The cached answer only: asking the clipboard owner here blocked the UI (#1406).
+        let is_clipboard_empty = !warpui::clipboard::cached_has_content(ctx.clipboard());
         MenuItemFields::new(crate::t!("common-paste"))
             .with_on_select_action(TerminalAction::Paste)
             .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))
@@ -25865,17 +25842,34 @@ impl TerminalView {
             send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
             return;
         }
-        let clipboard_text = warpui::clipboard::read_content_blocking(
+        // The platform reads inline (or this is wasm): the request is already answered (#1405).
+        let request = warpui::clipboard::request_read(
             ctx.clipboard(),
             warpui::clipboard::ReadKind::TextAndPaths,
-        )
-        .plain_text;
+        );
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.insert_read_into_input(outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.insert_read_into_input(outcome, ctx)
+                });
+            }
+        }
+        send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
+    }
 
+    fn insert_read_into_input(
+        &mut self,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let clipboard_text = outcome.into_content().plain_text;
         self.input.update(ctx, |input, ctx| {
             input.paste_insert(clipboard_text.as_str(), ctx);
             ctx.focus_self();
         });
-        send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
     }
 
     fn command_search_from_input(&mut self, ctx: &mut ViewContext<Self>) {

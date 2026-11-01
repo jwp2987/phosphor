@@ -7,11 +7,11 @@ use arboard::{
 use zbus::zvariant::NoneValue;
 
 use crate::{
-    clipboard::{
-        Availability, BackgroundClipboardWriter, ClipboardContent, ClipboardReader,
-        ClipboardTarget, ReadKind, ReadOutcome,
-    },
     Clipboard,
+    clipboard::{
+        Availability, AvailabilityProbe, BackgroundClipboardWriter, ClipboardContent,
+        ClipboardReader, ClipboardTarget, ReadKind, ReadOutcome,
+    },
 };
 
 /// How many times the text read is attempted when the owner is slow (#1173).
@@ -132,6 +132,94 @@ impl Drop for ReadBudget {
     }
 }
 
+/// The availability query on a fresh handle, for the worker and listener threads (#1406).
+fn probe_availability(target: ClipboardTarget) -> Availability {
+    match LinuxClipboard::new() {
+        Ok(mut clipboard) => clipboard.availability(target),
+        Err(_) => Availability::Unknown,
+    }
+}
+
+/// Whether the X11 owner listener is running, so the cached availability is event-driven and a
+/// menu open needs no refresh.
+static OWNER_EVENTS_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Starts (once) the thread that turns X11 clipboard owner changes into cache refreshes: an XFixes
+/// `SelectionNotify` for CLIPBOARD and PRIMARY arrives whenever any client takes a selection, and
+/// the thread blocks on the X connection for it (no polling). Not started on Wayland, whose offer
+/// events only reach a client that has keyboard focus; there the cache is refreshed when a menu
+/// opens and after our own writes instead. Any failure leaves the events off and logs why.
+fn start_owner_listener() {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("clipboard-owner-events".into())
+            .spawn(|| {
+                let setup = || -> Result<_, Box<dyn std::error::Error>> {
+                    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None)?;
+                    let root = conn.setup().roots[screen].root;
+                    conn.xfixes_query_version(5, 0)?.reply()?;
+                    let clipboard = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+                    let primary = u32::from(x11rb::protocol::xproto::AtomEnum::PRIMARY);
+                    let mask = SelectionEventMask::SET_SELECTION_OWNER
+                        | SelectionEventMask::SELECTION_WINDOW_DESTROY
+                        | SelectionEventMask::SELECTION_CLIENT_CLOSE;
+                    conn.xfixes_select_selection_input(root, clipboard, mask)?;
+                    conn.xfixes_select_selection_input(root, primary, mask)?;
+                    conn.flush()?;
+                    Ok((conn, clipboard, primary))
+                };
+                let (conn, clipboard, primary) = match setup() {
+                    Ok(ready) => ready,
+                    Err(err) => {
+                        log::info!(
+                            "Clipboard owner events unavailable ({err}); refreshing on menu open"
+                        );
+                        return;
+                    }
+                };
+                OWNER_EVENTS_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+                // The first answer, then one per owner change.
+                for target in [ClipboardTarget::Clipboard, ClipboardTarget::Primary] {
+                    crate::clipboard::availability_changed(target, &probe_availability);
+                }
+                loop {
+                    match conn.wait_for_event() {
+                        Ok(Event::XfixesSelectionNotify(event)) => {
+                            let target = if event.selection == clipboard {
+                                ClipboardTarget::Clipboard
+                            } else if event.selection == primary {
+                                ClipboardTarget::Primary
+                            } else {
+                                continue;
+                            };
+                            crate::clipboard::availability_changed(target, &probe_availability);
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            // The X connection is gone; menu opens refresh again from now on.
+                            log::warn!("Clipboard owner events ended: {err}");
+                            OWNER_EVENTS_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+            })
+            .is_ok();
+        if !spawned {
+            log::warn!("Unable to start the clipboard owner-event thread");
+        }
+    });
+}
+
 pub struct LinuxClipboard {
     inner: LinuxClipboardInner,
     /// Set when the last text read kept failing after retries (the owner timed out), as opposed
@@ -242,6 +330,17 @@ impl Clipboard for LinuxClipboard {
 
     fn has_primary_selection(&self) -> bool {
         true
+    }
+
+    fn availability_probe(&mut self) -> Option<AvailabilityProbe> {
+        // The TARGETS query waits for the owner's first answer; the probe runs on a worker with a
+        // fresh handle (arboard's X11 and Wayland state is process-global), never the UI thread.
+        start_owner_listener();
+        Some(std::sync::Arc::new(probe_availability))
+    }
+
+    fn has_availability_events(&self) -> bool {
+        OWNER_EVENTS_LIVE.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn availability(&mut self, target: ClipboardTarget) -> Availability {

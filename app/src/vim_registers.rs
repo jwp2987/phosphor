@@ -77,6 +77,13 @@ impl VimRegisters {
             return RegisterRead::Ready(self.registers.get(&register_name).cloned());
         }
         let stored = self.registers.get(&'+').cloned();
+        #[cfg(test)]
+        if let Some(deferred) = DEFERRED_SYSTEM_READ.with(|slot| slot.borrow_mut().take()) {
+            return RegisterRead::Pending(Box::pin(async move {
+                let text = deferred.await.unwrap_or_default();
+                Some(Self::combine_with_stored(stored.as_ref(), text))
+            }));
+        }
         // Text only, so the HTML and image probes (the slow part of a stalling owner) are skipped.
         let request = warpui::clipboard::request_read(
             ctx.clipboard(),
@@ -117,49 +124,36 @@ impl VimRegisters {
         }
     }
 
-    /// Blocking read, for the one caller without a key hold (the code editor's vim paste). The
-    /// platform read is bounded by its own first-answer deadline.
+    /// Test-only synchronous form of [`Self::request_register_read`]: the test clipboard reads
+    /// inline, so the answer is always ready. Production code has no blocking register read
+    /// (#1405); a register that would wait for the clipboard panics here rather than blocking.
+    #[cfg(test)]
     pub fn read_from_register(
         &self,
         register_name: char,
         ctx: &mut ModelContext<Self>,
     ) -> Option<RegisterContent> {
-        // If this is coming from the system clipboard, we need to check if the content was yanked
-        // using a linewise motion. If it was, it needs to be pasted on its own line.
-        if Self::points_to_system_clipboard(register_name, ctx) {
-            let register_content = self.registers.get(&'+');
-            // The ONE remaining blocking clipboard read in the editor (#1380, #1405): the
-            // register's value decides the edit this very keystroke, and the modal editors have
-            // no key hold to keep the keys typed behind an asynchronous read in order. Convert it
-            // to `request_read` (the vim action completing when the answer lands) as soon as the
-            // input queue can hold the keys typed meanwhile. Text only, so the HTML and image
-            // probes (the slow part of a stalling owner) are skipped; the platform read is itself
-            // bounded (first-answer deadline, blocked-reader cap, size cap).
-            let clipboard_content = warpui::clipboard::read_content_blocking(
-                ctx.clipboard(),
-                warpui::clipboard::ReadKind::TextAndPaths,
-            )
-            .plain_text;
-
-            // Read this model's register entry for the system clipboard. It may be different if
-            // the user wrote to the clipboard from a different app. If it's the same, we will
-            // assume that we wrote this entry to the clipboard, and we return our own stored value
-            // for the motion type.
-            if register_content.is_some_and(|register| register.text == clipboard_content) {
-                register_content.cloned()
-            } else {
-                // If the system clipboard content doesn't match, assume it came from a different
-                // app and therefore could not have been copied from a Vim linewise motion. So,
-                // treat it as charwise.
-                Some(RegisterContent {
-                    text: clipboard_content,
-                    motion_type: MotionType::Charwise,
-                })
-            }
-        } else {
-            self.registers.get(&register_name).cloned()
+        match self.request_register_read(register_name, ctx) {
+            RegisterRead::Ready(content) => content,
+            RegisterRead::Pending(_) => panic!("register read did not complete inline"),
         }
     }
+
+    /// Makes the next read of a system-clipboard register wait for the returned sender, as a real
+    /// clipboard whose owner is slow does: the test controls when (and with what text) it lands.
+    #[cfg(test)]
+    pub fn defer_next_system_clipboard_read_for_test() -> futures::channel::oneshot::Sender<String>
+    {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        DEFERRED_SYSTEM_READ.with(|slot| *slot.borrow_mut() = Some(rx));
+        tx
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static DEFERRED_SYSTEM_READ: std::cell::RefCell<Option<futures::channel::oneshot::Receiver<String>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The answer of [`VimRegisters::request_register_read`].

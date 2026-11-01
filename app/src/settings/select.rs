@@ -1,4 +1,3 @@
-use std::ops::Not;
 
 use serde::{Deserialize, Serialize};
 use warpui::{
@@ -85,7 +84,7 @@ define_settings_group!(SelectionSettings, settings: [
         description: "Whether the Linux primary selection clipboard is used.",
     },
     // Widened from the pin's `OR(WINDOWS, MAC)` to `DESKTOP` (#708, sub-item of the closed #638):
-    // on Linux/FreeBSD this now actually gates `read_for_middle_click_paste` instead of being
+    // on Linux/FreeBSD this now actually gates `request_middle_click_read` instead of being
     // ignored outright.
     // See that function's doc comment and `DECLINED.md`'s `IMPROVED` section for why this is a
     // deliberate divergence from the pin rather than an oversight, and for what stays unchanged
@@ -176,21 +175,9 @@ impl SelectionSettings {
         }
     }
 
-    fn maybe_read_from_linux_selection_clipboard(
-        &self,
-        ctx: &mut AppContext,
-    ) -> Option<ClipboardContent> {
-        self.linux_selection_clipboard_enabled().then(|| {
-            warpui::clipboard::read_content_blocking(
-                ctx.clipboard(),
-                warpui::clipboard::ReadKind::Primary,
-            )
-        })
-    }
-
-    /// The off-UI-thread form of [`Self::read_for_middle_click_paste`] (#1331): a reader to run on
+    /// The off-UI-thread form of [`Self::request_middle_click_read`] (#1331): a reader to run on
     /// a worker thread, or `None` when the paste is disabled or the platform reads inline
-    /// (callers then use `read_for_middle_click_paste`, which also answers `None` when the paste
+    /// (callers then use `request_middle_click_read`, which also answers `None` when the paste
     /// is disabled). Linux/FreeBSD read the primary selection; every other platform reads the
     /// clipboard the same way (#1405: the non-Linux middle click is no longer a UI-thread read).
     pub fn background_reader_for_middle_click_paste(
@@ -212,7 +199,7 @@ impl SelectionSettings {
     /// Which flavor an off-thread middle-click read needs, or `None` when the paste is disabled
     /// (the gate, and on Linux/FreeBSD the selection setting) (#1380). The primary selection on
     /// Linux/FreeBSD, the normal clipboard elsewhere; the result is a no-op when empty, exactly
-    /// as [`Self::read_for_middle_click_paste`] answers `None` for it.
+    /// as [`Self::request_middle_click_read`] answers `None` for it.
     pub fn middle_click_read_kind(&self) -> Option<warpui::clipboard::ReadKind> {
         if !self.middle_click_paste_gate() {
             return None;
@@ -239,27 +226,25 @@ impl SelectionSettings {
     /// since that is the same setting. `middle_click_paste_enabled` now applies on Linux/FreeBSD
     /// too (`supported_platforms: SupportedPlatforms::DESKTOP` above): a middle-click paste is
     /// gated on BOTH settings there (this one, and `linux_selection_clipboard` via
-    /// `maybe_read_from_linux_selection_clipboard`), so either one alone can suppress it.
+    /// `middle_click_read_kind`), so either one alone can suppress it.
     ///
     /// **What this does NOT change:** copy-to-primary-on-select. `maybe_copy_on_select` and
     /// `maybe_write_to_linux_selection_clipboard` above call
     /// `linux_selection_clipboard_enabled()` directly and never read `middle_click_paste_enabled`
     /// — turning middle-click paste off does not stop text you select from being written to the
     /// primary selection, exactly as before this change.
-    pub fn read_for_middle_click_paste(&self, ctx: &mut AppContext) -> Option<ClipboardContent> {
-        if !self.middle_click_paste_gate() {
-            return None;
-        }
-        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            self.maybe_read_from_linux_selection_clipboard(ctx)
-        } else {
-            Some(warpui::clipboard::read_full_blocking(ctx.clipboard()))
-                .filter(|content| content.is_empty().not())
-        }
+    pub fn request_middle_click_read(
+        &self,
+        ctx: &mut AppContext,
+    ) -> Option<warpui::clipboard::ReadRequest> {
+        // `None` when middle-click paste is disabled (the gate, and on Linux/FreeBSD the
+        // selection setting): nothing is read. The read never blocks the calling thread (#1405).
+        let kind = self.middle_click_read_kind()?;
+        Some(warpui::clipboard::request_read(ctx.clipboard(), kind))
     }
 
     /// Whether `middle_click_paste_enabled` currently permits a middle-click paste at all, on
-    /// any platform — split out from `read_for_middle_click_paste` so the gating decision is
+    /// any platform — split out from `request_middle_click_read` so the gating decision is
     /// testable without an `AppContext` (see `select_tests.rs`).
     fn middle_click_paste_gate(&self) -> bool {
         self.middle_click_paste_enabled

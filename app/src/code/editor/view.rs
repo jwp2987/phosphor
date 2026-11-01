@@ -66,6 +66,7 @@ use warp_editor::{
     search::{SearchEvent, Searcher, MATCH_FILL, SELECTED_MATCH_FILL},
 };
 use warp_util::content_version::ContentVersion;
+use warp_util::user_input::UserInput;
 use warpui::{
     elements::{
         new_scrollable::{
@@ -2258,11 +2259,20 @@ impl CodeEditorView {
         if !ctx.is_self_focused() {
             return;
         }
-        self.vim_model.update(ctx, |vim_model, ctx| {
-            for c in text.chars() {
-                vim_model.typed_character(c, ctx);
+        for (offset, c) in text.char_indices() {
+            // A character earlier in this very input started a clipboard register read (`"+p`):
+            // the rest of the input waits behind it, in order (#1405).
+            if self.paste_gate.has_pending() {
+                self.paste_gate
+                    .hold(CodeEditorViewAction::VimUserTyped(UserInput::new(
+                        &text[offset..],
+                    )));
+                return;
             }
-        });
+            self.vim_model.update(ctx, |vim_model, ctx| {
+                vim_model.typed_character(c, ctx);
+            });
+        }
     }
 
     /// Similar to Self::vim_user_insert, but for keystrokes which aren't represented by a char.

@@ -3395,8 +3395,13 @@ impl EditorView {
 
     #[cfg(test)]
     fn clipboard_content(&mut self, ctx: &mut ViewContext<Self>) -> String {
-        let content = warpui::clipboard::read_full_blocking(ctx.clipboard());
-        self.clipboard_text_content(content)
+        // The test clipboard reads inline, so the request is answered already.
+        let request =
+            warpui::clipboard::request_read(ctx.clipboard(), warpui::clipboard::ReadKind::Full);
+        let warpui::clipboard::ReadStart::Ready(outcome) = request.start else {
+            panic!("the test clipboard reads inline");
+        };
+        self.clipboard_text_content(outcome.into_content())
     }
 
     pub fn clipboard_text_content(&self, content: ClipboardContent) -> String {
@@ -4796,7 +4801,7 @@ impl EditorView {
             return;
         };
         match read {
-            // An empty middle-click selection pastes nothing (as `read_for_middle_click_paste`).
+            // An empty middle-click selection pastes nothing (as the synchronous read it replaced did).
             warpui::clipboard::BackgroundTextRead::Content(content)
                 if middle_click && content.is_empty() => {}
             warpui::clipboard::BackgroundTextRead::Content(content) if middle_click => {

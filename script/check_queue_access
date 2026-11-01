@@ -17,6 +17,13 @@
 # the deleted holder names (`EditorKeyHold`, `after_enter_replay`, `held_user_bytes`,
 # `subshell_setup_held_bytes`, `VerdictWait::queued`, the `SshTypeahead` field).
 #
+# Third guard (#1405, last blocking readers): production code may not call the BLOCKING clipboard
+# read helpers (`read_outcome_blocking`, `read_content_blocking`, `read_full_blocking`). They hold
+# the calling thread for as long as the clipboard owner takes (up to the platform's first-answer
+# deadline), so every production read goes through `request_read` and acts when the answer lands.
+# Exempt: tests, the headless TUI (`crates/warp_tui`), the integration harness, and the
+# definitions themselves (`crates/warpui_core/src/clipboard.rs`).
+#
 # Exit 0: clean. Exit 1: prints each offending file.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -54,6 +61,18 @@ while IFS= read -r file; do
         status=1
     fi
 done < <(git ls-files 'app/src/*.rs' 2>/dev/null)
+
+blocking='read_(outcome|content|full)_blocking'
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*|crates/warp_tui/*|crates/integration/*|*/integration_testing/*|crates/warpui_core/src/clipboard.rs) continue ;;
+    esac
+    if grep -nE "$blocking" "$file" | grep -vE '^[0-9]+:\s*//' >/dev/null; then
+        printf 'check_queue_access: a blocking clipboard read is called in %s (use request_read):\n' "$file" >&2
+        grep -nE "$blocking" "$file" | grep -vE '^[0-9]+:\s*//' >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/*.rs' 'crates/*/src/*.rs' 'crates/*/src/**/*.rs' 2>/dev/null)
 
 if ((status == 0)); then
     echo "check_queue_access: ok"
