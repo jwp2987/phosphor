@@ -8,8 +8,8 @@ use zbus::zvariant::NoneValue;
 
 use crate::{
     clipboard::{
-        BackgroundClipboardWriter, BackgroundTextRead, BackgroundTextReader, ClipboardContent,
-        ClipboardTarget,
+        Availability, BackgroundClipboardWriter, ClipboardContent, ClipboardReader,
+        ClipboardTarget, ReadKind, ReadOutcome,
     },
     Clipboard,
 };
@@ -63,15 +63,15 @@ fn flush_for_exit(wait_for_pending: impl FnOnce() -> bool, handoff: impl FnOnce(
     true
 }
 
-/// Kill switch for the targets-based `has_content` (#1306): `PHOSPHOR_CLIPBOARD_TARGETS_QUERY=0`
-/// restores the read-based probe.
+/// Kill switch for the targets-based availability query (#1306): `PHOSPHOR_CLIPBOARD_TARGETS_QUERY=0`
+/// makes the availability unknown (no query is sent).
 fn targets_query_enabled() -> bool {
     std::env::var("PHOSPHOR_CLIPBOARD_TARGETS_QUERY").map_or(true, |v| v != "0")
 }
 
-/// `has_content` from a targets query: `Some` when the query answered (the clipboard is non-empty
+/// Availability from a targets query: `Some` when the query answered (the clipboard is non-empty
 /// iff the owner offers text, an image, HTML or a file list), `None` when it failed and the caller
-/// should fall back to reading.
+/// should treat the availability as unknown.
 fn has_content_from_formats(
     formats: &Result<arboard::ClipboardFormats, arboard::Error>,
 ) -> Option<bool> {
@@ -102,9 +102,9 @@ thread_local! {
 }
 
 /// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop. An
-/// outer budget wins: starting one inside another is a no-op. Every synchronous read on the
-/// `Clipboard` trait takes one, so a caller that still reads on the UI thread waits at most the
-/// budget instead of arboard's 10 s per attempt (#1380).
+/// outer budget wins: starting one inside another is a no-op. Every blocking read primitive below
+/// takes one (they run only inside the reader on a worker thread, #1405), so a read waits at most
+/// the budget instead of arboard's 10 s per attempt (#1380).
 struct ReadBudget {
     owns: bool,
 }
@@ -187,21 +187,6 @@ impl LinuxClipboard {
         result
     }
 
-    /// The pre-#1306 probe: reads, and for an image-only clipboard decodes. Used when the targets
-    /// query is disabled or failed.
-    fn has_content_by_reading(&mut self) -> bool {
-        // Non-empty text is the overwhelmingly common case and answers the question without
-        // the HTML, path and image reads (an image decode can take hundreds of ms).
-        if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
-            return true;
-        }
-        // No plain text: HTML or copied paths still answer without an image decode.
-        if !self.read_without_images().is_empty() {
-            return true;
-        }
-        !self.read().is_empty()
-    }
-
     pub fn new() -> Result<Self, arboard::Error> {
         Ok(Self {
             inner: LinuxClipboardInner::new()?,
@@ -222,93 +207,24 @@ impl Clipboard for LinuxClipboard {
         }
     }
 
-    fn take_read_failure(&mut self) -> bool {
-        std::mem::take(&mut self.read_failed)
-    }
-
-    fn read(&mut self) -> ClipboardContent {
-        let _budget = ReadBudget::start(FULL_READ_BUDGET);
-        match self.read_from_specific_clipboard(LinuxClipboardKind::Clipboard) {
-            Ok(content) => content,
-            Err(err) => {
-                log::warn!("Failed to read from Linux clipboard: {err:?}");
-                ClipboardContent::null_value()
-            }
-        }
-    }
-
-    fn has_content(&mut self) -> bool {
-        if crate::clipboard::pending_write(ClipboardTarget::Clipboard).is_some() {
-            return true;
-        }
-        // One TARGETS request (X11) or the offer's mime types (Wayland) answers "is anything
-        // there" without reading or decoding any of it, so an image-only clipboard no longer pays
-        // for an image decode (#1306). Bounded like the other probes; a failed query falls back to
-        // the reads.
-        if targets_query_enabled() {
-            let formats = {
-                let _budget = ProbeBudget::start();
-                self.inner.get().formats()
-            };
-            if let Some(answer) = has_content_from_formats(&formats) {
-                return answer;
-            }
-            log::info!("Clipboard targets query failed ({formats:?}); falling back to reads");
-        }
-        // The fallback reads wait at most the full-read budget for the owner's first answer.
-        let _budget = ReadBudget::start(FULL_READ_BUDGET);
-        self.has_content_by_reading()
-    }
-
-    fn read_without_images(&mut self) -> ClipboardContent {
-        let _budget = ReadBudget::start(FULL_READ_BUDGET);
-        match self.read_from_specific_clipboard_inner(LinuxClipboardKind::Clipboard, false) {
-            Ok(content) => content,
-            Err(err) => {
-                log::warn!("Failed to read from Linux clipboard: {err:?}");
-                ClipboardContent::null_value()
-            }
-        }
-    }
-
-    fn read_text_and_paths(&mut self) -> ClipboardContent {
-        // One text read plus the syntactic path check; the HTML target and image probes are
-        // skipped because paste never uses them (a multi-MB paste paid for them on every read).
-        let _budget = ReadBudget::start(FULL_READ_BUDGET);
-        let plain_text = match self.read_text_retrying() {
-            Ok(text) => text,
-            Err(err) => {
-                log::warn!("Failed to read from Linux clipboard: {err:?}");
-                return ClipboardContent::null_value();
-            }
-        };
-        let paths = self.parse_valid_filepaths_from_text(&plain_text);
-        ClipboardContent {
-            plain_text,
-            paths,
-            ..Default::default()
-        }
-    }
-
-    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
-        // arboard's X11 and Wayland backends are process-global, so a fresh handle on another
-        // thread reads the same selections (and the same data when we own them).
-        let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
-        Some(crate::clipboard::tracked_reader(Box::new(move || {
-            if let Some(pending) = pending {
-                let mut content = (*pending).clone();
-                content.html = None;
-                content.images = None;
-                return BackgroundTextRead::Content(content);
-            }
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
+        // arboard's X11 and Wayland backends are process-global, so a fresh handle on the worker
+        // reads the same selections (and the same data when we own them). Every kind has the same
+        // bounded wait for the owner's FIRST answer (#1331): the terminal paste holds typed keys
+        // for as long as this takes, and arboard's own retries made that 30+ s. The give-up is the
+        // `TimedOut` answer, logged by the caller with the request id.
+        Box::new(move || {
             let Ok(mut clipboard) = LinuxClipboard::new() else {
-                return BackgroundTextRead::Content(ClipboardContent::null_value());
+                log::warn!("clipboard read ({kind:?}): no clipboard connection could be opened");
+                return ReadOutcome::Unavailable;
             };
-            // Same bounded first-answer wait as the full reader (#1331): the terminal paste holds
-            // typed keys for as long as this takes, and arboard's retries made that 30+ s.
             let started = Instant::now();
             let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
-            let content = clipboard.read_text_and_paths();
+            let content = match kind {
+                ReadKind::Full => clipboard.read(),
+                ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+                ReadKind::Primary => clipboard.read_from_primary_clipboard(),
+            };
             drop(budget);
             let flagged = clipboard.take_read_failure();
             if read_timed_out(
@@ -317,11 +233,44 @@ impl Clipboard for LinuxClipboard {
                 FULL_READ_BUDGET,
                 !content.plain_text.is_empty(),
             ) {
-                BackgroundTextRead::TimedOut
+                ReadOutcome::TimedOut
             } else {
-                BackgroundTextRead::Content(content)
+                ReadOutcome::Content(content)
             }
-        })))
+        })
+    }
+
+    fn has_primary_selection(&self) -> bool {
+        true
+    }
+
+    fn availability(&mut self, target: ClipboardTarget) -> Availability {
+        if crate::clipboard::pending_write(target).is_some() {
+            return Availability::HasContent;
+        }
+        // One TARGETS request (X11) or the offer's mime types (Wayland) answers "is anything
+        // there" without reading or decoding any of it, so an image-only clipboard no longer pays
+        // for an image decode (#1306). Bounded by the probe budget; a failed query is `Unknown`
+        // (the menu stays enabled) rather than a fallback read on the calling thread (#1405).
+        if !targets_query_enabled() {
+            return Availability::Unknown;
+        }
+        let kind = match target {
+            ClipboardTarget::Clipboard => LinuxClipboardKind::Clipboard,
+            ClipboardTarget::Primary => LinuxClipboardKind::Primary,
+        };
+        let formats = {
+            let _budget = ProbeBudget::start();
+            self.inner.get().clipboard(kind).formats()
+        };
+        match has_content_from_formats(&formats) {
+            Some(true) => Availability::HasContent,
+            Some(false) => Availability::Empty,
+            None => {
+                log::info!("Clipboard targets query failed ({formats:?}); availability unknown");
+                Availability::Unknown
+            }
+        }
     }
 
     fn flush_on_exit(&mut self) {
@@ -352,65 +301,6 @@ impl Clipboard for LinuxClipboard {
         }
     }
 
-    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
-        // Same process-global backends as `background_text_reader`; this one also probes the HTML
-        // and image targets, which a silent owner answers only after the arboard timeout (#1300).
-        let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
-        Some(crate::clipboard::tracked_reader(Box::new(move || {
-            if let Some(pending) = pending {
-                return BackgroundTextRead::Content((*pending).clone());
-            }
-            let Ok(mut clipboard) = LinuxClipboard::new() else {
-                return BackgroundTextRead::Content(ClipboardContent::null_value());
-            };
-            let started = Instant::now();
-            let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
-            let content = clipboard.read();
-            drop(budget);
-            let flagged = clipboard.take_read_failure();
-            if read_timed_out(
-                flagged,
-                started.elapsed(),
-                FULL_READ_BUDGET,
-                !content.plain_text.is_empty(),
-            ) {
-                BackgroundTextRead::TimedOut
-            } else {
-                BackgroundTextRead::Content(content)
-            }
-        })))
-    }
-
-    fn background_primary_reader(&mut self) -> Option<BackgroundTextReader> {
-        // Middle-click paste (#1331): the primary selection's owner can stall a read just as the
-        // clipboard's can, and the click used to wait on it on the UI thread with no budget.
-        let pending = crate::clipboard::pending_write(ClipboardTarget::Primary);
-        Some(crate::clipboard::tracked_reader(Box::new(move || {
-            // A copy to PRIMARY still being written is what the user just selected (#1307).
-            if let Some(pending) = pending {
-                return BackgroundTextRead::Content((*pending).clone());
-            }
-            let Ok(mut clipboard) = LinuxClipboard::new() else {
-                return BackgroundTextRead::Content(ClipboardContent::null_value());
-            };
-            let started = Instant::now();
-            let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
-            let content = clipboard.read_from_primary_clipboard();
-            drop(budget);
-            let flagged = clipboard.take_read_failure();
-            if read_timed_out(
-                flagged,
-                started.elapsed(),
-                FULL_READ_BUDGET,
-                !content.plain_text.is_empty(),
-            ) {
-                BackgroundTextRead::TimedOut
-            } else {
-                BackgroundTextRead::Content(content)
-            }
-        })))
-    }
-
     fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
         // ONE long-lived thread owns ONE clipboard handle for the process lifetime and performs
         // the writes in order, so the owning handle is never dropped after a write: arboard's X11
@@ -432,11 +322,6 @@ impl Clipboard for LinuxClipboard {
         )
     }
 
-    fn read_plain_text(&mut self) -> String {
-        let _budget = ReadBudget::start(FULL_READ_BUDGET);
-        self.read_text_retrying().unwrap_or_default()
-    }
-
     fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
         match self.write_to_specific_clipboard(LinuxClipboardKind::Primary, &contents) {
             Ok(_) => (),
@@ -454,6 +339,46 @@ impl Clipboard for LinuxClipboard {
                     log::warn!("Unable to set primary clipboard text: {err:?}");
                 }
             }
+        }
+    }
+}
+
+/// The blocking read primitives. Private to this module: they run only inside the reader
+/// [`Clipboard::reader`] hands out, on a worker thread (#1405).
+impl LinuxClipboard {
+    /// True once if the most recent read failed because the clipboard owner did not answer in time
+    /// (as opposed to the clipboard having nothing to read), clearing the flag (#1173).
+    fn take_read_failure(&mut self) -> bool {
+        std::mem::take(&mut self.read_failed)
+    }
+
+    fn read(&mut self) -> ClipboardContent {
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
+        match self.read_from_specific_clipboard(LinuxClipboardKind::Clipboard) {
+            Ok(content) => content,
+            Err(err) => {
+                log::warn!("Failed to read from Linux clipboard: {err:?}");
+                ClipboardContent::null_value()
+            }
+        }
+    }
+
+    fn read_text_and_paths(&mut self) -> ClipboardContent {
+        // One text read plus the syntactic path check; the HTML target and image probes are
+        // skipped because paste never uses them (a multi-MB paste paid for them on every read).
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
+        let plain_text = match self.read_text_retrying() {
+            Ok(text) => text,
+            Err(err) => {
+                log::warn!("Failed to read from Linux clipboard: {err:?}");
+                return ClipboardContent::null_value();
+            }
+        };
+        let paths = self.parse_valid_filepaths_from_text(&plain_text);
+        ClipboardContent {
+            plain_text,
+            paths,
+            ..Default::default()
         }
     }
 

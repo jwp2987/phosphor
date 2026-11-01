@@ -367,7 +367,7 @@ mod bounded_wait_tests {
 mod targets_query_tests {
     use super::super::has_content_from_formats;
 
-    /// #1306: an image-only clipboard is "non-empty" from its target list alone, so `has_content`
+    /// #1306: an image-only clipboard is "non-empty" from its target list alone, so the availability query
     /// answers without reading or decoding the image. Old code had no such path (it decoded).
     #[test]
     fn image_only_targets_have_content_without_a_read() {
@@ -387,7 +387,8 @@ mod targets_query_tests {
         assert_eq!(has_content_from_formats(&formats), Some(false));
     }
 
-    /// A failed query must not be read as "empty": the caller falls back to reading.
+    /// A failed query must not be read as "empty": availability is then unknown (the Paste entry stays
+    /// enabled) and nothing is read on the calling thread (#1405).
     #[test]
     fn failed_query_defers_to_the_read_fallback() {
         let formats = Err(arboard::Error::ContentNotAvailable);

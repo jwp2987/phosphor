@@ -1,4 +1,7 @@
-use crate::{clipboard::ClipboardContent, Clipboard};
+use crate::{
+    clipboard::{ClipboardContent, ClipboardReader, ReadKind, ReadOutcome},
+    Clipboard,
+};
 use js_sys::{Array, Object};
 use wasm_bindgen::{self, prelude::*, JsCast};
 use web_sys::{Blob, BlobPropertyBag};
@@ -41,8 +44,15 @@ impl Clipboard for WebClipboard {
         }
     }
 
-    fn read(&mut self) -> ClipboardContent {
-        std::mem::take(&mut self.saved_content)
+    fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
+        // The web clipboard cannot be read synchronously; the paste handler `save`s the content
+        // and this hands it out once, as an inline snapshot (there is no thread to move it to).
+        let content = std::mem::take(&mut self.saved_content);
+        Box::new(move || ReadOutcome::Content(content))
+    }
+
+    fn reads_inline(&self) -> bool {
+        true
     }
 
     fn save(&mut self, content: ClipboardContent) {

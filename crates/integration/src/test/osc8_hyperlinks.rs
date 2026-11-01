@@ -118,7 +118,9 @@ pub fn test_osc8_copy_block_yields_visible_text_only() -> Builder {
                     // match) — the copy includes the command line plus
                     // the output. Just check that the visible text is
                     // present and no ESC bytes leaked.
-                    let clip = app.update(|ctx| ctx.clipboard().read()).plain_text;
+                    let clip = app
+                        .update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()))
+                        .plain_text;
                     async_assert!(
                         clip.contains(VISIBLE_TEXT) && !clip.contains('\u{1b}'),
                         "clipboard should contain {VISIBLE_TEXT:?} and no ESC bytes, got: {clip:?}"

@@ -8,7 +8,8 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
 use objc2_foundation::{ns_string, NSArray, NSData, NSString};
 use warpui_core::clipboard::{
-    BackgroundTextRead, BackgroundTextReader, ClipboardContent, ImageData,
+    Availability, ClipboardContent, ClipboardReader, ClipboardTarget, ImageData, ReadKind,
+    ReadOutcome,
 };
 
 unsafe extern "C" {
@@ -72,7 +73,7 @@ impl crate::Clipboard for Clipboard {
         }
     }
 
-    fn has_content(&mut self) -> bool {
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
         // `availableTypeFromArray:` consults the declared type list only; it never asks the owner
         // to materialise (or us to decode) any data, so a lazy promise from another app cannot
         // block it (#1306). Covers the types `read` consumes.
@@ -89,41 +90,40 @@ impl crate::Clipboard for Clipboard {
                 ns_string!("public.svg-image"),
                 ns_string!("com.compuserve.gif"),
             ]);
-            self.0.availableTypeFromArray(&types).is_some()
+            if self.0.availableTypeFromArray(&types).is_some() {
+                Availability::HasContent
+            } else {
+                Availability::Empty
+            }
         }
     }
 
-    fn read_text_and_paths(&mut self) -> ClipboardContent {
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
+        // NSPasteboard reads can block on a lazy promise from the owning app; they run on a
+        // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
+        // reads the same data. There is no first-answer deadline to apply (a promise has no
+        // event or timeout); the blocked-reader cap and the consumer's backstop bound the wait.
+        Box::new(move || {
+            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
+                Ok(mut clipboard) => ReadOutcome::Content(match kind {
+                    ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+                    // No separate primary selection on macOS: it is the pasteboard.
+                    ReadKind::Full | ReadKind::Primary => clipboard.read(),
+                }),
+                Err(_) => ReadOutcome::Unavailable,
+            })
+        })
+    }
+}
+
+/// The blocking read primitives, run only inside the reader on a worker thread (#1405).
+impl Clipboard {
+    pub(crate) fn read_text_and_paths(&mut self) -> ClipboardContent {
         // Skips the HTML and image reads (the latter decodes and copies every image flavor).
         unsafe { self.read_text_and_paths_inner() }
     }
 
-    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
-        // NSPasteboard reads can block on a lazy promise from the owning app; run them on a
-        // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
-        // reads the same data.
-        Some(crate::clipboard::tracked_reader(Box::new(|| {
-            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
-                Ok(mut clipboard) => BackgroundTextRead::Content(
-                    crate::Clipboard::read_text_and_paths(&mut clipboard),
-                ),
-                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
-            })
-        })))
-    }
-
-    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
-        Some(crate::clipboard::tracked_reader(Box::new(|| {
-            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
-                Ok(mut clipboard) => {
-                    BackgroundTextRead::Content(crate::Clipboard::read(&mut clipboard))
-                }
-                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
-            })
-        })))
-    }
-
-    fn read(&mut self) -> ClipboardContent {
+    pub(crate) fn read(&mut self) -> ClipboardContent {
         unsafe {
             let mut content = self.read_text_and_paths_inner();
 

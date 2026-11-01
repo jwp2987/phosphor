@@ -3328,7 +3328,7 @@ impl EditorView {
 
     #[cfg(test)]
     fn clipboard_content(&mut self, ctx: &mut ViewContext<Self>) -> String {
-        let content = ctx.clipboard().read();
+        let content = warpui::clipboard::read_full_blocking(ctx.clipboard());
         self.clipboard_text_content(content)
     }
 
