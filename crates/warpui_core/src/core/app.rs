@@ -193,6 +193,16 @@ impl App {
         self.0.borrow().has_window_invalidations(window_id)
     }
 
+    /// Test-only: drains the window's pending invalidation and reports whether it asks for a
+    /// full frame (a view was notified/removed or a layout redraw was requested) and whether it
+    /// asks for a paint-only frame, as `(needs_layout, paint_only)`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn take_invalidation_kind_for_test(&self, window_id: WindowId) -> (bool, bool) {
+        self.0
+            .borrow_mut()
+            .take_invalidation_kind_for_test(window_id)
+    }
+
     pub fn window_bounds(&self, window_id: &WindowId) -> Option<RectF> {
         self.0.borrow().window_bounds(window_id)
     }
@@ -1097,6 +1107,17 @@ impl AppContext {
         U: FnOnce(&mut rendering::Config),
     {
         update_fn(&mut self.rendering_config)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn take_invalidation_kind_for_test(&mut self, window_id: WindowId) -> (bool, bool) {
+        let invalidation = self.take_all_invalidations_for_window(window_id);
+        (
+            !invalidation.updated.is_empty()
+                || !invalidation.removed.is_empty()
+                || invalidation.redraw_requested,
+            invalidation.paint_only_redraw_requested,
+        )
     }
 
     pub fn has_window_invalidations(&self, window_id: WindowId) -> bool {

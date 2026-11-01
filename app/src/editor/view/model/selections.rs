@@ -34,6 +34,9 @@ pub struct DrawableSelection {
 pub struct LocalDrawableSelectionData {
     pub colors: CursorColors,
     pub should_draw_cursors: bool,
+    /// The blink phase, shared with the view and read when the cursor is painted, so a blink
+    /// tick needs a paint-only frame, not a re-render and relayout. `None` = always visible.
+    pub blink_visible: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// This type holds additional information about how to draw a remote peer's

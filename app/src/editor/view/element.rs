@@ -997,7 +997,11 @@ impl EditorElement {
             let is_local_replica = self.is_local_replica(&replica_id, app);
             let (should_draw_cursors, colors) = if is_local_replica {
                 let data = &self.local_selection_data;
-                (data.should_draw_cursors, data.colors)
+                let blink_visible = data
+                    .blink_visible
+                    .as_ref()
+                    .is_none_or(|visible| visible.load(std::sync::atomic::Ordering::Relaxed));
+                (data.should_draw_cursors && blink_visible, data.colors)
             } else if let Some(data) = self.remote_selections_data.get(&replica_id) {
                 (data.should_draw_cursors, data.colors)
             } else {

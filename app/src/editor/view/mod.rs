@@ -155,6 +155,14 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 /// renderer keeps an idle focused window busy (#1108). Any edit, cursor move or
 /// focus change restarts the blinking.
 const MAX_IDLE_CURSOR_BLINKS: u32 = 20;
+
+/// `PHOSPHOR_BLINK_FULL_RENDER=1` makes a blink tick re-render the view (and relayout the
+/// window) again instead of requesting a paint-only frame.
+fn blink_full_render() -> bool {
+    static FULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FULL
+        .get_or_init(|| std::env::var("PHOSPHOR_BLINK_FULL_RENDER").is_ok_and(|value| value == "1"))
+}
 const DEFAULT_TAB_SIZE: usize = 4;
 /// How long an accept keypress (Right/End at the end of the buffer) that found no ghost yet is
 /// remembered, waiting for the ghost for that exact buffer to land (#1186).
@@ -1829,6 +1837,9 @@ pub struct EditorView {
     focused: bool,
     get_cursor_colors_fn: CursorColorsFn,
     cursors_visible: bool,
+    /// Mirror of `cursors_visible` that the element reads at paint time, so a blink tick only
+    /// requests a paint-only frame. Always written through `set_cursors_visible`.
+    cursors_visible_shared: Arc<std::sync::atomic::AtomicBool>,
     blink_epoch: usize,
     /// Blink toggles since the last cursor activity; see `MAX_IDLE_CURSOR_BLINKS`.
     blinks_since_activity: u32,
@@ -3349,6 +3360,7 @@ impl EditorView {
             windowing_state_handle,
             focused: false,
             cursors_visible: false,
+            cursors_visible_shared: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blink_epoch: 0,
             blinks_since_activity: 0,
             #[cfg(test)]
@@ -7730,6 +7742,35 @@ impl EditorView {
             .map(|state| state.location)
     }
 
+    /// The shared blink phase for the element to apply at paint time; `None` while voice input
+    /// is active, which always draws the cursor.
+    fn blink_visible_for_paint(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        #[cfg(feature = "voice_input")]
+        if self.voice_input_state.is_active() {
+            return None;
+        }
+        Some(self.cursors_visible_shared.clone())
+    }
+
+    fn set_cursors_visible(&mut self, visible: bool) {
+        self.cursors_visible = visible;
+        self.cursors_visible_shared
+            .store(visible, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Shows a blink phase change. The element reads the phase at paint time, so nothing about
+    /// the view's layout changed: ask for a paint-only frame instead of `notify()` (which
+    /// re-renders the view and re-lays out the whole window every 500 ms).
+    /// `PHOSPHOR_BLINK_FULL_RENDER=1` restores the full re-render.
+    fn request_blink_repaint(&self, ctx: &mut ViewContext<Self>) {
+        if blink_full_render() {
+            ctx.notify();
+        } else {
+            let window_id = ctx.window_id();
+            ctx.request_paint_only_redraw(window_id);
+        }
+    }
+
     fn next_blink_epoch(&mut self) -> usize {
         self.blink_epoch += 1;
         self.blink_epoch
@@ -7737,7 +7778,7 @@ impl EditorView {
 
     /// Mark the cursor as visible and schedule the next cursor blink at the right interval.
     fn reset_cursor_blink_timer(&mut self, ctx: &mut ViewContext<Self>) {
-        self.cursors_visible = true;
+        self.set_cursors_visible(true);
         self.blinks_since_activity = 0;
         ctx.notify();
 
@@ -7774,14 +7815,14 @@ impl EditorView {
                 // Idle for a while: leave the cursor solid and stop the timer chain.
                 // Activity (`reset_cursor_blink_timer`) starts it again.
                 if !self.cursors_visible {
-                    self.cursors_visible = true;
-                    ctx.notify();
+                    self.set_cursors_visible(true);
+                    self.request_blink_repaint(ctx);
                 }
                 return;
             }
             self.blinks_since_activity += 1;
-            self.cursors_visible = !self.cursors_visible;
-            ctx.notify();
+            self.set_cursors_visible(!self.cursors_visible);
+            self.request_blink_repaint(ctx);
 
             let epoch = self.next_blink_epoch();
             let _ = ctx.spawn(
@@ -7810,7 +7851,8 @@ impl EditorView {
             return true;
         }
 
-        self.cursors_visible && self.focused_in_active_window(ctx) && self.can_edit(ctx)
+        // The blink phase is applied at paint time (`cursors_visible_shared`).
+        self.focused_in_active_window(ctx) && self.can_edit(ctx)
     }
 
     fn handle_model_event(
@@ -8195,6 +8237,7 @@ impl EditorView {
         let local_selection_data = LocalDrawableSelectionData {
             colors: (self.get_cursor_colors_fn)(ctx),
             should_draw_cursors: self.should_draw_cursors(ctx),
+            blink_visible: self.blink_visible_for_paint(),
         };
 
         // Convert a remote peer's selection data into an avatar component
@@ -9077,7 +9120,7 @@ impl View for EditorView {
     fn on_blur(&mut self, blur_ctx: &BlurContext, ctx: &mut ViewContext<Self>) {
         if blur_ctx.is_self_blurred() {
             self.focused = false;
-            self.cursors_visible = false;
+            self.set_cursors_visible(false);
             if self.clear_selections_on_blur {
                 self.clear_selections(ctx);
             }

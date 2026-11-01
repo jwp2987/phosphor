@@ -5250,3 +5250,39 @@ fn test_keys_apply_immediately_when_no_paste_is_pending() {
         });
     })
 }
+
+#[test]
+fn test_cursor_blink_tick_requests_paint_only_frame() {
+    // A blink tick toggles a flag the element reads at paint time: it must ask for a
+    // paint-only frame, not notify the view (re-render + whole-window layout every 500 ms).
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (window_id, editor_handle) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let mut editor = EditorView::single_line(Default::default(), ctx);
+            editor.on_focus(&FocusContext::SelfFocused, ctx);
+            editor
+        });
+        let windowing_state = app.get_singleton_model_handle::<WindowManager>();
+        app.update_model(&windowing_state, |state, ctx| {
+            state.overwrite_for_test(state.stage(), Some(window_id));
+            ctx.notify();
+        });
+        // Drain whatever the setup invalidated.
+        let _ = app.take_invalidation_kind_for_test(window_id);
+        app.update_view(&editor_handle, |editor, ctx| {
+            let before = editor.cursors_visible;
+            let epoch = editor.next_blink_epoch();
+            editor.blink_cursors(epoch, ctx);
+            assert_ne!(editor.cursors_visible, before);
+            assert_eq!(
+                editor
+                    .cursors_visible_shared
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                editor.cursors_visible
+            );
+        });
+        let (needs_layout, paint_only) = app.take_invalidation_kind_for_test(window_id);
+        assert!(!needs_layout, "a blink tick must not notify the view");
+        assert!(paint_only, "a blink tick must request a paint-only frame");
+    });
+}
