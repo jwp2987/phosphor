@@ -1,4 +1,8 @@
-use super::{display_working_directory, format_session_location};
+use super::{display_working_directory, format_session_location, history_event_rerenders_zero_state};
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::AIAgentExchangeId;
+use crate::ai::blocklist::history_model::BlocklistAIHistoryEvent;
+use warpui::EntityId;
 use crate::ai::blocklist::agent_view::zero_state_block::current_working_directory_for_zero_state;
 use crate::features::FeatureFlag;
 use crate::terminal::model::ansi::{
@@ -136,4 +140,22 @@ fn cwd_for_recent_conversations_does_not_use_startup_path_after_bootstrap() {
     let terminal = terminal_with_startup_path(Some("/startup/path"));
     let cwd = current_working_directory_for_zero_state(&terminal);
     assert_eq!(cwd, None);
+}
+
+/// #1336: a streamed delta for any conversation must not re-render the zero state.
+#[test]
+fn streaming_delta_does_not_rerender_zero_state() {
+    let delta = BlocklistAIHistoryEvent::UpdatedStreamingExchange {
+        exchange_id: AIAgentExchangeId::new(),
+        terminal_view_id: EntityId::new(),
+        conversation_id: AIConversationId::new(),
+        is_hidden: false,
+    };
+    assert!(!history_event_rerenders_zero_state(&delta));
+    let deleted = BlocklistAIHistoryEvent::DeletedConversation {
+        terminal_view_id: None,
+        conversation_id: AIConversationId::new(),
+        conversation_title: None,
+    };
+    assert!(history_event_rerenders_zero_state(&deleted));
 }
