@@ -16,8 +16,9 @@ use crate::{
 };
 
 use super::{
-    ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput,
-    ReadFileContextResult, describe_failed_files, read_local_file_context,
+    AGENT_READ_FILES_BATCH_BYTES, AGENT_READ_FILES_MAX_FILES, ActionExecution, AnyActionExecution,
+    ExecuteActionInput, PreprocessActionInput, ReadFileContextResult, cap_read_batch,
+    convert_remote_file_contexts, describe_failed_files, read_local_file_context,
 };
 
 pub struct ReadFilesExecutor {
@@ -144,6 +145,9 @@ impl ReadFilesExecutor {
             })
             .collect();
 
+        // Cap the batch; files past the cap are reported, not dropped (#1278).
+        let (locations, overflow_note) = cap_read_batch(locations, AGENT_READ_FILES_MAX_FILES);
+
         // Check if this is a remote session with a connected host.
         let session_type = self.active_session.as_ref(ctx).session_type(ctx);
         let remote_client = match &session_type {
@@ -208,7 +212,7 @@ impl ReadFilesExecutor {
                             })
                             .collect(),
                         max_file_bytes: None,
-                        max_batch_bytes: None,
+                        max_batch_bytes: Some(AGENT_READ_FILES_BATCH_BYTES as u32),
                     };
 
                     let response = client
@@ -227,41 +231,18 @@ impl ReadFilesExecutor {
                         })
                         .collect::<Vec<_>>();
 
-                    if !failed_files.is_empty() && response.file_contexts.is_empty() {
+                    let (file_contexts, contentless) =
+                        convert_remote_file_contexts(response.file_contexts);
+                    let mut failed_files = failed_files;
+                    failed_files.extend(contentless);
+                    failed_files.extend(overflow_note);
+
+                    if file_contexts.is_empty() && !failed_files.is_empty() {
                         let failed = describe_failed_files(&failed_files);
                         return Ok(ReadFilesResult::Error(format!(
                             "Failed to read files: {failed}"
                         )));
                     }
-
-                    let file_contexts = response
-                        .file_contexts
-                        .into_iter()
-                        .filter_map(|fc| {
-                            let content = match fc.content? {
-                                remote_server::proto::file_context_proto::Content::TextContent(
-                                    text,
-                                ) => crate::ai::agent::AnyFileContent::StringContent(text),
-                                remote_server::proto::file_context_proto::Content::BinaryContent(
-                                    bytes,
-                                ) => crate::ai::agent::AnyFileContent::BinaryContent(bytes),
-                            };
-                            let line_range = match (fc.line_range_start, fc.line_range_end) {
-                                (Some(start), Some(end)) => Some(start as usize..end as usize),
-                                _ => None,
-                            };
-                            let last_modified = fc.last_modified_epoch_millis.map(|ms| {
-                                std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)
-                            });
-                            Some(crate::ai::agent::FileContext {
-                                file_name: fc.file_name,
-                                content,
-                                line_range,
-                                last_modified,
-                                line_count: fc.line_count as usize,
-                            })
-                        })
-                        .collect();
 
                     Ok(ReadFilesResult::Success {
                         files: file_contexts,
@@ -279,14 +260,15 @@ impl ReadFilesExecutor {
         // Local path.
         ActionExecution::Async {
             execute_future: Box::pin(async move {
-                let result = read_local_file_context(
+                let mut result = read_local_file_context(
                     &locations,
                     current_working_directory,
                     shell,
                     None,
-                    None,
+                    Some(AGENT_READ_FILES_BATCH_BYTES),
                 )
                 .await?;
+                result.failed_files.extend(overflow_note);
                 Ok(local_read_files_result(result))
             }),
             on_complete: Box::new(|res: Result<ReadFilesResult, anyhow::Error>, _ctx| {

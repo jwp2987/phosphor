@@ -1143,6 +1143,83 @@ pub fn describe_failed_files(failed_files: &[ReadFilesFailedFile]) -> String {
         .join(", ")
 }
 
+/// Total content budget of one agent `read_files` call. Without a cap a large batch only
+/// stopped at the 64 MB protocol limit (and then a 120 s timeout); with it, files past the
+/// budget come back as explicit per-file failures (#1278).
+pub const AGENT_READ_FILES_BATCH_BYTES: usize = 4_000_000;
+
+/// Most files one agent `read_files` call reads; the rest are reported, not dropped (#1278).
+pub const AGENT_READ_FILES_MAX_FILES: usize = 100;
+
+/// Splits an agent `read_files` batch at [`AGENT_READ_FILES_MAX_FILES`]. The second value is
+/// a failed-file entry saying how many files were not read, `None` when everything fits.
+pub fn cap_read_batch(
+    mut locations: Vec<FileLocations>,
+    max_files: usize,
+) -> (Vec<FileLocations>, Option<ReadFilesFailedFile>) {
+    if locations.len() <= max_files {
+        return (locations, None);
+    }
+    let skipped = locations.split_off(max_files);
+    let note = ReadFilesFailedFile {
+        path: format!("({} more files)", skipped.len()),
+        message: format!(
+            "{} more files not read: one read_files call reads at most {max_files} files. \
+             Request these in a separate call: {}.",
+            skipped.len(),
+            skipped
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    (locations, Some(note))
+}
+
+/// Turns a remote server's file contexts into agent file contexts plus per-file failures. An
+/// entry that carries no content used to vanish from both lists, so the model never learned
+/// the file was not read (#1278).
+pub fn convert_remote_file_contexts(
+    file_contexts: Vec<remote_server::proto::FileContextProto>,
+) -> (Vec<FileContext>, Vec<ReadFilesFailedFile>) {
+    let mut files = Vec::new();
+    let mut failed = Vec::new();
+    for fc in file_contexts {
+        let Some(content) = fc.content else {
+            failed.push(ReadFilesFailedFile {
+                path: fc.file_name,
+                message: "The remote host returned no content for this file; it was not read."
+                    .to_string(),
+            });
+            continue;
+        };
+        let content = match content {
+            remote_server::proto::file_context_proto::Content::TextContent(text) => {
+                AnyFileContent::StringContent(text)
+            }
+            remote_server::proto::file_context_proto::Content::BinaryContent(bytes) => {
+                AnyFileContent::BinaryContent(bytes)
+            }
+        };
+        let line_range = match (fc.line_range_start, fc.line_range_end) {
+            (Some(start), Some(end)) => Some(start as usize..end as usize),
+            _ => None,
+        };
+        let last_modified = fc
+            .last_modified_epoch_millis
+            .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+        files.push(FileContext {
+            file_name: fc.file_name,
+            content,
+            line_range,
+            last_modified,
+            line_count: fc.line_count as usize,
+        });
+    }
+    (files, failed)
+}
+
 /// Reads the content of the given files at the given `FileLocations`.
 ///
 /// If any files cannot be read, they are included in the `failed_files` field of the
@@ -1182,6 +1259,18 @@ pub async fn read_local_file_context(
                 &shell,
                 &current_working_directory,
             ));
+
+            // The batch budget is spent: say so for this file instead of reading it with a
+            // zero-byte allowance and returning an empty or silently cut entry (#1278).
+            if batch_bytes_remaining == Some(0) {
+                result.failed_files.push(ReadFilesFailedFile {
+                    path: absolute_file_path.to_string_lossy().to_string(),
+                    message: "Not read: this call's total size limit was reached. Request \
+                              this file in a separate read_files call."
+                        .to_string(),
+                });
+                continue;
+            }
 
             let metadata = match async_fs::metadata(&absolute_file_path).await {
                 Ok(m) => m,
