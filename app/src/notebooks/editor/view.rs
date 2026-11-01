@@ -3485,7 +3485,7 @@ impl TypedActionView for RichTextEditorView {
     fn action_accessibility_contents(
         &mut self,
         action: &Self::Action,
-        _ctx: &mut ViewContext<Self>,
+        ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         match action {
             EditorViewAction::UserTyped(text) => {
