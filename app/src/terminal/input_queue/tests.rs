@@ -524,8 +524,6 @@ fn a_gate_event_raised_during_delivery_releases_the_queue_inside_the_same_drain(
     assert!(!q.on_gate_event(&mut h, GateKind::HandoffReport, 1));
 }
 
-// ---- kill switch ----------------------------------------------------------------------------
-
 // ---- phase 3: the Enter gate's additive API ---------------------------------------------------
 
 #[test]

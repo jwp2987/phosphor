@@ -15127,9 +15127,8 @@ enum PtyPasteScenario {
     BackstopThenLateResult,
 }
 
-/// Runs one pty-paste scenario on the new queue path (`queue == true`) or the legacy
-/// `PasteSequencer` (`queue == false`, the kill switch) and returns every byte that reached the
-/// pty, in order. Both paths must produce the same bytes (#1353 phase 1).
+/// Runs one pty-paste scenario on the queue path (`queue == true`; the `PasteSequencer` path is
+/// gone) and returns every byte that reached the pty, in order (#1353 phase 1).
 #[cfg(not(target_family = "wasm"))]
 async fn pty_paste_bytes(app: &mut App, queue: bool, scenario: PtyPasteScenario) -> Vec<u8> {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
@@ -21225,7 +21224,7 @@ fn ssh_queue_enter_runs_the_held_line_once() {
 // ---- #1353 phase 5: the typeahead hand-off's prompt hold on the one input queue ---------------
 //
 // Every scenario runs on both paths: `queue == true` holds the keys as entries behind a
-// `LineEditorActive` gate, `queue == false` is `PHOSPHOR_INPUT_QUEUE_HANDOFF=0` (the hand-off's
+// `LineEditorActive` gate (`queue == false`, the hand-off's
 // own buffer). Not compiled/run when written.
 
 /// A ConPTY session whose running command just printed its prompt: the pty owns input, the
@@ -21494,7 +21493,7 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
 // ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
 //
 // Every scenario runs on both paths: `queue == true` holds the Enter and the keys behind it as
-// entries behind a `PromptSeen` gate, `queue == false` is `PHOSPHOR_INPUT_QUEUE_HANDOFF=0` (the
+// entries behind a `PromptSeen` gate (`queue == false`, the
 // hand-off's own buffer and the view's window timer). Not compiled/run when written.
 
 /// A command that was written just now with a line typed into it: an Enter typed now is held,

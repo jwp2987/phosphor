@@ -12576,7 +12576,7 @@ fn test_stalled_clipboard_read_applies_held_keys_at_the_backstop() {
 
 /// #1353 phase 1: text typed before a paste, while its read is pending, and after the read, in
 /// every split, lands in typed order around the pasted text (editor-bound, agent-mode input).
-/// Runs on the input queue and on the legacy sequencer (the kill switch), with the same result.
+/// Runs on the input queue.
 #[test]
 fn test_editor_paste_with_typed_keys_in_every_interleaving_keeps_typed_order() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
