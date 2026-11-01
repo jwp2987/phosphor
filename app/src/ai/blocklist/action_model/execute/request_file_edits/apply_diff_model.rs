@@ -19,7 +19,7 @@ use crate::ai::blocklist::SessionContext;
 use crate::auth::AuthStateProvider;
 use crate::terminal::model::session::active_session::ActiveSession;
 
-use super::diff_application::{DiffApplicationError, FileReadResult, apply_edits};
+use super::diff_application::{DiffApplicationError, FileReadResult, apply_edits_strict};
 
 /// Entity submodel that encapsulates filesystem access for diff application.
 ///
@@ -62,7 +62,7 @@ impl ApplyDiffModel {
             if is_remote {
                 match remote_client {
                     Some(client) => {
-                        apply_edits(
+                        apply_edits_strict(
                             edits,
                             &session_context,
                             &ai_identifiers,
@@ -81,7 +81,7 @@ impl ApplyDiffModel {
                     ]),
                 }
             } else {
-                apply_edits(
+                apply_edits_strict(
                     edits,
                     &session_context,
                     &ai_identifiers,
