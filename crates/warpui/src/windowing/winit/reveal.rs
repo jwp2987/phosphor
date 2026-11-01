@@ -131,7 +131,7 @@ fn show_items(path: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())
     };
     let timeout = async {
-        futures_timer::Delay::new(Duration::from_secs(3)).await;
+        async_io::Timer::after(Duration::from_secs(3)).await;
         Err("timed out".to_string())
     };
     futures_lite::future::block_on(futures_lite::future::or(call, timeout))
