@@ -51,18 +51,27 @@ pub(crate) fn pump_until(
 /// while, but not forever.
 pub(crate) const QUERY_PENDING_MAX: Duration = Duration::from_secs(120);
 
-/// How long after a cancelled session end (`WM_ENDSESSION(FALSE)`) a shell exit is still
-/// attributed to it: the exits Windows caused are delivered to the UI thread asynchronously and
-/// can land after the cancel.
-pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(3);
-
+/// The gate's state. Shell exits caused by a session end are attributed by *ordering*, not by
+/// elapsed time: a shell whose process died while a session end was pending or under way (seen
+/// on the exit watcher thread, at the instant the process died, via [`note_shell_exit`]) is
+/// counted in `session_exits`; the UI thread consumes one count per `Exited` it handles. After a
+/// cancel, only exits that were counted keep their pane, however late they are delivered, and an
+/// ordinary exit (nothing counted) closes its pane at once. There is no OS signal that names the
+/// killer: a console shell ended by CTRL_LOGOFF/SHUTDOWN_EVENT may exit 0xC000013A
+/// (STATUS_CONTROL_C_EXIT) or with whatever its own handler returns, so the exit code is only
+/// logged, not relied on.
 #[derive(Debug, Default)]
 pub(crate) struct SessionEndGate {
     /// When the latest `WM_QUERYENDSESSION` was answered, until a `WM_ENDSESSION` follows.
+    /// Expiry after [`QUERY_PENDING_MAX`] is a give-up net for a `WM_ENDSESSION` that never
+    /// arrives.
     query_pending_since: Option<Instant>,
     /// `WM_ENDSESSION(TRUE)` was seen: the process is going down.
     ending: bool,
-    cancelled_at: Option<Instant>,
+    /// `WM_ENDSESSION(FALSE)` was seen and no newer query has started.
+    cancelled: bool,
+    /// Shell exits observed while a session end was pending/ending that no pane has consumed yet.
+    session_exits: u32,
 }
 
 impl SessionEndGate {
@@ -70,36 +79,51 @@ impl SessionEndGate {
         Self {
             query_pending_since: None,
             ending: false,
-            cancelled_at: None,
+            cancelled: false,
+            session_exits: 0,
         }
+    }
+
+    fn session_end_active(&self, now: Instant) -> bool {
+        self.ending
+            || self
+                .query_pending_since
+                .is_some_and(|since| now.saturating_duration_since(since) < QUERY_PENDING_MAX)
     }
 
     pub(crate) fn note_query(&mut self, now: Instant) {
         self.query_pending_since = Some(now);
-        self.cancelled_at = None;
+        self.cancelled = false;
+        // Counts left from an earlier, resolved session end must not swallow a later exit.
+        self.session_exits = 0;
     }
 
-    pub(crate) fn note_end_session(&mut self, session_ending: bool, now: Instant) {
+    pub(crate) fn note_end_session(&mut self, session_ending: bool, _now: Instant) {
         self.query_pending_since = None;
         if session_ending {
             self.ending = true;
         } else {
-            self.cancelled_at = Some(now);
+            self.cancelled = true;
+        }
+    }
+
+    /// A shell process died (called from the exit watcher at that instant). Counted only when a
+    /// session end is pending or under way right now: those are the shells Windows killed.
+    pub(crate) fn note_shell_exit(&mut self, now: Instant) {
+        if self.session_end_active(now) {
+            self.session_exits = self.session_exits.saturating_add(1);
         }
     }
 
     /// Whether a shell that just exited should keep its pane (showing the "shell terminated"
     /// banner) instead of closing it. True from `WM_QUERYENDSESSION` until `WM_ENDSESSION`
     /// resolves it, for the rest of an ending session (so the session snapshot still holds the
-    /// tabs), and briefly after a cancel.
-    pub(crate) fn should_keep_exited_pane(&self, now: Instant) -> bool {
-        self.ending
-            || self
-                .query_pending_since
-                .is_some_and(|since| now.saturating_duration_since(since) < QUERY_PENDING_MAX)
-            || self
-                .cancelled_at
-                .is_some_and(|at| now.saturating_duration_since(at) < CANCEL_GRACE)
+    /// tabs), and, after a cancel, for each exit that was counted while the session end was
+    /// pending. Consumes one counted exit per call.
+    pub(crate) fn should_keep_exited_pane(&mut self, now: Instant) -> bool {
+        let counted = self.session_exits > 0;
+        self.session_exits = self.session_exits.saturating_sub(1);
+        self.session_end_active(now) || (self.cancelled && counted)
     }
 }
 
@@ -118,10 +142,19 @@ pub(crate) fn note_end_session(session_ending: bool) {
 }
 
 /// Whether a pane whose shell just exited should stay open because a Windows session end is
-/// being queried, is under way, or was just cancelled (jwp2987/phosphor#1103). Always false on
+/// being queried, is under way, or was cancelled with this shell already dead (jwp2987/phosphor#1103). Always false on
 /// platforms that never report a session end.
 pub fn keep_exited_pane_open() -> bool {
     GATE.lock().should_keep_exited_pane(Instant::now())
+}
+
+/// Records that a shell process died, at the instant it died (the exit watcher thread on
+/// Windows). `exit_code` is only logged. Whether the exit belongs to a session end is decided by
+/// the order of events (see [`SessionEndGate`]), not by a time window.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn note_shell_exit(exit_code: Option<u32>) {
+    log::debug!("session_end_gate: shell exited, code={exit_code:?}");
+    GATE.lock().note_shell_exit(Instant::now());
 }
 
 #[cfg(test)]

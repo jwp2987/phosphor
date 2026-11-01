@@ -45,11 +45,17 @@ extern "system" fn child_exit_callback(ctx: *mut c_void, timed_out: bool) {
     // "the shell dies along with opencode and other TUIs when they exit" (used to
     // pinpoint root cause against Windows Terminal's behavior).
     let mut exit_code: u32 = 0;
-    let exit_code_log = match unsafe { GetExitCodeProcess(event_tx.child_handle, &mut exit_code) } {
+    let got_code = unsafe { GetExitCodeProcess(event_tx.child_handle, &mut exit_code) };
+    let exit_code_log = match &got_code {
         Ok(()) => format!("exit_code={exit_code} (0x{exit_code:08X})"),
         Err(err) => format!("GetExitCodeProcess failed: {err}"),
     };
     log::info!("[ChildExitWatcher] shell pty child exited: {exit_code_log}");
+
+    // Tell the session-end gate at the instant the process died: if Windows is querying or
+    // ending the session right now this is a shell it killed (attribution by event order, not a
+    // time window; the exit code, e.g. STATUS_CONTROL_C_EXIT, is only logged).
+    warpui::platform::session_end_gate::note_shell_exit(got_code.ok().map(|_| exit_code));
 
     event_tx.sender.send(Message::ChildExited).ok();
 }

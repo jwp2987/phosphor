@@ -64,7 +64,7 @@ fn pump_with_an_already_elapsed_deadline_never_pumps() {
 
 #[test]
 fn gate_is_open_when_no_session_end_was_reported() {
-    let gate = SessionEndGate::new();
+    let mut gate = SessionEndGate::new();
     assert!(!gate.should_keep_exited_pane(Instant::now()));
 }
 
@@ -97,24 +97,62 @@ fn gate_stays_closed_to_closing_panes_for_a_session_that_is_ending() {
 }
 
 #[test]
-fn gate_releases_after_a_cancelled_session_end_once_the_grace_passes() {
+fn gate_after_a_cancel_keeps_only_exits_seen_during_the_session_end() {
+    let t0 = Instant::now();
+    let mut gate = SessionEndGate::new();
+    gate.note_query(t0);
+    // Windows killed two shells while the query was pending...
+    gate.note_shell_exit(t0 + Duration::from_millis(5));
+    gate.note_shell_exit(t0 + Duration::from_millis(6));
+    gate.note_end_session(false, t0 + Duration::from_secs(1));
+    // ...their exits are delivered to the UI long after the cancel: no time window applies.
+    let late = t0 + Duration::from_secs(60);
+    assert!(gate.should_keep_exited_pane(late));
+    assert!(gate.should_keep_exited_pane(late));
+    // A genuine `exit` right after the cancel (nothing counted) closes its pane at once.
+    assert!(!gate.should_keep_exited_pane(late));
+}
+
+#[test]
+fn gate_a_genuine_exit_right_after_a_cancel_closes_its_pane() {
+    // Old behaviour: any exit within CANCEL_GRACE (3 s) of the cancel kept its pane.
     let t0 = Instant::now();
     let mut gate = SessionEndGate::new();
     gate.note_query(t0);
     gate.note_end_session(false, t0);
-    // Late-delivered exits from the killed shells still belong to the cancelled session end.
-    assert!(gate.should_keep_exited_pane(t0 + CANCEL_GRACE - Duration::from_millis(1)));
-    // After that, an ordinary shell exit closes its pane again.
-    assert!(!gate.should_keep_exited_pane(t0 + CANCEL_GRACE));
+    assert!(!gate.should_keep_exited_pane(t0));
+}
+
+#[test]
+fn gate_exit_after_the_cancel_is_not_counted() {
+    let t0 = Instant::now();
+    let mut gate = SessionEndGate::new();
+    gate.note_query(t0);
+    gate.note_end_session(false, t0);
+    gate.note_shell_exit(t0);
+    assert!(!gate.should_keep_exited_pane(t0));
+}
+
+#[test]
+fn gate_exits_consumed_while_pending_do_not_leak_past_the_cancel() {
+    let t0 = Instant::now();
+    let mut gate = SessionEndGate::new();
+    gate.note_query(t0);
+    gate.note_shell_exit(t0);
+    assert!(gate.should_keep_exited_pane(t0));
+    gate.note_end_session(false, t0);
+    assert!(!gate.should_keep_exited_pane(t0));
 }
 
 #[test]
 fn gate_a_new_query_clears_an_earlier_cancel() {
     let t0 = Instant::now();
     let mut gate = SessionEndGate::new();
+    gate.note_query(t0);
+    gate.note_shell_exit(t0);
     gate.note_end_session(false, t0);
     let t1 = t0 + Duration::from_secs(10);
     gate.note_query(t1);
-    gate.note_end_session(false, t1 + Duration::from_secs(1));
-    assert!(!gate.should_keep_exited_pane(t1 + Duration::from_secs(1) + CANCEL_GRACE));
+    gate.note_end_session(false, t1);
+    assert!(!gate.should_keep_exited_pane(t1));
 }
