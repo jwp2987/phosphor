@@ -15066,6 +15066,21 @@ impl Input {
             prompt
         };
 
+        // #1299: a line that is queued instead of run or sent is logged, so a line that
+        // "vanished" from the input can be told from one that was lost.
+        warpui::input_order::log_hop("enter_queued", || {
+            format!(
+                "origin={} is_command={is_command} chars={}",
+                if queued_for_pending_lrc {
+                    "pending_lrc"
+                } else if queued_for_lrc && !is_command {
+                    "lrc"
+                } else {
+                    "toggle"
+                },
+                prompt.chars().count()
+            )
+        });
         self.ai_input_model.update(ctx, |model, ctx| {
             model.handle_input_buffer_submitted(ctx);
         });
@@ -15158,6 +15173,12 @@ impl Input {
             });
             self.editor.update(ctx, |editor, ctx| {
                 editor.clear_buffer(ctx);
+            });
+            warpui::input_order::log_hop("enter_queued", || {
+                format!(
+                    "origin=pending_approval is_command=false chars={}",
+                    prompt.chars().count()
+                )
             });
             let attachments = self.ai_context_model.update(ctx, |context_model, ctx| {
                 context_model.take_pending_attachments(ctx)
