@@ -1009,7 +1009,15 @@ impl TerminalView {
             queue.borrow_mut().on_paste_read(&mut host, id, result);
         }
         // A result that arrived after its paste was cancelled or given up has no entry to claim it.
-        self.paste_queue.payloads.remove(&id);
-        self.paste_queue.refused.remove(&id);
+        // A paste that is still queued (its own gate is closed but another gate, such as the
+        // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
+        // them here lost the paste.
+        let still_queued = queue.borrow().entries().any(
+            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
+        );
+        if !still_queued {
+            self.paste_queue.payloads.remove(&id);
+            self.paste_queue.refused.remove(&id);
+        }
     }
 }

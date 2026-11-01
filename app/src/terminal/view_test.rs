@@ -15720,7 +15720,10 @@ fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
                 );
                 // The abandon / time-out path.
                 view.release_subshell_setup_held_bytes(ctx);
-                assert_eq!(*written.borrow(), b"ls".to_vec());
+            });
+            // The pty write is an event: it is observed once the update that emitted it ends.
+            assert_eq!(*written.borrow(), b"ls".to_vec(), "queue={queue}");
+            terminal.update(&mut app, |view, ctx| {
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
             });
             assert_eq!(*written.borrow(), b"ls\r".to_vec(), "queue={queue}");
@@ -15769,46 +15772,46 @@ fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let written = subshell_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
+        let gate_token = |view: &TerminalView, kind: input_queue::GateKind| {
+            view.paste_queue
+                .queue
+                .borrow()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == kind)
+                .map(|gate| gate.token)
+                .expect("the gate is open")
+        };
+        // The pty writes are events: they are observed once the update that emitted them ends.
+        let setup_token = terminal.update(&mut app, |view, ctx| {
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
-            let token = view
-                .paste_queue
-                .queue
-                .borrow()
-                .gates()
-                .iter()
-                .find(|gate| gate.kind == input_queue::GateKind::SubshellSetup)
-                .map(|gate| gate.token)
-                .expect("the setup gate is open");
+            let token = gate_token(view, input_queue::GateKind::SubshellSetup);
             view.on_paste_queue_give_up(token, ctx);
-            assert_eq!(*written.borrow(), b"l".to_vec());
             assert!(view.subshell_bootstrap_announced.is_none());
-            // A second, late cap for the same gate does nothing.
-            view.on_paste_queue_give_up(token, ctx);
-            assert_eq!(*written.borrow(), b"l".to_vec());
+            token
+        });
+        assert_eq!(*written.borrow(), b"l".to_vec());
+        // A second, late cap for the same gate does nothing.
+        terminal.update(&mut app, |view, ctx| {
+            view.on_paste_queue_give_up(setup_token, ctx)
+        });
+        assert_eq!(*written.borrow(), b"l".to_vec());
 
-            written.borrow_mut().clear();
+        written.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
             start_subshell_bootstrap(view, false);
             assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
-            let token = view
-                .paste_queue
-                .queue
-                .borrow()
-                .gates()
-                .iter()
-                .find(|gate| gate.kind == input_queue::GateKind::SubshellBootstrapWrite)
-                .map(|gate| gate.token)
-                .expect("the bootstrap gate is open");
+            let token = gate_token(view, input_queue::GateKind::SubshellBootstrapWrite);
             view.on_paste_queue_give_up(token, ctx);
-            assert!(
-                written.borrow().is_empty(),
-                "still waits for the bootstrap's last line"
-            );
-            view.finish_subshell_bootstrap(ctx);
-            assert_eq!(*written.borrow(), b"e".to_vec());
         });
+        assert!(
+            written.borrow().is_empty(),
+            "still waits for the bootstrap's last line"
+        );
+        terminal.update(&mut app, |view, ctx| view.finish_subshell_bootstrap(ctx));
+        assert_eq!(*written.borrow(), b"e".to_vec());
     })
 }
 
