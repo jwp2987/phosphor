@@ -133,3 +133,24 @@ fn metadata_changed_is_emitted_on_any_field_change() {
     assert!(should_emit_metadata_changed(&None, &old, true));
     assert!(should_emit_metadata_changed(&old, &None, true));
 }
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn main_branch_cache_is_reused_only_while_fresh() {
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let cache = Some(("origin/main".to_owned(), start));
+    // No cache: detect.
+    assert_eq!(super::fresh_cached_main_branch(&None, start), None);
+    // Inside the TTL the six-process detection is skipped (#1334).
+    assert_eq!(
+        super::fresh_cached_main_branch(&cache, start + Duration::from_secs(5)),
+        Some("origin/main".to_owned())
+    );
+    // Past the TTL it is detected again.
+    assert_eq!(
+        super::fresh_cached_main_branch(&cache, start + Duration::from_secs(31)),
+        None
+    );
+}

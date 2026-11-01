@@ -2251,7 +2251,7 @@ impl Session {
 
         let output = self
             .execute_command(
-                "git --no-optional-locks branch --no-color",
+                crate::context_chips::builtins::GIT_BRANCHES_FOR_CORRECTIONS_COMMAND,
                 Some(working_dir),
                 env_vars,
                 ExecuteCommandOptions::default(),
