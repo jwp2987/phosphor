@@ -1,9 +1,9 @@
 use super::{
-    CollapsibleElementState, CollapsibleExpansionState,
+    CollapsibleElementState, CollapsibleExpansionState, EmptyEnterHint,
     default_collapsible_state_for_orchestration_action,
     default_collapsible_state_for_orchestration_message,
 };
-use crate::ai::agent::AIAgentActionType;
+use crate::ai::agent::{AIAgentActionId, AIAgentActionType};
 use crate::settings::{AISettings, OrchestrationMessageDisplayMode};
 use crate::test_util::settings::initialize_settings_for_tests;
 use settings::Setting;
@@ -531,4 +531,36 @@ fn secret_tooltip_dismiss_reports_whether_one_was_open() {
 fn unhovered_code_snippet_button_reset_reports_no_change() {
     let handles = crate::ai::blocklist::code_block::CodeSnippetButtonHandles::default();
     assert!(!handles.reset_hover_state_on_focus_change());
+}
+
+#[test]
+fn empty_enter_hint_follows_focus_and_pending_card() {
+    let card: AIAgentActionId = "card".to_string().into();
+    let other: AIAgentActionId = "other".to_string().into();
+    let mut hint = EmptyEnterHint::default();
+
+    // Nothing is shown until the empty-prompt Enter focuses the card.
+    assert_eq!(hint.text_for(&card, Some(&card)), None);
+
+    hint.show(card.clone(), "run");
+    assert_eq!(
+        hint.text_for(&card, Some(&card)).as_deref(),
+        Some("Press Enter again to run")
+    );
+    // Only the focused card shows it, and only while it is still the pending action.
+    assert_eq!(hint.text_for(&other, Some(&card)), None);
+    assert_eq!(hint.text_for(&card, Some(&other)), None);
+    // The card resolved (approved or rejected): no pending action, no hint.
+    assert_eq!(hint.text_for(&card, None), None);
+
+    // Focus leaving the card turns it off for good, and says whether a repaint is needed.
+    assert!(hint.clear());
+    assert_eq!(hint.text_for(&card, Some(&card)), None);
+    assert!(!hint.clear());
+
+    hint.show(card.clone(), "apply");
+    assert_eq!(
+        hint.text_for(&card, Some(&card)).as_deref(),
+        Some("Press Enter again to apply")
+    );
 }

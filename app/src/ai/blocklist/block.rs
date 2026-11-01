@@ -459,6 +459,39 @@ pub(crate) struct RequestedEdit {
     view: ViewHandle<CodeDiffView>,
 }
 
+/// The hint shown on a pending approval card after an Enter on an empty prompt focused it, so the
+/// user knows a second Enter accepts (#1290). It records which action the Enter focused and the
+/// verb for that card; it shows only while that action is still the pending one, and the AI block
+/// clears it when focus leaves the card. Keys are unchanged: this only describes the card's own
+/// Enter binding.
+#[derive(Debug, Default)]
+pub(crate) struct EmptyEnterHint {
+    focused: Option<(AIAgentActionId, &'static str)>,
+}
+
+impl EmptyEnterHint {
+    pub(crate) fn show(&mut self, action_id: AIAgentActionId, verb: &'static str) {
+        self.focused = Some((action_id, verb));
+    }
+
+    /// Turns the hint off; returns whether it was on (so the caller knows to repaint).
+    pub(crate) fn clear(&mut self) -> bool {
+        self.focused.take().is_some()
+    }
+
+    /// The hint for the card of `action_id`, or `None` unless the Enter focused this card and it
+    /// is still the pending action (an approved, rejected or superseded card shows nothing).
+    pub(crate) fn text_for(
+        &self,
+        action_id: &AIAgentActionId,
+        pending_action_id: Option<&AIAgentActionId>,
+    ) -> Option<String> {
+        let (focused_id, verb) = self.focused.as_ref()?;
+        (focused_id == action_id && pending_action_id == Some(action_id))
+            .then(|| format!("Press Enter again to {verb}"))
+    }
+}
+
 impl RequestedEdit {
     fn new(view: ViewHandle<CodeDiffView>) -> Self {
         Self { view }
@@ -937,6 +970,9 @@ pub struct AIBlock {
 
     /// Map from a requested MCP tool call action ID to its view handle and status.
     requested_mcp_tools: HashMap<AIAgentActionId, RequestedCommand>,
+    /// "Press Enter again to ..." hint under the pending approval card, shown after an Enter on an
+    /// empty prompt moved focus to it (#1290).
+    empty_enter_hint: EmptyEnterHint,
 
     /// Map from a requested edit action ID to its view handle and status.
     /// Uses IndexMap to preserve insertion order for correct revert ordering.
@@ -1439,6 +1475,7 @@ impl AIBlock {
             code_editor_views: Default::default(),
             requested_commands: Default::default(),
             requested_mcp_tools: Default::default(),
+            empty_enter_hint: Default::default(),
             requested_edits: Default::default(),
             todo_list_states: Default::default(),
             comment_states,
@@ -4643,6 +4680,37 @@ impl AIBlock {
         } else {
             // Else, delegate focus back to the terminal view.
             ctx.emit(AIBlockEvent::FocusTerminal);
+        }
+    }
+
+    /// Focuses the pending approval card for an Enter on an empty prompt and, when that card is a
+    /// command, MCP tool or file edit, shows the "Press Enter again" hint on it (#1290).
+    pub fn focus_pending_action_for_empty_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.focus_subview_if_necessary(ctx) {
+            return;
+        }
+        // Set after the focus change so the blur of whatever held focus cannot clear it.
+        let Some(action) = self.action_model.as_ref(ctx).get_pending_action(ctx) else {
+            return;
+        };
+        let id = action.id.clone();
+        let verb = if self.requested_edits.contains_key(&id) {
+            "apply"
+        } else if self.requested_mcp_tools.contains_key(&id) {
+            "approve"
+        } else if self.requested_commands.contains_key(&id) {
+            "run"
+        } else {
+            return;
+        };
+        self.empty_enter_hint.show(id, verb);
+        ctx.notify();
+    }
+
+    /// Turns the empty-Enter hint off (focus left the card); repaints only if it was showing.
+    pub fn clear_empty_enter_hint(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.empty_enter_hint.clear() {
+            ctx.notify();
         }
     }
 

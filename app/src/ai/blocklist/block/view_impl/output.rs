@@ -71,7 +71,7 @@ use crate::{
             block::{
                 model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
                 AIBlock, AIBlockAction, AIBlockStateHandles, ActionButtons,
-                AutonomySettingSpeedbump, EmbeddedCodeEditorView, RequestedEdit, TextLocation,
+                AutonomySettingSpeedbump, EmbeddedCodeEditorView, EmptyEnterHint, RequestedEdit, TextLocation,
                 TodoListElementState,
             },
             history_model::BlocklistAIHistoryModel,
@@ -154,6 +154,7 @@ pub(crate) struct Props<'a> {
     pub(crate) secret_redaction_state: &'a SecretRedactionState,
     pub(super) requested_commands: &'a HashMap<AIAgentActionId, RequestedCommand>,
     pub(super) requested_mcp_tools: &'a HashMap<AIAgentActionId, RequestedCommand>,
+    pub(super) empty_enter_hint: &'a EmptyEnterHint,
     pub(super) requested_edits: &'a IndexMap<AIAgentActionId, RequestedEdit>,
     pub(super) unit_test_suggestions:
         &'a HashMap<AIAgentActionId, ViewHandle<SuggestedUnitTestsView>>,
@@ -459,7 +460,12 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 .get(id)
                                 .map(|requested_command| requested_command.render())
                             {
-                                output_items.add_child(rendered_command);
+                                output_items.add_child(with_empty_enter_hint(
+                                    rendered_command,
+                                    id,
+                                    props,
+                                    app,
+                                ));
                             }
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {
@@ -592,11 +598,14 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                         continue;
                                     }
 
-                                    output_items.add_child(render_requested_edits_output_message(
+                                    let edit_card = render_requested_edits_output_message(
                                         requested_edit,
                                         action_status,
                                         request_type.is_passive_code_diff(),
                                         app,
+                                    );
+                                    output_items.add_child(with_empty_enter_hint(
+                                        edit_card, id, props, app,
                                     ));
                                 }
                             }
@@ -704,7 +713,12 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 .get(id)
                                 .map(|requested_mcp_tool| requested_mcp_tool.render())
                             {
-                                output_items.add_child(rendered_mcp_tool);
+                                output_items.add_child(with_empty_enter_hint(
+                                    rendered_mcp_tool,
+                                    id,
+                                    props,
+                                    app,
+                                ));
                             }
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {
@@ -1899,6 +1913,41 @@ fn render_stopped_output(props: Props, app: &AppContext) -> Box<dyn Element> {
     .with_padding_right(CONTENT_HORIZONTAL_PADDING)
     .with_margin_bottom(8.)
     .finish()
+}
+
+/// Puts the "Press Enter again to ..." line under an approval card that an empty-prompt Enter
+/// just focused (#1290). Otherwise returns the card untouched. Uses the theme's muted text
+/// color, so it reads in light and dark themes.
+fn with_empty_enter_hint(
+    card: Box<dyn Element>,
+    action_id: &AIAgentActionId,
+    props: &Props,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let pending_id = props
+        .action_model
+        .as_ref(app)
+        .get_pending_action(app)
+        .map(|action| &action.id);
+    let Some(text) = props.empty_enter_hint.text_for(action_id, pending_id) else {
+        return card;
+    };
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let hint = Container::new(
+        Text::new(
+            text,
+            appearance.ui_font_family(),
+            appearance.monospace_font_size() - 1.,
+        )
+        .with_color(blended_colors::text_sub(theme, theme.background()))
+        .with_selectable(false)
+        .finish(),
+    )
+    .with_padding_left(CONTENT_HORIZONTAL_PADDING)
+    .with_padding_bottom(8.)
+    .finish();
+    Flex::column().with_child(card).with_child(hint).finish()
 }
 
 fn render_requested_edits_output_message(

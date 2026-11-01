@@ -26480,7 +26480,7 @@ impl TerminalView {
                 // Focus only; the card's own Enter binding then runs it on a second Enter.
                 if let Some(ai_block) = self.last_ai_block() {
                     ai_block.update(ctx, |ai_block, ctx| {
-                        ai_block.focus_subview_if_necessary(ctx);
+                        ai_block.focus_pending_action_for_empty_enter(ctx);
                     });
                 }
             }
