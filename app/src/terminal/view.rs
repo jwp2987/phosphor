@@ -9787,12 +9787,12 @@ impl TerminalView {
         if self.is_agent_input_focused_with_text(ctx) {
             return;
         }
-        // #1195: nor while the user is still typing there -- an empty input a moment after a
-        // keystroke (a submit, a backspace) is not idle, and an Enter already on its way would
-        // approve a command they never read. The card stays up; focus stays in the input.
-        if self.input.as_ref(ctx).editor().as_ref(ctx).is_focused()
-            && input_typed_recently(self.input.as_ref(ctx).since_last_user_typed())
-        {
+        // #1195/#1350: nor from the input at all while it holds focus, typed in or not. A clock
+        // ("typed in the last second") cannot tell an idle input from a user who paused to read,
+        // and an Enter after the pause would approve a command they never read. The card stays up
+        // and the user reaches it by click, Tab, or an Enter on the empty input (which focuses it
+        // and shows the "press Enter again" hint, #1180): ordering, not timing.
+        if !approval_card_may_take_focus(self.input.as_ref(ctx).editor().as_ref(ctx).is_focused()) {
             return;
         }
         let target_needs_attention = block.as_ref(ctx).is_blocked_on_user_confirmation(ctx);
@@ -35542,13 +35542,11 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
 }
 
-/// How recently the user must have typed in the agent input for an appearing approval card to
-/// leave focus where it is (#1195).
-const RECENT_TYPING_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
-
-/// Whether the user typed within [`RECENT_TYPING_WINDOW`] (`since_last_typed` is how long ago).
-fn input_typed_recently(since_last_typed: Option<std::time::Duration>) -> bool {
-    since_last_typed.is_some_and(|since| since < RECENT_TYPING_WINDOW)
+/// Whether an appearing approval card may take keyboard focus (#1195, #1350): never from the
+/// input box while it holds focus. No timing is involved: an Enter reaches the card only after
+/// the user deliberately moved focus there, so it never approves something unread.
+fn approval_card_may_take_focus(input_editor_focused: bool) -> bool {
+    !input_editor_focused
 }
 
 /// Whether `TerminalView::is_input_box_visible` should hide the input box for the active AI
