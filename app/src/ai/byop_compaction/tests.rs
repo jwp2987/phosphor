@@ -2704,6 +2704,41 @@ fn a_failed_request_drops_the_deferral_but_not_the_allowance() {
     );
 }
 
+/// #1238: a deferred summary that failed for good did not compact, so its allowance comes back
+/// -- once per turn, so a summary that fails every time cannot loop.
+#[test]
+fn a_failed_deferred_summary_restores_the_allowance_once_per_turn() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(!state.auto_compacted(), "nothing was compacted");
+
+    state.on_deferred_summary_sent();
+    state.on_request_failed();
+    assert!(
+        state.auto_compacted(),
+        "the second failure in the same turn keeps the allowance spent"
+    );
+
+    state.on_new_user_turn();
+    state.on_deferred_summary_sent();
+    state.on_request_failed();
+    assert!(!state.auto_compacted(), "a new turn gets its restore back");
+}
+
+/// A deferred summary that finished (cleanly) is not restored by a later unrelated failure.
+#[test]
+fn a_finished_deferred_summary_keeps_the_allowance_spent() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    state.on_stream_finished(turn(false, Some(true)));
+    state.on_request_failed();
+    assert!(state.auto_compacted());
+}
+
 /// A new user turn forgets a pending continue, so an unrelated empty reply is not retried.
 #[test]
 fn a_new_user_turn_drops_the_pending_continue() {
