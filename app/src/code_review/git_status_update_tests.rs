@@ -154,3 +154,90 @@ fn main_branch_cache_is_reused_only_while_fresh() {
         None
     );
 }
+
+// ── command-completion refresh gating (#1334 follow-up) ─────────────────────
+
+#[test]
+fn empty_enter_with_quiet_watcher_runs_no_git() {
+    let mut gate = RefreshGate::default();
+    let t0 = Instant::now();
+    gate.refresh_started(t0);
+    let later = t0 + Duration::from_secs(10);
+    assert_eq!(gate.decide("", true, later, false), RefreshDecision::Skip);
+    assert_eq!(
+        gate.decide("  \t", true, later, false),
+        RefreshDecision::Skip
+    );
+    assert_eq!(
+        gate.decide("ls -la", true, later, false),
+        RefreshDecision::Skip
+    );
+}
+
+#[test]
+fn watcher_change_forces_refresh_then_clears() {
+    let mut gate = RefreshGate::default();
+    let t0 = Instant::now();
+    gate.refresh_started(t0);
+    gate.mark_dirty();
+    let later = t0 + Duration::from_secs(10);
+    assert_eq!(gate.decide("", true, later, false), RefreshDecision::Now);
+    gate.refresh_started(later);
+    assert_eq!(
+        gate.decide("", true, later + Duration::from_secs(1), false),
+        RefreshDecision::Skip
+    );
+}
+
+#[test]
+fn vcs_commands_and_untrusted_state_always_refresh() {
+    let mut gate = RefreshGate::default();
+    let t0 = Instant::now();
+    gate.refresh_started(t0);
+    let later = t0 + Duration::from_secs(10);
+    assert_eq!(
+        gate.decide("git switch b", true, later, false),
+        RefreshDecision::Now
+    );
+    gate.refresh_started(later);
+    let later = later + Duration::from_secs(10);
+    // No metadata / dead watcher: cannot trust "nothing changed".
+    assert_eq!(gate.decide("", false, later, false), RefreshDecision::Now);
+    // Kill switch.
+    assert_eq!(gate.decide("ls", true, later, true), RefreshDecision::Now);
+}
+
+#[test]
+fn burst_collapses_to_one_refresh() {
+    let mut gate = RefreshGate::default();
+    let t0 = Instant::now();
+    gate.refresh_started(t0);
+    gate.mark_dirty();
+    let t1 = t0 + Duration::from_millis(50);
+    assert_eq!(
+        gate.decide("make", true, t1, false),
+        RefreshDecision::Defer(REFRESH_COALESCE_WINDOW - Duration::from_millis(50))
+    );
+    // Further completions while the deferred refresh is pending are absorbed.
+    assert_eq!(
+        gate.decide("git status", true, t1, false),
+        RefreshDecision::Skip
+    );
+    gate.deferred_fired();
+    gate.refresh_started(t0 + REFRESH_COALESCE_WINDOW);
+    assert_eq!(
+        gate.decide("git status", true, t0 + Duration::from_secs(5), false),
+        RefreshDecision::Now
+    );
+}
+
+#[test]
+fn vcs_command_detection() {
+    assert!(command_may_change_git_state("git commit -m x"));
+    assert!(command_may_change_git_state("cd a && git pull"));
+    assert!(command_may_change_git_state("git.exe checkout b"));
+    assert!(command_may_change_git_state("gh pr checkout 3"));
+    assert!(!command_may_change_git_state("cargo build"));
+    assert!(!command_may_change_git_state("echo digit"));
+    assert!(!command_may_change_git_state(""));
+}
