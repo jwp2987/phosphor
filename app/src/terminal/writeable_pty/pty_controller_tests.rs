@@ -752,6 +752,163 @@ fn a_newer_paced_write_replaces_the_unwritten_chunks_of_the_older_one() {
     });
 }
 
+/// The messages a bootstrap produces with the writer-owned job queue on (#1384): ONE
+/// `SetupChunked` job for the whole paced script, instead of a timer-chained `Input` per chunk.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_container_bootstrap_is_one_setup_job_with_the_pacing_named() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(4096 + 100)).map(|i| (i % 256) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.clone().into(),
+            );
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
+        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+            panic!("expected a setup job: {:?}", messages[0]);
+        };
+        assert!(matches!(
+            pacing,
+            Pacing::Gap { dur, .. } if *dur == Duration::from_millis(50)
+        ));
+        assert_eq!(chunks.len(), 2);
+        let mut expected = escape_sequences::BRACKETED_PASTE_START.to_vec();
+        expected.extend_from_slice(&bootstrap);
+        expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+        expected.push(escape_sequences::C0::CR);
+        assert_eq!(chunks.concat(), expected);
+        assert!(chunks[0].starts_with(escape_sequences::BRACKETED_PASTE_START));
+        assert!(chunks[1].ends_with(&[escape_sequences::C0::CR]));
+    });
+}
+
+/// A ^C aborts the setup job before the interrupt goes out, and the submitted-command discard
+/// still follows, as on the timer path.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_ctrl_c_aborts_the_setup_job_then_interrupts() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[2], Message::DiscardQueuedInput),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(&messages[3], Message::Input(bytes) if bytes.as_ref() == [escape_sequences::C0::ETX]),
+            "{messages:?}"
+        );
+        assert_eq!(messages.len(), 4);
+    });
+}
+
+/// Shutting the pty down aborts the job before the shutdown.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_shutdown_aborts_the_setup_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'a'; 2 * 4096 + 10].into(),
+            );
+            controller.shutdown_pty(ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(matches!(messages[2], Message::Shutdown), "{messages:?}");
+        assert_eq!(messages.len(), 3);
+    });
+}
+
+/// A newer bootstrap aborts the older job before it queues its own, and with no job outstanding
+/// a ^C sends no abort at all.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_newer_bootstrap_aborts_the_older_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            // No job yet: a ^C must not send an abort.
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'a'; 2 * 4096 + 10].into(),
+            );
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'b'; 10].into(),
+            );
+        });
+        let messages = sender.messages.lock();
+        let kinds: Vec<&str> = messages
+            .iter()
+            .map(|m| match m {
+                Message::Input(_) => "input",
+                Message::DiscardQueuedInput => "discard",
+                Message::SetupChunked { .. } => "setup",
+                Message::Abort(_) => "abort",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["discard", "input", "setup", "abort", "setup"],
+            "{messages:?}"
+        );
+    });
+}
+
 /// The chunking decision is `is_container_subshell`, not "the bootstrap is
 /// large": a non-container session with a bootstrap over the 4KB chunk size
 /// must still go out as a single write, so this only depends on the container

@@ -5,6 +5,7 @@ mod long_command_file;
 pub mod command_history;
 mod message;
 mod posix_long_command;
+pub mod write_queue;
 pub mod pty_controller;
 #[cfg(not(target_family = "wasm"))]
 pub mod remote_server_controller;
