@@ -77,7 +77,6 @@ use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
 use super::input_queue;
-use super::paste_sequencer::{KeyDisposition, PasteFailure, PasteSequencer};
 use super::CLIAgent;
 use super::cli_agent;
 #[cfg(feature = "local_fs")]
@@ -2826,7 +2825,6 @@ struct SubshellBootstrapInFlight {
     /// due, the shell it was meant for is gone and the remaining lines are dropped.
     block_id: BlockId,
     remaining_lines: usize,
-    held_user_bytes: Vec<Vec<u8>>,
     /// Event-driven pacing (#1354): the lines not yet written, oldest first. Line N+1 is written
     /// when the shell printed the setup-line marker of line N (see
     /// `bootstrap::init_subshell_command_lines_with_markers`), not after a delay. Empty when the
@@ -3240,10 +3238,8 @@ pub struct TerminalView {
     /// keystrokes are held in it and delivered, in order, once the last line is out, so they can
     /// never interleave with (or land inside) the bootstrap.
     subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
-    /// Orders keys typed while a large paste is read and prepared off the main thread (#1255).
-    paste_sequencer: PasteSequencer,
-    /// The same ordering on the pane's one input queue (#1353 phase 1); used instead of
-    /// `paste_sequencer` unless `PHOSPHOR_INPUT_QUEUE_PASTE=0`.
+    /// The pane's one input queue (#1353): orders keys typed while a large paste is read off the
+    /// main thread (#1255), and everything else that holds keys.
     paste_queue: paste_queue::PasteQueueState,
     /// The active block and the time at which this view last typed a subshell bootstrap stage
     /// into it. Unlike the model's pending subshell session (which only exists once the shell
@@ -4216,9 +4212,9 @@ impl TerminalView {
             let handoff = model.typeahead_handoff_mut();
             handoff.track_view_precmds();
             // #1353 phase 5: the ConPTY prompt hold's keys live in this view's input queue.
-            handoff.set_prompt_hold_in_queue(paste_queue::handoff_queue_enabled_by_default());
+            handoff.set_prompt_hold_in_queue(true);
             // #1353 phase 5b: so does a young Enter's hold (a `PromptSeen` gate).
-            handoff.set_young_hold_in_queue(paste_queue::handoff_queue_enabled_by_default());
+            handoff.set_young_hold_in_queue(true);
         }
         let maa_passive_suggestions_model = ctx.add_model(|ctx| {
             MaaPassiveSuggestionsModel::new(
@@ -4484,7 +4480,7 @@ impl TerminalView {
             );
         }
         let paste_queue = paste_queue::PasteQueueState::new();
-        if paste_queue.shared {
+        {
             let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
             if let Some(mut queue) = paste_queue.queue.try_lock() {
                 queue.set_foreign_waker(Some(drain_tx));
@@ -5044,7 +5040,6 @@ impl TerminalView {
             pending_env_var_collection: None,
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
-            paste_sequencer: PasteSequencer::default(),
             paste_queue,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
@@ -10777,18 +10772,6 @@ impl TerminalView {
                 }
             }
         }
-        if self.input.as_ref(ctx).after_enter_replay_open() {
-            // #1016: keys after a deferred Enter wait their turn; an interrupt cancels the wait.
-            if is_abort_key(characters.as_bytes()) {
-                self.input
-                    .update(ctx, |input, _| input.clear_after_enter_replay());
-            } else if characters == "\r" || characters == "\n" {
-                self.input.update(ctx, |input, _| {
-                    input.queue_after_enter_replay(AfterEnterInput::Enter)
-                });
-                return;
-            }
-        }
         // #1051: a Ctrl-C during a PowerShell subshell setup has its own rules.
         if characters == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
             self.ctrl_c_during_powershell_setup(ctx);
@@ -11614,18 +11597,9 @@ impl TerminalView {
         ))
     }
 
-    /// Whether held subshell keys live on the input queue right now (#1353 phase 2): the switch is
-    /// on and the queue is not in the middle of delivering (a write made then cannot take a new
-    /// entry and uses the legacy buffers).
-    fn subshell_queue_owns_holds(&self) -> bool {
-        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_peek().is_some()
-    }
-
     /// Opens the subshell gates for a setup that has just been announced (#1353 phase 2).
     fn open_subshell_gates_for_setup(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.paste_queue.subshell_enabled {
-            self.prepare_subshell_gates(&[], ctx);
-        }
+        self.prepare_subshell_gates(&[], ctx);
     }
 
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
@@ -11798,14 +11772,6 @@ impl TerminalView {
                 return;
             }
         }
-        // #1016: input typed after a deferred Enter is still waiting to be routed; this follows
-        // it, so it queues behind rather than overtaking it.
-        if self.input.as_ref(ctx).after_enter_replay_open() {
-            self.input.update(ctx, |input, _| {
-                input.queue_after_enter_replay(AfterEnterInput::Text(characters.to_string()))
-            });
-            return;
-        }
         self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
 
         // The pty refuses user bytes while the agent controls the running command. Typing is
@@ -11922,40 +11888,9 @@ impl TerminalView {
     /// (#1016), in order, once that Enter has run: the same way keys typed right after any
     /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
     /// the pty takes the typed characters, otherwise it submits the editor.
-    fn replay_after_deferred_enter(&mut self, started: Instant, ctx: &mut ViewContext<Self>) {
-        // #1353 phase 3: the keys wait behind the Enter's queue gate; the events below close it.
-        if self.input.as_ref(ctx).enter_queue_awaits_route(ctx) {
-            self.settle_enter_queue(ctx);
-            return;
-        }
-        if !self.input.as_ref(ctx).after_enter_replay_open() {
-            return;
-        }
-        // The submitted shell command is not on its way to the pty until the hand-off engages;
-        // text routed before that lands in the editor, and the shell's report is later inserted
-        // in front of it (reordering the line). Everything typed meanwhile queues behind.
-        let pty_ready = self.should_write_typed_chars_to_pty(ctx)
-            || self.is_long_running()
-            || self.typeahead_handoff_routes_keys_to_pty();
-        if self.input.as_ref(ctx).after_enter_replay_awaits_pty()
-            && !pty_ready
-            && started.elapsed() < AFTER_ENTER_REPLAY_PTY_WAIT
-        {
-            let generation = self.input.as_ref(ctx).after_enter_replay_generation();
-            ctx.spawn(Timer::after(Duration::from_millis(5)), move |me, _, ctx| {
-                // #1206: only the replay this tick was armed for; a later one has its own.
-                if me.input.as_ref(ctx).after_enter_replay_generation() == generation {
-                    me.replay_after_deferred_enter(started, ctx);
-                }
-            });
-            return;
-        }
-        let queued = self
-            .input
-            .update(ctx, |input, _| input.take_after_enter_replay());
-        for input in &queued {
-            self.route_after_enter_input(input, ctx);
-        }
+    fn replay_after_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        // The keys wait behind the Enter's queue gate; the events of `settle_enter_queue` close it.
+        self.settle_enter_queue(ctx);
     }
 
     /// Routes one key that was typed behind an Enter that waited, as if it had just been typed
@@ -12175,47 +12110,25 @@ impl TerminalView {
         // out behind it, in order; an abort key cancels the paste instead. On the input queue
         // (#1353) the paste is an entry held by a gate and these bytes queue behind it; idle, this
         // is one borrow-flag read with no lock and no allocation.
-        if self.paste_queue.enabled || self.paste_queue.subshell_enabled {
-            // #1353 phase 2: a subshell setup or its paced bootstrap holds keys too. Their gates
-            // are opened from the facts the old buffers used and the keys wait on the same queue.
-            let mut abort_as_entry = false;
-            if self.paste_queue.subshell_enabled {
-                match self.prepare_subshell_gates(&bytes, ctx) {
-                    paste_queue::SubshellPrep::Normal => {}
-                    paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
-                    paste_queue::SubshellPrep::Stashed => return true,
-                    paste_queue::SubshellPrep::Bypass => {
-                        return self.write_user_bytes_to_pty_after_paste_stage(
-                            bytes,
-                            takes_over_agent_control,
-                            ctx,
-                        );
-                    }
-                }
-            }
-            if let Some(written) =
-                self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)
-            {
-                return written;
+        // A subshell setup or its paced bootstrap holds keys too: their gates are opened here and
+        // the keys wait on the same queue.
+        let mut abort_as_entry = false;
+        match self.prepare_subshell_gates(&bytes, ctx) {
+            paste_queue::SubshellPrep::Normal => {}
+            paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
+            paste_queue::SubshellPrep::Stashed => return true,
+            paste_queue::SubshellPrep::Bypass => {
+                return self.write_user_bytes_to_pty_after_paste_stage(
+                    bytes,
+                    takes_over_agent_control,
+                    ctx,
+                );
             }
         }
-        if !self.paste_queue.enabled && self.paste_sequencer.has_pending() {
-            match self.paste_sequencer.on_key(&bytes, is_abort_key(&bytes)) {
-                KeyDisposition::Held => {
-                    input_queue::trace::hold(input_queue::trace::legacy::PASTE_PTY, bytes.len());
-                    return true;
-                }
-                KeyDisposition::CancelledPaste(held) => {
-                    for held_bytes in held {
-                        self.write_user_bytes_to_pty_inner(
-                            held_bytes,
-                            takes_over_agent_control,
-                            ctx,
-                        );
-                    }
-                }
-                KeyDisposition::PassThrough => {}
-            }
+        if let Some(written) =
+            self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)
+        {
+            return written;
         }
         self.write_user_bytes_to_pty_after_paste_stage(bytes, takes_over_agent_control, ctx)
     }
@@ -12234,19 +12147,8 @@ impl TerminalView {
             // Ctrl-C / Ctrl-D: the rest of a chunked line-clear write is dropped (#1354).
             ctx.emit(Event::CancelPacedSetupWrites);
         }
-        // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
-        // them) and deliver them after its last line.
-        // On the input queue (#1353 phase 2) the bootstrap gate holds them as entries; this buffer
-        // is the legacy path (kill switch) and the fallback for a write that happens while the
-        // queue is delivering (it cannot take a new entry then).
-        let queue_owns_subshell_holds = self.subshell_queue_owns_holds();
-        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut()
-            && !queue_owns_subshell_holds
-        {
-            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_BOOTSTRAP, bytes.len());
-            in_flight.held_user_bytes.push(bytes.into_owned());
-            return true;
-        }
+        // While the paced subshell bootstrap is being written its gate holds the keystrokes (never
+        // dropped) as entries of the pane queue, delivered after its last line.
         // #1014: setup is announced but the shell has not finished it (an rc file that sleeps
         // delays it): text written now would sit in the tty ahead of the late bootstrap and run
         // inside it or vanish. Hold it here and deliver it, in order, once setup is over. Ctrl-C /
@@ -12325,21 +12227,6 @@ impl TerminalView {
             self.subshell_bootstrap_announced_age(),
         ) {
             self.release_subshell_setup_held_bytes(ctx);
-        }
-        // Not while the shell is asking for something: a visible unterminated line (`Password:`,
-        // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
-        // arrive late at the wrong place. Bytes already held stay held (they were typed for the
-        // command line).
-        if !queue_owns_subshell_holds
-            && subshell_setup_should_hold_typed_bytes(
-                self.subshell_bootstrap_announced_age(),
-                is_abort_key(&bytes),
-            )
-            && !self.active_output_awaits_an_answer()
-        {
-            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
-            self.subshell_setup_held_bytes.push(bytes.into_owned());
-            return true;
         }
         // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
         // Only an EOF can take a held Enter with it, so every other key skips the model lock (the
@@ -13166,7 +13053,6 @@ impl TerminalView {
         self.input.update(ctx, |input, ctx| {
             input.abandon_detection_if_over_parse_cap(ctx)
         });
-        let on_compute_clock = self.input.as_ref(ctx).enter_queue_enabled();
         let (can_run, pending, compute) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
@@ -13174,11 +13060,8 @@ impl TerminalView {
                 input.detection_compute(ctx).1,
             )
         });
-        let waited = if on_compute_clock {
-            compute
-        } else {
-            started.elapsed()
-        };
+        // The give-up is measured on the classifier's compute, never on the age of the Enter.
+        let waited = compute;
         let decision = if force_give_up && can_run && pending {
             YoungSubmit::SubmitWithoutVerdict
         } else {
@@ -13208,19 +13091,7 @@ impl TerminalView {
                 });
                 self.run_deferred_enter(true, ctx);
             }
-            YoungSubmit::Wait if on_compute_clock => self.watch_young_detection(ctx),
-            YoungSubmit::Wait => {
-                let rearm = Duration::from_millis(2);
-                let deadline = Instant::now() + rearm;
-                let id = self.young_enter_wait_id;
-                ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
-                    log_late_timer_wake("young detection wait", deadline);
-                    // #1206: only the wait this tick was armed for.
-                    if me.young_enter_wait_id == id {
-                        me.submit_deferred_enter_after_detection(started, ctx);
-                    }
-                });
-            }
+            YoungSubmit::Wait => self.watch_young_detection(ctx),
             YoungSubmit::KeepInEditor => {
                 self.young_enter_released = true;
                 self.keep_deferred_enter_text(ctx);
@@ -20296,7 +20167,6 @@ impl TerminalView {
             generation,
             block_id: self.model.lock().block_list().active_block().id().clone(),
             remaining_lines: rest.len(),
-            held_user_bytes: Vec::new(),
             pending_lines: if marked {
                 rest.clone().into()
             } else {
@@ -20490,25 +20360,7 @@ impl TerminalView {
 
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
     fn finish_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
-        // (The input queue's bootstrap gate is closed below; this buffer holds only what a write
-        // made while the queue was delivering could not queue, or the legacy path's keys.)
-        if let Some(in_flight) = self.subshell_bootstrap_in_flight.take() {
-            input_queue::trace::release(
-                input_queue::trace::legacy::SUBSHELL_BOOTSTRAP,
-                in_flight.held_user_bytes.len(),
-                in_flight.held_user_bytes.iter().map(Vec::len).sum(),
-                "pty",
-            );
-            for bytes in in_flight.held_user_bytes {
-                if self.paste_queue.subshell_enabled {
-                    // Older than anything the gate holds (it could only be taken here while the
-                    // queue was delivering): goes out first, not behind the queue.
-                    self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx);
-                } else {
-                    self.write_user_bytes_to_pty(bytes, ctx);
-                }
-            }
-        }
+        self.subshell_bootstrap_in_flight = None;
         // The bootstrap's event: its last line is out (or it was abandoned). The aborts typed
         // meanwhile go first, then what was typed behind it, in order (#1353 phase 2).
         self.settle_subshell_bootstrap_gate(ctx);
@@ -22668,7 +22520,7 @@ impl TerminalView {
     }
 
     /// Reads the clipboard and builds the pty bytes on a worker thread; the callback writes them
-    /// and then the keys typed meanwhile (see [`PasteSequencer`]).
+    /// and then the keys typed meanwhile (see `paste_queue`).
     #[cfg(not(target_family = "wasm"))]
     fn start_background_paste(
         &mut self,
@@ -22708,112 +22560,8 @@ impl TerminalView {
         backstop: Option<Duration>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // #1353 phase 1: the paste is an entry of the pane's input queue. A queue that is
-        // mid-drain cannot take a new gate; that is not reachable from a user paste, but fall
-        // back to the legacy sequencer rather than panic on a borrow.
-        if self.paste_queue.enabled && self.paste_queue.queue.try_lock().is_some() {
-            self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
-            return;
-        }
-        let id = self.paste_sequencer.begin();
-        let (tx, rx) = futures::channel::oneshot::channel();
-        let spawned = std::thread::Builder::new()
-            .name("paste-read".into())
-            .spawn(move || {
-                let result = match reader() {
-                    warpui::clipboard::BackgroundTextRead::TimedOut => {
-                        Err(PasteFailure::NoAnswer)
-                    }
-                    warpui::clipboard::BackgroundTextRead::TooLarge(bytes) => {
-                        Err(PasteFailure::TooLarge(bytes))
-                    }
-                    warpui::clipboard::BackgroundTextRead::Content(content) => {
-                        let text =
-                            clipboard_content_with_escaped_paths(content, shell_dialect, false);
-                        Ok(paste_bytes_for_pty(&text, bracketed))
-                    }
-                };
-                let _ = tx.send(result);
-            });
-        if spawned.is_err() {
-            self.paste_sequencer.complete(id);
-            self.show_error_toast(
-                "Paste failed \u{2014} could not start the clipboard read".to_string(),
-                ctx,
-            );
-            return;
-        }
-        ctx.spawn(
-            async move { rx.await.unwrap_or(Err(PasteFailure::NoAnswer)) },
-            move |me, bytes, ctx| me.finish_background_paste(id, bytes, ctx),
-        );
-        // A read that outlives the backstop fails the paste: the keys held behind it are written
-        // (in order) and the user is told. The reader's late answer finds the paste gone (#1331).
-        if let Some(backstop) = backstop {
-            ctx.spawn(Timer::after(backstop), move |me, _, ctx| {
-                if me.paste_sequencer.is_pending(id) {
-                    me.finish_background_paste(id, Err(PasteFailure::NoAnswer), ctx);
-                }
-            });
-        }
-        // Say what is happening when the read takes noticeable time (a big paste).
-        ctx.spawn(
-            Timer::after(PASTE_PROGRESS_TOAST_DELAY),
-            move |me, _, ctx| {
-                if me.paste_sequencer.is_pending(id) {
-                    if !ctx.has_singleton_model::<ToastStack>() {
-                        return;
-                    }
-                    let window_id = ctx.window_id();
-                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                        let toast = DismissibleToast::success(
-                            "Pasting from the clipboard\u{2026} (Ctrl-C cancels)".to_string(),
-                        );
-                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-                    });
-                }
-            },
-        );
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    /// The paste `id` was read: write it, then the keys typed behind it, in order. `None` bytes
-    /// mean the clipboard owner never answered.
-    fn finish_background_paste(
-        &mut self,
-        id: u64,
-        bytes: Result<Vec<u8>, PasteFailure>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // Cancelled (Ctrl-C) or superseded: the paste is dropped, nothing is written.
-        let Some(held) = self.paste_sequencer.complete(id) else {
-            return;
-        };
-        match bytes {
-            Ok(bytes) => {
-                self.write_user_bytes_to_pty(bytes, ctx);
-            }
-            Err(PasteFailure::TooLarge(bytes)) => {
-                self.show_error_toast(
-                    super::paste_sequencer::paste_too_large_message(bytes),
-                    ctx,
-                )
-            }
-            Err(PasteFailure::NoAnswer) => self.show_error_toast(
-                "Paste failed \u{2014} the clipboard did not answer; your typing was kept"
-                    .to_string(),
-                ctx,
-            ),
-        }
-        input_queue::trace::release(
-            input_queue::trace::legacy::PASTE_PTY,
-            held.len(),
-            held.iter().map(Vec::len).sum(),
-            "pty",
-        );
-        for held_bytes in held {
-            self.write_user_bytes_to_pty(held_bytes, ctx);
-        }
+        // The paste is an entry of the pane's input queue (#1353).
+        self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
     }
 
     fn has_active_cli_agent_session(&self, ctx: &AppContext) -> bool {
@@ -28983,7 +28731,7 @@ impl TerminalView {
                 }
             }
             InputEvent::ReplayAfterDeferredEnter => {
-                self.replay_after_deferred_enter(Instant::now(), ctx);
+                self.replay_after_deferred_enter(ctx);
             }
             InputEvent::ReplayEnterEntry(entry) => {
                 self.route_after_enter_input(entry, ctx);

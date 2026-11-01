@@ -26,9 +26,6 @@
 //! Timers: none here. The give-ups are the #1351 compute caps and backstops (they submit the
 //! Enter, which closes the gate), the route-settle cap in the view, and a long leak net on the
 //! gate itself ([`ENTER_GATE_LEAK_NET`]) so a bug can never swallow keys for good.
-//!
-//! `PHOSPHOR_INPUT_QUEUE_ENTER=0` keeps the legacy path (`VerdictWait::queued`,
-//! `after_enter_replay`), which stays in the tree.
 
 use std::time::Duration;
 
@@ -36,7 +33,6 @@ use warpui::{AppContext, ViewContext};
 
 use super::paste_queue::InputQueueHost;
 use super::{AfterEnterInput, Event, Input};
-use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, PaneQueue};
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
@@ -59,30 +55,9 @@ pub(super) struct EnterGate {
     pub(super) route_cap_armed: bool,
 }
 
-/// Whether the Enter ordering runs on the queue by default. Tests default to the legacy path
-/// (the existing suite asserts its structures) and opt in per input
-/// (`set_enter_queue_for_test`) or per run (`PHOSPHOR_TEST_ENTER_QUEUE=1`).
-pub(super) fn enabled_by_default() -> bool {
-    if cfg!(test) {
-        return std::env::var("PHOSPHOR_TEST_ENTER_QUEUE").is_ok_and(|value| value == "1");
-    }
-    kill_switch::is_enabled(Area::Enter)
-}
-
 impl Input {
     fn enter_queue_handle(&self, ctx: &AppContext) -> PaneQueue {
         self.editor.as_ref(ctx).paste_hold().queue()
-    }
-
-    /// Whether the Enter ordering runs on the queue for this input: its own switch, and the
-    /// editor's queue path (the editor only offers keys to the queue when that is on).
-    fn enter_queue_on(&self, ctx: &AppContext) -> bool {
-        self.enter_queue_enabled && self.editor.as_ref(ctx).paste_hold().uses_queue()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_enter_queue_for_test(&mut self, on: bool) {
-        self.enter_queue_enabled = on;
     }
 
     /// Keys typed now must queue behind an Enter: its gate is open on the queue. False while the
@@ -93,12 +68,6 @@ impl Input {
                 .try_peek()
                 .is_some_and(|queue| queue.has_gate(gate.kind, gate.key))
         })
-    }
-
-    /// Whether the Enter ordering is on the compute-clock / input-queue model
-    /// (`PHOSPHOR_INPUT_QUEUE_ENTER`).
-    pub(crate) fn enter_queue_enabled(&self) -> bool {
-        self.enter_queue_enabled
     }
 
     /// Whether a stage of the current input-type detection is running, and the classifier compute
@@ -143,14 +112,11 @@ impl Input {
     }
 
     /// Opens the gate of the wait `id` that just started (an Enter held for its verdict or a Tab
-    /// completion): keys arriving from now on queue behind it. A no-op on the legacy path.
+    /// completion): keys arriving from now on queue behind it.
     pub(super) fn open_enter_gate(&mut self, id: u64, kind: GateKind, ctx: &mut ViewContext<Self>) {
-        if !self.enter_queue_on(ctx) {
-            return;
-        }
         let queue = self.enter_queue_handle(ctx);
         let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: Enter gate not opened, the queue was busy; legacy path used");
+            log::warn!("input queue: Enter gate not opened, the queue was busy");
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
@@ -167,8 +133,7 @@ impl Input {
         });
     }
 
-    /// Queues `input` behind the Enter whose gate is open. False when no gate holds the queue (the
-    /// caller then uses the legacy list).
+    /// Queues `input` behind the Enter whose gate is open. False when no gate holds the queue.
     pub(crate) fn queue_behind_enter(
         &mut self,
         input: AfterEnterInput,
@@ -190,14 +155,12 @@ impl Input {
         true
     }
 
-    /// An Enter typed behind the one that waits: on the queue when the gate holds it, else on the
-    /// wait's own list.
+    /// An Enter typed behind the one that waits, on the queue behind the Enter's gate. The queue
+    /// not holding it (mid-drain) is not reachable from a user key; the Enter is then dropped
+    /// with a warning (it has nothing to submit: the line it follows is the waiting one).
     pub(super) fn queue_enter_behind_wait(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
-            return;
-        }
-        if let Some(wait) = self.verdict_wait.as_mut() {
-            wait.queued.push(AfterEnterInput::Enter);
+        if !self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
+            log::warn!("input queue: an Enter typed behind a waiting Enter could not be queued");
         }
     }
 
@@ -306,21 +269,53 @@ impl Input {
         &mut self,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.set_enter_queue_for_test(true);
+        self.open_submitted_enter_gate_for_test(
+            vec![AfterEnterInput::Text("x".to_string())],
+            true,
+            ctx,
+        );
+    }
+
+    /// The gate of an Enter that has run, holding `queued` behind it (what the after-Enter replay
+    /// list used to be opened with in tests); `awaits_pty` as for a submitted shell command.
+    #[cfg(test)]
+    pub(crate) fn open_submitted_enter_gate_for_test(
+        &mut self,
+        queued: Vec<AfterEnterInput>,
+        awaits_pty: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         self.open_enter_gate(1, GateKind::EnterVerdict, ctx);
-        let queue = self.enter_queue_handle(ctx);
-        {
-            let mut queue = queue.lock();
-            let mut host = InputQueueHost::new(self, ctx);
-            queue.offer(&mut host, EntryKind::Text("x".to_string()));
+        for item in queued {
+            assert!(self.queue_behind_enter(item, ctx));
         }
-        self.finish_enter_gate_after_submit(true, ctx);
+        self.finish_enter_gate_after_submit(awaits_pty, ctx);
     }
 
     /// The entries behind the Enter, for tests.
     #[cfg(test)]
     pub(crate) fn enter_gate_held_len_for_test(&self, ctx: &AppContext) -> usize {
         self.enter_gate_held_len(ctx)
+    }
+
+    /// The text and Enters queued behind the Enter, in order, adjacent text merged: what the
+    /// wait's own list and the after-Enter replay list used to hold, for tests.
+    #[cfg(test)]
+    pub(crate) fn enter_gate_held_for_test(&self, ctx: &AppContext) -> Vec<AfterEnterInput> {
+        let mut held: Vec<AfterEnterInput> = Vec::new();
+        let queue = self.enter_queue_handle(ctx);
+        let queue = queue.peek();
+        for entry in queue.entries() {
+            match &entry.kind {
+                EntryKind::Text(text) => match held.last_mut() {
+                    Some(AfterEnterInput::Text(last)) => last.push_str(text),
+                    _ => held.push(AfterEnterInput::Text(text.clone())),
+                },
+                EntryKind::Enter => held.push(AfterEnterInput::Enter),
+                _ => {}
+            }
+        }
+        held
     }
 
     /// Emits the replay request of a submitted Enter whose gate holds keys.

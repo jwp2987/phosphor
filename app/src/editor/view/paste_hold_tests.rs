@@ -27,8 +27,7 @@ fn editing_keys_are_held_and_everything_else_acts_at_once() {
 #[test]
 fn held_keys_come_back_in_typing_order_and_a_superseded_paste_keeps_them() {
     let hold = EditorPasteHold::default();
-    // This pins the `PasteSequencer` path that `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores.
-    hold.set_uses_queue(false);
+    // This pins the `PasteSequencer` path plain editors (search boxes, notebooks) use.
     assert!(!hold.hold(HeldPasteKey::Text("lost?".into())));
     let first = hold.begin();
     assert!(hold.hold(HeldPasteKey::Text("1".into())));
@@ -40,5 +39,5 @@ fn held_keys_come_back_in_typing_order_and_a_superseded_paste_keeps_them() {
         held.as_slice(),
         [HeldPasteKey::Text(text), HeldPasteKey::Action(EditorAction::Enter)] if text == "1"
     ));
-    assert!(!hold.has_pending());
+    assert!(!hold.sequencer_pending());
 }

@@ -3127,11 +3127,8 @@ impl EditorView {
             }
             self.flush_held_replay_now(ctx);
         }
-        if self.paste_hold.uses_queue() && !self.paste_hold.sequencer_pending() {
-            return self.hold_key_for_paste_on_queue(action, ctx);
-        }
         if !self.paste_hold.sequencer_pending() {
-            return false;
+            return self.hold_key_for_paste_on_queue(action, ctx);
         }
         if matches!(action, EditorAction::CtrlC) {
             for key in self.paste_hold.cancel() {

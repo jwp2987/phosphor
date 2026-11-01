@@ -2,10 +2,8 @@
 //! share a single `PaneQueue`, a drain driven from the editor side hands a pty entry over to the
 //! view (the foreign stop), and no key sits in a legacy holder at the same time as in the queue.
 //!
-//! Every test runs on both wirings: shared (the default) and two instances
-//! (`PHOSPHOR_INPUT_QUEUE_SHARED=0`, `PHOSPHOR_TEST_SHARED_QUEUE=0` for the suite), asserting the
-//! observable behaviour that must be the same on both and the ordering that only the shared queue
-//! can promise.
+//! The editor and the view always share the one queue (the two-instance wiring and its kill switch
+//! are gone); these assert the ordering only a single queue can promise.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -44,14 +42,7 @@ fn flat(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> Vec<u8> {
 /// queue path every one of them must be empty while the queue holds the keys.
 fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
     let setup: usize = view.subshell_setup_held_bytes.iter().map(Vec::len).sum();
-    let bootstrap: usize = view
-        .subshell_bootstrap_in_flight
-        .as_ref()
-        .map_or(0, |in_flight| {
-            in_flight.held_user_bytes.iter().map(Vec::len).sum()
-        });
     let ssh = usize::from(!view.ssh_typeahead.is_empty());
-    let sequencer = usize::from(view.paste_sequencer.has_pending());
     let replay = usize::from(
         view.input
             .as_ref(ctx)
@@ -60,11 +51,11 @@ fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
             .paste_hold()
             .replay_pending(),
     );
-    setup + bootstrap + ssh + sequencer + replay
+    setup + ssh + replay
 }
 
 #[test]
-fn the_editor_and_the_view_share_one_queue_exactly_when_the_switch_is_on() {
+fn the_editor_and_the_view_share_one_queue() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -76,10 +67,9 @@ fn the_editor_and_the_view_share_one_queue_exactly_when_the_switch_is_on() {
                 .as_ref(ctx)
                 .paste_hold()
                 .queue();
-            assert_eq!(
+            assert!(
                 view.paste_queue.queue.ptr_eq(&editor_queue),
-                view.paste_queue.shared,
-                "one instance per pane when shared, two when not"
+                "one instance per pane"
             );
             // One counter: ids handed out on either side never repeat, and say who owns them.
             let editor_paste = view
@@ -111,9 +101,6 @@ fn an_enter_gate_holds_editor_keys_but_not_pty_keys_on_either_wiring() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let input = terminal.read(&app, |view, _| view.input.clone());
-        input.read(&app, |input, ctx| {
-            input.editor().as_ref(ctx).paste_hold().set_uses_queue(true);
-        });
         input.update(&mut app, |input, ctx| {
             input.open_submitted_enter_gate_awaiting_pty_for_test(ctx)
         });
@@ -159,10 +146,6 @@ fn an_input_drain_hands_a_pty_key_to_the_view_and_nothing_overtakes() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         let input = terminal.read(&app, |view, _| view.input.clone());
-        let shared = terminal.read(&app, |view, _| view.paste_queue.shared);
-        input.read(&app, |input, ctx| {
-            input.editor().as_ref(ctx).paste_hold().set_uses_queue(true);
-        });
         // The Enter gate (barrier 1) with one line typed behind it (entry 1).
         input.update(&mut app, |input, ctx| {
             input.open_submitted_enter_gate_awaiting_pty_for_test(ctx)
@@ -188,12 +171,10 @@ fn an_input_drain_hands_a_pty_key_to_the_view_and_nothing_overtakes() {
                 .lock()
                 .on_gate_event(&mut host, GateKind::PasteReading, 77);
         });
-        if shared {
-            assert!(
-                flat(&pty_writes).is_empty(),
-                "shared: the key is behind the Enter, in typed order"
-            );
-        }
+        assert!(
+            flat(&pty_writes).is_empty(),
+            "the key is behind the Enter, in typed order"
+        );
         // The Enter is released by the input: its drain meets the pty key.
         input.update(&mut app, |input, ctx| input.release_enter_gate(ctx));
         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
@@ -201,9 +182,9 @@ fn an_input_drain_hands_a_pty_key_to_the_view_and_nothing_overtakes() {
         assert_eq!(
             written.iter().filter(|byte| **byte == b'a').count(),
             1,
-            "the pty key arrives exactly once (shared={shared}): {written:?}"
+            "the pty key arrives exactly once: {written:?}"
         );
-        if shared && let Some(line) = written.iter().position(|byte| *byte == b'x') {
+        if let Some(line) = written.iter().position(|byte| *byte == b'x') {
             let key = written.iter().position(|byte| *byte == b'a').unwrap();
             assert!(line < key, "the line typed first goes first: {written:?}");
         }
