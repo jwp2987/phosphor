@@ -76,20 +76,49 @@ pub(super) fn explorer_select_arg(path: &Path) -> OsString {
     arg
 }
 
+/// Why a `show_items` attempt did not succeed.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ShowItemsError {
+    /// The file manager (or the bus) explicitly reported failure: D-Bus error, no owner
+    /// for the name, not activatable, unknown method, spawn failure. Nothing was opened,
+    /// so falling back is safe.
+    Failed(String),
+    /// No reply arrived within the give-up window. The request may still be served late,
+    /// so a fallback could open a second window; do not fall back.
+    TimedOut,
+}
+
+/// Whether to open the parent folder after a `show_items` attempt. Only an explicit
+/// failure falls back; a timeout (reply still possibly in flight) and success do not.
+pub(super) fn should_fall_back(result: &Result<(), ShowItemsError>) -> bool {
+    matches!(result, Err(ShowItemsError::Failed(_)))
+}
+
 /// Runs `action`, using `show_items` for selection and `open_dir` for plain opens.
-/// If `show_items` fails, falls back to opening the parent folder.
+/// If `show_items` fails explicitly, falls back to opening the parent folder.
 pub(super) fn execute(
     action: RevealAction,
-    show_items: impl FnOnce(&Path) -> Result<(), String>,
+    show_items: impl FnOnce(&Path) -> Result<(), ShowItemsError>,
     mut open_dir: impl FnMut(&Path),
 ) {
     match action {
         RevealAction::Select(path) => {
-            if let Err(err) = show_items(&path) {
-                log::info!("Unable to select {path:?} in the file manager ({err}); opening folder");
+            let result = show_items(&path);
+            if should_fall_back(&result) {
+                if let Err(ShowItemsError::Failed(err)) = &result {
+                    log::info!(
+                        "Unable to select {path:?} in the file manager ({err}); opening folder"
+                    );
+                }
                 if let Some(parent) = path.parent() {
                     open_dir(parent);
                 }
+            } else if result.is_err() {
+                // The give-up timer fired with no reply. The D-Bus call may still complete
+                // and open its own window, so opening the folder too could show two.
+                log::warn!(
+                    "Timed out waiting for the file manager to select {path:?}; not opening a second window"
+                );
             }
         }
         RevealAction::Open(dir) => open_dir(&dir),
@@ -110,14 +139,15 @@ pub(super) fn reveal_in_background(path: PathBuf) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn show_items(path: &Path) -> Result<(), String> {
+fn show_items(path: &Path) -> Result<(), ShowItemsError> {
     use std::time::Duration;
 
-    let uri = file_manager_uri(path).ok_or_else(|| "path is not absolute".to_string())?;
+    let uri = file_manager_uri(path)
+        .ok_or_else(|| ShowItemsError::Failed("path is not absolute".to_string()))?;
     let call = async move {
         let connection = zbus::Connection::session()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ShowItemsError::Failed(e.to_string()))?;
         connection
             .call_method(
                 Some("org.freedesktop.FileManager1"),
@@ -128,11 +158,13 @@ fn show_items(path: &Path) -> Result<(), String> {
             )
             .await
             .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| ShowItemsError::Failed(e.to_string()))
     };
+    // Give-up safety net only: a D-Bus call to an unresponsive file manager has no other
+    // completion signal. Fires -> log + no fallback (see `should_fall_back`).
     let timeout = async {
         async_io::Timer::after(Duration::from_secs(3)).await;
-        Err("timed out".to_string())
+        Err(ShowItemsError::TimedOut)
     };
     futures_lite::future::block_on(futures_lite::future::or(call, timeout))
 }
@@ -145,12 +177,14 @@ fn open_dir(dir: &Path) {
 }
 
 #[cfg(windows)]
-fn show_items(path: &Path) -> Result<(), String> {
+fn show_items(path: &Path) -> Result<(), ShowItemsError> {
     use command::windows::CommandExt as _;
     let mut cmd = command::blocking::Command::new("explorer.exe");
     cmd.raw_arg(explorer_select_arg(path));
     // explorer.exe returns a nonzero exit code even on success, so spawn and don't wait.
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| ShowItemsError::Failed(e.to_string()))
 }
 
 #[cfg(windows)]
