@@ -630,7 +630,7 @@ pub fn init_subshell_command_lines_with_markers(
         Some(ShellType::Nu) => {
             let raw_script =
                 init_subshell_raw_script(ShellType::Nu, &crate::ASSETS, vars, session_id, ctx);
-            nu_subshell_lines(&raw_script, session_id)
+            nu_subshell_lines_with_markers(&raw_script, session_id, marked)
         }
         None => vec![
             UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
@@ -783,6 +783,14 @@ const NU_SKIPPED_NOTICE: &str = "print $\"(char nl)Phosphor: subshell setup skip
 const NU_NEWLINE_TOKEN: &str = "@@NL@@";
 const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
 
+/// What a nushell prints after executing setup line `index` of the session `token`: the same OSC
+/// as [`setup_line_marker`], built from `char esc` / `char bel` (both long-standing `char` names)
+/// inside a string interpolation so the typed text holds no escape byte. `print -n` writes no
+/// newline. It follows a `;`, so the line stays one statement sequence (#1372).
+fn nu_setup_line_marker(token: u64, index: usize) -> String {
+    format!(" print -n $\"(char esc)]{SETUP_LINE_MARKER_OSC};{token};{index}(char bel)\"")
+}
+
 /// The lines typed into a running `nu` to run the stage-one subshell script `raw_script`.
 ///
 /// Nushell cannot evaluate a string, only `source` a file whose path is known at parse time, so
@@ -797,7 +805,18 @@ const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
 ///
 /// The script is only run when it arrived whole (its byte length matches) and the shell is not
 /// already bootstrapped; otherwise the file holds a notice, or nothing.
-fn nu_subshell_lines(raw_script: &str, session_id: SessionId) -> Vec<String> {
+///
+/// With `marked`, every line but the last ends in a [`nu_setup_line_marker`] (the last removes the
+/// temp file and the script variable; nothing after it needs pacing).
+///
+/// The unknown-shell probe (`shell_type == None`) cannot be marked: its two lines are written
+/// before the shell is identified, and a marker needs the shell's own syntax (`builtin printf`
+/// vs `print -n` vs PowerShell's `Write-Host`); the probe line is the one that identifies it.
+fn nu_subshell_lines_with_markers(
+    raw_script: &str,
+    session_id: SessionId,
+    marked: bool,
+) -> Vec<String> {
     let script = raw_script
         .replace('\r', NU_CARRIAGE_RETURN_TOKEN)
         .replace('\n', NU_NEWLINE_TOKEN);
@@ -841,6 +860,13 @@ fn nu_subshell_lines(raw_script: &str, session_id: SessionId) -> Vec<String> {
     ));
     lines.push(" source $_wbf".to_owned());
     lines.push(" rm -f $_wbf; hide-env -i _wbs".to_owned());
+    if marked {
+        let last = lines.len().saturating_sub(1);
+        for (index, line) in lines.iter_mut().enumerate().take(last) {
+            line.push(';');
+            line.push_str(&nu_setup_line_marker(session_id.as_u64(), index));
+        }
+    }
     lines
 }
 

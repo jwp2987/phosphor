@@ -3880,3 +3880,69 @@ fn marked_setup_lines_print_their_markers_in_a_real_shell() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// #1372: the nushell setup lines end in a marker (the same OSC 7771 as bash/zsh/fish, written in
+/// nushell syntax so the typed text holds no escape byte), except the last; each line is still
+/// one `;`-joined statement sequence under the tty line limit; an unmarked build is unchanged.
+#[test]
+fn marked_nu_setup_lines_end_in_a_nu_marker_except_the_last() {
+    let raw = "print 'x'\n".repeat(300);
+    let session = SessionId::from(77u64);
+    let plain = nu_subshell_lines_with_markers(&raw, session, false);
+    let marked = nu_subshell_lines_with_markers(&raw, session, true);
+    assert_eq!(plain.len(), marked.len());
+    assert!(marked.len() >= 4);
+    let last = marked.len() - 1;
+    for (index, (plain_line, marked_line)) in plain.iter().zip(&marked).enumerate() {
+        if index == last {
+            assert_eq!(plain_line, marked_line, "last line is unmarked");
+        } else {
+            assert!(marked_line.starts_with(plain_line.as_str()), "{index}");
+            assert!(
+                marked_line.ends_with(&format!(
+                    "; print -n $\"(char esc)]7771;77;{index}(char bel)\""
+                )),
+                "{index}: {marked_line}"
+            );
+        }
+        assert!(
+            !marked_line.contains('\u{1b}'),
+            "{index}: no escape byte typed"
+        );
+        assert!(
+            marked_line.starts_with(' '),
+            "{index}: stays out of history"
+        );
+    }
+    assert!(marked
+        .iter()
+        .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES));
+}
+
+/// #1372: typed into a real nushell, the marked lines print every marker in order and the script
+/// still runs. Skipped when nu (or python3, for the pty driver) is missing.
+#[test]
+#[cfg(unix)]
+fn marked_nu_setup_lines_print_their_markers_in_a_real_shell() {
+    let lines =
+        nu_subshell_lines_with_markers("print 'STAGE2-RAN'\n", SessionId::from(4242u64), true);
+    let steps: Vec<String> = lines.iter().map(|line| format!("{line}\r")).collect();
+    let Some(session) = run_nu_session(
+        "marker",
+        &[],
+        "$env.config.show_banner = false\n",
+        &[],
+        &steps,
+    ) else {
+        return;
+    };
+    let mut from = 0;
+    for index in 0..lines.len() - 1 {
+        let marker = format!("\u{1b}]7771;4242;{index}\u{7}");
+        let found = session.raw[from..]
+            .find(&marker)
+            .unwrap_or_else(|| panic!("marker {index} missing or out of order: {:?}", session.raw));
+        from += found + marker.len();
+    }
+    assert!(session.raw.contains("STAGE2-RAN"), "{:?}", session.raw);
+}
