@@ -355,6 +355,12 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
             }
+            ModelEvent::LineEditorReading { .. } => {
+                me.on_line_editor_reading_marker(ctx);
+            }
+            ModelEvent::ContinuationPrompt { .. } => {
+                me.on_continuation_prompt_marker(ctx);
+            }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
                     buffer: Default::default(),
@@ -677,6 +683,38 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.arm_typeahead_handoff_stale_count_reset(activity_generation, ctx);
             }
         }
+    }
+
+    /// The shell said its line editor is reading a line (`LineEditorReading`, #1390): an explicit
+    /// ready signal, which releases the keys held since the prompt's precmd (ConPTY, #1349) exactly
+    /// as the bracketed-paste enable does. It works where that one never comes (readline with
+    /// `enable-bracketed-paste off`), so the give-up cap of the hold is not reached there. The
+    /// hand-off's own account of the marker (idempotent per prompt, in stream order) was applied
+    /// on the model thread; releasing a hold twice, for the marker and for the enable, releases
+    /// it once.
+    fn on_line_editor_reading_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        let queued_hold = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_queued_prompt_hold_on_signal();
+        if let Some(hold_id) = queued_hold {
+            ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
+    }
+
+    /// The shell showed a continuation prompt (`ContinuationPrompt`, #1391): the hand-off
+    /// re-baselined its line counts on this event (model thread, in stream order); a request
+    /// decision that was waiting on counts that disagreed is decided again now, not after the
+    /// give-up of the stale counts.
+    fn on_continuation_prompt_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        self.retry_typeahead_handoff_request(ctx);
     }
 
     /// Re-runs a typeahead hand-off request decision that had to wait, if the shell's line

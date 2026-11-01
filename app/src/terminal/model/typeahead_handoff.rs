@@ -102,6 +102,28 @@ pub enum ShellPromptFact {
     Unknown,
 }
 
+/// What the shell's own line-editor markers say it is doing (#1390, #1391, #1392), applied on the
+/// model thread in the order the markers arrive in the pty stream. The platform sample
+/// ([`ShellPromptFact`]) is read ahead of the stream; this is the stream's own, ordered, account,
+/// so it is never newer than the output the app has parsed. A bootstrap that sends no markers
+/// leaves it [`Self::Unknown`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShellActivity {
+    /// No marker seen this session (an older bootstrap, or nothing yet).
+    #[default]
+    Unknown,
+    /// A Precmd was parsed and the line editor has not said it is reading yet.
+    Prompt,
+    /// The line editor said it is reading a primary-prompt line (`LineEditorReading`).
+    Reading,
+    /// The shell showed a continuation prompt (`ContinuationPrompt`): it consumed an Enter as part
+    /// of a line that goes on.
+    Continuation,
+    /// A Preexec was parsed after the last of those: a command (or a builtin such as `read -k`)
+    /// is running. A raw read in this state is not the line editor: it never sends the marker.
+    Running,
+}
+
 /// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
 /// `cat` owns the foreground, or a program is reading a password (canonical tty, echo off), in
 /// the top-level shell or a Phosphorized subshell. Unix only; where nothing is installed, or the
@@ -486,6 +508,15 @@ pub struct TypeaheadHandoff {
     /// (the queue was idle or mid-delivery): the view puts it behind the gate
     /// ([`Self::take_deferred_key_started`]).
     deferred_key_started: bool,
+    /// What the shell's markers say it is doing now (see [`ShellActivity`]).
+    shell_activity: ShellActivity,
+    /// The prompt sequence number of the last `LineEditorReading` applied, so a second marker for
+    /// the same prompt changes nothing.
+    reading_seq: Option<u64>,
+    /// A line-editor marker has been seen this session: the bootstrap sends them, so the
+    /// events (not the logged give-ups, which stay as the net) account for the shell's line
+    /// editor.
+    line_editor_markers_live: bool,
     /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
@@ -852,6 +883,56 @@ impl TypeaheadHandoff {
         });
     }
 
+    /// The shell's line editor said it is reading a line (model thread, in stream order after the
+    /// prompt's Precmd). Returns whether it is news: a second marker for the same prompt
+    /// (`seq`), or one older than the last Precmd's, changes nothing.
+    pub fn on_line_editor_reading(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
+        self.line_editor_markers_live = true;
+        let stale = match (seq, self.prompt_seq) {
+            (Some(seq), Some(prompt)) => prompt.session == session && seq < prompt.seq,
+            _ => false,
+        };
+        if stale || (self.shell_activity == ShellActivity::Reading && self.reading_seq == seq) {
+            return false;
+        }
+        self.shell_activity = ShellActivity::Reading;
+        self.reading_seq = seq;
+        true
+    }
+
+    /// The shell showed a continuation prompt (PS2): it consumed the Enter that ended the line
+    /// so far, which no Precmd and no Preexec answers (model thread, in stream order). The line
+    /// counts are re-baselined on this event instead of waiting for the logged give-up of the
+    /// stale counts: one unanswered Enter is answered. Returns whether the counts changed.
+    pub fn on_continuation_prompt(&mut self) -> bool {
+        self.line_editor_markers_live = true;
+        self.shell_activity = ShellActivity::Continuation;
+        if let HandoffState::PtyOwned {
+            enters_written,
+            precmds_seen,
+            ..
+        } = &mut self.state
+            && *enters_written > *precmds_seen
+        {
+            *precmds_seen += 1;
+            // A line the counts counted as unanswered was answered: a reset armed before this
+            // (which would treat every line as consumed) is void.
+            self.activity_generation = self.activity_generation.wrapping_add(1);
+            return true;
+        }
+        false
+    }
+
+    /// What the shell's markers say it is doing now.
+    pub fn shell_activity(&self) -> ShellActivity {
+        self.shell_activity
+    }
+
+    /// Whether this session's shell sends line-editor markers (one was seen).
+    pub fn line_editor_markers_live(&self) -> bool {
+        self.line_editor_markers_live
+    }
+
     /// The command that just finished was interactive (a program read the keys typed into it)
     /// (model thread, before the Precmd that follows it).
     pub fn note_interactive_command_finished(&mut self) {
@@ -948,6 +1029,10 @@ impl TypeaheadHandoff {
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
         self.interactive_command_finished = false;
+        // ... and may not send line-editor markers either.
+        self.shell_activity = ShellActivity::Unknown;
+        self.reading_seq = None;
+        self.line_editor_markers_live = false;
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -1379,6 +1464,8 @@ impl TypeaheadHandoff {
 
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
+        self.shell_activity = ShellActivity::Prompt;
+        self.reading_seq = None;
         self.activity_generation = self.activity_generation.wrapping_add(1);
         let now = Instant::now();
         self.last_activity_at = Some(now);
@@ -1412,6 +1499,7 @@ impl TypeaheadHandoff {
     /// started this command itself (a typeahead line), rather than the app writing it. Returns
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
+        self.shell_activity = ShellActivity::Running;
         self.activity_generation = self.activity_generation.wrapping_add(1);
         // The shell took a line: its line editor is not about to start.
         self.awaiting_line_editor_since = None;

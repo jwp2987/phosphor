@@ -3892,6 +3892,11 @@ impl ansi::Handler for TerminalModel {
 
     fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
         if let Some(session_id) = data.session_id {
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                // In stream order with the Precmd / Preexec that frame it, on this thread.
+                self.typeahead_handoff
+                    .on_line_editor_reading(data.session_id, data.seq);
+            }
             self.event_proxy
                 .send_terminal_event(Event::LineEditorReading {
                     session_id: SessionId::from(session_id),
@@ -3902,6 +3907,9 @@ impl ansi::Handler for TerminalModel {
 
     fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
         if let Some(session_id) = data.session_id {
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.typeahead_handoff.on_continuation_prompt();
+            }
             self.event_proxy
                 .send_terminal_event(Event::ContinuationPrompt {
                     session_id: SessionId::from(session_id),

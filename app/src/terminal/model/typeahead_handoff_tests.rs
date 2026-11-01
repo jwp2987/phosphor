@@ -2717,3 +2717,102 @@ fn a_given_up_report_deferral_hands_over_its_gate_and_forgets_it() {
         "the view takes the entries synchronously; no end is left behind"
     );
 }
+
+// ---- the shell's line-editor markers (#1390, #1391, #1392) -----------------------------------
+
+/// A hand-off in prompt-sequence mode that has parsed a Precmd, `seq` of the session.
+fn at_prompt_with_seq(session: u64, seq: u64) -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(session), Some(seq));
+    handoff
+}
+
+#[test]
+fn the_markers_are_applied_in_stream_order_and_a_second_one_for_a_prompt_changes_nothing() {
+    let mut handoff = at_prompt_with_seq(7, 3);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(!handoff.line_editor_markers_live());
+
+    assert!(handoff.on_line_editor_reading(Some(7), Some(3)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+    assert!(handoff.line_editor_markers_live());
+    // Idempotent per prompt: the same sequence number again is not news.
+    assert!(!handoff.on_line_editor_reading(Some(7), Some(3)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+
+    // The user's line runs: Preexec says a command (or a builtin) is running.
+    handoff.on_preexec(true);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    // A late duplicate of the OLD prompt's marker is older than the last Precmd's number only
+    // once the next Precmd is parsed; here it is the same prompt, which changes nothing new.
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(5));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(
+        !handoff.on_line_editor_reading(Some(7), Some(3)),
+        "a marker older than the last Precmd is stale"
+    );
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(handoff.on_line_editor_reading(Some(7), Some(5)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+}
+
+#[test]
+fn a_raw_read_after_preexec_has_no_marker_so_the_stream_still_says_running() {
+    // #1392: a builtin raw read (`read -k`) runs after the command's Preexec and never starts the
+    // line editor, so no `LineEditorReading` follows it.
+    let mut handoff = at_prompt_with_seq(7, 1);
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    handoff.on_preexec(true);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    assert!(handoff.line_editor_markers_live());
+}
+
+#[test]
+fn a_new_session_forgets_the_markers_of_the_last_one() {
+    let mut handoff = at_prompt_with_seq(7, 1);
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    handoff.on_new_session();
+    assert_eq!(handoff.shell_activity(), ShellActivity::Unknown);
+    assert!(!handoff.line_editor_markers_live());
+}
+
+/// #1391: a continued line (PS2) answers the Enter that ended the line so far with neither Precmd
+/// nor Preexec; the marker re-baselines the counts, once per continuation prompt.
+#[test]
+fn a_continuation_prompt_answers_one_unanswered_enter_by_event() {
+    let mut handoff = young_after_submit();
+    handoff.age_last_activity_for_test();
+    // `echo "a` Enter (the command), then `b"` Enter typed into the continued line.
+    type_and_flush(&mut handoff, b"b\"\r");
+    assert!(handoff.has_unanswered_lines());
+    let generation = match handoff.on_line_editor_active(true, true) {
+        ActiveDecision::DrainAndWait {
+            activity_generation,
+        }
+        | ActiveDecision::Wait {
+            activity_generation,
+        } => activity_generation,
+        other => panic!("unexpected decision {other:?}"),
+    };
+
+    assert!(handoff.on_continuation_prompt());
+    assert_eq!(handoff.shell_activity(), ShellActivity::Continuation);
+    assert!(handoff.line_editor_markers_live());
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 2,
+            precmds_seen: 1,
+        }
+    );
+    // The stale-count reset armed before the marker is void: the counts are not "all consumed".
+    assert!(!handoff.reset_stale_counts(generation));
+    // With nothing unanswered a continuation prompt changes no count.
+    let mut balanced = after_submit();
+    balanced.on_precmd();
+    assert!(!balanced.on_continuation_prompt());
+}
