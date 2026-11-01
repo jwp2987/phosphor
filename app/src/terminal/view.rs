@@ -2879,6 +2879,8 @@ pub struct TerminalView {
     /// stretches where the gate itself would let keys through (a banner printed before the
     /// remote shell is up), so the held keys are never overtaken by later ones.
     ssh_typeahead_holding: bool,
+    /// Mirrors `ssh_typeahead_holding` into the input, which vetoes an Enter while it is set.
+    ssh_typeahead_hold_flag: Rc<Cell<bool>>,
     /// The keys held while the ssh connect is in flight (#1292), exactly as typed.
     ssh_typeahead: SshTypeahead,
     /// When the last key was held; a prompt that appears mid-burst discards the burst's tail too.
@@ -4163,6 +4165,7 @@ impl TerminalView {
         });
 
         let input_position_id = input.read(ctx, |input, _| input.save_position_id());
+        let ssh_typeahead_hold_flag = input.read(ctx, |input, _| input.ssh_typeahead_hold_flag());
         ctx.subscribe_to_view(&input, move |me, _, event, ctx| {
             me.handle_input_event(event, ctx);
         });
@@ -4667,6 +4670,7 @@ impl TerminalView {
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
             ssh_typeahead_holding: false,
+            ssh_typeahead_hold_flag,
             ssh_typeahead: SshTypeahead::default(),
             ssh_typeahead_last_key_at: None,
             ssh_typeahead_discard_burst: false,
@@ -10488,7 +10492,7 @@ impl TerminalView {
         // #1292: hold the key. Once anything is held every later key is held too, even where the
         // gate alone would let it through (a banner before the remote shell is up), so order is
         // kept; the held keys go to the remote shell once it shows its first prompt.
-        self.ssh_typeahead_holding = true;
+        self.set_ssh_typeahead_holding(true);
         self.ssh_typeahead_last_key_at = Some(now);
         match characters {
             Some(chars) => {
@@ -10579,10 +10583,41 @@ impl TerminalView {
         true
     }
 
+    fn set_ssh_typeahead_holding(&mut self, holding: bool) {
+        self.ssh_typeahead_holding = holding;
+        self.ssh_typeahead_hold_flag.set(holding);
+    }
+
+    /// Moves text that reached the editor directly while keys were held into the hold, behind
+    /// what is already held (#1292). Once the remote shell's first prompt hands focus to the
+    /// editor, keys no longer pass through `hold_input_during_ssh_connect`; they type into the
+    /// editor until the held keys are delivered a moment later, and the delivery would then
+    /// insert the older keys AFTER them (`Necho ZQCON_agent_1`), and an Enter among them could
+    /// submit half a line to the agent. Everything the editor has was typed after all held keys.
+    fn absorb_editor_text_into_ssh_hold(&mut self, ctx: &mut ViewContext<Self>) {
+        let text = self.input.as_ref(ctx).buffer_text(ctx);
+        if text.is_empty() {
+            return;
+        }
+        self.input
+            .update(ctx, |input, ctx| input.replace_buffer_content("", ctx));
+        let outcome = self.ssh_typeahead.push(HeldInput::Typed(text));
+        self.note_ssh_typeahead_outcome(&outcome, ctx);
+    }
+
+    /// An Enter reached the editor while keys are held (#1292): it is held behind them.
+    fn hold_editor_enter_during_ssh_connect(&mut self, ctx: &mut ViewContext<Self>) {
+        self.absorb_editor_text_into_ssh_hold(ctx);
+        let outcome = self.ssh_typeahead.push(HeldInput::Key("\r".to_owned()));
+        self.note_ssh_typeahead_outcome(&outcome, ctx);
+        self.ssh_typeahead_last_key_at = Some(Instant::now());
+        self.arm_ssh_typeahead_poll(ctx);
+    }
+
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
     fn reset_ssh_typeahead(&mut self) {
         self.ssh_typeahead.clear();
-        self.ssh_typeahead_holding = false;
+        self.set_ssh_typeahead_holding(false);
         self.ssh_typeahead_last_key_at = None;
         self.ssh_typeahead_discard_burst = false;
         self.ssh_paste_to_hold = false;
@@ -10652,7 +10687,7 @@ impl TerminalView {
     /// shown in the input editor as text, never run, so nothing executes on the wrong host.
     fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
         warpui::profiling::zone!("typeahead_handoff");
-        self.ssh_typeahead_holding = false;
+        self.set_ssh_typeahead_holding(false);
         self.ssh_typeahead_last_key_at = None;
         self.ssh_paste_to_hold = false;
         if self.ssh_typeahead.is_empty() {
@@ -10660,6 +10695,7 @@ impl TerminalView {
             return;
         }
         if self.ssh_remote_prompt_seen {
+            self.absorb_editor_text_into_ssh_hold(ctx);
             let held = self.ssh_typeahead.take();
             self.ssh_typeahead.clear();
             self.log_ssh_typeahead_delivery(held.len());
@@ -26336,6 +26372,7 @@ impl TerminalView {
     fn handle_input_event(&mut self, event: &InputEvent, ctx: &mut ViewContext<Self>) {
         match event {
             InputEvent::Enter => self.clear_prompt_suggestions(ctx),
+            InputEvent::EnterDuringSshConnect => self.hold_editor_enter_during_ssh_connect(ctx),
             InputEvent::PageUp => self.page_up(ctx),
             InputEvent::PageDown => self.page_down(ctx),
             InputEvent::ExecuteCommand(event) => {

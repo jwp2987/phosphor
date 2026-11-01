@@ -248,6 +248,7 @@ use settings::{Setting as _, ToggleableSetting};
 use std::{
     any::Any,
     borrow::Cow,
+    cell::Cell,
     collections::HashMap,
     fmt::Write,
     ops::Range,
@@ -1108,6 +1109,9 @@ pub enum InputEmptyStateChangeReason {
 
 pub enum Event {
     AutosuggestionAccepted,
+    /// An Enter reached the editor while the terminal view holds the keys typed during an ssh
+    /// connect (#1292); nothing was submitted.
+    EnterDuringSshConnect,
     /// Enter on an empty input while an agent approval card awaits the user's decision: the
     /// terminal view focuses the card, so a second Enter (its Run binding) approves it (#1180).
     /// Enter never approves from the input itself.
@@ -2110,6 +2114,10 @@ pub struct Input {
     awaiting_multiline_submit_confirmation: bool,
     /// The user confirmed: the next shell submission skips the multi-line check.
     multiline_submit_confirmed: bool,
+    /// Set by the terminal view while it holds the keys typed during an ssh connect (#1292): an
+    /// Enter reaching the editor then is handed back to the view to hold, in order, instead of
+    /// submitting the part of the line the editor has.
+    ssh_typeahead_hold: Rc<Cell<bool>>,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
     /// The id given to the next [`VerdictWait`] (#1206).
@@ -3890,6 +3898,7 @@ impl Input {
             shell_command_submit_pending: false,
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
+            ssh_typeahead_hold: Rc::new(Cell::new(false)),
             verdict_wait: None,
             next_verdict_wait_id: 0,
             deferred_enter_activity: DeferredEnterActivity::default(),
@@ -8213,6 +8222,11 @@ impl Input {
         self.editor.update(ctx, |view, ctx| {
             view.clear_buffer_and_reset_undo_stack(ctx);
         });
+    }
+
+    /// The flag the terminal view sets while it holds ssh-connect typeahead (#1292).
+    pub(crate) fn ssh_typeahead_hold_flag(&self) -> Rc<Cell<bool>> {
+        self.ssh_typeahead_hold.clone()
     }
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
@@ -12995,6 +13009,13 @@ impl Input {
         warpui::input_order::log_hop("enter_begin", || {
             format!("deferred={}", self.running_deferred_enter)
         });
+        // #1292: keys typed during an ssh connect belong to the remote shell. An Enter that
+        // reached the editor meanwhile (focus moved to it before the held keys were delivered)
+        // must not submit the editor's part of the line; the view holds it behind the rest.
+        if self.ssh_typeahead_hold.get() {
+            ctx.emit(Event::EnterDuringSshConnect);
+            return;
+        }
         if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
             // If the @ context menu is open, Enter selects the highlighted item
             // instead of submitting the CLI agent input.
