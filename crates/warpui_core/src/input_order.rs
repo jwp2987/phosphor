@@ -303,3 +303,7 @@ mod tests {
         assert!(!take_frame_owed(&owed));
     }
 }
+
+#[cfg(test)]
+#[path = "input_order_snapshot_tests.rs"]
+mod snapshot_tests;

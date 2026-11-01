@@ -20,10 +20,10 @@
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use chrono::{DateTime, Local};
-use parking_lot::Mutex;
+use warpui_core::sync_shim::Mutex;
+use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::block::interactive_latch::InteractiveLatch;
 use super::block::interactive_prompt_candidate;
@@ -260,6 +260,12 @@ impl ModelInbox {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(shuttle, loom))))]
 #[path = "key_facts_tests.rs"]
 mod tests;
+
+// Interleaving tests under `RUSTFLAGS="--cfg shuttle"` / `"--cfg loom"` (see
+// `warpui_core::sync_shim`); a model build compiles these instead of the ordinary tests.
+#[cfg(all(test, any(shuttle, loom)))]
+#[path = "key_facts_model_tests.rs"]
+mod model_tests;

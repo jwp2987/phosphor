@@ -1,4 +1,5 @@
-use parking_lot::{Condvar, Mutex};
+use crate::sync_shim::atomic::{AtomicU64, AtomicUsize};
+use crate::sync_shim::{Condvar, Mutex};
 
 /// A system clipboard. Each platform implements this trait once, in one module, and keeps its
 /// quirks (X11 INCR and first-answer deadlines, Wayland offers, NSPasteboard promises, Win32
@@ -197,18 +198,20 @@ pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 
 
 /// Counts background reader threads that have started and not yet returned.
 pub struct ReaderTracker {
-    in_flight: std::sync::atomic::AtomicUsize,
+    in_flight: AtomicUsize,
     /// Bumped by [`ReaderTracker::abandon_pending`]: a reader created before the bump belongs to a
     /// paste that gave up on it (#1353 phase 6, INP-A4).
-    abandon_epoch: std::sync::atomic::AtomicU64,
+    abandon_epoch: AtomicU64,
 }
 
 impl ReaderTracker {
-    pub const fn new() -> Self {
+    crate::model_const_fn! {
+    pub fn new() -> Self {
         Self {
-            in_flight: std::sync::atomic::AtomicUsize::new(0),
-            abandon_epoch: std::sync::atomic::AtomicU64::new(0),
+            in_flight: AtomicUsize::new(0),
+            abandon_epoch: AtomicU64::new(0),
         }
+    }
     }
 
     pub fn in_flight(&self) -> usize {
@@ -260,7 +263,9 @@ pub const MAX_IN_FLIGHT_READERS: usize = 4;
 /// A read that returns later than this is logged as slow.
 const SLOW_READ: std::time::Duration = std::time::Duration::from_secs(5);
 
-static PASTE_READERS: ReaderTracker = ReaderTracker::new();
+crate::model_static! {
+    static PASTE_READERS: ReaderTracker = ReaderTracker::new();
+}
 
 /// Wraps a platform reader so a wedged one is visible and bounded: the read is logged when it
 /// returns long after it started, and once [`MAX_IN_FLIGHT_READERS`] readers are still blocked a
@@ -559,16 +564,18 @@ pub enum WriteOutcome {
 /// thread, so generations follow the user's order) and a write whose generation is older than
 /// one already applied to its target is dropped. Writes to one target are serialized.
 pub struct WriteOrder {
-    next: std::sync::atomic::AtomicU64,
+    next: AtomicU64,
     applied: [Mutex<u64>; 2],
 }
 
 impl WriteOrder {
-    pub const fn new() -> Self {
+    crate::model_const_fn! {
+    pub fn new() -> Self {
         Self {
-            next: std::sync::atomic::AtomicU64::new(0),
+            next: AtomicU64::new(0),
             applied: [Mutex::new(0), Mutex::new(0)],
         }
+    }
     }
 
     pub fn next_generation(&self) -> u64 {
@@ -595,7 +602,9 @@ impl WriteOrder {
     }
 }
 
-static WRITE_ORDER: WriteOrder = WriteOrder::new();
+crate::model_static! {
+    static WRITE_ORDER: WriteOrder = WriteOrder::new();
+}
 
 /// Writes that were started but have not finished. A read that follows a copy by less than the
 /// write takes must see the new text, so reads consult this before the system clipboard.
@@ -607,11 +616,13 @@ pub struct PendingWrites {
 }
 
 impl PendingWrites {
-    pub const fn new() -> Self {
+    crate::model_const_fn! {
+    pub fn new() -> Self {
         Self {
             writes: Mutex::new(Vec::new()),
             changed: Condvar::new(),
         }
+    }
     }
 
     pub fn add(
@@ -654,7 +665,9 @@ impl PendingWrites {
     }
 }
 
-static PENDING_WRITES: PendingWrites = PendingWrites::new();
+crate::model_static! {
+    static PENDING_WRITES: PendingWrites = PendingWrites::new();
+}
 
 /// The content of the newest background write to `target` that has not finished yet. Platform
 /// reads return this instead of the (stale) system clipboard, so a paste right after a copy
@@ -789,18 +802,22 @@ pub struct AvailabilityCache {
 }
 
 impl AvailabilityCache {
-    pub const fn new() -> Self {
-        const fn entry() -> Mutex<CacheEntry> {
-            Mutex::new(CacheEntry {
-                known: Availability::Unknown,
-                epoch: 0,
-                in_flight: false,
-                rerun: false,
-            })
+    crate::model_const_fn! {
+    pub fn new() -> Self {
+        crate::model_const_fn! {
+            fn entry() -> Mutex<CacheEntry> {
+                Mutex::new(CacheEntry {
+                    known: Availability::Unknown,
+                    epoch: 0,
+                    in_flight: false,
+                    rerun: false,
+                })
+            }
         }
         Self {
             entries: [entry(), entry()],
         }
+    }
     }
 
     fn entry(&self, target: ClipboardTarget) -> &Mutex<CacheEntry> {
@@ -856,7 +873,9 @@ impl AvailabilityCache {
     }
 }
 
-static AVAILABILITY: AvailabilityCache = AvailabilityCache::new();
+crate::model_static! {
+    static AVAILABILITY: AvailabilityCache = AvailabilityCache::new();
+}
 
 /// Frees the probe slot if the probe panics, so one bad probe cannot stop every later refresh.
 struct ProbeSlot<'a> {
@@ -1177,6 +1196,12 @@ pub mod deferred_reads {
     }
 }
 
-#[cfg(test)]
+// A shuttle / loom build compiles only the model tests (the ordinary ones build `static`
+// trackers in `const` contexts, which the checkers' primitives cannot).
+#[cfg(all(test, not(any(shuttle, loom))))]
 #[path = "clipboard_tests.rs"]
 mod tests;
+
+#[cfg(all(test, any(shuttle, loom)))]
+#[path = "clipboard_model_tests.rs"]
+mod model_tests;

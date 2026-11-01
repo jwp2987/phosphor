@@ -141,6 +141,14 @@ pub mod settings;
 pub mod settings_view;
 pub mod tab_configs;
 pub mod terminal;
+
+/// Dev-only re-exports for the benches and fuzz targets (feature `dev-support`; not API).
+#[cfg(feature = "dev-support")]
+#[doc(hidden)]
+pub mod dev_support {
+    pub use crate::terminal::input_queue::tests::ops::{Op, run_ops};
+    pub use crate::terminal::input_queue::*;
+}
 // Facade re-exporting app-crate + workspace types to the warp_tui front-end.
 // Feature-gated; Zap-adapted subset (cloud re-exports removed). See
 // specs/warp-oss-sync/SCOPE.md.

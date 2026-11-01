@@ -1119,3 +1119,7 @@ fn load_script(file_path: &str, assets: &dyn AssetProvider) -> String {
 #[cfg(test)]
 #[path = "bootstrap_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bootstrap_snapshot_tests.rs"]
+mod snapshot_tests;

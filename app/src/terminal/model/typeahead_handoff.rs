@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use warpui_core::sync_shim::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use instant::Instant;
 
@@ -2426,6 +2426,11 @@ fn scan_line_terminators(bytes: &[u8], mut dirty: bool) -> (u32, bool) {
     (enters, dirty)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(shuttle, loom))))]
 #[path = "typeahead_handoff_tests.rs"]
 mod tests;
+
+// Interleaving tests of the hand-off handle under `--cfg shuttle` / `--cfg loom`.
+#[cfg(all(test, any(shuttle, loom)))]
+#[path = "typeahead_handoff_model_tests.rs"]
+mod model_tests;

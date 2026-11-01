@@ -251,3 +251,7 @@ pub fn after_pty_attempt(
 #[cfg(test)]
 #[path = "pane_key_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pane_key_snapshot_tests.rs"]
+mod snapshot_tests;
