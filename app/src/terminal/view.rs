@@ -516,7 +516,7 @@ use crate::terminal::view::inline_banner::{
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
-    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeahead, SshTypeaheadPush, burst_continues,
+    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeahead, SshTypeaheadPush,
     delivery_waits_for_first_precmd,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
@@ -2940,11 +2940,6 @@ pub struct TerminalView {
     ssh_editor_key_hold: Rc<EditorKeyHold>,
     /// The keys held while the ssh connect is in flight (#1292), exactly as typed.
     ssh_typeahead: SshTypeahead,
-    /// When the last key was held; a prompt that appears mid-burst discards the burst's tail too.
-    ssh_typeahead_last_key_at: Option<Instant>,
-    /// A prompt arrived while the user was still typing a burst: keys that follow within
-    /// `SSH_TYPEAHEAD_BURST_GAP` are discarded with it instead of being answered into the prompt.
-    ssh_typeahead_discard_burst: bool,
     /// A held paste whose text the paste handler has still to store.
     ssh_paste_to_hold: bool,
     /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
@@ -4739,8 +4734,6 @@ impl TerminalView {
             ssh_typeahead_holding: false,
             ssh_editor_key_hold,
             ssh_typeahead: SshTypeahead::default(),
-            ssh_typeahead_last_key_at: None,
-            ssh_typeahead_discard_burst: false,
             ssh_paste_to_hold: false,
             ssh_typeahead_precmd_wait_since: None,
             ssh_typeahead_deadline_armed: None,
@@ -10552,27 +10545,10 @@ impl TerminalView {
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
         let gate_drops =
             dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        let now = Instant::now();
         // A host-key / password prompt appeared while keys were held: what was typed before it
         // existed may be a password, so it is discarded, never shown or delivered (#1113).
         if self.ssh_typeahead_holding && !gate_drops {
             self.discard_ssh_typeahead_on_prompt(ctx);
-        }
-        // The rest of a typing burst that the prompt cut in two goes with the head: its tail
-        // must not be answered into the prompt (or typed into the editor) on its own.
-        if self.ssh_typeahead_discard_burst {
-            if !gate_drops && burst_continues(self.ssh_typeahead_last_key_at, now) {
-                self.ssh_typeahead_last_key_at = Some(now);
-                if matches!(characters, Some("\r" | "\n" | "\r\n")) {
-                    self.ssh_typeahead_discard_burst = false;
-                    self.ssh_typeahead_last_key_at = None;
-                }
-                warpui::input_order::log_key_hop("kh_hold_exit", || {
-                    "branch=discarded_burst_tail".to_owned()
-                });
-                return true;
-            }
-            self.ssh_typeahead_discard_burst = false;
         }
         self.log_ssh_drop_state(if gate_drops {
             "key_gate_holds"
@@ -10616,7 +10592,6 @@ impl TerminalView {
         // Keys the editor queued came before this one.
         self.drain_editor_keys_into_ssh_hold(ctx);
         self.set_ssh_typeahead_holding(true);
-        self.ssh_typeahead_last_key_at = Some(now);
         match characters {
             Some(chars) => {
                 let input = if control_sequence {
@@ -10692,14 +10667,9 @@ impl TerminalView {
             return false;
         }
         let had_keys = !self.ssh_typeahead.is_empty();
-        let last_key_at = self.ssh_typeahead_last_key_at;
-        let mid_burst = burst_continues(last_key_at, Instant::now());
+        // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
+        // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
         self.reset_ssh_typeahead();
-        self.ssh_typeahead_discard_burst = had_keys && mid_burst;
-        if self.ssh_typeahead_discard_burst {
-            // The burst's tail is recognised by its gap to the last key, which the reset cleared.
-            self.ssh_typeahead_last_key_at = last_key_at;
-        }
         if had_keys {
             self.show_ssh_typing_toast(
                 "Text typed before the SSH prompt appeared was discarded",
@@ -10749,7 +10719,6 @@ impl TerminalView {
             let outcome = self.ssh_typeahead.push(input);
             self.note_ssh_typeahead_outcome(&outcome, ctx);
         }
-        self.ssh_typeahead_last_key_at = Some(Instant::now());
         self.schedule_ssh_typeahead_give_up(ctx);
     }
 
@@ -10759,8 +10728,6 @@ impl TerminalView {
         self.ssh_editor_key_hold.clear();
         self.set_ssh_typeahead_holding(false);
         self.ssh_editor_key_hold.end_settle();
-        self.ssh_typeahead_last_key_at = None;
-        self.ssh_typeahead_discard_burst = false;
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
     }
@@ -10906,7 +10873,6 @@ impl TerminalView {
             )
         });
         self.set_ssh_typeahead_holding(false);
-        self.ssh_typeahead_last_key_at = None;
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
         self.drain_editor_keys_into_ssh_hold(ctx);

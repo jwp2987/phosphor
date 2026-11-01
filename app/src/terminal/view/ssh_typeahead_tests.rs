@@ -100,18 +100,6 @@ fn unexecuted_text_follows_edits_and_never_runs_anything() {
     assert_eq!(buffer.unexecuted_text(), "a\nb");
 }
 
-#[test]
-fn burst_continues_only_for_a_quick_follow_up() {
-    let now = Instant::now();
-    assert!(!burst_continues(None, now));
-    assert!(burst_continues(Some(now), now));
-    assert!(burst_continues(
-        Some(now),
-        now + SSH_TYPEAHEAD_BURST_GAP - Duration::from_millis(1)
-    ));
-    assert!(!burst_continues(Some(now), now + SSH_TYPEAHEAD_BURST_GAP));
-}
-
 /// #1332: the held Enter was delivered at the `Bootstrapped` hook, before the first prompt's Precmd
 /// was processed, and refused (`HistoryNotAppendable`). Delivery waits while that is the only
 /// obstacle, and never longer than the cap.

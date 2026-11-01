@@ -11,18 +11,12 @@
 //! its `Debug` output shows only counts, and callers log lengths at most.
 
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Most bytes held for one connect. A connect that hangs must not grow the buffer without limit;
 /// past this the whole buffer is dropped (a truncated command line must never run) and further
 /// keys of that connect are ignored.
 pub(super) const SSH_TYPEAHEAD_MAX_BYTES: usize = 64 * 1024;
-
-/// A key arriving this soon after the previous held key belongs to the same typing burst. When a
-/// prompt appears in the middle of a burst the rest of it is discarded with the head, so a tail
-/// is not answered into the prompt (or typed into the editor) on its own. A person reacting to a
-/// prompt needs far longer.
-pub(super) const SSH_TYPEAHEAD_BURST_GAP: Duration = Duration::from_millis(200);
 
 /// Give-up cap (#1332, #1348): the longest the held keys wait, once the remote shell has shown its
 /// first prompt, for the session to become able to take a command (its history registered). The
@@ -199,11 +193,6 @@ impl SshTypeahead {
         }
         text.trim_end_matches('\n').to_owned()
     }
-}
-
-/// Whether a key arriving at `now` continues a typing burst whose last key was at `last_key`.
-pub(super) fn burst_continues(last_key: Option<Instant>, now: Instant) -> bool {
-    last_key.is_some_and(|at| now.saturating_duration_since(at) < SSH_TYPEAHEAD_BURST_GAP)
 }
 
 #[cfg(test)]
