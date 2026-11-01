@@ -197,7 +197,10 @@ fn an_older_own_write_is_an_echo_only_while_a_newer_one_is_pending() {
     // v = 4 waits out the 60 s debounce: the file legitimately still holds v = 3.
     writer.queue("v = 4".to_owned()).unwrap();
     assert!(writer.is_recent_write(b"v = 3"));
-    assert!(writer.is_recent_write(b"v = 1"));
+    // Only the newest two writes can be on disk; v = 1 and v = 2 are a user's hand edit even
+    // while a write is pending (#1253).
+    assert!(!writer.is_recent_write(b"v = 1"));
+    assert!(!writer.is_recent_write(b"v = 2"));
     writer.discard_pending();
     assert!(!writer.is_recent_write(b"v = 1"));
     assert!(writer.is_recent_write(b"v = 3"));

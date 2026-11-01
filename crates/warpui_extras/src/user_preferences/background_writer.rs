@@ -24,9 +24,11 @@ use sha2::{Digest, Sha256};
 /// How long a pending write waits for newer ones to replace it.
 pub(super) const WRITE_DEBOUNCE: Duration = Duration::from_millis(150);
 
-/// How many of our own recent writes are remembered, so the file watcher's echo of an
-/// older write is recognised even after a newer one has been queued.
-const RECENT_WRITES_KEPT: usize = 8;
+/// How many of our own recent writes are remembered: the newest, and the one before it. While the
+/// newest is in flight or pending, the file holds one of exactly those two, so nothing older can
+/// be the watcher's echo; remembering more only let a user's hand edit that happened to equal an
+/// older write be mistaken for one (#1253).
+const RECENT_WRITES_KEPT: usize = 2;
 
 /// How long after a failed write the next attempt waits; doubled per consecutive failure up to
 /// [`WRITE_RETRY_DELAY_MAX`]. A write that failed (disk full, a momentarily read-only mount) is
