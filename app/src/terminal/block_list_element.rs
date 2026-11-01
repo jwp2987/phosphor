@@ -715,7 +715,7 @@ impl BlockListHoverState {
 
 /// Whether the terminal takes a key. The live focus decides alone whenever it is known; the
 /// render-time snapshot is only the fallback (#934).
-fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
+pub(crate) fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
     live_focus.unwrap_or(snapshot_focused)
 }
 
@@ -748,6 +748,54 @@ fn terminal_takes_unclaimed_held_key(
     // narrow rule (focus on the input only).
     let wide = live_terminal_focus == Some(true) && ssh_rescue_wide_enabled();
     live_input_focus == Some(true) || wide
+}
+
+/// #1397: what to do with a printable key that no claim rule of a terminal element took.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum UnclaimedKey {
+    /// Focus is inside this terminal on a view that takes no text itself: hand the key to the
+    /// terminal view's normal routing, so it is delivered instead of vanishing.
+    Rescue,
+    /// Not ours (another pane, the focused editor, the find bar): do not consume it.
+    Propagate,
+}
+
+pub(crate) fn unclaimed_key_route(
+    live_terminal_focus: Option<bool>,
+    live_editor_focus: Option<bool>,
+    focus_in_own_text_view: bool,
+) -> UnclaimedKey {
+    if live_terminal_focus == Some(true)
+        && live_editor_focus != Some(true)
+        && !focus_in_own_text_view
+    {
+        UnclaimedKey::Rescue
+    } else {
+        UnclaimedKey::Propagate
+    }
+}
+
+/// Logs (WARN, at most once every 5 s, never the key's text) that a key was unclaimed, so a
+/// silent drop cannot hide. `rescued` says it was delivered anyway. Rate limiting a log line is
+/// not behaviour driven by time.
+pub(crate) fn warn_unclaimed_key(site: &'static str, rescued: bool, focus: Option<bool>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST_WARN_MS: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let last = LAST_WARN_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 5_000
+        || LAST_WARN_MS
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    log::warn!(
+        "key unclaimed in {site}: rescued={rescued} terminal_subtree_focus={}",
+        warpui::input_order::describe_opt(focus)
+    );
 }
 
 /// `PHOSPHOR_SSH_RESCUE_WIDE=0` turns the #1394 widening off (kill switch).
@@ -802,6 +850,8 @@ pub struct BlockListElement {
     input_view_id: EntityId,
     /// See `TerminalViewRenderContext::input_editor_view_id` (#1339).
     input_editor_view_id: EntityId,
+    /// See `TerminalViewRenderContext::own_text_view_ids` (#1397).
+    own_text_view_ids: Vec<EntityId>,
     /// See `TerminalViewRenderContext::ssh_key_hold` (#1332).
     ssh_key_hold: Rc<crate::editor::EditorKeyHold>,
     is_terminal_selecting: bool,
@@ -1177,6 +1227,7 @@ impl BlockListElement {
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
             input_view_id: terminal_view_render_context.input_view_id,
             input_editor_view_id: terminal_view_render_context.input_editor_view_id,
+            own_text_view_ids: terminal_view_render_context.own_text_view_ids,
             ssh_key_hold: terminal_view_render_context.ssh_key_hold,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
@@ -1656,10 +1707,35 @@ impl BlockListElement {
                 claimed && !chars.is_empty()
             )
         });
-        if claimed && !chars.is_empty() {
-            ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+        if chars.is_empty() {
+            return false;
         }
-        true
+        if claimed {
+            ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+            return true;
+        }
+        // #1397: nobody claimed it. Never consume it silently: deliver it when focus is inside
+        // this terminal on a view that takes no text itself, else let it propagate.
+        let terminal_focus = ctx.live_focus_of(self.terminal_view_id);
+        let in_own_text_view = self
+            .own_text_view_ids
+            .iter()
+            .any(|id| ctx.live_focus_of(*id) == Some(true));
+        let editor_focus = ctx.live_focus_of(self.input_editor_view_id);
+        match unclaimed_key_route(terminal_focus, editor_focus, in_own_text_view) {
+            UnclaimedKey::Rescue => {
+                warn_unclaimed_key("block_list typed_characters", true, terminal_focus);
+                ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+                true
+            }
+            UnclaimedKey::Propagate => {
+                // Nothing focused at all would drop it everywhere; log that case.
+                if terminal_focus.is_none() {
+                    warn_unclaimed_key("block_list typed_characters", false, terminal_focus);
+                }
+                false
+            }
+        }
     }
 
     fn set_marked_text(
@@ -1673,15 +1749,18 @@ impl BlockListElement {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
             });
+            return true;
         }
-        true
+        // #1397: not delivered, so not consumed.
+        false
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
         if self.is_terminal_focused {
             ctx.dispatch_typed_action(TerminalAction::ClearMarkedText);
+            return true;
         }
-        true
+        false
     }
 
     fn ctrl_d(&self, ctx: &mut EventContext) -> bool {
@@ -5737,13 +5816,12 @@ mod tests {
         // The same key offered to both: exactly one of them takes it.
         for editor_focus in [Some(true), Some(false)] {
             let editor_takes = editor_focus.unwrap_or(false);
-            let terminal_takes =
-                super::terminal_takes_unclaimed_held_key(
-                    true,
-                    Some(true),
-                    editor_focus,
-                    Some(true),
-                );
+            let terminal_takes = super::terminal_takes_unclaimed_held_key(
+                true,
+                Some(true),
+                editor_focus,
+                Some(true),
+            );
             assert_ne!(
                 editor_takes, terminal_takes,
                 "editor focus {editor_focus:?}"
@@ -5781,6 +5859,19 @@ mod tests {
     /// moments before the remote shell's first prompt: the key used to be claimed by nobody and
     /// lost from the held line. It is taken now, while the hold is active, and not when focus is
     /// in another pane or the editor holds it.
+    #[test]
+    fn unclaimed_key_is_rescued_or_propagated_never_swallowed() {
+        use super::{unclaimed_key_route as route, UnclaimedKey::*};
+        // Focus on a terminal child that takes no text: delivered.
+        assert_eq!(route(Some(true), Some(false), false), Rescue);
+        // The focused editor, the find bar / filter editor: theirs, not consumed here.
+        assert_eq!(route(Some(true), Some(true), false), Propagate);
+        assert_eq!(route(Some(true), Some(false), true), Propagate);
+        // Another pane or window, or nothing focused: not consumed.
+        assert_eq!(route(Some(false), Some(false), false), Propagate);
+        assert_eq!(route(None, None, false), Propagate);
+    }
+
     #[test]
     fn key_with_focus_on_another_terminal_child_is_held_not_dropped() {
         // Focus is inside the terminal view, outside the input.

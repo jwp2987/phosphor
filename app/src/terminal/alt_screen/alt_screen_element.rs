@@ -209,10 +209,24 @@ impl AltScreenElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused && !chars.is_empty() {
+        // #1397: the live focus decides (the render snapshot is stale right after a focus change,
+        // #934), and a key that is not delivered is not consumed.
+        let focused = crate::terminal::block_list_element::terminal_accepts_keys(
+            self.is_terminal_focused,
+            ctx.live_focus_is_exactly(self.terminal_view_id),
+        );
+        if focused && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+            return true;
         }
-        true
+        if !chars.is_empty() && ctx.live_focus_of(self.terminal_view_id).is_none() {
+            crate::terminal::block_list_element::warn_unclaimed_key(
+                "alt_screen typed_characters",
+                false,
+                None,
+            );
+        }
+        false
     }
 
     fn set_marked_text(
@@ -226,15 +240,17 @@ impl AltScreenElement {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
             });
+            return true;
         }
-        true
+        false
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
         if self.is_terminal_focused {
             ctx.dispatch_typed_action(TerminalAction::ClearMarkedText);
+            return true;
         }
-        true
+        false
     }
 
     fn drag_and_drop_file(&mut self, paths: &[String], ctx: &mut EventContext) -> bool {
