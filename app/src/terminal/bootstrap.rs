@@ -579,6 +579,21 @@ pub fn init_subshell_command_lines(
     session_id: SessionId,
     ctx: &AppContext,
 ) -> Vec<String> {
+    init_subshell_command_lines_with_markers(shell_type, vars, session_id, false, ctx)
+}
+
+/// [`init_subshell_command_lines`], optionally with a setup-line marker after every line but the
+/// last (bash, zsh and fish only; other shells ignore `marked`). The marker is an OSC the shell
+/// prints once it has *executed* that line (`ESC ] 7771 ; <session id> ; <line index> BEL`, see
+/// [`setup_line_marker`]), so the app can write line N+1 when line N is known to be consumed
+/// instead of after a fixed delay.
+pub fn init_subshell_command_lines_with_markers(
+    shell_type: Option<ShellType>,
+    vars: &[EnvVar],
+    session_id: SessionId,
+    marked: bool,
+    ctx: &AppContext,
+) -> Vec<String> {
     match shell_type {
         Some(ShellType::PowerShell) => {
             let subshell_script = init_subshell_script_for_shell(
@@ -606,7 +621,11 @@ pub fn init_subshell_command_lines(
         Some(shell_type @ (ShellType::Bash | ShellType::Zsh | ShellType::Fish)) => {
             let raw_script =
                 init_subshell_raw_script(shell_type, &crate::ASSETS, vars, session_id, ctx);
-            chunked_eval_lines(shell_type, &raw_script)
+            chunked_eval_lines_with_markers(
+                shell_type,
+                &raw_script,
+                marked.then(|| session_id.as_u64()),
+            )
         }
         Some(ShellType::Nu) => {
             let raw_script =
@@ -653,8 +672,35 @@ fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
 /// also stops holding input after a while (#960). It is one `printf` with the count as an argument.
 const SKIPPED_NOTICE: &str = "builtin printf '\\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\\n' \"${#_wbs}\"";
 
+/// The OSC number of the setup-line marker (private; nothing else uses it).
+pub const SETUP_LINE_MARKER_OSC: &str = "7771";
+
+/// What a bash / zsh / fish prints after executing setup line `index` of the session `token`.
+/// `printf` is quoted so the text typed into the shell holds no escape byte.
+fn setup_line_marker(token: u64, index: usize) -> String {
+    format!(" builtin printf '\\e]{SETUP_LINE_MARKER_OSC};{token};{index}\\a'")
+}
+
+/// Whether the old timer-paced bootstrap (one fixed delay per typed line, a fixed wait before the
+/// pending command / rc-file / auto-warpify bootstrap) is wanted instead of the event-driven one:
+/// `PHOSPHOR_BOOTSTRAP_TIMED=1`. A kill switch for the events-not-timers rework (#1354).
+pub fn bootstrap_timed() -> bool {
+    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TIMED.get_or_init(|| std::env::var("PHOSPHOR_BOOTSTRAP_TIMED").is_ok_and(|v| v == "1"))
+}
+
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
+    chunked_eval_lines_with_markers(shell_type, raw_script, None)
+}
+
+/// [`chunked_eval_lines`]; with `marker_token` every line but the last ends in a
+/// [`setup_line_marker`] (the last one evaluates the script, which ends the typed setup).
+fn chunked_eval_lines_with_markers(
+    shell_type: ShellType,
+    raw_script: &str,
+    marker_token: Option<u64>,
+) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();
     for ch in raw_script.chars() {
@@ -720,6 +766,13 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
             " [ -z $WARP_BOOTSTRAPPED ] && contains -- (string length -- $_wbs) {chars} {bytes} && eval $_wbs; set -e _wbs"
         ),
     });
+    if let Some(token) = marker_token {
+        let last = lines.len().saturating_sub(1);
+        for (index, line) in lines.iter_mut().enumerate().take(last) {
+            line.push(';');
+            line.push_str(&setup_line_marker(token, index));
+        }
+    }
     lines
 }
 

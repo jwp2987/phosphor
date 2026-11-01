@@ -209,6 +209,15 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
+    /// The chunks of a paced bootstrap write (container / relay subshell) that are not yet
+    /// written, oldest first. Chunk k+1 is only written by the pacing step chained behind chunk
+    /// k, so there is exactly one pending step and nothing to race.
+    paced_write_queue: VecDeque<Vec<u8>>,
+    /// Bumped to cancel the paced write in flight (a ^C, the pty shutting down, the shell
+    /// exiting, a newer bootstrap): the step already scheduled sees the new value and writes
+    /// nothing, so no chunk (nor the submit CR it ends in) is typed into whatever owns the pty
+    /// afterwards.
+    paced_write_generation: u64,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
     /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
     #[cfg(test)]
@@ -281,8 +290,12 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::EndTmuxControlMode) => {
                 me.tmux_control_mode = None;
             }
-            ModelEvent::Exit { .. } if me.handoff_held_command_pending => {
-                me.drop_held_handoff_command();
+            ModelEvent::Exit { .. } => {
+                // The shell is gone: the rest of a paced bootstrap has nowhere to go.
+                me.cancel_paced_writes();
+                if me.handoff_held_command_pending {
+                    me.drop_held_handoff_command();
+                }
             }
             ModelEvent::HonorPS1OutOfSync => {
                 // We force re-sync the PS1 state of Zap settings with the shell's environment variable, $WARP_HONOR_PS1, via
@@ -466,6 +479,8 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
+            paced_write_queue: VecDeque::new(),
+            paced_write_generation: 0,
             #[cfg(test)]
             shutdown_requested: false,
         }
@@ -1090,6 +1105,66 @@ impl<T: EventLoopSender> PtyController<T> {
         self.write_bytes(&[escape_sequences::C0::CR][..], ctx);
     }
 
+    /// Writes `chunks` to the pty in order, the first now and each next one `gap` after the
+    /// previous, as ONE cancellable sequence (a newer call, [`Self::cancel_paced_writes`]
+    /// replaces / drops what is left).
+    ///
+    /// The gap is flow control for a user-space pty relay (`docker exec -it`, `sudo -i`, `script`)
+    /// that deadlocks when flooded (#960): how fast the relay consumes the input is not
+    /// observable from here (the echo it produces is not byte-exact and not guaranteed), so this
+    /// is the one place the bootstrap stays paced by time. It is never what decides *whether* a
+    /// chunk is written: a ^C, the pty shutting down, the shell exiting or a newer bootstrap
+    /// bumps `paced_write_generation`, and nothing more is written (previously every chunk was a
+    /// free-standing timer that typed itself into the live shell regardless).
+    #[cfg(feature = "local_fs")]
+    fn start_paced_writes(
+        &mut self,
+        chunks: Vec<Vec<u8>>,
+        gap: Duration,
+        ctx: &mut ModelContext<PtyController<T>>,
+    ) {
+        self.cancel_paced_writes();
+        let generation = self.paced_write_generation;
+        self.paced_write_queue = chunks.into();
+        self.write_next_paced_chunk(generation, gap, ctx);
+    }
+
+    /// One step of [`Self::start_paced_writes`]: write the next chunk and chain the one after it.
+    #[cfg(feature = "local_fs")]
+    fn write_next_paced_chunk(
+        &mut self,
+        generation: u64,
+        gap: Duration,
+        ctx: &mut ModelContext<PtyController<T>>,
+    ) {
+        if generation != self.paced_write_generation {
+            return;
+        }
+        let Some(chunk) = self.paced_write_queue.pop_front() else {
+            return;
+        };
+        self.write_bytes(chunk, ctx);
+        // `write_bytes` of a lone ^C cancels, but a chunk is never one; re-check anyway.
+        if generation != self.paced_write_generation || self.paced_write_queue.is_empty() {
+            return;
+        }
+        ctx.spawn(Timer::after(gap), move |me, _, ctx| {
+            me.write_next_paced_chunk(generation, gap, ctx)
+        });
+    }
+
+    /// Drops what is left of a paced bootstrap write (see [`Self::start_paced_writes`]).
+    fn cancel_paced_writes(&mut self) {
+        self.paced_write_generation = self.paced_write_generation.wrapping_add(1);
+        self.paced_write_queue.clear();
+    }
+
+    /// Test-only: how many chunks of a paced write are still unwritten.
+    #[cfg(test)]
+    pub fn paced_writes_remaining(&self) -> usize {
+        self.paced_write_queue.len()
+    }
+
     #[cfg(feature = "local_fs")]
     fn write_bootstrap_script_to_shell(
         &mut self,
@@ -1180,12 +1255,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 last.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
                 last.push(escape_sequences::C0::CR);
             }
-            for (index, chunk) in chunks.into_iter().enumerate() {
-                ctx.spawn(
-                    Timer::after(CONTAINER_BOOTSTRAP_CHUNK_DELAY * index as u32),
-                    move |me, _, ctx| me.write_bytes(chunk, ctx),
-                );
-            }
+            self.start_paced_writes(chunks, CONTAINER_BOOTSTRAP_CHUNK_DELAY, ctx);
         } else if pending_session_info.subshell_info.is_some() {
             // #960: a subshell started through a user-space pty relay (`sudo -i`, `sudo su -`,
             // `script`, ...) deadlocks when ~120KB of script is flooded at it in one burst. The
@@ -1214,16 +1284,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
                 None => bootstrap::subshell_bootstrap_chunks(&bootstrap),
             };
-            for (index, chunk) in chunks.into_iter().enumerate() {
-                if index == 0 {
-                    self.write_bytes(chunk, ctx);
-                    continue;
-                }
-                ctx.spawn(
-                    Timer::after(SUBSHELL_BOOTSTRAP_CHUNK_DELAY * index as u32),
-                    move |me, _, ctx| me.write_bytes(chunk, ctx),
-                );
-            }
+            self.start_paced_writes(chunks, SUBSHELL_BOOTSTRAP_CHUNK_DELAY, ctx);
         } else {
             // #1172: a bash over ssh that can take a counted raw read gets the body of the
             // bootstrap that way, not typed through its line editor.
@@ -1677,7 +1738,9 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
     /// tty would hand to the program as data (#1001). Falls back to the byte.
     pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
-        // Whatever of a big paste is still waiting to be written must not outlive the interrupt.
+        // Whatever of a big paste is still waiting to be written must not outlive the interrupt,
+        // nor the rest of a paced bootstrap.
+        self.cancel_paced_writes();
         self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
@@ -1697,6 +1760,7 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             self.shutdown_requested = true;
         }
+        self.cancel_paced_writes();
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
@@ -1768,6 +1832,9 @@ impl<T: EventLoopSender> PtyController<T> {
             &write,
             PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
         );
+        if is_interrupt {
+            self.cancel_paced_writes();
+        }
 
         // A paste is streamed by the event loop a tty-buffer at a time (the remote program or ssh
         // sets the pace; nothing is dropped or split). It is tagged cancellable so a ^C stops

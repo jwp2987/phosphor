@@ -1050,6 +1050,22 @@ where
                 unhandled(params);
             }
 
+            // Setup-line marker: the typed subshell setup line `index` of setup `token` has been
+            // executed by the shell. Format: OSC 7771 ; <token> ; <index> BEL.
+            b"7771" => {
+                let parsed = (params.len() == 3)
+                    .then(|| {
+                        let token = str::from_utf8(params[1]).ok()?.parse::<u64>().ok()?;
+                        let index = str::from_utf8(params[2]).ok()?.parse::<usize>().ok()?;
+                        Some((token, index))
+                    })
+                    .flatten();
+                match parsed {
+                    Some((token, index)) => self.handler.setup_line_consumed(token, index),
+                    None => unhandled(params),
+                }
+            }
+
             // Set color index.
             b"4" => {
                 if params.len() > 1 && !params.len().is_multiple_of(2) {

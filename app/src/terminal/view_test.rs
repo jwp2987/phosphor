@@ -15008,6 +15008,10 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
                 block_id,
                 remaining_lines: 1,
                 held_user_bytes: Vec::new(),
+                pending_lines: VecDeque::new(),
+                marker_token: None,
+                awaiting_marker: 0,
+                line_delay: Duration::from_millis(30),
             });
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
@@ -19665,5 +19669,217 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
             view.handle_terminal_wakeup(Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
         });
+    })
+}
+
+/// Subscribes to the bytes the view writes to the pty.
+fn collect_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } = event {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+        });
+    });
+    pty_writes
+}
+
+/// How many typed setup lines (each followed by a CR write) have reached the pty.
+fn setup_lines_written(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> usize {
+    writes
+        .borrow()
+        .iter()
+        .flatten()
+        .filter(|b| **b == b'\r')
+        .count()
+}
+
+/// #1354: line N+1 of a bash / zsh / fish subshell setup is written when the shell printed line
+/// N's marker, never because time passed. Before, the lines were `30 ms * (i + 1)` timers, so
+/// every line was out ~100 ms after the first whatever the shell had consumed.
+#[test]
+fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+            view.subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("a bash setup is paced by markers")
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the first line");
+
+        // However long the shell takes, and however much output arrives, nothing else is written.
+        warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("some rc output\r\n");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "no marker, no line");
+
+        // A marker of another setup, or of a later line, releases nothing.
+        terminal.update(&mut app, |view, ctx| {
+            let stale = format!("\x1b]7771;{};0\x07\x1b]7771;{token};5\x07", token + 1);
+            view.model.lock().process_bytes(stale.as_str());
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1);
+
+        // The marker of line 0 releases exactly line 1.
+        terminal.update(&mut app, |view, ctx| {
+            let marker = format!("\x1b]7771;{token};0\x07");
+            view.model.lock().process_bytes(marker.as_str());
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            // A second wakeup for the same marker does not write the next line too.
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 2);
+    })
+}
+
+/// #1354: the bootstrap of an auto-warpified subshell goes in at the subshell's first prompt, however
+/// long that takes -- a subshell slower than the old fixed 1 s still gets it, once, after its
+/// prompt, and nothing before.
+#[test]
+fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.arm_awaiting_subshell_prompt(
+                SubshellPromptTrigger::AutoWarpify {
+                    shell_type: ShellType::Bash,
+                },
+                ctx,
+            );
+        });
+        // Slower than the old AUTO_WARPIFY_DELAY, silent: nothing is written.
+        warpui::r#async::Timer::after(Duration::from_millis(1200)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "no prompt yet");
+
+        // A banner line that ends in a newline is not a prompt.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("loading profile\r\n");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a finished line is no prompt"
+        );
+
+        // The prompt: the bootstrap goes in.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("bash-5.1$ ");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert!(!pty_writes.borrow().is_empty(), "bootstrap at the prompt");
+        let after_prompt = pty_writes.borrow().len();
+
+        // Exactly once: more output does not start a second one.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("x");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert!(view.awaiting_subshell_prompt.is_none());
+        });
+        assert_eq!(pty_writes.borrow().len(), after_prompt);
+    })
+}
+
+/// #1354: a deferred setup (the shell showed `Password:`) is released by the output that shows the
+/// prompt gone after the answer -- an output event -- not by the next 250 ms poll.
+#[test]
+fn deferred_subshell_setup_is_released_by_the_output_after_the_answer() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Password: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(view.subshell_setup_deferred.is_some());
+            view.write_user_bytes_to_pty(b"secret".to_vec(), ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+        });
+        pty_writes.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            // The shell took the answer and printed its prompt; no poll runs here.
+            view.model.lock().process_bytes("\r\nme@host ~ % ");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert!(
+                view.subshell_setup_deferred.is_none(),
+                "released by the output"
+            );
+        });
+        assert!(
+            !pty_writes.borrow().is_empty(),
+            "setup written after the answer"
+        );
+    })
+}
+
+/// #1354: the deferred-setup checks read only the end of the output; they used to copy all of it
+/// (under the model lock, on the UI thread) on every poll.
+#[test]
+fn deferred_subshell_setup_reads_only_the_tail_of_the_output() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            let mut output = String::new();
+            for i in 0..5000 {
+                output.push_str(&format!("line {i}\r\n"));
+            }
+            output.push_str("Password: ");
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", output.as_str());
+            let snapshot = view.active_output_snapshot();
+            assert!(
+                snapshot.lines().count() <= OUTPUT_TAIL_ROWS + 1,
+                "{} lines copied",
+                snapshot.lines().count()
+            );
+            assert!(snapshot.trim_end().ends_with("Password:"));
+            assert!(view.active_output_input_prompt_line().is_some());
+        });
+    })
+}
+
+/// #1354: a ^C in the middle of the chunked mac line-clear write stops it; the chunks after it were
+/// free-standing timers that were still typed into the shell.
+#[test]
+fn ctrl_c_stops_the_chunked_line_clear_write() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(vec![b'x'; 3500], ctx);
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(200)).await;
+        let total: usize = pty_writes.borrow().iter().map(Vec::len).sum();
+        assert!(
+            total < 2000,
+            "only the first chunk and the ^C may be written, got {total} bytes"
+        );
     })
 }

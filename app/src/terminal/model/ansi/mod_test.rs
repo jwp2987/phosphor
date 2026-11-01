@@ -29,6 +29,7 @@ struct MockHandler {
     should_validate_dcs_hook_session_id: bool,
     allow_tmux_control_mode: bool,
     tmux_starting_events: usize,
+    setup_line_markers: Vec<(u64, usize)>,
 }
 
 impl Handler for MockHandler {
@@ -271,6 +272,10 @@ impl Handler for MockHandler {
         self.cwd_updates.push(path);
     }
 
+    fn setup_line_consumed(&mut self, token: u64, index: usize) {
+        self.setup_line_markers.push((token, index));
+    }
+
     fn set_keyboard_enhancement_flags(
         &mut self,
         _mode: KeyboardModes,
@@ -309,6 +314,7 @@ impl Default for MockHandler {
             should_validate_dcs_hook_session_id: false,
             allow_tmux_control_mode: false,
             tmux_starting_events: 0,
+            setup_line_markers: Vec::new(),
         }
     }
 }
@@ -1858,4 +1864,14 @@ fn tmux_control_mode_dcs_honoured_when_initiated() {
     let (parser, handler) = parse_tmux_dcs(true);
     assert!(parser.state.tmux_control_mode.is_some());
     assert_eq!(handler.tmux_starting_events, 1);
+}
+
+/// #1354: the marker OSC a typed setup line prints reaches the handler, with either terminator;
+/// a malformed one is ignored.
+#[test]
+fn parse_setup_line_marker_osc() {
+    let (_, handler) = parse_bytes(b"\x1b]7771;4242;3\x07\x1b]7771;18446744073709551615;12\x1b\\");
+    assert_eq!(handler.setup_line_markers, vec![(4242, 3), (u64::MAX, 12)]);
+    let (_, handler) = parse_bytes(b"\x1b]7771;x;3\x07\x1b]7771;1\x07\x1b]7771;1;2;3\x07");
+    assert!(handler.setup_line_markers.is_empty());
 }

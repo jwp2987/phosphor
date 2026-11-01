@@ -328,6 +328,11 @@ pub trait Handler {
     /// input buffer (the reporting is itself triggered by Zap).
     fn input_buffer(&mut self, _data: InputBufferValue) {}
 
+    /// Callback for the setup-line marker OSC (`ESC ] 7771 ; <session id> ; <line index> BEL`) that
+    /// the typed subshell setup lines print once the shell has executed them: line `index` of the
+    /// setup identified by `token` was consumed.
+    fn setup_line_consumed(&mut self, _token: u64, _index: usize) {}
+
     /// Callback emitted during the initialization process for subshells with where the shell type
     /// is initiall not known.
     fn init_subshell(&mut self, _data: InitSubshellValue) {}

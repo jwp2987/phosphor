@@ -3769,3 +3769,114 @@ fn counted_subshell_chunks_pace_the_prefix_and_send_the_body_as_one_write() {
         vec![b"abc".to_vec()]
     );
 }
+
+/// #1354: the setup lines of bash, zsh and fish end in a marker the shell prints once it ran the
+/// line, so the app can write the next line when the previous one was consumed instead of after
+/// a delay. The last line (it evaluates the script) carries none, and a plain build of the lines
+/// is unchanged.
+#[test]
+fn marked_setup_lines_end_in_a_marker_except_the_last() {
+    let raw = "echo 'x' ".repeat(500);
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        let plain = chunked_eval_lines(shell_type, &raw);
+        let marked = chunked_eval_lines_with_markers(shell_type, &raw, Some(77));
+        assert_eq!(plain.len(), marked.len(), "{shell_type:?}");
+        let last = marked.len() - 1;
+        for (index, (plain_line, marked_line)) in plain.iter().zip(&marked).enumerate() {
+            if index == last {
+                assert_eq!(
+                    plain_line, marked_line,
+                    "{shell_type:?}: last line is unmarked"
+                );
+            } else {
+                assert!(
+                    marked_line.starts_with(plain_line.as_str()),
+                    "{shell_type:?} {index}"
+                );
+                assert!(
+                    marked_line.ends_with(&format!("\\e]7771;77;{index}\\a'")),
+                    "{shell_type:?} {index}: {marked_line}"
+                );
+            }
+        }
+        assert!(
+            marked
+                .iter()
+                .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES),
+            "{shell_type:?}: the marker must not push a line past the tty line limit"
+        );
+        assert_eq!(
+            chunked_eval_lines(shell_type, &raw),
+            chunked_eval_lines_with_markers(shell_type, &raw, None)
+        );
+    }
+}
+
+/// #1354: typed into a real bash, zsh and fish, the marked lines print every marker, in order,
+/// and the script still runs.
+#[test]
+#[cfg(unix)]
+fn marked_setup_lines_print_their_markers_in_a_real_shell() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let cases: [(&str, &[&str], ShellType); 3] = [
+        ("bash", &["--norc", "-i"], ShellType::Bash),
+        ("zsh", &["-f", "-i"], ShellType::Zsh),
+        ("fish", &["--no-config", "-i"], ShellType::Fish),
+    ];
+    for (bin, args, shell_type) in cases {
+        let Ok(path) = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+        if path.is_empty() {
+            eprintln!("skipping {bin}: not installed");
+            continue;
+        }
+        let lines = chunked_eval_lines_with_markers(shell_type, "echo STAGE2-RAN", Some(4242));
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-marker-{bin}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+        let mut child = Command::new(&path)
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &dir)
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .env("XDG_CONFIG_HOME", dir.join("cfg"))
+            .env("TERM", "dumb")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            for line in &lines {
+                stdin.write_all(line.as_bytes()).unwrap();
+                stdin.write_all(b"\n").unwrap();
+            }
+            stdin.write_all(b"exit\n").unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut from = 0;
+        for index in 0..lines.len() - 1 {
+            let marker = format!("\u{1b}]7771;4242;{index}\u{7}");
+            let found = stdout[from..].find(&marker).unwrap_or_else(|| {
+                panic!("{bin}: marker {index} missing or out of order: {stdout:?}")
+            });
+            from += found + marker.len();
+        }
+        assert!(
+            stdout.contains("STAGE2-RAN"),
+            "{bin}: script did not run: {stdout:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
