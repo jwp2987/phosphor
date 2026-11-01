@@ -6,12 +6,29 @@
 //! terminal input replays them right behind the paste. The ordering is the terminal's
 //! [`PasteSequencer`], shared with the pty-bound paste path.
 //!
+//! #1353 phase 1: the same ordering now runs on an [`InputQueue`] (the paste is an entry held by a
+//! `PasteReading` gate; the keys typed behind it are `EditorKey` entries; the reader's result
+//! opens the gate; ^C cancels the paste and delivers what was typed before it). The editor's keys
+//! reach `InputQueue::offer` whenever the queue is not idle; idle, the cost is one borrow-flag
+//! read (no lock, no allocation). `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores the sequencer path
+//! below, which stays in the tree. The queue lives here (one per editor) because the editor-bound
+//! read is started by the terminal input, which has no handle on the terminal view's queue.
+//!
 //! The queue can hold a password typed blind, so `Debug` shows only kinds.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::rc::Rc;
+use std::time::Duration;
 
-use super::EditorAction;
+use warpui::ViewContext;
+
+use super::{EditorAction, EditorView};
+use crate::terminal::input_queue::kill_switch::{self, Area};
+use crate::terminal::input_queue::{
+    DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
+    GateToken, Host, InputEntry, InputQueue,
+};
 use crate::terminal::paste_sequencer::PasteSequencer;
 
 /// One key held behind a pending paste.
@@ -32,12 +49,54 @@ impl fmt::Debug for HeldPasteKey {
 }
 
 /// Owned by the editor; the terminal input starts and completes pastes on it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EditorPasteHold {
     sequencer: RefCell<PasteSequencer<HeldPasteKey>>,
+    queue: Rc<RefCell<InputQueue>>,
+    /// Paste ordering runs on `queue` (`PHOSPHOR_INPUT_QUEUE_PASTE`, default on).
+    queue_enabled: Cell<bool>,
+    next_paste_id: Cell<u64>,
+}
+
+impl Default for EditorPasteHold {
+    fn default() -> Self {
+        Self {
+            sequencer: RefCell::default(),
+            queue: Rc::default(),
+            queue_enabled: Cell::new(kill_switch::is_enabled(Area::Paste)),
+            next_paste_id: Cell::new(0),
+        }
+    }
 }
 
 impl EditorPasteHold {
+    /// Whether paste ordering runs on the input queue instead of the sequencer.
+    pub fn uses_queue(&self) -> bool {
+        self.queue_enabled.get()
+    }
+
+    /// Tests flip the path per hold (the kill switch itself is read once per process).
+    #[cfg(test)]
+    pub fn set_uses_queue(&self, on: bool) {
+        self.queue_enabled.set(on);
+    }
+
+    pub fn queue(&self) -> &Rc<RefCell<InputQueue>> {
+        &self.queue
+    }
+
+    pub fn next_queue_paste_id(&self) -> u64 {
+        let id = self.next_paste_id.get() + 1;
+        self.next_paste_id.set(id);
+        id
+    }
+
+    /// The queue holds input right now (a paste is being read). False while it is mid-drain: a
+    /// key applied by a delivery is part of that delivery and must not be held again.
+    pub fn queue_is_busy(&self) -> bool {
+        self.queue.try_borrow().is_ok_and(|queue| !queue.is_idle())
+    }
+
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already
     /// pending is superseded and its held keys carry over.
     pub fn begin(&self) -> u64 {
@@ -45,10 +104,22 @@ impl EditorPasteHold {
     }
 
     pub fn has_pending(&self) -> bool {
+        if self.queue_enabled.get() {
+            return self
+                .queue
+                .try_borrow()
+                .is_ok_and(|queue| queue.has_gate_kind(GateKind::PasteReading));
+        }
         self.sequencer.borrow().has_pending()
     }
 
     pub fn is_pending(&self, id: u64) -> bool {
+        if self.queue_enabled.get() {
+            return self
+                .queue
+                .try_borrow()
+                .is_ok_and(|queue| queue.has_gate(GateKind::PasteReading, id));
+        }
         self.sequencer.borrow().is_pending(id)
     }
 
@@ -66,6 +137,61 @@ impl EditorPasteHold {
     /// superseded (then nothing is pasted).
     pub fn complete(&self, id: u64) -> Option<Vec<HeldPasteKey>> {
         self.sequencer.borrow_mut().complete(id)
+    }
+}
+
+/// The [`Host`] of the editor's own offers (a key typed while a paste is read, or ^C): delivers
+/// held keys back to the editor. It never receives a paste (those complete in the terminal input,
+/// whose host delivers them) and never opens a gate.
+pub(super) struct EditorQueueHost<'a, 'b> {
+    pub(super) editor: &'a mut EditorView,
+    pub(super) ctx: &'a mut ViewContext<'b, EditorView>,
+}
+
+impl Host for EditorQueueHost<'_, '_> {
+    fn facts(&self) -> DestFacts {
+        DestFacts {
+            editor_focused: true,
+            input_box_visible: true,
+            ..DestFacts::default()
+        }
+    }
+
+    fn deliver(
+        &mut self,
+        entry: &InputEntry,
+        _dest: Destination,
+        _follow: &mut FollowUps,
+    ) -> DeliverOutcome {
+        match &entry.kind {
+            EntryKind::EditorKey(payload) => {
+                if let Some(key) = payload.take() {
+                    self.editor.apply_held_paste_key(key, self.ctx);
+                }
+            }
+            // The ^C itself acts through the editor's normal handler once the held keys are in.
+            EntryKind::Signal(_) => {}
+            other => {
+                log::warn!("input queue: editor was handed an entry it does not deliver: {other:?}")
+            }
+        }
+        DeliverOutcome::Delivered
+    }
+
+    fn discarded(&mut self, _entry: &InputEntry, why: DiscardReason) {
+        match why {
+            DiscardReason::PasteCancelled => {}
+            other => log::warn!("input queue: editor entry discarded: {other:?}"),
+        }
+    }
+
+    fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
+        // The editor never opens a gate; the terminal input's host arms the paste's cap.
+        let _ = (token, after);
+    }
+
+    fn warn(&mut self, line: &str) {
+        log::warn!("{line}");
     }
 }
 

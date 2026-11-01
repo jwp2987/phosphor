@@ -3045,6 +3045,9 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
+        if self.paste_hold.uses_queue() {
+            return self.hold_key_for_paste_on_queue(action, ctx);
+        }
         if !self.paste_hold.has_pending() {
             return false;
         }
@@ -3058,6 +3061,42 @@ impl EditorView {
             Some(key) => self.paste_hold.hold(key),
             None => false,
         }
+    }
+
+    /// The input-queue form of [`Self::hold_key_for_paste`] (#1353 phase 1). Idle (the common
+    /// case) this is one borrow-flag read: no lock, no allocation. While the queue holds input
+    /// the key is offered to it, which is the single entry point for keys behind a paste: it
+    /// queues the key, or (Ctrl-C) cancels the paste and applies what was typed before it.
+    fn hold_key_for_paste_on_queue(
+        &mut self,
+        action: &EditorAction,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, SignalKind};
+        if !self.paste_hold.queue_is_busy() {
+            return false;
+        }
+        let queue = Rc::clone(self.paste_hold.queue());
+        if matches!(action, EditorAction::CtrlC) {
+            let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+            queue
+                .borrow_mut()
+                .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
+            return false;
+        }
+        // A paste typed behind a paste is not held: it acts at once and queues its own entry
+        // behind this one's gate, so arrival order is kept without replaying it later.
+        if matches!(action, EditorAction::Paste | EditorAction::MiddleClickPaste) {
+            return false;
+        }
+        let Some(key) = paste_hold::held_form(action) else {
+            return false;
+        };
+        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+        queue
+            .borrow_mut()
+            .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
+        true
     }
 
     /// #1345: one `input_order` hop for a typing key reaching the terminal input's editor, with

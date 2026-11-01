@@ -12511,6 +12511,178 @@ fn test_stalled_clipboard_read_applies_held_keys_at_the_backstop() {
     });
 }
 
+/// #1353 phase 1: text typed before a paste, while its read is pending, and after the read, in
+/// every split, lands in typed order around the pasted text (editor-bound, agent-mode input).
+/// Runs on the input queue and on the legacy sequencer (the kill switch), with the same result.
+#[test]
+fn test_editor_paste_with_typed_keys_in_every_interleaving_keeps_typed_order() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
+            let typed = ["x", "y", "z"];
+            for paste_after in 0..=typed.len() {
+                input.update(&mut app, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.user_insert("ab", ctx);
+                });
+                // Typed before the paste is asked for: applied at once.
+                for key in &typed[..paste_after] {
+                    editor.update(&mut app, |editor, ctx| {
+                        editor.apply_held_paste_key(HeldPasteKey::Text((*key).to_string()), ctx);
+                    });
+                }
+                let (release, parked) = std::sync::mpsc::channel::<()>();
+                let reader: BackgroundTextReader = Box::new(move || {
+                    let _ = parked.recv_timeout(Duration::from_secs(20));
+                    BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+                });
+                input.update(&mut app, |input, ctx| {
+                    input.start_background_paste(reader, ctx)
+                });
+                assert!(editor.read(&app, |editor, _| editor.paste_hold().has_pending()));
+                assert_eq!(
+                    editor.read(&app, |editor, _| !editor
+                        .paste_hold()
+                        .queue()
+                        .borrow()
+                        .is_idle()),
+                    queue,
+                    "the queue holds the paste exactly when it is the active path"
+                );
+                // Typed while the read is pending: held behind it.
+                for key in &typed[paste_after..] {
+                    editor.update(&mut app, |editor, ctx| {
+                        editor.apply_held_paste_key(HeldPasteKey::Text((*key).to_string()), ctx);
+                    });
+                }
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        format!("ab{}", typed[..paste_after].concat()),
+                        "queue={queue}, paste after {paste_after}: held keys wait for the read"
+                    )
+                });
+                release.send(()).unwrap();
+                for _ in 0..1000 {
+                    if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.buffer_text(ctx),
+                        format!(
+                            "ab{}PASTE{}",
+                            typed[..paste_after].concat(),
+                            typed[paste_after..].concat()
+                        ),
+                        "queue={queue}, paste after {paste_after}"
+                    )
+                });
+            }
+        });
+    }
+}
+
+/// #1353 phase 1: a clipboard read that fails (the owner never answers) pastes nothing and applies
+/// the keys typed meanwhile, in order, on the input queue.
+#[test]
+fn test_editor_paste_failed_read_applies_the_held_keys() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ab", ctx);
+        });
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::TimedOut
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
+            editor.apply_held_paste_key(HeldPasteKey::Text("z".to_string()), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "ab"));
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abxyz")
+        });
+    });
+}
+
+/// #1353 phase 1: the backstop is one timer, logged when it fires; the keys are applied in order
+/// and the late answer is ignored. Kill switch twin of `test_stalled_clipboard_read_applies_held_keys_at_the_backstop`.
+#[test]
+fn test_stalled_clipboard_read_on_the_legacy_sequencer_applies_held_keys_at_the_backstop() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(false));
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ab", ctx);
+        });
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("LATE".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste_with_backstop(
+                reader,
+                Some(Duration::from_millis(100)),
+                ctx,
+            )
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
+        });
+        assert!(editor.read(&app, |editor, _| {
+            editor.paste_hold().queue().borrow().is_idle()
+        }));
+        for _ in 0..1000 {
+            if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abxy")
+        });
+        release.send(()).unwrap();
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abxy")
+        });
+    });
+}
+
 /// #1331: a middle-click read of a primary selection whose owner never answers returns to the UI
 /// at once, then fails at the backstop; the keys typed meanwhile are applied in order (none
 /// dropped) and the late answer is ignored.

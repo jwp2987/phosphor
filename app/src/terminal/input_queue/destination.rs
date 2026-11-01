@@ -52,6 +52,13 @@ pub fn destination_for(kind: &EntryKind, facts: &DestFacts) -> Destination {
     if matches!(kind, EntryKind::Signal(_)) {
         return Destination::Pty;
     }
+    // Phase 1: the terminal's keys already carry their form, and editor keys only ever go to the
+    // editor. The later stages (agent, hidden input box) still decide inside the legacy chain.
+    match kind {
+        EntryKind::PtyBytes { .. } => return Destination::Pty,
+        EntryKind::EditorKey(_) => return Destination::Editor,
+        _ => {}
+    }
     if let Some(reason) = facts.drop_reason {
         return Destination::Drop(reason);
     }
