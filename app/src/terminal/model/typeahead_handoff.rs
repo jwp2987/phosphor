@@ -86,20 +86,19 @@ impl std::fmt::Debug for ForegroundProbe {
 /// fast typing, below the stale-count reset (250 ms) that re-runs a waiting decision.
 pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 
-/// On a ConPTY session (#1162): the longest raw user keys typed between a prompt's precmd and the
-/// shell's line editor becoming active are held. Git Bash's readline switches the tty mode,
-/// enables bracketed paste and draws the prompt right after the prompt hook (measured: a key
-/// written ~6 ms before that start-up output vanished below the app). The line editor's own
-/// signal normally ends the hold within ~50 ms; after this long the keys are written anyway.
-pub const CONPTY_PROMPT_HOLD_EXPIRY: Duration = Duration::from_millis(150);
-
-/// The longest the prompt hold lasts for a precmd that no line-editor signal will follow (#1343):
-/// the status model arms its activation (the bracketed-paste signal, or the 50 ms fallback) only
-/// when the editor is inactive at the precmd. A precmd that finds it still flagged active gets no
-/// signal at all, and waiting the full [`CONPTY_PROMPT_HOLD_EXPIRY`] only delays the keys, then
-/// releases them in one burst (measured: 7 writes within 1 ms after 158 ms). The fallback's
-/// own delay plus a margin is as long as a signal could have taken.
-pub const CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY: Duration = Duration::from_millis(70);
+/// On a ConPTY session (#1162, #1349): raw user keys typed between a prompt's precmd and the
+/// shell's line editor becoming ready are held, and released by the line editor's own signal
+/// (the bracketed-paste enable `ESC[?2004h` that readline, zle and fish emit as they start
+/// reading a line), never by a timer. Git Bash's readline switches the tty mode, enables
+/// bracketed paste and draws the prompt right after the prompt hook (measured: a key written
+/// ~6 ms before that start-up output vanished below the app).
+///
+/// This is only the give-up safety net for a shell that was expected to signal and never did
+/// (for example readline with `enable-bracketed-paste off`): the keys are written anyway, a
+/// warning is logged, and the hold is switched off for the rest of the session so the next
+/// prompt is not delayed again. It is deliberately long: a signal normally arrives within
+/// 10-60 ms, so reaching this means the signal is not coming.
+pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
 pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
@@ -352,15 +351,20 @@ pub struct TypeaheadHandoff {
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
     conpty_input: bool,
-    /// Whether the ConPTY prompt hold is on (see [`CONPTY_PROMPT_HOLD_EXPIRY`]); it also needs
+    /// Whether the ConPTY prompt hold is on (see [`CONPTY_PROMPT_HOLD_GIVE_UP`]); it also needs
     /// `conpty_input`, so no other platform is ever affected.
     prompt_hold_enabled: bool,
     /// When the last precmd arrived, until the shell's line editor is active (or a command
     /// starts): keys typed in between are held.
     awaiting_line_editor_since: Option<Instant>,
-    /// Whether the current precmd will be followed by a line-editor signal (#1343). Cleared when
-    /// the controller finds the editor already active at the precmd.
-    line_editor_signal_expected: bool,
+    /// Whether the session's shell is known to signal its line editor being ready (#1349): a
+    /// readline, zle or fish prompt enables bracketed paste as it starts reading. A shell that
+    /// is not known to (PowerShell 5.1, cmd, an unknown WSL shell) is never held for: with no
+    /// signal to release it, the hold could only be a timer.
+    prompt_hold_shell_signals: bool,
+    /// A hold ran to the give-up cap with no signal: the shell does not signal after all, so
+    /// the hold stays off for the rest of the session (#1349).
+    prompt_hold_gave_up: bool,
     /// Raw user keys held between a precmd and the line editor becoming active (#1162), in typed
     /// order. Separate from `young_hold`, which holds an Enter for a different reason.
     prompt_hold: Option<Vec<u8>>,
@@ -427,30 +431,42 @@ impl TypeaheadHandoff {
         self.prompt_hold_enabled = enabled;
     }
 
-    fn should_hold_for_prompt(&self, reaches_shell_line: bool, now: Instant) -> bool {
+    /// Declares whether the session's shell signals its line editor being ready with a
+    /// bracketed-paste enable (#1349). Without that capability no hold is ever started.
+    pub fn set_conpty_prompt_hold_shell_signals(&mut self, signals: bool) {
+        self.prompt_hold_shell_signals = signals;
+    }
+
+    /// Whether a precmd arms the prompt hold: ConPTY, the kill switch is not set, the shell is
+    /// known to signal, and no earlier hold of this session gave up waiting for a signal.
+    fn prompt_hold_armed(&self) -> bool {
         self.conpty_input
             && self.prompt_hold_enabled
+            && self.prompt_hold_shell_signals
+            && !self.prompt_hold_gave_up
+    }
+
+    /// Whether the session is waiting for the line editor's signal after a precmd, and keys
+    /// typed now are held. The wait ends at the signal, a command start, a ^C, or the give-up
+    /// cap; elapsed time alone never releases it (the cap check here only covers the instant
+    /// before the view's give-up timer runs).
+    fn should_hold_for_prompt(&self, reaches_shell_line: bool, now: Instant) -> bool {
+        self.prompt_hold_armed()
             && reaches_shell_line
             && matches!(self.state, HandoffState::PtyOwned { .. })
             && self
                 .awaiting_line_editor_since
-                .is_some_and(|at| now.saturating_duration_since(at) < self.prompt_hold_expiry())
+                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_GIVE_UP)
     }
 
-    /// How long keys are held for the current precmd: the full expiry when a line-editor signal
-    /// is coming, the shorter one when none will (#1343).
-    pub fn prompt_hold_expiry(&self) -> Duration {
-        if self.line_editor_signal_expected {
-            CONPTY_PROMPT_HOLD_EXPIRY
-        } else {
-            CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY
-        }
+    /// The give-up cap the view arms a timer for when a hold starts.
+    pub fn prompt_hold_give_up(&self) -> Duration {
+        CONPTY_PROMPT_HOLD_GIVE_UP
     }
 
-    /// The precmd's prompt found the line editor still flagged active, so no activation (and no
-    /// release) will follow it (#1343): the hold expires after the shorter delay.
-    pub fn note_no_line_editor_signal(&mut self) {
-        self.line_editor_signal_expected = false;
+    /// Whether the line editor's ready signal is still awaited for the current prompt.
+    pub fn awaiting_line_editor_signal(&self) -> bool {
+        self.awaiting_line_editor_since.is_some()
     }
 
     /// Takes the "a prompt hold was just created" flag, returning its id so the view arms the
@@ -509,16 +525,19 @@ impl TypeaheadHandoff {
         chunks
     }
 
-    /// The shell's line editor became active (#1162): the held keys are due now, in typed
-    /// order, ahead of any request. Called before the hand-off decides on a request, so the
-    /// decision sees the keys as written. Also ends the wait for the line editor.
-    pub fn release_prompt_hold_on_active(&mut self) -> Vec<Vec<u8>> {
-        self.awaiting_line_editor_since = None;
+    /// The shell's line editor signalled that it is ready (#1349), observed in the pty output
+    /// after the prompt's precmd: the held keys are due now, in typed order, ahead of any
+    /// request. Also ends the wait for the line editor. A signal with no wait pending (a program
+    /// enabling bracketed paste itself, or a second signal for the same prompt) releases nothing.
+    pub fn release_prompt_hold_on_signal(&mut self) -> Vec<Vec<u8>> {
+        if self.awaiting_line_editor_since.take().is_none() {
+            return Vec::new();
+        }
         let waited_ms = self
             .last_precmd_at
             .map(|at| at.elapsed().as_secs_f64() * 1000.0);
         let chunks = self.drain_prompt_hold();
-        warpui::input_order::log_hop("line_editor_active", || {
+        warpui::input_order::log_hop("prompt_hold_signal", || {
             format!(
                 "since_precmd_ms={} released_chunks={}",
                 waited_ms.map_or_else(|| "none".to_string(), |ms| format!("{ms:.1}")),
@@ -528,13 +547,20 @@ impl TypeaheadHandoff {
         chunks
     }
 
-    /// The expiry of prompt hold `id` ran out with no line editor signal: the keys are written
-    /// anyway. `None` when that hold is gone already.
+    /// The give-up cap of prompt hold `id` ran out with no line editor signal: the keys are
+    /// written anyway, and the hold is off for the rest of the session (#1349). `None` when
+    /// that hold is gone already.
     pub fn expire_prompt_hold(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
         if id != self.prompt_hold_id || self.prompt_hold.is_none() {
             return None;
         }
         self.awaiting_line_editor_since = None;
+        self.prompt_hold_gave_up = true;
+        log::warn!(
+            "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt; \
+             writing the held keys and turning the hold off for this session",
+            CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+        );
         let chunks = self.drain_prompt_hold();
         warpui::input_order::log_hop("prompt_hold_expired", || {
             format!("released_chunks={}", chunks.len())
@@ -598,6 +624,8 @@ impl TypeaheadHandoff {
         self.rtt_samples.clear();
         self.rtt_pending.clear();
         self.command_written_at = None;
+        // A new shell may signal where the last one did not.
+        self.prompt_hold_gave_up = false;
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -987,9 +1015,8 @@ impl TypeaheadHandoff {
         let now = Instant::now();
         self.last_activity_at = Some(now);
         self.last_precmd_at = Some(now);
-        if self.conpty_input && self.prompt_hold_enabled {
+        if self.prompt_hold_armed() {
             self.awaiting_line_editor_since = Some(now);
-            self.line_editor_signal_expected = true;
         }
         warpui::input_order::log_hop("precmd_seen", String::new);
         if let HandoffState::PtyOwned { precmds_seen, .. } = &mut self.state {

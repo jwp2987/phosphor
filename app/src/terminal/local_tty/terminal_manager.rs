@@ -1011,6 +1011,8 @@ fn on_shell_determined<S: TerminalSurface>(
         manager.pid = Some(pid);
     }
 
+    #[cfg(windows)]
+    let shell_launch_data_for_hold = shell_launch_data.clone();
     manager.view.update(ctx, |surface, ctx| {
         surface.on_shell_determined(ctx);
         surface.on_active_shell_launch_data_updated(Some(shell_launch_data), ctx);
@@ -1051,9 +1053,37 @@ fn on_shell_determined<S: TerminalSurface>(
         model.typeahead_handoff_mut().set_conpty_input(true);
         // #1162: raw keys typed between a prompt and its line editor are held (bounded);
         // PHOSPHOR_CONPTY_PROMPT_HOLD=0 turns it off.
-        model.typeahead_handoff_mut().set_conpty_prompt_hold(
-            crate::terminal::model::typeahead_handoff::conpty_prompt_hold_env_enabled(),
+        let hold_enabled =
+            crate::terminal::model::typeahead_handoff::conpty_prompt_hold_env_enabled();
+        model
+            .typeahead_handoff_mut()
+            .set_conpty_prompt_hold(hold_enabled);
+        // #1349: the hold is released by the line editor's bracketed-paste signal, so it only
+        // exists for shells known to send one (readline, zle, fish). PowerShell 5.1, cmd and an
+        // unknown WSL shell are never held for: a hold with no signal could only be a timer.
+        let shell_signals = matches!(
+            &shell_launch_data_for_hold,
+            ShellLaunchData::Executable { shell_type, .. }
+                | ShellLaunchData::MSYS2 { shell_type, .. }
+                if matches!(
+                    shell_type,
+                    crate::terminal::shell::ShellType::Bash
+                        | crate::terminal::shell::ShellType::Zsh
+                        | crate::terminal::shell::ShellType::Fish
+                )
         );
+        model
+            .typeahead_handoff_mut()
+            .set_conpty_prompt_hold_shell_signals(shell_signals);
+        drop(model);
+        if hold_enabled && shell_signals {
+            manager.pty_controller.update(ctx, |controller, ctx| {
+                controller.set_conpty_prompt_hold_signals(
+                    Some(crate::terminal::model::typeahead_handoff::CONPTY_PROMPT_HOLD_GIVE_UP),
+                    ctx,
+                );
+            });
+        }
     }
 }
 
