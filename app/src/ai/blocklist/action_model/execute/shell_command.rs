@@ -731,6 +731,10 @@ impl ShellCommandExecutor {
                     let terminal_model = self.terminal_model.clone();
                     let block_id = block_id.clone();
                     async move {
+                        // Fused so a dropped sender (cancel) is still polled and reported as
+                        // `Err`, rather than skipped by `select!` as terminated (#1278).
+                        let handback_rx = handback_rx.fuse();
+                        let block_finished_rx = block_finished_rx.fuse();
                         pin!(handback_rx);
                         pin!(block_finished_rx);
 
@@ -839,6 +843,11 @@ impl ShellCommandExecutor {
         let terminal_model = self.terminal_model.clone();
 
         async move {
+            // `.fuse()` matters: a `oneshot::Receiver` whose sender was dropped reports
+            // `is_terminated()`, so `select!` would skip it and never see the `Err` that means
+            // "cancelled" (#1278). A `Fuse` is terminated only once it has yielded.
+            let block_metadata_received_rx = block_metadata_received_rx.fuse();
+            let force_refresh_rx = force_refresh_rx.fuse();
             pin!(block_metadata_received_rx);
             pin!(force_refresh_rx);
 
