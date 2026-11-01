@@ -1653,6 +1653,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 return outcome;
             }
 
+            // The key path reads the active block's state from the published facts (#1403); a
+            // command that starts here changes it.
+            model.publish_key_facts();
+
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not
             // currently being received by the `TerminalModel`, this is a no-op.
