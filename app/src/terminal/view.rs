@@ -12090,6 +12090,12 @@ impl TerminalView {
             .typeahead_handoff_mut()
             .expire_young_hold_chunks(hold_id);
         if let Some(chunks) = chunks {
+            // The give-up safety net fired: no prompt arrived in time. Ids and counts only, never bytes.
+            log::warn!(
+                "typeahead young hold {hold_id} expired with no prompt: releasing {} chunk(s), {} byte(s) to the pty",
+                chunks.len(),
+                chunks.iter().map(Vec::len).sum::<usize>()
+            );
             self.input
                 .update(ctx, |input, _| input.clear_handoff_enter_mark());
             input_queue::trace::release(
@@ -12113,6 +12119,14 @@ impl TerminalView {
             .lock()
             .typeahead_handoff_mut()
             .expire_prompt_hold(hold_id);
+        if let Some(chunks) = chunks.as_ref() {
+            // Give-up safety net: the line editor never signalled. Ids and counts only, never bytes.
+            log::warn!(
+                "typeahead prompt hold {hold_id} expired with no line-editor signal: releasing {} chunk(s), {} byte(s) to the pty",
+                chunks.len(),
+                chunks.iter().map(Vec::len).sum::<usize>()
+            );
+        }
         for bytes in chunks.into_iter().flatten() {
             ctx.emit(Event::WriteHandoffUserBytesToPty {
                 bytes: Cow::Owned(bytes),
