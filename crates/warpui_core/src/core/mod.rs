@@ -581,7 +581,6 @@ enum TaskCallback {
         on_done: Box<ModelFromStreamDoneCallback>,
     },
     ViewFromFuture {
-        window_id: WindowId,
         view_id: EntityId,
         callback: Box<ViewFromFutureCallback>,
     },
