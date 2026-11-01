@@ -298,6 +298,36 @@ impl Clipboard for LinuxClipboard {
         }))
     }
 
+    fn background_primary_reader(&mut self) -> Option<BackgroundTextReader> {
+        // Middle-click paste (#1331): the primary selection's owner can stall a read just as the
+        // clipboard's can, and the click used to wait on it on the UI thread with no budget.
+        let pending = crate::clipboard::pending_write(ClipboardTarget::Primary);
+        Some(Box::new(move || {
+            // A copy to PRIMARY still being written is what the user just selected (#1307).
+            if let Some(pending) = pending {
+                return BackgroundTextRead::Content((*pending).clone());
+            }
+            let Ok(mut clipboard) = LinuxClipboard::new() else {
+                return BackgroundTextRead::Content(ClipboardContent::null_value());
+            };
+            let started = Instant::now();
+            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
+            let content = clipboard.read_from_primary_clipboard();
+            arboard::set_first_answer_deadline(None);
+            let flagged = clipboard.take_read_failure();
+            if read_timed_out(
+                flagged,
+                started.elapsed(),
+                FULL_READ_BUDGET,
+                !content.plain_text.is_empty(),
+            ) {
+                BackgroundTextRead::TimedOut
+            } else {
+                BackgroundTextRead::Content(content)
+            }
+        }))
+    }
+
     fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
         // ONE long-lived thread owns ONE clipboard handle for the process lifetime and performs
         // the writes in order, so the owning handle is never dropped after a write: arboard's X11

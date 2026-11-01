@@ -21040,6 +21040,28 @@ impl TerminalView {
                 return;
             }
         }
+        // A middle click reads the primary selection the same way (#1331): off the UI thread, held
+        // keys kept in order, never a fragment run. Into the input or to the pty as the click routes.
+        #[cfg(not(target_family = "wasm"))]
+        if middle_click && !is_cli_agent_paste {
+            let reader = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+                selection.background_reader_for_middle_click_paste(ctx)
+            });
+            if let Some(reader) = reader {
+                if should_paste_in_input {
+                    self.input.update(ctx, |input, ctx| {
+                        input.start_background_middle_click_paste(
+                            reader,
+                            crate::terminal::input::PasteSource::TerminalMiddleClick(shell_dialect),
+                            ctx,
+                        );
+                    });
+                } else {
+                    self.start_background_paste(reader, shell_dialect, needs_bracketed_paste, ctx);
+                }
+                return;
+            }
+        }
         let copied = if middle_click {
             TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {

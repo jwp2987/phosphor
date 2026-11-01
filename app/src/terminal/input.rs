@@ -60,7 +60,7 @@ use crate::ai::blocklist::misroute_recovery::{
     agent_view_entry_keeps_offer, MisrouteOffer, RouteReason, SubmitRoute,
 };
 use crate::server::telemetry::{PaletteSource, SlashCommandAcceptedDetails, SlashMenuSource};
-use crate::settings::PrivacySettings;
+use crate::settings::{PrivacySettings, SelectionSettings};
 use crate::suggestions::ignored_suggestions_model::{
     IgnoredSuggestionsModel, IgnoredSuggestionsModelEvent, SuggestionType,
 };
@@ -102,6 +102,7 @@ use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::CodeDiffAction;
 use crate::terminal::CLIAgent;
 use crate::util::bindings::keybinding_name_to_normalized_string;
+use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor;
 use crate::util::truncation::truncate_from_end;
@@ -618,6 +619,18 @@ lazy_static! {
             ..Default::default()
         }
     };
+}
+
+/// What a background paste read is for (#1331): decides how its text is inserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) enum PasteSource {
+    /// The system clipboard (ctrl-shift-v): images may attach.
+    Clipboard,
+    /// A middle click on the input editor: the primary selection as text.
+    EditorMiddleClick,
+    /// A middle click the terminal routed to the input.
+    TerminalMiddleClick(Option<warp_util::path::ShellDialect>),
 }
 
 /// What a young line's text needs before its deferred Enter may run (#933).
@@ -10660,6 +10673,9 @@ impl Input {
             EditorEvent::MiddleClickPaste => {
                 ctx.emit(Event::InputFocusedFromMiddleClick);
             }
+            EditorEvent::MiddleClickPasteRequested => {
+                self.process_middle_click_paste_event(ctx);
+            }
             EditorEvent::Focused => ctx.emit(Event::EditorFocused),
             EditorEvent::ProcessingAttachedImages(is_processing) => {
                 self.set_is_processing_attached_images(*is_processing, ctx);
@@ -10894,6 +10910,33 @@ impl Input {
         }
     }
 
+    /// A middle click on the input: reads the primary selection off the UI thread where the
+    /// platform can (#1331). Elsewhere the read stays synchronous, as before.
+    fn process_middle_click_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let reader = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+                selection.background_reader_for_middle_click_paste(ctx)
+            });
+            if let Some(reader) = reader {
+                self.start_background_middle_click_paste(
+                    reader,
+                    PasteSource::EditorMiddleClick,
+                    ctx,
+                );
+                return;
+            }
+        }
+        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+            selection.read_for_middle_click_paste(ctx)
+        });
+        if let Some(content) = content {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.insert_middle_click_content(content, ctx)
+            });
+        }
+    }
+
     /// Process paste event by checking clipboard for images and handling appropriately.
     fn process_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
         // Where the platform can read the clipboard off the UI thread it does (#1300): a clipboard
@@ -10940,6 +10983,30 @@ impl Input {
         backstop: Option<Duration>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.start_background_read(reader, backstop, PasteSource::Clipboard, ctx);
+    }
+
+    /// Middle-click paste of the primary selection, read off the UI thread like any paste
+    /// (#1331): same hold, 2 s reader budget and backstop, so a selection owner that never
+    /// answers neither freezes the window nor loses the keys typed meanwhile.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn start_background_middle_click_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.start_background_read(reader, Self::paste_backstop(), source, ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_read(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        backstop: Option<Duration>,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let hold = self.editor.as_ref(ctx).paste_hold();
         let id = hold.begin();
         let (tx, rx) = futures::channel::oneshot::channel();
@@ -10953,7 +11020,7 @@ impl Input {
             return;
         }
         ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
-            me.finish_background_paste(id, read, ctx)
+            me.finish_background_paste_as(id, read, source, ctx)
         });
         // A read that outlives the backstop fails the paste: the keys held behind it are applied
         // (in order) and the user is told. The reader's late answer finds the paste gone.
@@ -11000,13 +11067,33 @@ impl Input {
         read: Option<warpui::clipboard::BackgroundTextRead>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.finish_background_paste_as(id, read, PasteSource::Clipboard, ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_background_paste_as(
+        &mut self,
+        id: u64,
+        read: Option<warpui::clipboard::BackgroundTextRead>,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(held) = self.editor.as_ref(ctx).paste_hold().complete(id) else {
             return;
         };
         match read {
-            Some(warpui::clipboard::BackgroundTextRead::Content(content)) => {
-                self.process_paste_content(content, ctx);
-            }
+            Some(warpui::clipboard::BackgroundTextRead::Content(content)) => match source {
+                PasteSource::Clipboard => self.process_paste_content(content, ctx),
+                PasteSource::EditorMiddleClick => {
+                    self.editor.update(ctx, |editor, ctx| {
+                        editor.insert_middle_click_content(content, ctx)
+                    });
+                }
+                PasteSource::TerminalMiddleClick(shell_dialect) => {
+                    let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                    self.system_insert(&text, ctx);
+                }
+            },
             Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => {
                 if ctx.has_singleton_model::<ToastStack>() {
                     let window_id = ctx.window_id();
@@ -11042,6 +11129,20 @@ impl Input {
             ) {
                 // The editor would only emit the event, to be handled after this loop's keys.
                 self.process_paste_event(ctx);
+                if hold.has_pending() {
+                    for rest in keys {
+                        hold.hold(rest);
+                    }
+                    return;
+                }
+                continue;
+            }
+            if matches!(
+                key,
+                crate::editor::HeldPasteKey::Action(EditorAction::MiddleClickPaste)
+            ) {
+                // Same as a held paste: the editor would only emit the request, too late.
+                self.process_middle_click_paste_event(ctx);
                 if hold.has_pending() {
                     for rest in keys {
                         hold.hold(rest);

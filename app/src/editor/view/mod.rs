@@ -4499,12 +4499,36 @@ impl EditorView {
             return;
         }
 
+        // The primary selection's owner can stall a read for seconds, so an editor whose owner
+        // reads the clipboard off the UI thread (the terminal input) gets a request, not a read.
+        #[cfg(not(target_family = "wasm"))]
+        if self.delegate_paste_handling {
+            ctx.emit(Event::MiddleClickPasteRequested);
+            ctx.focus_self();
+            return;
+        }
+
         let clipboard_content = self.middle_click_paste_content(ctx);
         if let Some(clipboard_content) = clipboard_content {
-            self.user_initiated_insert(&clipboard_content, PlainTextEditorViewAction::Paste, ctx);
-            ctx.emit(Event::MiddleClickPaste);
+            self.insert_middle_click_text(&clipboard_content, ctx);
         }
         ctx.focus_self();
+    }
+
+    fn insert_middle_click_text(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        self.user_initiated_insert(text, PlainTextEditorViewAction::Paste, ctx);
+        ctx.emit(Event::MiddleClickPaste);
+    }
+
+    /// Inserts what a middle-click read of the primary selection returned, exactly as the
+    /// synchronous path would have (#1331).
+    pub fn insert_middle_click_content(
+        &mut self,
+        content: ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = self.clipboard_text_content(content);
+        self.insert_middle_click_text(&text, ctx);
     }
 
     // Pastes the most recently cut text within the shell.
@@ -8716,6 +8740,10 @@ pub enum Event {
     /// Signifies that something has been pasted into the view
     Paste,
     MiddleClickPaste,
+    /// A middle click asked to paste the primary selection into an editor that delegates paste
+    /// handling: the owner reads it off the UI thread and calls
+    /// [`EditorView::insert_middle_click_content`] (#1331).
+    MiddleClickPasteRequested,
     /// Emitted when the 'delete all left' keybinding is triggered (cmd-delete on mac, ctrl-y on
     /// linux).
     DeleteAllLeft,
