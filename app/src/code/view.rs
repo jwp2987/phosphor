@@ -376,13 +376,35 @@ impl CodeView {
         let Some(released) = plan_tab_release(&tabs, self.active_tab_index) else {
             return;
         };
+        let large = self.release_tab_editors(ctx);
         self.tab_group.clear();
         self.active_tab_index = 0;
         self.released_tabs = Some(released);
-        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
-            model.remove_deallocated_buffers(ctx);
-        });
+        Self::sweep_buffers_after_drop(large, ctx);
         ctx.notify();
+    }
+
+    /// Drops every tab editor's own heavy state (laid-out paragraphs, syntax trees, highlight
+    /// data) right now, so a closed pane's memory does not wait for every handle to its editor
+    /// models to be dropped (#1407). The shared buffers are left to their `Weak` owners.
+    /// Returns whether a large editor was released, so the caller asks for the heap to be
+    /// trimmed afterwards.
+    fn release_tab_editors(&self, ctx: &mut ViewContext<Self>) -> bool {
+        let mut large = false;
+        for tab in &self.tab_group {
+            large |= tab.editor_view.as_ref(ctx).is_large_buffer(ctx);
+            tab.editor_view
+                .update(ctx, |local_editor, ctx| local_editor.release_memory(ctx));
+        }
+        large
+    }
+
+    /// Has `GlobalBufferModel` unregister (file watcher, LSP document) buffers whose last handle
+    /// was just dropped. See [`GlobalBufferModel::sweep_deallocated_buffers_when_idle`].
+    fn sweep_buffers_after_drop(trim: bool, ctx: &mut ViewContext<Self>) {
+        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.sweep_deallocated_buffers_when_idle(trim, ctx);
+        });
     }
 
     /// Rebuilds the tabs dropped by [`Self::release_tabs_for_undo_close`]. No-op otherwise.
@@ -399,6 +421,42 @@ impl CodeView {
             self.set_active_tab_index(active, ctx);
         }
         ctx.notify();
+    }
+
+    /// Weak handles to every tab's editor model and shared buffer, to prove they are dropped.
+    #[cfg(test)]
+    pub(crate) fn editor_handles_for_test(
+        &self,
+        ctx: &AppContext,
+    ) -> Vec<(
+        warpui::WeakModelHandle<crate::code::editor::model::CodeEditorModel>,
+        warpui::WeakModelHandle<warp_editor::content::buffer::Buffer>,
+    )> {
+        self.tab_group
+            .iter()
+            .map(|tab| {
+                let editor = tab.editor_view.as_ref(ctx).editor().as_ref(ctx);
+                let model = editor.model.clone();
+                let buffer = model.as_ref(ctx).buffer().clone();
+                (model.downgrade(), buffer.downgrade())
+            })
+            .collect()
+    }
+
+    /// A strong handle to the first tab's editor model, to stand in for a stray owner in tests.
+    #[cfg(test)]
+    pub(crate) fn retained_editor_model_for_test(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<ModelHandle<crate::code::editor::model::CodeEditorModel>> {
+        self.tab_group.first().map(|tab| {
+            tab.editor_view
+                .as_ref(ctx)
+                .editor()
+                .as_ref(ctx)
+                .model
+                .clone()
+        })
     }
 
     /// The tab paths for session snapshots; reads the released tabs while the editors are dropped.
@@ -1416,10 +1474,12 @@ impl CodeView {
             }
         });
 
+        let large = self.release_tab_editors(ctx);
         self.tab_group.clear();
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
         });
+        Self::sweep_buffers_after_drop(large, ctx);
     }
 
     fn insert_selection_as_context(
@@ -1635,10 +1695,17 @@ impl CodeView {
             }
         }
 
+        let mut large = false;
+        if let Some(tab) = self.tab_group.get(index) {
+            large = tab.editor_view.as_ref(ctx).is_large_buffer(ctx);
+            tab.editor_view
+                .update(ctx, |local_editor, ctx| local_editor.release_memory(ctx));
+        }
         self.tab_group.remove(index);
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.remove_deallocated_buffers(ctx);
         });
+        Self::sweep_buffers_after_drop(large, ctx);
         self.set_active_tab_index_after_remove(index, ctx);
     }
 
