@@ -13365,7 +13365,6 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
-        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -13426,6 +13425,11 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             );
         });
 
+        // Registered only now: with the model present the Enter's classification job runs on a
+        // real clock and spends its compute cap while the keys above are still being typed, which
+        // submits the Enter by itself. The released keys need it, because the editor classifies
+        // what they type.
+        ensure_input_classifier_for_test(&mut app);
         // The classifier spent its compute cap: the Enter goes ahead on the Enter-time rules.
         input.update(&mut app, |input, ctx| {
             if let Some(wait) = input.verdict_wait.as_mut() {

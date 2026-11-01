@@ -18114,6 +18114,9 @@ fn ssh_line_typed_across_gate_release_is_never_run_locally() {
             assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             // The Enter of the same burst is consumed: the line stays, nothing is submitted.
             editor_key(view, EditorAction::Enter, ctx);
+        });
+        // The editor's Enter event is delivered when the update above ends.
+        terminal.update(&mut app, |view, ctx| {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
             assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             view.input.update(ctx, |input, ctx| {
