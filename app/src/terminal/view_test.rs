@@ -17451,9 +17451,26 @@ fn ssh_line_typed_across_gate_release_is_held_whole() {
     })
 }
 
+/// Sends `action` to the input editor the way a key typed into it does.
+fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
+    view.input.update(ctx, |input, ctx| {
+        input
+            .editor()
+            .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
+    });
+}
+
+fn editor_text(view: &mut TerminalView, text: &str, ctx: &mut ViewContext<TerminalView>) {
+    editor_key(
+        view,
+        EditorAction::UserInsert(warp_util::user_input::UserInput::new(text.to_owned())),
+        ctx,
+    );
+}
+
 /// #1292 (agent mode): once the remote shell's first prompt hands focus to the editor, keys typed
-/// before the held keys are delivered land in the editor directly. The held keys must still come
-/// out FIRST: the delivery used to insert them after those keys (`Necho ZQCON_agent_1`).
+/// before the held keys are delivered reach the editor. They are queued behind the held keys, not
+/// applied: the delivery used to insert the older keys after them (`Necho ZQCON_agent_1`).
 #[test]
 fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
     App::test((), |mut app| async move {
@@ -17469,10 +17486,13 @@ fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
             // The remote shell's first prompt: the gate is released and the editor has focus.
             view.ssh_remote_prompt_seen = true;
             release_ssh_gate_for_test(view);
-            // Keys typed now reach the editor itself, not the hold.
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("N_agent_1", ctx));
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "N_agent_1");
+            // Keys typed now reach the editor itself, not the view.
+            editor_text(view, "N_agent_1", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "queued, not applied"
+            );
             view.poll_ssh_typeahead(false, ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(
@@ -17481,7 +17501,7 @@ fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
                 "held keys first, then what reached the editor meanwhile"
             );
             // Later keys go straight to the editor, behind everything.
-            view.typed_characters_on_terminal("_x", ctx);
+            editor_text(view, "_x", ctx);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
                 "echo ZQCONN_agent_1_x"
@@ -17491,9 +17511,34 @@ fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
     })
 }
 
+/// #1292: a Backspace typed into the editor in the gap edits the HELD text, not the editor's
+/// (which is empty), and the keys after it follow in order.
+#[test]
+fn ssh_editor_backspace_in_the_gap_edits_the_held_text() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo abX", ctx);
+            view.ssh_remote_prompt_seen = true;
+            release_ssh_gate_for_test(view);
+            editor_key(view, EditorAction::Backspace, ctx);
+            editor_text(view, "c", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.poll_ssh_typeahead(false, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
 /// #1292 (agent mode): an Enter that reaches the editor while keys are held must not submit the
 /// part of the line the editor has (it went to the agent as a prompt of its own); it is held
-/// behind everything typed before it.
+/// behind everything typed before it and runs the whole line once.
 #[test]
 fn ssh_editor_enter_during_hold_is_held_not_submitted() {
     App::test((), |mut app| async move {
@@ -17515,9 +17560,8 @@ fn ssh_editor_enter_during_hold_is_held_not_submitted() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo QW", ctx);
             assert!(view.ssh_typeahead_holding);
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("ERTY", ctx));
-            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+            editor_text(view, "ERTY", ctx);
+            editor_key(view, EditorAction::Enter, ctx);
         });
         terminal.update(&mut app, |view, ctx| {
             assert_eq!(
@@ -17526,6 +17570,7 @@ fn ssh_editor_enter_during_hold_is_held_not_submitted() {
                 "only the ssh command itself ran"
             );
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.drain_editor_keys_into_ssh_hold(ctx);
             assert_eq!(
                 view.ssh_typeahead.take(),
                 vec![
@@ -17535,6 +17580,27 @@ fn ssh_editor_enter_during_hold_is_held_not_submitted() {
             );
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1292: keys queued by the editor are discarded with the hold when a prompt arrives (they may
+/// be a password typed blind).
+#[test]
+fn ssh_prompt_arrival_discards_editor_queued_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("pa", ctx);
+            editor_text(view, "ss", ctx);
+            view.reset_ssh_typeahead();
+            assert!(view.ssh_editor_key_hold.is_empty());
+            view.drain_editor_keys_into_ssh_hold(ctx);
+            assert!(view.ssh_typeahead.is_empty());
+        });
     })
 }
 
