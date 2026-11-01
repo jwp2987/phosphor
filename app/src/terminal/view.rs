@@ -23352,7 +23352,8 @@ impl TerminalView {
     /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
     /// clipboard and target semantics, and is disabled while the clipboard is empty.
     fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
-        let is_clipboard_empty = !ctx.clipboard().has_content();
+        // The cached answer only: asking the clipboard owner here blocked the UI (#1406).
+        let is_clipboard_empty = !warpui::clipboard::cached_has_content(ctx.clipboard());
         MenuItemFields::new(crate::t!("common-paste"))
             .with_on_select_action(TerminalAction::Paste)
             .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))

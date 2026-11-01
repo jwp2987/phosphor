@@ -41,8 +41,25 @@ pub trait Clipboard: 'static {
         Availability::Unknown
     }
 
+    /// A self-contained availability query that may BLOCK in the OS (X11 `TARGETS` is bounded by a
+    /// 750 ms first-answer deadline, #1406) and therefore only ever runs on a worker thread, or
+    /// `None` where [`Clipboard::availability`] is a cheap local call (NSPasteboard's type list,
+    /// `IsClipboardFormatAvailable`, the in-memory clipboard) that is run inline.
+    fn availability_probe(&mut self) -> Option<AvailabilityProbe> {
+        None
+    }
+
+    /// True once the platform pushes owner-change events into [`availability_changed`] (X11
+    /// XFixes `SelectionNotify`), so the cached answer needs no refresh when a menu opens.
+    fn has_availability_events(&self) -> bool {
+        false
+    }
+
     /// Whether the clipboard may hold anything. Never reads or decodes; an unknown answer counts as
     /// "may hold something" so a menu entry is not wrongly disabled.
+    ///
+    /// This asks the platform synchronously, which can block on a dead selection owner (#1406):
+    /// UI code uses [`cached_has_content`] instead.
     fn has_content(&mut self) -> bool {
         !matches!(
             self.availability(ClipboardTarget::Clipboard),
@@ -718,6 +735,7 @@ pub fn write_in_background(
         if std::env::var_os("PHOSPHOR_SYNC_CLIPBOARD_WRITE").is_some() {
             return Err(content);
         }
+        note_own_write(target, &content);
         let Some(writer) = clipboard.background_writer() else {
             // The platform's write is cheap and ordered by construction (it finishes before this
             // returns): do it here so a caller has ONE write API and `on_done` still fires.
@@ -745,6 +763,207 @@ pub fn write_in_background(
         }
         Ok(())
     }
+}
+
+/// A self-contained availability query for a worker thread. See [`Clipboard::availability_probe`].
+pub type AvailabilityProbe =
+    std::sync::Arc<dyn Fn(ClipboardTarget) -> Availability + Send + Sync + 'static>;
+
+#[derive(Clone, Copy, Debug)]
+struct CacheEntry {
+    /// The newest answer; [`Availability::Unknown`] until the first one (the menu stays enabled).
+    known: Availability,
+    /// Bumped by every owner-change event and every write of ours, so a probe that started before
+    /// either cannot overwrite a newer answer with a stale one.
+    epoch: u64,
+    in_flight: bool,
+    /// An owner change arrived while a probe was in flight: ask again once it lands.
+    rerun: bool,
+}
+
+/// The cached availability of each clipboard (#1406). The paste menu reads [`Self::get`] and never
+/// queries; the answer is refreshed off the UI thread by owner-change events, by our own writes
+/// and, where the platform has no event, when a menu opens. At most one probe per clipboard runs
+/// at a time; an event during a probe is coalesced into one re-run.
+pub struct AvailabilityCache {
+    entries: [Mutex<CacheEntry>; 2],
+}
+
+impl AvailabilityCache {
+    pub const fn new() -> Self {
+        const fn entry() -> Mutex<CacheEntry> {
+            Mutex::new(CacheEntry {
+                known: Availability::Unknown,
+                epoch: 0,
+                in_flight: false,
+                rerun: false,
+            })
+        }
+        Self {
+            entries: [entry(), entry()],
+        }
+    }
+
+    fn entry(&self, target: ClipboardTarget) -> &Mutex<CacheEntry> {
+        &self.entries[target as usize]
+    }
+
+    pub fn get(&self, target: ClipboardTarget) -> Availability {
+        self.entry(target).lock().known
+    }
+
+    /// Records an answer that needs no probe: our own write, or a cheap inline query.
+    pub fn note(&self, target: ClipboardTarget, answer: Availability) {
+        let mut entry = self.entry(target).lock();
+        entry.known = answer;
+        entry.epoch += 1;
+    }
+
+    /// The owner changed. Returns whether the caller must start a probe (none is running); when
+    /// one is running it is told to run again instead.
+    pub fn invalidate(&self, target: ClipboardTarget) -> bool {
+        let mut entry = self.entry(target).lock();
+        entry.epoch += 1;
+        if entry.in_flight {
+            entry.rerun = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Claims the probe slot: the epoch to finish with, or `None` when a probe is already
+    /// running (it is asked to run again, so this request is not lost).
+    pub fn begin(&self, target: ClipboardTarget) -> Option<u64> {
+        let mut entry = self.entry(target).lock();
+        if entry.in_flight {
+            entry.rerun = true;
+            return None;
+        }
+        entry.in_flight = true;
+        entry.rerun = false;
+        Some(entry.epoch)
+    }
+
+    /// Stores the probe's `answer` unless the clipboard changed since the probe began, and frees
+    /// the slot. Returns whether the probe must run again.
+    pub fn finish(&self, target: ClipboardTarget, epoch: u64, answer: Availability) -> bool {
+        let mut entry = self.entry(target).lock();
+        if entry.epoch == epoch {
+            entry.known = answer;
+        }
+        entry.in_flight = false;
+        std::mem::take(&mut entry.rerun)
+    }
+}
+
+static AVAILABILITY: AvailabilityCache = AvailabilityCache::new();
+
+/// Frees the probe slot if the probe panics, so one bad probe cannot stop every later refresh.
+struct ProbeSlot<'a> {
+    cache: &'a AvailabilityCache,
+    target: ClipboardTarget,
+    armed: bool,
+}
+
+impl Drop for ProbeSlot<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.entry(self.target).lock().in_flight = false;
+        }
+    }
+}
+
+impl AvailabilityCache {
+    /// Runs `probe` and stores its answer, repeating while owner changes arrive meanwhile.
+    /// Blocks in `probe`: call it from a worker or an event thread, never the UI thread.
+    pub fn refresh_blocking(
+        &self,
+        target: ClipboardTarget,
+        probe: &dyn Fn(ClipboardTarget) -> Availability,
+    ) {
+        while let Some(epoch) = self.begin(target) {
+            let mut slot = ProbeSlot {
+                cache: self,
+                target,
+                armed: true,
+            };
+            let answer = probe(target);
+            slot.armed = false;
+            if !self.finish(target, epoch, answer) {
+                break;
+            }
+        }
+    }
+}
+
+/// The cached availability of `target` (see [`AvailabilityCache`]).
+pub fn cached_availability(target: ClipboardTarget) -> Availability {
+    AVAILABILITY.get(target)
+}
+
+/// Owner-change entry point for platform listeners: marks the cached answer stale and re-probes
+/// with `probe` on the CALLING thread, which must therefore be an event-listener thread.
+pub fn availability_changed(
+    target: ClipboardTarget,
+    probe: &dyn Fn(ClipboardTarget) -> Availability,
+) {
+    if AVAILABILITY.invalidate(target) {
+        AVAILABILITY.refresh_blocking(target, probe);
+    }
+}
+
+/// Asks the platform for the current availability without waiting for it: a probe that may block
+/// runs on a worker thread; a cheap one is answered inline.
+pub fn refresh_availability(clipboard: &mut dyn Clipboard, target: ClipboardTarget) {
+    refresh_in(&AVAILABILITY, clipboard, target);
+}
+
+fn refresh_in(
+    cache: &'static AvailabilityCache,
+    clipboard: &mut dyn Clipboard,
+    target: ClipboardTarget,
+) {
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(probe) = clipboard.availability_probe() {
+        if cache.invalidate(target) {
+            let spawned = std::thread::Builder::new()
+                .name("clipboard-avail".into())
+                .spawn(move || cache.refresh_blocking(target, &*probe));
+            if let Err(err) = spawned {
+                log::warn!("Unable to start the clipboard availability probe: {err}");
+            }
+        }
+        return;
+    }
+    cache.note(target, clipboard.availability(target));
+}
+
+/// Whether the paste menu entry is enabled: the cached answer, never a synchronous query. Unknown
+/// (nothing answered yet, or the query failed) counts as "may hold something". Kicks off an
+/// asynchronous refresh unless the platform pushes owner-change events.
+pub fn cached_has_content(clipboard: &mut dyn Clipboard) -> bool {
+    cached_has_content_in(&AVAILABILITY, clipboard)
+}
+
+fn cached_has_content_in(cache: &'static AvailabilityCache, clipboard: &mut dyn Clipboard) -> bool {
+    if !clipboard.has_availability_events() {
+        refresh_in(cache, clipboard, ClipboardTarget::Clipboard);
+    }
+    !matches!(cache.get(ClipboardTarget::Clipboard), Availability::Empty)
+}
+
+/// Our own write defines the clipboard: record it at once instead of waiting for the owner-change
+/// event (or a probe) to say so.
+fn note_own_write(target: ClipboardTarget, content: &ClipboardContent) {
+    AVAILABILITY.note(
+        target,
+        if content.is_empty() {
+            Availability::Empty
+        } else {
+            Availability::HasContent
+        },
+    );
 }
 
 // Clipboard could contain content with multiple data types at the same type.

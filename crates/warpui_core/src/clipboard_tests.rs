@@ -514,3 +514,158 @@ fn oversize_content_is_refused_by_every_read_path() {
         ReadOutcome::TooLarge(n) if n == MAX_PASTE_BYTES + 1
     ));
 }
+
+fn leaked_cache() -> &'static AvailabilityCache {
+    Box::leak(Box::new(AvailabilityCache::new()))
+}
+
+#[test]
+fn cache_is_unknown_before_the_first_answer() {
+    let cache = AvailabilityCache::new();
+    assert_eq!(cache.get(ClipboardTarget::Clipboard), Availability::Unknown);
+    assert_eq!(cache.get(ClipboardTarget::Primary), Availability::Unknown);
+}
+
+#[test]
+fn cache_keeps_the_two_clipboards_apart() {
+    let cache = AvailabilityCache::new();
+    cache.note(ClipboardTarget::Primary, Availability::HasContent);
+    assert_eq!(cache.get(ClipboardTarget::Clipboard), Availability::Unknown);
+    assert_eq!(
+        cache.get(ClipboardTarget::Primary),
+        Availability::HasContent
+    );
+}
+
+#[test]
+fn probe_answer_is_stored_unless_the_owner_changed_meanwhile() {
+    let cache = AvailabilityCache::new();
+    let target = ClipboardTarget::Clipboard;
+    let epoch = cache.begin(target).unwrap();
+    // Our own write lands while the probe is out: the probe's answer is older and is dropped.
+    cache.note(target, Availability::HasContent);
+    assert!(!cache.finish(target, epoch, Availability::Empty));
+    assert_eq!(cache.get(target), Availability::HasContent);
+    // A probe that saw no change is stored.
+    let epoch = cache.begin(target).unwrap();
+    assert!(!cache.finish(target, epoch, Availability::Empty));
+    assert_eq!(cache.get(target), Availability::Empty);
+}
+
+#[test]
+fn an_event_during_a_probe_coalesces_into_one_rerun() {
+    let cache = AvailabilityCache::new();
+    let target = ClipboardTarget::Clipboard;
+    assert!(
+        cache.invalidate(target),
+        "idle: the caller starts the probe"
+    );
+    let epoch = cache.begin(target).unwrap();
+    assert!(
+        !cache.invalidate(target),
+        "running: told to run again, not to start"
+    );
+    assert!(!cache.invalidate(target));
+    assert_eq!(cache.begin(target), None, "one probe at a time");
+    // The stale answer is dropped and exactly one rerun is requested.
+    assert!(cache.finish(target, epoch, Availability::Empty));
+    assert_eq!(cache.get(target), Availability::Unknown);
+    let epoch = cache.begin(target).unwrap();
+    assert!(!cache.finish(target, epoch, Availability::HasContent));
+    assert_eq!(cache.get(target), Availability::HasContent);
+}
+
+#[test]
+fn refresh_blocking_reruns_for_an_event_that_arrived_during_the_probe() {
+    let cache = AvailabilityCache::new();
+    let target = ClipboardTarget::Clipboard;
+    let calls = std::cell::Cell::new(0);
+    cache.refresh_blocking(target, &|_| {
+        calls.set(calls.get() + 1);
+        if calls.get() == 1 {
+            cache.invalidate(target);
+            Availability::Empty
+        } else {
+            Availability::HasContent
+        }
+    });
+    assert_eq!(calls.get(), 2);
+    assert_eq!(cache.get(target), Availability::HasContent);
+}
+
+#[test]
+fn a_panicking_probe_does_not_wedge_later_refreshes() {
+    let cache = AvailabilityCache::new();
+    let target = ClipboardTarget::Clipboard;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cache.refresh_blocking(target, &|_| panic!("probe failed"));
+    }));
+    assert!(result.is_err());
+    cache.refresh_blocking(target, &|_| Availability::Empty);
+    assert_eq!(cache.get(target), Availability::Empty);
+}
+
+/// A clipboard whose availability query blocks until released and whose synchronous query must
+/// never be reached: the menu may only read the cache.
+struct BlockingProbeClipboard {
+    release: std::sync::Arc<(Mutex<bool>, Condvar)>,
+    answer: Availability,
+}
+
+impl Clipboard for BlockingProbeClipboard {
+    fn write(&mut self, _contents: ClipboardContent) {}
+
+    fn reader(&mut self, _kind: ReadKind) -> ClipboardReader {
+        unreachable!("the menu never reads")
+    }
+
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
+        panic!("the menu must not query the clipboard on the calling thread");
+    }
+
+    fn availability_probe(&mut self) -> Option<AvailabilityProbe> {
+        let release = self.release.clone();
+        let answer = self.answer;
+        Some(std::sync::Arc::new(move |_| {
+            let (open, changed) = &*release;
+            let mut open = open.lock();
+            while !*open {
+                changed.wait(&mut open);
+            }
+            answer
+        }))
+    }
+}
+
+#[test]
+fn menu_enabled_state_never_waits_for_a_blocked_owner() {
+    let cache = leaked_cache();
+    let release = std::sync::Arc::new((Mutex::new(false), Condvar::new()));
+    let mut clipboard = BlockingProbeClipboard {
+        release: release.clone(),
+        answer: Availability::Empty,
+    };
+    // The probe is stuck on a dead owner; the menu still answers at once, and Unknown is enabled.
+    assert!(cached_has_content_in(cache, &mut clipboard));
+    assert_eq!(cache.get(ClipboardTarget::Clipboard), Availability::Unknown);
+    // Another menu open while the probe is stuck does not start a second query.
+    assert!(cached_has_content_in(cache, &mut clipboard));
+    // The owner answers: the cache learns it and the next menu open is disabled.
+    *release.0.lock() = true;
+    release.1.notify_all();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while cache.get(ClipboardTarget::Clipboard) == Availability::Unknown {
+        assert!(std::time::Instant::now() < deadline, "probe never landed");
+        std::thread::yield_now();
+    }
+    assert!(!cached_has_content_in(cache, &mut clipboard));
+}
+
+#[test]
+fn cheap_platforms_answer_the_menu_inline_and_fresh() {
+    let cache = leaked_cache();
+    let mut clipboard = InMemoryClipboard::default();
+    assert!(!cached_has_content_in(cache, &mut clipboard));
+    clipboard.write(ClipboardContent::plain_text("x".to_owned()));
+    assert!(cached_has_content_in(cache, &mut clipboard));
+}
