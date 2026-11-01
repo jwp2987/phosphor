@@ -261,14 +261,23 @@ impl CommandBuilder<'_> {
 /// The process for a chip command that is a single external program (#1230), resolved against
 /// the session's `PATH` (the executor's `environment_variables` carry it), or `None` when the
 /// program is not found there so the command still goes through the shell.
-#[cfg(unix)]
 fn direct_command(
     direct: &crate::context_chips::builtins::DirectInvocation,
     environment_variables: Option<&HashMap<String, String>>,
 ) -> Option<Command> {
-    let path_var = environment_variables
-        .and_then(|vars| vars.get("PATH").map(std::ffi::OsString::from))
-        .or_else(|| std::env::var_os("PATH"))?;
+    // Windows environment variable names are case-insensitive and the session carries `Path`.
+    let session_path = environment_variables.and_then(|vars| {
+        vars.iter()
+            .find(|(name, _)| {
+                if cfg!(windows) {
+                    name.eq_ignore_ascii_case("PATH")
+                } else {
+                    name.as_str() == "PATH"
+                }
+            })
+            .map(|(_, value)| std::ffi::OsString::from(value))
+    });
+    let path_var = session_path.or_else(|| std::env::var_os("PATH"))?;
     let program = warp_util::path::resolve_executable_in_path(direct.program, &path_var)?;
     let mut command = Command::new_with_process_group(program.as_os_str());
     command.args(direct.args);
@@ -390,7 +399,8 @@ impl LocalCommandExecutor {
     ) -> Result<CommandOutput> {
         // A per-prompt chip command that is made of external programs only does not need a
         // PowerShell process to run it (#1230).
-        #[cfg(unix)]
+        // Windows shares this path: `resolve_executable_in_path` applies PATHEXT there, and a
+        // program that cannot be found or started falls back to the shell exactly as on unix.
         {
             if self.shell_type == ShellType::PowerShell && shell_config_flag == "-NoProfile" {
                 if let Some(plan) =
@@ -426,7 +436,6 @@ impl LocalCommandExecutor {
 
     /// Runs one step of a [`DirectPlan`]; `None` when its program cannot be found or started,
     /// so the caller falls back to the shell.
-    #[cfg(unix)]
     async fn run_direct_step(
         &self,
         step: &crate::context_chips::builtins::DirectInvocation,
@@ -459,7 +468,6 @@ impl LocalCommandExecutor {
 
     /// Runs a chip command's programs directly, with the output and success the PowerShell
     /// command gave. `None` when a program cannot be started (the caller runs the shell).
-    #[cfg(unix)]
     async fn run_direct_plan(
         &self,
         plan: &crate::context_chips::builtins::DirectPlan,

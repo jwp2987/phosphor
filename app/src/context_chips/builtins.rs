@@ -282,7 +282,6 @@ fn pwsh_other_git_branches_command() -> String {
 }
 
 /// One external program with fixed arguments.
-#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DirectInvocation {
     pub program: &'static str,
@@ -292,7 +291,6 @@ pub(crate) struct DirectInvocation {
 }
 
 /// A chip command that is made of external programs only, so it can be run without a shell.
-#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DirectPlan {
     /// One program.
@@ -313,7 +311,6 @@ const GIT_ENV: &[(&str, &str)] = &[("GIT_OPTIONAL_LOCKS", "0")];
 /// (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux and several times that on
 /// Windows, where bash costs 3 ms. Matches the exact text the chips above generate, nothing
 /// else: any other command still goes through pwsh.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> {
     if command == pwsh_git_line_changes_command() {
         return Some(DirectPlan::Single(DirectInvocation {
