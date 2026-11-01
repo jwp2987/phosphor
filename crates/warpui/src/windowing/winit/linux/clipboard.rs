@@ -180,6 +180,12 @@ impl Clipboard for LinuxClipboard {
         if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
             return true;
         }
+        // No plain text: HTML or copied paths still answer without an image decode. Only an
+        // image-only (or empty) clipboard reaches the full read below; arboard has no decode-free
+        // target query on Linux, so that one case still decodes (#1306).
+        if !self.read_without_images().is_empty() {
+            return true;
+        }
         !self.read().is_empty()
     }
 
