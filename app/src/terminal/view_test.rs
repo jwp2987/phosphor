@@ -19134,7 +19134,7 @@ fn ssh_blind_password_after_a_banner_is_never_shown() {
 /// follows the user's edits.
 #[test]
 fn ssh_held_keys_keep_order_and_fallback_text_follows_edits() {
-    let mut held = SshTypeahead::default();
+    let mut held = crate::terminal::view::ssh_typeahead::SshTypeahead::default();
     for key in ["echo", " ", "secrex", "\u{7f}", "t"] {
         held.push(HeldInput::from_chars(key));
     }
