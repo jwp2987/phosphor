@@ -1383,15 +1383,18 @@ fn test_lazy_reflow_keeps_selection_across_reflowed_block() {
     }
     // Widening makes every long line fit on one row, so each reflowed block gets shorter.
     resize_columns(&mut block_list, base * 3);
-    assert!(block_list.blocks()[0].is_reflow_stale());
-    assert!(block_list.blocks()[1].is_reflow_stale());
+    // Blocks 0..3 are the bootstrap blocks (no visible rows); the first command block is 3.
+    let head_block = BlockIndex::from(3);
+    assert!(block_list.blocks()[head_block.0].is_reflow_stale());
+    assert!(block_list.blocks()[head_block.0 + 1].is_reflow_stale());
     let tail_block = BlockIndex::from(block_list.blocks().len() - 2);
     assert!(!block_list.blocks()[tail_block.0].is_reflow_stale());
 
-    // Select from the start of stale block 0's output to the middle of a current block, with
-    // stale blocks 1.. in between.
+    // Select from the start of stale block 3's output (the first block with rows of its own: an
+    // anchor on a zero-height bootstrap block sits on the first reflowed block's top row and would
+    // correctly count as inside it) to the middle of a current block, with stale blocks in between.
     let head = BlockListPoint::try_from_within_block_point(
-        &WithinBlock::new(Point { row: 0, col: 0 }, 0.into(), GridType::Output),
+        &WithinBlock::new(Point { row: 0, col: 0 }, head_block, GridType::Output),
         &block_list,
     )
     .unwrap();
@@ -1418,7 +1421,7 @@ fn test_lazy_reflow_keeps_selection_across_reflowed_block() {
 
     // Reflow the stale blocks between the anchors (heights change); the head block stays put.
     let heights_before = block_list.block_heights().summary().height;
-    assert!(block_list.reflow_stale_blocks_in_range(1.into(), 10.into()) > 0);
+    assert!(block_list.reflow_stale_blocks_in_range(4.into(), 12.into()) > 0);
     assert!(block_list.block_heights().summary().height != heights_before);
     assert_eq!(anchors(&block_list), before);
 }

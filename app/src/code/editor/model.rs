@@ -2137,10 +2137,10 @@ impl CodeEditorModel {
         render_state.styles().base_line_height().as_f32()
     }
 
-    pub fn paste(&mut self, ctx: &mut ModelContext<Self>) {
-        // We only want to read the plain text contents for code editor.
-        let content = ctx.clipboard().read();
-        self.insert(content.plain_text.as_str(), EditOrigin::UserInitiated, ctx);
+    /// Inserts pasted plain text at the cursor. The clipboard is read by the view, off the UI
+    /// thread, which also orders the keys typed meanwhile (#1380).
+    pub fn paste_text(&mut self, text: &str, ctx: &mut ModelContext<Self>) {
+        self.insert(text, EditOrigin::UserInitiated, ctx);
     }
 
     /// Append text to the end of the buffer regardless of cursor position.

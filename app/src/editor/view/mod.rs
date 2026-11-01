@@ -1061,6 +1061,8 @@ pub enum EditorAction {
         selected_range: Range<usize>,
     },
     ClearMarkedText,
+    /// Internal (#1389): the deferred step that applies replayed keys waiting for the display map.
+    ReplayHeldKeys,
     ImeCommit(UserInput<String>),
     Tab,
     ShiftTab,
@@ -3033,6 +3035,61 @@ impl EditorView {
 
     /// Applies a key that was held behind a paste, exactly as if it had just been typed.
     pub fn apply_held_paste_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        // #1389: the display map follows buffer edits only when effects flush, so a cursor-motion
+        // key applied in the same update as the edits before it would read a stale map. Such a key
+        // (and every key behind it, to keep the order) is applied by a deferred step, which runs
+        // after the effects of the keys before it.
+        let hold = Rc::clone(&self.paste_hold);
+        if !hold.is_replaying()
+            && (hold.replay_pending() || paste_hold::needs_fresh_display_map(&key))
+        {
+            hold.replay_push(key);
+            self.schedule_held_replay(ctx);
+            return;
+        }
+        self.apply_held_paste_key_now(key, ctx);
+    }
+
+    fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.replay_mark_scheduled() {
+            ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
+        }
+    }
+
+    /// One deferred replay step: applies the waiting keys up to the next one that needs the map to
+    /// have caught up with what this step applied, and queues another step for that one.
+    fn replay_held_keys_step(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        hold.replay_clear_scheduled();
+        let mut first = true;
+        while first || (hold.replay_pending() && !hold.replay_next_needs_fresh_map()) {
+            let Some(key) = hold.replay_pop() else {
+                return;
+            };
+            self.apply_held_paste_key_now(key, ctx);
+            first = false;
+        }
+        if hold.replay_pending() {
+            self.schedule_held_replay(ctx);
+        }
+    }
+
+    /// Applies every waiting replayed key now, in order. For a key that acts at once (Ctrl-C), which
+    /// must see everything typed before it.
+    fn flush_held_replay_now(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        while let Some(key) = hold.replay_pop() {
+            self.apply_held_paste_key_now(key, ctx);
+        }
+    }
+
+    fn apply_held_paste_key_now(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        let was_replaying = self.paste_hold.set_replaying(true);
+        self.apply_held_paste_key_inner(key, ctx);
+        self.paste_hold.set_replaying(was_replaying);
+    }
+
+    fn apply_held_paste_key_inner(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
         match key {
             HeldPasteKey::Text(text) => {
                 self.handle_action(&EditorAction::UserInsert(UserInput::new(text)), ctx)
@@ -3045,16 +3102,30 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
-        if self.paste_hold.uses_queue() {
+        // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
+        // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
+        if self.paste_hold.replay_pending()
+            && !self.paste_hold.is_replaying()
+            && !matches!(action, EditorAction::ReplayHeldKeys)
+        {
+            if let Some(key) = paste_hold::held_form(action) {
+                self.paste_hold.replay_push(key);
+                self.schedule_held_replay(ctx);
+                return true;
+            }
+            self.flush_held_replay_now(ctx);
+        }
+        if self.paste_hold.uses_queue() && !self.paste_hold.sequencer_pending() {
             return self.hold_key_for_paste_on_queue(action, ctx);
         }
-        if !self.paste_hold.has_pending() {
+        if !self.paste_hold.sequencer_pending() {
             return false;
         }
         if matches!(action, EditorAction::CtrlC) {
             for key in self.paste_hold.cancel() {
                 self.apply_held_paste_key(key, ctx);
             }
+            self.flush_held_replay_now(ctx);
             return false;
         }
         match paste_hold::held_form(action) {
@@ -3082,6 +3153,7 @@ impl EditorView {
             queue
                 .borrow_mut()
                 .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
+            self.flush_held_replay_now(ctx);
             return false;
         }
         // A paste typed behind a paste is not held: it acts at once and queues its own entry
@@ -3230,6 +3302,7 @@ impl EditorView {
         self.drag_drop_path_transformer = transformer;
     }
 
+    #[cfg(test)]
     fn clipboard_content(&mut self, ctx: &mut ViewContext<Self>) -> String {
         let content = ctx.clipboard().read();
         self.clipboard_text_content(content)
@@ -3241,13 +3314,6 @@ impl EditorView {
             self.shell_dialect,
             self.convert_newline_to_space,
         )
-    }
-
-    fn middle_click_paste_content(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
-        });
-        content.map(|content| self.clipboard_text_content(content))
     }
 
     /// Creates a single-line [`EditorView`] with an empty buffer
@@ -3786,6 +3852,8 @@ impl EditorView {
                 view.set_current_autosuggestion(Some(full_suggestion));
             });
 
+            // #1279: name the async notify behind a second frame after a key.
+            log::debug!(target: "warpui::notify_cause", "editor: autosuggestion set");
             ctx.notify();
 
             if matches!(location, AutosuggestionLocation::EndOfBuffer)
@@ -4573,18 +4641,84 @@ impl EditorView {
         // When paste handling is delegated, the parent view (e.g. the terminal input) is
         // responsible for processing the paste.
         if !self.delegate_paste_handling {
-            // Read clipboard contents
-            let content = ctx.clipboard().read();
-
-            let clipboard_content_str = self.clipboard_text_content(content);
-            self.user_initiated_insert(
-                &clipboard_content_str,
-                PlainTextEditorViewAction::Paste,
-                ctx,
-            );
+            // Read the clipboard off the UI thread (#1380). Keys typed meanwhile are held behind
+            // the paste and applied after it, in order, like the terminal input's paste (#1300).
+            self.start_plain_read(warpui::clipboard::ReadKind::TextAndPaths, false, ctx);
+            return;
         }
 
         ctx.emit(Event::Paste);
+    }
+
+    /// Starts the off-thread read of a plain editor's paste (`middle_click`: a middle-click paste
+    /// of the primary selection) and holds the keys typed behind it (#1380).
+    fn start_plain_read(
+        &mut self,
+        kind: warpui::clipboard::ReadKind,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // A paste asked for while another is being read waits behind it (superseding would drop
+        // the first one's text).
+        if self.paste_hold.sequencer_pending() {
+            let action = if middle_click {
+                EditorAction::MiddleClickPaste
+            } else {
+                EditorAction::Paste
+            };
+            self.paste_hold.hold(HeldPasteKey::Action(action));
+            return;
+        }
+        let id = self.paste_hold.begin();
+        match warpui::clipboard::read_in_background(ctx.clipboard(), kind) {
+            warpui::clipboard::StartedRead::Ready(read) => {
+                self.finish_plain_paste(id, read, middle_click, ctx)
+            }
+            warpui::clipboard::StartedRead::Pending(pending) => {
+                ctx.spawn(pending, move |me, read, ctx| {
+                    me.finish_plain_paste(id, read, middle_click, ctx)
+                });
+            }
+        }
+    }
+
+    /// The plain editor's paste `id` was read: insert it, announce it, then apply the keys typed
+    /// behind it in order. A paste cancelled by Ctrl-C or superseded does nothing.
+    fn finish_plain_paste(
+        &mut self,
+        id: u64,
+        read: warpui::clipboard::BackgroundTextRead,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(held) = self.paste_hold.complete(id) else {
+            return;
+        };
+        match read {
+            // An empty middle-click selection pastes nothing (as `read_for_middle_click_paste`).
+            warpui::clipboard::BackgroundTextRead::Content(content)
+                if middle_click && content.is_empty() => {}
+            warpui::clipboard::BackgroundTextRead::Content(content) if middle_click => {
+                self.insert_middle_click_content(content, ctx);
+            }
+            warpui::clipboard::BackgroundTextRead::Content(content) => {
+                let text = self.clipboard_text_content(content);
+                self.user_initiated_insert(&text, PlainTextEditorViewAction::Paste, ctx);
+                // Announced once the insert has landed (#1380), not by a read at action time.
+                crate::util::clipboard::announce_pasted_text(&text, ctx);
+            }
+            failed => {
+                if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                    crate::util::clipboard::show_read_failure_toast(message, ctx);
+                }
+            }
+        }
+        if !middle_click {
+            ctx.emit(Event::Paste);
+        }
+        for key in held {
+            self.apply_held_paste_key(key, ctx);
+        }
     }
 
     fn middle_click_paste(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4601,9 +4735,12 @@ impl EditorView {
             return;
         }
 
-        let clipboard_content = self.middle_click_paste_content(ctx);
-        if let Some(clipboard_content) = clipboard_content {
-            self.insert_middle_click_text(&clipboard_content, ctx);
+        // Off the UI thread (#1380): the selection owner can stall a read; keys typed meanwhile are
+        // held behind it. The kind is `None` when the setting disables middle-click paste.
+        let kind = SelectionSettings::handle(ctx)
+            .update(ctx, |selection, _| selection.middle_click_read_kind());
+        if let Some(kind) = kind {
+            self.start_plain_read(kind, true, ctx);
         }
         ctx.focus_self();
     }
@@ -8872,7 +9009,7 @@ impl TypedActionView for EditorView {
     fn action_accessibility_contents(
         &mut self,
         action: &EditorAction,
-        ctx: &mut ViewContext<Self>,
+        _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         match action {
             EditorAction::UserInsert(text) => ActionAccessibilityContent::Custom(
@@ -8908,12 +9045,16 @@ impl TypedActionView for EditorView {
             | EditorAction::MoveBackwardOneSubword
             | EditorAction::Delete
             | EditorAction::Backspace => ActionAccessibilityContent::Empty,
-            EditorAction::Paste => {
+            // A plain editor announces the pasted text once it has landed (`finish_plain_paste`);
+            // no clipboard read here, this runs on the UI thread (#1380). When the owner handles
+            // the paste (the terminal input) only the fact is announced.
+            EditorAction::Paste if self.delegate_paste_handling => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-                    format!("Pasting: {}", self.clipboard_content(ctx)),
+                    "Pasting from the clipboard".to_string(),
                     WarpA11yRole::UserAction,
                 ))
             }
+            EditorAction::Paste => ActionAccessibilityContent::Empty,
             _ => ActionAccessibilityContent::from_debug(),
         }
     }
@@ -9098,6 +9239,7 @@ impl TypedActionView for EditorView {
                 selected_range,
             } => self.set_marked_text(marked_text, selected_range, ctx),
             ClearMarkedText => self.clear_marked_text(ctx),
+            ReplayHeldKeys => self.replay_held_keys_step(ctx),
         }
 
         if self.is_focused() {

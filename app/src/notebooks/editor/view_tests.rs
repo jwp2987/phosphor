@@ -1151,3 +1151,60 @@ fn test_reset_with_markdown_clears_relaidout_mermaid_asset_sources() {
         }
     });
 }
+
+/// #1380: keys typed while a notebook paste is being read off the UI thread are held and applied
+/// after the pasted text, in typing order.
+#[test]
+fn test_keys_typed_during_a_paste_read_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        let (_window, editor_view, _test_view) = initialize_editor(&mut app);
+        editor_view.update(&mut app, |_, ctx| ctx.focus_self());
+        editor_view.update(&mut app, |editor, ctx| {
+            // A read in flight: the worker has not answered yet.
+            let id = editor.paste_gate.begin();
+            editor.handle_action(&EditorViewAction::UserTyped(UserInput::new("x")), ctx);
+            editor.handle_action(&EditorViewAction::UserTyped(UserInput::new("y")), ctx);
+            assert!(
+                editor.markdown(ctx).is_empty(),
+                "typed keys wait for the paste"
+            );
+            editor.finish_paste(
+                id,
+                warpui::clipboard::BackgroundTextRead::Content(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTE".into()),
+                ),
+                false,
+                ctx,
+            );
+            assert_eq!(&editor.markdown(ctx), "PASTExy");
+            assert!(!editor.paste_gate.has_pending());
+        });
+    })
+}
+
+/// #1380: a failed or over-cap read inserts nothing; the held keys still apply, and a second paste
+/// asked for during the read is not lost.
+#[test]
+fn test_failed_paste_read_keeps_the_keys_and_a_second_paste_queues_behind() {
+    App::test((), |mut app| async move {
+        let (_window, editor_view, _test_view) = initialize_editor(&mut app);
+        editor_view.update(&mut app, |_, ctx| ctx.focus_self());
+        editor_view.update(&mut app, |editor, ctx| {
+            let id = editor.paste_gate.begin();
+            editor.handle_action(&EditorViewAction::UserTyped(UserInput::new("a")), ctx);
+            // Asked for during the read: held, not dropped by superseding the first.
+            editor.paste(ctx);
+            editor.handle_action(&EditorViewAction::UserTyped(UserInput::new("b")), ctx);
+            editor.finish_paste(
+                id,
+                warpui::clipboard::BackgroundTextRead::TooLarge(
+                    warpui::clipboard::MAX_PASTE_BYTES + 1,
+                ),
+                false,
+                ctx,
+            );
+            // "a", then the queued paste (empty in-memory clipboard, completes at once), then "b".
+            assert_eq!(&editor.markdown(ctx), "ab");
+        });
+    })
+}

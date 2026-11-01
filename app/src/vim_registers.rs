@@ -72,7 +72,11 @@ impl VimRegisters {
         // using a linewise motion. If it was, it needs to be pasted on its own line.
         if Self::points_to_system_clipboard(register_name, ctx) {
             let register_content = self.registers.get(&'+');
-            let clipboard_content = ctx.clipboard().read().plain_text;
+            // Synchronous on purpose (#1380): the register's value decides the edit this very
+            // keystroke, and the modal editors have no key hold to keep the keys typed behind an
+            // asynchronous read in order. Text only, so the HTML and image probes (the slow part
+            // of a stalling owner) are skipped; the platform read is itself bounded.
+            let clipboard_content = ctx.clipboard().read_text_and_paths().plain_text;
 
             // Read this model's register entry for the system clipboard. It may be different if
             // the user wrote to the clipboard from a different app. If it's the same, we will
