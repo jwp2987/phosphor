@@ -39,8 +39,22 @@ pub enum RepoOutlinesEvent {
 
 const MAX_REPO_FILE_SIZE_LIMIT: usize = 5000;
 
+/// Source of outline versions. Global (not per-model) so a version never repeats across
+/// `RepoOutlines` instances, which keeps version-keyed caches correct in tests and on
+/// model re-creation.
+static OUTLINE_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_outline_version() -> u64 {
+    OUTLINE_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct RepoOutlines {
     outlines: HashMap<PathBuf, OutlineState>,
+
+    /// Changes whenever ANY outline's content or status changes (#1276). Every site that
+    /// mutates `outlines` (insert, clear, status set to Pending/Complete/Failed, in-place
+    /// update swap) must call [`Self::bump_version`]; symbol caches key on this value.
+    version: u64,
 
     /// Queue of paths to be scanned for git repo outlines.
     outline_queue: VecDeque<PathBuf>,
@@ -128,6 +142,7 @@ impl RepoOutlines {
 
         Self {
             outlines: Default::default(),
+            version: next_outline_version(),
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled,
@@ -143,6 +158,7 @@ impl RepoOutlines {
     pub fn new_for_test(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             outlines: Default::default(),
+            version: next_outline_version(),
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled: true,
@@ -151,6 +167,15 @@ impl RepoOutlines {
             build_on_demand: false,
             failed_at: Default::default(),
         }
+    }
+
+    /// Monotonic-ish token that changes on every outline mutation; see the field doc.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn bump_version(&mut self) {
+        self.version = next_outline_version();
     }
 
     /// Asks for the outline of the repo containing `path` to be built, if it has not
@@ -206,6 +231,7 @@ impl RepoOutlines {
             };
             self.failed_at.remove(&repo_path);
             self.outlines.insert(repo_path.clone(), outline_state);
+            self.bump_version();
             self.outline_queue.push_back(repo_path);
             self.compute_next_outline(ctx);
         }
@@ -254,6 +280,7 @@ impl RepoOutlines {
 
             me.outlines = HashMap::default();
             me.outline_queue = VecDeque::default();
+            me.bump_version();
         }
     }
 
@@ -363,6 +390,7 @@ impl RepoOutlines {
                                 {
                                     outline_state.status = OutlineStatus::Complete(outline);
                                 }
+                                me.bump_version();
                                 ctx.emit(RepoOutlinesEvent::OutlinesUpdated(
                                     canonicalized_path.into(),
                                 ));
@@ -387,6 +415,7 @@ impl RepoOutlines {
                                     outline_state.status = OutlineStatus::Failed;
                                     me.failed_at.insert(root_path_clone.clone(), Instant::now());
                                 }
+                                me.bump_version();
                             }
                         };
                     }
@@ -474,6 +503,7 @@ impl RepoOutlines {
             }) => {
                 let mut outline = OutlineStatus::Pending;
                 std::mem::swap(outline_status, &mut outline);
+                self.bump_version();
                 let repo_path_clone_inner = repo_path.to_path_buf();
 
                 ctx.spawn(
@@ -488,6 +518,7 @@ impl RepoOutlines {
                     move |me, (outline, repo_path), ctx| {
                         if let Some(state) = me.outlines.get_mut(&repo_path) {
                             state.status = OutlineStatus::Complete(outline);
+                            me.bump_version();
                             ctx.emit(RepoOutlinesEvent::OutlinesUpdated(repo_path));
                         }
                     },

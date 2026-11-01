@@ -544,14 +544,14 @@ impl RequestParams {
         // out of the tools array entirely.
         let codebase_context_enabled = BlocklistAIPermissions::as_ref(app)
             .get_codebase_context_enabled(app, terminal_view_id);
-        let codebase_symbols = std::sync::Arc::new(if codebase_context_enabled {
+        let codebase_symbols = if codebase_context_enabled {
             crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(
                 app,
                 &session_context,
             )
         } else {
-            Vec::new()
-        });
+            std::sync::Arc::new(Vec::new())
+        };
         // Shares the same codebase-context gate as `search_codebase`; additionally needs a
         // BYOP active-AI one-shot config and a ready outline (else `None` and the tool is
         // filtered out / rejected).

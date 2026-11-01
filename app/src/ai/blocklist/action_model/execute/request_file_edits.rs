@@ -1,5 +1,6 @@
 mod apply_diff_model;
 mod diff_application;
+mod rollback;
 mod telemetry;
 
 use warp_util::file::FileSaveError;
@@ -17,6 +18,7 @@ use warpui::{
 
 use apply_diff_model::ApplyDiffModel;
 use diff_application::DiffApplicationError;
+use rollback::{PreEdit, plan_rollback, rollback_message, run_rollback};
 pub(crate) use diff_application::FileReadResult;
 pub(crate) use diff_application::apply_edits;
 pub(crate) use telemetry::MalformedFinalLineProxyEvent;
@@ -68,6 +70,9 @@ pub struct RequestFileEditsExecutor {
     >,
     /// Set of action IDs where diff application failed.
     diff_application_failures: HashMap<AIAgentActionId, Vec1<DiffApplicationError>>,
+    /// Pre-edit contents of each file of a LOCAL batch, kept in memory so a write failure
+    /// part-way through can restore the files that already landed (#1277).
+    pre_edits: HashMap<AIAgentActionId, Vec<PreEdit>>,
     terminal_view_id: EntityId,
 }
 
@@ -84,6 +89,7 @@ impl RequestFileEditsExecutor {
             diff_views: HashMap::new(),
             tui_diff_storages: HashMap::new(),
             diff_application_failures: HashMap::new(),
+            pre_edits: HashMap::new(),
             terminal_view_id,
         }
     }
@@ -107,6 +113,7 @@ impl RequestFileEditsExecutor {
         self.diff_views.remove(action_id);
         self.tui_diff_storages.remove(action_id);
         self.diff_application_failures.remove(action_id);
+        self.pre_edits.remove(action_id);
     }
 
     pub(super) fn should_autoexecute(
@@ -257,6 +264,7 @@ impl RequestFileEditsExecutor {
 
         let (result_tx, result_rx) = oneshot::channel();
         let mut result_tx = Some(result_tx);
+        let pre_edits = self.pre_edits.remove(id).unwrap_or_default();
 
         ctx.subscribe_to_view(diff_view, move |_me, event, ctx| match event {
             CodeDiffViewEvent::Rejected => {
@@ -279,11 +287,31 @@ impl RequestFileEditsExecutor {
                 // If saving any file failed, report it as an error to the LLM, naming both
                 // the reason and the files that did land (see `save_failure_result`).
                 if !save_errors.is_empty() {
-                    let _ = result_tx.send(save_failure_result(
-                        save_errors,
-                        updated_files,
-                        deleted_files,
-                    ));
+                    // All-or-nothing (#1277): if some files landed and others did not, put the
+                    // landed ones back before reporting (local sessions only; `pre_edits` is
+                    // empty for remote ones).
+                    let updated: Vec<String> =
+                        updated_files.iter().map(|(f, _)| f.name.clone()).collect();
+                    let ops = plan_rollback(&pre_edits, &updated, deleted_files);
+                    if ops.is_empty() {
+                        let _ = result_tx.send(save_failure_result(
+                            save_errors,
+                            updated_files,
+                            deleted_files,
+                        ));
+                        return;
+                    }
+                    let reasons = save_error_reasons(save_errors);
+                    let applied: Vec<String> = updated
+                        .iter()
+                        .chain(deleted_files.iter())
+                        .cloned()
+                        .collect();
+                    ctx.spawn(run_rollback(ops), move |_me, report, _ctx| {
+                        let _ = result_tx.send(RequestFileEditsResult::DiffApplicationFailed {
+                            error: rollback_message(&reasons, &applied, &report),
+                        });
+                    });
                     return;
                 }
 
@@ -429,8 +457,12 @@ impl RequestFileEditsExecutor {
         // is the remote home (#1288).
         let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
         let mut diffs = Vec::with_capacity(applied_diffs.len());
+        let mut pre_edits = Vec::new();
         for diff in applied_diffs {
             let path = session_context.resolve_path(diff.file_name.as_str());
+            if !session_context.is_remote() {
+                pre_edits.push(PreEdit::from_applied(&diff, path.clone()));
+            }
             let file_diff = FileDiff::new(diff.original_content, path, diff.diff_type);
             diffs.push(file_diff);
         }
@@ -443,6 +475,10 @@ impl RequestFileEditsExecutor {
             }) => DiffSessionType::Remote(host_id.clone()),
             _ => DiffSessionType::Local,
         };
+
+        if !pre_edits.is_empty() {
+            self.pre_edits.insert(id.clone(), pre_edits);
+        }
 
         if let Some(storage) = self.tui_diff_storages.get(&id) {
             storage.set_candidate_diffs(diffs, diff_session_type, ctx);
@@ -488,6 +524,20 @@ impl RequestFileEditsExecutor {
     }
 }
 
+fn save_error_reasons(save_errors: &[FileSaveFailure]) -> String {
+    save_errors
+        .iter()
+        .map(|failure| match failure.error.as_ref() {
+            // `IOError`'s own `Display` is the constant "IO error when saving
+            // file.", so this variant is the one that has to be spelled out.
+            FileSaveError::IOError { error, path } => {
+                format!("Failed to save file {path:?}: {error}")
+            }
+            other => other.to_string(),
+        })
+        .join("\n")
+}
+
 /// Builds the result reported back to the LLM when accepting a set of edits
 /// left at least one file unwritten.
 ///
@@ -519,17 +569,7 @@ fn save_failure_result(
     written_files: &[(FileLocations, bool)],
     deleted_files: &[String],
 ) -> RequestFileEditsResult {
-    let reasons = save_errors
-        .iter()
-        .map(|failure| match failure.error.as_ref() {
-            // `IOError`'s own `Display` is the constant "IO error when saving
-            // file.", so this variant is the one that has to be spelled out.
-            FileSaveError::IOError { error, path } => {
-                format!("Failed to save file {path:?}: {error}")
-            }
-            other => other.to_string(),
-        })
-        .join("\n");
+    let reasons = save_error_reasons(save_errors);
 
     let applied = written_files
         .iter()

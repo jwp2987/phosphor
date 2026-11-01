@@ -408,6 +408,55 @@ pub fn fuzzy_match_diffs(
     }
 }
 
+/// Where a search block (without line-number hints) occurs in a file, by the same matchers
+/// `fuzzy_match_diffs` tries first. Lets a caller refuse an ambiguous edit or report a loose one;
+/// it changes no matching behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SearchMatchSummary {
+    /// 1-indexed start lines of exact (character-for-character) matches.
+    pub exact_starts: Vec<usize>,
+    /// 1-indexed start lines of whitespace/indentation-insensitive matches; only computed when
+    /// there is no exact match.
+    pub loose_starts: Vec<usize>,
+    /// Number of lines the search block spans.
+    pub search_lines: usize,
+}
+
+pub fn summarize_search_matches(search: &str, file_content: &str) -> SearchMatchSummary {
+    let target_lines: Vec<&str> = lines(file_content).collect();
+    let search_lines = lines(search).count();
+    let starts = |matches: Vec<Match>| -> Vec<usize> {
+        let mut starts: Vec<usize> = matches.into_iter().map(|m| m.start_line).collect();
+        starts.sort_unstable();
+        starts
+    };
+    let exact_scorer = MakeExactMatch.for_search(search);
+    let exact_starts = starts(score_matches(
+        &target_lines,
+        search_lines,
+        SECTION_MATCH_THRESHOLD,
+        None,
+        &exact_scorer,
+    ));
+    let loose_starts = if exact_starts.is_empty() {
+        let loose_scorer = MakeIndentationAgnosticMatch.for_search(search);
+        starts(score_matches(
+            &target_lines,
+            search_lines,
+            SECTION_MATCH_THRESHOLD,
+            None,
+            &loose_scorer,
+        ))
+    } else {
+        Vec::new()
+    };
+    SearchMatchSummary {
+        exact_starts,
+        loose_starts,
+        search_lines,
+    }
+}
+
 /// Match V4A format diffs against file content using context-based matching with fallback strategies.
 /// First attempts exact matching, then falls back to indentation-agnostic matching,
 /// and finally to JaroWinkler fuzzy matching.

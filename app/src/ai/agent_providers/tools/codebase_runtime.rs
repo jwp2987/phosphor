@@ -236,49 +236,98 @@ pub fn codebase_unavailable_reason(
 pub fn collect_codebase_symbols(
     app: &warpui::AppContext,
     session_context: &crate::ai::blocklist::SessionContext,
-) -> Vec<CodebaseSymbol> {
+) -> std::sync::Arc<Vec<CodebaseSymbol>> {
     use repo_metadata::repositories::DetectedRepositories;
     use warpui::SingletonEntity as _;
 
     use crate::ai::outline::{OutlineStatus, RepoOutlines};
 
+    let empty = || std::sync::Arc::new(Vec::new());
     let Some(git_repo_path) = local_cwd_for_session(session_context)
         .and_then(|current_dir| DetectedRepositories::as_ref(app).get_root_for_path(&current_dir))
     else {
-        return Vec::new();
+        return empty();
     };
 
     // Lazy outline: first use in this repo kicks off the build (returns empty until done).
     RepoOutlines::as_ref(app).request_outline(&git_repo_path);
-    let Some((outline_status, _)) = RepoOutlines::as_ref(app).get_outline(&git_repo_path) else {
-        return Vec::new();
+    let outlines = RepoOutlines::as_ref(app);
+    let version = outlines.version();
+    let Some((outline_status, _)) = outlines.get_outline(&git_repo_path) else {
+        return empty();
     };
     let OutlineStatus::Complete(outline) = outline_status else {
-        return Vec::new();
+        return empty();
     };
 
-    outline
-        .to_symbols_by_file(None)
-        .into_iter()
-        .flat_map(|(file_path, file_outline)| {
-            let prefix = git_repo_path.clone();
-            file_outline
-                .symbols()
-                .into_iter()
-                .flatten()
-                .map(move |symbol| CodebaseSymbol {
-                    name: symbol.name.clone(),
-                    type_prefix: symbol.type_prefix.clone(),
-                    file_path: file_path
-                        .strip_prefix(&prefix)
-                        .unwrap_or(&file_path)
-                        .to_string_lossy()
-                        .into_owned(),
-                    line_number: symbol.line_number,
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
+    // #1276: the projection below walks every symbol of the repo; cache it per
+    // (repo, outline version) instead of redoing it on every request.
+    SYMBOL_CACHE.get_or_build(&git_repo_path, version, || {
+        outline
+            .to_symbols_by_file(None)
+            .into_iter()
+            .flat_map(|(file_path, file_outline)| {
+                let prefix = git_repo_path.clone();
+                file_outline
+                    .symbols()
+                    .into_iter()
+                    .flatten()
+                    .map(move |symbol| CodebaseSymbol {
+                        name: symbol.name.clone(),
+                        type_prefix: symbol.type_prefix.clone(),
+                        file_path: file_path
+                            .strip_prefix(&prefix)
+                            .unwrap_or(&file_path)
+                            .to_string_lossy()
+                            .into_owned(),
+                        line_number: symbol.line_number,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    })
+}
+
+/// Single-slot cache of the collected symbols keyed by (repo root, outline version). The
+/// version (`RepoOutlines::version`) changes on every outline mutation, so a hit is never
+/// stale.
+#[cfg(not(target_family = "wasm"))]
+static SYMBOL_CACHE: SymbolCache = SymbolCache::new();
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) struct SymbolCache {
+    slot: std::sync::Mutex<Option<(std::path::PathBuf, u64, std::sync::Arc<Vec<CodebaseSymbol>>)>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl SymbolCache {
+    pub(crate) const fn new() -> Self {
+        Self {
+            slot: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Returns the cached symbols for (`repo`, `version`), or runs `build` and caches it.
+    pub(crate) fn get_or_build(
+        &self,
+        repo: &std::path::Path,
+        version: u64,
+        build: impl FnOnce() -> Vec<CodebaseSymbol>,
+    ) -> std::sync::Arc<Vec<CodebaseSymbol>> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((r, v, symbols)) = slot.as_ref()
+            && r == repo
+            && *v == version
+        {
+            return symbols.clone();
+        }
+        let symbols = std::sync::Arc::new(build());
+        *slot = Some((repo.to_path_buf(), version, symbols.clone()));
+        symbols
+    }
 }
 
 /// WASM has no local repository / outline index; the snapshot is always empty.
@@ -286,8 +335,8 @@ pub fn collect_codebase_symbols(
 pub fn collect_codebase_symbols(
     _app: &warpui::AppContext,
     _session_context: &crate::ai::blocklist::SessionContext,
-) -> Vec<CodebaseSymbol> {
-    Vec::new()
+) -> std::sync::Arc<Vec<CodebaseSymbol>> {
+    std::sync::Arc::new(Vec::new())
 }
 
 #[cfg(test)]

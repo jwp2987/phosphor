@@ -899,3 +899,22 @@ fn test_move_to_returns_v4a_destination_only() {
     };
     assert_eq!(str_replace.move_to(), None);
 }
+
+#[test]
+fn summarize_search_matches_counts_exact_and_loose() {
+    let file = "fn a() {\n    x();\n}\nfn b() {\n    x();\n}\n";
+    // Two identical places.
+    let s = summarize_search_matches("    x();", file);
+    assert_eq!(s.exact_starts, vec![2, 5]);
+    assert!(s.loose_starts.is_empty());
+    // One place.
+    let s = summarize_search_matches("fn b() {", file);
+    assert_eq!(s.exact_starts, vec![4]);
+    // Indentation differs: only a loose match.
+    let s = summarize_search_matches("x();", file);
+    assert!(s.exact_starts.is_empty());
+    assert_eq!(s.loose_starts, vec![2, 5]);
+    let s = summarize_search_matches("  fn b() {", "pad\nfn b() {\n");
+    assert!(s.exact_starts.is_empty());
+    assert_eq!(s.loose_starts, vec![2]);
+}

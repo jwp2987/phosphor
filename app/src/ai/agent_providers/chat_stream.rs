@@ -8437,13 +8437,26 @@ pub async fn generate_byop_output(
                     };
                     let error_content = serde_json::to_string(&error_payload)
                         .unwrap_or_else(|_| r#"{"error":"invalid_arguments"}"#.to_owned());
-                    final_messages.push(make_tool_call_carrier_message(
+                    let mut carrier = make_tool_call_carrier_message(
                         &current_task_id,
                         &request_id,
                         &call.call_id,
                         &call.fn_name,
                         &args_str,
-                    ));
+                    );
+                    // An earlier chunk may already have shown a typed placeholder card for this
+                    // call id. The final parse failed, so turn THAT card into the failed carrier
+                    // instead of leaving a live-looking card beside a second, error one (#1278).
+                    if let Some(placeholder_id) = tool_msg_ids.get(&call.call_id).cloned() {
+                        carrier.id = placeholder_id;
+                        yield Ok(make_update_message_event(
+                            &current_task_id,
+                            carrier,
+                            vec!["tool_call".to_owned(), "server_message_data".to_owned()],
+                        ));
+                    } else {
+                        final_messages.push(carrier);
+                    }
                     final_messages.push(make_tool_call_result_message(
                         &current_task_id,
                         &request_id,

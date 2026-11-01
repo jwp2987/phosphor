@@ -130,6 +130,11 @@ pub struct ShellCommandExecutor {
     /// pending poll future to resolve immediately with a fresh snapshot, bypassing the
     /// agent-set timeout.
     force_refresh_senders: HashMap<BlockSelector, oneshot::Sender<()>>,
+    /// The sender-map key each in-flight write / read / transfer action registered, so
+    /// cancelling the action can drop its senders (which resolves its future with
+    /// `Cancelled`) instead of leaving the detached future to run to its timeout (#1278). The
+    /// flag is true for a transfer-control action, which also holds `control_handback_sender`.
+    block_action_selectors: HashMap<AIAgentActionId, (BlockSelector, bool)>,
     terminal_model: Arc<FairMutex<TerminalModel>>,
     terminal_view_id: EntityId,
     /// Sender to notify when user hands control back to agent after TransferShellCommandControlToUser.
@@ -179,6 +184,7 @@ impl ShellCommandExecutor {
             terminal_model,
             block_finished_senders: HashMap::new(),
             force_refresh_senders: HashMap::new(),
+            block_action_selectors: HashMap::new(),
             terminal_view_id,
             control_handback_sender: None,
             awaiting_completion_action_ids: HashSet::new(),
@@ -596,6 +602,9 @@ impl ShellCommandExecutor {
                 ctx.emit(ShellCommandExecutorEvent::WriteToPty { input, mode });
 
                 let block_selector = BlockSelector::Id(block_id.clone());
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), false));
+                let cleanup_action_id = action_id.clone();
                 ActionExecution::new_async(
                     self.action_result_future(
                         block_selector.clone(),
@@ -607,6 +616,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
 
@@ -662,6 +672,9 @@ impl ShellCommandExecutor {
                 drop(model);
 
                 let block_selector = BlockSelector::Id(block_id.clone());
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), false));
+                let cleanup_action_id = action_id.clone();
                 ActionExecution::new_async(
                     self.action_result_future(block_selector.clone(), delay),
                     move |result, ctx| {
@@ -670,6 +683,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
 
@@ -708,6 +722,9 @@ impl ShellCommandExecutor {
                 let (block_finished_tx, block_finished_rx) = oneshot::channel();
                 self.block_finished_senders
                     .insert(block_selector.clone(), block_finished_tx);
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), true));
+                let cleanup_action_id = action_id.clone();
 
                 // Build the future that captures terminal model and block data.
                 let transfer_future = {
@@ -781,6 +798,7 @@ impl ShellCommandExecutor {
                     if let Some(handle) = handle.upgrade(ctx) {
                         handle.update(ctx, |me, _| {
                             me.block_finished_senders.remove(&block_selector);
+                            me.block_action_selectors.remove(&cleanup_action_id);
                             me.control_handback_sender = None;
                         });
                     }
@@ -1007,17 +1025,20 @@ impl ShellCommandExecutor {
         self.force_refresh_senders.remove(&requested_selector);
         self.awaiting_completion_action_ids.remove(id);
 
-        // No longer using `BlockSelector::Id(active_block.id())` as a fallback
-        // cleanup. The sender key for WriteToLRC / ReadShellCommandOutput /
-        // TransferShellCommandControlToUser comes from the block_id in the action's
-        // parameters, or the active_block at creation time — neither reliably
-        // corresponds to the active_block at cancel time: if the user switched the
-        // active block after the action was spawned, the old active-block fallback
-        // won't match; if they didn't switch, the cleanup only works "by accident".
-        // Their senders get cleaned up by each one's own on_complete callback once the
-        // future finishes naturally; immediate cleanup would require introducing an
-        // action_id → BlockSelector reverse index, which is a separate change outside
-        // this issue's scope.
+        // A write / read / transfer action: drop its senders now, which resolves its detached
+        // future with `Cancelled` instead of leaving it alive until its timeout or the block
+        // finishing (#1278).
+        if let Some((selector, is_transfer)) = self.block_action_selectors.remove(id) {
+            self.block_finished_senders.remove(&selector);
+            self.force_refresh_senders.remove(&selector);
+            if is_transfer {
+                self.control_handback_sender = None;
+            }
+        }
+
+        // No `BlockSelector::Id(active_block.id())` fallback: the active block at cancel time
+        // need not be the one the action was spawned against. The action-id index above is the
+        // exact key.
     }
 
     /// Force any in-flight poll for the given long-running command block to resolve

@@ -194,6 +194,68 @@ mod read_file_failures {
     }
 
     #[test]
+    fn batch_over_the_file_cap_reports_the_unread_files() {
+        let locations: Vec<FileLocations> = (0..5)
+            .map(|i| location(&format!("/tmp/f{i}.txt")))
+            .collect();
+        let (kept, note) = super::super::cap_read_batch(locations, 3);
+        assert_eq!(kept.len(), 3);
+        let note = note.expect("a note for the files past the cap");
+        assert!(
+            note.message.starts_with("2 more files not read"),
+            "{}",
+            note.message
+        );
+        assert!(note.message.contains("/tmp/f3.txt") && note.message.contains("/tmp/f4.txt"));
+
+        let (kept, note) = super::super::cap_read_batch(vec![location("/tmp/a")], 3);
+        assert_eq!(kept.len(), 1);
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn files_after_the_batch_byte_budget_get_an_explicit_failure() {
+        let dir = TempDir::new().expect("create tempdir");
+        let a = write_file(&dir, "a.txt", b"0123456789\n");
+        let b = write_file(&dir, "b.txt", b"second\n");
+
+        // Budget of 5 bytes: the first file spends it, the second must be reported.
+        let result = block_on(read_local_file_context(
+            &[location(&a), location(&b)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert_eq!(result.failed_files.len(), 1, "{:?}", result.failed_files);
+        assert!(result.failed_files[0].path.ends_with("b.txt"));
+        assert!(result.failed_files[0].message.contains("size limit"));
+    }
+
+    #[test]
+    fn remote_entry_without_content_is_a_failure_not_dropped() {
+        use remote_server::proto::{FileContextProto, file_context_proto::Content};
+        let with = FileContextProto {
+            file_name: "/r/a.txt".into(),
+            content: Some(Content::TextContent("hi".into())),
+            line_count: 1,
+            ..Default::default()
+        };
+        let without = FileContextProto {
+            file_name: "/r/b.txt".into(),
+            content: None,
+            ..Default::default()
+        };
+        let (files, failed) = super::super::convert_remote_file_contexts(vec![with, without]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].path, "/r/b.txt");
+        assert!(failed[0].message.contains("no content"));
+    }
+
+    #[test]
     fn describe_failed_files_groups_each_reason_per_file() {
         let failures = vec![
             ReadFilesFailedFile {

@@ -29,7 +29,7 @@ fn a_one_line_write_to_an_interactive_shell_clears_the_pending_line() {
             pty_write_for_target_command(Some(command), &input, AIAgentPtyWriteMode::Raw);
         assert_eq!(mode, AIAgentPtyWriteMode::Line, "{command}");
         assert_eq!(
-            mode.decorate_bytes(bytes.to_vec(), false),
+            mode.decorate_bytes(bytes.to_vec(), true),
             b"\x01\x0becho unmanaged-ok\r",
             "{command}"
         );
@@ -980,4 +980,52 @@ fn a_write_to_a_finished_command_says_the_input_was_not_delivered() {
     let noted_without_newline = with_input_not_delivered_note("done".to_owned());
     assert!(noted_without_newline.starts_with("done\n["), "{noted_without_newline}");
     assert!(with_input_not_delivered_note(String::new()).starts_with('['));
+}
+
+/// #1278: cancelling a write / read / transfer action drops its senders, so its detached future
+/// resolves `Cancelled` at once instead of living to its timeout. Before, the senders stayed in
+/// the maps until the future finished on its own.
+#[test]
+fn cancelling_a_block_action_resolves_its_future_as_cancelled() {
+    App::test((), |mut app| async move {
+        let action_id = AIAgentActionId::from("write-to-lrc".to_owned());
+        let (executor, terminal_model, _interrupts) =
+            executor_with_unpreexeced_agent_command(&mut app, &action_id);
+        let block_id = terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        let selector = BlockSelector::Id(block_id);
+
+        // What the WriteToLongRunningShellCommand branch does.
+        let future = executor.update(&mut app, |executor, _| {
+            executor
+                .block_action_selectors
+                .insert(action_id.clone(), (selector.clone(), false));
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::Duration(Duration::from_secs(30)),
+            )
+        });
+
+        executor.update(&mut app, |executor, ctx| {
+            executor.cancel_execution(
+                &action_id,
+                Some(CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                }),
+                ctx,
+            );
+            assert!(executor.block_action_selectors.is_empty());
+            assert!(!executor.block_finished_senders.contains_key(&selector));
+        });
+
+        let result = future.await;
+        assert!(
+            matches!(result, ActionResult::Cancelled),
+            "a cancelled action's future must end as Cancelled, not wait out its 30 s delay"
+        );
+    });
 }

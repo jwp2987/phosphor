@@ -22,6 +22,10 @@ impl RepoOutlines {
         None
     }
 
+    pub fn version(&self) -> u64 {
+        0
+    }
+
     pub fn request_outline(&self, _path: &Path) {}
 
     pub fn is_directory_indexed(&self, _directory: &Path) -> bool {

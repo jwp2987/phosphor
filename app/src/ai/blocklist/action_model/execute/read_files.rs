@@ -10,14 +10,15 @@ use crate::{
             ReadFilesFailedFile, ReadFilesRequest, ReadFilesResult,
         },
         blocklist::BlocklistAIPermissions,
-        paths::host_native_absolute_path,
+        paths::host_native_absolute_path_for,
     },
     terminal::model::session::{SessionType, active_session::ActiveSession},
 };
 
 use super::{
-    ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput,
-    ReadFileContextResult, describe_failed_files, read_local_file_context,
+    AGENT_READ_FILES_BATCH_BYTES, AGENT_READ_FILES_MAX_FILES, ActionExecution, AnyActionExecution,
+    ExecuteActionInput, PreprocessActionInput, ReadFileContextResult, cap_read_batch,
+    convert_remote_file_contexts, describe_failed_files, read_local_file_context,
 };
 
 pub struct ReadFilesExecutor {
@@ -73,7 +74,7 @@ impl ReadFilesExecutor {
                 locations
                     .iter()
                     .map(|file| {
-                        PathBuf::from(host_native_absolute_path(
+                        PathBuf::from(host_native_absolute_path_for(
                             &super::expand_session_tilde(
                                 self.active_session.as_ref(ctx),
                                 &file.name,
@@ -81,6 +82,7 @@ impl ReadFilesExecutor {
                             ),
                             &shell,
                             &current_working_directory,
+                            super::session_path_host(self.active_session.as_ref(ctx), ctx),
                         ))
                     })
                     .collect(),
@@ -143,6 +145,11 @@ impl ReadFilesExecutor {
             })
             .collect();
 
+        let path_host = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+
+        // Cap the batch; files past the cap are reported, not dropped (#1278).
+        let (locations, overflow_note) = cap_read_batch(locations, AGENT_READ_FILES_MAX_FILES);
+
         // Check if this is a remote session with a connected host.
         let session_type = self.active_session.as_ref(ctx).session_type(ctx);
         let remote_client = match &session_type {
@@ -185,10 +192,13 @@ impl ReadFilesExecutor {
                         files: locations
                             .iter()
                             .map(|loc| {
-                                let absolute_path = host_native_absolute_path(
+                                // A remote host's paths use its own (unix) rules, not the
+                                // local OS's (#1278).
+                                let absolute_path = host_native_absolute_path_for(
                                     &loc.name,
                                     &shell,
                                     &current_working_directory,
+                                    path_host,
                                 );
                                 remote_server::proto::ReadFileContextFile {
                                     path: absolute_path,
@@ -204,7 +214,7 @@ impl ReadFilesExecutor {
                             })
                             .collect(),
                         max_file_bytes: None,
-                        max_batch_bytes: None,
+                        max_batch_bytes: Some(AGENT_READ_FILES_BATCH_BYTES as u32),
                     };
 
                     let response = client
@@ -223,41 +233,18 @@ impl ReadFilesExecutor {
                         })
                         .collect::<Vec<_>>();
 
-                    if !failed_files.is_empty() && response.file_contexts.is_empty() {
+                    let (file_contexts, contentless) =
+                        convert_remote_file_contexts(response.file_contexts);
+                    let mut failed_files = failed_files;
+                    failed_files.extend(contentless);
+                    failed_files.extend(overflow_note);
+
+                    if file_contexts.is_empty() && !failed_files.is_empty() {
                         let failed = describe_failed_files(&failed_files);
                         return Ok(ReadFilesResult::Error(format!(
                             "Failed to read files: {failed}"
                         )));
                     }
-
-                    let file_contexts = response
-                        .file_contexts
-                        .into_iter()
-                        .filter_map(|fc| {
-                            let content = match fc.content? {
-                                remote_server::proto::file_context_proto::Content::TextContent(
-                                    text,
-                                ) => crate::ai::agent::AnyFileContent::StringContent(text),
-                                remote_server::proto::file_context_proto::Content::BinaryContent(
-                                    bytes,
-                                ) => crate::ai::agent::AnyFileContent::BinaryContent(bytes),
-                            };
-                            let line_range = match (fc.line_range_start, fc.line_range_end) {
-                                (Some(start), Some(end)) => Some(start as usize..end as usize),
-                                _ => None,
-                            };
-                            let last_modified = fc.last_modified_epoch_millis.map(|ms| {
-                                std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms)
-                            });
-                            Some(crate::ai::agent::FileContext {
-                                file_name: fc.file_name,
-                                content,
-                                line_range,
-                                last_modified,
-                                line_count: fc.line_count as usize,
-                            })
-                        })
-                        .collect();
 
                     Ok(ReadFilesResult::Success {
                         files: file_contexts,
@@ -275,14 +262,15 @@ impl ReadFilesExecutor {
         // Local path.
         ActionExecution::Async {
             execute_future: Box::pin(async move {
-                let result = read_local_file_context(
+                let mut result = read_local_file_context(
                     &locations,
                     current_working_directory,
                     shell,
                     None,
-                    None,
+                    Some(AGENT_READ_FILES_BATCH_BYTES),
                 )
                 .await?;
+                result.failed_files.extend(overflow_note);
                 Ok(local_read_files_result(result))
             }),
             on_complete: Box::new(|res: Result<ReadFilesResult, anyhow::Error>, _ctx| {

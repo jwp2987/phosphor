@@ -1634,3 +1634,155 @@ fn a_remote_tilde_with_unknown_home_is_refused_before_any_io() {
         ));
     });
 }
+
+/// #1277: a batch whose second diff fails to match yields an error for the whole batch (no
+/// diffs are returned to be written), and the first file is untouched on disk.
+#[test]
+fn batch_with_a_failing_second_diff_applies_nothing() {
+    App::test((), |app| async move {
+        let mut first = NamedTempFile::new().unwrap();
+        write!(&mut first, "alpha\nbeta\n").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let mut second = NamedTempFile::new().unwrap();
+        write!(&mut second, "gamma\n").unwrap();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let good = ParsedDiff::StrReplaceEdit {
+            file: Some(first_path.clone()),
+            search: Some("1|alpha".to_string()),
+            replace: Some("ALPHA".to_string()),
+        };
+        let bad = ParsedDiff::StrReplaceEdit {
+            file: Some(second_path.clone()),
+            search: Some("1|does not exist".to_string()),
+            replace: Some("x".to_string()),
+        };
+
+        let result = apply_edits(
+            vec![FileEdit::Edit(good), FileEdit::Edit(bad)],
+            &SessionContext::new_for_test(),
+            &AIIdentifiers::default(),
+            app.background_executor(),
+            Arc::new(AuthState::new_for_test()),
+            false,
+            |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+        )
+        .await;
+
+        let errors = result.expect_err("a failing diff fails the whole batch");
+        assert!(
+            matches!(&errors[..], [DiffApplicationError::UnmatchedDiffs { file, .. }] if *file == second_path)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&first_path).unwrap(),
+            "alpha\nbeta\n"
+        );
+    })
+}
+
+async fn strict_run(
+    app: &App,
+    path: &str,
+    search: &str,
+    replace: &str,
+    strict: bool,
+) -> Result<Vec<ai::diff_validation::AIRequestedCodeDiff>, vec1::Vec1<DiffApplicationError>> {
+    let edit = FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+        file: Some(path.to_string()),
+        search: Some(search.to_string()),
+        replace: Some(replace.to_string()),
+    });
+    let session_context = SessionContext::new_for_test();
+    let auth_state = Arc::new(AuthState::new_for_test());
+    let ids = AIIdentifiers::default();
+    let exec = app.background_executor();
+    let read = |path: String| async move { FileReadResult::from(std::fs::read_to_string(path)) };
+    if strict {
+        apply_edits_strict(
+            vec![edit],
+            &session_context,
+            &ids,
+            exec,
+            auth_state,
+            false,
+            read,
+        )
+        .await
+    } else {
+        apply_edits(
+            vec![edit],
+            &session_context,
+            &ids,
+            exec,
+            auth_state,
+            false,
+            read,
+        )
+        .await
+    }
+}
+
+/// #1277: the agent path refuses a search that matches in several places; other callers keep
+/// applying it (to the best match).
+#[test]
+fn strict_mode_refuses_a_search_matching_several_places() {
+    App::test((), |app| async move {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(
+            &mut file,
+            "fn a() {{\n    x();\n}}\nfn b() {{\n    x();\n}}\n"
+        )
+        .unwrap();
+        let path = file.path().to_string_lossy().to_string();
+
+        let errors = strict_run(&app, &path, "    x();", "    y();", true)
+            .await
+            .expect_err("ambiguous search must be refused");
+        match &errors[..] {
+            [DiffApplicationError::AmbiguousMatch { lines, .. }] => assert_eq!(lines, &vec![2, 5]),
+            other => panic!("expected AmbiguousMatch, got {other:?}"),
+        }
+        let message = DiffApplicationError::error_for_conversation(&errors);
+        assert!(message.contains("matched 2 places"), "{message}");
+        assert!(message.contains("more surrounding context"), "{message}");
+
+        // The non-agent entry point is unchanged.
+        assert!(
+            strict_run(&app, &path, "    x();", "    y();", false)
+                .await
+                .is_ok()
+        );
+        // A unique search is fine in strict mode.
+        assert!(
+            strict_run(&app, &path, "fn b() {", "fn c() {", true)
+                .await
+                .is_ok()
+        );
+    })
+}
+
+/// #1277: a whitespace-insensitive-only match is applied but reported.
+#[test]
+fn strict_mode_reports_a_loose_whitespace_match() {
+    App::test((), |app| async move {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(&mut file, "fn a() {{\n    only_here();\n}}\n").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+
+        let diffs = strict_run(&app, &path, "only_here();", "there();", true)
+            .await
+            .expect("a single loose match is applied");
+        assert_eq!(diffs.len(), 1);
+        let notes = crate::ai::agent_providers::tools::edit::edit_notes_for(&path);
+        assert_eq!(
+            notes,
+            vec!["applied via loose whitespace match at lines 2–2"]
+        );
+
+        // An exact match leaves no note.
+        strict_run(&app, &path, "    only_here();", "there();", true)
+            .await
+            .unwrap();
+        assert!(crate::ai::agent_providers::tools::edit::edit_notes_for(&path).is_empty());
+    })
+}

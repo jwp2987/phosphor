@@ -13,7 +13,9 @@ use crate::ai::agent::{
     conversation::AIConversationId,
 };
 use crate::ai::blocklist::BlocklistAIPermissions;
-use crate::ai::paths::{host_native_absolute_path, join_paths, shell_native_absolute_path};
+use crate::ai::paths::{
+    PathHost, host_native_absolute_path_for, join_paths_for, shell_native_absolute_path_for,
+};
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::{
@@ -87,7 +89,9 @@ impl FileGlobExecutor {
             return false;
         }
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
-        let absolute_path = host_native_absolute_path(&path, &shell, &current_working_directory);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+        let absolute_path =
+            host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
         BlocklistAIPermissions::as_ref(ctx)
             .can_read_files_with_conversation(
@@ -128,10 +132,12 @@ impl FileGlobExecutor {
             .current_working_directory()
             .cloned();
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
-        let absolute_path = shell_native_absolute_path(
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+        let absolute_path = shell_native_absolute_path_for(
             path.as_str(),
             shell_launch_data.as_ref(),
             current_working_directory.as_ref(),
+            remote,
         );
 
         let session = self.active_session.as_ref(ctx).session(ctx);
@@ -149,9 +155,15 @@ impl FileGlobExecutor {
         };
         ActionExecution::new_async(
             async move {
-                match run_file_glob(patterns_clone, absolute_path, session, shell_launch_data)
-                    .with_timeout(FILE_GLOB_TIMEOUT)
-                    .await
+                match run_file_glob(
+                    patterns_clone,
+                    absolute_path,
+                    session,
+                    shell_launch_data,
+                    remote,
+                )
+                .with_timeout(FILE_GLOB_TIMEOUT)
+                .await
                 {
                     Ok(result) => {
                         result.map(|glob_result| apply_result_limit(glob_result, result_limit))
@@ -265,6 +277,7 @@ async fn run_file_glob(
     absolute_path: String,
     session: Option<Arc<Session>>,
     shell_launch_data: Option<ShellLaunchData>,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     if patterns.is_empty() {
         return Err(anyhow::anyhow!("No patterns provided to file_glob"));
@@ -289,6 +302,7 @@ async fn run_file_glob(
             session.as_ref(),
             shell_launch_data,
             shell_type,
+            remote,
         )
         .await
     } else if shell_type == ShellType::PowerShell {
@@ -305,12 +319,14 @@ async fn run_git_ls_files_command(
     session: &Session,
     shell_launch_data: Option<ShellLaunchData>,
     shell_type: ShellType,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     let command = build_git_ls_files_command(
         patterns,
         target_path,
         shell_launch_data.as_ref(),
         shell_type,
+        remote,
     );
 
     let command_output = session
@@ -328,7 +344,11 @@ async fn run_git_ls_files_command(
         // `find` and PowerShell implementations, convert to absolute paths.
         let absolute_paths = non_empty_lines(&output)
             .map(|relative_path| {
-                join_paths(&[target_path, relative_path], shell_launch_data.as_ref())
+                join_paths_for(
+                    &[target_path, relative_path],
+                    shell_launch_data.as_ref(),
+                    remote,
+                )
             })
             .map(|path| FileGlobV2Match { file_path: path });
 
@@ -417,15 +437,16 @@ fn build_git_ls_files_command(
     target_path: &str,
     shell_launch_data: Option<&ShellLaunchData>,
     shell_type: ShellType,
+    remote: PathHost,
 ) -> String {
     let pattern_args = patterns
         .iter()
         .flat_map(|pattern| {
             [
                 // Matches on files in the target path.
-                join_paths(&[target_path, pattern], shell_launch_data),
+                join_paths_for(&[target_path, pattern], shell_launch_data, remote),
                 // Matches on files in any subdirectory of the target path.
-                join_paths(&[target_path, "*", pattern], shell_launch_data),
+                join_paths_for(&[target_path, "*", pattern], shell_launch_data, remote),
             ]
         })
         // Patterns are model-controlled action input. Quote after joining with
