@@ -753,7 +753,7 @@ impl TerminalView {
             log::warn!("input queue: a held key found the queue busy; writing it as typed");
             {
                 let mut model = self.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 if !handoff.route_released_chunk(&bytes) {
                     // Absorbed by a deferred Enter: there is no gate to put it behind either.
                     handoff.take_deferred_key_started();
@@ -849,9 +849,8 @@ impl TerminalView {
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: nothing else can end the hold, so record it for the next attempt.
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
+                self.handoff
+                    .write()
                     .restore_young_hold_end(hold_id, YoungHoldEnd::Dropped);
                 return bytes;
             };
@@ -889,11 +888,7 @@ impl TerminalView {
     /// dropped, written behind the command, or split at the Enter. Called from the few places a
     /// hold can end, never per key.
     pub(super) fn drain_young_hold_ends(&mut self, ctx: &mut ViewContext<Self>) {
-        let ends = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .take_young_hold_ends();
+        let ends = self.handoff.write().take_young_hold_ends();
         for (hold_id, end) in ends {
             self.apply_young_hold_end(hold_id, end, ctx);
         }
@@ -912,10 +907,7 @@ impl TerminalView {
         let (kind, entries) = {
             let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: keep the end for the next attempt (the gate's give-up finds it too).
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .restore_young_hold_end(hold_id, end);
+                self.handoff.write().restore_young_hold_end(hold_id, end);
                 log::warn!("input queue: young hold {hold_id} end deferred, the queue was busy");
                 return;
             };
@@ -939,10 +931,7 @@ impl TerminalView {
                 // Never queued or already taken.
                 if end == YoungHoldEnd::FollowCommand {
                     drop(guard);
-                    self.model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .count_followed_young_hold(hold_id, &[]);
+                    self.handoff.write().count_followed_young_hold(hold_id, &[]);
                 }
                 return;
             };
@@ -963,9 +952,8 @@ impl TerminalView {
                 // The command is written (or queued ahead of these): the keys typed behind the
                 // Enter follow it, counted as the lines they are.
                 let bytes = chunks.concat();
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
+                self.handoff
+                    .write()
                     .count_followed_young_hold(hold_id, &bytes);
                 trace::release(trace::legacy::HANDOFF, 1, held_bytes, "pty");
                 if !bytes.is_empty() {
@@ -985,7 +973,7 @@ impl TerminalView {
     /// order is the order and nothing has to be recovered from the editor's buffer. A gate that is
     /// open already (the report turned a young hold's gate into this one) is left alone.
     pub(super) fn open_deferred_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(id) = self.model.lock().typeahead_handoff().deferred_gate() else {
+        let Some(id) = self.handoff.read().deferred_gate() else {
             return;
         };
         let queue = self.paste_queue.queue.clone();
@@ -1095,11 +1083,7 @@ impl TerminalView {
         {
             return;
         }
-        let expiry = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .expire_queued_young_hold(hold_id);
+        let expiry = self.handoff.write().expire_queued_young_hold(hold_id);
         match expiry {
             YoungHoldExpiry::Keep => {}
             YoungHoldExpiry::Gone => {
@@ -1141,7 +1125,7 @@ impl TerminalView {
         let chunks = self.bytes_of_taken_entries(entries, ctx);
         let writes = {
             let mut model = self.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             if routed {
                 handoff.route_expired_young_chunks(chunks)
             } else {
@@ -1236,7 +1220,7 @@ impl TerminalView {
         let mut absorbed: Vec<(u64, Vec<u8>)> = Vec::new();
         let writes = {
             let mut model = self.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             if how == PromptHoldEnd::GaveUp {
                 handoff.expire_queued_prompt_hold(hold_id);
             }

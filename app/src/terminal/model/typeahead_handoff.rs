@@ -9,8 +9,10 @@
 //! written after a request, so the shell's report -- which also clears the shell's line -- covers
 //! every byte the user typed.
 //!
-//! This module is pure. `TerminalModel` owns one [`TypeaheadHandoff`] under the model lock; the
-//! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
+//! This module is pure. One [`PaneHandoff`] per terminal owns the [`TypeaheadHandoff`] behind its
+//! own leaf lock (not the model's, #1403); the terminal view, the input editor and
+//! `PtyController` feed it events and act on its decisions, and the model thread feeds it the
+//! prompt facts it parses.
 //!
 //! # Prompt sequence numbers (#1353 phase 6)
 //!
@@ -50,6 +52,8 @@ use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use instant::Instant;
 
@@ -438,6 +442,35 @@ enum Owner {
     Hold {
         released: bool,
     },
+}
+
+/// The handle on one pane's [`TypeaheadHandoff`] (#1403). The state lives behind its own small
+/// lock instead of inside the terminal model's, so a user key reaches it without waiting for the
+/// pty reader, which holds the model's lock while it parses.
+///
+/// The lock is a leaf: held for one method call, never across I/O, a parse, a view update or any
+/// other lock. The one order that exists is model lock first, hand-off second (the model thread
+/// updates the hand-off while it parses); code that holds a hand-off guard must not take the
+/// model's lock. Reads are recursive, so two shared guards alive in one statement cannot deadlock.
+#[derive(Clone, Debug, Default)]
+pub struct PaneHandoff(Arc<RwLock<TypeaheadHandoff>>);
+
+impl From<TypeaheadHandoff> for PaneHandoff {
+    fn from(handoff: TypeaheadHandoff) -> Self {
+        Self(Arc::new(RwLock::new(handoff)))
+    }
+}
+
+impl PaneHandoff {
+    /// Shared access (recursive: nested reads on one thread are safe).
+    pub fn read(&self) -> RwLockReadGuard<'_, TypeaheadHandoff> {
+        self.0.read_recursive()
+    }
+
+    /// Exclusive access. Never call while a guard of this handle is alive on the same thread.
+    pub fn write(&self) -> RwLockWriteGuard<'_, TypeaheadHandoff> {
+        self.0.write()
+    }
 }
 
 /// The hand-off state of one terminal. See the module documentation.

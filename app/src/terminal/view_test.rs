@@ -14646,7 +14646,7 @@ fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"ec");
                 handoff.on_user_write_flushed();
@@ -14688,7 +14688,7 @@ fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"ec");
                 handoff.on_user_write_flushed();
@@ -14736,7 +14736,7 @@ fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_precmd();
             }
@@ -14775,7 +14775,7 @@ fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.set_prompt_seq_enabled(true);
                 handoff.on_precmd_seq(Some(1), Some(1));
                 handoff.on_command_written();
@@ -14818,7 +14818,7 @@ fn typeahead_handoff_ctrl_c_with_a_prompt_cycle_hands_back_on_its_precmd() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.set_prompt_seq_enabled(true);
                 handoff.on_precmd_seq(Some(1), Some(1));
                 handoff.on_command_written();
@@ -14842,7 +14842,7 @@ fn typeahead_handoff_ctrl_c_with_a_prompt_cycle_hands_back_on_its_precmd() {
             // The cycle's Precmd.
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_precmd();
                 handoff.on_precmd_seq(Some(1), Some(3));
             }
@@ -14900,7 +14900,7 @@ fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
             {
                 let mut model = view.model.lock();
                 model.block_list_mut().set_bootstrapped();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 // A further Enter the shell answers with a prompt; both prompts have come.
                 handoff.on_user_bytes(b"\r");
@@ -15000,7 +15000,7 @@ fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
 /// Drives the hand-off to "Enter deferred while the report is outstanding".
 fn hold_after_deferred_enter(view: &TerminalView) {
     let mut model = view.model.lock();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.on_user_bytes(b"ec");
     handoff.on_user_write_flushed();
@@ -16333,7 +16333,7 @@ fn typeahead_handoff_ctrl_c_within_the_young_enter_window_reaches_the_pty() {
             {
                 let mut model = view.model.lock();
                 model.block_list_mut().active_block_mut().start();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"x");
                 handoff.on_user_write_flushed();
@@ -16499,7 +16499,7 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
 /// Drives the hand-off to "request written, report outstanding".
 fn awaiting_typeahead_report(view: &TerminalView) {
     let mut model = view.model.lock();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.on_user_bytes(b"ec");
     handoff.on_user_write_flushed();
@@ -16646,7 +16646,7 @@ fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_k
             assert_eq!(view.paste_queue.queue.borrow().queued_len(), 3);
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_report();
                 handoff.on_command_written();
             }
@@ -20168,7 +20168,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             {
                 let mut model = view.model.lock();
                 // The hand-off's request is outstanding...
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 // Typeahead for a command that has been running a while: a line begun within
                 // `YOUNG_ENTER_WINDOW` of the command being written is young (#933), and its
@@ -20198,7 +20198,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             }
             view.typed_characters_on_terminal("x", ctx);
             let mut model = view.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(
                 handoff.state(),
                 &HandoffState::AwaitingReport,
@@ -21335,7 +21335,7 @@ fn ssh_queue_enter_runs_the_held_line_once() {
 fn conpty_prompt_hold_setup(view: &mut TerminalView, queue: bool) {
     let mut model = view.model.lock();
     model.start_command_execution();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.age_last_activity_for_test();
     handoff.set_conpty_input(true);
@@ -21431,10 +21431,11 @@ fn keys_behind_a_prompt_hold_take_no_model_lock() {
     })
 }
 
-/// One model lock per key on the ordinary path (it was two to five): a key that is not held and
-/// not for the agent locks once.
+/// No blocking model lock per key on the ordinary path (it was two to five, then one, #1403): a
+/// key that is not held and not for the agent reads the model's facts through `try_lock` (or the
+/// published copy) and leaves its bookkeeping in the inbox.
 #[test]
-fn a_user_key_to_a_running_command_locks_the_model_once() {
+fn a_user_key_to_a_running_command_takes_no_blocking_model_lock() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -21443,7 +21444,7 @@ fn a_user_key_to_a_running_command_locks_the_model_once() {
             {
                 let mut model = view.model.lock();
                 model.start_command_execution();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.age_last_activity_for_test();
             }
@@ -21453,9 +21454,92 @@ fn a_user_key_to_a_running_command_locks_the_model_once() {
             }
             assert_eq!(
                 crate::terminal::model_lock_trace::key_path_lock_count() - before,
-                4,
-                "one lock per key"
+                0,
+                "no key waited for the model's lock"
             );
+        });
+    })
+}
+
+/// #1403: while the pty reader is inside the model's lock (parsing), a key still reaches the pty at
+/// once: it neither blocks on the lock nor misroutes. The lock is held by another thread for up to
+/// three seconds; the keys must be through long before.
+#[test]
+fn a_user_key_does_not_wait_for_the_parser() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+                drop(handoff);
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+            let started = Instant::now();
+            for key in [&b"e"[..], b"c", b"h", b"o", b"\r"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            let waited = started.elapsed();
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the keys waited {waited:?} for the parser"
+            );
+        });
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"echo\r".to_vec(),
+            "every key reached the pty, in typed order"
+        );
+    })
+}
+
+/// The first input and a ^C typed into a running command are left in the model's inbox, not
+/// written under its lock, and the model applies them: the block records both (#1178).
+#[test]
+fn a_key_leaves_the_first_input_and_ctrl_c_marks_for_the_model_to_apply() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("sleep 9", "");
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+                drop(handoff);
+                assert!(
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                );
+                model.publish_key_facts();
+            }
+            view.write_user_bytes_to_pty(b"q".to_vec(), ctx);
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+            let model = view.model.lock();
+            let block = model.block_list().active_block();
+            assert!(block.has_received_user_input());
+            assert!(block.was_interrupted_by_ctrl_c());
         });
     })
 }
@@ -21474,7 +21558,7 @@ fn fast_typing_during_a_running_command_then_enter_is_delivered_in_order() {
                 {
                     let mut model = view.model.lock();
                     model.start_command_execution();
-                    let handoff = model.typeahead_handoff_mut();
+                    let mut handoff = model.typeahead_handoff_mut();
                     handoff.on_command_written();
                     handoff.age_last_activity_for_test();
                 }
@@ -21598,7 +21682,7 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
 fn young_enter_setup(view: &mut TerminalView, queue: bool) {
     let mut model = view.model.lock();
     model.block_list_mut().active_block_mut().start();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.on_user_bytes(b"frob");
     handoff.on_user_write_flushed();
@@ -21750,7 +21834,7 @@ fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
                 hold_a_young_enter(view, queue, &pty_writes, ctx);
                 {
                     let mut model = view.model.lock();
-                    let handoff = model.typeahead_handoff_mut();
+                    let mut handoff = model.typeahead_handoff_mut();
                     handoff.on_precmd();
                     assert_eq!(
                         handoff.on_line_editor_active(true, true),

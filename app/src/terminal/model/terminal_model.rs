@@ -41,6 +41,7 @@ use super::grid::grid_handler::{
 };
 use super::image_map::StoredImageMetadata;
 use super::index::Point;
+use super::key_facts::{KeyFacts, KeyFactsCell, ModelCommand, ModelInbox};
 use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
     KittyDecodeError, KittyError, KittyMessage, KittyResponse, PendingKittyMessage,
@@ -58,7 +59,7 @@ use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
 use super::reply_ledger::SharedReplyLedger;
 use super::setup_echo_filter::SetupEchoFilter;
-use super::typeahead_handoff::TypeaheadHandoff;
+use super::typeahead_handoff::{PaneHandoff, TypeaheadHandoff};
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
@@ -494,7 +495,13 @@ pub struct TerminalModel {
     /// Who owns the user's keystrokes around a command submitted from the input editor
     /// (`FeatureFlag::TypeaheadHandoff`). Kept here so every routing and request decision is made
     /// under the model lock.
-    typeahead_handoff: TypeaheadHandoff,
+    typeahead_handoff: PaneHandoff,
+    /// The facts the user-key path reads without this model's lock (#1403); stored after every
+    /// parse and wherever the main thread changes what they derive from.
+    key_facts: KeyFactsCell,
+    /// What the main thread left for this model to apply (the key path writes here instead of
+    /// taking the lock); drained before every parse.
+    inbox: ModelInbox,
     /// Replies written to the pty and text the user wrote, so a reply that leaks into the
     /// shell's line can be told from typed text (#921).
     reply_ledger: SharedReplyLedger,
@@ -1250,8 +1257,10 @@ impl TerminalModel {
                 // #1353 phase 6: the kill switch for the prompt-sequence decisions.
                 let mut handoff = TypeaheadHandoff::default();
                 handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
-                handoff
+                PaneHandoff::from(handoff)
             },
+            key_facts: KeyFactsCell::default(),
+            inbox: ModelInbox::default(),
             reply_ledger: SharedReplyLedger::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,
@@ -1655,7 +1664,7 @@ impl TerminalModel {
         self.handled_exit = true;
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // Nothing can answer an outstanding typeahead request or run held keys any more.
-            self.typeahead_handoff.reset_on_exit();
+            self.typeahead_handoff.write().reset_on_exit();
         }
         // Forcibly exit the alt screen so that we can show the user the
         // banner informing them that the shell process exited.
@@ -1908,8 +1917,72 @@ impl TerminalModel {
         &mut self.block_list
     }
 
-    pub fn typeahead_handoff(&self) -> &TypeaheadHandoff {
-        &self.typeahead_handoff
+    /// Shared access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
+    pub fn typeahead_handoff(&self) -> parking_lot::RwLockReadGuard<'_, TypeaheadHandoff> {
+        self.typeahead_handoff.read()
+    }
+
+    /// The handle the terminal view and the pty controller keep, so the hand-off is reachable
+    /// without this model's lock.
+    pub fn pane_handoff(&self) -> PaneHandoff {
+        self.typeahead_handoff.clone()
+    }
+
+    /// The cell [`KeyFacts`] are published to; the view loads from it on the key path.
+    pub fn key_facts_cell(&self) -> KeyFactsCell {
+        self.key_facts.clone()
+    }
+
+    /// The inbox the key path leaves its bookkeeping in.
+    pub fn model_inbox(&self) -> ModelInbox {
+        self.inbox.clone()
+    }
+
+    /// Stores the key-path facts for readers that cannot take this model's lock. Called after
+    /// every parse, after the inbox is applied, and by the main thread where it changes them.
+    pub fn publish_key_facts(&self) {
+        self.key_facts.store(KeyFacts::from_model(self));
+    }
+
+    /// Applies, in order, what the main thread left in the inbox (the key path's bookkeeping),
+    /// then republishes the key facts. Called with the lock held, before bytes are parsed, so the
+    /// record of a key is in place before the echo it causes.
+    pub fn apply_inbox(&mut self) {
+        let commands = self.inbox.take();
+        if commands.is_empty() {
+            return;
+        }
+        for command in commands {
+            match command {
+                ModelCommand::UserWrote {
+                    first_input,
+                    ctrl_c,
+                } => {
+                    let active_block = self.block_list.active_block_mut();
+                    if first_input
+                        && active_block.is_active_and_long_running()
+                        && !active_block.has_received_user_input()
+                    {
+                        active_block.mark_received_user_input();
+                    }
+                    // #1178: a ^C typed into the running command interrupts it.
+                    if ctrl_c {
+                        active_block.mark_interrupted_by_ctrl_c();
+                    }
+                }
+                ModelCommand::TypedAhead(bytes) => {
+                    // #1033: the tty echoes these keys wherever the output is when they arrive;
+                    // record them so that echo can be told from output. A full-screen program
+                    // reads them raw.
+                    if self.is_alt_screen_active() {
+                        self.block_list.forget_typed_ahead_bytes();
+                    } else {
+                        self.block_list.record_typed_ahead_bytes(&bytes);
+                    }
+                }
+            }
+        }
+        self.publish_key_facts();
     }
 
     /// Installs the pty probe the interactive latch consults (unix local ptys).
@@ -1920,8 +1993,9 @@ impl TerminalModel {
         self.interactive_probe = Some(probe);
     }
 
-    pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
-        &mut self.typeahead_handoff
+    /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
+    pub fn typeahead_handoff_mut(&mut self) -> parking_lot::RwLockWriteGuard<'_, TypeaheadHandoff> {
+        self.typeahead_handoff.write()
     }
 
     /// Expects the tty to echo `line` (a subshell setup line the app is about to type) and keeps
@@ -3088,7 +3162,9 @@ impl TerminalModel {
 
         if active_block_completion == ActiveBlockCompletion::NewlyFinished {
             if finished_block_was_interactive && FeatureFlag::TypeaheadHandoff.is_enabled() {
-                self.typeahead_handoff.note_interactive_command_finished();
+                self.typeahead_handoff
+                    .write()
+                    .note_interactive_command_finished();
             }
             if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
                 if let Err(e) = tx.try_send(OrderedTerminalEventType::CommandExecutionFinished {
@@ -3132,9 +3208,10 @@ impl TerminalModel {
         let handled_after_inband = data.was_sent_after_in_band_command();
         self.block_list.apply_precmd_to_active(data);
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            self.typeahead_handoff.on_precmd();
-            self.typeahead_handoff.on_precmd_seq(session_id, prompt_seq);
-            self.typeahead_handoff.note_precmd_pending_view();
+            let mut handoff = self.typeahead_handoff.write();
+            handoff.on_precmd();
+            handoff.on_precmd_seq(session_id, prompt_seq);
+            handoff.note_precmd_pending_view();
         }
 
         self.emit_handler_event(HandlerEvent::Precmd {
@@ -3236,7 +3313,7 @@ impl TerminalModel {
                 && !active_block.started()
                 && !active_block.is_in_band_command_block()
                 && !self.shared_session_status.is_viewer();
-            self.typeahead_handoff.on_preexec(shell_started);
+            self.typeahead_handoff.write().on_preexec(shell_started);
         }
         self.reply_ledger.lock().on_command_start();
         self.block_list.apply_preexec_to_active(data);
@@ -3842,7 +3919,7 @@ impl ansi::Handler for TerminalModel {
         if FeatureFlag::TypeaheadHandoff.is_enabled()
             && fully_populated_session_info.subshell_info.is_none()
         {
-            self.typeahead_handoff.on_new_session();
+            self.typeahead_handoff.write().on_new_session();
         }
 
         self.emit_handler_event(HandlerEvent::Bootstrapped(BootstrappedEvent {
@@ -3895,6 +3972,7 @@ impl ansi::Handler for TerminalModel {
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 // In stream order with the Precmd / Preexec that frame it, on this thread.
                 self.typeahead_handoff
+                    .write()
                     .on_line_editor_reading(data.session_id, data.seq);
             }
             self.event_proxy
@@ -3908,7 +3986,7 @@ impl ansi::Handler for TerminalModel {
     fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
         if let Some(session_id) = data.session_id {
             if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                self.typeahead_handoff.on_continuation_prompt();
+                self.typeahead_handoff.write().on_continuation_prompt();
             }
             self.event_proxy
                 .send_terminal_event(Event::ContinuationPrompt {

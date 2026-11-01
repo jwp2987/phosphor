@@ -36,6 +36,7 @@ pub mod session;
 pub mod terminal_model;
 pub mod reply_ledger;
 pub mod setup_echo_filter;
+pub mod key_facts;
 pub mod typeahead_handoff;
 pub mod typed_echo;
 #[cfg(any(test, feature = "test-util"))]

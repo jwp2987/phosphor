@@ -2036,7 +2036,7 @@ mod typeahead_handoff {
             // Enter in the editor before the report: deferred, and later keys are held.
             {
                 let mut model = harness.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 assert!(handoff.defer_enter());
                 assert_eq!(handoff.on_user_bytes(b"pwd\r"), UserBytesRoute::Held);
                 assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
@@ -2782,7 +2782,7 @@ mod typeahead_handoff {
                 "the legacy request is written"
             );
             let mut model = harness.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(handoff.state(), &HandoffState::EditorOwned);
             assert!(handoff.untracked_bytes_requested());
             assert!(handoff.editor_text_precedes_report());
@@ -2802,7 +2802,7 @@ mod typeahead_handoff {
             assert_eq!(written(&harness), vec![REQUEST.to_vec()]);
             {
                 let mut model = harness.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.note_untracked_line_bytes();
                 // The report of the first request: it missed the keys.
                 handoff.on_report();
@@ -2821,7 +2821,7 @@ mod typeahead_handoff {
                 "the second request covers the keys; no third"
             );
             let mut model = harness.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert!(handoff.editor_text_precedes_report());
             handoff.on_report();
             assert!(!handoff.editor_text_precedes_report());
