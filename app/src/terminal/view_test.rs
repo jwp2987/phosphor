@@ -20204,6 +20204,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
                     handoff.on_line_editor_active(true, true),
                     ActiveDecision::SendRequest
                 );
+                drop(handoff);
                 // ...and a queued command drained behind it is running.
                 model.simulate_long_running_block("sleep 0.3", "");
                 model

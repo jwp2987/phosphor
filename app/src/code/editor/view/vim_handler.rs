@@ -656,38 +656,6 @@ impl VimHandler for CodeEditorView {
         ctx.notify();
     }
 
-    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
-    /// action with its content (#1405). The editor's own registers answer at once; one that
-    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
-    /// held behind that read (the view's paste gate) and applied right after the action, in
-    /// typed order.
-    fn read_register_then(
-        &mut self,
-        register_name: char,
-        ctx: &mut ViewContext<Self>,
-        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
-    ) {
-        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
-            registers.request_register_read(register_name, ctx)
-        });
-        match read {
-            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
-            crate::vim_registers::RegisterRead::Pending(pending) => {
-                let id = self.paste_gate.begin();
-                ctx.spawn(pending, move |me, content, ctx| {
-                    // Superseded or cancelled: the action is dropped.
-                    let Some(held) = me.paste_gate.complete(id) else {
-                        return;
-                    };
-                    done(me, content, ctx);
-                    for action in held {
-                        me.handle_action(&action, ctx);
-                    }
-                });
-            }
-        }
-    }
-
     fn visual_paste(
         &mut self,
         motion_type: MotionType,
@@ -697,67 +665,6 @@ impl VimHandler for CodeEditorView {
     ) {
         self.read_register_then(read_register_name, ctx, move |me, content, ctx| {
             me.visual_paste_register_content(motion_type, write_register_name, content, ctx)
-        });
-    }
-
-    fn visual_paste_register_content(
-        &mut self,
-        motion_type: MotionType,
-        write_register_name: char,
-        content: Option<RegisterContent>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(RegisterContent {
-            text,
-            motion_type: yanked_motion_type,
-        }) = content
-        else {
-            return;
-        };
-
-        self.model.update(ctx, |model, ctx| {
-            // Compute the visual selection
-            let include_newline =
-                motion_type == MotionType::Linewise && yanked_motion_type == MotionType::Linewise;
-            model.vim_visual_selection_range(motion_type, include_newline, ctx);
-
-            // Copy current selection to the write register before replacing it
-            let buffer = model.content().as_ref(ctx);
-            let selection_model = model.buffer_selection_model().clone();
-            let selected_text = buffer
-                .selected_text_as_plain_text(selection_model.clone(), ctx)
-                .into_string();
-            if !selected_text.is_empty() {
-                VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
-                    registers.write_to_register(
-                        write_register_name,
-                        selected_text,
-                        motion_type,
-                        ctx,
-                    );
-                });
-            }
-
-            // Replace selection with yanked text
-            model.update_content(
-                |mut content, ctx| {
-                    content.apply_edit(
-                        BufferEditAction::Insert {
-                            text: &text,
-                            style: model.active_text_style(),
-                            override_text_style: None,
-                        },
-                        EditOrigin::UserInitiated,
-                        selection_model,
-                        ctx,
-                    );
-                },
-                ctx,
-            );
-
-            if motion_type == MotionType::Linewise {
-                model.vim_move_to_line_bound(LineBound::Start, false, ctx);
-            }
         });
     }
 
@@ -821,76 +728,6 @@ impl VimHandler for CodeEditorView {
         let direction = direction.clone();
         self.read_register_then(register_name, ctx, move |me, content, ctx| {
             me.paste_register_content(count, &direction, content, ctx)
-        });
-    }
-
-    fn paste_register_content(
-        &mut self,
-        count: u32,
-        direction: &Direction,
-        content: Option<RegisterContent>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(RegisterContent { text, motion_type }) = content else {
-            return;
-        };
-
-        // For linewise cursor positioning, compute how many leading whitespace characters are at
-        // the start of the first inserted line.
-        let leading_ws = if motion_type == MotionType::Linewise {
-            text.chars()
-                .take_while(|c| c.is_whitespace() && *c != '\n')
-                .count()
-        } else {
-            0
-        };
-
-        let text = match motion_type {
-            MotionType::Charwise => text,
-            MotionType::Linewise => match direction {
-                Direction::Backward => {
-                    // 'P' - paste above current line
-                    // Insert the text followed by a newline to push current line down
-                    trim_one_end_match(&text, '\n').to_owned() + "\n"
-                }
-                Direction::Forward => {
-                    // 'p' - paste below current line
-                    "\n".to_owned() + trim_one_end_match(&text, '\n')
-                }
-            },
-        };
-
-        let insert_text = text.repeat(count as usize);
-
-        let (insert_point, cursor_offset_len) = match motion_type {
-            MotionType::Charwise => match direction {
-                Direction::Backward => (VimInsertPoint::BeforeCursor, insert_text.len() - 1),
-                Direction::Forward => (VimInsertPoint::AtCursor, insert_text.len() - 1),
-            },
-            MotionType::Linewise => match direction {
-                Direction::Backward => (VimInsertPoint::LineStart, leading_ws),
-                // For linewise "p", offset the cursor by 1 to get onto the new line, then by the line's leading whitespace.
-                Direction::Forward => (VimInsertPoint::LineEnd, 1 + leading_ws),
-            },
-        };
-
-        self.model.update(ctx, |model, ctx| {
-            let selection_model = model.buffer_selection_model().clone();
-            model.update_content(
-                |mut content, ctx| {
-                    content.apply_edit(
-                        BufferEditAction::VimEvent {
-                            text: insert_text,
-                            insert_point,
-                            cursor_offset_len,
-                        },
-                        EditOrigin::UserInitiated,
-                        selection_model,
-                        ctx,
-                    );
-                },
-                ctx,
-            );
         });
     }
 
@@ -1075,6 +912,171 @@ impl VimHandler for CodeEditorView {
 
     fn scroll_half_page_up(&mut self, count: u32, ctx: &mut ViewContext<Self>) {
         self.scroll_half_page(count, TextDirection::Backwards, ctx);
+    }
+}
+
+impl CodeEditorView {
+    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
+    /// action with its content (#1405). The editor's own registers answer at once; one that
+    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
+    /// held behind that read (the view's paste gate) and applied right after the action, in
+    /// typed order.
+    fn read_register_then(
+        &mut self,
+        register_name: char,
+        ctx: &mut ViewContext<Self>,
+        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
+    ) {
+        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
+            registers.request_register_read(register_name, ctx)
+        });
+        match read {
+            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
+            crate::vim_registers::RegisterRead::Pending(pending) => {
+                let id = self.paste_gate.begin();
+                ctx.spawn(pending, move |me, content, ctx| {
+                    // Superseded or cancelled: the action is dropped.
+                    let Some(held) = me.paste_gate.complete(id) else {
+                        return;
+                    };
+                    done(me, content, ctx);
+                    for action in held {
+                        me.handle_action(&action, ctx);
+                    }
+                });
+            }
+        }
+    }
+
+    fn visual_paste_register_content(
+        &mut self,
+        motion_type: MotionType,
+        write_register_name: char,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent {
+            text,
+            motion_type: yanked_motion_type,
+        }) = content
+        else {
+            return;
+        };
+
+        self.model.update(ctx, |model, ctx| {
+            // Compute the visual selection
+            let include_newline =
+                motion_type == MotionType::Linewise && yanked_motion_type == MotionType::Linewise;
+            model.vim_visual_selection_range(motion_type, include_newline, ctx);
+
+            // Copy current selection to the write register before replacing it
+            let buffer = model.content().as_ref(ctx);
+            let selection_model = model.buffer_selection_model().clone();
+            let selected_text = buffer
+                .selected_text_as_plain_text(selection_model.clone(), ctx)
+                .into_string();
+            if !selected_text.is_empty() {
+                VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
+                    registers.write_to_register(
+                        write_register_name,
+                        selected_text,
+                        motion_type,
+                        ctx,
+                    );
+                });
+            }
+
+            // Replace selection with yanked text
+            model.update_content(
+                |mut content, ctx| {
+                    content.apply_edit(
+                        BufferEditAction::Insert {
+                            text: &text,
+                            style: model.active_text_style(),
+                            override_text_style: None,
+                        },
+                        EditOrigin::UserInitiated,
+                        selection_model,
+                        ctx,
+                    );
+                },
+                ctx,
+            );
+
+            if motion_type == MotionType::Linewise {
+                model.vim_move_to_line_bound(LineBound::Start, false, ctx);
+            }
+        });
+    }
+
+    fn paste_register_content(
+        &mut self,
+        count: u32,
+        direction: &Direction,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent { text, motion_type }) = content else {
+            return;
+        };
+
+        // For linewise cursor positioning, compute how many leading whitespace characters are at
+        // the start of the first inserted line.
+        let leading_ws = if motion_type == MotionType::Linewise {
+            text.chars()
+                .take_while(|c| c.is_whitespace() && *c != '\n')
+                .count()
+        } else {
+            0
+        };
+
+        let text = match motion_type {
+            MotionType::Charwise => text,
+            MotionType::Linewise => match direction {
+                Direction::Backward => {
+                    // 'P' - paste above current line
+                    // Insert the text followed by a newline to push current line down
+                    trim_one_end_match(&text, '\n').to_owned() + "\n"
+                }
+                Direction::Forward => {
+                    // 'p' - paste below current line
+                    "\n".to_owned() + trim_one_end_match(&text, '\n')
+                }
+            },
+        };
+
+        let insert_text = text.repeat(count as usize);
+
+        let (insert_point, cursor_offset_len) = match motion_type {
+            MotionType::Charwise => match direction {
+                Direction::Backward => (VimInsertPoint::BeforeCursor, insert_text.len() - 1),
+                Direction::Forward => (VimInsertPoint::AtCursor, insert_text.len() - 1),
+            },
+            MotionType::Linewise => match direction {
+                Direction::Backward => (VimInsertPoint::LineStart, leading_ws),
+                // For linewise "p", offset the cursor by 1 to get onto the new line, then by the line's leading whitespace.
+                Direction::Forward => (VimInsertPoint::LineEnd, 1 + leading_ws),
+            },
+        };
+
+        self.model.update(ctx, |model, ctx| {
+            let selection_model = model.buffer_selection_model().clone();
+            model.update_content(
+                |mut content, ctx| {
+                    content.apply_edit(
+                        BufferEditAction::VimEvent {
+                            text: insert_text,
+                            insert_point,
+                            cursor_offset_len,
+                        },
+                        EditOrigin::UserInitiated,
+                        selection_model,
+                        ctx,
+                    );
+                },
+                ctx,
+            );
+        });
     }
 }
 
