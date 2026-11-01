@@ -21,6 +21,28 @@ const TEXT_READ_RETRY_PAUSE: Duration = Duration::from_millis(50);
 /// nothing.
 const TEXT_READ_TIMEOUT_FLOOR: Duration = Duration::from_millis(8);
 
+/// How long the html and image probes that follow a successful text read may wait, in total, for
+/// the owner's first answers (#1192). The owner just answered the text request, so a probe it
+/// ignores is a stall, not a slow owner; unbounded, each one held the UI thread (and the Enter
+/// typed behind a paste) for arboard's whole 10 s first-answer timeout.
+const PROBE_BUDGET: Duration = Duration::from_millis(750);
+
+/// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop.
+struct ProbeBudget;
+
+impl ProbeBudget {
+    fn start() -> Self {
+        arboard::set_first_answer_deadline(Some(Instant::now() + PROBE_BUDGET));
+        Self
+    }
+}
+
+impl Drop for ProbeBudget {
+    fn drop(&mut self) {
+        arboard::set_first_answer_deadline(None);
+    }
+}
+
 pub struct LinuxClipboard {
     inner: LinuxClipboardInner,
     /// Set when the last text read kept failing after retries (the owner timed out), as opposed
@@ -285,6 +307,10 @@ impl LinuxClipboard {
 
         // Get file paths from clipboard (Linux-specific)
         content.paths = self.parse_valid_filepaths_from_text(&content.plain_text);
+
+        // The probes below ask for targets the owner may not answer; once there is text, bound
+        // them (#1192). With no text the probes are the whole read and keep the full timeout.
+        let _probe_budget = (!content.plain_text.is_empty()).then(ProbeBudget::start);
 
         // Attempt to use HTML data first.
         match self.inner.get().clipboard(clipboard_kind).html() {

@@ -14,7 +14,7 @@ and conditions of the chosen license apply to this file.
 
 use std::{
 	borrow::Cow,
-	cell::RefCell,
+	cell::{Cell, RefCell},
 	collections::{hash_map::Entry, HashMap},
 	path::{Path, PathBuf},
 	sync::{
@@ -108,6 +108,34 @@ thread_local! {
 const LONG_TIMEOUT_DUR: Duration = Duration::from_millis(10_000);
 const SHORT_TIMEOUT_DUR: Duration = Duration::from_millis(5_000);
 
+thread_local! {
+	/// When set, the latest moment a read on this thread waits for the owner's FIRST answer
+	/// (#1192). See [`set_first_answer_deadline`].
+	static FIRST_ANSWER_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Caps how long reads on this thread wait for the selection owner's first answer, until cleared
+/// with `None` (PHOSPHOR, #1192).
+///
+/// A paste reads the text and then probes the html and image targets. An owner that answered the
+/// text request but never answers one of the probes (a busy or buggy app, or an owner that
+/// mishandles a target it does not offer) left the UI thread asleep for all of
+/// `LONG_TIMEOUT_DUR` per probe, and the Enter typed after the paste waited behind it. The caller
+/// sets a short budget once the text is in hand. Only the wait for the first answer is capped; a
+/// transfer that has started keeps its stall window.
+pub fn set_first_answer_deadline(deadline: Option<Instant>) {
+	FIRST_ANSWER_DEADLINE.with(|d| d.set(deadline));
+}
+
+/// The deadline for the owner's first answer to a request made at `now`.
+fn first_answer_deadline(now: Instant, cap: Option<Instant>) -> Instant {
+	let deadline = now + LONG_TIMEOUT_DUR;
+	match cap {
+		Some(cap) if cap < deadline => cap,
+		_ => deadline,
+	}
+}
+
 /// The deadline for the next INCR chunk, given that progress was just made at `now`. Every chunk
 /// (and the INCR start) renews it, so a read that keeps receiving data never times out.
 fn deadline_after_progress(now: Instant) -> Instant {
@@ -117,6 +145,38 @@ fn deadline_after_progress(now: Instant) -> Instant {
 #[cfg(test)]
 mod phosphor_timeout_tests {
 	use super::*;
+
+	/// #1192: once the text is in hand the html/image probes get a short budget, so an owner that
+	/// never answers a probe cannot hold the UI thread for the full first-answer timeout.
+	#[test]
+	fn first_answer_wait_is_capped_by_the_probe_budget() {
+		let t0 = Instant::now();
+		let cap = t0 + Duration::from_millis(750);
+		assert_eq!(first_answer_deadline(t0, Some(cap)), cap);
+		assert!(first_answer_deadline(t0, Some(cap)) < t0 + LONG_TIMEOUT_DUR);
+	}
+
+	/// Without a budget, and with one longer than the timeout, the full timeout applies.
+	#[test]
+	fn first_answer_wait_defaults_to_the_long_timeout() {
+		let t0 = Instant::now();
+		assert_eq!(first_answer_deadline(t0, None), t0 + LONG_TIMEOUT_DUR);
+		let far = t0 + LONG_TIMEOUT_DUR * 2;
+		assert_eq!(first_answer_deadline(t0, Some(far)), t0 + LONG_TIMEOUT_DUR);
+	}
+
+	/// The budget is per thread and clearable.
+	#[test]
+	fn probe_budget_is_thread_local_and_clearable() {
+		let t0 = Instant::now() + Duration::from_secs(1);
+		set_first_answer_deadline(Some(t0));
+		assert_eq!(FIRST_ANSWER_DEADLINE.with(|d| d.get()), Some(t0));
+		std::thread::spawn(|| assert_eq!(FIRST_ANSWER_DEADLINE.with(|d| d.get()), None))
+			.join()
+			.unwrap();
+		set_first_answer_deadline(None);
+		assert_eq!(FIRST_ANSWER_DEADLINE.with(|d| d.get()), None);
+	}
 
 	/// A slow owner that sends a chunk every 2 s for 10 minutes (300 chunks) must never hit the
 	/// deadline: each chunk renews it. Upstream's 10 ms window expired between the first two.
@@ -400,7 +460,8 @@ impl Inner {
 		let mut incr_data: Vec<u8> = Vec::new();
 		let mut using_incr = false;
 
-		let mut timeout_end = Instant::now() + LONG_TIMEOUT_DUR;
+		let mut timeout_end =
+			first_answer_deadline(Instant::now(), FIRST_ANSWER_DEADLINE.with(|d| d.get()));
 
 		while Instant::now() < timeout_end {
 			let event = reader.conn.poll_for_event().map_err(into_unknown)?;
