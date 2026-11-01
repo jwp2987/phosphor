@@ -19,6 +19,7 @@ pub mod input_order;
 pub mod integration;
 pub mod keymap;
 pub mod modals;
+pub mod multi_click;
 pub mod notification;
 pub mod platform;
 pub mod prelude;

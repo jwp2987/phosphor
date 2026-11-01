@@ -57,12 +57,8 @@ use self::key_events::{
     typed_characters_follow_keydown, KeyConversion,
 };
 
-/// This is the time duration beyond which clicks get treated as separate single clicks instead of
-/// double-click, triple-click, etc.
 /// At most one WARN summary of transiently skipped frames per this interval.
 const SKIPPED_FRAME_LOG_INTERVAL: Duration = Duration::from_secs(10);
-
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 
 /// The debounce timeout for drag-and-drop files. Multiple DroppedFile events
 /// are received within this time window and then combined into a single DragAndDropFiles event.
@@ -242,13 +238,14 @@ impl WindowState {
         }
         let now = Instant::now();
         // Increment the click_count if the button type is the same and the duration is faster than
-        // MULTI_CLICK_INTERVAL.
+        // the OS multi-click interval (`warpui_core::multi_click`).
         let click_count = self
             .last_mouse_button_pressed
             .take()
             .filter(|old_state| {
                 old_state.button_pressed == button
-                    && now.duration_since(old_state.pressed_at) <= MULTI_CLICK_INTERVAL
+                    && now.duration_since(old_state.pressed_at)
+                        <= warpui_core::multi_click::multi_click_interval()
             })
             .map(|old_state| old_state.click_count + 1)
             .unwrap_or(1);
