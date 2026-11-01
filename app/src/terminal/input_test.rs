@@ -13310,6 +13310,17 @@ fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
 
 // ---- #1353 phase 3: the Enter verdict / Tab / after-Enter ordering on the input queue -----------
 
+/// Registers the autodetection classifier (the real app has it from startup). Keys an Enter
+/// released from the input queue are replayed into the editor, which classifies the new text
+/// when autodetection is on; the models those tests build from `initialize_app` lack it.
+fn ensure_input_classifier_for_test(app: &mut App) {
+    app.update(|ctx| {
+        if !ctx.has_singleton_model::<crate::input_classifier::InputClassifierModel>() {
+            ctx.add_singleton_model(crate::input_classifier::InputClassifierModel::new);
+        }
+    });
+}
+
 /// Records every key the input queue releases behind an Enter that waited, in release order.
 fn record_released_enter_entries(
     app: &mut App,
@@ -13354,6 +13365,7 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -13451,6 +13463,7 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
 fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_line() {
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        ensure_input_classifier_for_test(&mut app);
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         let editor = input.read(&app, |input, _| input.editor().clone());
         editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
