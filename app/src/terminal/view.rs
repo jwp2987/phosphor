@@ -13607,6 +13607,7 @@ impl TerminalView {
         !has_remote_server && !self.control_master_error_banner_suppressed
     }
 
+    #[cfg(test)]
     fn read_from_clipboard(
         shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
@@ -16088,13 +16089,27 @@ impl TerminalView {
             ModelEvent::ClipboardLoad(_, format) => {
                 let access = *TerminalSettings::as_ref(ctx).osc52_clipboard_access;
                 if access.allows_read() {
-                    self.write_to_pty(
-                        format(&TerminalView::read_from_clipboard(
-                            Some(self.shell_dialect_from_app(ctx)),
-                            ctx,
-                        ))
-                        .into_bytes(),
+                    // Read off the UI thread (#1380); the answer is written when it arrives. An
+                    // unreadable clipboard answers empty, as before, so the program never hangs.
+                    let format = std::sync::Arc::clone(format);
+                    let shell_dialect = Some(self.shell_dialect_from_app(ctx));
+                    crate::util::clipboard::read_clipboard_for_view(
+                        self,
                         ctx,
+                        warpui::clipboard::ReadKind::TextAndPaths,
+                        move |view, read, ctx| {
+                            let text = match read {
+                                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                                    clipboard_content_with_escaped_paths(
+                                        content,
+                                        shell_dialect,
+                                        false,
+                                    )
+                                }
+                                _ => String::new(),
+                            };
+                            view.write_to_pty(format(&text).into_bytes(), ctx);
+                        },
                     );
                 } else {
                     log::info!(
@@ -22297,6 +22312,21 @@ impl TerminalView {
                 return;
             }
         }
+        // A paste the terminal routes to the input box reads off the UI thread too (#1380): the
+        // input's own queue holds keys typed meanwhile and inserts it, in order.
+        #[cfg(not(target_family = "wasm"))]
+        if !middle_click && should_paste_in_input && !is_cli_agent_paste {
+            if let Some(reader) = ctx.clipboard().background_text_reader() {
+                self.input.update(ctx, |input, ctx| {
+                    input.start_background_middle_click_paste(
+                        reader,
+                        crate::terminal::input::PasteSource::TerminalPaste(shell_dialect),
+                        ctx,
+                    );
+                });
+                return;
+            }
+        }
         // A middle click reads the primary selection the same way (#1331): off the UI thread, held
         // keys kept in order, never a fragment run. Into the input or to the pty as the click routes.
         #[cfg(not(target_family = "wasm"))]
@@ -25828,6 +25858,21 @@ impl TerminalView {
     }
 
     fn paste_in_input(&mut self, ctx: &mut ViewContext<Self>) {
+        // Off the UI thread where the platform can (#1380); the input inserts it in order with
+        // the keys typed meanwhile.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(reader) = ctx.clipboard().background_text_reader() {
+            self.input.update(ctx, |input, ctx| {
+                input.start_background_middle_click_paste(
+                    reader,
+                    crate::terminal::input::PasteSource::PlainTextPaste,
+                    ctx,
+                );
+                ctx.focus_self();
+            });
+            send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
+            return;
+        }
         let clipboard_text = ctx.clipboard().read_plain_text();
 
         self.input.update(ctx, |input, ctx| {

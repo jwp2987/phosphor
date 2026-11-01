@@ -649,6 +649,11 @@ pub(crate) enum PasteSource {
     EditorMiddleClick,
     /// A middle click the terminal routed to the input.
     TerminalMiddleClick(Option<warp_util::path::ShellDialect>),
+    /// A paste the terminal view routed to the input (#1380): copied paths escaped for the
+    /// shell, inserted as a system paste (no image attach), as the synchronous read was.
+    TerminalPaste(Option<warp_util::path::ShellDialect>),
+    /// The input's context-menu paste (#1380): the plain text only.
+    PlainTextPaste,
 }
 
 /// What a young line's text needs before its deferred Enter may run (#933).
@@ -11214,6 +11219,13 @@ impl Input {
                 PasteSource::TerminalMiddleClick(shell_dialect) => {
                     let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
                     self.system_insert(&text, ctx);
+                }
+                PasteSource::TerminalPaste(shell_dialect) => {
+                    let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                    self.paste_insert(&text, ctx);
+                }
+                PasteSource::PlainTextPaste => {
+                    self.paste_insert(content.plain_text.as_str(), ctx);
                 }
             },
             Some(warpui::clipboard::BackgroundTextRead::TooLarge(bytes)) => {

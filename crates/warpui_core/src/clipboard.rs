@@ -191,6 +191,77 @@ fn tracked_reader_with(
     })
 }
 
+/// Which clipboard flavors an off-thread [`read_in_background`] needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadKind {
+    /// Text, paths, HTML and images ([`Clipboard::read`]).
+    Full,
+    /// Text and copied paths only ([`Clipboard::read_text_and_paths`]).
+    TextAndPaths,
+    /// The Linux primary selection ([`Clipboard::read_from_primary_clipboard`]).
+    Primary,
+}
+
+/// The boxed future of a [`read_in_background`].
+pub type PendingRead =
+    std::pin::Pin<Box<dyn std::future::Future<Output = BackgroundTextRead> + Send + 'static>>;
+
+/// What [`read_in_background`] started.
+pub enum StartedRead {
+    /// The platform has no off-thread reader, so the read was done on the calling thread already;
+    /// the caller handles the result at once (no event-loop hop, so behaviour and ordering are
+    /// exactly the old synchronous ones).
+    Ready(BackgroundTextRead),
+    /// A worker thread is reading; await the future (`ctx.spawn`) and handle the result there.
+    Pending(PendingRead),
+}
+
+/// Starts a clipboard read that never blocks the calling (UI) thread, for callers that need the
+/// content but not synchronously (#1380). The read runs on a worker thread with the platform
+/// reader's own first-answer budget (and the paste size cap); await the returned future from
+/// `ctx.spawn` and act on the result in the callback. A reader thread that cannot be started
+/// answers `TimedOut`.
+///
+/// Where the platform has no off-thread reader (wasm, or a backend that does not provide one) the
+/// read happens here, synchronously ([`StartedRead::Ready`]): the same behaviour as before.
+pub fn read_in_background(clipboard: &mut dyn Clipboard, kind: ReadKind) -> StartedRead {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let reader = match kind {
+            ReadKind::Full => clipboard.background_full_reader(),
+            ReadKind::TextAndPaths => clipboard.background_text_reader(),
+            ReadKind::Primary => clipboard.background_primary_reader(),
+        };
+        if let Some(reader) = reader {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let spawned = std::thread::Builder::new()
+                .name("clipboard-read".into())
+                .spawn(move || {
+                    let _ = tx.send(reader());
+                });
+            return match spawned {
+                Ok(_) => StartedRead::Pending(Box::pin(async move {
+                    rx.await.unwrap_or(BackgroundTextRead::TimedOut)
+                })),
+                Err(err) => {
+                    log::warn!("Unable to start the clipboard read thread: {err}");
+                    StartedRead::Ready(BackgroundTextRead::TimedOut)
+                }
+            };
+        }
+    }
+    let content = match kind {
+        ReadKind::Full => clipboard.read(),
+        ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+        ReadKind::Primary => clipboard.read_from_primary_clipboard(),
+    };
+    StartedRead::Ready(if clipboard.take_read_failure() {
+        BackgroundTextRead::TimedOut
+    } else {
+        cap_paste_size(BackgroundTextRead::Content(content), MAX_PASTE_BYTES)
+    })
+}
+
 /// Refuses content whose text exceeds `max` bytes, dropping it here on the reader thread so the
 /// oversize buffer is freed before it is queued anywhere.
 pub fn cap_paste_size(read: BackgroundTextRead, max: usize) -> BackgroundTextRead {

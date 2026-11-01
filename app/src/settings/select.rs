@@ -204,6 +204,22 @@ impl SelectionSettings {
         None
     }
 
+    /// Which flavor an off-thread middle-click read needs, or `None` when the paste is disabled
+    /// (the gate, and on Linux/FreeBSD the selection setting) (#1380). The primary selection on
+    /// Linux/FreeBSD, the normal clipboard elsewhere; the result is a no-op when empty, exactly
+    /// as [`Self::read_for_middle_click_paste`] answers `None` for it.
+    pub fn middle_click_read_kind(&self) -> Option<warpui::clipboard::ReadKind> {
+        if !self.middle_click_paste_gate() {
+            return None;
+        }
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            self.linux_selection_clipboard_enabled()
+                .then_some(warpui::clipboard::ReadKind::Primary)
+        } else {
+            Some(warpui::clipboard::ReadKind::Full)
+        }
+    }
+
     /// Implements the correct middle-click paste behavior for the current platform.
     ///
     /// Linux has the "primary clipboard" to which it maps the middle mouse button. Other platforms

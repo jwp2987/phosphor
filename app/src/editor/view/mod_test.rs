@@ -5482,3 +5482,83 @@ fn test_cursor_blink_tick_requests_paint_only_frame() {
         assert!(paint_only, "a blink tick must request a paint-only frame");
     });
 }
+
+/// #1380: a plain editor's paste goes through the off-thread read path. With a clipboard that has
+/// no worker reader (the test platform) the read completes at once, so the paste lands inside the
+/// action exactly as the old synchronous read did.
+#[test]
+fn test_plain_editor_paste_lands_at_once_when_the_platform_has_no_worker_reader() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            ctx.clipboard()
+                .write(warpui::clipboard::ClipboardContent::plain_text(
+                    "hello".into(),
+                ));
+            view.paste(ctx);
+            assert_eq!(view.buffer_text(ctx), "hello");
+            assert!(!view.paste_hold().sequencer_pending());
+        });
+    })
+}
+
+/// #1380: while a plain editor's paste is being read, the keys typed are held and applied behind
+/// it, in order.
+#[test]
+fn test_plain_editor_keys_typed_during_a_paste_read_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            // A read in flight (the worker has not answered yet).
+            let id = view.paste_hold().begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            assert_eq!(
+                view.buffer_text(ctx),
+                "",
+                "typed keys are held behind the paste"
+            );
+            // The read answers: the paste first, then the held keys.
+            view.finish_plain_paste(
+                id,
+                warpui::clipboard::BackgroundTextRead::Content(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTE".into()),
+                ),
+                false,
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "PASTExy");
+            assert!(!view.paste_hold().sequencer_pending());
+        });
+    })
+}
+
+/// #1380 x #1382: a read that failed or is over the paste cap inserts nothing (never a truncated
+/// paste) and the held keys are still applied.
+#[test]
+fn test_plain_editor_failed_or_oversize_paste_inserts_nothing_and_keeps_the_keys() {
+    for failure in [
+        warpui::clipboard::BackgroundTextRead::TimedOut,
+        warpui::clipboard::BackgroundTextRead::TooLarge(warpui::clipboard::MAX_PASTE_BYTES + 1),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("ab", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                view.move_to_buffer_end(ctx);
+                let id = view.paste_hold().begin();
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                view.finish_plain_paste(id, failure, false, ctx);
+                assert_eq!(view.buffer_text(ctx), "abz");
+            });
+        });
+    }
+}

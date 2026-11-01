@@ -2261,17 +2261,45 @@ impl RichTextEditorView {
 
     /// Paste from the clipboard.
     pub fn paste(&mut self, ctx: &mut ViewContext<Self>) {
-        let content = ctx.clipboard().read();
-        self.paste_content(content, ctx);
+        // Off the UI thread (#1380); the HTML flavor is needed, so the full reader.
+        crate::util::clipboard::read_clipboard_for_view(
+            self,
+            ctx,
+            warpui::clipboard::ReadKind::Full,
+            |view, read, ctx| match read {
+                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                    view.paste_content(content, ctx)
+                }
+                failed => {
+                    if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                        crate::util::clipboard::show_read_failure_toast(message, ctx);
+                    }
+                }
+            },
+        );
     }
 
     fn middle_click_paste(&mut self, ctx: &mut ViewContext<Self>) {
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
+        // Off the UI thread (#1380); `None` kind: middle-click paste is disabled.
+        let kind = SelectionSettings::handle(ctx)
+            .update(ctx, |selection, _| selection.middle_click_read_kind());
+        let Some(kind) = kind else {
+            return;
+        };
+        crate::util::clipboard::read_clipboard_for_view(self, ctx, kind, |view, read, ctx| {
+            match read {
+                // An empty selection pastes nothing, as the synchronous read answered `None`.
+                warpui::clipboard::BackgroundTextRead::Content(content) if content.is_empty() => {}
+                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                    view.paste_content(content, ctx)
+                }
+                failed => {
+                    if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                        crate::util::clipboard::show_read_failure_toast(message, ctx);
+                    }
+                }
+            }
         });
-        if let Some(content) = content {
-            self.paste_content(content, ctx);
-        }
     }
 
     fn paste_content(&mut self, content: ClipboardContent, ctx: &mut ViewContext<Self>) {
@@ -3348,7 +3376,7 @@ impl TypedActionView for RichTextEditorView {
     fn action_accessibility_contents(
         &mut self,
         action: &Self::Action,
-        ctx: &mut ViewContext<Self>,
+        _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         match action {
             EditorViewAction::UserTyped(text) => {
@@ -3359,7 +3387,7 @@ impl TypedActionView for RichTextEditorView {
             }
             EditorViewAction::Paste | EditorViewAction::MiddleClickPaste => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-                    format!("Pasting: {}", ctx.clipboard().read().plain_text),
+                    "Pasting from the clipboard".to_string(),
                     WarpA11yRole::UserAction,
                 ))
             }

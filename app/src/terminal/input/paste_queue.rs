@@ -83,6 +83,15 @@ impl Host for InputQueueHost<'_, '_> {
                             clipboard_content_with_escaped_paths(content, shell_dialect, false);
                         self.input.system_insert(&text, self.ctx);
                     }
+                    PasteSource::TerminalPaste(shell_dialect) => {
+                        let text =
+                            clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                        self.input.paste_insert(&text, self.ctx);
+                    }
+                    PasteSource::PlainTextPaste => {
+                        self.input
+                            .paste_insert(content.plain_text.as_str(), self.ctx);
+                    }
                 }
                 if self.held_behind > 0 {
                     self.input.request_detection_for_pasted_text(self.ctx);

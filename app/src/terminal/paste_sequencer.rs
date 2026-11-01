@@ -9,6 +9,7 @@
 
 /// The message for a paste refused by the size cap (#1382). The paste is never truncated; the
 /// keys typed behind it are still delivered.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn paste_too_large_message(bytes: usize) -> String {
     format!(
         "Paste too large \u{2014} the clipboard holds {} MB (limit {} MB); nothing was pasted and your typing was kept",
@@ -18,6 +19,7 @@ pub(crate) fn paste_too_large_message(bytes: usize) -> String {
 }
 
 /// Why a pty-bound background paste produced no bytes.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PasteFailure {
     /// The clipboard owner never answered, or the reader died.
