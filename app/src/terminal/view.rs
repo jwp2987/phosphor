@@ -75,6 +75,7 @@ use crate::view_components::action_button::{ActionButton, ButtonSize, KeystrokeS
 use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
+use super::input_queue;
 use super::paste_sequencer::{KeyDisposition, PasteSequencer};
 use super::CLIAgent;
 use super::cli_agent;
@@ -11724,7 +11725,10 @@ impl TerminalView {
         // out behind it, in order; an abort key cancels the paste instead.
         if self.paste_sequencer.has_pending() {
             match self.paste_sequencer.on_key(&bytes, is_abort_key(&bytes)) {
-                KeyDisposition::Held => return true,
+                KeyDisposition::Held => {
+                    input_queue::trace::hold(input_queue::trace::legacy::PASTE_PTY, bytes.len());
+                    return true;
+                }
                 KeyDisposition::CancelledPaste(held) => {
                     for held_bytes in held {
                         self.write_user_bytes_to_pty_inner(
@@ -11741,6 +11745,7 @@ impl TerminalView {
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
+            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_BOOTSTRAP, bytes.len());
             in_flight.held_user_bytes.push(bytes.into_owned());
             return true;
         }
@@ -11786,6 +11791,7 @@ impl TerminalView {
         // ` . <bootstrap file>` line, which then failed and wedged setup on "Starting shell...")
         // and, as that shape flipped from key to key, out of order. Every key is held instead.
         if !is_abort_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
+            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;
         }
@@ -11810,6 +11816,7 @@ impl TerminalView {
             is_abort_key(&bytes),
         ) && !self.active_output_awaits_an_answer()
         {
+            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
             self.subshell_setup_held_bytes.push(bytes.into_owned());
             return true;
         }
@@ -11910,6 +11917,7 @@ impl TerminalView {
             format!("bytes={} route={handoff_route:?}", bytes.len())
         });
         if handoff_route == UserBytesRoute::Held {
+            input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
             let hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 self.model
@@ -11955,6 +11963,7 @@ impl TerminalView {
             .then(|| bytes.to_vec());
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
+        input_queue::trace::deliver(bytes.len(), "pty");
         if handoff_route == UserBytesRoute::WriteCounted {
             ctx.emit(Event::WriteHandoffUserBytesToPty { bytes });
         } else {
@@ -11979,6 +11988,12 @@ impl TerminalView {
         if let Some(chunks) = chunks {
             self.input
                 .update(ctx, |input, _| input.clear_handoff_enter_mark());
+            input_queue::trace::release(
+                input_queue::trace::legacy::HANDOFF,
+                chunks.len(),
+                chunks.iter().map(Vec::len).sum(),
+                "pty",
+            );
             for bytes in chunks {
                 ctx.emit(Event::WriteHandoffUserBytesToPty {
                     bytes: Cow::Owned(bytes),
@@ -19251,6 +19266,12 @@ impl TerminalView {
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
     fn finish_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.take() {
+            input_queue::trace::release(
+                input_queue::trace::legacy::SUBSHELL_BOOTSTRAP,
+                in_flight.held_user_bytes.len(),
+                in_flight.held_user_bytes.iter().map(Vec::len).sum(),
+                "pty",
+            );
             for bytes in in_flight.held_user_bytes {
                 self.write_user_bytes_to_pty(bytes, ctx);
             }
@@ -19273,6 +19294,12 @@ impl TerminalView {
         self.powershell_setup_hold = PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
+        input_queue::trace::release(
+            input_queue::trace::legacy::SUBSHELL_SETUP,
+            self.subshell_setup_held_bytes.len(),
+            self.subshell_setup_held_bytes.iter().map(Vec::len).sum(),
+            "pty",
+        );
         for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
             self.write_user_bytes_to_pty(bytes, ctx);
         }
@@ -21505,6 +21532,12 @@ impl TerminalView {
                 ctx,
             ),
         }
+        input_queue::trace::release(
+            input_queue::trace::legacy::PASTE_PTY,
+            held.len(),
+            held.iter().map(Vec::len).sum(),
+            "pty",
+        );
         for held_bytes in held {
             self.write_user_bytes_to_pty(held_bytes, ctx);
         }
