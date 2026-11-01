@@ -371,6 +371,9 @@ impl DProtoHook {
                     value.command = v;
                 }
                 "session_id" => value.session_id = v.parse::<u64>().ok(),
+                // The shell's hook counter (#1353): only Precmd's is read, the distance between two
+                // Precmds already counts the Preexecs between them.
+                "seq" => {}
                 _ => {
                     log::warn!("Tried to add unknown field {key} to Preexec hook");
                 }
@@ -592,6 +595,7 @@ impl RawPrecmdValue {
             "conda_env" => self.prompt_metadata.conda_env = map_empty_to_none(value),
             "kube_config" => self.prompt_metadata.kube_config = map_empty_to_none(value),
             "session_id" => self.prompt_metadata.session_id = value.parse::<u64>().ok(),
+            "seq" => self.prompt_metadata.seq = value.parse::<u64>().ok(),
             "exit_code" => {
                 self.exit_code = RawPrecmdField::Present(value.parse::<i32>().ok().map(Into::into));
             }
@@ -808,6 +812,12 @@ pub struct PromptMetadata {
     /// Whether this prompt metadata was emitted after the completion of an in-band command.
     #[serde(default)]
     pub is_after_in_band_command: bool,
+
+    /// The shell's per-session counter of Precmd and Preexec hooks (#1353 phase 6): it grows by
+    /// one for every hook of either kind the shell sends, so the distance between two Precmds
+    /// counts the Preexecs between them. `None` from a bootstrap that predates it.
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 impl PromptMetadata {
@@ -839,6 +849,7 @@ impl Default for PromptMetadata {
             kube_config: Default::default(),
             session_id: Default::default(),
             is_after_in_band_command: Default::default(),
+            seq: Default::default(),
         }
     }
 }

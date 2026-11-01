@@ -117,6 +117,10 @@ where
     /// (`FeatureFlag::TypeaheadHandoff`).
     fn on_typeahead_handoff_changed(&mut self, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when the editor's command was refused, so the hand-off will not engage
+    /// for it (#1353 phase 6), so keys waiting for the route to settle can be released.
+    fn on_typeahead_handoff_not_engaged(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when the shell's line editor signalled it is ready while the surface's input queue
     /// held keys for the prompt (#1353 phase 5): release the gate `hold_id` names.
     fn on_prompt_hold_released(&mut self, _hold_id: u64, _ctx: &mut ViewContext<Self>) {}

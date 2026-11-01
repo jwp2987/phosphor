@@ -1027,6 +1027,10 @@ fn on_shell_determined<S: TerminalSurface>(
         model.lock().typeahead_handoff_mut().set_foreground_probe(
             crate::terminal::model::typeahead_handoff::ForegroundProbe::new(Arc::new(move || {
                 super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
+            }))
+            // #1353 phase 6: the same sample, also saying when the shell's line editor is reading.
+            .with_prompt_fact(Arc::new(move || {
+                super::terminal_attributes::shell_prompt_fact(fd, pid as i32)
             })),
         );
         // #1373: who owns the terminal decides "interactive / long running", not elapsed time.

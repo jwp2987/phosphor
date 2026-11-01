@@ -301,6 +301,24 @@ impl Input {
         );
     }
 
+    /// A submitted shell-command Enter whose gate holds one key and waits for the pty to take its
+    /// command, for tests of the events that release it.
+    #[cfg(test)]
+    pub(crate) fn open_submitted_enter_gate_awaiting_pty_for_test(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.set_enter_queue_for_test(true);
+        self.open_enter_gate(1, ctx);
+        let queue = self.enter_queue_handle(ctx);
+        {
+            let mut queue = queue.borrow_mut();
+            let mut host = InputQueueHost::new(self, ctx);
+            queue.offer(&mut host, EntryKind::Text("x".to_string()));
+        }
+        self.finish_enter_gate_after_submit(true, ctx);
+    }
+
     /// The entries behind the Enter, for tests.
     #[cfg(test)]
     pub(crate) fn enter_gate_held_len_for_test(&self, ctx: &AppContext) -> usize {
