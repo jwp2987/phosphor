@@ -1039,15 +1039,18 @@ impl ProjectContextModel {
     }
 
     /// Resolves every send waiting on `canonical`'s scan with the now-cached rules.
+    ///
+    /// `scanned` is the entry the scan just produced: it is used as-is rather than re-validated
+    /// through the cache (an ancestor directory's mtime moving between the scan and this
+    /// callback would otherwise resolve the send with no project rules at all).
     #[cfg(feature = "local_fs")]
-    fn notify_rules_waiters(&mut self, canonical: &Path) {
+    fn notify_rules_waiters(&mut self, canonical: &Path, scanned: Option<&FastPathEntry>) {
         let Some(waiters) = self.fast_path_waiters.remove(canonical) else {
             return;
         };
-        let project = match self.rules_lookup(canonical) {
-            RulesLookup::Ready(project) => project,
-            RulesLookup::Pending => None,
-        };
+        let project = self
+            .find_applicable_rules(canonical)
+            .or_else(|| scanned.and_then(Self::result_from_fast_path_entry));
         let layered = self.layer_global_rules(project);
         for waiter in waiters {
             let _ = waiter.send(layered.clone());
@@ -1140,14 +1143,14 @@ impl ProjectContextModel {
                 let Some((canonical, entry)) = scanned else {
                     // The path is gone: nothing to cache, but sends waiting on it must not
                     // hang (they proceed with the global rules only).
-                    me.notify_rules_waiters(&requested);
+                    me.notify_rules_waiters(&requested, None);
                     return;
                 };
                 // Requests look the cache up by the canonical path (`pending_context`).
+                me.notify_rules_waiters(&canonical, Some(&entry));
                 me.fast_path_cache
                     .borrow_mut()
                     .insert(canonical.clone(), entry);
-                me.notify_rules_waiters(&canonical);
             },
         );
         #[cfg(test)]
