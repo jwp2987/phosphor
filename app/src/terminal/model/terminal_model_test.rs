@@ -2802,6 +2802,57 @@ fn ssh_login_classifies_current_last_line_after_scan_cursor_has_advanced() {
     );
 }
 
+/// #1374: a failed-auth re-prompt that arrives long after "Permission denied" (the timer's 3 s
+/// have passed) is not treated as login done.
+#[test]
+fn ssh_login_failed_auth_reprompt_is_not_login_done() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+
+    model.process_bytes("user@myhost's password: ");
+    model.process_bytes("\r\nPermission denied, please try again.\r\n");
+    // The delayed confirmation fires (as the old 3 s timer did) before the re-prompt shows up.
+    model.check_for_end_of_ssh_login(true);
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_ne!(state(&model), SshLoginNotificationState::Completed);
+
+    model.process_bytes("user@myhost's password: ");
+    model.check_for_end_of_ssh_login(true);
+    assert_ne!(state(&model), SshLoginNotificationState::Completed);
+}
+
+/// #1374: a re-prompt after a non-prompt line withdraws the pending recheck; the stale timer's
+/// confirmation then does nothing.
+#[test]
+fn ssh_login_reprompt_withdraws_pending_recheck() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+    model.process_bytes("some banner text\r\n");
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_eq!(
+        state(&model),
+        SshLoginNotificationState::SentInitialNotification
+    );
+    model.process_bytes("Enter passphrase for key: ");
+    assert_eq!(state(&model), SshLoginNotificationState::Monitoring);
+    model.check_for_end_of_ssh_login(true);
+    assert_eq!(state(&model), SshLoginNotificationState::Monitoring);
+}
+
 #[test]
 fn dropped_oversized_apc_abandons_pending_kitty_transmission() {
     let mut terminal = TerminalModel::mock(None, None);

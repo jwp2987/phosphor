@@ -16361,17 +16361,6 @@ fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(!is_abort_key(b""));
 }
 
-#[test]
-fn find_bar_relayouts_after_banner_change_only_when_open() {
-    // #958: a banner appearing while the find bar is open must trigger a delayed redraw of the
-    // bar so it picks up the banner's newly saved position.
-    assert_eq!(
-        super::find_bar_banner_relayout_delay(true),
-        Some(super::FIND_BAR_BANNER_RELAYOUT_DELAY)
-    );
-    assert_eq!(super::find_bar_banner_relayout_delay(false), None);
-}
-
 /// #983: typing is dropped while an ssh bootstrap is pending, but only within bounds. A stale
 /// pending session (failed su/sudo -i) whose failure timer fired, or one that has swallowed past
 /// the ceiling, must let typed characters reach the pty again.

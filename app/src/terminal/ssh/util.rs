@@ -67,6 +67,9 @@ pub fn check_ssh_login_state(block_output: &str) -> SshLoginState {
             || line.contains("Confirm user presence")
             || line.starts_with("Enter ")
             || line.starts_with("Allow ")
+            // #1374: ssh prints this and then re-prompts (possibly many seconds later, while the
+            // server delays its reply). It is a mid-authentication line, never "login done".
+            || line.contains("Permission denied, please try again")
         {
             SshLoginState::Authenticating
         } else if PROMPT_REGEX.is_match(line) {

@@ -691,17 +691,73 @@ enum StaleReflowWork {
     All,
 }
 
-const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
-
-/// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
-/// banner's freshly saved position (#958). Must be longer than one frame.
-const FIND_BAR_BANNER_RELAYOUT_DELAY: Duration = Duration::from_millis(50);
-
-/// The delay after which the find bar must be redrawn following a banner change, if at all.
-/// Only an open find bar offsets itself by the banner.
-fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
-    find_bar_open.then_some(FIND_BAR_BANNER_RELAYOUT_DELAY)
+/// The post-approval/rejection focus reclaim (#901, #1374). It is bounded by EVENTS, not time: it
+/// ends when the input is visible and focused, the action finishes, ctrl-c, or the user moves focus
+/// themselves. The last is detected by comparing the focused view with the one the reclaim itself
+/// left focus on: any difference is a user click/navigation (or another owner of focus) and the
+/// reclaim must never fight it.
+#[derive(Default)]
+struct FocusReclaim {
+    active: bool,
+    /// The view focus was left on by the reclaim; `None` until it has placed focus once.
+    placed_on: Option<EntityId>,
 }
+
+impl FocusReclaim {
+    fn start(&mut self) {
+        self.active = true;
+        self.placed_on = None;
+    }
+
+    fn end(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_placed(&mut self, focused_now: Option<EntityId>) {
+        self.placed_on = focused_now;
+    }
+
+    /// Whether the reclaim still applies given the currently focused view. Ends it if the user
+    /// (or anything else) moved focus away from where the reclaim left it.
+    fn is_active(&mut self, focused_now: Option<EntityId>) -> bool {
+        if self.active && self.placed_on.is_some() && self.placed_on != focused_now {
+            self.end();
+        }
+        self.active
+    }
+}
+
+#[cfg(test)]
+mod focus_reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_survives_without_a_user_focus_change_and_never_lapses_by_time() {
+        let a = EntityId::new();
+        let mut r = FocusReclaim::default();
+        assert!(!r.is_active(Some(a)));
+        r.start();
+        assert!(r.is_active(Some(a)));
+        r.record_placed(Some(a));
+        // Arbitrarily later, focus is where the reclaim left it: still active.
+        assert!(r.is_active(Some(a)));
+    }
+
+    #[test]
+    fn user_click_elsewhere_ends_the_reclaim() {
+        let (a, b) = (EntityId::new(), EntityId::new());
+        let mut r = FocusReclaim::default();
+        r.start();
+        r.record_placed(Some(a));
+        assert!(!r.is_active(Some(b)), "focus the user put elsewhere stays");
+        assert!(!r.is_active(Some(a)), "and the reclaim does not come back");
+    }
+}
+
+/// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
+const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
+
+const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
 /// the conversation is cancelled, the command handed to the user and the agent view left
@@ -2965,7 +3021,7 @@ pub struct TerminalView {
     last_focus_ts: Option<NaiveDateTime>,
     /// Set when the user approves or rejects a requested command card, until focus has been
     /// handed back from the AI block (#901).
-    reclaim_focus_until: Option<Instant>,
+    reclaim_focus: FocusReclaim,
     /// Whether focus has already been moved off the card once; after that, an AI block holding
     /// focus means the user put it there, and the reclaim ends.
     reclaim_focus_placed: bool,
@@ -4801,7 +4857,7 @@ impl TerminalView {
             ))]
             remote_dir_listing_cache: indexmap::IndexMap::new(),
             last_focus_ts: None,
-            reclaim_focus_until: None,
+            reclaim_focus: FocusReclaim::default(),
             reclaim_focus_placed: false,
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
@@ -11556,7 +11612,7 @@ impl TerminalView {
                     self.input.as_ref(ctx).buffer_text(ctx).chars().count()
                 )
             });
-            if self.focus_reclaim_active() {
+            if self.focus_reclaim_active(ctx) {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
                 self.place_focus_after_card_resolved(ctx);
@@ -14847,7 +14903,7 @@ impl TerminalView {
     /// approved or rejected card is still being replaced it does, until the input is back
     /// (#901).
     fn redetermine_focus_after_action_event(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.focus_reclaim_active() {
+        if !self.focus_reclaim_active(ctx) {
             return self.redetermine_terminal_focus(ctx);
         }
         // Having already left the card, an AI block holding focus means the user clicked or
@@ -14859,21 +14915,20 @@ impl TerminalView {
         self.place_focus_after_card_resolved(ctx)
     }
 
-    /// Whether a post-approval/rejection focus reclaim is still in effect (it lapses after a
-    /// couple of seconds so it can never linger and fight the user).
-    fn focus_reclaim_active(&mut self) -> bool {
-        match self.reclaim_focus_until {
-            Some(until) if Instant::now() < until => true,
-            Some(_) => {
-                self.end_focus_reclaim();
-                false
-            }
-            None => false,
+    /// Whether a post-approval/rejection focus reclaim is still in effect (it ends on events, never by
+    /// time, and as soon as the user moves focus so it can never fight them, #1374).
+    fn focus_reclaim_active(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let focused = ctx.focused_view_id(ctx.window_id());
+        let was_placed = self.reclaim_focus.placed_on.is_some();
+        let active = self.reclaim_focus.is_active(focused);
+        if !active && was_placed {
+            self.reclaim_focus_placed = false;
         }
+        active
     }
 
     fn end_focus_reclaim(&mut self) {
-        self.reclaim_focus_until = None;
+        self.reclaim_focus.end();
         self.reclaim_focus_placed = false;
     }
 
@@ -14910,6 +14965,8 @@ impl TerminalView {
             self.focus_terminal(ctx);
         }
         self.reclaim_focus_placed = true;
+        self.reclaim_focus
+            .record_placed(ctx.focused_view_id(ctx.window_id()));
         true
     }
 
@@ -25614,12 +25671,21 @@ impl TerminalView {
     /// this it would stay partly behind a banner that appeared while it was open (#958).
     fn notify_notice_banner_changed(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.notify();
-        if let Some(delay) =
-            find_bar_banner_relayout_delay(self.find_model.as_ref(ctx).is_find_bar_open())
-        {
-            ctx.spawn(Timer::after(delay), |me, _, ctx| {
-                me.find_bar.update(ctx, |_, ctx| ctx.notify());
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            // #1374: driven by the frame-drawn callback (the frame `notify` above schedules is the
+            // one that saves the banner's position), not by a guessed 50 ms delay.
+            let (frame_tx, frame_rx) = async_channel::bounded::<()>(1);
+            ctx.on_next_frame_drawn(move || {
+                let _ = frame_tx.try_send(());
             });
+            ctx.spawn(
+                async move {
+                    let _ = frame_rx.recv().await;
+                },
+                |me, _, ctx| {
+                    me.find_bar.update(ctx, |_, ctx| ctx.notify());
+                },
+            );
         }
     }
 
@@ -26610,7 +26676,7 @@ impl TerminalView {
                 // The card still holds focus and `redetermine_terminal_focus` refuses to take it
                 // from an AI block, so reclaim it explicitly -- now, and again from the action
                 // events below once the command's block has settled and the input is visible.
-                self.reclaim_focus_until = Some(Instant::now() + Duration::from_secs(2));
+                self.reclaim_focus.start();
                 self.reclaim_focus_placed = false;
                 self.place_focus_after_card_resolved(ctx);
             }
@@ -32432,21 +32498,25 @@ impl TerminalView {
     ) {
         match check_type {
             SshLoginStatus::RecheckBeforeWarpifying => {
-                // After we receive a line of output from ssh that is NOT prompting for user input (unlike "Enter passphrase: "),
-                // we wait and repeat the check after a small delay in case the state returned to something that's user-input bound.
-                // For example, say the output that kicked off this event was "Permission denied, please try again." and
-                // ssh will subsequently re-prompt for user input. We want to avoid assuming that ssh authentication is completed until
-                // we confirm twice that user input is not currently being requested.
-                // Note: 100ms is an estimate, not backed by any particular technical happenings.
+                // After a line of ssh output that is NOT a prompt (could be a banner, or "Permission
+                // denied" before a re-prompt), login is only declared done if no prompt shows up
+                // again. That is decided from OUTPUT EVENTS in the model (#1374): a re-prompt in
+                // any later chunk withdraws this recheck (`check_for_end_of_ssh_login`), and the
+                // known mid-auth lines never request it. This timer is only the logged give-up
+                // for a .hushlogin host with an unrecognised prompt: there is no remote signal
+                // to wait for, so after the grace period quiet output is taken as "login done".
                 let active_block_id = self.model.lock().block_list().active_block_id().clone();
                 ctx.spawn(
                     async {
-                        warpui::r#async::Timer::after(Duration::from_secs(3)).await;
+                        warpui::r#async::Timer::after(SSH_LOGIN_RECHECK_GIVE_UP).await;
                         active_block_id
                     },
                     move |terminal_view, active_block_id, _| {
                         let mut model = terminal_view.model.lock();
                         if model.block_list().active_block_id() == &active_block_id {
+                            log::debug!(
+                                "ssh login recheck gave up waiting for a re-prompt (#1374)"
+                            );
                             model.check_for_end_of_ssh_login(true);
                         }
                     },
