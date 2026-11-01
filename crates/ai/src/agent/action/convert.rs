@@ -7,6 +7,7 @@ use warp_multi_agent_api as api;
 
 use crate::{
     agent::{
+        FileLocations,
         action::{
             AIAgentActionType, AIAgentPtyWriteMode, CommentSide, FileEdit, InsertReviewComment,
             InsertedCommentLine, InsertedCommentLocation, ReadFilesRequest, ShellCommandDelay,
@@ -14,7 +15,6 @@ use crate::{
         },
         action_result::{AnyFileContent, FileContext},
         convert::ToolToAIAgentActionError,
-        FileLocations,
     },
     diff_validation::{ParsedDiff, V4AHunk},
     document::AIDocumentId,
@@ -308,12 +308,23 @@ impl From<warp_multi_agent_api::AnyFileContent> for FileContext {
 impl From<api::message::tool_call::ReadDocuments> for AIAgentActionType {
     fn from(value: api::message::tool_call::ReadDocuments) -> Self {
         use crate::agent::action::ReadDocumentsRequest;
-        AIAgentActionType::ReadDocuments(ReadDocumentsRequest {
-            document_ids: value
+        let (document_ids, line_ranges): (Vec<AIDocumentId>, Vec<Vec<std::ops::Range<usize>>>) =
+            value
                 .documents
                 .into_iter()
-                .filter_map(|doc| AIDocumentId::try_from(doc.document_id).ok())
-                .collect(),
+                .filter_map(|doc| {
+                    let id = AIDocumentId::try_from(doc.document_id).ok()?;
+                    let ranges = doc
+                        .line_ranges
+                        .into_iter()
+                        .map(|r| r.start as usize..r.end as usize)
+                        .collect();
+                    Some((id, ranges))
+                })
+                .unzip();
+        AIAgentActionType::ReadDocuments(ReadDocumentsRequest {
+            document_ids,
+            line_ranges,
         })
     }
 }
@@ -761,5 +772,28 @@ mod file_glob_v2_conversion_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod read_documents_ranges_tests {
+    use super::*;
+
+    /// #1278: the line ranges the model asked for survive the proto -> action conversion (they
+    /// were dropped, so every read returned the whole document).
+    #[test]
+    fn read_documents_keeps_requested_line_ranges() {
+        let id = AIDocumentId::new();
+        let tool = api::message::tool_call::ReadDocuments {
+            documents: vec![api::message::tool_call::read_documents::Document {
+                document_id: id.to_string(),
+                line_ranges: vec![api::FileContentLineRange { start: 3, end: 5 }],
+            }],
+        };
+        let AIAgentActionType::ReadDocuments(request) = AIAgentActionType::from(tool) else {
+            panic!("expected ReadDocuments");
+        };
+        assert_eq!(request.document_ids, vec![id]);
+        assert_eq!(request.line_ranges, vec![vec![3..5]]);
     }
 }

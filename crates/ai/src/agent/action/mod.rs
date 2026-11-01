@@ -602,6 +602,9 @@ impl Display for ReadFilesRequest {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ReadDocumentsRequest {
     pub document_ids: Vec<AIDocumentId>,
+    /// The 1-based inclusive line ranges asked for each document, parallel to `document_ids`
+    /// (an empty entry, or a shorter vec, means the whole document).
+    pub line_ranges: Vec<Vec<Range<usize>>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
