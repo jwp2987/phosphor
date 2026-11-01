@@ -1237,12 +1237,12 @@ pub fn test_ls_script_quotes_awkward_directory_names_per_shell() {
         let script = super::ls_script_for_dir(&directory, dialect).expect("UTF-8 path");
         assert!(!script.contains('\n'), "{script:?}");
         assert!(script.contains("cd /home/u/it"), "{script:?}");
-        // No unescaped space, quote, `$` or paren between `cd ` and ` && find`.
+        // No unescaped space, quote, `$` or paren between `cd ` and the first ` &&`.
         let arg = script
             .split_once("cd ")
-            .and_then(|(_, rest)| rest.split_once(" && find"))
+            .and_then(|(_, rest)| rest.split_once(" &&"))
             .map(|(arg, _)| arg.to_owned())
-            .expect("cd <dir> && find");
+            .expect("cd <dir> && ...");
         let mut chars = arg.chars();
         while let Some(c) = chars.next() {
             if c == '\\' {
