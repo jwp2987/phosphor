@@ -21,8 +21,8 @@
 #   type_ms    wall ms for 40 characters typed at 10 ms/key mid-file minus the 400 ms
 #              nominal key time (proxy for typing latency; per-key = /40)
 #   rss_close  RSS 5 s after closing the tab
-# Per-editor memory breakdown: run with RUST_LOG=phosphor::editor_mem=debug and read
-# $OUT/app.stdout (logged by the render model when the editor lays out).
+# NOTE: the per-editor memory breakdown log (RUST_LOG target) is NOT implemented yet; use the
+# dhat build mentioned in #1340 for allocation breakdowns.
 set -euo pipefail
 BIN=${1:?bin}; FILE=${2:?file}; LABEL=${3:-run}
 D=${DISP:-:87}; OUT=${OUT:-/tmp/editor_mem_$LABEL}; mkdir -p "$OUT/home"
@@ -32,7 +32,7 @@ SEARCH_XY=${SEARCH_XY:-"560 17"}; CLOSE_XY=${CLOSE_XY:-"1262 53"}
 env -u GNOME_KEYRING_CONTROL -u SSH_AUTH_SOCK -u WAYLAND_DISPLAY \
   HOME="$OUT/home" XDG_RUNTIME_DIR="$OUT" XDG_CONFIG_HOME="$OUT/home/.config" \
   XDG_STATE_HOME="$OUT/home/.local/state" XDG_DATA_HOME="$OUT/home/.local/share" \
-  RUST_LOG="${RUST_LOG:-phosphor::editor_mem=debug}" \
+  RUST_LOG="${RUST_LOG:-warn}" \
   dbus-run-session -- "$BIN" >"$OUT/app.stdout" 2>&1 &
 sleep 2
 PID=$(pgrep -f "$(basename "$BIN")\$" | head -1)
