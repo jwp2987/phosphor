@@ -3566,6 +3566,8 @@ impl Element for BlockListElement {
         }
 
         let mut model = self.model.lock();
+        let mut hold =
+            crate::terminal::model_lock_trace::HoldTimer::start("BlockListElement::layout");
         let cell_size = Vector2F::new(
             self.size_info.cell_width_px().as_f32(),
             self.size_info.cell_height_px().as_f32(),
@@ -3584,19 +3586,41 @@ impl Element for BlockListElement {
         // avoid laying out every rich content block on every frame.
         let dirty_rich_content_items = model.block_list_mut().take_dirty_rich_content_items();
         if !dirty_rich_content_items.is_empty() {
-            for view_id in &dirty_rich_content_items {
-                if let Some(rich_content) = self.rich_content_elements.get_mut(view_id) {
-                    // Lay out the rich content with an infinite vertical constraint,
-                    // allowing it to take up as much size as it needs.
-                    let current_size = rich_content.layout(
-                        SizeConstraint::tight_on_cross_axis(Axis::Vertical, constraint),
-                        ctx,
-                        app,
-                    );
-                    let height_px = current_size.y();
+            // Laying out a rich-content view (an AI block, a CLI subagent bubble) is arbitrary
+            // view work that reads none of the model, so it runs with the guard released: the
+            // pty reader's `try_lock` is not refused for it. The measured heights are applied
+            // by view id after re-locking, which tolerates an item removed in the gap, and the
+            // viewport and everything else read from the model are derived after the re-lock,
+            // so no state from before the gap is carried over. `PHOSPHOR_RENDER_LOCK_LEGACY=1`
+            // keeps the guard held.
+            macro_rules! layout_dirty_rich_content {
+                () => {
+                    for view_id in &dirty_rich_content_items {
+                        if let Some(rich_content) = self.rich_content_elements.get_mut(view_id) {
+                            // Lay out the rich content with an infinite vertical constraint,
+                            // allowing it to take up as much size as it needs.
+                            let current_size = rich_content.layout(
+                                SizeConstraint::tight_on_cross_axis(Axis::Vertical, constraint),
+                                ctx,
+                                app,
+                            );
+                            let height_px = current_size.y();
 
-                    updated_rich_content_heights.insert(*view_id, height_px as f64);
-                }
+                            updated_rich_content_heights.insert(*view_id, height_px as f64);
+                        }
+                    }
+                };
+            }
+            if crate::terminal::model_lock_trace::legacy_lock_scoping() {
+                layout_dirty_rich_content!();
+            } else {
+                drop(model);
+                drop(hold);
+                layout_dirty_rich_content!();
+                model = self.model.lock();
+                hold = crate::terminal::model_lock_trace::HoldTimer::start(
+                    "BlockListElement::layout (after dirty rich content)",
+                );
             }
         }
         // O(1) when the map is empty, which is almost every frame; otherwise patches only the
@@ -4052,6 +4076,7 @@ impl Element for BlockListElement {
         // Explicitly drop the terminal model mutex guard so that it can be freed up for other
         // threads
         drop(model);
+        drop(hold);
 
         for (idx, element) in block_indices_with_label_elements.iter().zip(elements) {
             self.label_elements.insert(*idx, element);

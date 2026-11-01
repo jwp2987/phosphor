@@ -12495,51 +12495,111 @@ impl TerminalView {
             });
         }
 
-        // For simplicity, we simply rescan the entire block for block filter matches.
-        self.model
-            .lock()
-            .block_list_mut()
-            .maybe_refilter_active_block_output();
+        let (redraw, footer) = if crate::terminal::model_lock_trace::legacy_lock_scoping() {
+            // For simplicity, we simply rescan the entire block for block filter matches.
+            self.model
+                .lock()
+                .block_list_mut()
+                .maybe_refilter_active_block_output();
 
-        // If the block filter editor is open on an active block we update the
-        // number of line matches.
-        if let Some(block_index) = self.active_filter_editor_block_index {
-            let model = self.model.lock();
-            let active_block_index = model.block_list().active_block_index();
-            let num_matched_lines = model
-                .block_list()
-                .num_matched_lines_in_filter_for_block(block_index);
-            if block_index == active_block_index {
+            // If the block filter editor is open on an active block we update the
+            // number of line matches.
+            if let Some(block_index) = self.active_filter_editor_block_index {
+                let model = self.model.lock();
+                let active_block_index = model.block_list().active_block_index();
+                let num_matched_lines = model
+                    .block_list()
+                    .num_matched_lines_in_filter_for_block(block_index);
+                if block_index == active_block_index {
+                    self.block_filter_editor.update(ctx, |filter_editor, ctx| {
+                        filter_editor.set_num_matched_lines(num_matched_lines);
+                        ctx.notify();
+                    });
+                }
+            }
+
+            // While nothing the element tree was built from has changed, new output needs only a
+            // paint in the alt screen (painted straight from the model) and only layout and paint in
+            // the block list (whose layout derives from block heights); see `wakeup_redraw`.
+            let (redraw, footer) = {
+                let model = self.model.lock();
+                (
+                    wakeup_redraw::decide(
+                        self.last_rendered_fingerprint.get(),
+                        self.render_fingerprint(&model, ctx),
+                    ),
+                    self.footer_fingerprint(&model, ctx),
+                )
+            };
+
+            // The active block height could have changed since the last time it was calculated, as
+            // one cause of the Wakeup signal is the long-running process timer. Make sure that the
+            // model is up-to-date with the current height information.
+            if !self.model.lock().is_alt_screen_active() {
+                let mut model = self.model.lock();
+                model.block_list_mut().update_background_block_height();
+                model.block_list_mut().update_active_block_height();
+            }
+
+            (redraw, footer)
+        } else {
+            // One lock cycle for the refilter, the filter-editor count, both fingerprints and
+            // the height refresh (was five), so the pty reader's `try_lock` is refused once per
+            // wakeup instead of up to five times. The order of the steps is unchanged; the
+            // filter editor is told after the guard is released.
+            let mut filter_matches = None;
+            let decided = {
+                let mut model = self.model.lock();
+                // Declared after `model`, so it logs a slow hold just before the guard drops.
+                let _hold =
+                    crate::terminal::model_lock_trace::HoldTimer::start("handle_terminal_wakeup");
+                // For simplicity, we simply rescan the entire block for block filter matches.
+                model.block_list_mut().maybe_refilter_active_block_output();
+
+                // If the block filter editor is open on an active block we update the
+                // number of line matches.
+                if let Some(block_index) = self.active_filter_editor_block_index {
+                    if block_index == model.block_list().active_block_index() {
+                        filter_matches = Some(
+                            model
+                                .block_list()
+                                .num_matched_lines_in_filter_for_block(block_index),
+                        );
+                    }
+                }
+
+                // While nothing the element tree was built from has changed, new output needs
+                // only a paint in the alt screen (painted straight from the model) and only
+                // layout and paint in the block list (whose layout derives from block heights);
+                // see `wakeup_redraw`.
+                let decided = (
+                    wakeup_redraw::decide(
+                        self.last_rendered_fingerprint.get(),
+                        self.render_fingerprint(&model, ctx),
+                    ),
+                    self.footer_fingerprint(&model, ctx),
+                );
+
+                // The active block height could have changed since the last time it was
+                // calculated, as one cause of the Wakeup signal is the long-running process
+                // timer. Make sure that the model is up-to-date with the current height
+                // information.
+                if !model.is_alt_screen_active() {
+                    model.block_list_mut().update_background_block_height();
+                    model.block_list_mut().update_active_block_height();
+                }
+                decided
+            };
+            if let Some(num_matched_lines) = filter_matches {
                 self.block_filter_editor.update(ctx, |filter_editor, ctx| {
                     filter_editor.set_num_matched_lines(num_matched_lines);
                     ctx.notify();
                 });
             }
-        }
-
-        // While nothing the element tree was built from has changed, new output needs only a
-        // paint in the alt screen (painted straight from the model) and only layout and paint in
-        // the block list (whose layout derives from block heights); see `wakeup_redraw`.
-        let (redraw, footer) = {
-            let model = self.model.lock();
-            (
-                wakeup_redraw::decide(
-                    self.last_rendered_fingerprint.get(),
-                    self.render_fingerprint(&model, ctx),
-                ),
-                self.footer_fingerprint(&model, ctx),
-            )
+            decided
         };
         self.last_wakeup_redraw = Some(redraw);
 
-        // The active block height could have changed since the last time it was calculated, as
-        // one cause of the Wakeup signal is the long-running process timer. Make sure that the
-        // model is up-to-date with the current height information.
-        if !self.model.lock().is_alt_screen_active() {
-            let mut model = self.model.lock();
-            model.block_list_mut().update_background_block_height();
-            model.block_list_mut().update_active_block_height();
-        }
         self.maybe_emit_terminal_view_state_changed_for_long_running_block(ctx);
 
         match redraw {
@@ -33094,6 +33154,8 @@ impl View for TerminalView {
         let appearance = Appearance::as_ref(app);
         let semantic_selection = SemanticSelection::as_ref(app);
         let model = self.model.lock();
+        // Declared after `model`, so it drops (and logs a slow hold) just before the guard.
+        let _hold = crate::terminal::model_lock_trace::HoldTimer::start("TerminalView::render");
         let ambient_agent_task_id_for_details_panel =
             self.ambient_agent_task_id_for_details_panel_from_model(&model, app);
         let input_mode = self.current_input_mode(app);
