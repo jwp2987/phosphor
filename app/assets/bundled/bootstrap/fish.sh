@@ -272,7 +272,9 @@ end
 # Run before a command is executed.
 function warp_preexec --on-event fish_preexec
     set -l command (warp_escape_json "$argv")
-    warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$command\", \"session_id\": $WARP_SESSION_ID}}"
+    # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+    set -g __warp_seq (math "$__warp_seq + 1")
+    warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$command\", \"session_id\": $WARP_SESSION_ID, \"seq\": $__warp_seq}}"
     warp_maybe_send_reset_grid_osc
 
     # If this preexec is called for user command, kill ongoing generator command jobs.
@@ -385,6 +387,7 @@ function warp_change_prompt_modes_to_warp_prompt
 end
 
 set block_id 0
+set -g __warp_seq 0
 # Run before the prompt is displayed. We also need to trigger this on "fish_posterror", as
 # submitting a command containing a syntax error will not trigger "fish_preexec" or "fish_prompt".
 function warp_precmd --on-event fish_prompt --on-event fish_posterror
@@ -405,6 +408,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     # report the same ID. The Precmd carries this completion metadata so the client can classify it
     # and, if the CommandFinished was missed, recover the completion.
     set -l next_block_id "precmd-$WARP_SESSION_ID-$block_id"
+    set -g __warp_seq (math "$__warp_seq + 1")
     warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": $WARP_SESSION_ID}}"
     warp_maybe_send_reset_grid_osc
 
@@ -423,6 +427,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
         \"conda_env\": \"\",
         \"node_version\": \"\",
         \"session_id\": $WARP_SESSION_ID,
+        \"seq\": $__warp_seq,
         \"is_after_in_band_command\": true
         }}"
         warp_send_json_message $escaped_json
@@ -592,7 +597,8 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       \"virtual_env\": \"$escaped_virtual_env\",
       \"conda_env\": \"$escaped_conda_env\",
       \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID
+      \"session_id\": $WARP_SESSION_ID,
+      \"seq\": $__warp_seq
       }}"
     else
       # We send an lprompt to use for prompt preview purposes only (we still use prompt markers for active prompts).
@@ -608,7 +614,8 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       \"virtual_env\": \"$escaped_virtual_env\",
       \"conda_env\": \"$escaped_conda_env\",
       \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID
+      \"session_id\": $WARP_SESSION_ID,
+      \"seq\": $__warp_seq
       }}"
     end
     warp_send_json_message $escaped_json

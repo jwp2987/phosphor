@@ -365,10 +365,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # history to do so. This means that $1 is not the correct command if the executed command is ignored
         # by history (e.g. via $HISTCONTROL or $HISTIGNORE); for example, all in-band generators are ignored
         # by history.
+        __warp_seq=$((${__warp_seq:-0} + 1))
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "Preexec"
           warp_send_hook_kv_pair "command" "$BASH_COMMAND"
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
+          warp_send_hook_kv_pair "seq" "$__warp_seq"
           warp_send_hook_via_kv_pairs_end
         else
           local truncated_command
@@ -379,12 +381,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           if [[ -z ${__warp_preexec_hex_head:-} || ${__warp_preexec_hex_sid-} != "${WARP_SESSION_ID:-}" ]]; then
             __warp_hex_encode_to "{\"hook\": \"Preexec\", \"value\": {\"command\": \""
             __warp_preexec_hex_head=$__warp_hex
-            __warp_hex_encode_to "\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+            __warp_hex_encode_to "\", \"session_id\": ${WARP_SESSION_ID:-}, \"seq\": "
             __warp_preexec_hex_tail=$__warp_hex
             __warp_preexec_hex_sid=${WARP_SESSION_ID:-}
           fi
           __warp_hex_encode_to "$truncated_command"
           encoded_message=$__warp_preexec_hex_head$__warp_hex$__warp_preexec_hex_tail
+          __warp_hex_encode_to "${__warp_seq}}}"
+          encoded_message+=$__warp_hex
           __warp_emit_hex_message
         fi
         warp_maybe_send_reset_grid_osc
@@ -582,6 +586,9 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         # it and, if the CommandFinished was missed, recover the completion.
         : "${block_id:=0}"
         local next_block_id="precmd-${WARP_SESSION_ID:-}-$((block_id++))"
+        # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends,
+        # so the app can order them against what it has parsed (arithmetic only, no fork).
+        __warp_seq=$((${__warp_seq:-0} + 1))
         if [ "${WARP_IN_MSYS2:-}" = true ]; then
           warp_send_hook_via_kv_pairs_start "CommandFinished"
           warp_send_hook_kv_pair "exit_code" "$exit_code"
@@ -622,6 +629,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
             \"conda_env\": \"\",
             \"node_version\": \"\",
             \"session_id\": ${WARP_SESSION_ID:-},
+            \"seq\": $__warp_seq,
             \"is_after_in_band_command\": true
             }}"
             return 0
@@ -856,6 +864,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "conda_env" "${CONDA_DEFAULT_ENV:-}"
           warp_send_hook_kv_pair "node_version" "${node_version:-}"
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
+          warp_send_hook_kv_pair "seq" "$__warp_seq"
           warp_send_hook_via_kv_pairs_end
         else
           local escaped_json="{\"hook\": \"Precmd\", \"value\": {
@@ -870,7 +879,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           \"virtual_env\": \"$escaped_virtual_env\",
           \"conda_env\": \"$escaped_conda_env\",
           \"node_version\": \"$escaped_node_version\",
-          \"session_id\": ${WARP_SESSION_ID:-}
+          \"session_id\": ${WARP_SESSION_ID:-},
+          \"seq\": $__warp_seq
           }}"
           warp_send_json_message "$escaped_json"
         fi

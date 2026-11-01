@@ -229,10 +229,12 @@ def --env __warp_precmd [] {
     let next_block_id = $"precmd-($sid)-($n)"
     __warp_send $'{"hook": "CommandFinished", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "session_id": ($sid)}}'
     $env.__warp_block_id = ($n + 1)
+    # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+    $env.__warp_seq = (($env.__warp_seq? | default 0 | into int) + 1)
 
     if ($env._WARP_GENERATOR_COMMAND? | default "" | is-not-empty) {
         hide-env _WARP_GENERATOR_COMMAND
-        __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": "", "ps1": "", "git_head": "", "git_branch": "", "virtual_env": "", "conda_env": "", "node_version": "", "session_id": ($sid), "is_after_in_band_command": true}}'
+        __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": "", "ps1": "", "git_head": "", "git_branch": "", "virtual_env": "", "conda_env": "", "node_version": "", "session_id": ($sid), "seq": ($env.__warp_seq), "is_after_in_band_command": true}}'
         return
     }
 
@@ -258,7 +260,7 @@ def --env __warp_precmd [] {
     let ps1_preview = if $honor == "1" { "" } else { __warp_orig_prompt_text | encode hex --lower }
     let ignore_markers = if $honor == "1" { "false" } else { "true" }
     let ps1 = if $honor == "1" { '""' } else { $'"($ps1_preview)"' }
-    __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": ($pwd), "ignore_prompt_markers": ($ignore_markers), "ps1": ($ps1), "rprompt": "", "git_head": ($git_head), "git_branch": ($git_branch), "virtual_env": ($venv), "conda_env": ($conda), "node_version": ($node), "session_id": ($sid)}}'
+    __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": ($pwd), "ignore_prompt_markers": ($ignore_markers), "ps1": ($ps1), "rprompt": "", "git_head": ($git_head), "git_branch": ($git_branch), "virtual_env": ($venv), "conda_env": ($conda), "node_version": ($node), "session_id": ($sid), "seq": ($env.__warp_seq)}}'
 }
 
 # pre_execution hook.
@@ -266,7 +268,8 @@ def --env __warp_preexec [] {
     let line = (commandline)
     # The commands bound to keys run through executehostcommand; they are not user commands.
     if ($line | str trim | str starts-with "__warp_") { return }
-    __warp_send $'{"hook": "Preexec", "value": {"command": (__warp_jstr $line), "session_id": ($env.WARP_SESSION_ID)}}'
+    $env.__warp_seq = (($env.__warp_seq? | default 0 | into int) + 1)
+    __warp_send $'{"hook": "Preexec", "value": {"command": (__warp_jstr $line), "session_id": ($env.WARP_SESSION_ID), "seq": ($env.__warp_seq)}}'
 }
 
 # In-band generator: runs the POSIX command with bash (or sh), merges stderr into stdout, and

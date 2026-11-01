@@ -196,6 +196,9 @@ class Session:
         os.unlink(self.bootfile.name)
 
 
+RAW_SEQS = []
+
+
 def normalise(events, tmp):
     """Drop what legitimately differs between machines and runs."""
     out = []
@@ -222,6 +225,11 @@ def normalise(events, tmp):
                     if key in value:
                         value[key] = "<%s %s>" % (key, "set" if value[key] else "empty")
                 value["keywords"] = value.get("keywords", "")[:20]
+            # #1353: the per-session sequence number depends on how many prompts came before
+            # (it is compared separately in main(): present and strictly increasing), so it is
+            # taken out here and the golden stays valid for scripts that predate it.
+            if e[1] in ("Precmd", "Preexec") and isinstance(value, dict) and "seq" in value:
+                RAW_SEQS.append(value.pop("seq"))
             text = json.dumps(value, sort_keys=True).replace(tmp, "<TMP>")
             out.append(["hook", e[1], json.loads(text)])
         else:
@@ -337,6 +345,13 @@ def main():
                     break
         check(same, "%-20s %d events" % (name, len(golden[name])), detail)
     check(set(result) == set(golden), "same scenario set")
+    # #1353: every Precmd and Preexec carries the shell's sequence number, strictly increasing.
+    if bootstrap_path.startswith(BOOT):
+        check(
+            len(RAW_SEQS) > 0 and all(isinstance(n, int) for n in RAW_SEQS) and all(b > a for a, b in zip(RAW_SEQS, RAW_SEQS[1:])),
+            "Precmd/Preexec seq present and strictly increasing (%d hooks)" % len(RAW_SEQS),
+            "seqs: %s" % RAW_SEQS[:40],
+        )
     print("FAILED: %s" % ", ".join(failures) if failures else "all hook sequences identical")
     return 1 if failures else 0
 

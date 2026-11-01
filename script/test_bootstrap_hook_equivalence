@@ -551,6 +551,13 @@ def e2e(kind):
             pre = [v for h, v in hooks if h == "Preexec"]
             check(pre and pre[0].get("command") == "echo 'he said \"hi\" \\ x'", "Preexec command round-trips",
                   repr(pre))
+            # #1353: Preexec and Precmd carry the shell's per-session counter, strictly increasing.
+            seqs = [v.get("seq") for h, v in hooks if h in ("Preexec", "Precmd")]
+            more = [v.get("seq") for h, v in sh.cycle(b"true") if h in ("Preexec", "Precmd")]
+            allseqs = seqs + more
+            check(len(seqs) == 2 and all(isinstance(n, int) for n in allseqs)
+                  and all(b > a for a, b in zip(allseqs, allseqs[1:])),
+                  "Preexec/Precmd seq present and strictly increasing", repr(allseqs))
         finally:
             sh.close()
     finally:
