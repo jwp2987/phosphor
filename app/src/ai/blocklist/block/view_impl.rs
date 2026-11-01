@@ -1100,6 +1100,7 @@ impl View for AIBlock {
                 secret_redaction_state: &self.secret_redaction_state,
                 requested_commands: &self.requested_commands,
                 requested_mcp_tools: &self.requested_mcp_tools,
+                empty_enter_hint: &self.empty_enter_hint,
                 requested_edits: &self.requested_edits,
                 unit_test_suggestions: &self.unit_tests_suggestions,
                 todo_list_states: &self.todo_list_states,
@@ -1288,6 +1289,10 @@ impl View for AIBlock {
         if focus_ctx.is_self_focused() {
             self.focus_subview_if_necessary(ctx);
         }
+    }
+
+    fn on_blur(&mut self, _blur_ctx: &warpui::BlurContext, ctx: &mut ViewContext<Self>) {
+        self.clear_empty_enter_hint(ctx);
     }
 
     fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
