@@ -58,6 +58,18 @@ pub struct TemplatableMCPServerManager {
     /// Cached credentials for file-based servers, keyed by installation hash.
     #[cfg(not(target_family = "wasm"))]
     file_based_server_credentials: oauth::FileBasedPersistedCredentialsMap,
+    /// The stored credentials are being read off the UI thread (#1309). While true, saves and
+    /// removals only mark the map dirty; the merged result is written when the read lands, so a
+    /// partial in-memory map never overwrites what is stored.
+    #[cfg(not(target_family = "wasm"))]
+    credentials_loading: bool,
+    #[cfg(not(target_family = "wasm"))]
+    templatable_credentials_dirty: bool,
+    #[cfg(not(target_family = "wasm"))]
+    file_based_credentials_dirty: bool,
+    /// Servers to start once the credentials are available (they need them to authenticate).
+    #[cfg(not(target_family = "wasm"))]
+    pending_autostart: Vec<Uuid>,
     #[cfg(not(target_family = "wasm"))]
     database_connection: Option<Arc<Mutex<SqliteConnection>>>,
     /// Error messages for failed servers, keyed by installation UUID.

@@ -131,7 +131,44 @@ pub(super) struct CurrentUser {
 /// environment (`$HOME`/`$USER`) or built-in shell defaults. Resolution failure
 /// must never abort the process — an unresolvable uid is a degraded session,
 /// not a crash.
+///
+/// The record is cached for the life of the process (a process's uid, and so
+/// its passwd record, does not change; #1311): the lookup can block on SSSD/LDAP
+/// or spawn `getent`, and used to run on the UI thread for every new tab. Call
+/// [`prewarm_current_user`] at startup so the first tab finds it cached. Only a
+/// successful resolution is cached, so a transient failure is retried.
 pub(super) fn resolve_current_user() -> Option<CurrentUser> {
+    resolve_current_user_cached(&CURRENT_USER_CACHE, resolve_current_user_uncached)
+}
+
+static CURRENT_USER_CACHE: std::sync::Mutex<Option<CurrentUser>> = std::sync::Mutex::new(None);
+
+/// Returns the cached user, or runs `resolve` (outside the lock, so a slow lookup
+/// never blocks readers of an already-filled cache) and caches a `Some` result.
+fn resolve_current_user_cached(
+    cache: &std::sync::Mutex<Option<CurrentUser>>,
+    resolve: impl FnOnce() -> Option<CurrentUser>,
+) -> Option<CurrentUser> {
+    if let Some(user) = cache.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Some(user);
+    }
+    let resolved = resolve();
+    if resolved.is_some() {
+        *cache.lock().unwrap_or_else(|e| e.into_inner()) = resolved.clone();
+    }
+    resolved
+}
+
+/// Resolves the current user on a background thread so the first new tab hits the cache.
+pub fn prewarm_current_user() {
+    let _ = std::thread::Builder::new()
+        .name("prewarm-current-user".into())
+        .spawn(|| {
+            let _ = resolve_current_user();
+        });
+}
+
+fn resolve_current_user_uncached() -> Option<CurrentUser> {
     let uid = nix::unistd::getuid();
     current_user_via_getpwuid(uid)
         .or_else(|| current_user_via_getent(uid.as_raw()))
@@ -1149,6 +1186,40 @@ fn resolve_current_user_returns_running_user() {
     if let Some(user) = resolve_current_user() {
         assert!(!user.name.is_empty());
     }
+}
+
+#[test]
+fn current_user_is_resolved_once_and_cached() {
+    let cache = std::sync::Mutex::new(None);
+    let calls = std::cell::Cell::new(0);
+    let user = CurrentUser {
+        name: "u".into(),
+        dir: "/home/u".into(),
+        shell: "/bin/sh".into(),
+    };
+    for _ in 0..3 {
+        let got = resolve_current_user_cached(&cache, || {
+            calls.set(calls.get() + 1);
+            Some(user.clone())
+        });
+        assert_eq!(got, Some(user.clone()));
+    }
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn failed_current_user_resolution_is_not_cached() {
+    let cache = std::sync::Mutex::new(None);
+    assert_eq!(resolve_current_user_cached(&cache, || None), None);
+    let user = CurrentUser {
+        name: "u".into(),
+        dir: "/h".into(),
+        shell: "/bin/sh".into(),
+    };
+    assert_eq!(
+        resolve_current_user_cached(&cache, || Some(user.clone())),
+        Some(user)
+    );
 }
 
 #[cfg(test)]

@@ -317,3 +317,170 @@ fn reloading_picks_up_another_processs_write() {
         });
     });
 }
+
+// ── off-thread load and ordered writes (#1309) ─────────────────
+
+mod background {
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    use super::*;
+
+    /// A `Send` store whose handles share one map and record which thread each op ran on.
+    #[derive(Clone, Default)]
+    struct SharedStore {
+        data: Arc<Mutex<HashMap<String, String>>>,
+        ops: Arc<Mutex<Vec<(&'static str, ThreadId)>>>,
+    }
+
+    struct Handle(SharedStore);
+
+    impl SecureStorage for Handle {
+        fn write_value(&self, key: &str, value: &str) -> Result<(), Error> {
+            self.0
+                .ops
+                .lock()
+                .unwrap()
+                .push(("write", std::thread::current().id()));
+            self.0
+                .data
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), value.to_owned());
+            Ok(())
+        }
+        fn read_value(&self, key: &str) -> Result<String, Error> {
+            // Slow, like a keyring that has to be unlocked.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.0
+                .ops
+                .lock()
+                .unwrap()
+                .push(("read", std::thread::current().id()));
+            self.0
+                .data
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or(Error::NotFound)
+        }
+        fn remove_value(&self, _key: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    fn install(store: &SharedStore) {
+        let store = store.clone();
+        secure_storage::background::set_factory_for_test(Some(Arc::new(move || {
+            Box::new(Handle(store.clone())) as secure_storage::Model
+        })));
+    }
+
+    async fn wait_until(mut done: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if done() {
+                return;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("condition not reached");
+    }
+
+    #[test]
+    fn construction_does_not_read_the_keychain_on_the_calling_thread() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            store.data.lock().unwrap().insert(
+                SECURE_STORAGE_KEY.to_owned(),
+                r#"{"p":"sk-stored"}"#.to_owned(),
+            );
+            install(&store);
+
+            let started = std::time::Instant::now();
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            // The 50 ms read must not have run inline.
+            assert!(started.elapsed() < std::time::Duration::from_millis(40));
+            secrets.read(&app, |s, _| {
+                assert!(!s.is_loaded());
+                assert_eq!(s.get("p"), None);
+            });
+
+            // A consumer that asked too early gets the value once it has loaded.
+            wait_until(|| secrets.read(&app, |s, _| s.is_loaded())).await;
+            secrets.read(&app, |s, _| assert_eq!(s.get("p"), Some("sk-stored")));
+            let main = std::thread::current().id();
+            assert!(store.ops.lock().unwrap().iter().all(|(_, t)| *t != main));
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn an_edit_made_before_the_load_lands_merges_with_the_stored_keys_and_is_not_lost() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            store.data.lock().unwrap().insert(
+                SECURE_STORAGE_KEY.to_owned(),
+                r#"{"old":"sk-old"}"#.to_owned(),
+            );
+            install(&store);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            secrets.update(&mut app, |s, ctx| s.set("new", "sk-new".to_owned(), ctx));
+            // Not persisted yet: that would have overwritten "old" with a partial map.
+            assert!(store
+                .ops
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(op, _)| *op != "write"));
+
+            wait_until(|| {
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(op, _)| *op == "write")
+            })
+            .await;
+            secrets.read(&app, |s, _| {
+                assert_eq!(s.get("old"), Some("sk-old"));
+                assert_eq!(s.get("new"), Some("sk-new"));
+            });
+            let persisted: HashMap<String, String> =
+                serde_json::from_str(&store.data.lock().unwrap()[SECURE_STORAGE_KEY]).unwrap();
+            assert_eq!(persisted.len(), 2);
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn writes_land_in_the_order_they_were_made() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            install(&store);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            wait_until(|| secrets.read(&app, |s, _| s.is_loaded())).await;
+            secrets.update(&mut app, |s, ctx| {
+                s.set("p", "one".to_owned(), ctx);
+                s.set("p", "two".to_owned(), ctx);
+                s.set("p", "three".to_owned(), ctx);
+            });
+            wait_until(|| {
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(o, _)| *o == "write")
+                    .count()
+                    == 3
+            })
+            .await;
+            let persisted: HashMap<String, String> =
+                serde_json::from_str(&store.data.lock().unwrap()[SECURE_STORAGE_KEY]).unwrap();
+            assert_eq!(persisted["p"], "three");
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+}

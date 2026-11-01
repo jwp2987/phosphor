@@ -19,19 +19,45 @@ pub enum AgentProviderSecretsEvent {
 }
 
 /// Singleton: manages the user's custom provider API keys.
+///
+/// The keychain read happens off the UI thread (#1309): [`Self::new`] returns an empty store and
+/// the read lands through [`Self::finish_load`], which emits `KeysUpdated` so subscribers
+/// re-derive from [`Self::get`]. Writes go through the ordered secure-storage worker.
 pub struct AgentProviderSecrets {
     keys: HashMap<String, String>,
+    /// Edits made while a keychain read is in flight. They are re-applied on top of what the read
+    /// returns (so neither side is lost) and only then persisted -- persisting the in-memory map
+    /// before the read lands would overwrite the stored keys with a partial set.
+    pending: Vec<(String, Option<String>)>,
+    /// Whether a read is in flight.
+    loading: bool,
+    /// Identifies the latest read; a result from an older one is stale and dropped.
+    load_epoch: u64,
+    /// Whether the first read has completed.
+    loaded: bool,
 }
 
 impl AgentProviderSecrets {
-    /// Reads all keys from secure storage at startup.
+    /// Starts reading all keys from secure storage; they arrive shortly after construction.
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        Self {
-            keys: Self::load_from_storage(ctx),
-        }
+        let mut me = Self {
+            keys: HashMap::new(),
+            pending: Vec::new(),
+            loading: false,
+            load_epoch: 0,
+            loaded: false,
+        };
+        me.start_load(ctx);
+        me
     }
 
-    /// Reads the API key for the given provider; returns `None` if not configured.
+    /// Whether the initial read of the stored keys has completed.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// Reads the API key for the given provider; returns `None` if not configured (or not yet
+    /// loaded -- see [`Self::is_loaded`]; `KeysUpdated` is emitted when the load lands).
     pub fn get(&self, provider_id: &str) -> Option<&str> {
         self.keys.get(provider_id).map(String::as_str)
     }
@@ -39,10 +65,10 @@ impl AgentProviderSecrets {
     /// Sets/updates the API key for a provider.
     /// Passing an empty string is equivalent to deleting it.
     pub fn set(&mut self, provider_id: &str, api_key: String, ctx: &mut ModelContext<Self>) {
-        if api_key.is_empty() {
-            self.keys.remove(provider_id);
-        } else {
-            self.keys.insert(provider_id.to_owned(), api_key);
+        let value = (!api_key.is_empty()).then_some(api_key);
+        self.apply(provider_id, value.clone());
+        if self.loading {
+            self.pending.push((provider_id.to_owned(), value));
         }
         ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
         self.persist(ctx);
@@ -50,9 +76,24 @@ impl AgentProviderSecrets {
 
     /// Removes a provider (along with its secret).
     pub fn remove(&mut self, provider_id: &str, ctx: &mut ModelContext<Self>) {
-        if self.keys.remove(provider_id).is_some() {
+        // While the stored keys are still loading, the key may exist only on disk.
+        if self.keys.remove(provider_id).is_some() || self.loading {
+            if self.loading {
+                self.pending.push((provider_id.to_owned(), None));
+            }
             ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
             self.persist(ctx);
+        }
+    }
+
+    fn apply(&mut self, provider_id: &str, value: Option<String>) {
+        match value {
+            Some(v) => {
+                self.keys.insert(provider_id.to_owned(), v);
+            }
+            None => {
+                self.keys.remove(provider_id);
+            }
         }
     }
 
@@ -67,16 +108,66 @@ impl AgentProviderSecrets {
     /// to have been ignored. Driven by the revision file; see
     /// [`crate::ai::tui_api_keys`].
     ///
-    /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] unconditionally, matching
+    /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] when the read lands, matching
     /// [`Self::set`]: subscribers re-derive from [`Self::get`] rather than diffing.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn reload_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
-        self.keys = Self::load_from_storage(ctx);
-        ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
+        self.start_load(ctx);
     }
 
-    fn load_from_storage(ctx: &mut ModelContext<Self>) -> HashMap<String, String> {
-        let raw = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
+    fn start_load(&mut self, ctx: &mut ModelContext<Self>) {
+        self.load_epoch += 1;
+        self.loading = true;
+        let epoch = self.load_epoch;
+        match secure_storage::background::run_or_inline(
+            |storage| Self::read_from(storage),
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), move |me, loaded, ctx| {
+                    if let Some(keys) = loaded {
+                        me.finish_load(epoch, keys, true, ctx);
+                    }
+                });
+            }
+            // Synchronous backend. During construction nothing can be subscribed yet, and the
+            // model is not registered, so don't emit then.
+            Err(keys) => {
+                let emit = self.loaded;
+                self.finish_load(epoch, keys, emit, ctx)
+            }
+        }
+    }
+
+    /// Adopts a completed read, unless a newer one was started since.
+    fn finish_load(
+        &mut self,
+        epoch: u64,
+        keys: HashMap<String, String>,
+        emit: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if epoch != self.load_epoch {
+            return;
+        }
+        self.keys = keys;
+        self.loading = false;
+        self.loaded = true;
+        let pending = std::mem::take(&mut self.pending);
+        let had_pending = !pending.is_empty();
+        for (id, value) in pending {
+            self.apply(&id, value);
+        }
+        if emit {
+            ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
+        }
+        if had_pending {
+            self.persist(ctx);
+        }
+    }
+
+    fn read_from(storage: &dyn secure_storage::SecureStorage) -> HashMap<String, String> {
+        let raw = match storage.read_value(SECURE_STORAGE_KEY) {
             Ok(json) => json,
             Err(secure_storage::Error::NotFound) => return HashMap::new(),
             Err(e) => {
@@ -95,7 +186,12 @@ impl AgentProviderSecrets {
     /// GUI and TUI mutation (add, edit, clear, delete a provider). The
     /// cross-process notification is therefore stamped here rather than at each
     /// of the five call sites, so a new mutation path cannot forget it.
+    ///
+    /// Deferred while a read is in flight (see `pending`); [`Self::finish_load`] persists then.
     fn persist(&self, ctx: &mut ModelContext<Self>) {
+        if self.loading {
+            return;
+        }
         let json = match serde_json::to_string(&self.keys) {
             Ok(json) => json,
             Err(e) => {
@@ -103,16 +199,22 @@ impl AgentProviderSecrets {
                 return;
             }
         };
-        if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
-            log::error!("Failed to write agent provider secrets: {e:#}");
-            // Deliberately no revision bump on a failed write -- see the same
-            // note in `ai::api_keys::ApiKeyManager::write_keys_to_secure_storage`.
-            return;
-        }
-
-        // The keyring is shared with every other Zap process, so tell them to
-        // re-read it. See `ai::secret_revision`.
-        ::ai::secret_revision::bump_or_log();
+        // Queued behind any earlier write on the secure-storage worker, so writes land in the
+        // order they were made; runs synchronously where no worker exists.
+        let _ = secure_storage::background::run_or_inline(
+            move |storage| {
+                if let Err(e) = storage.write_value(SECURE_STORAGE_KEY, &json) {
+                    log::error!("Failed to write agent provider secrets: {e:#}");
+                    // Deliberately no revision bump on a failed write -- see the same
+                    // note in `ai::api_keys::ApiKeyManager::write_keys_to_secure_storage`.
+                    return;
+                }
+                // The keyring is shared with every other Zap process, so tell them to
+                // re-read it. See `ai::secret_revision`.
+                ::ai::secret_revision::bump_or_log();
+            },
+            ctx.secure_storage(),
+        );
     }
 }
 

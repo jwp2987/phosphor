@@ -2,7 +2,7 @@ use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::app_exit::{ChildKillHandle, ChildProcessSlot, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
-    load_credentials_from_secure_storage, write_to_secure_storage, FILE_BASED_MCP_CREDENTIALS_KEY,
+    parse_credentials, FILE_BASED_MCP_CREDENTIALS_KEY,
     TEMPLATABLE_MCP_CREDENTIALS_KEY,
 };
 use core::fmt;
@@ -61,6 +61,7 @@ use uuid::Uuid;
 use warp_core::safe_error;
 use warp_core::{execution_mode::AppExecutionMode, features::FeatureFlag, settings::Setting as _};
 use warpui::AppContext;
+use warpui_extras::secure_storage::AppContextExt as _;
 use warpui::{windowing::WindowManager, ModelContext, SingletonEntity};
 
 use super::{
@@ -300,6 +301,10 @@ impl TemplatableMCPServerManager {
             spawned_servers: Default::default(),
             server_credentials: Default::default(),
             file_based_server_credentials: Default::default(),
+            credentials_loading: false,
+            templatable_credentials_dirty: false,
+            file_based_credentials_dirty: false,
+            pending_autostart: Vec::new(),
             locally_installed_servers,
             database_connection,
             server_error_messages: Default::default(),
@@ -312,26 +317,20 @@ impl TemplatableMCPServerManager {
 
         me.refresh_server_objects(ctx);
 
-        // If we're not in a test, try to load credentials from secure storage.
-        if !cfg!(test) {
-            me.server_credentials = load_credentials_from_secure_storage::<PersistedCredentialsMap>(
-                ctx,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-            );
-
-            if FeatureFlag::FileBasedMcp.is_enabled() {
-                me.file_based_server_credentials = load_credentials_from_secure_storage::<
-                    FileBasedPersistedCredentialsMap,
-                >(
-                    ctx, FILE_BASED_MCP_CREDENTIALS_KEY
-                );
-            }
-        }
-
-        if AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers() {
-            for installation_uuid in running_server_uuids {
+        let autostart: Vec<Uuid> = if AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers() {
+            running_server_uuids.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        if cfg!(test) {
+            for installation_uuid in autostart {
                 me.spawn_server(installation_uuid, ctx)
             }
+        } else {
+            // The stored credentials are read on the secure-storage worker (#1309). Servers that
+            // need them to authenticate start when the read lands.
+            me.pending_autostart = autostart;
+            me.start_credentials_load(ctx);
         }
 
         // Migrate legacy MCPs to be templatables on app start. Uses UpdateManager
@@ -340,6 +339,62 @@ impl TemplatableMCPServerManager {
         me.convert_all_legacy_to_templatable(servers_to_restart, ctx);
 
         me
+    }
+
+    /// Reads the stored OAuth credentials off the UI thread and starts the pending servers once
+    /// they are in memory.
+    fn start_credentials_load(&mut self, ctx: &mut ModelContext<Self>) {
+        self.credentials_loading = true;
+        let read_file_based = FeatureFlag::FileBasedMcp.is_enabled();
+        match warpui_extras::secure_storage::background::run_or_inline(
+            move |storage| {
+                (
+                    storage.read_value(TEMPLATABLE_MCP_CREDENTIALS_KEY),
+                    read_file_based.then(|| storage.read_value(FILE_BASED_MCP_CREDENTIALS_KEY)),
+                )
+            },
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), |me, raw, ctx| {
+                    // A lost worker leaves the maps empty; start the servers regardless.
+                    let (templatable, file_based) =
+                        raw.unwrap_or((Err(warpui_extras::secure_storage::Error::NotFound), None));
+                    me.finish_credentials_load(templatable, file_based, ctx);
+                });
+            }
+            Err((templatable, file_based)) => {
+                self.finish_credentials_load(templatable, file_based, ctx)
+            }
+        }
+    }
+
+    fn finish_credentials_load(
+        &mut self,
+        templatable: Result<String, warpui_extras::secure_storage::Error>,
+        file_based: Option<Result<String, warpui_extras::secure_storage::Error>>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // What was stored is the base; anything saved while the read was in flight is newer and
+        // overlays it.
+        let mut stored: oauth::PersistedCredentialsMap = parse_credentials(templatable);
+        stored.extend(std::mem::take(&mut self.server_credentials));
+        self.server_credentials = stored;
+        if let Some(raw) = file_based {
+            let mut stored: oauth::FileBasedPersistedCredentialsMap = parse_credentials(raw);
+            stored.extend(std::mem::take(&mut self.file_based_server_credentials));
+            self.file_based_server_credentials = stored;
+        }
+        self.credentials_loading = false;
+        if std::mem::take(&mut self.templatable_credentials_dirty) {
+            self.persist_credentials(ctx, TEMPLATABLE_MCP_CREDENTIALS_KEY);
+        }
+        if std::mem::take(&mut self.file_based_credentials_dirty) {
+            self.persist_credentials(ctx, FILE_BASED_MCP_CREDENTIALS_KEY);
+        }
+        for installation_uuid in std::mem::take(&mut self.pending_autostart) {
+            self.spawn_server(installation_uuid, ctx);
+        }
     }
 
     fn delete_orphaned_installations(&mut self, ctx: &mut ModelContext<Self>) {
@@ -1452,11 +1507,7 @@ impl TemplatableMCPServerManager {
             );
             self.server_credentials
                 .insert(template_uuid, legacy_cred.clone());
-            write_to_secure_storage(
-                ctx,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-                &self.server_credentials,
-            );
+            self.persist_credentials(ctx, TEMPLATABLE_MCP_CREDENTIALS_KEY);
         }
     }
 
@@ -1811,11 +1862,7 @@ impl TemplatableMCPServerManager {
             self.file_based_server_credentials.remove(hash);
         }
         if !installation_hashes.is_empty() {
-            write_to_secure_storage(
-                ctx,
-                FILE_BASED_MCP_CREDENTIALS_KEY,
-                &self.file_based_server_credentials,
-            );
+            self.persist_credentials(ctx, FILE_BASED_MCP_CREDENTIALS_KEY);
         }
     }
 

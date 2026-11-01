@@ -1580,6 +1580,10 @@ fn initialize_app(
         secrets
     });
 
+    // #1311: resolve the passwd record off the UI thread so new tabs hit the cache.
+    #[cfg(all(unix, feature = "local_tty"))]
+    crate::terminal::local_tty::prewarm_current_user();
+
     // Issue #72: the global HTTP proxy's Basic Auth password goes through the OS keychain.
     // Reapply immediately after registering, so the empty-string placeholder global slot
     // set during settings::init gets overwritten with the real password.

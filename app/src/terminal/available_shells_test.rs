@@ -7,10 +7,59 @@ use std::sync::Arc;
 use warp_core::features::FeatureFlag;
 
 fn make_available_shells(shells: Vec<AvailableShell>) -> AvailableShells {
-    AvailableShells {
+    let scan = Arc::new(ShellScan::default());
+    *scan.done.lock().unwrap() = Some(ScanResult {
         shells,
         shell_counts: HashMap::new(),
+    });
+    AvailableShells {
+        scan,
+        result: std::sync::OnceLock::new(),
+        empty: ScanResult::default(),
+        scanned_path: std::ffi::OsString::new(),
+        wsl_names: Vec::new(),
     }
+}
+
+#[test]
+fn unfinished_scan_serves_empty_list_within_bounded_wait_then_the_result() {
+    // A scan that has not finished must not block the reader past the bound...
+    let scan = Arc::new(ShellScan::default());
+    let shells = AvailableShells {
+        scan: scan.clone(),
+        result: std::sync::OnceLock::new(),
+        empty: ScanResult::default(),
+        scanned_path: std::ffi::OsString::new(),
+        wsl_names: Vec::new(),
+    };
+    let start = std::time::Instant::now();
+    assert_eq!(shells.get_available_shells().count(), 0);
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+
+    // ...and once the scan completes, the next read sees its result.
+    *scan.done.lock().unwrap() = Some(ScanResult {
+        shells: vec![AvailableShell::new_local_executable(
+            "bash".to_string(),
+            PathBuf::from("/bin/bash"),
+            ShellType::Bash,
+        )],
+        shell_counts: HashMap::new(),
+    });
+    scan.cv.notify_all();
+    assert_eq!(shells.get_available_shells().count(), 1);
+    // The result is adopted: it keeps being served.
+    assert_eq!(shells.get_available_shells().count(), 1);
+}
+
+#[test]
+fn rescan_only_when_path_changes() {
+    let mut shells = make_available_shells(vec![]);
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    shells.scanned_path = current;
+    assert!(!shells.rescan_if_path_changed());
+    shells.scanned_path = std::ffi::OsString::from("/definitely/not/the/path");
+    assert!(shells.rescan_if_path_changed());
+    assert!(!shells.rescan_if_path_changed());
 }
 
 #[test]

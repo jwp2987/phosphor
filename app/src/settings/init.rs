@@ -88,6 +88,7 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     TuiThemeSettings::register(ctx);
     TuiZeroStateSettings::register(ctx);
     LocalControlSettings::register(ctx);
+    super::local_control::begin_async_load(ctx);
     PreferencesSettings::register(ctx);
     WarpDrivePrivacySettings::register(ctx);
     UserAppInstallDetectionSettings::register(ctx);
