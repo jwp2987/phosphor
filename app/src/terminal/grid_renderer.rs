@@ -2001,9 +2001,19 @@ fn render_image(
             warn_image_once(image_id, 2, "Image was evicted from the image cache");
             return;
         }
-        DeferredImage::Pending { stale } => {
-            // Poll until the background raster lands; paint-only, the layout is unchanged.
-            ctx.repaint_after_paint_only(std::time::Duration::from_millis(33));
+        DeferredImage::Pending {
+            stale,
+            wait,
+            give_up_at,
+        } => {
+            // Redrawn by the raster worker's completion signal (paint-only: the layout is
+            // unchanged), not by polling.
+            ctx.repaint_after_raster(wait);
+            // One-shot give-up for a worker that never answers; the cache then marks the image
+            // failed and logs it. Not a poll: it fires once, at the deadline.
+            if let Some(at) = give_up_at {
+                ctx.repaint_at_paint_only(at);
+            }
             if let Some(stale) = stale {
                 if let Image::Static(image) = stale.image.as_ref() {
                     let from = stale.from_bounds.to_f32();

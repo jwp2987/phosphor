@@ -672,6 +672,10 @@ pub enum RepaintTrigger {
     AssetLoaded {
         asset_handle: AssetHandle,
     },
+    /// A background image raster finished (see `ImageCache::image_deferred`).
+    RasterReady {
+        wait: crate::image_cache::RasterWait,
+    },
 }
 
 type EventMunger = dyn Fn(&mut Event, &mut AppContext);
@@ -4364,6 +4368,51 @@ impl AppContext {
                 },
             );
         })
+    }
+
+    /// Redraws `window_id` (paint only: the layout is unchanged) once, when a background image
+    /// raster finishes, for the frame that painted `pending_rasters`. This replaces polling the
+    /// raster worker with a repaint timer. Dedups per (window, wait) like `manage_pending_assets`.
+    pub fn manage_pending_rasters(
+        &mut self,
+        window_id: WindowId,
+        pending_rasters: HashSet<crate::image_cache::RasterWait>,
+    ) {
+        for wait in pending_rasters {
+            if self.repaint_tasks.values().any(|task| {
+                task.window_id == window_id
+                    && matches!(&task.repaint_trigger, RepaintTrigger::RasterReady { wait: w } if w == &wait)
+            }) {
+                continue;
+            }
+            let ready = wait.when_ready();
+            let weak_app = self.weak_self.clone();
+            let task_id = TaskId::new();
+            let task = self.foreground.spawn(async move {
+                ready.await;
+                let Some(app) = weak_app.upgrade() else {
+                    return;
+                };
+                let mut app = app.borrow_mut();
+                // Cancelled tasks are no longer in `repaint_tasks`.
+                if app.repaint_tasks.remove(&task_id).is_some() {
+                    // The window may have closed while the raster ran; its result is simply
+                    // dropped (the cache keeps it for whoever asks next).
+                    if app.is_window_open(window_id) {
+                        app.request_paint_only_redraw(window_id);
+                        app.update_windows();
+                    }
+                }
+            });
+            self.repaint_tasks.insert(
+                task_id,
+                RepaintTask {
+                    task,
+                    window_id,
+                    repaint_trigger: RepaintTrigger::RasterReady { wait },
+                },
+            );
+        }
     }
 
     fn load_fallback_family_and_redraw(

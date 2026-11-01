@@ -1192,3 +1192,61 @@ fn test_a_new_view_builds_a_frame_once_then_none_until_mounted() {
         assert!(presenter.borrow().is_view_mounted(new_child.id()));
     })
 }
+
+/// Redraw is driven by the raster worker's signal (#1356): registering a wait schedules no
+/// periodic repaint, and a completion redraws the owning window exactly once (paint only, no
+/// layout) however many times the wait was registered.
+#[test]
+fn test_raster_completion_redraws_the_owning_window_once() {
+    use crate::image_cache::RasterWait;
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let (wait, finish) = RasterWait::test_new();
+        app.update(|ctx| {
+            ctx.manage_pending_rasters(window_id, [wait.clone()].into_iter().collect());
+            ctx.manage_pending_rasters(window_id, [wait].into_iter().collect());
+        });
+        let paint_baseline = counts.paint_calls.get();
+        let layout_baseline = counts.layout_calls.get();
+
+        // Nothing has finished: no frames, however long we wait.
+        Timer::after(Duration::from_millis(100)).await;
+        assert_eq!(counts.paint_calls.get(), paint_baseline);
+
+        finish();
+        for _ in 0..500 {
+            if counts.paint_calls.get() > paint_baseline {
+                break;
+            }
+            Timer::after(Duration::from_millis(2)).await;
+        }
+        // Let any (wrong) second redraw show up.
+        Timer::after(Duration::from_millis(100)).await;
+        assert_eq!(counts.paint_calls.get(), paint_baseline + 1);
+        assert_eq!(counts.layout_calls.get(), layout_baseline);
+    })
+}
+
+/// A raster that finishes after its window closed is dropped without touching the dead window.
+#[test]
+fn test_raster_completion_for_a_closed_window_is_dropped() {
+    use crate::image_cache::RasterWait;
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let (wait, finish) = RasterWait::test_new();
+        app.update(|ctx| {
+            ctx.manage_pending_rasters(window_id, [wait].into_iter().collect());
+            ctx.simulate_window_closed(window_id);
+        });
+        finish();
+        Timer::after(Duration::from_millis(100)).await;
+        app.update(|ctx| assert!(!ctx.is_window_open(window_id)));
+    })
+}
