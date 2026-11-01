@@ -26,7 +26,7 @@ fn build_find_command_groups_alternatives_and_strips_globstar_prefix() {
     let command = build_find_command(&patterns, "/r", ShellType::Bash);
     assert_eq!(
         command,
-        r#"find /r -type f \( -name '*.rs' -o -name '*.toml' \)"#
+        r#"find '/r' -type f \( -name '*.rs' -o -name '*.toml' \)"#
     );
     let single = build_find_command(&["**/**/x.rs".to_string()], "/r", ShellType::Bash);
     assert_eq!(single, "find '/r' -type f -name 'x.rs'");
