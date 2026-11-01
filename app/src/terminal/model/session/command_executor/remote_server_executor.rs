@@ -134,4 +134,8 @@ impl CommandExecutor for RemoteServerCommandExecutor {
     fn connection_lost(&self) -> bool {
         self.client.is_disconnected()
     }
+
+    fn is_remote_server_executor(&self) -> bool {
+        true
+    }
 }
