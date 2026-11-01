@@ -19845,23 +19845,6 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
     })
 }
 
-/// Subscribes to the bytes the view writes to the pty.
-fn collect_pty_writes(
-    app: &mut App,
-    terminal: &ViewHandle<TerminalView>,
-) -> Rc<RefCell<Vec<Vec<u8>>>> {
-    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-    let writes = pty_writes.clone();
-    app.update(|ctx| {
-        ctx.subscribe_to_view(terminal, move |_, event, _| {
-            if let Event::WriteBytesToPty { bytes } = event {
-                writes.borrow_mut().push(bytes.to_vec());
-            }
-        });
-    });
-    pty_writes
-}
-
 /// How many typed setup lines (each followed by a CR write) have reached the pty.
 fn setup_lines_written(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> usize {
     writes

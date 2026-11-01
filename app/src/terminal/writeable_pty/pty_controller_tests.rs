@@ -613,7 +613,7 @@ fn paced_write_controller(
     app: &mut App,
     model: Arc<FairMutex<TerminalModel>>,
     sender: &TestEventLoopSender,
-) -> (ModelHandle<PtyController<TestEventLoopSender>>, impl Sized) {
+) -> (ModelHandle<PtyController<TestEventLoopSender>>, impl Sized + use<>) {
     let (model_events_tx, model_events_rx) = async_channel::unbounded();
     let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
     let sessions = app.add_model(|_| Sessions::new_for_test());

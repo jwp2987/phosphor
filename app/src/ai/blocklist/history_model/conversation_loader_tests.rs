@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use super::load_pool::{MAX_LOAD_THREADS, start};
+use super::load_pool::{InFlight, MAX_LOAD_THREADS, start};
 
 #[test]
 fn many_concurrent_loads_use_at_most_the_cap_threads() {

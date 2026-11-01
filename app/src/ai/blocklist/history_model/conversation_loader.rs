@@ -157,11 +157,16 @@ pub(super) mod load_pool {
     /// Loads in flight, by key. A request for a key that is already being loaded joins that load
     /// instead of starting a second read and restore (#1370).
     pub(in super::super) struct InFlight<K, V> {
-        map: Arc<Mutex<std::collections::HashMap<K, Loading<V>>>>,
+        map: Arc<Mutex<std::collections::HashMap<K, SharedLoad<V>>>>,
     }
 
-    pub(in super::super) type Loading<V> =
-        futures::future::Shared<futures::future::BoxFuture<'static, V>>;
+    /// The shared slot a load resolves. The value is wrapped in `Arc<Mutex<_>>` so the shared
+    /// future (and the registry holding it) is `Send + Sync` for any `V: Send`.
+    type Slot<V> = std::sync::Arc<Mutex<V>>;
+
+    type SharedLoad<V> = futures::future::Shared<futures::future::BoxFuture<'static, Slot<V>>>;
+
+    pub(in super::super) type Loading<V> = futures::future::BoxFuture<'static, V>;
 
     impl<K, V> InFlight<K, V>
     where
@@ -184,10 +189,15 @@ pub(super) mod load_pool {
         ) -> Result<Loading<V>, String> {
             use futures::FutureExt as _;
             let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            let join = |shared: SharedLoad<V>| -> Loading<V> {
+                shared
+                    .map(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).clone())
+                    .boxed()
+            };
             if let Some(existing) = map.get(&key) {
-                return Ok(existing.clone());
+                return Ok(join(existing.clone()));
             }
-            let (tx, rx) = futures::channel::oneshot::channel::<V>();
+            let (tx, rx) = futures::channel::oneshot::channel::<Slot<V>>();
             let shared = rx
                 .map(|r| r.expect("a load's finish callback is always called"))
                 .boxed()
@@ -200,13 +210,13 @@ pub(super) mod load_pool {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&finish_key);
-                let _ = tx.send(value);
+                let _ = tx.send(std::sync::Arc::new(Mutex::new(value)));
             });
             if let Err(e) = run(finish) {
                 map.remove(&key);
                 return Err(e);
             }
-            Ok(shared)
+            Ok(join(shared))
         }
     }
 
