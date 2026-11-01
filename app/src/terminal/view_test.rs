@@ -15720,7 +15720,10 @@ fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
                 );
                 // The abandon / time-out path.
                 view.release_subshell_setup_held_bytes(ctx);
-                assert_eq!(*written.borrow(), b"ls".to_vec());
+            });
+            // The pty write is an event: it is observed once the update that emitted it ends.
+            assert_eq!(*written.borrow(), b"ls".to_vec(), "queue={queue}");
+            terminal.update(&mut app, |view, ctx| {
                 assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
             });
             assert_eq!(*written.borrow(), b"ls\r".to_vec(), "queue={queue}");
@@ -15769,46 +15772,46 @@ fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let written = subshell_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
+        let gate_token = |view: &TerminalView, kind: input_queue::GateKind| {
+            view.paste_queue
+                .queue
+                .borrow()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == kind)
+                .map(|gate| gate.token)
+                .expect("the gate is open")
+        };
+        // The pty writes are events: they are observed once the update that emitted them ends.
+        let setup_token = terminal.update(&mut app, |view, ctx| {
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
             assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
-            let token = view
-                .paste_queue
-                .queue
-                .borrow()
-                .gates()
-                .iter()
-                .find(|gate| gate.kind == input_queue::GateKind::SubshellSetup)
-                .map(|gate| gate.token)
-                .expect("the setup gate is open");
+            let token = gate_token(view, input_queue::GateKind::SubshellSetup);
             view.on_paste_queue_give_up(token, ctx);
-            assert_eq!(*written.borrow(), b"l".to_vec());
             assert!(view.subshell_bootstrap_announced.is_none());
-            // A second, late cap for the same gate does nothing.
-            view.on_paste_queue_give_up(token, ctx);
-            assert_eq!(*written.borrow(), b"l".to_vec());
+            token
+        });
+        assert_eq!(*written.borrow(), b"l".to_vec());
+        // A second, late cap for the same gate does nothing.
+        terminal.update(&mut app, |view, ctx| {
+            view.on_paste_queue_give_up(setup_token, ctx)
+        });
+        assert_eq!(*written.borrow(), b"l".to_vec());
 
-            written.borrow_mut().clear();
+        written.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
             start_subshell_bootstrap(view, false);
             assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
-            let token = view
-                .paste_queue
-                .queue
-                .borrow()
-                .gates()
-                .iter()
-                .find(|gate| gate.kind == input_queue::GateKind::SubshellBootstrapWrite)
-                .map(|gate| gate.token)
-                .expect("the bootstrap gate is open");
+            let token = gate_token(view, input_queue::GateKind::SubshellBootstrapWrite);
             view.on_paste_queue_give_up(token, ctx);
-            assert!(
-                written.borrow().is_empty(),
-                "still waits for the bootstrap's last line"
-            );
-            view.finish_subshell_bootstrap(ctx);
-            assert_eq!(*written.borrow(), b"e".to_vec());
         });
+        assert!(
+            written.borrow().is_empty(),
+            "still waits for the bootstrap's last line"
+        );
+        terminal.update(&mut app, |view, ctx| view.finish_subshell_bootstrap(ctx));
+        assert_eq!(*written.borrow(), b"e".to_vec());
     })
 }
 
@@ -20882,28 +20885,37 @@ fn ssh_legacy_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
 }
 
 fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty(queue: bool) {
-    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
-        submit_command(view, "ssh host", ctx);
-        view.model
-            .lock()
-            .simulate_long_running_block("ssh host", "");
-        view.warpify_state
-            .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
-        view.typed_characters_on_terminal("blind", ctx);
-        assert!(view.ssh_typeahead_holding);
-        assert_eq!(ssh_gate_open(view), queue);
-        view.model.lock().process_bytes("Password: ");
-        view.typed_characters_on_terminal("hunter2", ctx);
-        assert!(!view.ssh_typeahead_holding);
-        assert!(view.ssh_held_is_empty());
-        assert!(!ssh_gate_open(view), "the prompt event dropped the gate");
-        assert!(ssh_queue_is_idle(view));
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.ssh_iq.enabled = queue;
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(ssh_gate_open(view), queue);
+            view.model.lock().process_bytes("Password: ");
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert!(!ssh_gate_open(view), "the prompt event dropped the gate");
+            assert!(ssh_queue_is_idle(view));
+        });
+        // The pty write is an event: it is observed once the update that emitted it ends.
         let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(
             writes, b"hunter2",
             "only the post-prompt key reaches the prompt"
         );
-    });
+    })
 }
 
 #[test]
