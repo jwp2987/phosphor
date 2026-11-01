@@ -74,6 +74,7 @@ fn background_readers_default_to_none() {
     assert!(Plain.background_text_reader().is_none());
     assert!(Plain.background_full_reader().is_none());
     assert!(!Plain.has_content());
+}
 
 #[test]
 fn later_write_wins_when_it_runs_first() {
