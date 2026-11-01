@@ -1570,12 +1570,23 @@ impl BlockListElement {
         if editor_focus == Some(true) {
             self.ssh_key_hold.end_settle();
         }
-        terminal_takes_unclaimed_held_key(
-            self.ssh_key_hold
-                .rescues_unclaimed_keys(std::time::Instant::now()),
-            ctx.live_focus_of(self.input_view_id),
-            editor_focus,
-        )
+        let rescue = self
+            .ssh_key_hold
+            .rescues_unclaimed_keys(std::time::Instant::now());
+        let input_focus = ctx.live_focus_of(self.input_view_id);
+        let taken = terminal_takes_unclaimed_held_key(rescue, input_focus, editor_focus);
+        // Only while a rescue is possible: keeps the log quiet for ordinary typing.
+        if rescue {
+            warpui::input_order::log_key_hop("kh_element_rescue", || {
+                format!(
+                    "hold_active={} input_focus={} editor_focus={} taken={taken}",
+                    self.ssh_key_hold.is_active(),
+                    warpui::input_order::describe_opt(input_focus),
+                    warpui::input_order::describe_opt(editor_focus)
+                )
+            });
+        }
+        taken
     }
 
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
@@ -1583,6 +1594,7 @@ impl BlockListElement {
             && !chars.is_empty()
             && chars.chars().all(|c| c.is_control())
         {
+            warpui::input_order::log_key_hop("kh_element_key_down", || "taken=true".to_owned());
             ctx.dispatch_typed_action(TerminalAction::KeyDown(chars.to_string()));
             true
         } else {
@@ -1607,13 +1619,25 @@ impl BlockListElement {
         let on_settled_ai_target = self
             .settled_ai_focus_view_id
             .is_some_and(|view| ctx.live_focus_is_exactly(view) == Some(true));
-        if (self.terminal_focused_now(ctx)
+        let terminal_focused = self.terminal_focused_now(ctx);
+        let claimed = terminal_focused
             || on_approval_card
             || on_ssh_choice_card
             || on_settled_ai_target
-            || self.takes_unclaimed_held_key(ctx))
-            && !chars.is_empty()
-        {
+            || self.takes_unclaimed_held_key(ctx);
+        // #1345: whether the terminal element dispatched this key to the terminal view, and the
+        // focus facts behind it. A key that no element claims (the editor included) vanishes here.
+        warpui::input_order::log_key_hop("kh_element_typed", || {
+            format!(
+                "terminal_focused={terminal_focused} snapshot_terminal_focused={} \
+                 input_focus={} editor_focus={} claimed={}",
+                self.is_terminal_focused,
+                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_view_id)),
+                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_editor_view_id)),
+                claimed && !chars.is_empty()
+            )
+        });
+        if claimed && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
         }
         true

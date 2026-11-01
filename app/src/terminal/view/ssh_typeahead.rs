@@ -40,6 +40,23 @@ pub(super) fn delivery_waits_for_first_precmd(
     awaiting_first_precmd && waited < SSH_TYPEAHEAD_PRECMD_WAIT_CAP
 }
 
+/// The longest the hand-off waits for the view to handle the remote prompt's precmd event (#1345).
+/// That handling reinitializes the input editor, which erases what the editor took before it ran
+/// (#934); it normally lands within a frame, so a short cap keeps a miscount from holding keys.
+pub(super) const SSH_TYPEAHEAD_VIEW_PRECMD_WAIT_CAP: Duration = Duration::from_millis(500);
+
+/// Whether delivery of the held keys waits for the view's handling of the prompt's precmd event
+/// (#1345). `view_precmd_pending` is that the model has applied a prompt the view has not
+/// handled; `waited` is how long delivery has already waited.
+pub(super) fn delivery_waits_for_view_precmd(view_precmd_pending: bool, waited: Duration) -> bool {
+    view_precmd_pending && waited < SSH_TYPEAHEAD_VIEW_PRECMD_WAIT_CAP
+}
+
+/// Escape hatch: `PHOSPHOR_NO_SSH_VIEW_PRECMD_WAIT=1` restores the pre-#1345 immediate delivery.
+pub(super) fn ssh_view_precmd_wait_disabled() -> bool {
+    std::env::var_os("PHOSPHOR_NO_SSH_VIEW_PRECMD_WAIT").is_some()
+}
+
 /// One held input, as it reached the terminal view.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum HeldInput {

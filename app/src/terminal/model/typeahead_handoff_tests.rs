@@ -1804,3 +1804,17 @@ fn the_next_precmd_expects_a_signal_again() {
     handoff.on_precmd();
     assert_eq!(handoff.prompt_hold_expiry(), CONPTY_PROMPT_HOLD_EXPIRY);
 }
+
+/// #1345: the view reads how many prompts it has yet to handle, to hold the ssh hand-off until
+/// the editor reinitialization of the remote prompt has run.
+#[test]
+fn view_precmds_pending_counts_prompts_until_the_view_handles_them() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_precmd_pending_view();
+    assert_eq!(handoff.precmds_pending_view(), 0, "nothing tracks them yet");
+    handoff.track_view_precmds();
+    handoff.note_precmd_pending_view();
+    assert_eq!(handoff.precmds_pending_view(), 1);
+    handoff.on_precmd_viewed();
+    assert_eq!(handoff.precmds_pending_view(), 0);
+}

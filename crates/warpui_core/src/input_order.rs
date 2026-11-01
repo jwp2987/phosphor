@@ -13,7 +13,7 @@
 //! after that output. Only byte counts and times are logged, never the bytes.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The log target every input-order line uses.
@@ -66,17 +66,44 @@ pub fn describe_key(key: &str) -> String {
 /// tester cannot grep the log for these lines (#1034).
 const LINE_PREFIX: &str = "input_order";
 
-fn key_down_line(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> String {
+/// Sequence number of the key being dispatched (#1345). A physical key is a `keydown` event and,
+/// for printable keys, a `typed_characters` event right after it: both carry the same number, and
+/// every `kh_*` hop the key causes prints it, so one key's path can be followed end to end.
+static KEY_SEQ: AtomicU64 = AtomicU64::new(0);
+/// A `keydown` was numbered and its `typed_characters` has not arrived yet.
+static KEYDOWN_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The number of the key being dispatched now (0 before the first).
+pub fn current_key_seq() -> u64 {
+    KEY_SEQ.load(Ordering::Relaxed)
+}
+
+/// Numbers a `keydown` event.
+fn next_key_seq_for_keydown() -> u64 {
+    KEYDOWN_OPEN.store(true, Ordering::Relaxed);
+    KEY_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Numbers a `typed_characters` event: the one of the `keydown` before it, else a new one.
+fn key_seq_for_typed_characters() -> u64 {
+    if KEYDOWN_OPEN.swap(false, Ordering::Relaxed) {
+        current_key_seq()
+    } else {
+        KEY_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
+fn key_down_line(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool, seq: u64) -> String {
     format!(
-        "{LINE_PREFIX} keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={}",
+        "{LINE_PREFIX} keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={} seq={seq}",
         describe_key(key),
         now_ms()
     )
 }
 
-fn typed_characters_line(chars: &str) -> String {
+fn typed_characters_line(chars: &str, seq: u64) -> String {
     format!(
-        "{LINE_PREFIX} typed_characters text={} t={}",
+        "{LINE_PREFIX} typed_characters text={} t={} seq={seq}",
         describe_text(chars),
         now_ms()
     )
@@ -122,6 +149,27 @@ pub fn log_pty_write(bytes: usize) {
     }
 }
 
+/// A tri-state focus answer as a log word.
+pub fn describe_opt(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+/// Logs one hop of a typed key's path (#1345): `kh_*` names, the number of the key being
+/// dispatched, then flags and counts only (never the key). Grep `hop=kh_` and follow `seq=`.
+pub fn log_key_hop(what: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(
+            target: TARGET,
+            "{}",
+            hop_line(what, &format!("seq={} {}", current_key_seq(), detail()))
+        );
+    }
+}
+
 /// Logs one hop of the typeahead -> pty path (#1162), for pinning down where a typed-ahead byte
 /// is lost or reordered on a platform that cannot be debugged live (Windows ConPTY). Takes the
 /// detail lazily so the formatting costs nothing when input-order logging is off.
@@ -156,14 +204,16 @@ pub fn log_frame_if_pty_output_pending(layout: bool) {
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
-        log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd));
+        let seq = next_key_seq_for_keydown();
+        log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd, seq));
     }
 }
 
 /// Logs typed characters being dispatched.
 pub fn log_typed_characters(chars: &str) {
     if enabled() {
-        log::debug!(target: TARGET, "{}", typed_characters_line(chars));
+        let seq = key_seq_for_typed_characters();
+        log::debug!(target: TARGET, "{}", typed_characters_line(chars, seq));
     }
 }
 
@@ -186,16 +236,17 @@ mod tests {
     #[test]
     fn lines_are_greppable_without_the_target_and_redact_text() {
         for line in [
-            key_down_line("a", false, false, false, false),
-            key_down_line("enter", false, false, false, false),
-            typed_characters_line("hunter2"),
+            key_down_line("a", false, false, false, false, 1),
+            key_down_line("enter", false, false, false, false, 2),
+            typed_characters_line("hunter2", 3),
             submit_line("hunter2"),
         ] {
             assert!(line.starts_with("input_order "), "{line}");
             assert!(!line.contains("hunter2"), "{line}");
         }
-        assert!(key_down_line("enter", false, false, false, false).contains("key=enter"));
-        assert!(typed_characters_line("hunter2").contains("<7 chars>"));
+        assert!(key_down_line("enter", false, false, false, false, 2).contains("key=enter"));
+        assert!(typed_characters_line("hunter2", 3).contains("<7 chars>"));
+        assert!(typed_characters_line("a", 9).ends_with(" seq=9"));
     }
 
     #[test]
@@ -222,6 +273,23 @@ mod tests {
         let line = hop_line("pty_write_partial", "wrote=1 of=5");
         assert!(
             line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_keydown_and_its_typed_characters_share_a_number() {
+        let keydown = next_key_seq_for_keydown();
+        assert_eq!(key_seq_for_typed_characters(), keydown);
+        // Typed characters with no keydown before them (an input method) get their own.
+        assert!(key_seq_for_typed_characters() > keydown);
+    }
+
+    #[test]
+    fn key_hops_carry_the_sequence_and_the_detail() {
+        let line = hop_line("kh_x", "seq=4 focused=true");
+        assert!(
+            line.starts_with("input_order hop=kh_x seq=4 focused=true t="),
             "{line}"
         );
     }
