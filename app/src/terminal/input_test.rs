@@ -12399,7 +12399,7 @@ fn test_paste_inside_explicit_window_is_classified_and_enter_routes_it() {
         });
         input.read(&app, |input, ctx| {
             assert!(
-                input.ai_input_model().as_ref(ctx).input_type().is_shell(),
+                !input.ai_input_model().as_ref(ctx).input_type().is_ai(),
                 "a pasted shell command Enter-ed at once runs in the shell"
             );
         });

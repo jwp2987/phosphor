@@ -303,6 +303,32 @@ async fn wait_for_tab_count(workspace: &ViewHandle<Workspace>, app: &mut App, ex
     }
 }
 
+/// Polls until the active tab holds `expected` code panes (the size guard checks the file off
+/// the UI thread, so the pane opens a few ticks after the call).
+#[allow(dead_code)]
+async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
+    for _ in 0..1000 {
+        let count = workspace.read(app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .code_panes(ctx)
+                .count()
+        });
+        if count == expected {
+            return;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// For "nothing should open" assertions there is no condition to poll for; give the off-thread
+/// size check ample time to have (wrongly) opened a pane before the caller asserts none did.
+#[allow(dead_code)]
+async fn settle_background_tasks() {
+    warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_hover_takes_precedence_over_selection() {
@@ -521,7 +547,7 @@ fn test_open_file_with_target_event_preserves_requested_line() {
         });
 
         // The size guard checks the file off the UI thread before the pane opens.
-        app.finish_pending_tasks().await;
+        wait_for_code_panes(&workspace, &mut app, 1).await;
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
             let code_panes = pane_group.code_panes(ctx).collect::<Vec<_>>();
@@ -6485,7 +6511,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         };
 
         open_it(&workspace, &mut app);
-        app.finish_pending_tasks().await;
+        wait_for_code_panes(&workspace, &mut app, 1).await;
 
         let code_pane_id = workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -6504,7 +6530,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         });
 
         open_it(&workspace, &mut app);
-        app.finish_pending_tasks().await;
+        wait_for_code_panes(&workspace, &mut app, 1).await;
 
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -7902,7 +7928,7 @@ fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
                 ctx,
             );
         });
-        app.finish_pending_tasks().await;
+        settle_background_tasks().await;
         assert_eq!(code_pane_count(&workspace, &app), 0);
 
         // Entry point 2: `open_file_with_target` (file tree, palette, drag-drop).
@@ -7917,7 +7943,7 @@ fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
                 ctx,
             );
         });
-        app.finish_pending_tasks().await;
+        settle_background_tasks().await;
         assert_eq!(code_pane_count(&workspace, &app), 0);
 
         // Control: a small file still opens.
@@ -7939,7 +7965,7 @@ fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
                 ctx,
             );
         });
-        app.finish_pending_tasks().await;
+        wait_for_code_panes(&workspace, &mut app, 1).await;
         assert_eq!(code_pane_count(&workspace, &app), 1);
     });
 }

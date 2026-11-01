@@ -755,6 +755,8 @@ impl LocalGitRepoStatusModel {
             metadata,
             has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
+            main_branch_cache: None,
+            refresh_gate: RefreshGate::default(),
         }
     }
 

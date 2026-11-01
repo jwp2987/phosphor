@@ -75,7 +75,7 @@ impl<'a> BlockFindRenderData<'a> {
         controller: &'a AsyncFindController,
         block_index: BlockIndex,
         command_grid: Option<&GridHandler>,
-        output_grid: Option<&GridHandler>,
+        output_grid: Option<&'a GridHandler>,
     ) -> Self {
         // Convert command grid matches. Highlights are rendered in *original*
         // grid coordinates (the renderer maps them to displayed positions
@@ -469,12 +469,12 @@ impl TerminalFindModel {
     ///
     /// For async find, the grid handlers are needed to convert from absolute to
     /// relative coordinates and filter truncated matches.
-    pub(crate) fn find_render_data_for_block(
-        &self,
+    pub(crate) fn find_render_data_for_block<'a>(
+        &'a self,
         block_index: BlockIndex,
         command_grid: Option<&GridHandler>,
-        output_grid: Option<&GridHandler>,
-    ) -> Option<BlockFindRenderData<'_>> {
+        output_grid: Option<&'a GridHandler>,
+    ) -> Option<BlockFindRenderData<'a>> {
         if let Some(controller) = &self.async_find_controller {
             if !controller.has_active_find() {
                 return None;
