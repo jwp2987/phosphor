@@ -1061,6 +1061,8 @@ pub enum EditorAction {
         selected_range: Range<usize>,
     },
     ClearMarkedText,
+    /// Internal (#1389): the deferred step that applies replayed keys waiting for the display map.
+    ReplayHeldKeys,
     ImeCommit(UserInput<String>),
     Tab,
     ShiftTab,
@@ -3033,6 +3035,61 @@ impl EditorView {
 
     /// Applies a key that was held behind a paste, exactly as if it had just been typed.
     pub fn apply_held_paste_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        // #1389: the display map follows buffer edits only when effects flush, so a cursor-motion
+        // key applied in the same update as the edits before it would read a stale map. Such a key
+        // (and every key behind it, to keep the order) is applied by a deferred step, which runs
+        // after the effects of the keys before it.
+        let hold = Rc::clone(&self.paste_hold);
+        if !hold.is_replaying()
+            && (hold.replay_pending() || paste_hold::needs_fresh_display_map(&key))
+        {
+            hold.replay_push(key);
+            self.schedule_held_replay(ctx);
+            return;
+        }
+        self.apply_held_paste_key_now(key, ctx);
+    }
+
+    fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.replay_mark_scheduled() {
+            ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
+        }
+    }
+
+    /// One deferred replay step: applies the waiting keys up to the next one that needs the map to
+    /// have caught up with what this step applied, and queues another step for that one.
+    fn replay_held_keys_step(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        hold.replay_clear_scheduled();
+        let mut first = true;
+        while first || (hold.replay_pending() && !hold.replay_next_needs_fresh_map()) {
+            let Some(key) = hold.replay_pop() else {
+                return;
+            };
+            self.apply_held_paste_key_now(key, ctx);
+            first = false;
+        }
+        if hold.replay_pending() {
+            self.schedule_held_replay(ctx);
+        }
+    }
+
+    /// Applies every waiting replayed key now, in order. For a key that acts at once (Ctrl-C), which
+    /// must see everything typed before it.
+    fn flush_held_replay_now(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        while let Some(key) = hold.replay_pop() {
+            self.apply_held_paste_key_now(key, ctx);
+        }
+    }
+
+    fn apply_held_paste_key_now(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        let was_replaying = self.paste_hold.set_replaying(true);
+        self.apply_held_paste_key_inner(key, ctx);
+        self.paste_hold.set_replaying(was_replaying);
+    }
+
+    fn apply_held_paste_key_inner(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
         match key {
             HeldPasteKey::Text(text) => {
                 self.handle_action(&EditorAction::UserInsert(UserInput::new(text)), ctx)
@@ -3045,6 +3102,19 @@ impl EditorView {
     /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
     /// applied first and the Ctrl-C then acts normally.
     fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
+        // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
+        // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
+        if self.paste_hold.replay_pending()
+            && !self.paste_hold.is_replaying()
+            && !matches!(action, EditorAction::ReplayHeldKeys)
+        {
+            if let Some(key) = paste_hold::held_form(action) {
+                self.paste_hold.replay_push(key);
+                self.schedule_held_replay(ctx);
+                return true;
+            }
+            self.flush_held_replay_now(ctx);
+        }
         if self.paste_hold.uses_queue() && !self.paste_hold.sequencer_pending() {
             return self.hold_key_for_paste_on_queue(action, ctx);
         }
@@ -3055,6 +3125,7 @@ impl EditorView {
             for key in self.paste_hold.cancel() {
                 self.apply_held_paste_key(key, ctx);
             }
+            self.flush_held_replay_now(ctx);
             return false;
         }
         match paste_hold::held_form(action) {
@@ -3082,6 +3153,7 @@ impl EditorView {
             queue
                 .borrow_mut()
                 .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
+            self.flush_held_replay_now(ctx);
             return false;
         }
         // A paste typed behind a paste is not held: it acts at once and queues its own entry
@@ -9152,6 +9224,7 @@ impl TypedActionView for EditorView {
                 selected_range,
             } => self.set_marked_text(marked_text, selected_range, ctx),
             ClearMarkedText => self.clear_marked_text(ctx),
+            ReplayHeldKeys => self.replay_held_keys_step(ctx),
         }
 
         if self.is_focused() {
