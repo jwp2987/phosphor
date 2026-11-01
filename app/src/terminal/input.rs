@@ -13420,12 +13420,17 @@ impl Input {
 
         // In terminal mode an @ picker with nothing to select (e.g. `@(1,2,3)` in PowerShell)
         // must never swallow Enter: close it and submit the line (#1337).
+        let typed_at_filter = match self.suggestions_mode_model.as_ref(ctx).mode() {
+            InputSuggestionsMode::AIContextMenu { filter_text, .. } => filter_text.clone(),
+            _ => String::new(),
+        };
         if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu()
             && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
             && !self.editor.update(ctx, |editor, ctx| {
-                editor
-                    .ai_context_menu()
-                    .is_some_and(|menu| menu.as_ref(ctx).has_selectable_item(ctx))
+                editor.ai_context_menu().is_some_and(|menu| {
+                    menu.as_ref(ctx)
+                        .has_selectable_item(&typed_at_filter, ctx)
+                })
             })
         {
             self.close_ai_context_menu(ctx);
