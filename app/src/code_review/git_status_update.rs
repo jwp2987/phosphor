@@ -334,20 +334,14 @@ pub(super) fn fresh_cached_main_branch(
     (now.saturating_duration_since(*detected_at) < MAIN_BRANCH_CACHE_TTL).then(|| name.clone())
 }
 
-/// Bursts of command completions inside this window collapse into one metadata refresh.
-#[cfg(feature = "local_fs")]
-const REFRESH_COALESCE_WINDOW: Duration = Duration::from_millis(200);
-
 /// What a command-completion refresh request should do.
 #[cfg(feature = "local_fs")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RefreshDecision {
-    /// Nothing could have changed; reuse the last result (no git processes).
+    /// Nothing could have changed (an empty Enter with a quiet watcher); no git processes.
     Skip,
-    /// Refresh once after this delay; further requests meanwhile are absorbed.
-    Defer(Duration),
-    /// Refresh right now.
-    Now,
+    /// Request a refresh; [`RefreshGate::request_refresh`] coalesces it with one in flight.
+    Refresh,
 }
 
 /// Kill switch: `PHOSPHOR_GIT_REFRESH_ALWAYS=1` restores a refresh after every block.
@@ -371,15 +365,20 @@ pub(super) fn command_may_change_git_state(command: &str) -> bool {
         })
 }
 
-/// Pure bookkeeping behind command-completion refreshes, kept free of the app context so it can
-/// be unit-tested.
+/// Pure bookkeeping behind metadata refreshes, kept free of the app context so it can be unit-tested.
+///
+/// A refresh is never skipped because of watcher timing: the watcher flushes its events after a
+/// fixed window, so "the watcher has not reported anything" does not mean "nothing changed".
+/// Requests instead coalesce: at most one refresh is in flight and one more is remembered as
+/// pending, which re-runs as soon as the in-flight one finishes, so the result always reflects
+/// the latest request (no timer involved).
 #[cfg(feature = "local_fs")]
 #[derive(Debug, Default)]
 pub(super) struct RefreshGate {
     /// The watcher reported a relevant change since the last refresh started.
     dirty: bool,
-    last_refresh: Option<Instant>,
-    deferred_pending: bool,
+    in_flight: bool,
+    rerun_pending: bool,
 }
 
 #[cfg(feature = "local_fs")]
@@ -388,43 +387,35 @@ impl RefreshGate {
         self.dirty = true;
     }
 
-    /// Any refresh (forced or not) clears the dirty flag and opens the coalescing window.
-    pub(super) fn refresh_started(&mut self, now: Instant) {
+    /// Ask for a refresh. Returns true when the caller must start one now; false when one is
+    /// already in flight, in which case it re-runs once that one finishes
+    /// ([`Self::refresh_finished`]).
+    pub(super) fn request_refresh(&mut self) -> bool {
+        if self.in_flight {
+            self.rerun_pending = true;
+            return false;
+        }
+        self.in_flight = true;
         self.dirty = false;
-        self.last_refresh = Some(now);
+        true
     }
 
-    pub(super) fn deferred_fired(&mut self) {
-        self.deferred_pending = false;
+    /// The in-flight refresh completed (successfully or not). Returns true when a request arrived
+    /// meanwhile and the caller must start another refresh (via [`Self::request_refresh`]).
+    pub(super) fn refresh_finished(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.rerun_pending)
     }
 
     /// `trusted` is true when metadata exists and the repo watcher is live; without it we cannot
-    /// know nothing changed, so only coalescing applies.
-    pub(super) fn decide(
-        &mut self,
-        command: &str,
-        trusted: bool,
-        now: Instant,
-        always: bool,
-    ) -> RefreshDecision {
-        if self.deferred_pending {
-            return RefreshDecision::Skip;
+    /// know nothing changed. Only a command that never ran (empty Enter) with a quiet watcher is
+    /// skipped; everything else refreshes (coalesced), whatever the watcher has delivered so far.
+    pub(super) fn decide(&self, command: &str, trusted: bool, always: bool) -> RefreshDecision {
+        if trusted && !always && !self.dirty && command.trim().is_empty() {
+            RefreshDecision::Skip
+        } else {
+            RefreshDecision::Refresh
         }
-        if trusted
-            && !always
-            && !self.dirty
-            && (command.trim().is_empty() || !command_may_change_git_state(command))
-        {
-            return RefreshDecision::Skip;
-        }
-        if let Some(last) = self.last_refresh {
-            let elapsed = now.saturating_duration_since(last);
-            if elapsed < REFRESH_COALESCE_WINDOW {
-                self.deferred_pending = true;
-                return RefreshDecision::Defer(REFRESH_COALESCE_WINDOW - elapsed);
-            }
-        }
-        RefreshDecision::Now
     }
 }
 
@@ -521,7 +512,9 @@ impl LocalGitRepoStatusModel {
             );
         }
 
-        // Throttled metadata refresh (at most once every 5 seconds).
+        // Throttled metadata refresh for plain file-change events (at most once every 5 seconds).
+        // This is pacing for build-output churn, not correctness: command completions and HEAD
+        // changes refresh through the coalescing gate immediately.
         ctx.spawn_stream_local(
             throttle(Duration::from_secs(5), throttled_rx),
             |me, _, ctx| {
@@ -549,9 +542,9 @@ impl LocalGitRepoStatusModel {
     /// events that may have changed git state (block completed, agent file
     /// edits, etc.).
     pub fn refresh_metadata(&mut self, ctx: &mut ModelContext<Self>) {
-        self.refresh_gate.refresh_started(Instant::now());
-        if let Some(handle) = self.computing_metadata_abort_handle.take() {
-            handle.abort();
+        // Coalesce instead of aborting/skipping: a request during a refresh re-runs after it.
+        if !self.refresh_gate.request_refresh() {
+            return;
         }
         let repo_path_buf = self.repo_path.clone();
         let cached_main_branch = fresh_cached_main_branch(&self.main_branch_cache, Instant::now());
@@ -564,31 +557,25 @@ impl LocalGitRepoStatusModel {
                         Some((metadata.main_branch_name.clone(), Instant::now()));
                 }
                 me.handle_metadata_result(result, ctx);
+                if me.refresh_gate.refresh_finished() {
+                    me.refresh_metadata(ctx);
+                }
             },
         ));
     }
 
-    /// Refresh after a block completed with `command`, skipping or coalescing when nothing could
-    /// have changed: an empty Enter or a command that doesn't touch VCS state, with the watcher
-    /// silent since the last refresh, reuses the last result; bursts collapse into one refresh.
-    /// Any watcher event, a VCS command, or a dead watcher still refreshes.
+    /// Refresh after a block completed with `command`. Only an empty Enter with a quiet watcher
+    /// reuses the last result; every other completion refreshes, coalesced with any refresh
+    /// already in flight, so the chip reflects the latest edit even when the block finished
+    /// before the file watcher flushed its event.
     pub fn refresh_metadata_after_command(&mut self, command: &str, ctx: &mut ModelContext<Self>) {
         let trusted = self.metadata.is_some() && self.subscriber_id.is_some();
         match self
             .refresh_gate
-            .decide(command, trusted, Instant::now(), refresh_always_env())
+            .decide(command, trusted, refresh_always_env())
         {
             RefreshDecision::Skip => {}
-            RefreshDecision::Now => self.refresh_metadata(ctx),
-            RefreshDecision::Defer(delay) => {
-                ctx.spawn(
-                    async move { warpui::r#async::Timer::after(delay).await },
-                    |me, _, ctx| {
-                        me.refresh_gate.deferred_fired();
-                        me.refresh_metadata(ctx);
-                    },
-                );
-            }
+            RefreshDecision::Refresh => self.refresh_metadata(ctx),
         }
     }
 
