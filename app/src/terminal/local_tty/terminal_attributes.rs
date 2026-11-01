@@ -119,9 +119,57 @@ pub fn terminal_owner(
     let pgid = unsafe { libc::tcgetpgrp(fd) };
     if pgid > 0 && pgid != shell_pid {
         TerminalOwner::Program
+    } else if shell_is_blocked(shell_pid) {
+        // The shell is the foreground group yet asleep: a builtin waiting on the tty (`read x`).
+        // A shell computing in a function is running, not asleep, and stays `Shell`.
+        TerminalOwner::ShellBlocked
     } else {
         TerminalOwner::Shell
     }
+}
+
+/// Whether the shell process is asleep in the kernel. Linux: `/proc/<pid>/stat` state `S`.
+/// macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` status `SSLEEP`. Any failure or other platform is
+/// `false` (the latch then waits for a better signal).
+fn shell_is_blocked(shell_pid: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{shell_pid}/stat"))
+            .ok()
+            .and_then(|stat| parse_proc_stat_state(&stat))
+            == Some('S')
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `SSLEEP` from <sys/proc.h>.
+        const SSLEEP: u32 = 3;
+        // SAFETY: zeroed is a valid bit pattern for this plain C struct; `proc_pidinfo` writes at
+        // most `size_of` bytes into it.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                shell_pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast::<libc::c_void>(),
+                size,
+            )
+        };
+        written == size && info.pbi_status == SSLEEP
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = shell_pid;
+        false
+    }
+}
+
+/// The process state letter from `/proc/<pid>/stat` (`pid (comm) S ...`).
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_proc_stat_state(stat: &str) -> Option<char> {
+    let close = stat.rfind(')')?;
+    stat[close + 1..].split_whitespace().next()?.chars().next()
 }
 
 /// Whether the pty's foreground process group provably cannot hold a shell at its prompt, local

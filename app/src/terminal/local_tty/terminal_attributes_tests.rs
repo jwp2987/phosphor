@@ -1,4 +1,6 @@
-use super::{is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat};
+use super::{
+    is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat, parse_proc_stat_state,
+};
 use nix::sys::termios::LocalFlags;
 
 #[test]
@@ -44,4 +46,11 @@ fn malformed_stat_is_none() {
     assert_eq!(parse_proc_stat(""), None);
     assert_eq!(parse_proc_stat("1 (x"), None);
     assert_eq!(parse_proc_stat("1 (x) S"), None);
+}
+
+#[test]
+fn proc_stat_state_is_read_after_the_last_paren() {
+    assert_eq!(parse_proc_stat_state("12 (bash) S 1 12 12 0"), Some('S'));
+    assert_eq!(parse_proc_stat_state("12 (we (ird) R 1 12 12 0"), Some('R'));
+    assert_eq!(parse_proc_stat_state("garbage"), None);
 }
