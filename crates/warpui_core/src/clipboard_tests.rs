@@ -264,3 +264,102 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
     }
     assert_eq!(TRACKER.in_flight(), 0);
 }
+
+#[test]
+fn over_cap_paste_is_refused_not_truncated() {
+    let big = ClipboardContent::plain_text("x".repeat(11));
+    match cap_paste_size(BackgroundTextRead::Content(big), 10) {
+        BackgroundTextRead::TooLarge(n) => assert_eq!(n, 11),
+        _ => panic!("expected TooLarge"),
+    }
+    // Exactly at the cap is admitted whole, as are paths and html counted together.
+    match cap_paste_size(
+        BackgroundTextRead::Content(ClipboardContent::plain_text("x".repeat(10))),
+        10,
+    ) {
+        BackgroundTextRead::Content(c) => assert_eq!(c.plain_text.len(), 10),
+        _ => panic!("expected Content"),
+    }
+    let mixed = ClipboardContent {
+        plain_text: "aaaaaa".into(),
+        html: Some("bbbbbb".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        cap_paste_size(BackgroundTextRead::Content(mixed), 10),
+        BackgroundTextRead::TooLarge(12)
+    ));
+    assert!(matches!(
+        cap_paste_size(BackgroundTextRead::TimedOut, 10),
+        BackgroundTextRead::TimedOut
+    ));
+}
+
+/// A clipboard whose reads are served by a worker-thread reader, like the Linux/Windows/macOS ones.
+struct WorkerClipboard {
+    text: String,
+    main_thread: std::thread::ThreadId,
+}
+
+impl Clipboard for WorkerClipboard {
+    fn write(&mut self, content: ClipboardContent) {
+        self.text = content.plain_text;
+    }
+
+    fn read(&mut self) -> ClipboardContent {
+        // A synchronous read on the UI thread is exactly what #1380 removes.
+        assert_ne!(
+            std::thread::current().id(),
+            self.main_thread,
+            "the read must not run on the calling thread"
+        );
+        ClipboardContent::plain_text(self.text.clone())
+    }
+
+    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
+        let text = self.text.clone();
+        let main_thread = self.main_thread;
+        Some(Box::new(move || {
+            assert_ne!(std::thread::current().id(), main_thread);
+            BackgroundTextRead::Content(ClipboardContent::plain_text(text))
+        }))
+    }
+
+    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
+        self.background_full_reader()
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn save(&mut self, _content: ClipboardContent) {}
+}
+
+#[test]
+fn read_in_background_runs_the_reader_off_the_calling_thread() {
+    let mut clipboard = WorkerClipboard {
+        text: "from the worker".to_owned(),
+        main_thread: std::thread::current().id(),
+    };
+    for kind in [ReadKind::Full, ReadKind::TextAndPaths] {
+        match read_in_background(&mut clipboard, kind) {
+            StartedRead::Pending(pending) => match futures::executor::block_on(pending) {
+                BackgroundTextRead::Content(content) => {
+                    assert_eq!(content.plain_text, "from the worker")
+                }
+                _ => panic!("expected content"),
+            },
+            StartedRead::Ready(_) => panic!("a platform with a worker reader must not read here"),
+        }
+    }
+}
+
+#[test]
+fn read_in_background_without_a_worker_reader_answers_at_once() {
+    let mut clipboard = InMemoryClipboard::default();
+    clipboard.write(ClipboardContent::plain_text("local".to_owned()));
+    match read_in_background(&mut clipboard, ReadKind::TextAndPaths) {
+        StartedRead::Ready(BackgroundTextRead::Content(content)) => {
+            assert_eq!(content.plain_text, "local")
+        }
+        _ => panic!("expected an immediate read"),
+    }
+}

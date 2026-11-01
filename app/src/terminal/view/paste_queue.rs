@@ -51,6 +51,7 @@ use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, InputQueue, SignalKind, trace,
 };
+use crate::terminal::paste_sequencer::PasteFailure;
 
 /// What the pane's paste ordering needs: the queue, the paste bytes waiting for their turn, and
 /// the id counter.
@@ -58,6 +59,8 @@ pub(super) struct PasteQueueState {
     pub(super) queue: Rc<RefCell<InputQueue>>,
     /// Prepared pty bytes of pastes that were read and wait to be delivered, by paste id.
     pub(super) payloads: HashMap<u64, Vec<u8>>,
+    /// Queued pastes refused by the size cap (#1382): already told, so no generic failure toast.
+    pub(super) refused: std::collections::HashSet<u64>,
     next_id: u64,
     /// `PHOSPHOR_INPUT_QUEUE_PASTE`; false keeps the legacy `PasteSequencer` path.
     pub(super) enabled: bool,
@@ -136,6 +139,7 @@ impl PasteQueueState {
         Self {
             queue: Rc::new(RefCell::new(InputQueue::new())),
             payloads: HashMap::new(),
+            refused: Default::default(),
             next_id: 0,
             enabled: kill_switch::is_enabled(Area::Paste),
             subshell_enabled: kill_switch::is_enabled(Area::Subshell),
@@ -293,8 +297,12 @@ impl Host for PtyQueueHost<'_, '_> {
         match why {
             // The reader gave nothing (or never answered): say so; the keys behind it follow.
             DiscardReason::PasteFailed | DiscardReason::PasteNotReady => {
-                self.view
-                    .show_error_toast(PASTE_FAILED_TOAST.to_string(), self.ctx);
+                let refused = matches!(&entry.kind, EntryKind::Paste { paste_id, .. }
+                    if self.view.paste_queue.refused.contains(paste_id));
+                if !refused {
+                    self.view
+                        .show_error_toast(PASTE_FAILED_TOAST.to_string(), self.ctx);
+                }
             }
             // ^C / ^D cancelled it: silent, as before.
             DiscardReason::PasteCancelled => {}
@@ -882,14 +890,17 @@ impl TerminalView {
             .name("paste-read".into())
             .spawn(move || {
                 let result = match reader() {
-                    warpui::clipboard::BackgroundTextRead::TimedOut => None,
+                    warpui::clipboard::BackgroundTextRead::TimedOut => Err(PasteFailure::NoAnswer),
+                    warpui::clipboard::BackgroundTextRead::TooLarge(bytes) => {
+                        Err(PasteFailure::TooLarge(bytes))
+                    }
                     warpui::clipboard::BackgroundTextRead::Content(content) => {
                         let text = crate::util::clipboard::clipboard_content_with_escaped_paths(
                             content,
                             shell_dialect,
                             false,
                         );
-                        Some(super::paste_bytes_for_pty(&text, bracketed))
+                        Ok(super::paste_bytes_for_pty(&text, bracketed))
                     }
                 };
                 let _ = tx.send(result);
@@ -902,7 +913,7 @@ impl TerminalView {
             return;
         }
         ctx.spawn(
-            async move { rx.await.ok().flatten() },
+            async move { rx.await.unwrap_or(Err(PasteFailure::NoAnswer)) },
             move |me, bytes, ctx| me.finish_queued_background_paste(id, bytes, ctx),
         );
         // A subshell setup in progress holds this paste too: its gates open before the paste
@@ -954,7 +965,7 @@ impl TerminalView {
     fn finish_queued_background_paste(
         &mut self,
         id: u64,
-        bytes: Option<Vec<u8>>,
+        bytes: Result<Vec<u8>, PasteFailure>,
         ctx: &mut ViewContext<Self>,
     ) {
         let queue = Rc::clone(&self.paste_queue.queue);
@@ -969,13 +980,23 @@ impl TerminalView {
             );
         }
         let result = match bytes {
-            Some(bytes) => {
+            Ok(bytes) => {
                 self.paste_queue.payloads.insert(id, bytes);
                 // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery
                 // moves them instead of copying a multi-MB paste.
                 Ok(Vec::new())
             }
-            None => Err(()),
+            Err(failure) => {
+                if let PasteFailure::TooLarge(bytes) = failure {
+                    // Its own message; the gate still opens so the keys behind it follow.
+                    self.paste_queue.refused.insert(id);
+                    self.show_error_toast(
+                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
+                        ctx,
+                    );
+                }
+                Err(())
+            }
         };
         {
             let mut host = PtyQueueHost::new(self, ctx);
@@ -983,5 +1004,6 @@ impl TerminalView {
         }
         // A result that arrived after its paste was cancelled or given up has no entry to claim it.
         self.paste_queue.payloads.remove(&id);
+        self.paste_queue.refused.remove(&id);
     }
 }

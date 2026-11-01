@@ -1492,7 +1492,25 @@ impl TerminalView {
             return;
         }
 
-        let content = ctx.clipboard().read();
+        // Off the UI thread (#1380); the link is then loaded from what was read.
+        crate::util::clipboard::read_clipboard_for_view(
+            self,
+            ctx,
+            warpui::clipboard::ReadKind::TextAndPaths,
+            |view, read, ctx| match read {
+                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                    view.load_agent_mode_conversation_from_clipboard_content(content, ctx)
+                }
+                _ => log::error!("Clipboard could not be read for a conversation debug link"),
+            },
+        );
+    }
+
+    fn load_agent_mode_conversation_from_clipboard_content(
+        &mut self,
+        content: warpui::clipboard::ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(debug_link) = content
             .paths
             .and_then(|paths| paths.into_iter().exactly_one().ok())

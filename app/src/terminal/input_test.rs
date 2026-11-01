@@ -12457,6 +12457,57 @@ fn test_slow_clipboard_read_does_not_block_and_keys_follow_the_paste() {
     });
 }
 
+/// #1380: the terminal view's paste into the input box and the input's context-menu paste read off
+/// the UI thread through the input's own paste machinery. `TerminalPaste` escapes copied paths for
+/// the shell; `PlainTextPaste` inserts the plain text only. Both on the queue and the sequencer.
+#[test]
+fn test_view_routed_pastes_insert_through_the_background_reader() {
+    use crate::terminal::input::PasteSource;
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    let cases: Vec<(PasteSource, &'static str)> = vec![
+        (
+            PasteSource::TerminalPaste(Some(warp_util::path::ShellDialect::Posix)),
+            "ab/tmp/a\\ b",
+        ),
+        (PasteSource::PlainTextPaste, "abtext"),
+    ];
+    for queue in [true, false] {
+        for (source, expected) in cases.clone() {
+            App::test((), move |mut app| async move {
+                initialize_app(&mut app);
+                let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+                let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+                let editor = input.read(&app, |input, _| input.editor().clone());
+                editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
+                input.update(&mut app, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx);
+                    input.user_insert("ab", ctx);
+                });
+                let reader: BackgroundTextReader = Box::new(move || {
+                    BackgroundTextRead::Content(ClipboardContent {
+                        plain_text: "text".to_string(),
+                        paths: Some(vec!["/tmp/a b".to_string()]),
+                        ..Default::default()
+                    })
+                });
+                input.update(&mut app, |input, ctx| {
+                    input.start_background_middle_click_paste(reader, source, ctx)
+                });
+                for _ in 0..1000 {
+                    if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                input.read(&app, |input, ctx| {
+                    assert_eq!(input.buffer_text(ctx), expected, "queue={queue}")
+                });
+            });
+        }
+    }
+}
+
 /// #1331: a clipboard read that never answers fails the paste at the backstop; the keys typed
 /// meanwhile are applied in order (none dropped) and the late answer is ignored.
 #[test]
@@ -12630,6 +12681,48 @@ fn test_editor_paste_failed_read_applies_the_held_keys() {
             assert_eq!(input.buffer_text(ctx), "abxyz")
         });
     });
+}
+
+/// #1382: a clipboard over the paste cap pastes nothing (never a truncated paste) and applies the
+/// keys typed meanwhile, in order, on the input queue and on the legacy sequencer.
+#[test]
+fn test_editor_paste_over_the_size_cap_is_refused_and_the_keys_kept() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("ab", ctx);
+            });
+            let (release, parked) = std::sync::mpsc::channel::<()>();
+            let reader: BackgroundTextReader = Box::new(move || {
+                let _ = parked.recv_timeout(Duration::from_secs(20));
+                BackgroundTextRead::TooLarge(warpui::clipboard::MAX_PASTE_BYTES + 1)
+            });
+            input.update(&mut app, |input, ctx| {
+                input.start_background_paste(reader, ctx)
+            });
+            editor.update(&mut app, |editor, ctx| {
+                editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
+            });
+            release.send(()).unwrap();
+            for _ in 0..1000 {
+                if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "abxy", "queue={queue}")
+            });
+        });
+    }
 }
 
 /// #1353 phase 1: the backstop is one timer, logged when it fires; the keys are applied in order

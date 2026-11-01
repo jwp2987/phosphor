@@ -113,6 +113,13 @@ impl EditorPasteHold {
         self.sequencer.borrow().has_pending()
     }
 
+    /// A paste begun with [`Self::begin`] is pending, whichever path the input uses. The input's
+    /// own pastes are on the queue; a plain editor's paste (search box, settings field) reads
+    /// off the UI thread on the sequencer (#1380) and holds the keys typed behind it here.
+    pub fn sequencer_pending(&self) -> bool {
+        self.sequencer.borrow().has_pending()
+    }
+
     pub fn is_pending(&self, id: u64) -> bool {
         if self.queue_enabled.get() {
             return self
