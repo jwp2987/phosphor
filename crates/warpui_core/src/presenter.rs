@@ -776,7 +776,10 @@ impl Presenter {
                     keystroke.cmd,
                 )
             }
-            Event::TypedCharacters { chars } => crate::input_order::log_typed_characters(chars),
+            Event::TypedCharacters { chars } => {
+                crate::input_order::bump_typed_dispatch_seq();
+                crate::input_order::log_typed_characters(chars)
+            }
             _ => {}
         }
         // Translate all events to be in the coordinate space after factoring in the

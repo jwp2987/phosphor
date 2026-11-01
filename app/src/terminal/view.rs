@@ -4467,6 +4467,22 @@ impl TerminalView {
         // #1353 step 3: the pane has ONE input queue. The input's editor adopts the view's, and
         // a drain the editor side has to stop (an entry only this view can deliver) pokes the
         // queue's waker so this view continues it. Event driven: nothing polls.
+        // #1400: a key the editor queued for the ssh hold (arrows, Backspace, ...) joins the
+        // ordered hold the moment it arrives, instead of sitting in the editor's side queue until
+        // the next terminal key or the hand-over. Event driven: the editor pokes this channel.
+        {
+            let (wake_tx, wake_rx) = async_channel::bounded::<()>(1);
+            ssh_editor_key_hold.set_waker(wake_tx);
+            let _ = ctx.spawn_stream_local(
+                wake_rx,
+                |me, _, ctx| {
+                    if me.ssh_iq.enabled && me.ssh_typeahead_holding {
+                        me.drain_editor_keys_into_ssh_hold(ctx);
+                    }
+                },
+                |_, _| {}, /* on_done */
+            );
+        }
         let paste_queue = paste_queue::PasteQueueState::new();
         if paste_queue.shared {
             let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);

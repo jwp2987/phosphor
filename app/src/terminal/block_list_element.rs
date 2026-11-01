@@ -750,6 +750,17 @@ fn terminal_takes_unclaimed_held_key(
     live_input_focus == Some(true) || wide
 }
 
+/// #1400: whether the terminal takes a printable key for the active ssh hold: focus is inside
+/// this terminal (the input, the editor in it, or any view the terminal owns). The editor's focus
+/// does NOT keep the key from the terminal: the hold is one ordered queue, offered here.
+pub(crate) fn terminal_takes_typed_during_hold(
+    live_input_focus: Option<bool>,
+    live_terminal_focus: Option<bool>,
+) -> bool {
+    live_input_focus == Some(true)
+        || (live_terminal_focus == Some(true) && ssh_rescue_wide_enabled())
+}
+
 /// #1397: what to do with a printable key that no claim rule of a terminal element took.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum UnclaimedKey {
@@ -1658,6 +1669,30 @@ impl BlockListElement {
         taken
     }
 
+    /// #1400: the terminal takes a PRINTABLE key for the ssh hold, whether or not the editor
+    /// holds focus. While the hold is active every key typed in this terminal joins the one
+    /// ordered hold, offered here the moment it arrives. The editor also sees this event (a flex
+    /// broadcasts it to all its children) and may or may not be reached by it: leaving the key to
+    /// "the editor takes it" lost 15 of 29 keys in the window between the remote's first Precmd
+    /// and the hand-over. `claim_typed` makes the editor's copy a no-op, in either order (#1339).
+    /// After the hold ended, only the settling rule of [`Self::takes_unclaimed_held_key`] applies.
+    fn takes_typed_for_ssh_hold(&self, chars: &str, ctx: &EventContext) -> bool {
+        if !self.ssh_key_hold.is_active() {
+            return false;
+        }
+        let taken = terminal_takes_typed_during_hold(
+            ctx.live_focus_of(self.input_view_id),
+            ctx.live_focus_of(self.terminal_view_id),
+        );
+        warpui::input_order::log_key_hop("kh_element_hold_take", || {
+            format!(
+                "taken={taken} editor_focus={}",
+                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_editor_view_id))
+            )
+        });
+        taken && !chars.is_empty()
+    }
+
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
         if (self.terminal_focused_now(ctx) || self.takes_unclaimed_held_key(ctx))
             && !chars.is_empty()
@@ -1693,6 +1728,7 @@ impl BlockListElement {
             || on_approval_card
             || on_ssh_choice_card
             || on_settled_ai_target
+            || self.takes_typed_for_ssh_hold(chars, ctx)
             || self.takes_unclaimed_held_key(ctx);
         // #1345: whether the terminal element dispatched this key to the terminal view, and the
         // focus facts behind it. A key that no element claims (the editor included) vanishes here.
@@ -1711,6 +1747,12 @@ impl BlockListElement {
             return false;
         }
         if claimed {
+            // #1400: with the ssh hold active this element offers the key; the editor's copy of
+            // the same event (an action, run after this pass) sees the mark and drops itself.
+            if self.ssh_key_hold.is_active() {
+                self.ssh_key_hold
+                    .mark_offered(warpui::input_order::typed_dispatch_seq(), chars);
+            }
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
             return true;
         }
@@ -5807,6 +5849,24 @@ mod tests {
         assert!(!super::terminal_takes_unclaimed_held_key(
             true, None, None, None
         ));
+    }
+
+    /// #1400: while the ssh hold is active the terminal element offers every printable key typed
+    /// in this terminal, the editor's focus included (the editor was not reached in the window
+    /// between the remote's first Precmd and the hand-over, and 15 of 29 keys vanished).
+    #[test]
+    fn terminal_takes_a_typed_key_for_the_active_hold_even_with_the_editor_focused() {
+        // Input focused (the editor inside it holds focus): taken.
+        assert!(super::terminal_takes_typed_during_hold(
+            Some(true),
+            Some(true)
+        ));
+        // Focus in another pane or window keeps its keys.
+        assert!(!super::terminal_takes_typed_during_hold(
+            Some(false),
+            Some(false)
+        ));
+        assert!(!super::terminal_takes_typed_during_hold(None, None));
     }
 
     /// #1339: with focus in the input's editor the editor takes and queues the key; the terminal
