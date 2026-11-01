@@ -65,6 +65,7 @@ use crate::terminal::model::{Secret, SecretHandle};
 use super::displayed_output::DisplayedOutput;
 use super::grapheme_cursor::{self, GraphemeCursor};
 use super::row::Row;
+use super::text_snapshot::{GridTextSnapshot, SnapshotCell, SnapshotContent, SnapshotRow};
 use super::{ConvertToAbsolute as _, Cursor, SelectionCursor};
 use filtering::FilterState;
 use string_offset::ByteOffset;
@@ -1339,6 +1340,141 @@ impl GridHandler {
                 force_secrets_obfuscated,
             ),
         }
+    }
+
+    /// Plain-text twin of [`Self::bounds_to_string`] that copies the needed cells instead of
+    /// building the string, so the string can be built off the UI thread and outside the model
+    /// lock (#1304). `GridTextSnapshot::render` returns the same text `bounds_to_string` would
+    /// (`include_esc_sequences == false`).
+    pub fn bounds_to_text_snapshot(
+        &self,
+        start: Point,
+        end: Point,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+        respect_displayed_output: RespectDisplayedOutput,
+    ) -> GridTextSnapshot {
+        if end.row >= self.total_rows() || self.total_rows() == 0 || self.columns() == 0 {
+            return GridTextSnapshot::empty();
+        }
+
+        let row_indices: Vec<usize> = match (respect_displayed_output, self.displayed_output_rows())
+        {
+            (RespectDisplayedOutput::Yes, Some(rows)) => rows
+                .skip(start.row)
+                .take(end.row.saturating_sub(start.row) + 1)
+                .collect(),
+            _ => (start.row..(end.row + 1)).collect(),
+        };
+
+        let columns = self.columns();
+        let mut rows = Vec::with_capacity(row_indices.len());
+        for (offset, row) in row_indices.into_iter().enumerate() {
+            let offset_row = start.row + offset;
+            let start_col = if offset_row == start.row {
+                start.col
+            } else {
+                0
+            };
+            let end_col = if offset_row == end.row {
+                end.col
+            } else {
+                columns.saturating_sub(1)
+            };
+            if let Some(snapshot_row) = self.snapshot_line(
+                row,
+                start_col..end_col,
+                offset_row == end.row,
+                respect_obfuscated_secrets,
+                force_secrets_obfuscated,
+            ) {
+                rows.push(snapshot_row);
+            }
+        }
+
+        GridTextSnapshot {
+            rows,
+            tabs: (0..columns)
+                .map(|col| self.ansi_handler_state.tabs[col])
+                .collect(),
+            columns,
+        }
+    }
+
+    /// Copies what [`Self::line_to_string`] reads for one row (plain text only).
+    fn snapshot_line(
+        &self,
+        row: usize,
+        mut cols: Range<usize>,
+        include_wrapped_wide: bool,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+    ) -> Option<SnapshotRow> {
+        let grid_row = self.row(row)?;
+        let row_length = min(grid_row.line_length(), cols.end + 1);
+
+        if grid_row
+            .get(cols.start)
+            .is_some_and(|cell| cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+        {
+            cols.start -= 1;
+        }
+
+        let should_show_secrets = force_secrets_obfuscated
+            || (respect_obfuscated_secrets == RespectObfuscatedSecrets::Yes
+                && self.get_secret_obfuscation().is_visually_obfuscated());
+        let check_secrets = should_show_secrets && self.has_secrets();
+
+        let mut cells = Vec::new();
+        let mut obfuscated = Vec::new();
+        for col in IndexRange::from(cols.start..row_length) {
+            let Some(cell) = grid_row.get(col) else {
+                break;
+            };
+            cells.push(SnapshotCell {
+                content: match cell.content_for_display() {
+                    CharOrStr::Char(c) => SnapshotContent::Char(c),
+                    CharOrStr::Str(s) => SnapshotContent::Str(s.into()),
+                },
+                is_tab: cell.c == '\t',
+                flags: cell.flags,
+            });
+            if check_secrets {
+                obfuscated.push(
+                    self.secret_at_original_point(Point::new(row, col))
+                        .is_some_and(|(handle, _)| {
+                            self.secret_by_handle(handle)
+                                .is_some_and(Secret::is_obfuscated)
+                        }),
+                );
+            }
+        }
+
+        let last_flags = row_length
+            .checked_sub(1)
+            .and_then(|last| grid_row.get(last))
+            .map(|cell| cell.flags);
+
+        let prev_first_char = if row_length == self.columns()
+            && row_length >= 2
+            && last_flags.is_some_and(|flags| flags.contains(Flags::LEADING_WIDE_CHAR_SPACER))
+            && include_wrapped_wide
+        {
+            row.checked_sub(1)
+                .and_then(|prev| self.row(prev))
+                .and_then(|prev_row| prev_row.get(0).map(|cell| cell.c))
+        } else {
+            None
+        };
+
+        Some(SnapshotRow {
+            cols,
+            row_length,
+            cells,
+            obfuscated,
+            last_flags,
+            prev_first_char,
+        })
     }
 
     fn visible_rows_to_string(

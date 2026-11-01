@@ -6,6 +6,7 @@ pub use serialized_block::*;
 use warp_core::features::FeatureFlag;
 
 use super::grid::grid_handler::{GridHandler, PerformResetGridChecks};
+use super::grid::text_snapshot::BlockTextSnapshot;
 use super::grid::{Cursor, RespectDisplayedOutput};
 use super::header_grid::CommandSnapshot;
 use super::header_grid::HeaderGrid;
@@ -2568,6 +2569,50 @@ impl Block {
         end: BlockGridPoint,
         line_limit: Option<usize>,
     ) -> String {
+        self.with_range_grids(start, end, |blockgrids, start_point, end_point| {
+            Self::join_range_grids(blockgrids, start_point, end_point, line_limit)
+        })
+    }
+
+    /// Snapshot twin of [`Self::bounds_to_string`]: copies the cells in the range so the text can
+    /// be built off the UI thread and outside the model lock (#1304).
+    pub fn bounds_to_text_snapshot(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+    ) -> BlockTextSnapshot {
+        self.with_range_grids(start, end, |blockgrids, start_point, end_point| {
+            BlockTextSnapshot {
+                pieces: blockgrids
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, grid)| {
+                        match (idx == 0, idx == blockgrids.len() - 1) {
+                            (true, false) => grid.point_to_end_text_snapshot(start_point),
+                            (false, true) => grid.start_to_point_text_snapshot(end_point),
+                            (false, false) => grid.contents_text_snapshot(None),
+                            (true, true) => grid.grid_handler.bounds_to_text_snapshot(
+                                start_point,
+                                end_point,
+                                RespectObfuscatedSecrets::Yes,
+                                false, /* force_obfuscated_secrets */
+                                RespectDisplayedOutput::Yes,
+                            ),
+                        }
+                    })
+                    .collect(),
+            }
+        })
+    }
+
+    /// Resolves which grids (and the start/end points relative to them) the range covers, then
+    /// hands them to `f`.
+    fn with_range_grids<R>(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+        f: impl FnOnce(&[&BlockGrid], Point, Point) -> R,
+    ) -> R {
         let (mut start_point, mut end_point) = (start.grid_point(), end.grid_point());
 
         // Declared here to ensure these values live long enough for future iteration through BlockGrids.
@@ -2717,7 +2762,16 @@ impl Block {
             }
         };
 
-        // Iterate over the BlockGrids and construct the final string, given the start/end points.
+        f(&blockgrids, start_point, end_point)
+    }
+
+    /// Iterates over the BlockGrids and constructs the final string, given the start/end points.
+    fn join_range_grids(
+        blockgrids: &[&BlockGrid],
+        start_point: Point,
+        end_point: Point,
+        line_limit: Option<usize>,
+    ) -> String {
         itertools::join(
             blockgrids
                 .iter()

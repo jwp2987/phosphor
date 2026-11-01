@@ -5,6 +5,7 @@ mod grid_storage;
 mod indexing;
 mod selection_cursor;
 mod storage;
+pub mod text_snapshot;
 
 pub(super) mod grapheme_cursor;
 #[cfg(test)]

@@ -492,6 +492,7 @@ use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::escape_sequences::{self, C1, EscCodes, ToEscapeSequence};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
+use crate::terminal::model::grid::text_snapshot::SelectionParts;
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
@@ -763,6 +764,21 @@ const CLIPBOARD_WRITE_SLOW_TOAST_DELAY: Duration = Duration::from_secs(3);
 const PASTE_PROGRESS_TOAST_DELAY: Duration = Duration::from_millis(750);
 
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
+/// Selections spanning more rows than this are stringified off the UI thread when copied
+/// (#1304); smaller ones stay inline.
+const COPY_SELECTION_DEFER_ROWS: usize = 20_000;
+
+/// `PHOSPHOR_COPY_INLINE=1` turns the off-thread selection copy off (#1304).
+fn copy_inline_forced() -> bool {
+    std::env::var_os("PHOSPHOR_COPY_INLINE").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// A selection's text for a copy: ready now, or snapshotted and still to be rendered.
+enum SelectionCopyText {
+    Ready(Option<String>),
+    Pending(SelectionParts),
+}
+
 const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
 /// Duration before we consider a session to have failed bootstrapping.
@@ -2673,6 +2689,9 @@ enum PowerShellSetupHold {
 
 pub struct TerminalView {
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
+    /// Bumped by every selection copy; a huge selection rendered off-thread only writes the
+    /// clipboard if no newer copy started meanwhile (#1304).
+    selection_copy_seq: u64,
     /// been told finished (#880).
     pending_image_ids: std::collections::HashSet<u32>,
     pub model: Arc<FairMutex<TerminalModel>>,
@@ -4821,6 +4840,7 @@ impl TerminalView {
             agent_view_back_button,
             is_using_conversation_for_pane_header_title: false,
             ambient_agent_view_model,
+            selection_copy_seq: 0,
             ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
@@ -21001,6 +21021,8 @@ impl TerminalView {
     /// thread (#1307). Falls back to an inline write on platforms with a cheap clipboard. A later
     /// copy always wins over an earlier slower one; a failed or very slow write shows a toast.
     fn copy_text_to_clipboard(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+        // A copy that lands now supersedes any huge selection still being rendered.
+        self.selection_copy_seq = self.selection_copy_seq.wrapping_add(1);
         #[cfg(not(target_family = "wasm"))]
         {
             let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -21481,6 +21503,74 @@ impl TerminalView {
         let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
         input_mode.is_inverted_blocklist()
     }
+    /// The selection's text for a copy. A selection over `COPY_SELECTION_DEFER_ROWS` rows is only
+    /// snapshotted here (cheap, under a short model lock); the caller renders it on a
+    /// background thread so a huge copy never stalls the UI (#1304). The result is byte-identical
+    /// to `selection_to_string`. `PHOSPHOR_COPY_INLINE=1` forces the old inline path.
+    fn selection_text_for_copy(&mut self, ctx: &ViewContext<Self>) -> SelectionCopyText {
+        // Any newer selection copy supersedes one still being rendered.
+        self.selection_copy_seq = self.selection_copy_seq.wrapping_add(1);
+        let defer_over_rows = if cfg!(target_family = "wasm") || copy_inline_forced() {
+            None
+        } else {
+            Some(COPY_SELECTION_DEFER_ROWS)
+        };
+        let semantic_selection = SemanticSelection::as_ref(ctx);
+        let parts = self.model.lock().selection_to_parts(
+            semantic_selection,
+            self.is_inverted_blocklist(ctx),
+            defer_over_rows,
+            ctx,
+        );
+        match parts {
+            None => SelectionCopyText::Ready(None),
+            Some(parts) if parts.has_snapshots() => SelectionCopyText::Pending(parts),
+            Some(parts) => SelectionCopyText::Ready(Some(parts.render())),
+        }
+    }
+
+    /// Renders `parts` on a background thread, then runs `then` with the text on the UI thread,
+    /// unless a newer selection copy started meanwhile (it must not be overwritten by this one).
+    #[cfg(not(target_family = "wasm"))]
+    fn render_selection_off_thread(
+        &mut self,
+        parts: SelectionParts,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        let seq = self.selection_copy_seq;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("selection-render".into())
+            .spawn(move || {
+                let _ = tx.send(parts.render());
+            });
+        if spawned.is_err() {
+            self.show_error_toast(
+                "Copy failed \u{2014} could not start the copy".to_string(),
+                ctx,
+            );
+            return;
+        }
+        ctx.spawn(async move { rx.await.ok() }, move |me, text, ctx| {
+            if let Some(text) = text {
+                if me.selection_copy_seq == seq {
+                    then(me, text, ctx);
+                }
+            }
+        });
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn render_selection_off_thread(
+        &mut self,
+        parts: SelectionParts,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        then(self, parts.render(), ctx);
+    }
+
 
     fn copy(&mut self, ctx: &mut ViewContext<Self>) {
         // First check if there's selected text in the CLI subagent views
@@ -21515,17 +21605,22 @@ impl TerminalView {
             return;
         }
 
-        let semantic_selection = SemanticSelection::as_ref(ctx);
-        let selected = self.model.lock().selection_to_string(
-            semantic_selection,
-            self.is_inverted_blocklist(ctx),
-            ctx,
-        );
-        if let Some(selected) = selected {
-            if !selected.is_empty() {
-                self.copy_text_to_clipboard(selected, ctx);
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected)) => {
+                if !selected.is_empty() {
+                    self.copy_text_to_clipboard(selected, ctx);
+                }
+                return;
             }
-            return;
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, |me, selected, ctx| {
+                    if !selected.is_empty() {
+                        me.copy_text_to_clipboard(selected, ctx);
+                    }
+                });
+                return;
+            }
         }
 
         // Prioritize selected text in the input over selected blocks (APP-4330):
@@ -23552,15 +23647,20 @@ impl TerminalView {
             return;
         }
         let selection_settings = SelectionSettings::handle(ctx);
-        let semantic_selection = SemanticSelection::as_ref(ctx);
-        let model = self.model.lock();
-        if let Some(selected) =
-            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-        {
+        let copy_on_select = move |selected: String, ctx: &mut ViewContext<Self>| {
             selection_settings.update(ctx, |selection_settings, ctx| {
                 selection_settings
                     .maybe_copy_on_select(ClipboardContent::plain_text(selected), ctx);
             });
+        };
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected)) => copy_on_select(selected, ctx),
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, move |_, selected, ctx| {
+                    copy_on_select(selected, ctx)
+                });
+            }
         }
     }
 
@@ -26863,13 +26963,16 @@ impl TerminalView {
             return;
         }
 
-        let selected_text = {
-            let semantic_selection = SemanticSelection::as_ref(ctx);
-            let model = self.model.lock();
-            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-        };
-        if let Some(selected_text) = selected_text {
-            self.copy_text_to_clipboard(selected_text, ctx);
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected_text)) => {
+                self.copy_text_to_clipboard(selected_text, ctx);
+            }
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, |me, selected_text, ctx| {
+                    me.copy_text_to_clipboard(selected_text, ctx);
+                });
+            }
         }
         self.close_context_menu(ctx, true);
     }

@@ -69,6 +69,7 @@ use crate::terminal::model::ansi::{
     InitSshValue, InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue,
     PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
 };
+use crate::terminal::model::grid::text_snapshot::SelectionParts;
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::session::SessionInfo;
 use crate::terminal::shell::{ShellName, ShellType};
@@ -2145,6 +2146,31 @@ impl TerminalModel {
         } else {
             self.block_list
                 .selection_to_string(semantic_selection, inverted_blocklist, app)
+        }
+    }
+
+    /// Like [`Self::selection_to_string`], but a selection over `defer_over_rows` rows is
+    /// captured as snapshots (cheap, under the caller's lock) and rendered later with
+    /// `SelectionParts::render`, which can run on a background thread (#1304).
+    pub fn selection_to_parts(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        defer_over_rows: Option<usize>,
+        app: &AppContext,
+    ) -> Option<SelectionParts> {
+        if self.alt_screen_active {
+            // Bounded by the screen size, so always inline.
+            self.alt_screen
+                .selection_to_string(semantic_selection)
+                .map(|text| SelectionParts::new(vec![text.into()]))
+        } else {
+            self.block_list.selection_to_parts(
+                semantic_selection,
+                inverted_blocklist,
+                app,
+                defer_over_rows,
+            )
         }
     }
 

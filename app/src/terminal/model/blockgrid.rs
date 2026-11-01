@@ -22,6 +22,7 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::{Arc, OnceLock};
 
 use super::find::RegexDFAs;
+use super::grid::text_snapshot::GridTextSnapshot;
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
 use super::kitty::{KittyAction, KittyResponse};
@@ -822,6 +823,42 @@ impl BlockGrid {
                 point,
                 self.end_point(),
                 false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::Yes,
+                false, /* force_obfuscated_secrets */
+                RespectDisplayedOutput::Yes,
+            )
+        }
+    }
+
+    /// Snapshot twin of [`Self::start_to_point_as_string`] (#1304).
+    pub fn start_to_point_text_snapshot(&self, point: Point) -> GridTextSnapshot {
+        self.range_text_snapshot(self.start_point(), point)
+    }
+
+    /// Snapshot twin of [`Self::point_to_end_as_string`] (#1304).
+    pub fn point_to_end_text_snapshot(&self, point: Point) -> GridTextSnapshot {
+        self.range_text_snapshot(point, self.end_point())
+    }
+
+    /// Snapshot twin of `contents_to_string(false, max_rows)` (#1304).
+    pub fn contents_text_snapshot(&self, max_rows: Option<usize>) -> GridTextSnapshot {
+        if self.is_empty() {
+            return GridTextSnapshot::empty();
+        }
+        let row_start_bound = match max_rows {
+            None => 0,
+            Some(max) => (self.len() - 1).saturating_sub(max),
+        };
+        self.range_text_snapshot(Point::new(row_start_bound, 0), self.end_point())
+    }
+
+    fn range_text_snapshot(&self, start: Point, end: Point) -> GridTextSnapshot {
+        if self.is_empty() {
+            GridTextSnapshot::empty()
+        } else {
+            self.grid_handler.bounds_to_text_snapshot(
+                start,
+                end,
                 RespectObfuscatedSecrets::Yes,
                 false, /* force_obfuscated_secrets */
                 RespectDisplayedOutput::Yes,
