@@ -28,3 +28,26 @@ fn a_missing_file_is_not_reported_as_too_large() {
         None
     );
 }
+
+#[test]
+fn oversized_paths_reports_only_files_past_the_limit_and_extras_are_filtered() {
+    let dir = std::env::temp_dir().join(format!("phosphor-size-guard-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let small = dir.join("small.txt");
+    let big = dir.join("big.txt");
+    std::fs::write(&small, "x").unwrap();
+    let file = std::fs::File::create(&big).unwrap();
+    file.set_len(CODE_EDITOR_MAX_FILE_BYTES + 1).unwrap();
+
+    let paths = vec![small.clone(), big.clone(), dir.join("missing.txt")];
+    let oversized = oversized_paths(&paths);
+    assert_eq!(
+        oversized,
+        vec![(big.clone(), CODE_EDITOR_MAX_FILE_BYTES + 1)]
+    );
+    assert_eq!(
+        without_oversized(&paths, &oversized),
+        vec![small, dir.join("missing.txt")]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
