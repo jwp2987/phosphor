@@ -1676,3 +1676,99 @@ fn a_new_session_drops_the_previous_sessions_round_trips() {
     assert!(!handoff.on_preexec(false));
     assert_eq!(handoff.rtt_samples.len(), 1);
 }
+
+/// A ConPTY hand-off, pty-owned, whose prompt's precmd arrived just now and whose line editor is
+/// not active yet (#1162).
+fn conpty_awaiting_line_editor() -> TypeaheadHandoff {
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.on_precmd();
+    handoff
+}
+
+#[test]
+fn keys_between_precmd_and_active_are_held_and_released_in_order() {
+    let mut handoff = conpty_awaiting_line_editor();
+    for key in [&b"f"[..], b"o", b"\x1b[A", b"\r", b"x"] {
+        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
+    }
+    assert!(handoff.take_prompt_hold_started().is_some());
+    assert_eq!(handoff.writes_in_flight(), 0);
+    // Old behaviour: every key above was WriteCounted straight to the pty, ahead of readline.
+    let chunks = handoff.release_prompt_hold_on_active();
+    assert_eq!(
+        chunks,
+        vec![
+            b"f".to_vec(),
+            b"o".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"\r".to_vec(),
+            b"x".to_vec()
+        ]
+    );
+    assert_eq!(handoff.writes_in_flight(), 5);
+    assert!(!handoff.has_prompt_hold());
+    // Once active nothing is held.
+    assert_eq!(handoff.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn the_hold_expiry_releases_the_keys_in_order() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.expire_prompt_hold(id + 1), None);
+    assert_eq!(
+        handoff.expire_prompt_hold(id),
+        Some(vec![b"a".to_vec(), b"b".to_vec(), b"\r".to_vec()])
+    );
+    assert_eq!(handoff.expire_prompt_hold(id), None);
+    assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_stale_precmd_does_not_hold_new_keys() {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.awaiting_line_editor_since =
+        Some(Instant::now() - CONPTY_PROMPT_HOLD_EXPIRY - Duration::from_millis(1));
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_signal_goes_out_behind_the_held_keys() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.take_prompt_hold_before_signal(b"\x03"),
+        Some(b"ls\r\x03".to_vec())
+    );
+    assert!(!handoff.has_prompt_hold());
+    assert_eq!(handoff.take_prompt_hold_before_signal(b"a"), None);
+}
+
+#[test]
+fn a_preexec_ends_the_wait_for_new_keys() {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.on_preexec(false);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn the_kill_switch_and_other_platforms_never_hold() {
+    // Prompt hold off (PHOSPHOR_CONPTY_PROMPT_HOLD=0).
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(false);
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+    // Not a ConPTY session (Linux, macOS): the flag alone changes nothing.
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_prompt_hold(true);
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.has_prompt_hold());
+}

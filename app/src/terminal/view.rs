@@ -501,8 +501,9 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungSubmit,
-    forces_shell_submit, text_for_editor, young_submit_decision,
+    CONPTY_PROMPT_HOLD_EXPIRY, HeldKeysRelease, InterruptOutcome, ReportDisposition,
+    UserBytesRoute, YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor,
+    young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -11711,6 +11712,18 @@ impl TerminalView {
         {
             bytes = Cow::Owned(with_held);
         }
+        // #1162: a signal or EOF goes out behind the keys held for the prompt (an Enter among
+        // them must run before the ^C reaches it), as one write in typed order.
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && bytes.iter().any(is_signal_byte)
+            && let Some(with_held) = self
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .take_prompt_hold_before_signal(&bytes)
+        {
+            bytes = Cow::Owned(with_held);
+        }
         // #963: the user typing into an interactive full-screen program (pager, vim, tmux, ...)
         // the agent is driving is taking the command over. Do it the same way an explicit
         // take-over does, so the agent stops writing to the same program and the two inputs
@@ -11805,6 +11818,21 @@ impl TerminalView {
                     me.release_expired_young_hold(hold_id, ctx);
                 });
             }
+            // #1162: keys held between a prompt's precmd and its line editor becoming active.
+            let prompt_hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .take_prompt_hold_started()
+            } else {
+                None
+            };
+            if let Some(prompt_hold_id) = prompt_hold_id {
+                ctx.spawn(
+                    Timer::after(CONPTY_PROMPT_HOLD_EXPIRY),
+                    move |me, _, ctx| me.release_expired_prompt_hold(prompt_hold_id, ctx),
+                );
+            }
             return true;
         }
 
@@ -11842,6 +11870,21 @@ impl TerminalView {
                     bytes: Cow::Owned(bytes),
                 });
             }
+        }
+    }
+
+    /// The line editor never signalled within [`CONPTY_PROMPT_HOLD_EXPIRY`]
+    /// (#1162): the keys held since the prompt's precmd are written anyway, in typed order.
+    fn release_expired_prompt_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
+        let chunks = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .expire_prompt_hold(hold_id);
+        for bytes in chunks.into_iter().flatten() {
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
         }
     }
 

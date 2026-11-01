@@ -1046,7 +1046,15 @@ fn on_shell_determined<S: TerminalSurface>(
     // #1162: the session's input goes through ConPTY, which loses lines when a held run of
     // keys with an embedded Enter arrives as one write, or when a request lands mid-line.
     #[cfg(windows)]
-    model.lock().typeahead_handoff_mut().set_conpty_input(true);
+    {
+        let mut model = model.lock();
+        model.typeahead_handoff_mut().set_conpty_input(true);
+        // #1162: raw keys typed between a prompt and its line editor are held (bounded);
+        // PHOSPHOR_CONPTY_PROMPT_HOLD=0 turns it off.
+        model.typeahead_handoff_mut().set_conpty_prompt_hold(
+            crate::terminal::model::typeahead_handoff::conpty_prompt_hold_env_enabled(),
+        );
+    }
 }
 
 /// Wires the Unix terminal-attributes poller to a terminal surface.
