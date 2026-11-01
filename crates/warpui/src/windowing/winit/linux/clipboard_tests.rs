@@ -308,19 +308,58 @@ mod bounded_wait_tests {
     #[test]
     fn exit_handoff_runs_even_when_a_write_never_finishes() {
         let mut ran = false;
-        let mut sleeps = 0;
-        let did = flush_for_exit(|| true, || sleeps += 1, 5, || ran = true);
+        // The bounded wait gave up (returned false): the handoff still runs.
+        let did = flush_for_exit(|| false, || ran = true);
         assert!(did && ran);
-        assert_eq!(sleeps, 5, "the wait for in-flight copies is bounded");
     }
 
     #[test]
-    fn exit_handoff_does_not_wait_when_nothing_is_pending() {
+    fn exit_handoff_runs_after_the_wait_reports_the_copy_landed() {
         let mut ran = false;
-        let mut sleeps = 0;
-        flush_for_exit(|| false, || sleeps += 1, 5, || ran = true);
+        flush_for_exit(|| true, || ran = true);
         assert!(ran);
-        assert_eq!(sleeps, 0);
+    }
+
+    #[test]
+    fn exit_wait_is_woken_by_the_writer_finishing_not_polled() {
+        use crate::clipboard::{ClipboardContent, ClipboardTarget, PendingWrites};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let pending = Arc::new(PendingWrites::new());
+        pending.add(
+            1,
+            ClipboardTarget::Clipboard,
+            Arc::new(ClipboardContent::plain_text("x".into())),
+        );
+        let finisher = {
+            let pending = pending.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                pending.finish(1);
+            })
+        };
+        let start = Instant::now();
+        // A generous budget: returning well before it proves the notify woke the waiter.
+        assert!(pending.wait_until_idle(ClipboardTarget::Clipboard, Duration::from_secs(10)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        finisher.join().unwrap();
+    }
+
+    #[test]
+    fn exit_wait_gives_up_at_its_budget_when_a_copy_never_finishes() {
+        use crate::clipboard::{ClipboardContent, ClipboardTarget, PendingWrites};
+        use std::sync::Arc;
+
+        let pending = PendingWrites::new();
+        pending.add(
+            1,
+            ClipboardTarget::Clipboard,
+            Arc::new(ClipboardContent::plain_text("x".into())),
+        );
+        assert!(!pending.wait_until_idle(ClipboardTarget::Clipboard, Duration::from_millis(20)));
+        // A different target is not blocked by it.
+        assert!(pending.wait_until_idle(ClipboardTarget::Primary, Duration::from_millis(20)));
     }
 }
 

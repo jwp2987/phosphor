@@ -49,18 +49,15 @@ fn read_timed_out(flagged: bool, elapsed: Duration, budget: Duration, has_text: 
 }
 
 /// Quit-time handoff: waits (bounded) for in-flight copies, then runs `handoff`. Returns whether
-/// the handoff ran.
-fn flush_for_exit(
-    mut pending_write: impl FnMut() -> bool,
-    mut sleep: impl FnMut(),
-    max_polls: usize,
-    handoff: impl FnOnce(),
-) -> bool {
-    for _ in 0..max_polls {
-        if !pending_write() {
-            break;
-        }
-        sleep();
+/// the handoff ran. `wait_for_pending` blocks until the copies finish (the serial writer wakes it)
+/// or its budget passes, and says whether they finished; a copy still unfinished at the budget is
+/// logged, not silently dropped.
+fn flush_for_exit(wait_for_pending: impl FnOnce() -> bool, handoff: impl FnOnce()) -> bool {
+    if !wait_for_pending() {
+        log::warn!(
+            "A clipboard copy was still in flight {EXIT_PENDING_WRITE_WAIT:?} after quit began; \
+             handing the clipboard over without it"
+        );
     }
     handoff();
     true
@@ -297,11 +294,15 @@ impl Clipboard for LinuxClipboard {
         let spawned = std::thread::Builder::new()
             .name("clipboard-exit".into())
             .spawn(move || {
-                let poll = Duration::from_millis(10);
                 flush_for_exit(
-                    || crate::clipboard::pending_write(ClipboardTarget::Clipboard).is_some(),
-                    || std::thread::sleep(poll),
-                    (EXIT_PENDING_WRITE_WAIT.as_millis() / poll.as_millis()) as usize,
+                    || {
+                        // Woken by the serial writer finishing the copy (a Condvar notify), not
+                        // polled; `EXIT_PENDING_WRITE_WAIT` is only the logged give-up.
+                        crate::clipboard::wait_for_pending_writes(
+                            ClipboardTarget::Clipboard,
+                            EXIT_PENDING_WRITE_WAIT,
+                        )
+                    },
                     arboard::hand_over_to_clipboard_manager,
                 );
                 let _ = done_tx.send(());

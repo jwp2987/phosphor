@@ -1,4 +1,4 @@
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 /// A Clipboard that can read and write strings. Each platform must implement this trait to support
 /// writing to a clipboard.
@@ -169,12 +169,16 @@ static WRITE_ORDER: WriteOrder = WriteOrder::new();
 /// write takes must see the new text, so reads consult this before the system clipboard.
 pub struct PendingWrites {
     writes: Mutex<Vec<(u64, ClipboardTarget, std::sync::Arc<ClipboardContent>)>>,
+    /// Notified whenever a write is forgotten, so a waiter (quit) wakes when the last pending
+    /// copy lands instead of polling for it.
+    changed: Condvar,
 }
 
 impl PendingWrites {
     pub const fn new() -> Self {
         Self {
             writes: Mutex::new(Vec::new()),
+            changed: Condvar::new(),
         }
     }
 
@@ -190,6 +194,21 @@ impl PendingWrites {
     /// Forgets the write `generation` (finished, superseded or failed).
     pub fn finish(&self, generation: u64) {
         self.writes.lock().retain(|(g, _, _)| *g != generation);
+        self.changed.notify_all();
+    }
+
+    /// Blocks until no write to `target` is unfinished, or `timeout` passes (a give-up net for a
+    /// wedged selection owner). Returns whether none remain. Woken by [`Self::finish`].
+    #[cfg(not(target_family = "wasm"))]
+    pub fn wait_until_idle(&self, target: ClipboardTarget, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut writes = self.writes.lock();
+        while writes.iter().any(|(_, t, _)| *t == target) {
+            if self.changed.wait_until(&mut writes, deadline).timed_out() {
+                return !writes.iter().any(|(_, t, _)| *t == target);
+            }
+        }
+        true
     }
 
     /// The newest unfinished write to `target`, if any.
@@ -210,6 +229,13 @@ static PENDING_WRITES: PendingWrites = PendingWrites::new();
 /// pastes the new text.
 pub fn pending_write(target: ClipboardTarget) -> Option<std::sync::Arc<ClipboardContent>> {
     PENDING_WRITES.latest(target)
+}
+
+/// Waits (up to `timeout`) for the in-flight background copies to `target` to finish; woken by the
+/// writer finishing, not by polling. Returns whether none remain.
+#[cfg(not(target_family = "wasm"))]
+pub fn wait_for_pending_writes(target: ClipboardTarget, timeout: std::time::Duration) -> bool {
+    PENDING_WRITES.wait_until_idle(target, timeout)
 }
 
 /// Builds a [`BackgroundClipboardWriter`] backed by ONE long-lived thread that owns ONE platform
