@@ -42,11 +42,11 @@ use crate::appearance::Appearance;
 use crate::features::FeatureFlag;
 use crate::report_if_error;
 use crate::settings::{LocalControlMode, LocalControlModeSetting, LocalControlSettings};
-#[cfg(target_os = "macos")]
 use crate::view_components::DismissibleToast;
 use crate::view_components::{Dropdown, DropdownItem};
 #[cfg(target_os = "macos")]
-use crate::workspace::{cli_install, ToastStack};
+use crate::workspace::cli_install;
+use crate::workspace::ToastStack;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScriptingSettingsPageAction {
@@ -204,9 +204,34 @@ impl TypedActionView for ScriptingSettingsPageView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             ScriptingSettingsPageAction::SetLocalControlMode(mode) => {
-                LocalControlSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings.local_control_mode.set_value(*mode, ctx));
+                let pending = LocalControlSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    match settings.local_control_mode.set_value_tracked(*mode, ctx) {
+                        Ok(pending) => pending,
+                        Err(err) => {
+                            report_if_error!(Err::<(), _>(err));
+                            None
+                        }
+                    }
                 });
+                // The write runs on the secure-storage worker; surface a failure as a toast, as
+                // the synchronous write's error used to be reported.
+                if let Some(pending) = pending {
+                    let window_id = ctx.window_id();
+                    ctx.spawn(pending.wait(), move |_, outcome, ctx| {
+                        if let Some(Err(error)) = outcome {
+                            let message =
+                                format!("Failed to save the local control setting: {error:#}");
+                            log::warn!("{message}");
+                            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                toast_stack.add_persistent_toast(
+                                    DismissibleToast::error(message),
+                                    window_id,
+                                    ctx,
+                                );
+                            });
+                        }
+                    });
+                }
                 ctx.notify();
             }
             #[cfg(target_os = "macos")]

@@ -345,3 +345,33 @@ fn test_nu_is_searched_for_by_name_when_loading_known_shells() {
         "{shell_types:?}"
     );
 }
+
+#[test]
+fn saved_shell_is_used_while_the_scan_is_unfinished() {
+    VirtualFS::test("saved_shell_while_scan_unfinished", |dirs, mut sandbox| {
+        sandbox.mkdir("bin");
+        sandbox.with_files(vec![Stub::MockExecutable("bin/zsh")]);
+        let zsh = dirs.tests().join("bin").join("zsh");
+        let shells = AvailableShells {
+            scan: Arc::new(ShellScan::default()), // never completes
+            result: std::sync::OnceLock::new(),
+            empty: ScanResult::default(),
+            scanned_path: std::ffi::OsString::new(),
+            wsl_names: Vec::new(),
+        };
+        let pref = NewSessionShell::Executable(zsh.display().to_string());
+        let start = std::time::Instant::now();
+        let got = shells
+            .resolve_preferred_directly(&pref)
+            .expect("shell exists");
+        assert!(start.elapsed() < std::time::Duration::from_millis(250));
+        assert!(got.matches_preference(&pref));
+        assert!(shells.scanned_if_ready().is_none());
+
+        // A saved shell that no longer exists falls back to the default.
+        let gone = NewSessionShell::Executable(
+            dirs.tests().join("bin").join("fish").display().to_string(),
+        );
+        assert!(shells.resolve_preferred_directly(&gone).is_none());
+    });
+}
