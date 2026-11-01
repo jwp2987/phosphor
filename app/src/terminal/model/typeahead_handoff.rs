@@ -29,6 +29,17 @@
 //! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
 //! | ConPTY request after a key | 120 ms quiet | `writes_in_flight == 0` and no key held in the view's queue (the queue boundary) |
 //!
+//! # Where held keys live (#1353 phase 5)
+//!
+//! On the queue path (`PHOSPHOR_INPUT_QUEUE_HANDOFF` not `0`) this module keeps no bytes for the
+//! ConPTY prompt hold (a `LineEditorActive` gate, released by the line editor's signal) nor, since
+//! phase 5b, for the young-Enter hold (a `PromptSeen` gate keyed by the hold's id). A hold whose
+//! keys are in the view's queue is only a marker here; every way it can end records a
+//! [`YoungHoldEnd`] (or hands the id over synchronously for a signal) and the view turns that into
+//! taking or dropping the gate's entries. The legacy buffers and the view's timer stay for the
+//! kill switch and for a key the queue cannot take at that moment. `HoldAfterEnter.held` (phase
+//! 5b step 2) is still a buffer in this struct.
+//!
 //! Still timing, because no signal exists: the young-Enter window and its round-trip learning where
 //! the platform can say nothing about the shell (ssh, ConPTY, macOS without a sample), the PS2
 //! continued line (no Precmd, no Preexec), and every give-up above.
