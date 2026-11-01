@@ -6,8 +6,10 @@ use anyhow::Result;
 use cocoa::base::id;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
-use objc2_foundation::{NSArray, NSData, NSString, ns_string};
-use warpui_core::clipboard::{ClipboardContent, ImageData};
+use objc2_foundation::{ns_string, NSArray, NSData, NSString};
+use warpui_core::clipboard::{
+    BackgroundTextRead, BackgroundTextReader, ClipboardContent, ImageData,
+};
 
 unsafe extern "C" {
     fn getFilePathsFromPasteboard() -> id;
@@ -70,7 +72,81 @@ impl crate::Clipboard for Clipboard {
         }
     }
 
+    fn has_content(&mut self) -> bool {
+        // `availableTypeFromArray:` consults the declared type list only; it never asks the owner
+        // to materialise (or us to decode) any data, so a lazy promise from another app cannot
+        // block it (#1306). Covers the types `read` consumes.
+        unsafe {
+            let types = NSArray::from_slice(&[
+                NSPasteboardTypeString,
+                NSPasteboardTypeHTML,
+                ns_string!("public.file-url"),
+                ns_string!("NSFilenamesPboardType"),
+                ns_string!("public.png"),
+                ns_string!("public.jpeg"),
+                ns_string!("public.gif"),
+                ns_string!("public.webp"),
+                ns_string!("public.svg-image"),
+                ns_string!("com.compuserve.gif"),
+            ]);
+            self.0.availableTypeFromArray(&types).is_some()
+        }
+    }
+
+    fn read_text_and_paths(&mut self) -> ClipboardContent {
+        // Skips the HTML and image reads (the latter decodes and copies every image flavor).
+        unsafe { self.read_text_and_paths_inner() }
+    }
+
+    fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
+        // NSPasteboard reads can block on a lazy promise from the owning app; run them on a
+        // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
+        // reads the same data.
+        Some(Box::new(|| {
+            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
+                Ok(mut clipboard) => BackgroundTextRead::Content(
+                    crate::Clipboard::read_text_and_paths(&mut clipboard),
+                ),
+                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
+            })
+        }))
+    }
+
+    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
+        Some(Box::new(|| {
+            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
+                Ok(mut clipboard) => {
+                    BackgroundTextRead::Content(crate::Clipboard::read(&mut clipboard))
+                }
+                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
+            })
+        }))
+    }
+
     fn read(&mut self) -> ClipboardContent {
+        unsafe {
+            let mut content = self.read_text_and_paths_inner();
+
+            let html = self.0.stringForType(NSPasteboardTypeHTML);
+            if let Some(html) = html.as_deref() {
+                content.html = Some(
+                    CStr::from_ptr(html.UTF8String())
+                        .to_str()
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            }
+
+            // Try to read image data from clipboard
+            content.images = self.read_image_data_from_pasteboard();
+
+            content
+        }
+    }
+}
+
+impl Clipboard {
+    unsafe fn read_text_and_paths_inner(&mut self) -> ClipboardContent {
         unsafe {
             // Try getting file paths from the clipboard. If we end up with an empty
             // array of file paths, fallback to getting the string from the pasteboard.
@@ -101,20 +177,6 @@ impl crate::Clipboard for Clipboard {
                         .collect::<Vec<String>>(),
                 );
             }
-
-            let html = self.0.stringForType(NSPasteboardTypeHTML);
-            if let Some(html) = html.as_deref() {
-                content.html = Some(
-                    CStr::from_ptr(html.UTF8String())
-                        .to_str()
-                        .unwrap_or("")
-                        .to_string(),
-                )
-            }
-
-            // Try to read image data from clipboard
-            content.images = self.read_image_data_from_pasteboard();
-
             content
         }
     }

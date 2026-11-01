@@ -38,3 +38,40 @@ fn image_only_clipboard_has_content() {
     assert!(clipboard.has_content());
     assert!(clipboard.read_without_images().images.is_none());
 }
+
+/// A clipboard whose `read` must never run: `has_content` answers from a cheap probe (#1306).
+struct ProbeOnlyClipboard;
+
+impl Clipboard for ProbeOnlyClipboard {
+    fn write(&mut self, _contents: ClipboardContent) {}
+    fn read(&mut self) -> ClipboardContent {
+        panic!("has_content must not read or decode clipboard content");
+    }
+    fn has_content(&mut self) -> bool {
+        true
+    }
+    #[cfg(target_family = "wasm")]
+    fn save(&mut self, _content: ClipboardContent) {}
+}
+
+#[test]
+fn has_content_override_does_not_read() {
+    assert!(ProbeOnlyClipboard.has_content());
+}
+
+#[test]
+fn background_readers_default_to_none() {
+    // Platforms without a thread-safe read keep the synchronous path (#1305).
+    struct Plain;
+    impl Clipboard for Plain {
+        fn write(&mut self, _contents: ClipboardContent) {}
+        fn read(&mut self) -> ClipboardContent {
+            ClipboardContent::default()
+        }
+        #[cfg(target_family = "wasm")]
+        fn save(&mut self, _content: ClipboardContent) {}
+    }
+    assert!(Plain.background_text_reader().is_none());
+    assert!(Plain.background_full_reader().is_none());
+    assert!(!Plain.has_content());
+}
