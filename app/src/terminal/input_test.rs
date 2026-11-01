@@ -7438,9 +7438,9 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
-/// #1158: an Enter waiting for a verdict that never arrives (over ssh it waited on remote
-/// completion generators) submits once the budget is spent. It used to hold for 5 s and then keep
-/// the text in the editor.
+/// #1158/#1351: an Enter waiting for a verdict whose classifier is stuck (over ssh it waited on
+/// remote completion generators) submits once the classifier's own compute has spent the cap. It
+/// used to hold for 5 s and then keep the text in the editor.
 #[test]
 fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget() {
     use crate::ai::blocklist::InputConfig;
@@ -7486,19 +7486,23 @@ fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget
             );
         });
 
-        // Within the budget it keeps waiting.
+        // Within the cap it keeps waiting.
         input.update(&mut app, |input, ctx| {
-            input.wait_for_verdict_then_enter(line.to_string(), Instant::now(), ctx);
+            input.verdict_wait.as_mut().unwrap().compute = ComputeClock::with_spent_for_test(
+                ENTER_VERDICT_BUDGET - std::time::Duration::from_millis(5),
+            );
+            input.wait_for_verdict_then_enter(line.to_string(), ctx);
         });
         input.read(&app, |input, _| {
-            assert!(input.verdict_wait.is_some(), "still within the budget");
+            assert!(input.verdict_wait.is_some(), "still within the cap");
         });
 
-        // The verdict never lands; once the budget is spent the Enter goes ahead.
+        // The verdict never lands; once the classifier spent the cap the Enter goes ahead.
         input.update(&mut app, |input, ctx| {
-            let started =
-                Instant::now() - ENTER_VERDICT_BUDGET - std::time::Duration::from_millis(5);
-            input.wait_for_verdict_then_enter(line.to_string(), started, ctx);
+            input.verdict_wait.as_mut().unwrap().compute = ComputeClock::with_spent_for_test(
+                ENTER_VERDICT_BUDGET + std::time::Duration::from_millis(5),
+            );
+            input.wait_for_verdict_then_enter(line.to_string(), ctx);
         });
         input.read(&app, |input, ctx| {
             assert!(
@@ -10509,7 +10513,7 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
                 ctx,
             );
             input.user_insert("ec", ctx);
-            input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
+            input.wait_for_verdict_then_enter("true".to_string(), ctx);
         });
         input.read(&app, |input, _| {
             assert!(
@@ -10575,7 +10579,7 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
         // submit again.
         input.update(&mut app, |input, ctx| {
             input.last_enter_submitted_shell_command = false;
-            input.wait_for_verdict_then_enter("true".to_string(), Instant::now(), ctx);
+            input.wait_for_verdict_then_enter("true".to_string(), ctx);
             input.release_verdict_wait_if_settled(ctx);
         });
         input.read(&app, |input, _| {
@@ -10725,7 +10729,7 @@ fn test_keys_typed_behind_waiting_enter_keep_its_verdict_pending() {
         // on the inherited input type.
         input.update(&mut app, |input, ctx| {
             input.release_verdict_wait_if_settled(ctx);
-            input.wait_for_verdict_then_enter(line.to_string(), Instant::now(), ctx);
+            input.wait_for_verdict_then_enter(line.to_string(), ctx);
         });
         input.read(&app, |input, ctx| {
             assert!(
@@ -10737,8 +10741,8 @@ fn test_keys_typed_behind_waiting_enter_keep_its_verdict_pending() {
     });
 }
 
-/// #1206: a backstop tick armed for an Enter that was voided since must not release the Enter
-/// that replaced it, however late it fires.
+/// #1206: a timer armed for an Enter that was voided since must not release the Enter that
+/// replaced it, however late it fires.
 #[test]
 fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
@@ -10766,7 +10770,9 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
         });
 
         // The first wait's tick fires late: it finds another wait and leaves it alone.
-        input.update(&mut app, |input, ctx| input.tick_enter_hold(stale_id, ctx));
+        input.update(&mut app, |input, ctx| {
+            input.compute_cap_fired(stale_id, ctx)
+        });
         input.read(&app, |input, ctx| {
             let wait = input
                 .verdict_wait
@@ -10777,25 +10783,260 @@ fn test_stale_verdict_wait_tick_does_not_release_a_later_enter() {
             assert!(!input.last_enter_submitted_shell_command);
         });
 
-        // The later wait's own tick decides it: past the budget it submits on the Enter-time
-        // rules and drops the late verdict.
+        // The later wait's own timer decides it: once its classifier spent the cap it submits on
+        // the Enter-time rules and drops the late verdict.
         let current_id = input.update(&mut app, |input, ctx| {
             let wait = input.verdict_wait.as_mut().expect("waiting");
-            wait.hold = EnterHold::Verdict {
-                since: Instant::now() - ENTER_VERDICT_BUDGET * 2,
-            };
+            wait.compute = ComputeClock::with_spent_for_test(ENTER_VERDICT_BUDGET * 2);
             let id = wait.id;
-            input.tick_enter_hold(id, ctx);
+            input.compute_cap_fired(id, ctx);
             id
         });
         assert_ne!(current_id, stale_id);
         input.read(&app, |input, ctx| {
-            assert!(input.verdict_wait.is_none(), "the budget is spent");
+            assert!(input.verdict_wait.is_none(), "the compute cap is spent");
             assert!(
                 !input.detection_pending_for_buffer(ctx),
                 "the late verdict is dropped"
             );
         });
+    });
+}
+
+/// #1351: a main-thread stall between the Enter and the verdict's delivery must not decide the
+/// route. The Enter is 50 ms old (well past the 20 ms cap, which used to be counted from the
+/// Enter) while the classifier spent no compute at all: it keeps waiting, and the verdict that
+/// then lands routes the line.
+#[test]
+fn test_stall_between_enter_and_verdict_still_routes_by_the_verdict() {
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let line = "is it true";
+        // The fixture inherits AI; the verdict below is Shell, so the route shows who decided.
+        let input = waiting_prose_enter_fixture(&mut app, line).await;
+        let stall = std::time::Duration::from_millis(50);
+        assert!(stall > ENTER_VERDICT_BUDGET);
+
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().expect("waiting");
+            wait.hold = EnterHold::Verdict {
+                since: Instant::now() - stall,
+            };
+            let id = wait.id;
+            // Everything that could wake the Enter during the stall: the cap timer, the
+            // backstop-free re-check, a model notification with the verdict still pending.
+            input.compute_cap_fired(id, ctx);
+            input.wait_for_verdict_then_enter(line.to_string(), ctx);
+            input.release_verdict_wait_if_settled(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "the Enter's age is not the classifier's compute: it keeps waiting"
+            );
+            assert!(input.detection_pending_for_buffer(ctx));
+            assert!(!input.last_enter_submitted_shell_command);
+        });
+
+        // The verdict (already computed, queued behind the stall) is delivered.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |model, ctx| {
+                model.deliver_verdict_for_test(InputType::Shell, line, ctx)
+            });
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_none(),
+                "the verdict released the Enter"
+            );
+            assert!(
+                input.last_enter_submitted_shell_command,
+                "the line routed by the delivered Shell verdict, not by the Enter-time rules"
+            );
+        });
+    });
+}
+
+/// #1351: the give-up cap fires only on the classifier's own compute: a job that has run for less
+/// than the cap is waited for (with one timer for the rest of the cap, not a poll), however old
+/// the Enter is; one that spent the cap is given up on and logged.
+#[test]
+fn test_verdict_give_up_cap_counts_only_classifier_compute() {
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let line = "is it true";
+        let input = waiting_prose_enter_fixture(&mut app, line).await;
+
+        // A stage that has run 5 ms: not at the cap. One timer for the remaining ~15 ms.
+        let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(5));
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.hold = EnterHold::Verdict {
+                since: Instant::now() - std::time::Duration::from_secs(1),
+            };
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.hold_timers_armed_for_test.clear();
+            input.arm_compute_cap(id, ctx);
+            input.compute_cap_fired(id, ctx);
+        });
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "5 ms of compute is within the cap"
+            );
+            let armed = &input.hold_timers_armed_for_test;
+            assert!(!armed.is_empty());
+            for (timer, delay) in armed {
+                assert_eq!(*timer, "compute cap");
+                assert!(
+                    *delay <= ENTER_VERDICT_BUDGET - std::time::Duration::from_millis(5),
+                    "the timer is for the rest of the cap, not a fresh cap"
+                );
+            }
+        });
+        drop(guard);
+
+        // The classifier spent the cap: given up on, submitted on the Enter-time rules.
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = ComputeClock::with_spent_for_test(ENTER_VERDICT_BUDGET);
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "the late verdict is dropped"
+            );
+        });
+    });
+}
+
+/// #1351: nothing polls. Holding an Enter for a verdict arms the give-up backstop once; waking the
+/// wait again (notifications, repeated checks, timers that find the cap not reached with no stage
+/// running) arms nothing, and nothing is a 2 ms tick.
+#[test]
+fn test_enter_hold_schedules_no_polling_ticks() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let line = "is it true";
+        let input = waiting_prose_enter_fixture(&mut app, line).await;
+        let armed_at_hold = input.update(&mut app, |input, _| {
+            // No stage runs on the clock in this test.
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = ComputeClock::default();
+            input.hold_timers_armed_for_test.clone()
+        });
+        input.update(&mut app, |input, ctx| {
+            let id = input.verdict_wait_id().unwrap();
+            for _ in 0..5 {
+                input.wait_for_verdict_then_enter(line.to_string(), ctx);
+                input.release_verdict_wait_if_settled(ctx);
+                input.compute_cap_fired(id, ctx);
+            }
+        });
+        input.read(&app, |input, _| {
+            let armed = &input.hold_timers_armed_for_test;
+            assert_eq!(
+                armed
+                    .iter()
+                    .filter(|(timer, _)| *timer == "hold backstop")
+                    .count(),
+                1,
+                "exactly one give-up backstop: {armed:?}"
+            );
+            assert_eq!(
+                armed.len(),
+                armed_at_hold.len(),
+                "waking the wait arms no timer: {armed:?}"
+            );
+            assert!(
+                armed
+                    .iter()
+                    .all(|(_, delay)| *delay > std::time::Duration::from_millis(2)),
+                "no 2 ms tick: {armed:?}"
+            );
+        });
+    });
+}
+
+/// #1351: a Tab then Enter whose completion is delivered after a main-thread stall (the Enter is
+/// older than the 150 ms cap, the completer spent no compute) still submits the COMPLETED line,
+/// and the stall alone never submits the partial one.
+#[test]
+fn test_tab_then_enter_with_completion_delivered_after_a_stall_submits_the_completed_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input
+                .verdict_wait
+                .as_mut()
+                .expect("the Enter holds for the Tab");
+            wait.hold = EnterHold::TabCompletion {
+                since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 3,
+            };
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "the stalled Enter must not submit the partial line"
+        );
+        input.read(&app, |input, _| {
+            assert!(input.verdict_wait.is_some());
+            let armed = &input.hold_timers_armed_for_test;
+            assert!(
+                armed.iter().all(|(timer, _)| *timer == "hold backstop"),
+                "{armed:?}"
+            );
+        });
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+    });
+}
+
+/// #1351: a completer that spent its cap is given up on (visible text submitted); one still
+/// within it is waited for.
+#[test]
+fn test_tab_completion_cap_counts_only_completer_compute() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let (clock, guard) = ComputeClock::running_for_test(std::time::Duration::from_millis(40));
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = clock.clone();
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert!(
+            executed.borrow().is_empty(),
+            "40 ms of compute is within the 150 ms cap"
+        );
+        drop(guard);
+        input.update(&mut app, |input, ctx| {
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET);
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
     });
 }
 
@@ -10810,6 +11051,8 @@ fn test_keys_typed_behind_waiting_enter_recognises_suffix_and_cursor_insertion()
         hold: EnterHold::Verdict {
             since: Instant::now(),
         },
+        compute: ComputeClock::default(),
+        watch_epoch: 0,
         cursor: 4,
     };
     let behind = |current: &str| super::keys_typed_behind_waiting_enter(current, &wait);
@@ -11503,6 +11746,7 @@ async fn tab_enter_fixture(
             generation,
             snapshot: snapshot.clone(),
             local,
+            compute: ComputeClock::default(),
         });
         (generation, snapshot)
     });
@@ -11621,7 +11865,8 @@ fn test_tab_then_enter_multiple_matches_submits_visible_text() {
     });
 }
 
-/// #1165: no answer within the budget: the visible text is submitted and a late result is dropped.
+/// #1165/#1351: a completer that spent its compute cap without answering: the visible text is
+/// submitted and a late result is dropped.
 #[test]
 fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
     App::test((), |mut app| async move {
@@ -11629,10 +11874,10 @@ fn test_tab_then_enter_timeout_submits_visible_text_and_drops_late_result() {
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         input.update(&mut app, |input, ctx| {
             input.input_enter(ctx);
-            input.verdict_wait.as_mut().unwrap().hold = EnterHold::TabCompletion {
-                since: Instant::now() - TAB_COMPLETION_ENTER_BUDGET * 2,
-            };
-            input.poll_completion_hold(ctx);
+            let wait = input.verdict_wait.as_mut().unwrap();
+            wait.compute = ComputeClock::with_spent_for_test(TAB_COMPLETION_ENTER_BUDGET * 2);
+            let id = wait.id;
+            input.compute_cap_fired(id, ctx);
         });
         assert_eq!(executed.borrow().as_slice(), ["git checkout fe"]);
         deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
@@ -11679,7 +11924,8 @@ fn test_tab_then_enter_ctrl_c_during_hold_submits_nothing() {
         input.update(&mut app, |input, ctx| {
             input.input_enter(ctx);
             input.clear_buffer_and_reset_undo_stack(ctx);
-            input.poll_completion_hold(ctx);
+            // The edit voids the wait at the next turn of the event loop; run that step here.
+            input.reconcile_verdict_wait(ctx);
         });
         input.read(&app, |input, _| assert!(input.verdict_wait.is_none()));
         deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);

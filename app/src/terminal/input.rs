@@ -30,6 +30,7 @@ use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason}
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
+use crate::ai::blocklist::compute_clock::ComputeClock;
 use crate::ai::blocklist::input_model::{
     EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision, shell_family,
     should_wait_for_verdict_before_submit,
@@ -455,7 +456,7 @@ const AGENT_MODE_HINT_KEYS: &[&str] = &[
 
 /// Logs (INFO, at most once a second) that an Enter went ahead without its classification verdict
 /// (#1158). Never the buffer text, only its length.
-fn log_late_enter_verdict(text: &str, waited: std::time::Duration) {
+fn log_late_enter_verdict(text: &str, classifier_compute: std::time::Duration) {
     use std::sync::OnceLock;
     use std::sync::atomic::AtomicU64;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -467,8 +468,8 @@ fn log_late_enter_verdict(text: &str, waited: std::time::Duration) {
     }
     LAST_LOGGED_MS.store(now_ms, Ordering::Relaxed);
     log::info!(
-        "Enter submitted without its input-type verdict: late after {} ms (budget {} ms, {} chars)",
-        waited.as_millis(),
+        "Enter submitted without its input-type verdict: classifier compute {} ms (cap {} ms, {} chars)",
+        classifier_compute.as_millis(),
         crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET.as_millis(),
         text.chars().count()
     );
@@ -1332,12 +1333,19 @@ impl DeferredEnterActivity {
 /// it (#1016).
 #[derive(Debug)]
 struct VerdictWait {
-    /// Identifies this wait (#1206): a backstop tick armed for a wait that was voided or released
-    /// since must not touch the one that replaced it.
+    /// Identifies this wait (#1206): a timer armed for a wait that was voided or released since
+    /// must not touch the one that replaced it.
     id: u64,
     text: String,
     queued: Vec<AfterEnterInput>,
     hold: EnterHold,
+    /// The compute the job this Enter waits for (the classifier, the completer) has spent (#1351).
+    /// The give-up cap is measured on it, never on the age of the Enter.
+    compute: ComputeClock,
+    /// Which [`Input::watch_hold_compute`] the armed timers belong to: a hold that changes kind
+    /// (a Tab completion becoming the verdict wait of the completed line) starts a new watch, and
+    /// the old watch's timers must not act on it.
+    watch_epoch: u64,
     /// Byte offset of the cursor in `text` when the Enter was pressed (#1207): keys typed behind
     /// the Enter land there until the wait restores the line (which moves the cursor to its end).
     cursor: usize,
@@ -1365,8 +1373,9 @@ fn keys_typed_behind_waiting_enter(current: &str, wait: &VerdictWait) -> Option<
 }
 
 /// Why the Enter of a [`VerdictWait`] is held, and since when. Each hold is released by its own
-/// event (the verdict notification, the completion result) or decided by the shared backstop tick
-/// ([`Input::tick_enter_hold`]) against its own budget.
+/// event (the verdict notification, the completion result). The only timers are give-up safety
+/// nets (#1351): one armed from the event "the job started running" for the rest of the hold's
+/// compute cap, and one backstop for a result that never arrives at all. `since` is for logging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnterHold {
     /// The classification verdict for `text` has not landed (#933): the Enter submits on it, or
@@ -1387,9 +1396,12 @@ struct TabCompletionRequest {
     /// Whether the completer runs on this machine. A remote completer cannot answer quickly and
     /// is never waited for.
     local: bool,
+    /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
+    compute: ComputeClock,
 }
 
-/// How long an Enter holds for the Tab completion in flight before it submits the visible text.
+/// The most compute the Tab completer may spend before an Enter holding for it submits the visible
+/// text (#1351). Measured from when the completer job started running, never from the Enter.
 const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
 /// A hold longer than this is logged at WARN, so slow completers can be traced.
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
@@ -1407,6 +1419,26 @@ struct HandoffEnterMark {
     inserted_delta: isize,
     /// When the Enter was deferred, to log a long hold (#1192).
     started: Instant,
+}
+
+impl EnterHold {
+    /// The most compute the awaited job may spend before the Enter gives up on it (#1351).
+    fn compute_cap(self) -> std::time::Duration {
+        match self {
+            EnterHold::Verdict { .. } => crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET,
+            EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
+        }
+    }
+
+    /// How long an Enter holds before giving up on a result that never arrived, whether or not
+    /// any job was seen running (#1351). A safety net for a lost signal, never the way a hold is
+    /// normally released; it is logged when it fires.
+    fn backstop(self) -> std::time::Duration {
+        match self {
+            EnterHold::Verdict { .. } => std::time::Duration::from_millis(250),
+            EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
+        }
+    }
 }
 
 impl VerdictWait {
@@ -1951,6 +1983,9 @@ pub struct Input {
     completions_abort_handle: Option<AbortHandle>,
     /// The Tab completion request in flight, if any (#1165).
     tab_completion_request: Option<TabCompletionRequest>,
+    /// The give-up timers armed for held Enters: (timer, delay), for tests.
+    #[cfg(test)]
+    hold_timers_armed_for_test: Vec<(&'static str, std::time::Duration)>,
     /// Bumped whenever a pending async result (completion, autosuggestion, next-command
     /// suggestion, AI query prediction) can no longer be applied: Esc, submit, buffer
     /// clear/replace, block completion, input-mode switch. Requests capture it when they start
@@ -3853,6 +3888,8 @@ impl Input {
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
             tab_completion_request: None,
+            #[cfg(test)]
+            hold_timers_armed_for_test: Vec::new(),
             input_generation: 0,
             completion_menu_stale: false,
             next_command_request_generation: 0,
@@ -9912,6 +9949,16 @@ impl Input {
                 let typed_behind_waiting_enter = self.reconcile_edit_behind_waiting_enter(ctx);
                 let should_run_ai_input_detection =
                     should_run_ai_input_detection && !typed_behind_waiting_enter;
+                // An edit of the waiting line itself voids the Enter. Settle that on the next
+                // turn of the event loop (this handler may be nested inside the wait's own
+                // bookkeeping), instead of leaving it to a polling tick (#1351).
+                if !typed_behind_waiting_enter && let Some(id) = self.verdict_wait_id() {
+                    ctx.spawn(futures::future::ready(()), move |me, _, ctx| {
+                        if me.verdict_wait_id() == Some(id) {
+                            me.reconcile_verdict_wait(ctx);
+                        }
+                    });
+                }
 
                 // Abort any autodetection work on the old buffer state, and record that this
                 // buffer's input type is now undecided until its own verdict lands (#833). The
@@ -12097,6 +12144,7 @@ impl Input {
 
         let completion_session = completion_context.session.clone();
         let generation = self.input_generation;
+        let completion_compute = ComputeClock::default();
         // An explicit Tab always asks the remote again, even for a directory that failed to list
         // a moment ago (#1295); the as-you-type menu waits out a burst of keystrokes instead
         // of listing for each one. The wait is abortable: the next keystroke supersedes it.
@@ -12115,6 +12163,7 @@ impl Input {
                 generation,
                 snapshot: editor_snapshot.clone(),
                 local: completion_session.is_local(),
+                compute: completion_compute.clone(),
             });
         }
 
@@ -12124,6 +12173,9 @@ impl Input {
                     if let Some(debounce) = remote_debounce {
                         Timer::after(debounce).await;
                     }
+                    // The completer's own compute starts here, not when the Enter arrived or the
+                    // job was queued (#1351).
+                    let _compute = completion_compute.begin();
                     let suggestions = completer::suggestions(
                         before_cursor_text.as_str(),
                         cursor_position,
@@ -14019,7 +14071,10 @@ impl Input {
         self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
-        self.wait_for_verdict_then_enter(text, since, ctx);
+        // Released by the verdict landing (the input model's notification); see
+        // `watch_hold_compute` for the give-up nets.
+        self.watch_hold_compute(ctx);
+        self.wait_for_verdict_then_enter(text, ctx);
         true
     }
 
@@ -14111,7 +14166,8 @@ impl Input {
             ctx,
         );
         self.begin_deferred_enter_activity(ctx);
-        self.poll_completion_hold(ctx);
+        // Released by the completion result (`deliver_completion_suggestions_results`).
+        self.watch_hold_compute(ctx);
         true
     }
 
@@ -14129,11 +14185,21 @@ impl Input {
             .start_byte_index_of_last_selection(ctx)
             .as_usize()
             .min(text.len());
+        let compute = match hold {
+            EnterHold::Verdict { .. } => self.ai_input_model.as_ref(ctx).detection_clock(),
+            EnterHold::TabCompletion { .. } => self
+                .tab_completion_request
+                .as_ref()
+                .map(|request| request.compute.clone())
+                .unwrap_or_default(),
+        };
         self.verdict_wait = Some(VerdictWait {
             id,
             text,
             queued: Vec::new(),
             hold,
+            compute,
+            watch_epoch: 0,
             cursor,
         });
         id
@@ -14144,55 +14210,150 @@ impl Input {
         self.verdict_wait.as_ref().map(|wait| wait.id)
     }
 
-    /// Arms the backstop tick of the current wait: 2 ms, the granularity both budgets are decided
-    /// at. The releasing event (verdict notification, completion result) normally runs first.
-    fn arm_enter_hold_tick(&mut self, timer: &'static str, ctx: &mut ViewContext<Self>) {
-        let Some(id) = self.verdict_wait_id() else {
+    /// Starts watching the job the current wait is held for (#1351). Nothing here polls:
+    ///
+    /// * the wait is RELEASED by the result event (the verdict notification, the delivered
+    ///   completion), however late the main thread gets to it;
+    /// * when a stage of the job starts running on the clock, that event arms ONE timer for the
+    ///   rest of the hold's compute cap ([`Self::arm_compute_cap`]), a give-up net for a job that
+    ///   is slow, measured on the job's own compute and never on the age of the Enter;
+    /// * one backstop timer ([`EnterHold::backstop`]) covers a result that never arrives and
+    ///   no job that ever starts. Both are logged when they fire.
+    fn watch_hold_compute(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref() else {
             return;
         };
-        let rearm = std::time::Duration::from_millis(2);
-        let deadline = Instant::now() + rearm;
-        ctx.spawn(Timer::after(rearm), move |me, _, ctx| {
-            log_late_timer_wake(timer, deadline);
-            me.tick_enter_hold(id, ctx);
-        });
+        let (id, backstop, clock) = (wait.id, wait.hold.backstop(), wait.compute.clone());
+        if let Some(wait) = self.verdict_wait.as_mut() {
+            wait.watch_epoch = wait.watch_epoch.wrapping_add(1);
+        }
+        let (tx, rx) = async_channel::unbounded::<()>();
+        clock.notify_on_stage_start(tx);
+        let _ = ctx.spawn_stream_local(
+            rx,
+            move |me, (), ctx| {
+                if me.verdict_wait_id() == Some(id) {
+                    me.arm_compute_cap(id, ctx);
+                } else {
+                    // The wait ended: close the stream.
+                    clock.stop_notifying();
+                }
+            },
+            |_, _| {},
+        );
+        // A stage may already be running.
+        self.arm_compute_cap(id, ctx);
+        self.arm_hold_timer(id, backstop, "hold backstop", ctx);
     }
 
-    /// The backstop tick of wait `id` (#1206): decides the hold it was armed for, by its kind. A
-    /// tick armed for a wait that was voided or released since finds another wait, or none, and
-    /// must not touch it: that wait has its own ticks.
-    fn tick_enter_hold(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+    /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When
+    /// none is, no timer is needed: the stage's start, or the result, is an event of its own.
+    fn arm_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
         let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
             return;
         };
-        let (hold, text) = (wait.hold, wait.text.clone());
+        if !wait.compute.is_running() {
+            return;
+        }
+        let remaining = wait.hold.compute_cap().saturating_sub(wait.compute.spent());
+        self.arm_hold_timer(id, remaining, "compute cap", ctx);
+    }
+
+    /// Arms a one-shot give-up timer of wait `id`. It finds another wait, or none, when the wait
+    /// it was armed for was voided or released since, and must not touch it (#1206).
+    fn arm_hold_timer(
+        &mut self,
+        id: u64,
+        delay: std::time::Duration,
+        timer: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        #[cfg(test)]
+        self.hold_timers_armed_for_test.push((timer, delay));
+        let Some(epoch) = self.verdict_wait.as_ref().map(|wait| wait.watch_epoch) else {
+            return;
+        };
+        let deadline = Instant::now() + delay;
+        ctx.spawn(Timer::after(delay), move |me, _, ctx| {
+            log_late_timer_wake(timer, deadline);
+            // Armed by an earlier watch of this wait (its hold has since changed kind): not ours.
+            if !me
+                .verdict_wait
+                .as_ref()
+                .is_some_and(|wait| wait.id == id && wait.watch_epoch == epoch)
+            {
+                return;
+            }
+            if timer == "hold backstop" {
+                me.hold_backstop_fired(id, ctx);
+            } else {
+                me.compute_cap_fired(id, ctx);
+            }
+        });
+    }
+
+    /// The compute-cap timer of wait `id`: gives up on the job only if its own compute reached the
+    /// cap. A stage that finished meanwhile, or a cap not yet reached, leaves the wait to the
+    /// result event (and to the timer the next stage start arms).
+    fn compute_cap_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
+            return;
+        };
+        if wait.compute.spent() < wait.hold.compute_cap() {
+            self.arm_compute_cap(id, ctx);
+            return;
+        }
+        let (text, hold) = (wait.text.clone(), wait.hold);
         match hold {
-            EnterHold::Verdict { since } => self.wait_for_verdict_then_enter(text, since, ctx),
-            EnterHold::TabCompletion { .. } => self.poll_completion_hold(ctx),
+            EnterHold::Verdict { .. } => self.wait_for_verdict_then_enter(text, ctx),
+            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
         }
     }
 
-    /// Moves what was typed behind a held Enter out of the buffer, ends the hold at the budget,
-    /// and re-arms itself while the hold lasts. The result itself arrives through
-    /// [`Self::deliver_completion_suggestions_results`].
-    fn poll_completion_hold(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(held_since) = self
-            .verdict_wait
-            .as_ref()
-            .and_then(VerdictWait::tab_completion_since)
-        else {
+    /// The backstop of wait `id`: no result arrived at all. Gives up like the compute cap.
+    fn hold_backstop_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
             return;
         };
+        let (text, hold, spent) = (wait.text.clone(), wait.hold, wait.compute.spent());
+        log::warn!(
+            "Enter hold backstop fired after {} ms: no {} arrived (job compute {} ms)",
+            hold.backstop().as_millis(),
+            match hold {
+                EnterHold::Verdict { .. } => "input-type verdict",
+                EnterHold::TabCompletion { .. } => "Tab completion",
+            },
+            spent.as_millis()
+        );
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        match hold {
+            EnterHold::Verdict { .. } => {
+                let pending = self
+                    .ai_input_model
+                    .as_ref(ctx)
+                    .is_detection_pending_for(&text, ctx);
+                if pending {
+                    self.submit_without_verdict(&text, spent, ctx);
+                } else {
+                    // The verdict landed after all: it decides.
+                    self.submit_held_enter(ctx);
+                }
+            }
+            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
+        }
+    }
+
+    /// The Tab completer spent its compute cap (or never answered): the visible text is submitted
+    /// and a late result is dropped.
+    fn give_up_completion_hold(&mut self, ctx: &mut ViewContext<Self>) {
         // Void (Ctrl-C, an edit of the text): the completion is cancelled with it.
         if !self.reconcile_verdict_wait(ctx) {
             return;
         }
-        if held_since.elapsed() >= TAB_COMPLETION_ENTER_BUDGET {
-            self.cancel_pending_completions_for_deferred_enter();
-            self.finish_completion_hold(None, ctx);
-            return;
-        }
-        self.arm_enter_hold_tick("completion hold", ctx);
+        self.cancel_pending_completions_for_deferred_enter();
+        self.finish_completion_hold(None, ctx);
     }
 
     /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
@@ -14217,6 +14378,11 @@ impl Input {
             return;
         };
         let waited = held_since.elapsed();
+        let compute_spent = self
+            .verdict_wait
+            .as_ref()
+            .map(|wait| wait.compute.spent())
+            .unwrap_or_default();
         let before = self.editor.as_ref(ctx).buffer_text(ctx);
         let mut outcome = "timed out";
         if let Some((results, snapshot)) = result {
@@ -14248,8 +14414,9 @@ impl Input {
         }
         if waited > TAB_COMPLETION_ENTER_WARN {
             log::warn!(
-                "Enter held {} ms for a local Tab completion ({outcome}; budget {} ms)",
+                "Enter held {} ms for a local Tab completion ({outcome}; completer compute {} ms, cap {} ms)",
                 waited.as_millis(),
+                compute_spent.as_millis(),
                 TAB_COMPLETION_ENTER_BUDGET.as_millis()
             );
         }
@@ -14265,14 +14432,22 @@ impl Input {
             }
         }
         let since = Instant::now();
+        // The completion's clock is done with; the completed line's verdict has its own.
+        let completion_clock = self.verdict_wait.as_ref().map(|wait| wait.compute.clone());
+        if let Some(clock) = completion_clock {
+            clock.stop_notifying();
+        }
+        let verdict_clock = self.ai_input_model.as_ref(ctx).detection_clock();
         if let Some(wait) = self.verdict_wait.as_mut() {
             wait.hold = EnterHold::Verdict { since };
             wait.text = text.clone();
+            wait.compute = verdict_clock;
         }
         if self.verdict_needed_before_submit(ctx).is_some() {
             self.ai_input_model
                 .update(ctx, |model, _| model.clear_typeahead_provenance());
-            self.wait_for_verdict_then_enter(text, since, ctx);
+            self.watch_hold_compute(ctx);
+            self.wait_for_verdict_then_enter(text, ctx);
         } else {
             self.submit_held_enter(ctx);
         }
@@ -14299,8 +14474,8 @@ impl Input {
     /// #1181: the observer of the input model, which notifies when a pending detection settles.
     /// If the waiting Enter's verdict has landed, run it now rather than at the next timer tick.
     /// The release is [`Self::wait_for_verdict_then_enter`] itself, which takes `verdict_wait`:
-    /// whichever of this and the backstop timer runs second finds nothing to release, so the
-    /// Enter runs exactly once. Never re-arms a timer (a still-pending verdict is the timer's).
+    /// whichever of this and a give-up timer runs second finds nothing to release, so the Enter
+    /// runs exactly once. Never arms a timer (a still-pending verdict is waited for as an event).
     fn release_verdict_wait_if_settled(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return;
@@ -14316,7 +14491,7 @@ impl Input {
         {
             return;
         }
-        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        self.wait_for_verdict_then_enter(text, ctx);
     }
 
     /// #1205: whether the edit just made left the buffer holding the line a waiting Enter
@@ -14367,6 +14542,9 @@ impl Input {
                 // The user edited the waiting text itself: the Enter is void. Keep what was
                 // typed behind it in the editor rather than losing it.
                 let wait = self.verdict_wait.take();
+                if let Some(wait) = wait.as_ref() {
+                    wait.compute.stop_notifying();
+                }
                 if wait
                     .as_ref()
                     .is_some_and(VerdictWait::holds_for_tab_completion)
@@ -14388,11 +14566,11 @@ impl Input {
     /// Runs the Enter that waited (verdict or completion hold): opens the replay for what was
     /// typed behind it (#1016), submits, and hands the replay to the view.
     fn submit_held_enter(&mut self, ctx: &mut ViewContext<Self>) {
-        let queued = self
-            .verdict_wait
-            .take()
-            .map(|wait| wait.queued)
-            .unwrap_or_default();
+        let wait = self.verdict_wait.take();
+        if let Some(wait) = wait.as_ref() {
+            wait.compute.stop_notifying();
+        }
+        let queued = wait.map(|wait| wait.queued).unwrap_or_default();
         // Open the replay before the submit so nothing typed from here on can be routed
         // ahead of the queue (#1016); the view drains it once the pty route is settled.
         let has_queued = !queued.is_empty();
@@ -14413,12 +14591,13 @@ impl Input {
         }
     }
 
-    fn wait_for_verdict_then_enter(
-        &mut self,
-        text: String,
-        started: Instant,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    /// Runs the waiting Enter if its verdict has landed, or if the classifier has spent its compute
+    /// cap on it (#1351). Called from the verdict's own event ([`Self::release_verdict_wait_if_settled`])
+    /// and from the compute-cap timer; it never arms a timer, a still-pending verdict within the
+    /// cap is waited for as an event. The cap is the classifier's compute from when its job started
+    /// running, never the age of the Enter, so a main-thread stall that delays this call cannot
+    /// make a verdict that is already computed (or queued) lose to the Enter-time rules.
+    fn wait_for_verdict_then_enter(&mut self, text: String, ctx: &mut ViewContext<Self>) {
         // The user edited the text meanwhile (Ctrl-C clears it): the Enter is void. Text typed
         // behind the Enter is moved out of the buffer first (#1016).
         if !self.reconcile_verdict_wait(ctx) {
@@ -14430,30 +14609,50 @@ impl Input {
             .ai_input_model
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
-        let waited = started.elapsed();
-        let decision = enter_verdict_wait_decision(pending, waited);
+        let spent = self
+            .verdict_wait
+            .as_ref()
+            .map(|wait| wait.compute.spent())
+            .unwrap_or_default();
+        let decision = enter_verdict_wait_decision(pending, spent);
         if decision != EnterVerdictWait::Wait {
+            let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
+                EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {
+                    since.elapsed()
+                }
+            });
             warpui::input_order::log_hop("verdict_wait_end", || {
                 format!(
-                    "decision={decision:?} waited_ms={:.1}",
-                    waited.as_secs_f64() * 1000.
+                    "decision={decision:?} waited_ms={:.1} compute_ms={:.1}",
+                    waited.unwrap_or_default().as_secs_f64() * 1000.,
+                    spent.as_secs_f64() * 1000.
                 )
             });
         }
         match decision {
-            decision @ (EnterVerdictWait::Submit | EnterVerdictWait::SubmitWithoutVerdict) => {
-                if decision == EnterVerdictWait::SubmitWithoutVerdict {
-                    log_late_enter_verdict(&text, waited);
-                    // The parse may have landed since the Enter: decide on everything known now,
-                    // then drop the verdict so it cannot land after the submit.
-                    self.settle_pending_input_detection_for_submit(ctx);
-                    self.ai_input_model
-                        .update(ctx, |model, _| model.abandon_pending_detection());
-                }
-                self.submit_held_enter(ctx);
+            EnterVerdictWait::Submit => self.submit_held_enter(ctx),
+            EnterVerdictWait::SubmitWithoutVerdict => {
+                self.submit_without_verdict(&text, spent, ctx)
             }
-            EnterVerdictWait::Wait => self.arm_enter_hold_tick("verdict wait", ctx),
+            EnterVerdictWait::Wait => {}
         }
+    }
+
+    /// The classifier did not answer within its compute cap (or the backstop fired): submit on the
+    /// Enter-time rules and drop the verdict so it cannot land after the submit. Logged.
+    fn submit_without_verdict(
+        &mut self,
+        text: &str,
+        classifier_compute: std::time::Duration,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        log_late_enter_verdict(text, classifier_compute);
+        // The parse may have landed since the Enter: decide on everything known now, then drop
+        // the verdict so it cannot land after the submit.
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.ai_input_model
+            .update(ctx, |model, _| model.abandon_pending_detection());
+        self.submit_held_enter(ctx);
     }
 
     /// Whether input typed after a deferred Enter is still waiting to be routed (#1016): new
