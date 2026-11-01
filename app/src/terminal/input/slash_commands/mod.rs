@@ -223,6 +223,9 @@ impl SlashCommandTrigger {
 #[derive(Debug, PartialEq, Eq)]
 enum OpenFileTarget {
     File,
+    /// A file past the code editor's size limit (its length in bytes), see
+    /// `util::file::size_guard` (#1329).
+    TooLarge(u64),
     NotAFile,
     Missing,
 }
@@ -230,7 +233,12 @@ enum OpenFileTarget {
 #[cfg(feature = "local_fs")]
 fn probe_open_file_target(path: &std::path::Path) -> OpenFileTarget {
     match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => OpenFileTarget::File,
+        Ok(metadata) if metadata.is_file() => {
+            match crate::util::file::size_guard::too_large_for_code_editor(path) {
+                Some(len) => OpenFileTarget::TooLarge(len),
+                None => OpenFileTarget::File,
+            }
+        }
         Ok(_) => OpenFileTarget::NotAFile,
         Err(_) => OpenFileTarget::Missing,
     }
@@ -747,6 +755,14 @@ impl Input {
                                         layout: external_editor::settings::EditorLayout::SplitPane,
                                         line_col,
                                     });
+                                }
+                                OpenFileTarget::TooLarge(len) => {
+                                    show_error_toast(
+                                        crate::util::file::size_guard::too_large_message(
+                                            &file_path, len,
+                                        ),
+                                        ctx,
+                                    );
                                 }
                                 OpenFileTarget::NotAFile => {
                                     show_error_toast(
@@ -1494,6 +1510,22 @@ mod tests {
         assert_eq!(
             probe_open_file_target(&dir.join("missing")),
             OpenFileTarget::Missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn open_file_target_probe_refuses_a_file_past_the_editor_limit() {
+        let dir = std::env::temp_dir().join(format!("open-file-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge.txt");
+        // Sparse: no 40 MB of disk is written.
+        let handle = std::fs::File::create(&file).unwrap();
+        handle.set_len(40 * 1024 * 1024).unwrap();
+        assert_eq!(
+            probe_open_file_target(&file),
+            OpenFileTarget::TooLarge(40 * 1024 * 1024)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

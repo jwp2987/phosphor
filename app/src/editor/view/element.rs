@@ -4,7 +4,7 @@ use super::super::soft_wrap::{
 use super::model::MarkedTextState;
 use super::snapshot::{
     LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, editor_full_layout_forced,
-    large_buffer_real_rows, rows_cannot_wrap,
+    large_buffer_real_rows, rows_cannot_wrap_measured, widest_ascii_advance_ems,
 };
 use super::{
     position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
@@ -1458,12 +1458,21 @@ impl EditorElement {
         // nothing per frame (a per-row scan was ~40 ms at 13,000 rows).
         {
             let buffer = view_snapshot.editor_model.as_ref(app).buffer(app);
-            if !rows_cannot_wrap(
+            let ascii_advance_ems = buffer.is_ascii().then(|| {
+                widest_ascii_advance_ems(
+                    app.font_cache(),
+                    view_snapshot.font_family,
+                    view_snapshot.font_properties,
+                    view_snapshot.font_size,
+                )
+            });
+            if !rows_cannot_wrap_measured(
                 view_snapshot.rightmost_point(app).column(),
                 buffer.is_ascii(),
                 buffer.is_tab_free(),
                 view_snapshot.font_size,
                 max_width,
+                ascii_advance_ems.flatten(),
             ) {
                 return None;
             }

@@ -844,11 +844,75 @@ pub(crate) fn rows_cannot_wrap(
     font_size: f32,
     max_width: f32,
 ) -> bool {
+    rows_cannot_wrap_measured(
+        longest_row_chars,
+        all_ascii,
+        tab_free,
+        font_size,
+        max_width,
+        None,
+    )
+}
+
+/// As [`rows_cannot_wrap`], but an all-ASCII row is bounded by `ascii_advance_ems` (the widest
+/// ASCII advance of the real font, in ems, see [`widest_ascii_advance_ems`]) instead of the
+/// 1 em worst case. A monospace font is ~0.6 em, so the 1 em bound failed for any 100-char row in
+/// an ordinary window and left the whole 1 MB buffer fully laid out on every frame (#1333).
+pub(crate) fn rows_cannot_wrap_measured(
+    longest_row_chars: u32,
+    all_ascii: bool,
+    tab_free: bool,
+    font_size: f32,
+    max_width: f32,
+    ascii_advance_ems: Option<f32>,
+) -> bool {
     if !tab_free || !font_size.is_finite() || font_size <= 0. || !max_width.is_finite() {
         return false;
     }
-    let max_advance_ems = if all_ascii { 1.0 } else { 1.5 };
+    let max_advance_ems = if all_ascii {
+        match ascii_advance_ems {
+            Some(ems) if ems.is_finite() && ems > 0. => ems.min(1.0),
+            _ => 1.0,
+        }
+    } else {
+        1.5
+    };
     longest_row_chars as f32 * font_size * max_advance_ems <= max_width
+}
+
+/// Safety factor on the measured widest ASCII advance, for rounding and hinting differences
+/// between the advance a glyph reports and the one the shaper lays out. (Kerning and ligatures
+/// only narrow ASCII text; and the layout re-checks the rows it really lays out.)
+const ASCII_ADVANCE_SAFETY: f32 = 1.15;
+
+/// The widest advance, in ems times [`ASCII_ADVANCE_SAFETY`], among the printable ASCII glyphs of
+/// the font the editor draws with. `None` when any of them is missing (a fallback font could then
+/// be wider) or has no usable advance, which keeps the 1 em bound.
+pub(crate) fn widest_ascii_advance_ems(
+    font_cache: &warpui::fonts::Cache,
+    family_id: FamilyId,
+    properties: Properties,
+    font_size: f32,
+) -> Option<f32> {
+    if !font_size.is_finite() || font_size <= 0. {
+        return None;
+    }
+    let font_id = font_cache.select_font(family_id, properties);
+    let mut widest = 0f32;
+    for ch in ' '..='~' {
+        let (glyph_id, glyph_font) = font_cache.glyph_for_char(font_id, ch, false)?;
+        if glyph_font != font_id {
+            return None;
+        }
+        let advance = font_cache
+            .glyph_advance(font_id, font_size, glyph_id)
+            .ok()?;
+        if !advance.x().is_finite() {
+            return None;
+        }
+        widest = widest.max(advance.x());
+    }
+    (widest > 0.).then(|| widest / font_size * ASCII_ADVANCE_SAFETY)
 }
 
 /// The row ranges of a `total_rows` buffer that need a real layout when it is large (#1191):

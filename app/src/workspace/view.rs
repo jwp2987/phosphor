@@ -5986,6 +5986,14 @@ impl Workspace {
                 crate::util::file::open_file_path_in_external_editor(line_col, path.clone(), ctx);
             }
             FileTarget::CodeEditor(layout) => {
+                // A huge file would be loaded whole into the editor (#1329): refuse it here.
+                if let Some(len) = crate::util::file::size_guard::too_large_for_code_editor(&path) {
+                    let message = crate::util::file::size_guard::too_large_message(&path, len);
+                    self.toast_stack.update(ctx, |view, ctx| {
+                        view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
+                    });
+                    return;
+                }
                 let open_as_preview = false;
                 self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
             }
