@@ -915,6 +915,14 @@ const OUTPUT_TAIL_ROWS: usize = 16;
 /// rest of the lines fall back to the timed pacing. Logged when it fires. Not what sequences
 /// the lines: the marker is.
 const SUBSHELL_SETUP_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for the input queue's bootstrap-write gate (#1399): typed keys wait behind the
+/// setup lines until the last one is written. Every setup line may wait the whole marker give-up
+/// before the timed fallback takes over, so the net must outlast `lines` of those plus one more;
+/// a shorter one (it was 2 s per line) released the keys in the middle of the fallback's writes
+/// and interleaved them with the setup script.
+fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
+    SUBSHELL_SETUP_MARKER_GIVE_UP * (lines as u32 + 1) + Duration::from_secs(2)
+}
 /// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
 /// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
 /// Logged when it fires.

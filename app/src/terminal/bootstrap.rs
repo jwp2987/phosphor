@@ -826,11 +826,16 @@ const NU_NEWLINE_TOKEN: &str = "@@NL@@";
 const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
 
 /// What a nushell prints after executing setup line `index` of the session `token`: the same OSC
-/// as [`setup_line_marker`], built from `char esc` / `char bel` (both long-standing `char` names)
-/// inside a string interpolation so the typed text holds no escape byte. `print -n` writes no
-/// newline. It follows a `;`, so the line stays one statement sequence (#1372).
+/// as [`setup_line_marker`], built from `ansi esc` / `char bel` inside a string interpolation so
+/// the typed text holds no escape byte. `print -n` writes no newline. It follows a `;`, so the
+/// line stays one statement sequence (#1372).
+///
+/// The escape is `ansi esc`, NOT `char esc`: nushell 0.116 has no `char esc` ("error finding
+/// named character"), which fails the whole line at parse time, so no marker ever came and the
+/// setup fell back to timers on every run (#1399). Verified against nu 0.116.1: `ansi esc` and
+/// `char bel` print `ESC ] 7771;<token>;<index> BEL`.
 fn nu_setup_line_marker(token: u64, index: usize) -> String {
-    format!(" print -n $\"(char esc)]{SETUP_LINE_MARKER_OSC};{token};{index}(char bel)\"")
+    format!(" print -n $\"(ansi esc)]{SETUP_LINE_MARKER_OSC};{token};{index}(char bel)\"")
 }
 
 /// The lines typed into a running `nu` to run the stage-one subshell script `raw_script`.
