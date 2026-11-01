@@ -2014,21 +2014,19 @@ impl BlocklistAIController {
                 static_query_type,
                 running_command,
                 ..
-            } => {
-                input_for_query(
-                    query,
-                    &task_id,
-                    conversation_id,
-                    static_query_type,
-                    user_query_mode,
-                    running_command,
-                    additional_attachments,
-                    read,
-                    self.context_model.as_ref(ctx),
-                    self.active_session.as_ref(ctx),
-                    ctx,
-                )
-            }
+            } => input_for_query(
+                query,
+                &task_id,
+                conversation_id,
+                static_query_type,
+                user_query_mode,
+                running_command,
+                additional_attachments,
+                read,
+                self.context_model.as_ref(ctx),
+                self.active_session.as_ref(ctx),
+                ctx,
+            ),
             InputQueryType::AIInputType { ai_input } => {
                 drop(read);
                 ai_input
