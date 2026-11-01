@@ -18,8 +18,9 @@
 //! never stored, so the next caller starts a fresh run.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::future::{BoxFuture, Shared, WeakShared};
 use lazy_static::lazy_static;
@@ -29,6 +30,15 @@ use crate::terminal::model::session::SessionId;
 
 /// How long a finished generator result is reused.
 pub(super) const GENERATOR_CACHE_TTL: Duration = Duration::from_secs(5);
+
+/// How long a git alias lookup is reused while the git config files it reads are unchanged
+/// (#1342). The lookup (`git config --get-regexp '^alias.'`) answers from files only, so it
+/// survives command submission; on Windows each copy is a `powershell -EncodedCommand` plus git.
+pub(super) const ALIAS_LOOKUP_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// Environment kill switch: set to `1` to give alias lookups the ordinary 5 s, drop-on-submit
+/// lifetime again.
+pub(super) const ALIAS_CACHE_DISABLE_ENV: &str = "PHOSPHOR_NO_ALIAS_LOOKUP_CACHE";
 
 /// A generator that has not finished after this long is abandoned (and, locally, killed). The
 /// run is detached from the caller that started it, so without a bound a hung generator
@@ -69,15 +79,82 @@ impl RunHandle {
     }
 }
 
+/// Size and modification time of every git config file an alias lookup can read, taken when the
+/// run starts. A result is reused past the ordinary TTL only while the stamp is unchanged, so a
+/// `git config alias.x ...` or an edit of `.gitconfig` is never answered with the old aliases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ConfigStamp(Vec<(PathBuf, Option<(SystemTime, u64)>)>);
+
+impl ConfigStamp {
+    #[cfg(test)]
+    pub(super) fn from_entries(entries: Vec<(PathBuf, Option<(SystemTime, u64)>)>) -> Self {
+        Self(entries)
+    }
+}
+
+/// Whether `script` is a git alias lookup (`git ... config --get-regexp '^alias.'`, `git config
+/// --get alias.co`): a read of git config files only.
+pub(super) fn is_alias_lookup_script(script: &str) -> bool {
+    let script = script.trim_start();
+    script.starts_with("git ") && script.contains(" config ") && script.contains("alias")
+}
+
+/// Stamps the git config files visible from `pwd`: the global ones and the repository's own.
+pub(super) fn config_stamp(pwd: &str) -> ConfigStamp {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".gitconfig"));
+        paths.push(home.join(".config").join("git").join("config"));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        paths.push(Path::new(&xdg).join("git").join("config"));
+    }
+    for dir in Path::new(pwd).ancestors() {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            paths.push(dot_git.join("config"));
+            break;
+        } else if dot_git.is_file() {
+            // A worktree or submodule: stamp the pointer file; the config lives elsewhere.
+            paths.push(dot_git);
+            break;
+        }
+    }
+    ConfigStamp(
+        paths
+            .into_iter()
+            .map(|path| {
+                let meta = std::fs::metadata(&path)
+                    .ok()
+                    .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+                (path, meta)
+            })
+            .collect(),
+    )
+}
+
 enum Slot {
     InFlight {
         run_id: u64,
         run: RunHandle,
+        stamp: Option<ConfigStamp>,
     },
     Done {
         at: Instant,
         result: GeneratorRunResult,
+        /// Set for results that outlive command submission (alias lookups).
+        stamp: Option<ConfigStamp>,
     },
+}
+
+impl Slot {
+    fn done_ttl(stamp: &Option<ConfigStamp>) -> Duration {
+        if stamp.is_some() {
+            ALIAS_LOOKUP_CACHE_TTL
+        } else {
+            GENERATOR_CACHE_TTL
+        }
+    }
 }
 
 #[derive(Default)]
@@ -137,10 +214,28 @@ impl GeneratorCache {
         detached: bool,
         start: impl FnOnce(u64) -> SharedGeneratorRun,
     ) -> Result<GeneratorRunResult, SharedGeneratorRun> {
+        self.get_or_start_stamped(key, now, detached, None, start)
+    }
+
+    /// [`Self::get_or_start_with`] for a lookup that reads only config files: with a `stamp`
+    /// the finished result is kept for [`ALIAS_LOOKUP_CACHE_TTL`], survives
+    /// [`Self::invalidate_session`], and is reused only while the stamp still matches.
+    pub(super) fn get_or_start_stamped(
+        &mut self,
+        key: &GeneratorKey,
+        now: Instant,
+        detached: bool,
+        stamp: Option<ConfigStamp>,
+        start: impl FnOnce(u64) -> SharedGeneratorRun,
+    ) -> Result<GeneratorRunResult, SharedGeneratorRun> {
         self.sweep(now);
         match self.slots.get(key) {
-            Some(Slot::Done { at, result })
-                if now.saturating_duration_since(*at) < GENERATOR_CACHE_TTL =>
+            Some(Slot::Done {
+                at,
+                result,
+                stamp: done_stamp,
+            }) if now.saturating_duration_since(*at) < Slot::done_ttl(done_stamp)
+                && *done_stamp == stamp =>
             {
                 return Ok(result.clone());
             }
@@ -167,6 +262,7 @@ impl GeneratorCache {
             Slot::InFlight {
                 run_id,
                 run: handle,
+                stamp,
             },
         );
         Err(run)
@@ -181,19 +277,19 @@ impl GeneratorCache {
         result: &GeneratorRunResult,
         now: Instant,
     ) {
-        let is_this_run = matches!(
-            self.slots.get(key),
-            Some(Slot::InFlight { run_id: id, .. }) if *id == run_id
-        );
-        if !is_this_run {
-            return;
-        }
+        let stamp = match self.slots.get(key) {
+            Some(Slot::InFlight {
+                run_id: id, stamp, ..
+            }) if *id == run_id => stamp.clone(),
+            _ => return,
+        };
         if is_cacheable(result) {
             self.slots.insert(
                 key.clone(),
                 Slot::Done {
                     at: now,
                     result: result.clone(),
+                    stamp,
                 },
             );
         } else {
@@ -202,12 +298,18 @@ impl GeneratorCache {
     }
 
     pub(super) fn invalidate_session(&mut self, session_id: SessionId) {
-        self.slots.retain(|key, _| key.session_id != session_id);
+        // A stamped result reads config files only and is checked against them on reuse, so a
+        // submitted command does not make it stale.
+        self.slots.retain(|key, slot| {
+            key.session_id != session_id || matches!(slot, Slot::Done { stamp: Some(_), .. })
+        });
     }
 
     fn sweep(&mut self, now: Instant) {
         self.slots.retain(|_, slot| match slot {
-            Slot::Done { at, .. } => now.saturating_duration_since(*at) < GENERATOR_CACHE_TTL,
+            Slot::Done { at, stamp, .. } => {
+                now.saturating_duration_since(*at) < Slot::done_ttl(stamp)
+            }
             // An attached run whose last waiter went away is dead: nothing will finish it.
             Slot::InFlight { run, .. } => run.join().is_some(),
         });

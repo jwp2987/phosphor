@@ -390,6 +390,7 @@ fn sweep_drops_an_in_flight_slot_whose_run_is_gone() {
         Slot::InFlight {
             run_id: 1,
             run: RunHandle::Attached(weak_gone),
+            stamp: None,
         },
     );
     cache.slots.insert(
@@ -397,6 +398,7 @@ fn sweep_drops_an_in_flight_slot_whose_run_is_gone() {
         Slot::InFlight {
             run_id: 2,
             run: RunHandle::Attached(weak_alive),
+            stamp: None,
         },
     );
     cache.sweep(now);
@@ -409,4 +411,85 @@ fn sweep_drops_an_in_flight_slot_whose_run_is_gone() {
         "a run somebody waits on stays"
     );
     drop(waited_on);
+}
+
+fn stamp(len: u64) -> ConfigStamp {
+    ConfigStamp::from_entries(vec![(
+        PathBuf::from("/home/u/.gitconfig"),
+        Some((SystemTime::UNIX_EPOCH, len)),
+    )])
+}
+
+const ALIAS_SCRIPT: &str = "git --no-optional-locks config --get-regexp '^alias.'";
+
+/// #1342: the alias lookup is recognised, ordinary generators are not.
+#[test]
+fn alias_lookup_scripts_are_recognised() {
+    assert!(is_alias_lookup_script(ALIAS_SCRIPT));
+    assert!(is_alias_lookup_script("git config --get alias.checkout"));
+    assert!(!is_alias_lookup_script("git branch --no-color"));
+    assert!(!is_alias_lookup_script("git config --get-regexp '.*'"));
+}
+
+/// #1342: a stamped alias lookup survives command submission and is reused past the ordinary
+/// TTL; on old code the submit dropped it and every `git commit` spawned the lookup again.
+#[test]
+fn stamped_alias_lookup_survives_invalidation_and_ttl() {
+    let mut cache = GeneratorCache::default();
+    let now = Instant::now();
+    let k = key(1, "/repo", ALIAS_SCRIPT);
+    let starts = Cell::new(0);
+    let run = |c: &mut GeneratorCache, at: Instant| {
+        c.get_or_start_stamped(&k, at, true, Some(stamp(5)), |id| {
+            starts.set(starts.get() + 1);
+            let r = ready_run(ok("alias.co checkout\n"));
+            let _ = id;
+            r
+        })
+    };
+    let first = run(&mut cache, now);
+    let res = first.err().expect("first call starts a run");
+    let result = futures::executor::block_on(res);
+    cache.finish(&k, 0, &result, now);
+
+    cache.invalidate_session(SessionId::from(1));
+    let later = now + GENERATOR_CACHE_TTL * 4;
+    let second = run(&mut cache, later);
+    assert!(second.is_ok(), "reused after submit and past the 5 s TTL");
+    assert_eq!(starts.get(), 1);
+}
+
+/// #1342: a changed config file (`git config alias.x y`, an edited .gitconfig) is a miss, so a
+/// real change is never answered with the old aliases.
+#[test]
+fn changed_config_stamp_forces_a_new_alias_lookup() {
+    let mut cache = GeneratorCache::default();
+    let now = Instant::now();
+    let k = key(1, "/repo", ALIAS_SCRIPT);
+    let first = cache.get_or_start_stamped(&k, now, true, Some(stamp(5)), |_| {
+        ready_run(ok("alias.co checkout\n"))
+    });
+    let result = futures::executor::block_on(first.err().unwrap());
+    cache.finish(&k, 0, &result, now);
+
+    let second = cache.get_or_start_stamped(&k, now, true, Some(stamp(9)), |_| {
+        ready_run(ok("alias.co checkout\nalias.st status\n"))
+    });
+    assert!(second.is_err(), "a changed stamp must start a new run");
+}
+
+/// #1342: the stamp reflects the file on disk.
+#[test]
+fn config_stamp_changes_when_gitconfig_changes() {
+    let dir = std::env::temp_dir().join(format!("phosphor-stamp-{}", std::process::id()));
+    let git = dir.join("repo").join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let cfg = git.join("config");
+    std::fs::write(&cfg, "[alias]\n co = checkout\n").unwrap();
+    let pwd = dir.join("repo").to_string_lossy().into_owned();
+    let before = config_stamp(&pwd);
+    std::fs::write(&cfg, "[alias]\n co = checkout\n st = status\n").unwrap();
+    let after = config_stamp(&pwd);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_ne!(before, after);
 }
