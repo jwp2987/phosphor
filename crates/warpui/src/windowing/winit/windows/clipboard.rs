@@ -2,7 +2,10 @@ use std::ops::Not;
 
 use arboard::{self, Clipboard as WindowsClipboardInner};
 
-use crate::{clipboard::ClipboardContent, Clipboard};
+use crate::{
+    clipboard::{BackgroundClipboardWriter, ClipboardContent},
+    Clipboard,
+};
 
 pub struct WindowsClipboard {
     inner: WindowsClipboardInner,
@@ -31,6 +34,25 @@ impl Clipboard for WindowsClipboard {
                 log::warn!("Unable to set clipboard text: {err:?}");
             }
         }
+    }
+
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        // A Win32 clipboard owner/viewer can stall `OpenClipboard`; arboard opens it per call, so a
+        // fresh handle on the writer thread is equivalent (#1307).
+        Some(std::sync::Arc::new(|contents, _target| {
+            let Ok(mut clipboard) = WindowsClipboard::new() else {
+                log::warn!("Unable to open the clipboard for a background write");
+                return false;
+            };
+            let result = if let Some(html) = &contents.html {
+                clipboard.inner.set().html(html, Some(&contents.plain_text))
+            } else {
+                clipboard.inner.set().text(&contents.plain_text)
+            };
+            result
+                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                .is_ok()
+        }))
     }
 
     fn read(&mut self) -> ClipboardContent {

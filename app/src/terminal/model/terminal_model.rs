@@ -2148,6 +2148,21 @@ impl TerminalModel {
         }
     }
 
+    /// Whether [`Self::selection_to_string`] would return `Some`, without building the string
+    /// (which grows with the selection; #1304).
+    pub fn has_selection_range(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+    ) -> bool {
+        if self.alt_screen_active {
+            self.alt_screen.selection_range(semantic_selection).is_some()
+        } else {
+            self.block_list
+                .has_renderable_selection(semantic_selection, inverted_blocklist)
+        }
+    }
+
     /// Returns the underlying text string for the given range in the model.
     pub fn string_at_range<T: RangeInModel>(
         &self,

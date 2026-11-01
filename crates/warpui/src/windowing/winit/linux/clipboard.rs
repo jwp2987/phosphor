@@ -7,8 +7,11 @@ use arboard::{
 use zbus::zvariant::NoneValue;
 
 use crate::{
+    clipboard::{
+        BackgroundClipboardWriter, BackgroundTextRead, BackgroundTextReader, ClipboardContent,
+        ClipboardTarget,
+    },
     Clipboard,
-    clipboard::{BackgroundTextRead, BackgroundTextReader, ClipboardContent},
 };
 
 /// How many times the text read is attempted when the owner is slow (#1173).
@@ -130,12 +133,7 @@ impl Clipboard for LinuxClipboard {
     fn has_content(&mut self) -> bool {
         // Non-empty text is the overwhelmingly common case and answers the question without
         // the HTML, path and image reads (an image decode can take hundreds of ms).
-        if self
-            .inner
-            .get()
-            .text()
-            .is_ok_and(|text| !text.is_empty())
-        {
+        if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
             return true;
         }
         !self.read().is_empty()
@@ -197,6 +195,37 @@ impl Clipboard for LinuxClipboard {
                 BackgroundTextRead::TimedOut
             } else {
                 BackgroundTextRead::Content(content)
+            }
+        }))
+    }
+
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        // The backends are process-global (see `background_text_reader`), so a fresh handle on the
+        // writer thread sets the same selections; the owner may stall it instead of the UI (#1307).
+        Some(std::sync::Arc::new(|contents, target| {
+            let Ok(mut clipboard) = LinuxClipboard::new() else {
+                log::warn!("Unable to open the clipboard for a background write");
+                return false;
+            };
+            match target {
+                ClipboardTarget::Clipboard => clipboard
+                    .write_to_specific_clipboard(LinuxClipboardKind::Clipboard, &contents)
+                    .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                    .is_ok(),
+                ClipboardTarget::Primary => {
+                    match clipboard
+                        .write_to_specific_clipboard(LinuxClipboardKind::Primary, &contents)
+                    {
+                        Ok(()) => true,
+                        Err(arboard::Error::ClipboardNotSupported) => clipboard
+                            .write_to_specific_clipboard(LinuxClipboardKind::Clipboard, &contents)
+                            .is_ok(),
+                        Err(err) => {
+                            log::warn!("Unable to set primary clipboard text: {err:?}");
+                            false
+                        }
+                    }
+                }
             }
         }))
     }

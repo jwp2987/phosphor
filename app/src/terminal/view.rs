@@ -740,6 +740,8 @@ fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
 
 /// A terminal paste still being read after this long gets a "Pasting..." notice (#1255).
 #[cfg(not(target_family = "wasm"))]
+/// How long a clipboard write may run before the user is told the owner is not answering.
+const CLIPBOARD_WRITE_SLOW_TOAST_DELAY: Duration = Duration::from_secs(3);
 const PASTE_PROGRESS_TOAST_DELAY: Duration = Duration::from_millis(750);
 
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
@@ -20534,6 +20536,60 @@ impl TerminalView {
     /// Takes `&self` (it only needs `ctx`) so that read-only paths -- notably
     /// `open_terminal_content_url`, which is called while a highlighted link is borrowed out of
     /// `self` -- can report a refusal without an exclusive borrow.
+    /// Copies `text` to the system clipboard without letting a stalled clipboard owner hold the UI
+    /// thread (#1307). Falls back to an inline write on platforms with a cheap clipboard. A later
+    /// copy always wins over an earlier slower one; a failed or very slow write shows a toast.
+    fn copy_text_to_clipboard(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let pending_for_thread = pending.clone();
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let started = warpui::clipboard::write_in_background(
+                ctx.clipboard(),
+                ClipboardContent::plain_text(text),
+                warpui::clipboard::ClipboardTarget::Clipboard,
+                move |outcome| {
+                    pending_for_thread.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(outcome);
+                },
+            );
+            match started {
+                Ok(()) => {
+                    ctx.spawn(async move { rx.await.ok() }, |me, outcome, ctx| {
+                        if !matches!(
+                            outcome,
+                            Some(warpui::clipboard::WriteOutcome::Written)
+                                | Some(warpui::clipboard::WriteOutcome::Superseded)
+                        ) {
+                            me.show_error_toast(
+                                "Copy failed \u{2014} the clipboard did not accept the text"
+                                    .to_string(),
+                                ctx,
+                            );
+                        }
+                    });
+                    ctx.spawn(
+                        Timer::after(CLIPBOARD_WRITE_SLOW_TOAST_DELAY),
+                        move |me, _, ctx| {
+                            if pending.load(std::sync::atomic::Ordering::SeqCst) {
+                                me.show_error_toast(
+                                    "Copy is taking a while \u{2014} the clipboard owner is not \
+                                     responding"
+                                        .to_string(),
+                                    ctx,
+                                );
+                            }
+                        },
+                    );
+                }
+                Err(content) => ctx.clipboard().write(content),
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        ctx.clipboard().write(ClipboardContent::plain_text(text));
+    }
+
     fn show_error_toast(&self, text: String, ctx: &mut ViewContext<Self>) {
         // `handle` panics when the singleton was never registered (bare views); ask first.
         if !ctx.has_singleton_model::<ToastStack>() {
@@ -20936,14 +20992,14 @@ impl TerminalView {
         }
 
         let semantic_selection = SemanticSelection::as_ref(ctx);
-        if let Some(selected) = self.model.lock().selection_to_string(
+        let selected = self.model.lock().selection_to_string(
             semantic_selection,
             self.is_inverted_blocklist(ctx),
             ctx,
-        ) {
+        );
+        if let Some(selected) = selected {
             if !selected.is_empty() {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(selected));
+                self.copy_text_to_clipboard(selected, ctx);
             }
             return;
         }
@@ -21241,13 +21297,10 @@ impl TerminalView {
                 // selected block(s), so offer the selection explicitly (#988).
                 if is_active_block_selected
                     && is_active_block_running
-                    && model
-                        .selection_to_string(
-                            SemanticSelection::as_ref(ctx),
-                            self.is_inverted_blocklist(ctx),
-                            ctx,
-                        )
-                        .is_some_and(|text| !text.is_empty())
+                    && model.has_selection_range(
+                        SemanticSelection::as_ref(ctx),
+                        self.is_inverted_blocklist(ctx),
+                    )
                 {
                     items.insert(
                         1,
@@ -22093,9 +22146,8 @@ impl TerminalView {
         let model = self.model.lock();
 
         let semantic_selection = SemanticSelection::as_ref(ctx);
-        let selection_string =
-            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx);
-        if selection_string.is_some() {
+        // Only whether a selection exists matters here; do not format it (#1304).
+        if model.has_selection_range(semantic_selection, self.is_inverted_blocklist(ctx)) {
             menu_items.push(
                 MenuItemFields::new(crate::t!("menu-block-copy"))
                     .with_on_select_action(TerminalAction::ContextMenu(
@@ -26250,15 +26302,13 @@ impl TerminalView {
             return;
         }
 
-        {
+        let selected_text = {
             let semantic_selection = SemanticSelection::as_ref(ctx);
             let model = self.model.lock();
-            if let Some(selected_text) =
-                model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-            {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(selected_text));
-            }
+            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
+        };
+        if let Some(selected_text) = selected_text {
+            self.copy_text_to_clipboard(selected_text, ctx);
         }
         self.close_context_menu(ctx, true);
     }

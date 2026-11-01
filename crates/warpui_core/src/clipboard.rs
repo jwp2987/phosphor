@@ -51,6 +51,13 @@ pub trait Clipboard: 'static {
         None
     }
 
+    /// A self-contained writer that can run on another thread, or `None` when the platform's
+    /// clipboard write is cheap and must stay on the calling thread. An X11/Wayland or Win32
+    /// clipboard owner can stall a write, which froze the UI (#1307). Returns `true` on success.
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        None
+    }
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text
@@ -83,6 +90,106 @@ pub enum BackgroundTextRead {
 
 /// See [`Clipboard::background_text_reader`].
 pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 'static>;
+
+/// Which system clipboard a background write targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    Clipboard,
+    /// The Linux primary selection (middle-click paste); other platforms write the clipboard.
+    Primary,
+}
+
+/// See [`Clipboard::background_writer`].
+pub type BackgroundClipboardWriter =
+    std::sync::Arc<dyn Fn(ClipboardContent, ClipboardTarget) -> bool + Send + Sync + 'static>;
+
+/// How a background clipboard write ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    /// A later copy to the same target had already been written, so this one was dropped.
+    Superseded,
+    Failed,
+}
+
+/// Orders background writes: each write takes a generation when it is started (on the calling
+/// thread, so generations follow the user's order) and a write whose generation is older than
+/// one already applied to its target is dropped. Writes to one target are serialized.
+pub struct WriteOrder {
+    next: std::sync::atomic::AtomicU64,
+    applied: [Mutex<u64>; 2],
+}
+
+impl WriteOrder {
+    pub const fn new() -> Self {
+        Self {
+            next: std::sync::atomic::AtomicU64::new(0),
+            applied: [Mutex::new(0), Mutex::new(0)],
+        }
+    }
+
+    pub fn next_generation(&self) -> u64 {
+        self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// Runs `write` unless a later generation has already been applied to `target`.
+    pub fn run(
+        &self,
+        generation: u64,
+        target: ClipboardTarget,
+        write: impl FnOnce() -> bool,
+    ) -> WriteOutcome {
+        let mut applied = self.applied[target as usize].lock();
+        if *applied > generation {
+            return WriteOutcome::Superseded;
+        }
+        *applied = generation;
+        if write() {
+            WriteOutcome::Written
+        } else {
+            WriteOutcome::Failed
+        }
+    }
+}
+
+static WRITE_ORDER: WriteOrder = WriteOrder::new();
+
+/// Writes `content` on a background thread when the platform supports it and returns `Ok`;
+/// `on_done` runs on that thread with the outcome (it is dropped uncalled if the thread cannot be
+/// spawned). Returns the content back as `Err` when the caller should write synchronously. `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1`
+/// forces the synchronous path.
+pub fn write_in_background(
+    clipboard: &mut dyn Clipboard,
+    content: ClipboardContent,
+    target: ClipboardTarget,
+    on_done: impl FnOnce(WriteOutcome) + Send + 'static,
+) -> Result<(), ClipboardContent> {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (clipboard, target, on_done);
+        return Err(content);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        if std::env::var_os("PHOSPHOR_SYNC_CLIPBOARD_WRITE").is_some() {
+            return Err(content);
+        }
+        let Some(writer) = clipboard.background_writer() else {
+            return Err(content);
+        };
+        let generation = WRITE_ORDER.next_generation();
+        if let Err(err) = std::thread::Builder::new()
+            .name("clipboard-write".into())
+            .spawn(move || {
+                let outcome = WRITE_ORDER.run(generation, target, || writer(content, target));
+                on_done(outcome);
+            })
+        {
+            log::warn!("Unable to start the clipboard write thread: {err}");
+        }
+        Ok(())
+    }
+}
 
 // Clipboard could contain content with multiple data types at the same type.
 #[derive(Debug, Clone, Default)]
