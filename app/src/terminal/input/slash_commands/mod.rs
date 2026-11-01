@@ -867,27 +867,35 @@ impl Input {
                     // The pin canonicalizes and indexes the working directory itself rather
                     // than the repo root; `CodebaseIndexManager` resolves the root it actually
                     // indexes (`root_path_for_codebase`).
-                    let Ok(repo_path) = directory.canonicalize() else {
-                        show_error_toast(
-                            format!("Could not resolve {} to index", directory.display()),
-                            ctx,
-                        );
-                        return true;
-                    };
-
-                    let started = CodebaseIndexManager::handle(ctx)
-                        .update(ctx, |manager, ctx| manager.index_directory(repo_path, ctx));
-                    if !started {
-                        // `index_directory` returns false when indexing is off or the index
-                        // limit is reached, and says nothing about which. Both are conditions
-                        // the user has to fix in Code settings.
-                        show_error_toast(
-                            "Could not start indexing — check Settings > Code > Codebase Indexing"
-                                .to_owned(),
-                            ctx,
-                        );
-                        return true;
-                    }
+                    // Canonicalize off the UI thread (network volumes / privacy prompts); the
+                    // indexing start and its error toasts run back on the main thread.
+                    ctx.spawn(
+                        async move {
+                            let resolved = directory.canonicalize();
+                            (directory, resolved)
+                        },
+                        |_me, (directory, resolved), ctx| {
+                            let Ok(repo_path) = resolved else {
+                                show_error_toast(
+                                    format!("Could not resolve {} to index", directory.display()),
+                                    ctx,
+                                );
+                                return;
+                            };
+                            let started = CodebaseIndexManager::handle(ctx)
+                                .update(ctx, |manager, ctx| manager.index_directory(repo_path, ctx));
+                            if !started {
+                                // `index_directory` returns false when indexing is off or the
+                                // index limit is reached, and says nothing about which. Both are
+                                // conditions the user has to fix in Code settings.
+                                show_error_toast(
+                                    "Could not start indexing — check Settings > Code > Codebase Indexing"
+                                        .to_owned(),
+                                    ctx,
+                                );
+                            }
+                        },
+                    );
                 }
                 #[cfg(not(feature = "local_fs"))]
                 {

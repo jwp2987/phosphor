@@ -173,7 +173,7 @@ impl GridHighlightedLink {
                 if file_link
                     .get_inner()
                     .absolute_path()
-                    .map(|path| path.is_dir())
+                    .map(|path| crate::util::path_probe::is_dir_cached(&path))
                     .unwrap_or(false) =>
             {
                 crate::t!("common-open-folder")
@@ -280,7 +280,9 @@ impl RichContentLink {
     pub fn tooltip_text(&self) -> String {
         match &self {
             #[cfg(feature = "local_fs")]
-            RichContentLink::FilePath { absolute_path, .. } if absolute_path.is_dir() => {
+            RichContentLink::FilePath { absolute_path, .. }
+                if crate::util::path_probe::is_dir_cached(absolute_path) =>
+            {
                 crate::t!("common-open-folder")
             }
             #[cfg(feature = "local_fs")]

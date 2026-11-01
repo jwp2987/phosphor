@@ -61,6 +61,9 @@ pub struct ScriptingSettingsPageView {
     local_control_mode_dropdown: ViewHandle<Dropdown<ScriptingSettingsPageAction>>,
     #[cfg(target_os = "macos")]
     warpctrl_installing: bool,
+    /// Last known install state; computed off-thread (never stat/canonicalize in render).
+    #[cfg(target_os = "macos")]
+    warpctrl_installed: bool,
 }
 
 impl ScriptingSettingsPageView {
@@ -91,13 +94,32 @@ impl ScriptingSettingsPageView {
         let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             vec![Box::new(LocalControlModeWidget)];
 
-        Self {
+        let mut this = Self {
             page: PageType::new_uncategorized(widgets, Some("Scripting")),
             local_only_icon_tooltip_states: RefCell::new(HashMap::new()),
             local_control_mode_dropdown,
             #[cfg(target_os = "macos")]
             warpctrl_installing: false,
-        }
+            #[cfg(target_os = "macos")]
+            warpctrl_installed: false,
+        };
+        #[cfg(target_os = "macos")]
+        this.refresh_warpctrl_installed(ctx);
+        this
+    }
+
+    /// Re-checks the warpctrl install state on a background thread; applied on the main thread.
+    #[cfg(target_os = "macos")]
+    pub fn refresh_warpctrl_installed(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async { cli_install::is_warpctrl_installed() },
+            |view, installed, ctx| {
+                if view.warpctrl_installed != installed {
+                    view.warpctrl_installed = installed;
+                    ctx.notify();
+                }
+            },
+        );
     }
 
     fn update_local_control_mode_dropdown(
@@ -127,7 +149,7 @@ impl ScriptingSettingsPageView {
 
     #[cfg(target_os = "macos")]
     fn install_warpctrl(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.warpctrl_installing || cli_install::is_warpctrl_installed() {
+        if self.warpctrl_installing || self.warpctrl_installed {
             return;
         }
 
@@ -138,6 +160,7 @@ impl ScriptingSettingsPageView {
             async { cli_install::install_warpctrl() },
             move |view, result, ctx| {
                 view.warpctrl_installing = false;
+                view.refresh_warpctrl_installed(ctx);
                 match result {
                     Ok(()) => {
                         let command_name = ChannelState::channel().warpctrl_command_name();
@@ -207,6 +230,12 @@ impl SettingsPageMeta for ScriptingSettingsPageView {
         SettingsSection::Scripting
     }
 
+    fn on_page_selected(&mut self, _allow_steal_focus: bool, _ctx: &mut ViewContext<Self>) {
+        // Re-check the install state (off-thread) each time the page is opened.
+        #[cfg(target_os = "macos")]
+        self.refresh_warpctrl_installed(_ctx);
+    }
+
     fn should_render(&self, _ctx: &AppContext) -> bool {
         cfg!(not(target_family = "wasm")) && FeatureFlag::WarpControlCli.is_enabled()
     }
@@ -250,7 +279,7 @@ impl SettingsWidget for WarpControlCliInstallWidget {
         appearance: &Appearance,
         _app: &AppContext,
     ) -> Box<dyn Element> {
-        let installed = cli_install::is_warpctrl_installed();
+        let installed = view.warpctrl_installed;
         let disabled = view.warpctrl_installing || installed;
         let label = if view.warpctrl_installing {
             "Installing…"

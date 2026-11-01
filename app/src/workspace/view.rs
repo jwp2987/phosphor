@@ -9816,7 +9816,9 @@ impl Workspace {
         items.extend(
             PersistedWorkspace::as_ref(ctx)
                 .workspaces()
-                .filter(|ws| ws.path.exists())
+                // Cached off-thread probe: never stat persisted workspaces on the UI thread
+                // (network volumes). Unknown paths are shown until the first probe lands.
+                .filter(|ws| crate::util::path_probe::exists_cached(&ws.path, true))
                 .filter(|ws| Self::should_include_worktree_sidecar_repo(&ws.path, ctx))
                 .filter(|ws| {
                     if query.is_empty() {
