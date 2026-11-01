@@ -67,6 +67,12 @@ pub enum CustomEvent {
     /// multiple `Focused` events into a single `ActiveWindowChanged` event on the next tick of the
     /// [`winit::event_loop::EventLoop`].
     ActiveWindowChanged,
+    /// A `RedrawRequested` arrived while the app was mutably borrowed (a nested native loop such
+    /// as a Windows modal move/resize), so the draw was recorded as owed. This event is queued
+    /// once per owed burst and flushes the owed redraws; it is delivered after the current
+    /// callback returns, i.e. once the borrow has been released (UI-R8, mirrors the macOS
+    /// `DrawOwed` flush of #1358).
+    FlushOwedRedraws,
     /// Update the UI App using the given closure.
     UpdateUIApp(#[derivative(Debug = "ignore")] Box<dyn FnOnce(&mut AppContext) + Send + Sync>),
     RequestUserAttention {

@@ -148,3 +148,28 @@ fn minimized_windows_skip_redraws_and_redraw_once_restored() {
     assert!(gate.redraw_due_on_event(false));
     assert!(!gate.redraw_due_on_event(false));
 }
+
+#[test]
+fn borrowed_redraw_is_owed_once_and_paid_on_release() {
+    let mut owed = OwedRedraw::default();
+    // First deferral queues the flush; further ones while it is queued do not.
+    assert!(owed.note_deferred());
+    assert!(!owed.note_deferred());
+    assert!(!owed.pending());
+    // The flush finds the borrow still held: nothing drawn, the debt stays and is retried by the
+    // next event rather than spinning.
+    assert!(!owed.take_for_flush(false));
+    assert!(owed.pending());
+    // Released: the debt is paid exactly once.
+    assert!(owed.take_for_flush(true));
+    assert!(!owed.take_for_flush(true));
+    assert!(!owed.pending());
+}
+
+#[test]
+fn a_drawn_frame_clears_the_debt() {
+    let mut owed = OwedRedraw::default();
+    assert!(owed.note_deferred());
+    owed.note_draw_ran();
+    assert!(!owed.take_for_flush(true));
+}
