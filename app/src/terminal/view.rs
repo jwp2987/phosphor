@@ -21087,6 +21087,37 @@ impl TerminalView {
         bracketed: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.start_background_paste_with_backstop(
+            reader,
+            shell_dialect,
+            bracketed,
+            Self::paste_backstop(),
+            ctx,
+        );
+    }
+
+    /// How long the terminal holds typed keys for a clipboard read before giving up on it (#1331).
+    /// The platform readers bound their own wait; this is the backstop for a wedged reader thread.
+    /// `PHOSPHOR_PASTE_BACKSTOP_MS` overrides it (shared with the input editor); `0` turns it off.
+    #[cfg(not(target_family = "wasm"))]
+    fn paste_backstop() -> Option<Duration> {
+        const DEFAULT_MS: u64 = 3_000;
+        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MS);
+        (ms > 0).then(|| Duration::from_millis(ms))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste_with_backstop(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        shell_dialect: Option<ShellDialect>,
+        bracketed: bool,
+        backstop: Option<Duration>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let id = self.paste_sequencer.begin();
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
@@ -21114,6 +21145,15 @@ impl TerminalView {
             async move { rx.await.ok().flatten() },
             move |me, bytes, ctx| me.finish_background_paste(id, bytes, ctx),
         );
+        // A read that outlives the backstop fails the paste: the keys held behind it are written
+        // (in order) and the user is told. The reader's late answer finds the paste gone (#1331).
+        if let Some(backstop) = backstop {
+            ctx.spawn(Timer::after(backstop), move |me, _, ctx| {
+                if me.paste_sequencer.is_pending(id) {
+                    me.finish_background_paste(id, None, ctx);
+                }
+            });
+        }
         // Say what is happening when the read takes noticeable time (a big paste).
         ctx.spawn(
             Timer::after(PASTE_PROGRESS_TOAST_DELAY),
@@ -21152,7 +21192,8 @@ impl TerminalView {
                 self.write_user_bytes_to_pty(bytes, ctx);
             }
             None => self.show_error_toast(
-                "Paste failed \u{2014} clipboard read timed out".to_string(),
+                "Paste failed \u{2014} the clipboard did not answer; your typing was kept"
+                    .to_string(),
                 ctx,
             ),
         }

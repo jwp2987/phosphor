@@ -14930,6 +14930,61 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
+/// #1331: a terminal-bound paste whose clipboard read never answers fails at the backstop; the
+/// keys typed meanwhile reach the pty in typing order (none dropped, Enter after the fragment it
+/// followed) and the reader's late answer writes nothing. Not compiled/run when written (no
+/// builds in the fix pass).
+#[test]
+fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("LATE".to_string()))
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.start_background_paste_with_backstop(
+                reader,
+                None,
+                false,
+                Some(Duration::from_millis(100)),
+                ctx,
+            );
+            for key in [b"l".to_vec(), b"s".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "keys typed behind a pending paste are held"
+        );
+        for _ in 0..1000 {
+            if !terminal.read(&app, |view, _| view.paste_sequencer.has_pending()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"ls\r".to_vec(), "held keys released in order");
+        release.send(()).unwrap();
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"ls\r".to_vec(), "the late answer is ignored");
+    })
+}
+
 /// #933 x ^C: an Enter held because the command may already have finished does not swallow a
 /// Ctrl-C typed within the window. The ETX is written to the pty, once, and the hold is dropped.
 /// #1014: keys typed while the paced subshell bootstrap is still in flight (an rc file that
