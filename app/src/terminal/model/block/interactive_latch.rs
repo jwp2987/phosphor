@@ -167,6 +167,20 @@ impl InteractiveLatch {
         }
     }
 
+    /// The user pressed a key while this block executes unlatched. The keystroke is the event: a
+    /// silent builtin (`read x`) that went to sleep after the debounce probe produces no output to
+    /// re-probe on, yet the key must reach it. Same decision as [`Self::on_output`], so the
+    /// debounce rule still holds (a foreground program / blocked shell only latches once settled);
+    /// free when the block is not executing or already latched (two atomic loads, no syscall).
+    pub fn on_key(&self) {
+        self.on_output();
+    }
+
+    /// Whether a key needs to re-probe: executing and not yet latched.
+    pub fn needs_key_probe(&self) -> bool {
+        !self.is_latched() && self.0.executing.load(Ordering::Relaxed)
+    }
+
     /// The presentation debounce elapsed. Consults the probe about the terminal NOW: a command that
     /// already finished, or that never left the shell, does not latch however late this runs.
     pub fn on_settled(&self) {
