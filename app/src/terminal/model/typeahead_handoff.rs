@@ -14,7 +14,8 @@
 
 use std::collections::VecDeque;
 use std::mem;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use instant::Instant;
@@ -106,6 +107,32 @@ pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
 /// Whether the ConPTY prompt hold is on by default: it is, unless the kill switch says `0`.
 pub fn conpty_prompt_hold_env_enabled() -> bool {
     std::env::var(CONPTY_PROMPT_HOLD_ENV).map_or(true, |value| value.trim() != "0")
+}
+
+/// Milliseconds on a process-wide monotonic clock, never 0 (0 means "never" in a stamp). Used only
+/// for the mid-line guard's stamp that the view writes without taking the model lock.
+fn stamp_now_ms() -> u64 {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    let base = BASE.get_or_init(Instant::now);
+    (Instant::now().saturating_duration_since(*base).as_millis() as u64).saturating_add(1)
+}
+
+/// The shared stamp of the last user byte that the view queued for the shell's line while a
+/// prompt hold held keys (#1353 phase 5). The view stores to it without the model lock; the
+/// ConPTY mid-line guard ([`CONPTY_MIDLINE_QUIET`]) reads it with the hand-off's own stamp.
+#[derive(Clone, Debug, Default)]
+pub struct QueuedLineBytesStamp(Arc<AtomicU64>);
+
+impl QueuedLineBytesStamp {
+    /// Records "the user typed a byte for the shell's line just now".
+    pub fn note_now(&self) {
+        self.0.store(stamp_now_ms(), Ordering::Relaxed);
+    }
+
+    fn recent(&self, within: Duration) -> bool {
+        let stamp = self.0.load(Ordering::Relaxed);
+        stamp != 0 && stamp_now_ms().saturating_sub(stamp) < within.as_millis() as u64
+    }
 }
 
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
@@ -374,6 +401,16 @@ pub struct TypeaheadHandoff {
     prompt_hold_started: bool,
     /// Identifies the current prompt hold; a timer armed for an earlier one must not release it.
     prompt_hold_id: u64,
+    /// #1353 phase 5: the keys of a prompt hold live in the view's input queue (entries behind a
+    /// `LineEditorActive` gate), not in `prompt_hold`. Set once by the view when its queue
+    /// handles the hand-off holds; off keeps the buffer above.
+    prompt_hold_in_queue: bool,
+    /// A prompt hold exists and its keys are in the view's queue (see `prompt_hold_in_queue`).
+    /// Cleared by the view when it has released them ([`Self::finish_queued_prompt_hold`]) or by
+    /// a signal that takes them ([`Self::take_queued_prompt_hold_for_signal`]).
+    prompt_hold_queued: bool,
+    /// Typing into a queued prompt hold, stamped by the view without the model lock.
+    queued_line_bytes: QueuedLineBytesStamp,
     /// When the last precmd arrived, whether or not a hold follows (for the release hop).
     last_precmd_at: Option<Instant>,
     /// When the user last typed a byte that reached the shell's line.
@@ -437,6 +474,28 @@ impl TypeaheadHandoff {
         self.prompt_hold_shell_signals = signals;
     }
 
+    /// #1353 phase 5: the view's input queue holds the keys of a prompt hold (entries behind a
+    /// `LineEditorActive` gate) instead of this struct. Set once, before any key is routed.
+    pub fn set_prompt_hold_in_queue(&mut self, in_queue: bool) {
+        self.prompt_hold_in_queue = in_queue;
+    }
+
+    /// Whether the view's queue holds the keys of a prompt hold.
+    pub fn prompt_hold_in_queue(&self) -> bool {
+        self.prompt_hold_in_queue
+    }
+
+    /// The stamp the view writes, without the model lock, for each key it queues behind a prompt
+    /// hold, so the ConPTY mid-line guard sees keys that never came through here.
+    pub fn queued_line_bytes_stamp(&self) -> QueuedLineBytesStamp {
+        self.queued_line_bytes.clone()
+    }
+
+    /// Whether a queued prompt hold is live (its keys are in the view's queue).
+    pub fn prompt_hold_queued(&self) -> bool {
+        self.prompt_hold_queued
+    }
+
     /// Whether a precmd arms the prompt hold: ConPTY, the kill switch is not set, the shell is
     /// known to signal, and no earlier hold of this session gave up waiting for a signal.
     fn prompt_hold_armed(&self) -> bool {
@@ -477,7 +536,7 @@ impl TypeaheadHandoff {
 
     #[cfg(test)]
     pub(crate) fn has_prompt_hold(&self) -> bool {
-        self.prompt_hold.is_some()
+        self.prompt_hold.is_some() || self.prompt_hold_queued
     }
 
     /// A signal or EOF byte is about to be written while keys are held for the prompt: the held
@@ -512,17 +571,100 @@ impl TypeaheadHandoff {
         for len in lengths {
             let chunk = bytes[start..start + len].to_vec();
             start += len;
-            match self.route_user_bytes_unheld(&chunk, true) {
-                UserBytesRoute::WriteCounted => chunks.push(chunk),
-                UserBytesRoute::Write => {
-                    // Not counted by the route, but the writer retires every chunk it writes.
-                    self.writes_in_flight = self.writes_in_flight.saturating_add(1);
-                    chunks.push(chunk);
-                }
-                UserBytesRoute::Held => (),
+            if self.route_released_chunk(&chunk) {
+                chunks.push(chunk);
             }
         }
         chunks
+    }
+
+    /// Routes one chunk that was held (for the prompt, #1162) as the write it was typed as,
+    /// bypassing every hold, and returns whether the caller must write it. A chunk the current
+    /// state absorbs (`HoldAfterEnter`) is not written. The view's queue releases a queued prompt
+    /// hold chunk by chunk through this (#1353 phase 5), exactly as `drain_prompt_hold` does.
+    pub fn route_released_chunk(&mut self, chunk: &[u8]) -> bool {
+        match self.route_user_bytes_unheld(chunk, true) {
+            UserBytesRoute::WriteCounted => true,
+            UserBytesRoute::Write => {
+                // Not counted by the route, but the writer retires every chunk it writes.
+                self.writes_in_flight = self.writes_in_flight.saturating_add(1);
+                true
+            }
+            UserBytesRoute::Held => false,
+        }
+    }
+
+    /// The line editor's ready signal arrived and the keys of the prompt hold are in the view's
+    /// queue (#1353 phase 5): ends the wait and returns the hold's id when one is live, so the
+    /// view releases that gate. The hold stays live ([`Self::prompt_hold_queued`]) until the view
+    /// has accounted the released keys ([`Self::finish_queued_prompt_hold`]), and no request is
+    /// decided meanwhile (see `on_line_editor_active`). Same wait handling as
+    /// [`Self::release_prompt_hold_on_signal`]: a signal with no wait pending releases nothing.
+    pub fn release_queued_prompt_hold_on_signal(&mut self) -> Option<u64> {
+        if self.awaiting_line_editor_since.take().is_none() {
+            return None;
+        }
+        let waited_ms = self
+            .last_precmd_at
+            .map(|at| at.elapsed().as_secs_f64() * 1000.0);
+        warpui::input_order::log_hop("prompt_hold_signal", || {
+            format!(
+                "since_precmd_ms={} queued={}",
+                waited_ms.map_or_else(|| "none".to_string(), |ms| format!("{ms:.1}")),
+                self.prompt_hold_queued
+            )
+        });
+        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+    }
+
+    /// The line editor's ready signal, for whichever kind of prompt hold is live: the chunks of a
+    /// hold the hand-off itself buffered (to be written now, in typed order), or the id of a hold
+    /// whose keys are in the view's queue (which the view releases). Both empty when no wait was
+    /// pending.
+    pub fn release_prompt_hold_on_signal_any(&mut self) -> (Vec<Vec<u8>>, Option<u64>) {
+        if self.prompt_hold_queued {
+            (Vec::new(), self.release_queued_prompt_hold_on_signal())
+        } else {
+            (self.release_prompt_hold_on_signal(), None)
+        }
+    }
+
+    /// The give-up cap of the queued prompt hold `id` ran out with no line editor signal
+    /// (#1349): returns whether that hold is live, so the view writes its keys anyway and the
+    /// hold is off for the rest of the session. `false` when it is gone already.
+    pub fn expire_queued_prompt_hold(&mut self, id: u64) -> bool {
+        if id != self.prompt_hold_id || !self.prompt_hold_queued {
+            return false;
+        }
+        self.awaiting_line_editor_since = None;
+        self.prompt_hold_gave_up = true;
+        log::warn!(
+            "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt; \
+             writing the held keys and turning the hold off for this session",
+            CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+        );
+        warpui::input_order::log_hop("prompt_hold_expired", String::new);
+        true
+    }
+
+    /// A signal or EOF byte is about to be written while the view's queue holds keys for the
+    /// prompt: ends the wait and hands the hold over (returns its id) so the view prepends the
+    /// held keys to `bytes`, one write in typed order, as `take_prompt_hold_before_signal` does
+    /// for the buffer. The hold is over once this returns.
+    pub fn take_queued_prompt_hold_for_signal(&mut self, bytes: &[u8]) -> Option<u64> {
+        if !bytes.iter().any(is_signal_byte) {
+            return None;
+        }
+        self.awaiting_line_editor_since = None;
+        mem::take(&mut self.prompt_hold_queued).then_some(self.prompt_hold_id)
+    }
+
+    /// The view released the keys of queued prompt hold `id` (all accounted through
+    /// [`Self::route_released_chunk`]): the hold is over, a request may be decided again.
+    pub fn finish_queued_prompt_hold(&mut self, id: u64) {
+        if id == self.prompt_hold_id {
+            self.prompt_hold_queued = false;
+        }
     }
 
     /// The shell's line editor signalled that it is ready (#1349), observed in the pty output
@@ -572,9 +714,10 @@ impl TypeaheadHandoff {
     /// request now would land in the middle of the line (#1162).
     fn typing_a_line_on_conpty(&self, now: Instant) -> bool {
         self.conpty_input
-            && self
+            && (self
                 .last_line_bytes_at
                 .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_MIDLINE_QUIET)
+                || self.queued_line_bytes.recent(CONPTY_MIDLINE_QUIET))
     }
 
     pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
@@ -1113,6 +1256,14 @@ impl TypeaheadHandoff {
                 enters_written,
                 precmds_seen,
             } => {
+                if self.prompt_hold_queued {
+                    // #1353 phase 5: keys typed since the prompt wait in the view's queue and
+                    // have not been counted yet, so the shell's line looks empty. Decide nothing
+                    // until the view has released them (it asks for a retry then).
+                    return ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    };
+                }
                 let no_line_queued = precmds_seen >= enters_written;
                 if no_line_queued && self.precmds_pending_view > 0 {
                     // The editor has yet to be reinitialized for the finished block, which
@@ -1202,7 +1353,26 @@ impl TypeaheadHandoff {
             }
             return UserBytesRoute::Held;
         }
-        if self.young_hold.is_none()
+        if self.prompt_hold_queued {
+            // The view's queue holds the keys of a prompt hold and takes every key typed behind
+            // it, so a key only gets here if the queue and this state disagree. Never hold it a
+            // second time, and never lose it: it is written as typed.
+            log::warn!(
+                "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live"
+            );
+        } else if self.young_hold.is_none()
+            && self.should_hold_for_prompt(reaches_shell_line, Instant::now())
+            && self.prompt_hold_in_queue
+        {
+            // #1353 phase 5: the bytes are not stored here; the view puts this key at the front of
+            // its queue behind a `LineEditorActive` gate (one entry per key event, in typed
+            // order) and releases them by the line editor's signal.
+            self.prompt_hold_queued = true;
+            self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
+            self.prompt_hold_started = true;
+            self.last_line_bytes_at = Some(Instant::now());
+            return UserBytesRoute::Held;
+        } else if self.young_hold.is_none()
             && self.should_hold_for_prompt(reaches_shell_line, Instant::now())
         {
             self.prompt_hold = Some(bytes.to_vec());
@@ -1568,6 +1738,8 @@ impl TypeaheadHandoff {
     pub fn reset_on_exit(&mut self) {
         *self = Self {
             tracks_view_precmds: self.tracks_view_precmds,
+            prompt_hold_in_queue: self.prompt_hold_in_queue,
+            queued_line_bytes: self.queued_line_bytes.clone(),
             ..Self::default()
         };
     }

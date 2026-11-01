@@ -23,7 +23,8 @@ pub enum GateKind {
     PtyRouteSettling,
     /// An Enter arrived while the last command may already have finished (Q3b).
     PromptSeen,
-    /// ConPTY: between a precmd and the shell's line editor becoming active (Q3c).
+    /// ConPTY: between a precmd and the shell's line editor becoming active (Q3c); phase 5 keeps
+    /// the held keys here (`view/paste_queue.rs`), opened by the line editor's bracketed-paste signal.
     LineEditorActive,
     /// A subshell warpify setup was announced and is unfinished (Q6a).
     SubshellSetup,
@@ -147,7 +148,8 @@ impl GateKind {
             GateKind::HandoffReport => Some(Duration::from_secs(3)),
             GateKind::PtyRouteSettling => Some(Duration::from_millis(300)),
             GateKind::PromptSeen => Some(Duration::from_millis(600)),
-            GateKind::LineEditorActive => Some(Duration::from_millis(150)),
+            // The hand-off's give-up cap since #1349 (the line editor's own signal opens it).
+            GateKind::LineEditorActive => Some(Duration::from_millis(1500)),
             GateKind::SubshellSetup | GateKind::PowershellSetup => Some(Duration::from_secs(90)),
             GateKind::SubshellBootstrapWrite => None,
             GateKind::SshConnect => Some(Duration::from_secs(5)),

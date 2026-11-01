@@ -1861,3 +1861,151 @@ fn view_precmds_pending_counts_prompts_until_the_view_handles_them() {
     handoff.on_precmd_viewed();
     assert_eq!(handoff.precmds_pending_view(), 0);
 }
+
+// ---- #1353 phase 5: the prompt hold's keys live in the view's input queue ------------------
+// Not compiled/run when written.
+
+/// As `conpty_awaiting_line_editor`, with the keys of the prompt hold kept by the view's queue.
+fn conpty_awaiting_line_editor_in_queue() -> TypeaheadHandoff {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.set_prompt_hold_in_queue(true);
+    handoff
+}
+
+/// The queued hold keeps no bytes: the first key is Held and counted nowhere, the view puts it
+/// in the queue, and the line editor's signal names the hold for the view to release.
+#[test]
+fn a_queued_prompt_hold_keeps_no_bytes_and_the_signal_names_it() {
+    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    assert_eq!(handoff.on_user_bytes(b"f"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    assert!(handoff.prompt_hold_queued());
+    assert!(handoff.prompt_hold.is_none(), "the bytes are the queue's");
+    assert_eq!(handoff.writes_in_flight(), 0);
+    // Nothing is counted until the view releases the keys: the signal only names the hold.
+    let (chunks, queued) = handoff.release_prompt_hold_on_signal_any();
+    assert!(chunks.is_empty());
+    assert_eq!(queued, Some(id));
+    assert!(
+        handoff.prompt_hold_queued(),
+        "live until the view accounted the keys"
+    );
+    assert_eq!(handoff.writes_in_flight(), 0);
+    // A second signal for the same prompt has no wait pending.
+    assert_eq!(
+        handoff.release_prompt_hold_on_signal_any(),
+        (Vec::new(), None)
+    );
+}
+
+/// Releasing the queued keys counts each one as the legacy buffer did: five keys, five writes in
+/// flight, the Enter among them counted as a line terminator.
+#[test]
+fn releasing_the_queued_keys_counts_them_like_the_buffer_did() {
+    let mut buffered = conpty_awaiting_line_editor();
+    let mut queued = conpty_awaiting_line_editor_in_queue();
+    let keys: [&[u8]; 5] = [b"f", b"o", b"\x1b[A", b"\r", b"x"];
+    for key in keys {
+        assert_eq!(buffered.on_user_bytes(key), UserBytesRoute::Held);
+    }
+    // The view's queue takes the keys after the first, which never reach the hand-off.
+    assert_eq!(queued.on_user_bytes(keys[0]), UserBytesRoute::Held);
+    let id = queued.take_prompt_hold_started().unwrap();
+    let legacy_chunks = buffered.release_prompt_hold_on_signal();
+    assert_eq!(queued.release_prompt_hold_on_signal_any().1, Some(id));
+    let mut written = Vec::new();
+    for key in keys {
+        if queued.route_released_chunk(key) {
+            written.push(key.to_vec());
+        }
+    }
+    queued.finish_queued_prompt_hold(id);
+    assert_eq!(written, legacy_chunks, "same chunks, same order");
+    assert_eq!(queued.writes_in_flight(), buffered.writes_in_flight());
+    assert_eq!(queued.state(), buffered.state());
+    assert!(!queued.prompt_hold_queued());
+    assert_eq!(queued.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
+}
+
+/// No request is decided while the keys wait in the queue: their Enter is not counted yet, so
+/// the shell's line looks empty and the editor would take over ahead of them.
+#[test]
+fn no_request_is_decided_while_queued_keys_are_uncounted() {
+    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.release_prompt_hold_on_signal_any();
+    assert!(handoff.route_released_chunk(b"\r"));
+    handoff.finish_queued_prompt_hold(id);
+    // Decided again with the Enter counted: a line is queued ahead of the prompt, so no request.
+    assert!(!matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest | ActiveDecision::Committed
+    ));
+}
+
+/// The give-up cap: the hold's id guards it, it fires once, and the hold is off for the session.
+#[test]
+fn the_queued_hold_give_up_is_id_guarded_and_switches_the_hold_off() {
+    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(!handoff.expire_queued_prompt_hold(id + 1));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    assert!(!handoff.expire_queued_prompt_hold(id), "one-shot");
+    // The next prompt is not held for any more.
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::WriteCounted);
+}
+
+/// A signal takes the hold over: the view puts the held keys in front of it as one write.
+#[test]
+fn a_signal_takes_the_queued_hold_and_ends_the_wait() {
+    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    assert_eq!(handoff.on_user_bytes(b"l"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.take_queued_prompt_hold_for_signal(b"a"), None);
+    assert!(handoff.prompt_hold_queued());
+    assert_eq!(
+        handoff.take_queued_prompt_hold_for_signal(b"\x03"),
+        Some(id)
+    );
+    assert!(!handoff.prompt_hold_queued());
+    assert!(!handoff.awaiting_line_editor_signal());
+    // The combined write reaches the hand-off as one signal-carrying write: never held.
+    assert_eq!(
+        handoff.on_user_bytes(b"l\x03"),
+        UserBytesRoute::WriteCounted
+    );
+}
+
+/// Keys queued behind a prompt hold are still typing: the view stamps them lock-free and the
+/// ConPTY mid-line guard sees the stamp (#1189 for the queue).
+#[test]
+fn the_midline_guard_sees_keys_the_view_queued() {
+    let mut handoff = conpty_young_after_submit();
+    handoff.age_last_activity_for_test();
+    handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
+    assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
+    handoff.queued_line_bytes_stamp().note_now();
+    assert!(handoff.typing_a_line_on_conpty(Instant::now()));
+}
+
+/// With the hold off or the queue unavailable the buffer is used, exactly as before.
+#[test]
+fn without_the_queue_the_prompt_hold_keeps_its_buffer() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert!(!handoff.prompt_hold_in_queue());
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    assert!(!handoff.prompt_hold_queued());
+    assert_eq!(handoff.prompt_hold.as_deref(), Some(&b"a"[..]));
+    let (chunks, queued) = handoff.release_prompt_hold_on_signal_any();
+    assert_eq!(chunks, vec![b"a".to_vec()]);
+    assert_eq!(queued, None);
+}
