@@ -37,25 +37,37 @@ impl Clipboard for WindowsClipboard {
     }
 
     fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
-        // A Win32 clipboard owner/viewer can stall `OpenClipboard`; arboard opens it per call, so a
-        // fresh handle on the writer thread is equivalent (#1307).
-        Some(std::sync::Arc::new(|contents, _target| {
-            let Ok(mut clipboard) = WindowsClipboard::new() else {
-                log::warn!("Unable to open the clipboard for a background write");
-                return false;
-            };
-            let result = if let Some(html) = &contents.html {
-                clipboard.inner.set().html(html, Some(&contents.plain_text))
-            } else {
-                clipboard.inner.set().text(&contents.plain_text)
-            };
-            result
-                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
-                .is_ok()
-        }))
+        // One long-lived writer thread with one handle keeps writes ordered; a Win32 owner or
+        // viewer that stalls `OpenClipboard` stalls that thread, not the UI (#1307).
+        static WRITER: std::sync::OnceLock<BackgroundClipboardWriter> = std::sync::OnceLock::new();
+        Some(
+            WRITER
+                .get_or_init(|| {
+                    crate::clipboard::serial_writer(
+                        || WindowsClipboard::new().ok(),
+                        |clipboard, contents, _target| {
+                            let result = if let Some(html) = &contents.html {
+                                clipboard.inner.set().html(html, Some(&contents.plain_text))
+                            } else {
+                                clipboard.inner.set().text(&contents.plain_text)
+                            };
+                            result
+                                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                                .is_ok()
+                        },
+                    )
+                })
+                .clone(),
+        )
     }
 
     fn read(&mut self) -> ClipboardContent {
+        // A copy still being written is what the user just copied (#1307).
+        if let Some(pending) =
+            crate::clipboard::pending_write(crate::clipboard::ClipboardTarget::Clipboard)
+        {
+            return (*pending).clone();
+        }
         let mut content = ClipboardContent {
             plain_text: self.inner.get().text().unwrap_or_default(),
             ..Default::default()
