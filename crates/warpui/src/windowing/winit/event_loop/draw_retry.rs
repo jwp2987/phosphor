@@ -197,6 +197,45 @@ impl RateLimitedSummary {
     }
 }
 
+/// Per-window "draw owed" bookkeeping (UI-R8): `redraw_window` found the app mutably borrowed
+/// and could not draw. The draw is owed, not dropped; one flush is queued, and it runs when the
+/// borrow has been released. No timer and no per-turn re-arm: the release is the signal.
+#[derive(Debug, Default)]
+pub(super) struct OwedRedraw {
+    owed: bool,
+    flush_queued: bool,
+}
+
+impl OwedRedraw {
+    /// Records a draw that could not run. Returns true if the caller must queue a flush.
+    pub fn note_deferred(&mut self) -> bool {
+        self.owed = true;
+        !std::mem::replace(&mut self.flush_queued, true)
+    }
+
+    /// A frame was drawn, so nothing is owed any more.
+    pub fn note_draw_ran(&mut self) {
+        self.owed = false;
+    }
+
+    /// The queued flush ran. `can_draw` is whether the app can be borrowed now. Returns true if
+    /// a redraw should be requested. If the borrow is still held, the debt stays and the next
+    /// event (see [`Self::pending`]) retries.
+    pub fn take_for_flush(&mut self, can_draw: bool) -> bool {
+        self.flush_queued = false;
+        if can_draw {
+            std::mem::take(&mut self.owed)
+        } else {
+            false
+        }
+    }
+
+    /// A draw is owed and no flush is queued to pay it.
+    pub fn pending(&self) -> bool {
+        self.owed && !self.flush_queued
+    }
+}
+
 #[cfg(test)]
 #[path = "draw_retry_tests.rs"]
 mod tests;

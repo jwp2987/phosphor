@@ -785,6 +785,13 @@ pub enum BlockSection {
     NotContained,
 }
 
+/// Where a sliced block snapshot resumes: which grid piece and which row offset in it (#1377).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotSliceCursor {
+    piece: usize,
+    offset: usize,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockGridPoint {
     Prompt(Point),
@@ -2581,27 +2588,82 @@ impl Block {
         start: BlockGridPoint,
         end: BlockGridPoint,
     ) -> BlockTextSnapshot {
+        let mut out = BlockTextSnapshot::default();
+        let mut cursor = SnapshotSliceCursor::default();
+        let done = self.bounds_to_text_snapshot_sliced(start, end, &mut cursor, None, &mut out);
+        debug_assert!(done);
+        out
+    }
+
+    /// Row-chunked [`Self::bounds_to_text_snapshot`] (#1377). Appends to `out` until `deadline`
+    /// (`None` = to completion) and returns whether the range is complete; if not, call again
+    /// with the same `cursor` and `out` after releasing the model lock. A finished block never
+    /// changes, so the slices join into exactly the unsliced snapshot.
+    pub fn bounds_to_text_snapshot_sliced(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+        cursor: &mut SnapshotSliceCursor,
+        deadline: Option<std::time::Instant>,
+        out: &mut BlockTextSnapshot,
+    ) -> bool {
         self.with_range_grids(start, end, |blockgrids, start_point, end_point| {
-            BlockTextSnapshot {
-                pieces: blockgrids
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, grid)| {
-                        match (idx == 0, idx == blockgrids.len() - 1) {
-                            (true, false) => grid.point_to_end_text_snapshot(start_point),
-                            (false, true) => grid.start_to_point_text_snapshot(end_point),
-                            (false, false) => grid.contents_text_snapshot(None),
-                            (true, true) => grid.grid_handler.bounds_to_text_snapshot(
-                                start_point,
-                                end_point,
-                                RespectObfuscatedSecrets::Yes,
-                                false, /* force_obfuscated_secrets */
-                                RespectDisplayedOutput::Yes,
-                            ),
-                        }
-                    })
-                    .collect(),
+            let last = blockgrids.len().saturating_sub(1);
+            for (idx, grid) in blockgrids.iter().enumerate() {
+                if idx < cursor.piece {
+                    continue;
+                }
+                while out.pieces.len() <= idx {
+                    out.pieces.push(Default::default());
+                }
+                let piece = &mut out.pieces[idx];
+                let from = cursor.offset;
+                let next = match (idx == 0, idx == last) {
+                    (true, false) => grid.range_text_snapshot_sliced(
+                        start_point,
+                        grid.end_point(),
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (false, true) => grid.range_text_snapshot_sliced(
+                        grid.start_point(),
+                        end_point,
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (false, false) => grid.range_text_snapshot_sliced(
+                        Point::new(0, 0),
+                        grid.end_point(),
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (true, true) => grid.grid_handler.bounds_to_text_snapshot_sliced(
+                        start_point,
+                        end_point,
+                        RespectObfuscatedSecrets::Yes,
+                        false, /* force_obfuscated_secrets */
+                        RespectDisplayedOutput::Yes,
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                };
+                match next {
+                    Some(next) => {
+                        cursor.piece = idx;
+                        cursor.offset = next;
+                        return false;
+                    }
+                    None => {
+                        cursor.piece = idx + 1;
+                        cursor.offset = 0;
+                    }
+                }
             }
+            true
         })
     }
 

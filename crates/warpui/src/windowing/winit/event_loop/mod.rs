@@ -180,6 +180,8 @@ struct WindowState {
     /// When set, a frame was skipped for a transient reason and a redraw must be requested once
     /// this instant passes. Serviced at the top of [`EventLoop::handle_event`].
     redraw_retry_at: Option<Instant>,
+    /// A redraw arrived while the app was mutably borrowed; see [`draw_retry::OwedRedraw`].
+    owed_redraw: draw_retry::OwedRedraw,
     /// Skips redraws while the window is minimized; see [`MinimizedRedrawGate`].
     minimized_gate: MinimizedRedrawGate,
     /// For touch events, stores whether soft keyboard was requested during LeftMouseDown.
@@ -206,6 +208,7 @@ impl WindowState {
             momentum_scroll_abort: None,
             draw_retry: DrawRetryState::default(),
             redraw_retry_at: None,
+            owed_redraw: Default::default(),
             minimized_gate: MinimizedRedrawGate::default(),
             #[cfg(target_family = "wasm")]
             pending_soft_keyboard_request: false,
@@ -635,10 +638,38 @@ impl EventLoop {
         let _ = (next_deadline, window_target);
     }
 
+    /// Pays redraws that were owed because the app was mutably borrowed when winit asked for them
+    /// (UI-R8). `queued_flush` is true when called for the [`CustomEvent::FlushOwedRedraws`] that
+    /// was queued for the debt; otherwise (top of any later event) only a debt with no flush
+    /// queued is paid, which covers a flush that found the borrow still held.
+    fn flush_owed_redraws(&mut self, queued_flush: bool) {
+        let can_draw = self.callbacks.can_borrow_mut();
+        let mut to_request = Vec::new();
+        for state in self.state.windows.values_mut() {
+            let pay = if queued_flush {
+                state.owed_redraw.take_for_flush(can_draw)
+            } else {
+                can_draw && state.owed_redraw.pending() && state.owed_redraw.take_for_flush(true)
+            };
+            if pay {
+                to_request.push(state.window_id);
+            }
+        }
+        for window_id in to_request {
+            let window = self
+                .ui_app
+                .read(|ctx| ctx.windows().platform_window(window_id));
+            if let Some(window) = window {
+                downcast_window(window.as_ref()).request_redraw_keeping_scene();
+            }
+        }
+    }
+
     /// Handles a single [`winit::event::Event`].
     pub fn handle_event(&mut self, evt: Event<CustomEvent>, window_target: &ActiveEventLoop) {
         window_target.set_control_flow(ControlFlow::Wait);
         self.service_redraw_retries(window_target);
+        self.flush_owed_redraws(false);
 
         match evt {
             Event::NewEvents(StartCause::Init) => {
@@ -959,6 +990,9 @@ impl EventLoop {
             Event::UserEvent(CustomEvent::VisualViewportResized { width, height }) => {
                 self.handle_visual_viewport_resize(width, height);
             }
+            Event::UserEvent(CustomEvent::FlushOwedRedraws) => {
+                self.flush_owed_redraws(true);
+            }
             Event::UserEvent(CustomEvent::MomentumScroll { window_id }) => {
                 let Some(window_state) = self.state.windows.get_mut(&window_id) else {
                     return;
@@ -1151,6 +1185,19 @@ impl EventLoop {
             log::warn!("Redraw requested for a window for which we have no state");
             return;
         };
+
+        // Re-entrant draw (a nested native loop delivered this while the app is mutably
+        // borrowed): drawing now would panic on the RefCell. The draw is owed; queue one flush
+        // that runs once the borrow is released (UI-R8; macOS does the same, #1358).
+        if !self.callbacks.can_borrow_mut() {
+            log::debug!("Redraw requested while the app is mutably borrowed; deferring it");
+            if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                if state.owed_redraw.note_deferred() {
+                    let _ = self.proxy.send_event(CustomEvent::FlushOwedRedraws);
+                }
+            }
+            return;
+        }
         let Some(window) = self
             .ui_app
             .read(|ctx| ctx.windows().platform_window(window_id))
@@ -1246,6 +1293,7 @@ impl EventLoop {
             Ok(_) => {
                 if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
                     state.draw_retry.on_frame_drawn();
+                    state.owed_redraw.note_draw_ran();
                 }
                 self.callbacks.for_window(window).frame_drawn()
             }

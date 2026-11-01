@@ -11,6 +11,11 @@
 //! [`GridHandler::bounds_to_string`]: super::grid_handler::GridHandler::bounds_to_string
 
 use std::ops::Range;
+use std::time::{Duration, Instant};
+
+use crate::terminal::model::block::{BlockGridPoint, SnapshotSliceCursor};
+use crate::terminal::model::blocks::BlockList;
+use crate::terminal::model::BlockId;
 
 use crate::terminal::model::cell::Flags;
 use crate::util::extensions::TrimStringExt;
@@ -147,6 +152,40 @@ impl BlockTextSnapshot {
 pub enum SelectionPart {
     Text(String),
     Block(BlockTextSnapshot),
+    /// A block range whose snapshot is taken in time-budgeted row slices by
+    /// [`SelectionParts::advance`], so no single model-lock hold grows with the selection
+    /// (#1377).
+    Range(Box<PendingBlockRange>),
+}
+
+/// A block's selected range being snapshotted slice by slice.
+pub struct PendingBlockRange {
+    block_id: BlockId,
+    start: BlockGridPoint,
+    end: BlockGridPoint,
+    cursor: SnapshotSliceCursor,
+    snapshot: BlockTextSnapshot,
+    complete: bool,
+}
+
+impl PendingBlockRange {
+    pub fn new(block_id: BlockId, start: BlockGridPoint, end: BlockGridPoint) -> Self {
+        Self {
+            block_id,
+            start,
+            end,
+            cursor: SnapshotSliceCursor::default(),
+            snapshot: BlockTextSnapshot::default(),
+            complete: false,
+        }
+    }
+}
+
+/// Why a sliced snapshot could not finish.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SliceError {
+    /// The block was evicted between slices.
+    BlockGone,
 }
 
 impl From<String> for SelectionPart {
@@ -193,7 +232,47 @@ impl SelectionParts {
     pub fn has_snapshots(&self) -> bool {
         self.parts
             .iter()
-            .any(|part| matches!(part, SelectionPart::Block(_)))
+            .any(|part| matches!(part, SelectionPart::Block(_) | SelectionPart::Range(_)))
+    }
+
+    /// Whether [`Self::advance`] still has rows to snapshot.
+    pub fn needs_slicing(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| matches!(part, SelectionPart::Range(range) if !range.complete))
+    }
+
+    /// Snapshots pending block ranges for up to `budget` (one slice), under the caller's model
+    /// lock. Returns `Ok(true)` when everything is captured and [`Self::render`] can run on any
+    /// thread, `Ok(false)` when the caller should release the lock, yield, and call again. A
+    /// block that is still running is captured in one go (it can change between slices, so it
+    /// cannot be split); finished blocks never change.
+    pub fn advance(&mut self, blocks: &BlockList, budget: Duration) -> Result<bool, SliceError> {
+        let deadline = Instant::now() + budget;
+        for part in &mut self.parts {
+            let SelectionPart::Range(range) = part else {
+                continue;
+            };
+            if range.complete {
+                continue;
+            }
+            let block = blocks
+                .block_with_id(&range.block_id)
+                .ok_or(SliceError::BlockGone)?;
+            let slice_deadline = block.finished().then_some(deadline);
+            let range = &mut **range;
+            range.complete = block.bounds_to_text_snapshot_sliced(
+                range.start,
+                range.end,
+                &mut range.cursor,
+                slice_deadline,
+                &mut range.snapshot,
+            );
+            if !range.complete {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// The selection text; identical to the old inline `selected_texts.join("\n")`.
@@ -203,6 +282,7 @@ impl SelectionParts {
             .map(|part| match part {
                 SelectionPart::Text(text) => text,
                 SelectionPart::Block(snapshot) => snapshot.render(),
+                SelectionPart::Range(range) => range.snapshot.render(),
             })
             .collect::<Vec<_>>()
             .join("\n")

@@ -852,6 +852,32 @@ impl BlockGrid {
         self.range_text_snapshot(Point::new(row_start_bound, 0), self.end_point())
     }
 
+    /// Row-chunked twin of the three snapshot methods above (#1377): appends the rows of
+    /// `start..=end` from offset `from` to `out` until `deadline`. See
+    /// [`GridHandler::bounds_to_text_snapshot_sliced`].
+    pub fn range_text_snapshot_sliced(
+        &self,
+        start: Point,
+        end: Point,
+        from: usize,
+        deadline: Option<std::time::Instant>,
+        out: &mut GridTextSnapshot,
+    ) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        self.grid_handler.bounds_to_text_snapshot_sliced(
+            start,
+            end,
+            RespectObfuscatedSecrets::Yes,
+            false, /* force_obfuscated_secrets */
+            RespectDisplayedOutput::Yes,
+            from,
+            deadline,
+            out,
+        )
+    }
+
     fn range_text_snapshot(&self, start: Point, end: Point) -> GridTextSnapshot {
         if self.is_empty() {
             GridTextSnapshot::empty()

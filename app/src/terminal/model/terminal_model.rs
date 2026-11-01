@@ -2164,6 +2164,27 @@ impl TerminalModel {
         }
     }
 
+    /// [`Self::selection_to_parts`] whose big selections are left as unsnapshotted ranges, to be
+    /// captured by `SelectionParts::advance` in short lock holds (#1377).
+    pub fn selection_to_parts_sliced(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        defer_over_rows: Option<usize>,
+        app: &AppContext,
+    ) -> Option<SelectionParts> {
+        if self.alt_screen_active {
+            self.selection_to_parts(semantic_selection, inverted_blocklist, defer_over_rows, app)
+        } else {
+            self.block_list.selection_to_parts_sliced(
+                semantic_selection,
+                inverted_blocklist,
+                app,
+                defer_over_rows,
+            )
+        }
+    }
+
     /// Like [`Self::selection_to_string`], but a selection over `defer_over_rows` rows is
     /// captured as snapshots (cheap, under the caller's lock) and rendered later with
     /// `SelectionParts::render`, which can run on a background thread (#1304).
@@ -4103,7 +4124,9 @@ impl ansi::Handler for TerminalModel {
         let bytes = input.bytes();
 
         // Send a copy of the bytes to subscribers.
-        self.event_proxy.send_pty_read_event(bytes);
+        let countable = !self.is_receiving_in_band_command_output()
+            && self.is_active_block_bootstrapped();
+        self.event_proxy.send_pty_read_event(bytes, countable);
 
         // Send a copy of the bytes for the active shared session, if applicable.
         // When processing a synchronized output frame, `on_finish_byte_processing` is called

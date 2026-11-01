@@ -70,6 +70,9 @@ use super::{ConvertToAbsolute as _, Cursor, SelectionCursor};
 use filtering::FilterState;
 use string_offset::ByteOffset;
 
+/// How many rows a sliced text snapshot copies between deadline checks.
+pub const SNAPSHOT_DEADLINE_CHECK_ROWS: usize = 64;
+
 /// Used to match equal brackets, when performing a bracket-pair selection.
 const BRACKET_PAIRS: [(char, char); 4] = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
 
@@ -1354,22 +1357,61 @@ impl GridHandler {
         force_secrets_obfuscated: bool,
         respect_displayed_output: RespectDisplayedOutput,
     ) -> GridTextSnapshot {
+        let mut snapshot = GridTextSnapshot::empty();
+        self.bounds_to_text_snapshot_sliced(
+            start,
+            end,
+            respect_obfuscated_secrets,
+            force_secrets_obfuscated,
+            respect_displayed_output,
+            0,
+            None,
+            &mut snapshot,
+        );
+        snapshot
+    }
+
+    /// Row-chunked [`Self::bounds_to_text_snapshot`] (#1377): appends the rows at offsets
+    /// `from..` of the range to `out`, stopping once `deadline` has passed (checked every
+    /// [`SNAPSHOT_DEADLINE_CHECK_ROWS`] rows). Returns `Some(next_offset)` if rows remain, to be
+    /// passed as `from` to the next call (after the caller released the model lock), and `None`
+    /// when the range is complete. Calling it to completion produces exactly the rows of the
+    /// unsliced call. The grid must not change between slices (finished blocks never do).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bounds_to_text_snapshot_sliced(
+        &self,
+        start: Point,
+        end: Point,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+        respect_displayed_output: RespectDisplayedOutput,
+        from: usize,
+        deadline: Option<std::time::Instant>,
+        out: &mut GridTextSnapshot,
+    ) -> Option<usize> {
         if end.row >= self.total_rows() || self.total_rows() == 0 || self.columns() == 0 {
-            return GridTextSnapshot::empty();
+            return None;
         }
 
-        let row_indices: Vec<usize> = match (respect_displayed_output, self.displayed_output_rows())
-        {
-            (RespectDisplayedOutput::Yes, Some(rows)) => rows
-                .skip(start.row)
-                .take(end.row.saturating_sub(start.row) + 1)
-                .collect(),
-            _ => (start.row..(end.row + 1)).collect(),
-        };
+        let requested = end.row.saturating_sub(start.row) + 1;
+        let row_indices: Box<dyn Iterator<Item = usize> + '_> =
+            match (respect_displayed_output, self.displayed_output_rows()) {
+                (RespectDisplayedOutput::Yes, Some(rows)) => Box::new(
+                    rows.skip(start.row + from)
+                        .take(requested.saturating_sub(from)),
+                ),
+                _ => Box::new((start.row + from)..(end.row + 1)),
+            };
 
         let columns = self.columns();
-        let mut rows = Vec::with_capacity(row_indices.len());
-        for (offset, row) in row_indices.into_iter().enumerate() {
+        if out.tabs.is_empty() {
+            out.tabs = (0..columns)
+                .map(|col| self.ansi_handler_state.tabs[col])
+                .collect();
+            out.columns = columns;
+        }
+        for (i, row) in row_indices.enumerate() {
+            let offset = from + i;
             let offset_row = start.row + offset;
             let start_col = if offset_row == start.row {
                 start.col
@@ -1388,17 +1430,18 @@ impl GridHandler {
                 respect_obfuscated_secrets,
                 force_secrets_obfuscated,
             ) {
-                rows.push(snapshot_row);
+                out.rows.push(snapshot_row);
+            }
+            if let Some(deadline) = deadline {
+                if (i + 1) % SNAPSHOT_DEADLINE_CHECK_ROWS == 0
+                    && offset + 1 < requested
+                    && std::time::Instant::now() >= deadline
+                {
+                    return Some(offset + 1);
+                }
             }
         }
-
-        GridTextSnapshot {
-            rows,
-            tabs: (0..columns)
-                .map(|col| self.ansi_handler_state.tabs[col])
-                .collect(),
-            columns,
-        }
+        None
     }
 
     /// Copies what [`Self::line_to_string`] reads for one row (plain text only).
