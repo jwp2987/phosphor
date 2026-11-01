@@ -114,6 +114,8 @@ pub(super) fn branch_stamp(pwd: &str) -> Option<BranchStamp> {
 struct Entry {
     stamp: BranchStamp,
     branches: Vec<String>,
+    /// Store order, so the oldest entry is the one evicted when the cache is full.
+    seq: u64,
 }
 
 lazy_static! {
@@ -131,10 +133,38 @@ pub(super) fn lookup(session_id: SessionId, pwd: &str, stamp: &BranchStamp) -> O
 /// Records `branches`, which were listed while the repository had `stamp`.
 pub(super) fn store(session_id: SessionId, pwd: &str, stamp: BranchStamp, branches: Vec<String>) {
     let mut cache = CACHE.lock();
-    if cache.len() >= MAX_CACHED_ENTRIES {
-        cache.clear();
+    store_in(&mut cache, (session_id, pwd.to_owned()), stamp, branches);
+}
+
+type CacheMap = HashMap<(SessionId, String), Entry>;
+
+/// Inserts, evicting only the oldest entry when full (the old behaviour cleared every session's
+/// list at once, so a 65th directory made all the others re-run git; #1382).
+fn store_in(
+    cache: &mut CacheMap,
+    key: (SessionId, String),
+    stamp: BranchStamp,
+    branches: Vec<String>,
+) {
+    static NEXT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if cache.len() >= MAX_CACHED_ENTRIES && !cache.contains_key(&key) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, e)| e.seq)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest);
+        }
     }
-    cache.insert((session_id, pwd.to_owned()), Entry { stamp, branches });
+    cache.insert(
+        key,
+        Entry {
+            stamp,
+            branches,
+            seq,
+        },
+    );
 }
 
 #[cfg(test)]
