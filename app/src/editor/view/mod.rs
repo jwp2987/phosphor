@@ -3246,7 +3246,15 @@ impl EditorView {
             return false;
         };
         let key = match action {
-            EditorAction::UserInsert(text) => HeldEditorKey::Text(String::clone(text)),
+            EditorAction::UserInsert(text) => {
+                // #1400: the terminal element sees the same typed-characters event and may have
+                // offered it to the ssh hold already (it runs first, and it also takes it when
+                // this editor is not reached at all). Offered exactly once: this copy is dropped.
+                if hold.take_offered(warpui::input_order::typed_dispatch_seq(), text.as_ref()) {
+                    return true;
+                }
+                HeldEditorKey::Text(String::clone(text))
+            }
             EditorAction::Enter => HeldEditorKey::Control("\r"),
             EditorAction::Backspace => HeldEditorKey::Control("\u{7f}"),
             EditorAction::DeleteAllLeft => HeldEditorKey::Control("\u{15}"),

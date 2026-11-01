@@ -20912,6 +20912,57 @@ fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_legacy_buffer(
     ssh_key_via_editor_route_before_handover_joins_the_hold(false);
 }
 
+/// #1400: 14 keys held, then 15 more typed while focus is already in the editor: each is seen by
+/// the terminal element (which offers it to the hold) AND the editor (its action copy of the same
+/// event, which must drop itself), and a few reach only the editor. Hand-over: all 29, once, in
+/// typed order, nothing left in the editor's side queue.
+fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        let line = "echo RTtm0 >> ~/rl_tm0.1.txt";
+        let chars: Vec<String> = line.chars().map(|c| c.to_string()).collect();
+        for c in &chars[..14] {
+            view.typed_characters_on_terminal(c, ctx);
+        }
+        assert!(view.ssh_typeahead_holding);
+        remote_first_prompt_is_next_for_test(view);
+        for (i, c) in chars[14..].iter().enumerate() {
+            if i % 5 == 4 {
+                // Only the editor is reached by this one.
+                editor_text(view, c, ctx);
+            } else {
+                // The element offers it, then the editor's copy of the same event.
+                let seq = warpui::input_order::bump_typed_dispatch_seq();
+                view.ssh_editor_key_hold.mark_offered(seq, c);
+                view.typed_characters_on_terminal(c, ctx);
+                editor_text(view, c, ctx);
+            }
+        }
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "none applied early"
+        );
+        first_precmd_processed_for_test(view, ctx);
+        view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(view.ssh_editor_key_hold.is_empty());
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_queue() {
+    ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(true);
+}
+
+#[test]
+fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_legacy_buffer() {
+    ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(false);
+}
+
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);

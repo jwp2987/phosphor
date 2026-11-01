@@ -66,6 +66,14 @@ pub struct EditorKeyHold {
     queue: RefCell<Vec<HeldEditorKey>>,
     bytes: Cell<usize>,
     overflowed: Cell<bool>,
+    /// The typed-characters event (`warpui::input_order::typed_dispatch_seq`) and text already
+    /// offered to the hold by one route (#1400). The terminal element and the focused editor both
+    /// see the same event; whichever offers first claims it and the other must not offer it again
+    /// (#1339), whatever the order they run in.
+    claimed: RefCell<Option<(u64, String)>>,
+    /// Wakes the terminal view when a key was queued here, so it joins the ordered ssh hold at
+    /// once instead of waiting for the next key or the hand-over (#1400).
+    waker: RefCell<Option<async_channel::Sender<()>>>,
 }
 
 impl fmt::Debug for EditorKeyHold {
@@ -108,8 +116,41 @@ impl EditorKeyHold {
         self.active.get() || self.settling.get()
     }
 
+    /// The terminal element offered typed-characters event `seq` (text `text`) to the hold. The
+    /// same event is also dispatched to the focused editor as an action, after the element pass;
+    /// [`Self::take_offered`] makes that copy a no-op (offered exactly once, #1339/#1400).
+    pub fn mark_offered(&self, seq: u64, text: &str) {
+        *self.claimed.borrow_mut() = Some((seq, text.to_owned()));
+    }
+
+    /// Whether this event was already offered by the terminal element (then the editor drops its
+    /// copy). Consumes the mark.
+    pub fn take_offered(&self, seq: u64, text: &str) -> bool {
+        let mut claimed = self.claimed.borrow_mut();
+        if claimed
+            .as_ref()
+            .is_some_and(|(s, t)| *s == seq && t == text)
+        {
+            *claimed = None;
+            return true;
+        }
+        false
+    }
+
+    /// The terminal view's wake-up channel (bounded to one: a wake pending is as good as two).
+    pub fn set_waker(&self, waker: async_channel::Sender<()>) {
+        *self.waker.borrow_mut() = Some(waker);
+    }
+
     /// Queues one key. Adjacent printable runs are merged.
     pub fn push(&self, key: HeldEditorKey) {
+        self.push_inner(key);
+        if let Some(waker) = self.waker.borrow().as_ref() {
+            let _ = waker.try_send(());
+        }
+    }
+
+    fn push_inner(&self, key: HeldEditorKey) {
         if self.overflowed.get() {
             return;
         }
@@ -165,6 +206,20 @@ mod tests {
         assert!(hold.rescues_unclaimed_keys());
         hold.end_settle();
         assert!(!hold.rescues_unclaimed_keys());
+    }
+
+    /// #1339 / #1400: one typed-characters event is offered once, whichever route is first.
+    #[test]
+    fn a_typed_event_offered_by_the_element_is_dropped_by_the_editor_once() {
+        let hold = EditorKeyHold::default();
+        assert!(
+            !hold.take_offered(5, "a"),
+            "nothing offered: the editor offers its own"
+        );
+        hold.mark_offered(5, "a");
+        assert!(!hold.take_offered(6, "a"));
+        assert!(hold.take_offered(5, "a"));
+        assert!(!hold.take_offered(5, "a"), "the mark is consumed");
     }
 
     #[test]
