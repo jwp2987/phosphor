@@ -225,8 +225,19 @@ impl Clipboard for LinuxClipboard {
             let Ok(mut clipboard) = LinuxClipboard::new() else {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
+            // Same bounded first-answer wait as the full reader (#1331): the terminal paste holds
+            // typed keys for as long as this takes, and arboard's retries made that 30+ s.
+            let started = Instant::now();
+            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
             let content = clipboard.read_text_and_paths();
-            if clipboard.take_read_failure() {
+            arboard::set_first_answer_deadline(None);
+            let flagged = clipboard.take_read_failure();
+            if read_timed_out(
+                flagged,
+                started.elapsed(),
+                FULL_READ_BUDGET,
+                !content.plain_text.is_empty(),
+            ) {
                 BackgroundTextRead::TimedOut
             } else {
                 BackgroundTextRead::Content(content)
