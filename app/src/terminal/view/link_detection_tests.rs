@@ -337,3 +337,38 @@ fn path_menu_has_open_reveal_and_copy_locally() {
             .any(|a| matches!(a, TerminalAction::ShowInFileExplorer(_)))
     );
 }
+
+/// A click or right-click on a file path is always a local action (open, reveal, copy). It must
+/// never become an agent query (#1347: "/agent Open the file <path>" cost an LLM turn).
+#[test]
+fn path_menu_actions_are_all_local_never_agent() {
+    use crate::terminal::view::{ContextMenuAction, TerminalAction};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("b.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("b.txt", Some((3, Some(4))))),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .unwrap();
+    for remote in [false, true] {
+        for item in super::alt_screen_link_menu_items(&link, None, remote) {
+            let Some(action) = item.fields().and_then(|f| f.on_select_action().cloned()) else {
+                continue;
+            };
+            assert!(
+                matches!(
+                    action,
+                    TerminalAction::OpenGridLink(_)
+                        | TerminalAction::ShowInFileExplorer(_)
+                        | TerminalAction::ContextMenu(ContextMenuAction::CopyUrl { .. })
+                ),
+                "file link menu offered a non-local action"
+            );
+        }
+    }
+}

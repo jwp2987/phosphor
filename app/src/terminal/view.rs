@@ -22847,48 +22847,25 @@ impl TerminalView {
                     }
                     #[cfg(feature = "local_fs")]
                     GridHighlightedLink::File(file_link) => {
-                        let path = file_link.get_inner().absolute_path();
-                        let show_in_file_explorer_menu_item_label = if cfg!(target_os = "macos") {
-                            crate::t!("menu-block-show-in-finder")
-                        } else {
-                            crate::t!("menu-block-show-containing-folder")
-                        };
-                        path.map(|path| {
-                            let mut items = vec![
-                                MenuItemFields::new(crate::t!("menu-block-copy-path"))
-                                    .with_on_select_action(TerminalAction::ContextMenu(
-                                        ContextMenuAction::CopyUrl {
-                                            url_content: path.to_string_lossy().into(),
-                                        },
-                                    ))
-                                    .into_item(),
-                                MenuItemFields::new(show_in_file_explorer_menu_item_label)
-                                    .with_on_select_action(TerminalAction::ShowInFileExplorer(
-                                        path.clone(),
-                                    ))
-                                    .into_item(),
-                            ];
-
+                        // Open / Show in Finder (containing folder) / Copy path, the same
+                        // entries as the alt screen menu (#1347). Every one is a local action:
+                        // a path is never handed to the agent.
+                        let remote = self.alt_link_session_is_remote(ctx);
+                        let mut items = link_detection::alt_screen_link_menu_items(
+                            highlighted_link,
+                            None,
+                            remote,
+                        );
+                        if let Some(path) = file_link.get_inner().absolute_path() {
                             if renders_in_warp_notebook_viewer(&path) {
                                 items.push(
                                     MenuItemFields::new(crate::t!("menu-block-open-in-warp"))
                                         .with_on_select_action(TerminalAction::OpenFileInWarp(path))
                                         .into_item(),
                                 );
-                                // Because the default for cmd-click is to open in Zap, we also
-                                // have an open-in-editor option.
-                                items.push(
-                                    MenuItemFields::new(crate::t!("menu-block-open-in-editor"))
-                                        .with_on_select_action(TerminalAction::OpenGridLink(
-                                            highlighted_link.clone(),
-                                        ))
-                                        .into_item(),
-                                );
                             }
-
-                            items
-                        })
-                        .unwrap_or_default()
+                        }
+                        items
                     }
                     GridHighlightedLink::Hyperlink { uri, .. } => {
                         // OSC 8 hyperlink right-click. "Copy link" copies the
