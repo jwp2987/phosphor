@@ -443,8 +443,9 @@ impl SessionContext {
     }
 
     /// Returns the entries and whether the result may be cached. Only a listing the remote shell
-    /// actually produced (success, or a failure with an exit code such as a half-typed path that
-    /// does not exist yet) is cacheable. A transport error (the remote-server connection dropped
+    /// actually produced successfully is cacheable; a failure with an exit code (such as a
+    /// half-typed path that does not exist yet) is remembered by the failed-listing memory
+    /// (#1295) instead. A transport error (the remote-server connection dropped
     /// under a request in flight, a ControlMaster timeout), a killed command and a truncated
     /// listing say nothing about the directory, and caching their empty result made Tab show no
     /// menu for the whole cache window after a proxy restart (#1289).
@@ -528,7 +529,11 @@ impl SessionContext {
                                     Instant::now(),
                                 );
                             }
-                            (vec![], shell_verdict)
+                            // Remembered by the failed-listing memory above, NOT by the shared
+                            // listing cache: that cache outlives the memory's reset, so an
+                            // explicit Tab (which forgets the memory) would still be answered
+                            // with the cached empty listing instead of asking the remote again.
+                            (vec![], false)
                         }
                     },
                     Err(err) => {
