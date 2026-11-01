@@ -89,22 +89,24 @@ impl PaneKeyContext {
     }
 }
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
 
-/// The previous key event was the end of an IME composition: a typed event right after it is the
-/// composition's commit.
-static AFTER_IME_CLEAR: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// The previous key event was the end of an IME composition: a typed event right after it is
+    /// the composition's commit. Key events are dispatched on the main thread, in order.
+    static AFTER_IME_CLEAR: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Records that an event of kind `kind` went by and returns whether a typed event now is an IME
 /// commit. Called once per key event, in order.
 pub(crate) fn note_event_and_is_ime_commit(clear_marked_text: bool, typed: bool) -> bool {
     if clear_marked_text {
-        AFTER_IME_CLEAR.store(true, Ordering::Relaxed);
+        AFTER_IME_CLEAR.with(|flag| flag.set(true));
         false
     } else if typed {
-        AFTER_IME_CLEAR.swap(false, Ordering::Relaxed)
+        AFTER_IME_CLEAR.with(|flag| flag.replace(false))
     } else {
-        AFTER_IME_CLEAR.store(false, Ordering::Relaxed);
+        AFTER_IME_CLEAR.with(|flag| flag.set(false));
         false
     }
 }
