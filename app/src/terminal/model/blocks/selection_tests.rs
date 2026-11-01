@@ -1639,3 +1639,70 @@ fn test_selection_to_parts_defers_big_selections_with_identical_text() {
         })
     })
 }
+
+/// #1304 follow-up: preview callers (Find-bar prefill, a11y) get the text of a small selection,
+/// but a selection over their row cap is reported as too large without building any text.
+/// `has_renderable_selection` answers "is anything selected" without a string at all.
+#[test]
+fn test_bounded_selection_does_not_build_big_selections() {
+    use crate::terminal::model::grid::text_snapshot::BoundedSelection;
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let semantic_selection = SemanticSelection::mock(false, "");
+            assert!(!block_list.has_renderable_selection(&semantic_selection, false));
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(1_000_000),
+                )),
+                BoundedSelection::None
+            );
+
+            let first_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let second_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let first_block = block_list.block_at(first_block_index).expect("block");
+            let second_block = block_list.block_at(second_block_index).expect("block");
+            let first_command_grid_offset = first_block.command_grid_offset();
+            let second_output_grid_offset =
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset();
+            block_list.start_selection(
+                BlockListPoint::new(first_command_grid_offset, 0),
+                SelectionType::Simple,
+                Side::Left,
+            );
+            block_list.update_selection(
+                BlockListPoint::new(second_output_grid_offset, 3),
+                Side::Right,
+            );
+            assert!(block_list.has_renderable_selection(&semantic_selection, false));
+
+            let inline = block_list
+                .selection_to_string(&semantic_selection, false, ctx)
+                .expect("selection should have text");
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(1_000_000),
+                )),
+                BoundedSelection::Text(inline)
+            );
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(2),
+                )),
+                BoundedSelection::TooLarge
+            );
+        })
+    })
+}

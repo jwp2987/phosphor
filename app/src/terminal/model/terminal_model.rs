@@ -69,7 +69,7 @@ use crate::terminal::model::ansi::{
     InitSshValue, InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue,
     PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
 };
-use crate::terminal::model::grid::text_snapshot::SelectionParts;
+use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::session::SessionInfo;
 use crate::terminal::shell::{ShellName, ShellType};
@@ -2172,6 +2172,24 @@ impl TerminalModel {
                 defer_over_rows,
             )
         }
+    }
+
+    /// The selection's text only if it spans at most `max_rows` rows; a bigger selection is
+    /// reported as [`BoundedSelection::TooLarge`] without building any of its text, so UI-thread
+    /// callers that only need a preview cost O(`max_rows`) however big the selection is.
+    pub fn selection_to_bounded_string(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        max_rows: usize,
+        app: &AppContext,
+    ) -> BoundedSelection {
+        BoundedSelection::from_parts(self.selection_to_parts(
+            semantic_selection,
+            inverted_blocklist,
+            Some(max_rows),
+            app,
+        ))
     }
 
     /// Whether [`Self::selection_to_string`] would return `Some`, without building the string
