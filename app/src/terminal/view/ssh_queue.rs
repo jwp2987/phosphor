@@ -70,6 +70,29 @@ impl TerminalView {
         self.ssh_held_stats().1
     }
 
+    /// Opens the connect gate if none is open: keys (and pastes) offered from now on wait behind
+    /// it. The gate may have been closed behind the view's back (a signal ends a gate): never
+    /// offer to a queue with no gate, it would be delivered at once, mid-connect.
+    pub(super) fn ssh_hold_ensure_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        let gate_alive = self.ssh_iq.gate.is_some_and(|(_, key)| {
+            queue
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
+        });
+        if gate_alive {
+            return;
+        }
+        self.ssh_iq.next_conn += 1;
+        let key = self.ssh_iq.next_conn;
+        let mut host = PtyQueueHost::new(self, ctx);
+        let token = queue.lock().open_gate(
+            &mut host,
+            GateSpec::new(GateKind::SshConnect, key).with_cap(None),
+        );
+        self.ssh_iq.gate = Some((token, key));
+    }
+
     /// Holds one input behind the connect, in typed order.
     pub(super) fn ssh_hold_push(
         &mut self,
@@ -89,24 +112,8 @@ impl TerminalView {
         if self.ssh_held_bytes() + len > SSH_TYPEAHEAD_MAX_BYTES {
             return self.ssh_hold_overflow();
         }
+        self.ssh_hold_ensure_gate(ctx);
         let queue = self.paste_queue.queue.clone();
-        // The gate may have been closed behind the view's back (a signal ends a gate): never offer
-        // a key to a queue with no gate, it would be delivered at once, mid-connect.
-        let gate_alive = self.ssh_iq.gate.is_some_and(|(_, key)| {
-            queue
-                .try_peek()
-                .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
-        });
-        if !gate_alive {
-            self.ssh_iq.next_conn += 1;
-            let key = self.ssh_iq.next_conn;
-            let mut host = PtyQueueHost::new(self, ctx);
-            let token = queue.lock().open_gate(
-                &mut host,
-                GateSpec::new(GateKind::SshConnect, key).with_cap(None),
-            );
-            self.ssh_iq.gate = Some((token, key));
-        }
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let mut host = PtyQueueHost::new(self, ctx);
@@ -126,33 +133,55 @@ impl TerminalView {
         SshTypeaheadPush::Overflowed
     }
 
-    /// Removes the gate and everything behind it without delivering (the entries are `Held`
-    /// ones, which own no resources).
+    /// Removes the gate and everything behind it without delivering, and returns what it held in
+    /// typed order. That includes the pastes whose clipboard read is still pending behind the
+    /// connect (their gates and what was typed after them): they were typed for a session that
+    /// is not coming (a prompt appeared, ^C, a new command), so their late answer must not be
+    /// pasted anywhere. A paste that was already read comes back as a held paste.
     fn ssh_hold_drop_gate(&mut self) -> Vec<HeldInput> {
-        let Some((_, key)) = self.ssh_iq.gate.take() else {
+        let gate = self.ssh_iq.gate.take();
+        let paste_ids: Vec<u64> = self.paste_queue.ssh_pastes.drain().collect();
+        if gate.is_none() && paste_ids.is_empty() {
             return Vec::new();
-        };
+        }
+        let mut removed = Vec::new();
         match self.paste_queue.queue.try_lock() {
             Some(mut queue) => {
-                let removed = queue.drop_gate(GateKind::SshConnect, key);
-                if !removed.is_empty() {
-                    warpui::input_order::log_key_hop("kh_iq_discard", || {
-                        format!("queue={} entries={}", trace::legacy::SSH, removed.len())
-                    });
+                if let Some((_, key)) = gate {
+                    removed.extend(queue.drop_gate(GateKind::SshConnect, key));
                 }
-                removed
-                    .into_iter()
-                    .filter_map(|entry| match entry.kind {
-                        EntryKind::Held { class, text } => Some(HeldInput::from_parts(class, text)),
-                        _ => None,
-                    })
-                    .collect()
+                for id in &paste_ids {
+                    removed.extend(queue.drop_gate(GateKind::PasteReading, *id));
+                }
             }
             None => {
                 log::warn!("ssh hold: input queue busy while dropping the ssh gate");
-                Vec::new()
+                return Vec::new();
             }
         }
+        removed.sort_by_key(|entry| entry.id);
+        if !removed.is_empty() {
+            warpui::input_order::log_key_hop("kh_iq_discard", || {
+                format!("queue={} entries={}", trace::legacy::SSH, removed.len())
+            });
+        }
+        let mut held = Vec::new();
+        for entry in removed {
+            match entry.kind {
+                EntryKind::Held { class, text } => held.push(HeldInput::from_parts(class, text)),
+                EntryKind::Paste { paste_id, .. } => {
+                    self.paste_queue.routed_pastes.remove(&paste_id);
+                    self.paste_queue.refused.remove(&paste_id);
+                    if let Some(bytes) = self.paste_queue.payloads.remove(&paste_id) {
+                        held.push(HeldInput::Paste(
+                            String::from_utf8_lossy(&bytes).into_owned(),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        held
     }
 
     /// Forgets every held key and the overflow state.

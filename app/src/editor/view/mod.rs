@@ -2627,6 +2627,38 @@ impl VimHandler for EditorView {
         });
     }
 
+    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
+    /// action with its content (#1405). The editor's own registers answer at once; one that
+    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
+    /// held behind that read (the editor's paste hold) and applied right after the action, in
+    /// typed order.
+    fn read_register_then(
+        &mut self,
+        register_name: char,
+        ctx: &mut ViewContext<Self>,
+        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
+    ) {
+        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
+            registers.request_register_read(register_name, ctx)
+        });
+        match read {
+            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
+            crate::vim_registers::RegisterRead::Pending(pending) => {
+                let id = self.paste_hold.begin();
+                ctx.spawn(pending, move |me, content, ctx| {
+                    // Cancelled by an interrupt: the action is dropped.
+                    let Some(held) = me.paste_hold.complete(id) else {
+                        return;
+                    };
+                    done(me, content, ctx);
+                    for key in held {
+                        me.apply_held_paste_key(key, ctx);
+                    }
+                });
+            }
+        }
+    }
+
     fn paste(
         &mut self,
         count: u32,
@@ -2634,11 +2666,20 @@ impl VimHandler for EditorView {
         register_name: char,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(RegisterContent { text, motion_type }) = VimRegisters::handle(ctx)
-            .update(ctx, |registers, ctx| {
-                registers.read_from_register(register_name, ctx)
-            })
-        else {
+        let direction = direction.clone();
+        self.read_register_then(register_name, ctx, move |me, content, ctx| {
+            me.paste_register_content(count, &direction, content, ctx)
+        });
+    }
+
+    fn paste_register_content(
+        &mut self,
+        count: u32,
+        direction: &Direction,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent { text, motion_type }) = content else {
             return;
         };
         match motion_type {
@@ -2890,12 +2931,22 @@ impl VimHandler for EditorView {
         write_register_name: char,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.read_register_then(read_register_name, ctx, move |me, content, ctx| {
+            me.visual_paste_register_content(motion_type, write_register_name, content, ctx)
+        });
+    }
+
+    fn visual_paste_register_content(
+        &mut self,
+        motion_type: MotionType,
+        write_register_name: char,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(RegisterContent {
             text,
             motion_type: yanked_motion_type,
-        }) = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
-            registers.read_from_register(read_register_name, ctx)
-        })
+        }) = content
         else {
             return;
         };

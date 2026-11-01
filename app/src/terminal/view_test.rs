@@ -21087,6 +21087,103 @@ fn ssh_queue_overflow_drops_the_whole_run() {
     ssh_overflow_drops_the_whole_run(true);
 }
 
+/// #1405: a paste whose clipboard read is still pending when it is made during an ssh connect is
+/// an entry behind the connect gate with a `PasteReading` gate of its own. Keys typed before it
+/// come first, keys typed meanwhile queue behind it, and when the read answers and the hand-over
+/// drains, everything lands once, in typed order.
+#[test]
+fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
+    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        assert!(ssh_gate_open(view));
+        // The paste: its read has not answered yet.
+        let id = view
+            .paste_queue
+            .queue
+            .next_paste_id(input_queue::PasteOwner::Pty);
+        view.paste_queue.routed_pastes.insert(id);
+        view.paste_queue.ssh_pastes.insert(id);
+        {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().offer_gated(
+                &mut host,
+                input_queue::EntryKind::Paste {
+                    paste_id: id,
+                    payload: None,
+                },
+                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id),
+            );
+        }
+        view.typed_characters_on_terminal("b", ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "all of it is held"
+        );
+        // The read answers while the connect is still in flight: nothing is delivered yet.
+        view.finish_async_paste_read(
+            id,
+            false,
+            None,
+            warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text("P".to_owned())),
+            ctx,
+        );
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        // The hand-over: a, the paste, b.
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
+        assert!(ssh_queue_is_idle(view));
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// #1405: a paste still being read when a prompt appears is cancelled with the hold; its late
+/// answer is pasted nowhere.
+#[test]
+fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
+    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        let id = view
+            .paste_queue
+            .queue
+            .next_paste_id(input_queue::PasteOwner::Pty);
+        view.paste_queue.routed_pastes.insert(id);
+        view.paste_queue.ssh_pastes.insert(id);
+        {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().offer_gated(
+                &mut host,
+                input_queue::EntryKind::Paste {
+                    paste_id: id,
+                    payload: None,
+                },
+                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id),
+            );
+        }
+        view.reset_ssh_typeahead();
+        assert!(
+            ssh_queue_is_idle(view),
+            "the pending paste went with the hold"
+        );
+        view.finish_async_paste_read(
+            id,
+            false,
+            None,
+            warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text("P".to_owned())),
+            ctx,
+        );
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
 /// The held line reaches the remote shell once: at most one `echo hi` runs, and the Enter stays
 /// behind the text it ends.
 #[test]

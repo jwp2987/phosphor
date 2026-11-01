@@ -77,6 +77,7 @@ use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
 use super::input_queue;
+use super::paste_sequencer::PasteFailure;
 use super::CLIAgent;
 use super::cli_agent;
 #[cfg(feature = "local_fs")]
@@ -10979,20 +10980,25 @@ impl TerminalView {
     /// Holds the text of a paste that arrived during an ssh connect (#1292), as typing is held.
     fn hold_ssh_paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         let shell_dialect = Some(self.shell_dialect_from_app(ctx));
-        let copied = if middle_click {
-            TerminalView::middle_click_paste_content(shell_dialect, ctx)
-        } else {
-            // Blocking on purpose until the ssh hold can order a later-arriving paste behind the
-            // keys already held (#1405); bounded by the platform reader's own deadline.
-            clipboard_content_with_escaped_paths(
-                warpui::clipboard::read_content_blocking(
-                    ctx.clipboard(),
-                    warpui::clipboard::ReadKind::TextAndPaths,
-                ),
-                shell_dialect,
+        if !middle_click {
+            // The paste is an entry of the pane queue behind the connect gate, with a
+            // `PasteReading` gate of its own until the read answers: the keys typed meanwhile
+            // queue behind it, in order, and it is routed when it drains (#1405).
+            if self.paste_queue.queue.try_peek().is_none() {
+                log::warn!("ssh hold: input queue busy, a paste was not held");
+                return;
+            }
+            self.ssh_hold_ensure_gate(ctx);
+            self.start_async_paste_read(
+                warpui::clipboard::ReadKind::TextAndPaths,
                 false,
-            )
-        };
+                true,
+                shell_dialect,
+                ctx,
+            );
+            return;
+        }
+        let copied = TerminalView::middle_click_paste_content(shell_dialect, ctx);
         if copied.is_empty() {
             return;
         }
@@ -22270,6 +22276,129 @@ impl TerminalView {
         )
     }
 
+    /// Starts a paste whose clipboard read goes through the one async API ([`request_read`]) and
+    /// is ordered by the pane queue (#1405): the paste is an entry held by a `PasteReading` gate
+    /// until the read answers, keys typed meanwhile queue behind it in typed order, and the text
+    /// is routed (input box or pty) when the entry drains. Used where no background reader of the
+    /// platform serves the paste: the CLI-agent paste (images included) and the paste held during
+    /// an ssh connect (behind the connect gate). Returns the paste id.
+    fn start_async_paste_read(
+        &mut self,
+        kind: warpui::clipboard::ReadKind,
+        cli_agent: bool,
+        for_ssh_hold: bool,
+        shell_dialect: Option<ShellDialect>,
+        ctx: &mut ViewContext<Self>,
+    ) -> u64 {
+        let id = self.paste_queue.next_paste_id();
+        let request = warpui::clipboard::request_read(ctx.clipboard(), kind);
+        self.paste_queue.routed_pastes.insert(id);
+        if for_ssh_hold {
+            self.paste_queue.ssh_pastes.insert(id);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        let backstop = Self::paste_backstop();
+        #[cfg(target_family = "wasm")]
+        let backstop: Option<Duration> = None;
+        self.prepare_subshell_gates(&[], ctx);
+        let queue = self.paste_queue.queue.clone();
+        {
+            let mut host = paste_queue::PtyQueueHost::new(self, ctx);
+            queue.lock().offer_gated(
+                &mut host,
+                input_queue::EntryKind::Paste {
+                    paste_id: id,
+                    payload: None,
+                },
+                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id)
+                    .with_cap(backstop),
+            );
+        }
+        match request.start {
+            // The platform reads inline: the answer is known already, the gate opens at once (no
+            // event-loop hop), still in its place in typed order.
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.finish_async_paste_read(id, cli_agent, shell_dialect, outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, move |me, outcome, ctx| {
+                    me.finish_async_paste_read(id, cli_agent, shell_dialect, outcome, ctx)
+                });
+            }
+        }
+        id
+    }
+
+    /// The clipboard answered paste `id` (see [`Self::start_async_paste_read`]): the gate opens,
+    /// the paste drains in its place in typed order. A CLI agent that takes images natively gets
+    /// its image-paste key instead of the text (the Windows fall-through pastes the empty text,
+    /// which the agent reads as "a paste happened").
+    fn finish_async_paste_read(
+        &mut self,
+        id: u64,
+        cli_agent: bool,
+        shell_dialect: Option<ShellDialect>,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use warpui::clipboard::ReadOutcome;
+        // Cancelled (^C, a reset hold) or given up: no entry claims the answer.
+        if !self
+            .paste_queue
+            .queue
+            .peek()
+            .has_gate(input_queue::GateKind::PasteReading, id)
+        {
+            self.paste_queue.routed_pastes.remove(&id);
+            self.paste_queue.ssh_pastes.remove(&id);
+            return;
+        }
+        let result = match outcome {
+            ReadOutcome::Content(content) if self.paste_queue.ssh_pastes.contains(&id) => {
+                // A paste held during an ssh connect: nothing to paste means nothing to hold.
+                let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                if text.is_empty() {
+                    self.paste_queue.refused.insert(id);
+                    Err(PasteFailure::NoAnswer)
+                } else {
+                    Ok(text.into_bytes())
+                }
+            }
+            ReadOutcome::Content(content) => {
+                if cli_agent && content.has_image_data() {
+                    if !cfg!(windows) {
+                        self.paste_queue.routed_pastes.remove(&id);
+                        Ok(vec![escape_sequences::C0::SYN])
+                    } else if CLIAgentSessionsModel::as_ref(ctx)
+                        .session(self.view_id)
+                        .is_some_and(|s| s.agent == CLIAgent::Claude)
+                    {
+                        // On Windows, Claude Code uses Alt+V for native image paste.
+                        self.paste_queue.routed_pastes.remove(&id);
+                        Ok(vec![escape_sequences::C0::ESC, b'v'])
+                    } else {
+                        // Other agents on Windows: the (empty-text) bracketed paste is their
+                        // signal to read the clipboard for image data themselves.
+                        Ok(
+                            clipboard_content_with_escaped_paths(content, shell_dialect, false)
+                                .into_bytes(),
+                        )
+                    }
+                } else {
+                    Ok(
+                        clipboard_content_with_escaped_paths(content, shell_dialect, false)
+                            .into_bytes(),
+                    )
+                }
+            }
+            ReadOutcome::TooLarge(bytes) => Err(PasteFailure::TooLarge(bytes)),
+            ReadOutcome::TimedOut => Err(PasteFailure::NoAnswer),
+            // No clipboard handle at all: nothing to paste, nothing to say.
+            ReadOutcome::Unavailable => Ok(Vec::new()),
+        };
+        self.finish_queued_background_paste(id, result, ctx);
+    }
+
     /// Delivers pasted text that was held during an ssh connect (#1292), to wherever a paste
     /// made now would go.
     fn deliver_paste_text(&mut self, copied: &str, ctx: &mut ViewContext<Self>) {
@@ -22362,59 +22491,24 @@ impl TerminalView {
                 return;
             }
         }
-        let copied = if middle_click {
-            TerminalView::middle_click_paste_content(shell_dialect, ctx)
-        } else {
+        if !middle_click {
             // Images matter only for CLI-agent paste; otherwise skip the read and decode. Paste
-            // never uses the HTML flavor, so the plain path reads just text and copied paths.
-            // Blocking on purpose for the CLI-agent paste (and wasm) until the paste queue can
-            // hold keys typed behind a CLI-agent read (#1405); bounded by the platform reader's
-            // own deadline.
-            let clipboard_content = match warpui::clipboard::read_outcome_blocking(
-                ctx.clipboard(),
+            // never uses the HTML flavor, so the plain path reads just text and copied paths. The
+            // read is asynchronous and ordered by the pane queue (#1405).
+            self.start_async_paste_read(
                 if is_cli_agent_paste {
                     warpui::clipboard::ReadKind::Full
                 } else {
                     warpui::clipboard::ReadKind::TextAndPaths
                 },
-            ) {
-                warpui::clipboard::ReadOutcome::Content(content) => content,
-                // The owner never answered (X11 timeout): say so rather than pasting nothing
-                // (#1173).
-                warpui::clipboard::ReadOutcome::TimedOut => {
-                    self.show_error_toast(
-                        "Paste failed \u{2014} clipboard read timed out".to_string(),
-                        ctx,
-                    );
-                    return;
-                }
-                warpui::clipboard::ReadOutcome::TooLarge(_)
-                | warpui::clipboard::ReadOutcome::Unavailable => Default::default(),
-            };
-
-            if is_cli_agent_paste && clipboard_content.has_image_data() {
-                if !cfg!(windows) {
-                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], ctx);
-                    return;
-                }
-
-                // On Windows, Claude Code uses Alt+V for native image paste.
-                let is_claude = CLIAgentSessionsModel::as_ref(ctx)
-                    .session(self.view_id)
-                    .is_some_and(|s| s.agent == CLIAgent::Claude);
-                if is_claude {
-                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::ESC, b'v'], ctx);
-                    return;
-                }
-
-                // For all other agents on Windows, fall through to the normal paste path. When
-                // bracketed paste is enabled (true for TUI-based CLI agents), the empty-text paste
-                // sends \x1b[200~\x1b[201~ to the PTY. The agent interprets this as a "paste
-                // happened" signal and reads the Windows clipboard directly for image data.
-            }
-
-            clipboard_content_with_escaped_paths(clipboard_content, shell_dialect, false)
-        };
+                is_cli_agent_paste,
+                false,
+                shell_dialect,
+                ctx,
+            );
+            return;
+        }
+        let copied = TerminalView::middle_click_paste_content(shell_dialect, ctx);
 
         if should_paste_in_input {
             // We put everything from the clipboard into the input box, even

@@ -56,6 +56,13 @@ pub(super) struct PasteQueueState {
     pub(super) payloads: HashMap<u64, Vec<u8>>,
     /// Queued pastes refused by the size cap (#1382): already told, so no generic failure toast.
     pub(super) refused: std::collections::HashSet<u64>,
+    /// Pastes whose payload is TEXT that goes where a paste made at that moment would go
+    /// ([`TerminalView::deliver_paste_text`]): the paste held during an ssh connect (#1292) and
+    /// the CLI-agent paste. Their destination is decided when they drain, not when they were read.
+    pub(super) routed_pastes: std::collections::HashSet<u64>,
+    /// The subset of `routed_pastes` read for the ssh hold: cancelled with the hold (a prompt,
+    /// ^C, a new command) so a late answer is never pasted anywhere.
+    pub(super) ssh_pastes: std::collections::HashSet<u64>,
     /// Ctrl-C / Ctrl-D typed while the paced bootstrap lines are being written. Like the buffer it
     /// replaces they wait for the last line (an interrupt in the middle of the setup script would
     /// leave a half-run bootstrap); [`TerminalView::settle_subshell_bootstrap_gate`] sends them
@@ -104,6 +111,8 @@ impl PasteQueueState {
             queue: PaneQueue::new(),
             payloads: HashMap::new(),
             refused: Default::default(),
+            routed_pastes: Default::default(),
+            ssh_pastes: Default::default(),
             pending_aborts: Vec::new(),
             cli_submit_gate: None,
             next_cli_submit_key: 0,
@@ -114,7 +123,7 @@ impl PasteQueueState {
     }
 
     /// The next paste id of this pane (one counter, shared with the editor's pastes).
-    fn next_paste_id(&mut self) -> u64 {
+    pub(super) fn next_paste_id(&mut self) -> u64 {
         self.queue.next_paste_id(PasteOwner::Pty)
     }
 }
@@ -189,6 +198,13 @@ impl Host for PtyQueueHost<'_, '_> {
                 paste_id,
                 payload: Some(_),
             } => match self.view.paste_queue.payloads.remove(paste_id) {
+                Some(bytes) if self.view.paste_queue.routed_pastes.remove(paste_id) => {
+                    // Text read for an ssh hold / a CLI agent: routed now, as a paste made now.
+                    self.view.paste_queue.ssh_pastes.remove(paste_id);
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    self.view.deliver_paste_text(&text, self.ctx);
+                    self.written = true;
+                }
                 Some(bytes) => {
                     self.view.paste_queue.requeueable_delivery = true;
                     self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
@@ -252,6 +268,8 @@ impl Host for PtyQueueHost<'_, '_> {
         }
         if let EntryKind::Paste { paste_id, .. } = &entry.kind {
             self.view.paste_queue.payloads.remove(paste_id);
+            self.view.paste_queue.routed_pastes.remove(paste_id);
+            self.view.paste_queue.ssh_pastes.remove(paste_id);
         }
         match why {
             // The reader gave nothing (or never answered): say so; the keys behind it follow.
@@ -1001,6 +1019,62 @@ impl TerminalView {
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
     }
 
+    /// The reader's result for paste `id` (`None`: the clipboard owner never answered). Opens the
+    /// paste's gate: the paste is delivered, then the keys typed behind it, in order. A cancelled
+    /// or given-up paste is not in the queue any more and the late result changes nothing.
+    pub(super) fn finish_queued_background_paste(
+        &mut self,
+        id: u64,
+        bytes: Result<Vec<u8>, PasteFailure>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        if queue.peek().has_gate(GateKind::PasteReading, id) {
+            let (entries, held_bytes) = queue.peek().queued_summary();
+            // The paste itself is one of the queued entries.
+            trace::release(
+                trace::legacy::PASTE_PTY,
+                entries.saturating_sub(1),
+                held_bytes,
+                "pty",
+            );
+        }
+        let result = match bytes {
+            Ok(bytes) => {
+                self.paste_queue.payloads.insert(id, bytes);
+                // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery
+                // moves them instead of copying a multi-MB paste.
+                Ok(Vec::new())
+            }
+            Err(failure) => {
+                if let PasteFailure::TooLarge(bytes) = failure {
+                    // Its own message; the gate still opens so the keys behind it follow.
+                    self.paste_queue.refused.insert(id);
+                    self.show_error_toast(
+                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
+                        ctx,
+                    );
+                }
+                Err(())
+            }
+        };
+        {
+            let mut host = PtyQueueHost::new(self, ctx);
+            queue.lock().on_paste_read(&mut host, id, result);
+        }
+        // A result that arrived after its paste was cancelled or given up has no entry to claim it.
+        // A paste that is still queued (its own gate is closed but another gate, such as the
+        // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
+        // them here lost the paste.
+        let still_queued = queue.peek().entries().any(
+            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
+        );
+        if !still_queued {
+            self.paste_queue.payloads.remove(&id);
+            self.paste_queue.refused.remove(&id);
+        }
+    }
+
     /// Whether the PowerShell setup gate is open (#1048: its keys are entries of the queue).
     pub(super) fn powershell_gate_open(&self) -> bool {
         self.paste_queue
@@ -1338,61 +1412,5 @@ impl TerminalView {
                 }
             },
         );
-    }
-
-    /// The reader's result for paste `id` (`None`: the clipboard owner never answered). Opens the
-    /// paste's gate: the paste is delivered, then the keys typed behind it, in order. A cancelled
-    /// or given-up paste is not in the queue any more and the late result changes nothing.
-    fn finish_queued_background_paste(
-        &mut self,
-        id: u64,
-        bytes: Result<Vec<u8>, PasteFailure>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let queue = self.paste_queue.queue.clone();
-        if queue.peek().has_gate(GateKind::PasteReading, id) {
-            let (entries, held_bytes) = queue.peek().queued_summary();
-            // The paste itself is one of the queued entries.
-            trace::release(
-                trace::legacy::PASTE_PTY,
-                entries.saturating_sub(1),
-                held_bytes,
-                "pty",
-            );
-        }
-        let result = match bytes {
-            Ok(bytes) => {
-                self.paste_queue.payloads.insert(id, bytes);
-                // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery
-                // moves them instead of copying a multi-MB paste.
-                Ok(Vec::new())
-            }
-            Err(failure) => {
-                if let PasteFailure::TooLarge(bytes) = failure {
-                    // Its own message; the gate still opens so the keys behind it follow.
-                    self.paste_queue.refused.insert(id);
-                    self.show_error_toast(
-                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
-                        ctx,
-                    );
-                }
-                Err(())
-            }
-        };
-        {
-            let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().on_paste_read(&mut host, id, result);
-        }
-        // A result that arrived after its paste was cancelled or given up has no entry to claim it.
-        // A paste that is still queued (its own gate is closed but another gate, such as the
-        // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
-        // them here lost the paste.
-        let still_queued = queue.peek().entries().any(
-            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
-        );
-        if !still_queued {
-            self.paste_queue.payloads.remove(&id);
-            self.paste_queue.refused.remove(&id);
-        }
     }
 }
