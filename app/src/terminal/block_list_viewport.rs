@@ -42,6 +42,10 @@ pub struct ReflowAnchor {
     block_index: BlockIndex,
     top_in_lines: Lines,
     scroll_top_in_lines: Lines,
+    /// Where the viewport top sat inside the block's output grid, by content (logical line and
+    /// wrapped-row offset, see `BlockGrid::row_content_anchor`) plus the sub-row remainder.
+    /// `None` when the top is outside the output grid, which then keeps the block-relative offset.
+    output_row: Option<((usize, usize), Lines)>,
 }
 
 /// Wraps a scroll position for the purposes of centralizing update logic.
@@ -104,11 +108,19 @@ impl ScrollState {
         let (Some(anchor), ScrollPosition::FixedAtPosition { .. }) = (anchor, self.position) else {
             return false;
         };
-        let delta = viewport_after.top_of_block_in_lines(anchor.block_index) - anchor.top_in_lines;
-        if delta == Lines::zero() {
+        let top_after = viewport_after.top_of_block_in_lines(anchor.block_index);
+        let by_content = anchor.output_row.and_then(|(content, frac)| {
+            let block = viewport_after.block_list.block_at(anchor.block_index)?;
+            let row = block.output_grid().row_for_content_anchor(content)?;
+            Some(top_after + block.output_grid_offset() + Lines::new(row as f64) + frac)
+        });
+        let delta = top_after - anchor.top_in_lines;
+        let scroll_top = by_content
+            .unwrap_or(anchor.scroll_top_in_lines + delta)
+            .max(Lines::zero());
+        if scroll_top == anchor.scroll_top_in_lines {
             return false;
         }
-        let scroll_top = (anchor.scroll_top_in_lines + delta).max(Lines::zero());
         self.position = ScrollPosition::FixedAtPosition {
             scroll_lines: viewport_after.scroll_lines_from_scroll_top(scroll_top),
         };
@@ -818,10 +830,22 @@ impl<'a> ViewportState<'a> {
     /// Captures the topmost visible block and the current scroll top before heights change.
     pub fn reflow_anchor(&self) -> Option<ReflowAnchor> {
         let block_index = self.iter().find_map(|item| item.block_index)?;
+        let scroll_top_in_lines = self.scroll_top_in_lines();
+        let top_in_lines = self.top_of_block_in_lines(block_index);
+        let output_row = self.block_list.block_at(block_index).and_then(|block| {
+            let into_output = scroll_top_in_lines - top_in_lines - block.output_grid_offset();
+            if into_output < Lines::zero() {
+                return None;
+            }
+            let row = into_output.as_f64().floor();
+            let content = block.output_grid().row_content_anchor(row as usize)?;
+            Some((content, Lines::new(into_output.as_f64() - row)))
+        });
         Some(ReflowAnchor {
             block_index,
-            top_in_lines: self.top_of_block_in_lines(block_index),
-            scroll_top_in_lines: self.scroll_top_in_lines(),
+            top_in_lines,
+            scroll_top_in_lines,
+            output_row,
         })
     }
 

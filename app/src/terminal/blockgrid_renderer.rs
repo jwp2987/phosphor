@@ -137,6 +137,29 @@ impl BlockGrid {
         );
     }
 
+    /// The displayed rows [`Self::draw`] paints for this origin, or `None` while a block filter
+    /// is active (rows then differ from the original coordinates of find matches).
+    pub fn visible_row_window(
+        &self,
+        grid_origin: Vector2F,
+        origin: Vector2F,
+        block_grid_params: &BlockGridParams,
+    ) -> Option<std::ops::Range<usize>> {
+        if self.grid_handler().len_displayed().is_some() {
+            return None;
+        }
+        let cell_size = block_grid_params.grid_render_params.cell_size;
+        let start_row = hidden_rows_above(grid_origin, origin, cell_size);
+        let below = hidden_rows_below(
+            grid_origin,
+            origin,
+            cell_size,
+            block_grid_params.bounds,
+            self.len_displayed(),
+        );
+        Some(start_row..self.len_displayed().saturating_sub(below))
+    }
+
     /// What [`Self::draw`] would paint, captured under the model lock to be painted once it is
     /// released (see `BlockListElement::paint`), or `None` when this grid has to be painted from
     /// the model (see [`GridSnapshot::capture`]).

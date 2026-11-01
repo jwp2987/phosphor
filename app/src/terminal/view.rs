@@ -20569,6 +20569,21 @@ impl TerminalView {
             return;
         }
 
+        // The newest blocks reflow inside `resize` below, so a scrolled-back position has to be
+        // anchored to content before it, not after (#1328).
+        let pre_resize_anchor = if size_update.rows_or_columns_changed()
+            && matches!(
+                self.scroll_position.position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ) {
+            let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+            let model = self.model.lock();
+            self.viewport_state(model.block_list(), input_mode, ctx)
+                .reflow_anchor()
+        } else {
+            None
+        };
+
         // Update model with new size info.
         self.model.lock().resize(size_update);
         self.find_model.update(ctx, |find_model, ctx| {
@@ -20591,6 +20606,19 @@ impl TerminalView {
         *self.size_info = size_update.new_size;
         // Deferred reflow (#1303): what is on screen reflows now, the rest in the background.
         self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::NearViewport, ctx);
+        if pre_resize_anchor.is_some() {
+            let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+            let model = self.model.lock();
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            let moved = self
+                .scroll_position
+                .compensate_for_reflow(pre_resize_anchor, &viewport);
+            drop(viewport);
+            drop(model);
+            if moved {
+                ctx.notify();
+            }
+        }
         self.schedule_stale_reflow_driver(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterResize, ctx);
 
