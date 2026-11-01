@@ -2589,6 +2589,81 @@ fn test_completions_while_typing_doesnt_hide_autosuggestion() {
     });
 }
 
+// #1355: a keystroke that invalidates an as-you-type completion menu hides it at once (no
+// 750 ms wait, so a stale item can't be accepted); the new results then re-open it.
+#[test]
+fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .completions_open_while_typing
+                .set_value(true, ctx);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("a.txt"), argument_suggestion("b.txt")],
+                    (10, 10),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+
+        // The keystroke: the stale menu is hidden immediately.
+        input.update(&mut app, |input, ctx| input.user_insert("z", ctx));
+        input.read(&app, |input, ctx| {
+            assert!(
+                !matches!(
+                    input.suggestions_mode_model.as_ref(ctx).mode(),
+                    InputSuggestionsMode::CompletionSuggestions { .. }
+                ),
+                "stale menu must not stay up after the keystroke"
+            );
+        });
+
+        // The new results show the menu again.
+        input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("z.txt")],
+                    (10, 11),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+    });
+}
+
 #[test]
 fn test_agent_mode_set_while_typing_slash_command() {
     App::test((), |mut app| async move {

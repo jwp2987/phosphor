@@ -10157,7 +10157,6 @@ impl Input {
                         // as an edit). Thus, when using the two features together, we only
                         // recompute the result set if the selected item doesn't match the
                         // current word span.
-                        let old_buffer_text_original = buffer_text_original.clone();
                         if *trigger == CompletionsTrigger::AsYouType
                             && (!self.is_classic_completions_enabled(ctx)
                                 || (self.is_classic_completions_enabled(ctx)
@@ -10170,32 +10169,13 @@ impl Input {
                             self.open_completion_suggestions(CompletionsTrigger::AsYouType, ctx);
                             self.maybe_generate_autosuggestion(ctx);
 
-                            // Since tab completions are async, we should close the
-                            // menu if it's been some time and the menu still hasn't updated,
-                            // otherwise the user will see an old completions menu even while
-                            // the buffer text has changed. We wait with a delay so that way
-                            // the menu doesn't close right away and open away right after if
-                            // the completions finish quickly, since that causes a jittery UX.
-                            let _ = ctx.spawn(
-                                async move {
-                                    warpui::r#async::Timer::after(Duration::from_millis(750)).await;
-                                    old_buffer_text_original
-                                },
-                                move |input, old_buffer_text_original, ctx| {
-                                    if let InputSuggestionsMode::CompletionSuggestions {
-                                        buffer_text_original,
-                                        ..
-                                    } = input.suggestions_mode_model.as_ref(ctx).mode()
-                                    {
-                                        // The menu hasn't changed since last time so
-                                        // close it for now. If the menu is truly delayed,
-                                        // the completions callback will eventually open it.
-                                        if old_buffer_text_original == *buffer_text_original {
-                                            input.close_input_suggestions(true, ctx);
-                                        }
-                                    }
-                                },
-                            );
+                            // The keystroke invalidated the menu on screen (it lists the
+                            // results for the OLD text), so it is hidden right now rather
+                            // than after a delay: accepting a stale item would insert the
+                            // wrong completion (#1355). The new request above answers
+                            // asynchronously, and its results re-open the menu. No timer:
+                            // the results (or their absence) are the signal.
+                            self.close_input_suggestions(/*should_focus_input=*/ false, ctx);
                         } else {
                             let buffer_text_original = buffer_text_original.clone();
                             let completion_results = completion_results.clone();
@@ -17435,6 +17415,12 @@ impl Autosuggester for Input {
                 },
                 ctx,
             );
+        } else {
+            // The request for this exact buffer finished with nothing to show: a remembered
+            // Right/End accept (#1355) must not fire on some later ghost.
+            self.editor.update(ctx, |editor, _| {
+                editor.discard_pending_autosuggestion_accept();
+            });
         }
     }
 
