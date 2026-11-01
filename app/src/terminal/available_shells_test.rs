@@ -7,59 +7,97 @@ use std::sync::Arc;
 use warp_core::features::FeatureFlag;
 
 fn make_available_shells(shells: Vec<AvailableShell>) -> AvailableShells {
-    let scan = Arc::new(ShellScan::default());
-    *scan.done.lock().unwrap() = Some(ScanResult {
-        shells,
-        shell_counts: HashMap::new(),
-    });
     AvailableShells {
-        scan,
-        result: std::sync::OnceLock::new(),
+        result: Some(ScanResult {
+            shells,
+            shell_counts: HashMap::new(),
+        }),
         empty: ScanResult::default(),
+        scan_generation: 1,
         scanned_path: std::ffi::OsString::new(),
         wsl_names: Vec::new(),
     }
 }
 
-#[test]
-fn unfinished_scan_serves_empty_list_within_bounded_wait_then_the_result() {
-    // A scan that has not finished must not block the reader past the bound...
-    let scan = Arc::new(ShellScan::default());
-    let shells = AvailableShells {
-        scan: scan.clone(),
-        result: std::sync::OnceLock::new(),
+fn unscanned_available_shells() -> AvailableShells {
+    AvailableShells {
+        result: None,
         empty: ScanResult::default(),
+        scan_generation: 1,
         scanned_path: std::ffi::OsString::new(),
         wsl_names: Vec::new(),
-    };
-    let start = std::time::Instant::now();
-    assert_eq!(shells.get_available_shells().count(), 0);
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
 
-    // ...and once the scan completes, the next read sees its result.
-    *scan.done.lock().unwrap() = Some(ScanResult {
+fn bash_scan() -> ScanResult {
+    ScanResult {
         shells: vec![AvailableShell::new_local_executable(
             "bash".to_string(),
             PathBuf::from("/bin/bash"),
             ShellType::Bash,
         )],
         shell_counts: HashMap::new(),
+    }
+}
+
+#[test]
+fn unfinished_scan_never_waits_and_completion_is_announced_by_event() {
+    warpui::App::test((), |mut app| async move {
+        let model = app.add_model(|_| unscanned_available_shells());
+        let events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        app.update(|ctx| {
+            let events = events.clone();
+            ctx.subscribe_to_model(&model, move |_, event, _| {
+                assert_eq!(*event, AvailableShellsEvent::ScanComplete);
+                events.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+
+        // An unfinished scan answers "not known yet" immediately: no 300 ms condvar wait.
+        let start = std::time::Instant::now();
+        model.read(&app, |shells, _| {
+            assert_eq!(shells.get_available_shells().count(), 0);
+        });
+        assert!(start.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(events.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Completion is pushed to subscribers, and from then on the list is served.
+        model.update(&mut app, |shells, ctx| {
+            assert!(shells.adopt_scan(1, bash_scan(), ctx));
+        });
+        assert_eq!(events.load(std::sync::atomic::Ordering::SeqCst), 1);
+        model.read(&app, |shells, _| {
+            assert_eq!(shells.get_available_shells().count(), 1);
+        });
     });
-    scan.cv.notify_all();
-    assert_eq!(shells.get_available_shells().count(), 1);
-    // The result is adopted: it keeps being served.
-    assert_eq!(shells.get_available_shells().count(), 1);
+}
+
+#[test]
+fn superseded_scan_completion_is_ignored() {
+    warpui::App::test((), |mut app| async move {
+        let model = app.add_model(|_| unscanned_available_shells());
+        model.update(&mut app, |shells, ctx| {
+            shells.scan_generation = 2; // a rescan started after generation 1
+            assert!(!shells.adopt_scan(1, bash_scan(), ctx));
+            assert_eq!(shells.get_available_shells().count(), 0);
+            assert!(shells.adopt_scan(2, bash_scan(), ctx));
+            assert_eq!(shells.get_available_shells().count(), 1);
+        });
+    });
 }
 
 #[test]
 fn rescan_only_when_path_changes() {
-    let mut shells = make_available_shells(vec![]);
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    shells.scanned_path = current;
-    assert!(!shells.rescan_if_path_changed());
-    shells.scanned_path = std::ffi::OsString::from("/definitely/not/the/path");
-    assert!(shells.rescan_if_path_changed());
-    assert!(!shells.rescan_if_path_changed());
+    warpui::App::test((), |mut app| async move {
+        let model = app.add_model(|_| make_available_shells(vec![]));
+        model.update(&mut app, |shells, ctx| {
+            shells.scanned_path = std::env::var_os("PATH").unwrap_or_default();
+            assert!(!shells.rescan_if_path_changed(ctx));
+            shells.scanned_path = std::ffi::OsString::from("/definitely/not/the/path");
+            assert!(shells.rescan_if_path_changed(ctx));
+            assert!(!shells.rescan_if_path_changed(ctx));
+        });
+    });
 }
 
 #[test]
@@ -352,13 +390,7 @@ fn saved_shell_is_used_while_the_scan_is_unfinished() {
         sandbox.mkdir("bin");
         sandbox.with_files(vec![Stub::MockExecutable("bin/zsh")]);
         let zsh = dirs.tests().join("bin").join("zsh");
-        let shells = AvailableShells {
-            scan: Arc::new(ShellScan::default()), // never completes
-            result: std::sync::OnceLock::new(),
-            empty: ScanResult::default(),
-            scanned_path: std::ffi::OsString::new(),
-            wsl_names: Vec::new(),
-        };
+        let shells = unscanned_available_shells(); // scan has not completed
         let pref = NewSessionShell::Executable(zsh.display().to_string());
         let start = std::time::Instant::now();
         let got = shells

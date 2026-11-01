@@ -51,6 +51,7 @@ impl AllowedSessionKinds {
 pub struct NewSessionDataSource {
     searcher: Box<dyn NewSessionSearcher>,
     allowed: AllowedSessionKinds,
+    binding_source: ModelHandle<BindingSource>,
 }
 
 impl NewSessionDataSource {
@@ -70,9 +71,11 @@ impl NewSessionDataSource {
 
     fn new_fuzzy(binding_source: ModelHandle<BindingSource>, ctx: &mut ModelContext<Self>) -> Self {
         ctx.observe(&binding_source, Self::on_binding_source_changed);
+        Self::rebuild_when_shell_scan_completes(ctx);
         Self {
             searcher: Box::new(FuzzyNewSessionSearcher::default()),
             allowed: Default::default(),
+            binding_source,
         }
     }
 
@@ -82,12 +85,23 @@ impl NewSessionDataSource {
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         ctx.observe(&binding_source, Self::on_binding_source_changed);
+        Self::rebuild_when_shell_scan_completes(ctx);
         Self {
             searcher: Box::new(full_text_searcher::FullTextNewSessionSearcher::new(
                 ctx.background_executor(),
             )),
             allowed: Default::default(),
+            binding_source,
         }
+    }
+
+    /// The shell list may still be scanning when the options are first built (#1364): rebuild
+    /// them from the stored binding source when the scan completes.
+    fn rebuild_when_shell_scan_completes(ctx: &mut ModelContext<Self>) {
+        ctx.observe(&AvailableShells::handle(ctx), |me, _, ctx| {
+            let source = me.binding_source.clone();
+            me.on_binding_source_changed(source, ctx);
+        });
     }
 
     pub fn with_allowed_kinds(mut self, allowed: AllowedSessionKinds) -> Self {
@@ -305,7 +319,7 @@ impl NewSessionSearcher for FuzzyNewSessionSearcher {
 mod full_text_searcher {
     use crate::define_search_schema;
     use crate::search::command_palette::new_session::data_source::{
-        NewSessionSearcher, SearcherAction, SEARCHER_BASE_STRINGS,
+        NewSessionSearcher, SEARCHER_BASE_STRINGS, SearcherAction,
     };
     use crate::search::command_palette::new_session::search_item::SearchItem;
     use crate::search::command_palette::new_session::{NewSessionOption, NewSessionOptionId};

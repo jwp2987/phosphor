@@ -470,8 +470,8 @@ impl<S> TerminalManager<S> {
 
         let preferred_shell = chosen_shell.unwrap_or_else(|| {
             // Re-scan in the background if the process PATH changed since the last scan (#1310).
-            AvailableShells::handle(ctx).update(ctx, |shells, _| {
-                shells.rescan_if_path_changed();
+            AvailableShells::handle(ctx).update(ctx, |shells, ctx| {
+                shells.rescan_if_path_changed(ctx);
             });
             AvailableShells::handle(ctx)
                 .read(ctx, |shells, ctx| shells.get_user_preferred_shell(ctx))
