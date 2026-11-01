@@ -51,6 +51,13 @@ pub trait Clipboard: 'static {
         None
     }
 
+    /// A self-contained reader for the Linux primary selection (middle-click paste), with the
+    /// same first-answer budget as [`Self::background_full_reader`]; `None` where there is no
+    /// separate primary selection or its read must stay on the calling thread (#1331).
+    fn background_primary_reader(&mut self) -> Option<BackgroundTextReader> {
+        None
+    }
+
     /// A self-contained writer that can run on another thread, or `None` when the platform's
     /// clipboard write is cheap and must stay on the calling thread. An X11/Wayland or Win32
     /// clipboard owner can stall a write, which froze the UI (#1307). Returns `true` on success.

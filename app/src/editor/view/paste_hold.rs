@@ -86,6 +86,7 @@ pub(super) fn held_form(action: &EditorAction) -> Option<HeldPasteKey> {
         ShiftTab,
         Cut,
         Paste,
+        MiddleClickPaste,
         Yank,
         Newline,
         CtrlEnter,

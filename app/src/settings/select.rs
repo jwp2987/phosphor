@@ -184,6 +184,26 @@ impl SelectionSettings {
             .then(|| ctx.clipboard().read_from_primary_clipboard())
     }
 
+    /// The off-UI-thread form of [`Self::read_for_middle_click_paste`] (#1331): a reader to run on
+    /// a worker thread, or `None` when the paste is disabled or the platform cannot read the
+    /// selection off the UI thread (callers then use `read_for_middle_click_paste`, which also
+    /// answers `None` when the paste is disabled).
+    pub fn background_reader_for_middle_click_paste(
+        &self,
+        ctx: &mut AppContext,
+    ) -> Option<warpui::clipboard::BackgroundTextReader> {
+        if !self.middle_click_paste_gate() {
+            return None;
+        }
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            if !self.linux_selection_clipboard_enabled() {
+                return None;
+            }
+            return ctx.clipboard().background_primary_reader();
+        }
+        None
+    }
+
     /// Implements the correct middle-click paste behavior for the current platform.
     ///
     /// Linux has the "primary clipboard" to which it maps the middle mouse button. Other platforms
