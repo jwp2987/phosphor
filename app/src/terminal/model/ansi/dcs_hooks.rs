@@ -103,6 +103,14 @@ pub(super) enum DProtoHook {
     ExitShell {
         value: ExitShellValue,
     },
+    /// The shell's line editor is about to read a line (#1390). Sent unencoded (OSC `f` form).
+    LineEditorReading {
+        value: LineEditorMarkerValue,
+    },
+    /// The shell is about to read a continuation line, PS2 (#1391). Sent unencoded (OSC `f` form).
+    ContinuationPrompt {
+        value: LineEditorMarkerValue,
+    },
 }
 
 impl DProtoHook {
@@ -127,6 +135,8 @@ impl DProtoHook {
             DProtoHook::SshTmuxInstaller { .. } => "SshTmuxInstaller",
             DProtoHook::TmuxInstallFailed { .. } => "TmuxInstallFailed",
             DProtoHook::ExitShell { .. } => "ExitShell",
+            DProtoHook::LineEditorReading { .. } => "LineEditorReading",
+            DProtoHook::ContinuationPrompt { .. } => "ContinuationPrompt",
         }
     }
 
@@ -145,6 +155,9 @@ impl DProtoHook {
             DProtoHook::InitShell { value } => Some(value.session_id),
             DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
             DProtoHook::ExitShell { value } => Some(value.session_id),
+            DProtoHook::LineEditorReading { value } | DProtoHook::ContinuationPrompt { value } => {
+                value.session_id.map(SessionId::from)
+            }
             DProtoHook::Preexec { value } => value.session_id.map(SessionId::from),
             DProtoHook::CommandFinished { value } => value.session_id.map(SessionId::from),
             DProtoHook::Bootstrapped { value } => value.session_id.map(SessionId::from),
@@ -188,6 +201,8 @@ impl DProtoHook {
             | DProtoHook::InitSubshell { .. }
             | DProtoHook::FinishUpdate { .. }
             | DProtoHook::ExitShell { .. }
+            | DProtoHook::LineEditorReading { .. }
+            | DProtoHook::ContinuationPrompt { .. }
             | DProtoHook::InitSsh { .. }
             | DProtoHook::RemoteWarpificationIsUnavailable { .. }
             | DProtoHook::SshTmuxInstaller { .. }
@@ -1100,6 +1115,19 @@ pub struct FinishUpdateValue {
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExitShellValue {
     pub session_id: SessionId,
+}
+
+/// Payload of the line-editor activity markers (`LineEditorReading`, `ContinuationPrompt`; #1390,
+/// #1391). The shell sends them unencoded: `ESC ] 9278 ; f ; {"hook": "LineEditorReading",
+/// "value": {"session_id": N, "seq": M}} BEL`. `seq` is the shell's per-session counter (see
+/// [`PromptMetadata::seq`]) as of the last Precmd or Preexec it sent, so the app can order the
+/// marker against the hooks it has parsed. `None` when a bootstrap omits it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LineEditorMarkerValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 /// Custom serde deserializer that trims trailing null bytes.

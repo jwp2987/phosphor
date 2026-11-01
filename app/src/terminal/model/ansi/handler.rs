@@ -321,6 +321,13 @@ pub trait Handler {
     /// rather than hanging on orphaned multiplexed channels.
     fn exit_shell(&mut self, _data: ExitShellValue) {}
 
+    /// The shell's line editor is about to read a line (bash readline, zle, fish, reedline,
+    /// PSReadLine; #1390). Sent by the bootstrap, never by older ones.
+    fn line_editor_reading(&mut self, _data: LineEditorMarkerValue) {}
+
+    /// The shell is about to read a continuation line (bash PS2, zsh PS2; #1391).
+    fn continuation_prompt(&mut self, _data: LineEditorMarkerValue) {}
+
     /// Callback for the terminal to when user executes `clear` command.
     fn clear(&mut self, _data: ClearValue) {}
 

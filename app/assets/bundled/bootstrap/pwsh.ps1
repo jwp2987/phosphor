@@ -349,6 +349,23 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
     }
 
+    # Phosphor (#1390, #1391): tells the app PSReadLine is about to read a line. Sent from the
+    # PSConsoleHostReadLine wrapper, after the prompt has been written and the maintenance has run,
+    # i.e. the last thing before the real PSReadLine starts. Carries the seq of the Precmd that
+    # preceded the prompt. PSReadLine keeps an unfinished command (`if (1) {`) in the same read
+    # and paints its own ContinuationPrompt with no hook, so pwsh has no ContinuationPrompt event.
+    # Read-Host and [Console]::ReadKey do not go through PSConsoleHostReadLine, so a builtin read
+    # never sends this. One console write, no process.
+    function Warp-Send-LineEditorReading {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'A marker must never keep PSConsoleHostReadLine from reading the line')]
+        param()
+        try {
+            if ($env:PHOSPHOR_LINE_EDITOR_MARKERS -eq '0') { return }
+            Warp-Write-Osc ("$([char]0x1b)" + ']9278;f;{"hook": "LineEditorReading", "value": {"session_id": ' + [uint64]$global:_warpSessionId + ', "seq": ' + [int64]$script:warpSeq + '}}' + $oscEnd)
+        } catch {
+        }
+    }
+
     function Warp-Finish-Update([string]$updateId) {
         $updateMsg = @{
             hook = 'FinishUpdate'
@@ -1236,6 +1253,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $script:oldPSConsoleHostReadLine = $function:global:PSConsoleHostReadLine
         $function:global:PSConsoleHostReadLine = {
             Warp-Idle-Maintenance
+            Warp-Send-LineEditorReading
 
             $line = & $script:oldPSConsoleHostReadLine
 

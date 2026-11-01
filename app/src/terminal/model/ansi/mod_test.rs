@@ -255,6 +255,16 @@ impl Handler for MockHandler {
         self.d_proto_hooks.push(DProtoHook::InitSsh { value: data })
     }
 
+    fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::LineEditorReading { value: data })
+    }
+
+    fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::ContinuationPrompt { value: data })
+    }
+
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
         self.d_proto_hooks
             .push(DProtoHook::SourcedRcFileForWarp { value: data })
@@ -724,6 +734,60 @@ fn parse_dcs_precmd_carries_the_shells_sequence_number() {
     assert!(matches!(
         handler.d_proto_hooks.first(),
         Some(DProtoHook::Preexec { .. })
+    ));
+}
+
+/// #1390, #1391: the shells send the line-editor markers unencoded, as one OSC, with the session's
+/// sequence number. The exact bytes below are what the bootstraps print.
+#[test]
+fn parse_osc_line_editor_markers_carry_session_and_sequence_number() {
+    let reading = b"\x1b]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": 7, \"seq\": 12}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(reading, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::LineEditorReading { value }] => {
+            assert_eq!(value.session_id, Some(7));
+            assert_eq!(value.seq, Some(12));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    let continuation = b"\x1b]9278;f;{\"hook\": \"ContinuationPrompt\", \"value\": {\"session_id\": 7, \"seq\": 13}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(continuation, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::ContinuationPrompt { value }] => {
+            assert_eq!(value.session_id, Some(7));
+            assert_eq!(value.seq, Some(13));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+}
+
+/// A marker from a bootstrap without sequence numbers parses with `seq: None`, and a marker for a
+/// session this terminal did not register is dropped like every other hook.
+#[test]
+fn parse_osc_line_editor_marker_without_seq_and_for_unknown_session() {
+    let bytes =
+        b"\x1b]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": 7}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(bytes, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::LineEditorReading { value }] => assert_eq!(value.seq, None),
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    let (_, handler) = parse_bytes_with_registered_sessions(bytes, [SessionId::from(8)]);
+    assert!(handler.d_proto_hooks.is_empty());
+}
+
+/// The hex-encoded DCS form (an older or alternative sender) reaches the same handler.
+#[test]
+fn parse_dcs_line_editor_markers_hex_encoded() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "ContinuationPrompt", "value": {"session_id": 3, "seq": 4}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::ContinuationPrompt { value }] if value.seq == Some(4)
     ));
 }
 

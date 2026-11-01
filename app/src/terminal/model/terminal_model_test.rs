@@ -3611,3 +3611,48 @@ fn output_with_raw_tty_latches_and_cooked_shell_does_not() {
         );
     }
 }
+
+/// #1390, #1391: the line-editor markers reach the event channel with their session and sequence
+/// number, in the order the shell sent them.
+#[test]
+fn line_editor_markers_become_terminal_events_in_order() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    terminal.continuation_prompt(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    // No session: nothing can be attributed, nothing is sent.
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: None,
+        seq: Some(4),
+    });
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(
+        matches!(
+            &events[0],
+            Event::LineEditorReading { session_id, seq: Some(3) } if *session_id == SessionId::from(5)
+        ),
+        "{:?}",
+        events[0]
+    );
+    assert!(
+        matches!(
+            &events[1],
+            Event::ContinuationPrompt { session_id, seq: Some(3) } if *session_id == SessionId::from(5)
+        ),
+        "{:?}",
+        events[1]
+    );
+}

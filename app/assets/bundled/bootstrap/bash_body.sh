@@ -1187,6 +1187,30 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         local suffix="$prompt_suffix"
       fi
 
+      # Phosphor (#1390, #1391): line-editor activity markers. LineEditorReading is written by bash
+      # itself as the last bytes of the primary prompt (PS1 expands ${__warp_lr_osc-} right before
+      # readline starts reading), ContinuationPrompt as the first bytes of PS2. Both carry the
+      # session's last Precmd sequence number. Builtins only (printf -v), no fork. bash has no hook
+      # at the moment readline begins, so the prompt string is the nearest point to it; a prompt
+      # redraw (resize, ^L) does not re-expand PS1, so the marker is sent once per read. They are
+      # built every prompt, with the sequence number the Precmd just sent.
+      __warp_lr_osc=
+      __warp_ps2_osc=
+      if [[ -n ${WARP_SESSION_ID:-} && ${PHOSPHOR_LINE_EDITOR_MARKERS:-1} != 0 ]]; then
+        builtin printf -v __warp_lr_osc '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}"
+        builtin printf -v __warp_ps2_osc '\e]9278;f;{"hook": "ContinuationPrompt", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}"
+      fi
+      if [[ -n $__warp_lr_osc ]] && shopt -q promptvars; then
+        # Only a PS1 that is expanded (promptvars) can carry the reference.
+        if [[ "${WARP_HONOR_PS1:-}" == "1" ]]; then
+          suffix="$suffix"'${__warp_lr_osc-}'
+        fi
+        case ${PS2-> } in
+          *'${__warp_ps2_osc-}'*) ;;
+          *) PS2='\[${__warp_ps2_osc-}\]'"${PS2-> }" ;;
+        esac
+      fi
+
       # The "\[" and "\]" indicate to bash that the sequence between the markers are 
       # "non-printable", which effectively means they should not change the position
       # of the cursor as they're "printed".
@@ -1239,6 +1263,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           # account for them when keeping track of its internal cursor position.
           PS1="\[$prompt_prefix\]${ORIGINAL_PS1:-}\[$suffix\]"
         fi
+      fi
+
+      # Warp prompt (PS1 empty) or no promptvars: nothing to ride on, so the marker goes out here, as
+      # the last thing the precmd stage does before readline reads.
+      # (A PS1 that a plugin replaced each prompt and that already looks wrapped is not rewrapped
+      # above, so it may lack the reference too.)
+      if [[ -n $__warp_lr_osc && ( "${WARP_HONOR_PS1:-}" != "1" || "${PS1-}" != *'${__warp_lr_osc-}'* ) ]]; then
+        __warp_emit '%s' "$__warp_lr_osc"
       fi
 
       # Ensure that this is always the last precmd hook. This prevents any other precmd hook, which might

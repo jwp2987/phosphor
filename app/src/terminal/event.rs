@@ -87,6 +87,18 @@ pub enum Event {
     ExitShell {
         session_id: SessionId,
     },
+    /// The shell's line editor is about to read a line (#1390). `seq` is the shell's per-session
+    /// hook counter as of its last Precmd/Preexec (`None` from a bootstrap without sequence
+    /// numbers).
+    LineEditorReading {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// The shell is about to read a continuation line, PS2 (#1391). Same `seq` as above.
+    ContinuationPrompt {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
@@ -665,6 +677,18 @@ impl Debug for Event {
             Event::PluggableNotification { .. } => write!(f, "PluggableNotification"),
             Event::ExitShell { session_id } => {
                 write!(f, "ExitShell(session: {session_id:?})")
+            }
+            Event::LineEditorReading { session_id, seq } => {
+                write!(
+                    f,
+                    "LineEditorReading(session: {session_id:?}, seq: {seq:?})"
+                )
+            }
+            Event::ContinuationPrompt { session_id, seq } => {
+                write!(
+                    f,
+                    "ContinuationPrompt(session: {session_id:?}, seq: {seq:?})"
+                )
             }
         }
     }

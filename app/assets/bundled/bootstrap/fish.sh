@@ -310,6 +310,19 @@ function warp_git
     GIT_OPTIONAL_LOCKS=0 command git $argv
 end
 
+# Phosphor (#1390, #1391): LineEditorReading marker, printed as the LAST bytes of the prompt so it
+# reaches the terminal in the same paint that precedes fish's first read. fish captures prompt
+# output itself and passes OSC through without counting its width (as it does for 133;A/B). It is
+# part of the prompt, so a repaint that re-runs the prompt repeats it with the same seq (the app
+# treats it as idempotent). fish has no PS2: an incomplete command line just gets a newline inside
+# the same editor, so there is no ContinuationPrompt on fish. fish's `read` builtin does not run
+# fish_prompt, so a builtin read never sends this. No fork: printf is a builtin.
+function __warp_lr_print
+    test -n "$WARP_SESSION_ID"; or return 0
+    test "$PHOSPHOR_LINE_EDITOR_MARKERS" = 0; and return 0
+    builtin printf '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' $WARP_SESSION_ID $__warp_seq
+end
+
 # Wrap fish prompt function output with OSC prompt marker sequences,
 # so that we can direct the prompt bytes to the appropriate grids.
 function warp_update_prompt_vars
@@ -325,7 +338,7 @@ function warp_update_prompt_vars
 
   # If not honoring PS1, set both prompts to be empty
   if test "$WARP_HONOR_PS1" = "0"
-    function fish_prompt; builtin echo -n ""; end
+    function fish_prompt; __warp_lr_print; end
     function fish_right_prompt; builtin echo -n ""; end
   # If honoring PS1, add prefix/suffix to both prompts
   else
@@ -347,6 +360,7 @@ function warp_update_prompt_vars
       builtin echo -n (builtin printf '\x07')
       warp_original_fish_prompt
       end_prompt
+      __warp_lr_print
     end
 
     # Check if warp_original_fish_right_prompt was backed up before redefining fish_right_prompt

@@ -1990,6 +1990,20 @@ esac
   # that needs the repair the block still finishes exactly once, but may carry
   # the wrapper's status instead of the command's: 0 under add-zle-hook-widget,
   # 1 under p10k's `_p9k_widget` pattern.
+  # Phosphor (#1390, #1391): tell the app the line editor is about to read. ZLE runs zle-line-init
+  # for the main prompt (CONTEXT=start) and for each continuation line (CONTEXT=cont, PS2); vared
+  # and `select` have other contexts and are not the shell's line editor. `read -k`/`read -q` and
+  # other builtins do not start ZLE, so they never send this: a Preexec with no LineEditorReading
+  # after it is how the app tells a builtin raw read from the editor. builtin printf only.
+  _warp_emit_line_editor_marker() {
+    [[ -n ${WARP_SESSION_ID:-} && ${PHOSPHOR_LINE_EDITOR_MARKERS:-1} != 0 ]] || return 0
+    case ${CONTEXT:-} in
+      start) __warp_emit '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
+      cont) __warp_emit '\e]9278;f;{"hook": "ContinuationPrompt", "value": {"session_id": %s, "seq": %s}}\a' "$WARP_SESSION_ID" "${__warp_seq:-0}" ;;
+    esac
+    return 0
+  }
+
   _warp_zle_line_init() {
     local warp_status=$?
     # Nesting depth (locals are dynamically scoped, so this reads the outer
@@ -2023,6 +2037,7 @@ esac
     # drops a hook, since the dispatcher on the stack runs them all.
     if [[ ${widgets[_warp_user_zle_line_init]:-} == user:azhw:zle-line-init ]] &&
        (( ${funcstack[(Ie)azhw:zle-line-init]} )); then
+      (( _warp_zle_line_init_depth == 1 )) && _warp_emit_line_editor_marker
       return 0
     fi
     if zle -la _warp_user_zle_line_init; then
@@ -2038,6 +2053,9 @@ esac
         zle _warp_user_zle_line_init -N -- "$@"
       fi
     fi
+    # After the user's widget: the nearest point to ZLE's first read.
+    (( _warp_zle_line_init_depth == 1 )) && _warp_emit_line_editor_marker
+    return 0
   }
   # ${widgets} comes from zsh/zleparameter.
   zmodload zsh/zleparameter 2>/dev/null || :
