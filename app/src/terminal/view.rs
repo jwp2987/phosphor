@@ -911,6 +911,14 @@ const OUTPUT_TAIL_ROWS: usize = 16;
 /// rest of the lines fall back to the timed pacing. Logged when it fires. Not what sequences
 /// the lines: the marker is.
 const SUBSHELL_SETUP_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for the input queue's bootstrap-write gate (#1399): typed keys wait behind the
+/// setup lines until the last one is written. Every setup line may wait the whole marker give-up
+/// before the timed fallback takes over, so the net must outlast `lines` of those plus one more;
+/// a shorter one (it was 2 s per line) released the keys in the middle of the fallback's writes
+/// and interleaved them with the setup script.
+fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
+    SUBSHELL_SETUP_MARKER_GIVE_UP * (lines as u32 + 1) + Duration::from_secs(2)
+}
 /// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
 /// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
 /// Logged when it fires.
@@ -10974,8 +10982,13 @@ impl TerminalView {
         let copied = if middle_click {
             TerminalView::middle_click_paste_content(shell_dialect, ctx)
         } else {
+            // Blocking on purpose until the ssh hold can order a later-arriving paste behind the
+            // keys already held (#1405); bounded by the platform reader's own deadline.
             clipboard_content_with_escaped_paths(
-                ctx.clipboard().read_text_and_paths(),
+                warpui::clipboard::read_content_blocking(
+                    ctx.clipboard(),
+                    warpui::clipboard::ReadKind::TextAndPaths,
+                ),
                 shell_dialect,
                 false,
             )
@@ -13635,7 +13648,10 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> String {
         // Image data is never used here, so don't read or decode it.
-        let content = ctx.clipboard().read_without_images();
+        let content = warpui::clipboard::read_content_blocking(
+            ctx.clipboard(),
+            warpui::clipboard::ReadKind::TextAndPaths,
+        );
         clipboard_content_with_escaped_paths(content, shell_dialect, false)
     }
 
@@ -22351,20 +22367,30 @@ impl TerminalView {
         } else {
             // Images matter only for CLI-agent paste; otherwise skip the read and decode. Paste
             // never uses the HTML flavor, so the plain path reads just text and copied paths.
-            let clipboard_content = if is_cli_agent_paste {
-                ctx.clipboard().read()
-            } else {
-                ctx.clipboard().read_text_and_paths()
+            // Blocking on purpose for the CLI-agent paste (and wasm) until the paste queue can
+            // hold keys typed behind a CLI-agent read (#1405); bounded by the platform reader's
+            // own deadline.
+            let clipboard_content = match warpui::clipboard::read_outcome_blocking(
+                ctx.clipboard(),
+                if is_cli_agent_paste {
+                    warpui::clipboard::ReadKind::Full
+                } else {
+                    warpui::clipboard::ReadKind::TextAndPaths
+                },
+            ) {
+                warpui::clipboard::ReadOutcome::Content(content) => content,
+                // The owner never answered (X11 timeout): say so rather than pasting nothing
+                // (#1173).
+                warpui::clipboard::ReadOutcome::TimedOut => {
+                    self.show_error_toast(
+                        "Paste failed \u{2014} clipboard read timed out".to_string(),
+                        ctx,
+                    );
+                    return;
+                }
+                warpui::clipboard::ReadOutcome::TooLarge(_)
+                | warpui::clipboard::ReadOutcome::Unavailable => Default::default(),
             };
-
-            // The owner never answered (X11 timeout): say so rather than pasting nothing (#1173).
-            if ctx.clipboard().take_read_failure() {
-                self.show_error_toast(
-                    "Paste failed \u{2014} clipboard read timed out".to_string(),
-                    ctx,
-                );
-                return;
-            }
 
             if is_cli_agent_paste && clipboard_content.has_image_data() {
                 if !cfg!(windows) {
@@ -25766,7 +25792,11 @@ impl TerminalView {
             send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
             return;
         }
-        let clipboard_text = ctx.clipboard().read_plain_text();
+        let clipboard_text = warpui::clipboard::read_content_blocking(
+            ctx.clipboard(),
+            warpui::clipboard::ReadKind::TextAndPaths,
+        )
+        .plain_text;
 
         self.input.update(ctx, |input, ctx| {
             input.paste_insert(clipboard_text.as_str(), ctx);

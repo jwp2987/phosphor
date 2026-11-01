@@ -69,12 +69,14 @@ impl RenderableBlock for RenderableTemporaryBlock {
         let mut decoration_index = 0;
         for paragraph in paragraph_block.paragraphs() {
             // We could draw text directly since temporary paragraph should have its own decoration and selection state.
-            ctx.draw_text(
-                paragraph.content_origin(),
-                Default::default(),
-                paragraph.item.frame(),
-                paragraph_styles,
-            );
+            if let Some(frame) = paragraph.item.frame() {
+                ctx.draw_text(
+                    paragraph.content_origin(),
+                    Default::default(),
+                    frame,
+                    paragraph_styles,
+                );
+            }
 
             let paragraph_end = paragraph.end_char_offset();
             for (idx, decoration) in self.text_decoration[decoration_index..].iter().enumerate() {

@@ -270,6 +270,9 @@ pub struct PtyController<T: EventLoopSender> {
     /// instead of timer-chained `Input` messages. Decided once, from the sender (only the local
     /// unix event loop has the queue) and `PHOSPHOR_PTY_WRITE_QUEUE`.
     write_queue: bool,
+    /// When the last lone ^C was sent to the event loop, until the line editor next announces it
+    /// is ready (input-order log only: the ^C -> next prompt leg, #1401).
+    ctrl_c_sent_at: Option<std::time::Instant>,
     /// A `SetupChunked` job was sent and no abort since, so a cancel has something to abort.
     setup_job_sent: bool,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
@@ -302,6 +305,11 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(true);
+                if let Some(sent) = me.ctrl_c_sent_at.take() {
+                    warpui::input_order::log_hop("line_editor_ready_after_ctrl_c", || {
+                        format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
+                    });
+                }
                 // #1349: the line editor's ready signal releases the keys held since the
                 // prompt's precmd (ConPTY), in typed order, ahead of any request. This is the
                 // only thing that releases them besides a command start, a ^C or the give-up cap.
@@ -554,6 +562,7 @@ impl<T: EventLoopSender> PtyController<T> {
             paced_write_queue: VecDeque::new(),
             paced_write_generation: 0,
             write_queue,
+            ctrl_c_sent_at: None,
             setup_job_sent: false,
             #[cfg(test)]
             shutdown_requested: false,
@@ -2167,6 +2176,8 @@ impl<T: EventLoopSender> PtyController<T> {
         }
 
         if is_interrupt {
+            warpui::input_order::log_hop("ctrl_c_to_event_loop", String::new);
+            self.ctrl_c_sent_at = Some(std::time::Instant::now());
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
         // On a pty with the write queue, a paste and an agent write are their own job classes

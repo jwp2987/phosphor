@@ -3339,7 +3339,7 @@ impl EditorView {
 
     #[cfg(test)]
     fn clipboard_content(&mut self, ctx: &mut ViewContext<Self>) -> String {
-        let content = ctx.clipboard().read();
+        let content = warpui::clipboard::read_full_blocking(ctx.clipboard());
         self.clipboard_text_content(content)
     }
 
@@ -3872,6 +3872,17 @@ impl EditorView {
 
         if let Some(buffer_text) = buffer_snapshot {
             let text = text.into();
+            // #1398: a huge suggestion (a pasted megabyte in the history) froze the UI in text
+            // layout. Not offered at all; a ghost from an earlier buffer must not linger either.
+            if text.len() > snapshot::MAX_GHOST_TEXT_BYTES {
+                log::debug!(
+                    "autosuggestion of {} bytes not offered (limit {})",
+                    text.len(),
+                    snapshot::MAX_GHOST_TEXT_BYTES
+                );
+                self.clear_autosuggestion(ctx);
+                return;
+            }
             let full_suggestion = format!("{buffer_text}{text}");
 
             self.autosuggestion_state = Some(Arc::new(AutosuggestionState {

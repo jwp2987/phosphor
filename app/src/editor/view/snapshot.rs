@@ -217,6 +217,9 @@ impl ViewSnapshot {
     }
 
     /// Lays out the given ghosted text, which can be a placeholder or autosuggestion.
+    ///
+    /// Text over [`MAX_GHOST_TEXT_BYTES`] is cut and ends in an ellipsis, so no ghost or placeholder
+    /// path can hand the layout engine an unbounded string on the main thread (#1398).
     fn layout_ghosted_text(
         &self,
         text: &str,
@@ -227,6 +230,8 @@ impl ViewSnapshot {
         layout_cache: &LayoutCache,
     ) -> Vec<Arc<text_layout::Line>> {
         let font_size = self.font_size;
+        let bounded = bounded_ghost_text(text);
+        let text = &*bounded;
 
         if soft_wrap {
             let text_frame = layout_cache.layout_text(
@@ -983,3 +988,25 @@ fn line_and_style_runs(
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
+
+/// The most ghost text (an autosuggestion's remaining suffix, a placeholder) the editor offers or
+/// lays out, in bytes (#1398). A 1.3 MB history entry as the suggestion for its first two letters
+/// froze the Mac UI for ~76 s in text layout (ICU line breaking re-scans the string at every
+/// break). 16 KB (owner's choice) covers any command worth completing from a ghost (a long
+/// one-liner, a multi-line script of ~200 lines) and stays cheap to lay out; a suggestion
+/// longer than that is not offered at all, since accepting a truncated one would insert a
+/// command the user never saw in full.
+pub(crate) const MAX_GHOST_TEXT_BYTES: usize = 16 * 1024;
+
+/// `text`, cut at the last char boundary within [`MAX_GHOST_TEXT_BYTES`] and ended with an
+/// ellipsis when longer. Defence in depth behind the autosuggestion cap in `set_autosuggestion`.
+pub(super) fn bounded_ghost_text(text: &str) -> Cow<'_, str> {
+    if text.len() <= MAX_GHOST_TEXT_BYTES {
+        return Cow::Borrowed(text);
+    }
+    let mut end = MAX_GHOST_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Cow::Owned(format!("{}\u{2026}", &text[..end]))
+}

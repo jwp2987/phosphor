@@ -1,61 +1,78 @@
 use parking_lot::{Condvar, Mutex};
 
-/// A Clipboard that can read and write strings. Each platform must implement this trait to support
-/// writing to a clipboard.
+/// A system clipboard. Each platform implements this trait once, in one module, and keeps its
+/// quirks (X11 INCR and first-answer deadlines, Wayland offers, NSPasteboard promises, Win32
+/// clipboard ownership) behind it. There is deliberately NO synchronous read on this trait (#1405):
+/// a read is requested with [`request_read`] and answered later with a [`ReadOutcome`], so no
+/// clipboard owner can hold the calling thread. Writes go through [`write_in_background`] and the
+/// quit-time flush through [`Clipboard::flush_on_exit`].
 pub trait Clipboard: 'static {
+    /// The platform's write primitive. Callers go through [`write_in_background`], which orders
+    /// writes and runs this off the UI thread where the platform needs it.
     fn write(&mut self, contents: ClipboardContent);
 
-    fn read(&mut self) -> ClipboardContent;
+    /// Writes to the primary clipboard, used to support the Primary Selection Protocol (middle-click paste).
+    ///
+    /// NOTE: For platforms that don't support the primary clipboard, it writes to the default clipboard instead.
+    fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
+        self.write(contents)
+    }
 
-    /// True once if the most recent read failed because the clipboard owner did not answer in time
-    /// (as opposed to the clipboard having nothing to read), clearing the flag. Lets a paste tell
-    /// the user it failed instead of silently pasting nothing (#1173).
-    fn take_read_failure(&mut self) -> bool {
+    /// A self-contained reader for `kind` that may BLOCK in the OS and therefore only ever runs on
+    /// a worker thread (see [`request_read`]). It must own everything it needs (a fresh handle on
+    /// the process-global clipboard), apply the platform's own first-answer deadline, and answer
+    /// [`ReadOutcome::TimedOut`] when the owner never answers or [`ReadOutcome::Unavailable`] when
+    /// no clipboard handle could be opened. The caller wraps it with the blocked-reader cap, the
+    /// abandon epoch, the paste size cap and the request log, and answers a copy that is still
+    /// being written from memory, so platforms do none of that.
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader;
+
+    /// True when [`Clipboard::reader`] is a cheap in-memory snapshot (the in-process test
+    /// clipboard, the wasm saved content) that is run on the calling thread instead of a worker.
+    /// No OS clipboard may ever answer true.
+    fn reads_inline(&self) -> bool {
         false
     }
 
-    /// Whether the clipboard holds anything at all. Platforms should override this with a probe
-    /// that does not decode images; the default reads (and decodes) everything.
+    /// What the clipboard holds, WITHOUT reading it: X11 `TARGETS`, the Wayland offer's mime list,
+    /// the NSPasteboard type list, `IsClipboardFormatAvailable`. [`Availability::Unknown`] when the
+    /// platform cannot say without reading (the default).
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
+        Availability::Unknown
+    }
+
+    /// Whether the clipboard may hold anything. Never reads or decodes; an unknown answer counts as
+    /// "may hold something" so a menu entry is not wrongly disabled.
     fn has_content(&mut self) -> bool {
-        !self.read().is_empty()
+        !matches!(
+            self.availability(ClipboardTarget::Clipboard),
+            Availability::Empty
+        )
     }
 
-    /// Like `read`, but `images` is always `None`. For callers that never use image data, so
-    /// platforms can skip the (potentially large) image read and decode.
-    fn read_without_images(&mut self) -> ClipboardContent {
-        let mut content = self.read();
-        content.images = None;
-        content
-    }
-
-    /// Plain text and copied-file paths only (`html` and `images` are `None`). For paste, which
-    /// uses nothing else, so platforms can skip the HTML and image probes when text is present.
-    fn read_text_and_paths(&mut self) -> ClipboardContent {
-        let mut content = self.read_without_images();
-        content.html = None;
-        content
-    }
-
-    /// A self-contained reader for the clipboard's text and copied paths that can run on another
-    /// thread, or `None` when the platform's clipboard read is cheap enough (or not thread-safe
-    /// enough) to stay on the main thread. A multi-MB X11 selection is transferred in INCR chunks
-    /// by a possibly slow owner, which froze the UI for seconds (#1255).
+    /// Compatibility adapter over [`request_read`] for [`ReadKind::TextAndPaths`]: a reader to run
+    /// on another thread, or `None` where the read is an inline snapshot. Prefer [`request_read`].
     fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
-        None
+        legacy_reader(self, ReadKind::TextAndPaths)
     }
 
-    /// Like [`Self::background_text_reader`] but for a full [`Clipboard::read`]: text, copied paths,
-    /// HTML and images. For the input editor's paste, which may attach an image. `None` keeps the
-    /// read on the main thread (#1300).
+    /// Compatibility adapter for [`ReadKind::Full`] (see [`Clipboard::background_text_reader`]).
     fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
-        None
+        legacy_reader(self, ReadKind::Full)
     }
 
-    /// A self-contained reader for the Linux primary selection (middle-click paste), with the
-    /// same first-answer budget as [`Self::background_full_reader`]; `None` where there is no
-    /// separate primary selection or its read must stay on the calling thread (#1331).
+    /// Compatibility adapter for [`ReadKind::Primary`] (see [`Clipboard::background_text_reader`]).
+    /// `None` where there is no separate primary selection.
     fn background_primary_reader(&mut self) -> Option<BackgroundTextReader> {
-        None
+        if !self.has_primary_selection() {
+            return None;
+        }
+        legacy_reader(self, ReadKind::Primary)
+    }
+
+    /// Whether the platform has a primary selection that is separate from the clipboard (Linux).
+    fn has_primary_selection(&self) -> bool {
+        false
     }
 
     /// A self-contained writer that can run on another thread, or `None` when the platform's
@@ -69,38 +86,88 @@ pub trait Clipboard: 'static {
     /// the clipboard manager to take the data over (#1330). Must be bounded and must not panic.
     fn flush_on_exit(&mut self) {}
 
-    /// Just the plain text of the clipboard (empty if none).
-    fn read_plain_text(&mut self) -> String {
-        self.read().plain_text
-    }
-
-    /// Writes to the primary clipboard, used to support the Primary Selection Protocol (middle-click paste).
-    ///
-    /// NOTE: For platforms that don't support the primary clipboard, it writes to the default clipboard instead.
-    fn write_to_primary_clipboard(&mut self, contents: ClipboardContent) {
-        self.write(contents)
-    }
-
-    /// Reads the primary clipboard, used to support the Primary Selection Protocol (middle-click paste).
-    /// This reads from the default clipboard on platforms other than Linux.
-    fn read_from_primary_clipboard(&mut self) -> ClipboardContent {
-        self.read()
-    }
-
     #[cfg(target_family = "wasm")]
     fn save(&mut self, content: ClipboardContent);
 }
 
-/// The result of a [`Clipboard::background_text_reader`] read.
+/// What a clipboard holds, from a query that reads nothing. See [`Clipboard::availability`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    /// Nothing the app can paste is on offer.
+    Empty,
+    /// At least one pasteable flavor (text, html, a file list or an image) is on offer.
+    HasContent,
+    /// The platform could not tell without reading.
+    Unknown,
+}
+
+/// Identifies one clipboard read request, so its start, its give-up and its late arrival can be
+/// told apart in the log and by a consumer that matches an answer to the request it made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReadRequestId(pub u64);
+
+static NEXT_READ_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl ReadRequestId {
+    pub fn next() -> Self {
+        Self(NEXT_READ_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// How a clipboard read ended. The one answer type of the async read API.
+#[derive(Debug)]
+pub enum ReadOutcome {
+    /// The text, copied paths and (for [`ReadKind::Full`]) html and images. Empty content when the
+    /// clipboard held nothing.
+    Content(ClipboardContent),
+    /// The text and paths together are larger than [`MAX_PASTE_BYTES`] (this many bytes). The
+    /// content was dropped on the reader thread; the paste is refused with a message, never
+    /// truncated (#1382).
+    TooLarge(usize),
+    /// A deadline passed: the clipboard owner never answered, or too many earlier readers are
+    /// still blocked in the OS. Always logged where it is decided.
+    TimedOut,
+    /// No clipboard handle could be opened (no display server, the Win32 clipboard unreachable).
+    Unavailable,
+}
+
+impl ReadOutcome {
+    /// The content, or empty content when the read gave none.
+    pub fn into_content(self) -> ClipboardContent {
+        match self {
+            ReadOutcome::Content(content) => content,
+            ReadOutcome::TooLarge(_) | ReadOutcome::TimedOut | ReadOutcome::Unavailable => {
+                ClipboardContent::default()
+            }
+        }
+    }
+}
+
+/// See [`Clipboard::reader`].
+pub type ClipboardReader = Box<dyn FnOnce() -> ReadOutcome + Send + 'static>;
+
+/// The result of a [`Clipboard::background_text_reader`] read: the compatibility form of
+/// [`ReadOutcome`] (`Unavailable` is reported as empty content).
 pub enum BackgroundTextRead {
     /// The text and copied paths (empty content when the clipboard held no text).
     Content(ClipboardContent),
-    /// The clipboard owner never answered (the same condition as `take_read_failure`).
+    /// The clipboard owner never answered.
     TimedOut,
     /// The text and paths together are larger than [`MAX_PASTE_BYTES`] (this many bytes). The
     /// content was dropped on the reader thread; the paste is refused with a message, never
     /// truncated (#1382).
     TooLarge(usize),
+}
+
+impl From<ReadOutcome> for BackgroundTextRead {
+    fn from(outcome: ReadOutcome) -> Self {
+        match outcome {
+            ReadOutcome::Content(content) => BackgroundTextRead::Content(content),
+            ReadOutcome::TooLarge(bytes) => BackgroundTextRead::TooLarge(bytes),
+            ReadOutcome::TimedOut => BackgroundTextRead::TimedOut,
+            ReadOutcome::Unavailable => BackgroundTextRead::Content(ClipboardContent::default()),
+        }
+    }
 }
 
 /// The most text (plain text, HTML and copied paths together) one paste may carry. A paste is
@@ -183,8 +250,15 @@ static PASTE_READERS: ReaderTracker = ReaderTracker::new();
 /// new one answers `TimedOut` at once instead of starting yet another blocked OS call. (A blocked
 /// OS clipboard call has no cancel; this is the stop for further leaks.)
 #[cfg(not(target_family = "wasm"))]
-pub fn tracked_reader(inner: BackgroundTextReader) -> BackgroundTextReader {
-    tracked_reader_with(&PASTE_READERS, MAX_IN_FLIGHT_READERS, SLOW_READ, inner)
+fn tracked_reader(id: ReadRequestId, kind: ReadKind, inner: ClipboardReader) -> ClipboardReader {
+    tracked_reader_with(
+        &PASTE_READERS,
+        MAX_IN_FLIGHT_READERS,
+        SLOW_READ,
+        id,
+        kind,
+        inner,
+    )
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -192,8 +266,10 @@ fn tracked_reader_with(
     tracker: &'static ReaderTracker,
     max: usize,
     slow: std::time::Duration,
-    inner: BackgroundTextReader,
-) -> BackgroundTextReader {
+    id: ReadRequestId,
+    kind: ReadKind,
+    inner: ClipboardReader,
+) -> ClipboardReader {
     use std::sync::atomic::Ordering;
     // The cancel flag of this read: the epoch the paste that asked for it saw.
     let epoch = tracker.abandon_epoch.load(Ordering::SeqCst);
@@ -202,23 +278,34 @@ fn tracked_reader_with(
         let _guard = InFlightGuard(tracker);
         if before >= max {
             log::warn!(
-                "{before} clipboard reader thread(s) are still blocked in the OS; not starting another"
+                "clipboard read #{} ({kind:?}) gave up: {before} reader thread(s) are still blocked in the OS; not starting another",
+                id.0
             );
-            return BackgroundTextRead::TimedOut;
+            return ReadOutcome::TimedOut;
         }
         let started = std::time::Instant::now();
         let read = cap_paste_size(inner(), MAX_PASTE_BYTES);
+        if matches!(read, ReadOutcome::TimedOut) {
+            // The give-up net of a stalled owner: always logged (#1405).
+            log::warn!(
+                "clipboard read #{} ({kind:?}) gave up after {:?}: the owner did not answer",
+                id.0,
+                started.elapsed()
+            );
+        }
         if tracker.abandon_epoch.load(Ordering::SeqCst) != epoch {
             // Only logged: another paste may be waiting on a read that was started before this
             // abandon, so the result is still handed back and the consumer decides.
             log::warn!(
-                "clipboard read returned after {:?}; a paste gave up on it while it was blocked",
+                "clipboard read #{} returned after {:?}; a paste gave up on it while it was blocked",
+                id.0,
                 started.elapsed()
             );
         }
         if started.elapsed() >= slow {
             log::warn!(
-                "clipboard read returned after {:?} (budget {:?}); the paste had long given up on it",
+                "clipboard read #{} returned after {:?} (budget {:?}); the paste had long given up on it",
+                id.0,
                 started.elapsed(),
                 slow
             );
@@ -227,85 +314,205 @@ fn tracked_reader_with(
     })
 }
 
-/// Which clipboard flavors an off-thread [`read_in_background`] needs.
+/// Which clipboard flavors an off-thread read needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadKind {
-    /// Text, paths, HTML and images ([`Clipboard::read`]).
+    /// Text, paths, HTML and images.
     Full,
-    /// Text and copied paths only ([`Clipboard::read_text_and_paths`]).
+    /// Text and copied paths only (`html` and `images` are `None`): what a paste uses, so the
+    /// platform skips the HTML and image probes.
     TextAndPaths,
-    /// The Linux primary selection ([`Clipboard::read_from_primary_clipboard`]).
+    /// The Linux primary selection (text and paths); the clipboard where there is none.
     Primary,
+}
+
+impl ReadKind {
+    /// The clipboard a read of this kind targets, for the copy-still-being-written check.
+    pub fn target(self) -> ClipboardTarget {
+        match self {
+            ReadKind::Primary => ClipboardTarget::Primary,
+            ReadKind::Full | ReadKind::TextAndPaths => ClipboardTarget::Clipboard,
+        }
+    }
 }
 
 /// The boxed future of a [`read_in_background`].
 pub type PendingRead =
     std::pin::Pin<Box<dyn std::future::Future<Output = BackgroundTextRead> + Send + 'static>>;
 
+/// The boxed future of a [`request_read`].
+pub type PendingOutcome =
+    std::pin::Pin<Box<dyn std::future::Future<Output = ReadOutcome> + Send + 'static>>;
+
+/// What [`request_read`] started.
+pub enum ReadStart {
+    /// The answer is already known (an inline snapshot, a copy still being written, or a reader
+    /// thread that could not be started).
+    Ready(ReadOutcome),
+    /// A worker thread is reading; await the future (`ctx.spawn`) and act on the answer there.
+    Pending(PendingOutcome),
+}
+
+/// One clipboard read in flight: THE async read API (#1405).
+pub struct ReadRequest {
+    pub id: ReadRequestId,
+    pub kind: ReadKind,
+    pub start: ReadStart,
+}
+
+impl ReadRequest {
+    /// The answer as a future either way, for `ctx.spawn`.
+    pub fn into_future(self) -> PendingOutcome {
+        match self.start {
+            ReadStart::Ready(outcome) => Box::pin(futures::future::ready(outcome)),
+            ReadStart::Pending(pending) => pending,
+        }
+    }
+}
+
 /// What [`read_in_background`] started.
 pub enum StartedRead {
-    /// The platform has no off-thread reader, so the read was done on the calling thread already;
-    /// the caller handles the result at once (no event-loop hop, so behaviour and ordering are
-    /// exactly the old synchronous ones).
+    /// The platform reads inline (see [`Clipboard::reads_inline`]), so the answer is known
+    /// already; the caller handles the result at once (no event-loop hop).
     Ready(BackgroundTextRead),
     /// A worker thread is reading; await the future (`ctx.spawn`) and handle the result there.
     Pending(PendingRead),
 }
 
-/// Starts a clipboard read that never blocks the calling (UI) thread, for callers that need the
-/// content but not synchronously (#1380). The read runs on a worker thread with the platform
-/// reader's own first-answer budget (and the paste size cap); await the returned future from
-/// `ctx.spawn` and act on the result in the callback. A reader thread that cannot be started
-/// answers `TimedOut`.
-///
-/// Where the platform has no off-thread reader (wasm, or a backend that does not provide one) the
-/// read happens here, synchronously ([`StartedRead::Ready`]): the same behaviour as before.
+/// Requests a clipboard read that never blocks the calling (UI) thread: the one read API. The
+/// read runs on a worker thread with the platform reader's own first-answer deadline, the
+/// blocked-reader cap, the abandon epoch and the paste size cap, and carries a request id that
+/// appears in every log line about it. A copy that is still being written answers from memory. A
+/// reader thread that cannot be started answers `TimedOut`.
+pub fn request_read(clipboard: &mut dyn Clipboard, kind: ReadKind) -> ReadRequest {
+    let id = ReadRequestId::next();
+    let reader = prepared_reader(clipboard, kind, id);
+    let start = start_reader(clipboard.reads_inline(), id, reader);
+    ReadRequest { id, kind, start }
+}
+
+/// [`request_read`] in the older `BackgroundTextRead` vocabulary, for the paste paths written
+/// against it.
 pub fn read_in_background(clipboard: &mut dyn Clipboard, kind: ReadKind) -> StartedRead {
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let reader = match kind {
-            ReadKind::Full => clipboard.background_full_reader(),
-            ReadKind::TextAndPaths => clipboard.background_text_reader(),
-            ReadKind::Primary => clipboard.background_primary_reader(),
-        };
-        if let Some(reader) = reader {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            let spawned = std::thread::Builder::new()
-                .name("clipboard-read".into())
-                .spawn(move || {
-                    let _ = tx.send(reader());
-                });
-            return match spawned {
-                Ok(_) => StartedRead::Pending(Box::pin(async move {
-                    rx.await.unwrap_or(BackgroundTextRead::TimedOut)
-                })),
-                Err(err) => {
-                    log::warn!("Unable to start the clipboard read thread: {err}");
-                    StartedRead::Ready(BackgroundTextRead::TimedOut)
-                }
-            };
+    match request_read(clipboard, kind).start {
+        ReadStart::Ready(outcome) => StartedRead::Ready(outcome.into()),
+        ReadStart::Pending(pending) => {
+            StartedRead::Pending(Box::pin(
+                async move { BackgroundTextRead::from(pending.await) },
+            ))
         }
     }
-    let content = match kind {
-        ReadKind::Full => clipboard.read(),
-        ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
-        ReadKind::Primary => clipboard.read_from_primary_clipboard(),
-    };
-    StartedRead::Ready(if clipboard.take_read_failure() {
-        BackgroundTextRead::TimedOut
-    } else {
-        cap_paste_size(BackgroundTextRead::Content(content), MAX_PASTE_BYTES)
-    })
+}
+
+/// The reader [`request_read`] runs: the platform's, behind the pending-write short-circuit, the
+/// blocked-reader cap, the abandon epoch and the size cap.
+fn prepared_reader<C: Clipboard + ?Sized>(
+    clipboard: &mut C,
+    kind: ReadKind,
+    id: ReadRequestId,
+) -> ClipboardReader {
+    // A copy still being written is what the user just copied (#1307); captured now, on the
+    // calling thread, so the answer follows the user's order.
+    if let Some(pending) = pending_write(kind.target()) {
+        return Box::new(move || {
+            let mut content = (*pending).clone();
+            if kind == ReadKind::TextAndPaths {
+                content.html = None;
+                content.images = None;
+            }
+            ReadOutcome::Content(content)
+        });
+    }
+    let reader = clipboard.reader(kind);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        tracked_reader(id, kind, reader)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = id;
+        Box::new(move || cap_paste_size(reader(), MAX_PASTE_BYTES))
+    }
+}
+
+fn start_reader(inline: bool, id: ReadRequestId, reader: ClipboardReader) -> ReadStart {
+    #[cfg(not(target_family = "wasm"))]
+    if !inline {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("clipboard-read".into())
+            .spawn(move || {
+                let _ = tx.send(reader());
+            });
+        return match spawned {
+            Ok(_) => ReadStart::Pending(Box::pin(async move {
+                rx.await.unwrap_or(ReadOutcome::TimedOut)
+            })),
+            Err(err) => {
+                log::warn!(
+                    "Unable to start the clipboard read thread for request #{}: {err}",
+                    id.0
+                );
+                ReadStart::Ready(ReadOutcome::TimedOut)
+            }
+        };
+    }
+    let _ = (inline, id);
+    ReadStart::Ready(reader())
+}
+
+/// The older `Option<BackgroundTextReader>` form of a read, for the paste paths that take a
+/// reader to run themselves; `None` where the read is an inline snapshot.
+fn legacy_reader<C: Clipboard + ?Sized>(
+    clipboard: &mut C,
+    kind: ReadKind,
+) -> Option<BackgroundTextReader> {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (clipboard, kind);
+        None
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        if clipboard.reads_inline() {
+            return None;
+        }
+        let reader = prepared_reader(clipboard, kind, ReadRequestId::next());
+        Some(Box::new(move || BackgroundTextRead::from(reader())))
+    }
+}
+
+/// A BOUNDED BLOCKING read on the calling thread, for the few callers that cannot yet wait for an
+/// event (#1405): a vim register read that decides the very keystroke that asked for it, the
+/// paste held during an ssh connect, the CLI-agent paste, the headless TUI, and tests. It is not
+/// a second read implementation: it runs the same reader [`request_read`] would, so the deadline,
+/// the blocked-reader cap and the size cap all apply. Each caller is a gap to close by moving it
+/// to [`request_read`] once the input queue can hold the keys typed behind the read. Never use
+/// it where an event-driven read is possible.
+pub fn read_outcome_blocking(clipboard: &mut dyn Clipboard, kind: ReadKind) -> ReadOutcome {
+    let reader = prepared_reader(clipboard, kind, ReadRequestId::next());
+    reader()
+}
+
+/// [`read_outcome_blocking`] reduced to the content (empty when the read gave none).
+pub fn read_content_blocking(clipboard: &mut dyn Clipboard, kind: ReadKind) -> ClipboardContent {
+    read_outcome_blocking(clipboard, kind).into_content()
+}
+
+/// [`read_content_blocking`] for [`ReadKind::Full`]: the whole clipboard, for tests and the few
+/// callers listed there.
+pub fn read_full_blocking(clipboard: &mut dyn Clipboard) -> ClipboardContent {
+    read_content_blocking(clipboard, ReadKind::Full)
 }
 
 /// Refuses content whose text exceeds `max` bytes, dropping it here on the reader thread so the
 /// oversize buffer is freed before it is queued anywhere.
-pub fn cap_paste_size(read: BackgroundTextRead, max: usize) -> BackgroundTextRead {
+pub fn cap_paste_size(read: ReadOutcome, max: usize) -> ReadOutcome {
     match read {
-        BackgroundTextRead::Content(content) if content.text_bytes() > max => {
+        ReadOutcome::Content(content) if content.text_bytes() > max => {
             let bytes = content.text_bytes();
             log::warn!("clipboard paste of {bytes} bytes exceeds the {max} byte cap; refused");
-            BackgroundTextRead::TooLarge(bytes)
+            ReadOutcome::TooLarge(bytes)
         }
         other => other,
     }
@@ -489,10 +696,12 @@ pub fn serial_writer<H: 'static>(
     })
 }
 
-/// Writes `content` on a background thread when the platform supports it and returns `Ok`;
-/// `on_done` runs on that thread with the outcome (it is dropped uncalled if the thread cannot be
-/// spawned). Returns the content back as `Err` when the caller should write synchronously. `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1`
-/// forces the synchronous path.
+/// The one write API. Writes `content` on the platform's ordered writer thread (or inline where the
+/// platform's write is cheap) and returns `Ok`; `on_done` runs on that thread with the outcome (it
+/// is dropped uncalled if the thread cannot be spawned). Every write takes a generation on the
+/// calling thread, so the user's copy order wins, and quit waits for them (woken, not polled) via
+/// [`wait_for_pending_writes`]. Returns the content back as `Err` only when
+/// `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1` forces the synchronous path, or on wasm.
 pub fn write_in_background(
     clipboard: &mut dyn Clipboard,
     content: ClipboardContent,
@@ -510,7 +719,14 @@ pub fn write_in_background(
             return Err(content);
         }
         let Some(writer) = clipboard.background_writer() else {
-            return Err(content);
+            // The platform's write is cheap and ordered by construction (it finishes before this
+            // returns): do it here so a caller has ONE write API and `on_done` still fires.
+            match target {
+                ClipboardTarget::Clipboard => clipboard.write(content),
+                ClipboardTarget::Primary => clipboard.write_to_primary_clipboard(content),
+            }
+            on_done(WriteOutcome::Written);
+            return Ok(());
         };
         let generation = WRITE_ORDER.next_generation();
         let pending = std::sync::Arc::new(content);
@@ -649,8 +865,25 @@ impl Clipboard for InMemoryClipboard {
         *self.clipboard_content.lock() = contents;
     }
 
-    fn read(&mut self) -> ClipboardContent {
-        self.clipboard_content.lock().clone()
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
+        let mut content = self.clipboard_content.lock().clone();
+        if kind == ReadKind::TextAndPaths {
+            content.html = None;
+            content.images = None;
+        }
+        Box::new(move || ReadOutcome::Content(content))
+    }
+
+    fn reads_inline(&self) -> bool {
+        true
+    }
+
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
+        if self.clipboard_content.lock().is_empty() {
+            Availability::Empty
+        } else {
+            Availability::HasContent
+        }
     }
 
     #[cfg(target_family = "wasm")]

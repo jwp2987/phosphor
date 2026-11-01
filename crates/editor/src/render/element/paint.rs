@@ -153,12 +153,15 @@ impl<'a, 'b> RenderContext<'a, 'b> {
     ) {
         let paint_style_override =
             self.paint_style_override(paragraph.start_char_offset..paragraph.end_char_offset());
-        self.draw_text(
-            paragraph.content_origin(),
-            paint_style_override,
-            paragraph.item.frame(),
-            style,
-        );
+        // A dehydrated paragraph has no glyphs to draw; lazy layout hydrates the viewport first.
+        if let Some(frame) = paragraph.item.frame() {
+            self.draw_text(
+                paragraph.content_origin(),
+                paint_style_override,
+                frame,
+                style,
+            );
+        }
 
         paragraph.draw_selection(state, self);
         self.draw_text_decorations(paragraph, state.decorations().text(), state);

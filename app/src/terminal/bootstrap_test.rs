@@ -3900,7 +3900,7 @@ fn marked_nu_setup_lines_end_in_a_nu_marker_except_the_last() {
             assert!(marked_line.starts_with(plain_line.as_str()), "{index}");
             assert!(
                 marked_line.ends_with(&format!(
-                    "; print -n $\"(char esc)]7771;77;{index}(char bel)\""
+                    "; print -n $\"(ansi esc)]7771;77;{index}(char bel)\""
                 )),
                 "{index}: {marked_line}"
             );
@@ -3919,6 +3919,15 @@ fn marked_nu_setup_lines_end_in_a_nu_marker_except_the_last() {
             .iter()
             .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES)
     );
+}
+
+/// #1399: nushell 0.116 has no `char esc`; a marker built with it fails the whole line at parse
+/// time, so no marker ever arrived. The marker uses `ansi esc` and no other unknown named char.
+#[test]
+fn nu_setup_marker_uses_only_names_nushell_0_116_has() {
+    let marker = nu_setup_line_marker(9, 3);
+    assert_eq!(marker, " print -n $\"(ansi esc)]7771;9;3(char bel)\"");
+    assert!(!marker.contains("char esc"), "{marker}");
 }
 
 /// #1372: typed into a real nushell, the marked lines print every marker in order and the script

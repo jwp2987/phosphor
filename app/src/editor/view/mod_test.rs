@@ -2156,6 +2156,83 @@ fn test_autosuggestions() -> Result<()> {
     })
 }
 
+/// #1398: a huge history entry as the suggestion for the typed prefix froze the UI for ~76 s in
+/// text layout. A suggestion over the cap is not offered (and clears a stale one); at the cap and
+/// below nothing changes.
+#[test]
+fn test_oversized_autosuggestion_is_not_offered() -> Result<()> {
+    use super::snapshot::MAX_GHOST_TEXT_BYTES;
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let kind = AutosuggestionType::Command {
+            was_intelligent_autosuggestion: false,
+        };
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("ec", Default::default(), ctx)
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.set_autosuggestion(
+                "ho hi",
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), Some("ho hi"));
+            // Over the cap: dropped, and the earlier ghost does not linger.
+            view.set_autosuggestion(
+                "a".repeat(MAX_GHOST_TEXT_BYTES + 1),
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), None);
+            // Exactly the cap is still offered.
+            view.set_autosuggestion(
+                "a".repeat(MAX_GHOST_TEXT_BYTES),
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(
+                view.current_autosuggestion_text().map(str::len),
+                Some(MAX_GHOST_TEXT_BYTES)
+            );
+            // A 1.3 MB entry (the report) is never stored.
+            view.set_autosuggestion(
+                "b".repeat(1_300_000),
+                AutosuggestionLocation::EndOfBuffer,
+                kind,
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+        Ok(())
+    })
+}
+
+/// #1398: whatever reaches the ghost layout (a placeholder included) is bounded, cut on a char
+/// boundary and marked with an ellipsis; short text is borrowed untouched.
+#[test]
+fn test_bounded_ghost_text() {
+    use super::snapshot::{MAX_GHOST_TEXT_BYTES, bounded_ghost_text};
+    assert!(matches!(
+        bounded_ghost_text("echo hi"),
+        std::borrow::Cow::Borrowed("echo hi")
+    ));
+    let at_cap = "x".repeat(MAX_GHOST_TEXT_BYTES);
+    assert_eq!(bounded_ghost_text(&at_cap), at_cap.as_str());
+    let long = "x".repeat(1_300_000);
+    let cut = bounded_ghost_text(&long);
+    assert_eq!(cut.len(), MAX_GHOST_TEXT_BYTES + '\u{2026}'.len_utf8());
+    assert!(cut.ends_with('\u{2026}'));
+    // A multi-byte char straddling the cap is not split.
+    let wide = "\u{e9}".repeat(MAX_GHOST_TEXT_BYTES);
+    let cut = bounded_ghost_text(&wide);
+    assert!(cut.len() <= MAX_GHOST_TEXT_BYTES + '\u{2026}'.len_utf8());
+    assert!(cut.ends_with('\u{2026}'));
+}
+
 #[test]
 fn test_partial_autosuggestion() -> Result<()> {
     App::test((), |mut app| async move {

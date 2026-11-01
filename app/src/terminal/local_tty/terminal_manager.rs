@@ -1635,9 +1635,11 @@ impl EventLoopSender for mio_channel::Sender<Message> {
         })
     }
 
-    /// The typed write queue is unix-only for now; the Windows ConPTY path keeps its own writes.
+    /// The typed write queue runs in the same event loop on every platform. On Windows its
+    /// backpressure is the ConPTY named pipe: a write is `WouldBlock` while the previous
+    /// overlapped write is in flight, and mio reports the pipe writable when it completes.
     fn supports_write_queue(&self) -> bool {
-        cfg!(unix)
+        true
     }
 }
 

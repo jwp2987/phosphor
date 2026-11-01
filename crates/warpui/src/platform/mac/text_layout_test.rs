@@ -11,7 +11,7 @@ use rand::random;
 pub(crate) fn collect_line_caret_position_pairs(line: &Line) -> Vec<(usize, usize)> {
     line.caret_positions
         .iter()
-        .map(|pos| (pos.start_offset, pos.last_offset))
+        .map(|pos| (pos.start(), pos.last()))
         .collect_vec()
 }
 
@@ -161,7 +161,7 @@ fn test_caret_positions_ligatures() -> Result<()> {
     assert_eq!(
         line.caret_positions
             .iter()
-            .map(|pos| pos.start_offset)
+            .map(|pos| pos.start())
             .collect::<Vec<_>>(),
         (0..32).collect::<Vec<usize>>()
     );

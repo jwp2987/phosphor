@@ -2433,7 +2433,7 @@ impl SelectableElement for FormattedTextElement {
                         let first_glyph = line.first_glyph()?;
                         let last_glyph = line.last_glyph()?;
                         let relative_x =
-                            if first_glyph.index <= offset && offset <= last_glyph.index + 1 {
+                            if first_glyph.char_index() <= offset && offset <= last_glyph.char_index() + 1 {
                                 line.x_for_index(offset)
                             } else if matches!(direction, SelectionDirection::Backward) {
                                 0.
@@ -2555,14 +2555,14 @@ impl SelectableElement for FormattedTextElement {
                 let first_glyph = line.first_glyph()?;
                 let last_glyph = line.last_glyph()?;
                 // Visual glyph order can oppose logical indices, and usize::clamp panics if min > max.
-                if first_glyph.index > last_glyph.index {
+                if first_glyph.char_index() > last_glyph.char_index() {
                     return None;
                 }
                 // If we clicked to the right of a line, the text_selection_bound's glyph index would be one larger than the last glyph's index.
                 // Snap it within the line's index range so we do smart selection as if we clicked on the last glyph in the line.
                 let char_offset = text_selection_bound
                     .glyph_index
-                    .clamp(first_glyph.index, last_glyph.index);
+                    .clamp(first_glyph.char_index(), last_glyph.char_index());
                 let byte_offset = raw_text.char_indices().nth(char_offset)?.0.into();
 
                 let smart_select_range = smart_select_fn(raw_text, byte_offset)?;

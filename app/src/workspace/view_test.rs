@@ -5582,7 +5582,10 @@ fn test_copy_current_path_is_a_noop_without_a_focused_path() {
 
             workspace.handle_action(&WorkspaceAction::CopyCurrentPath, ctx);
 
-            assert_eq!(ctx.clipboard().read().plain_text, "sentinel");
+            assert_eq!(
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
+                "sentinel"
+            );
         });
     });
 }

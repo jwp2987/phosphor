@@ -1240,7 +1240,7 @@ impl SelectableElement for Text {
 
                         // If we're expanding to the end of the line, we can have offset == last_glyph.index + 1.
                         let relative_x =
-                            if first_glyph.index <= offset && offset <= last_glyph.index + 1 {
+                            if first_glyph.char_index() <= offset && offset <= last_glyph.char_index() + 1 {
                                 line.x_for_index(offset)
                             } else if matches!(direction, SelectionDirection::Backward) {
                                 0.
@@ -1353,8 +1353,8 @@ impl SelectableElement for Text {
                 // Snap it within the line's index range so we do smart selection as if we clicked on the last glyph in the line.
                 let char_offset = text_selection_bound
                     .glyph_index
-                    .min(last_glyph.index)
-                    .max(first_glyph.index);
+                    .min(last_glyph.char_index())
+                    .max(first_glyph.char_index());
                 let byte_offset = text.char_indices().nth(char_offset)?.0.into();
 
                 let smart_select_range = smart_select_fn(text, byte_offset)?;

@@ -2249,7 +2249,7 @@ fn context_menu_copy_blocks_prefers_selected_blocks_over_lingering_text_selectio
 
             terminal_view.context_menu_copy_blocks(ctx);
 
-            let copied = ctx.clipboard().read().plain_text;
+            let copied = warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text;
             assert!(
                 copied.contains("output_b"),
                 "expected the selected block B to be copied, got {copied:?}"
@@ -13215,7 +13215,7 @@ fn ai_block_copy_output_does_not_clobber_clipboard_when_nothing_streamed() {
 
         ai_block.update(&mut app, |_block, ctx| {
             assert_eq!(
-                ctx.clipboard().read().plain_text,
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
                 "sentinel",
                 "copying output before anything has streamed must not overwrite the clipboard \
                  with an empty string"
@@ -21621,5 +21621,19 @@ fn a_key_after_a_young_hold_ended_is_not_swallowed() {
                 );
             });
         }
+    }
+}
+
+/// #1399: the bootstrap-write gate holds typed keys until the last setup line is written. Each
+/// marked line may wait the whole marker give-up before the timed fallback writes the rest, so the
+/// gate's net must outlast that; the old 2 s per line released keys into the middle of the
+/// fallback's writes (the script interleaved with the typed bytes).
+#[test]
+fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
+    for lines in 1..40usize {
+        assert!(
+            subshell_bootstrap_gate_cap(lines) > SUBSHELL_SETUP_MARKER_GIVE_UP * lines as u32,
+            "{lines} lines"
+        );
     }
 }

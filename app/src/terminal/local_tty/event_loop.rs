@@ -162,6 +162,26 @@ pub struct State {
     /// When the oldest user input not yet fully written was received by this loop. Times the
     /// receive -> pty write leg for the slow-operation log (#1146).
     user_input_received_at: Option<Instant>,
+    /// Whether consecutive plain-text key writes are merged into one write (see
+    /// [`State::coalesce_keys_into`]). On for a pty whose writes complete asynchronously (the
+    /// Windows ConPTY pipe), where each write must wait for the previous one's completion event.
+    coalesce_keys: bool,
+}
+
+/// `PHOSPHOR_PTY_COALESCE=0` turns key-write coalescing off.
+fn coalesce_keys_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !std::env::var("PHOSPHOR_PTY_COALESCE").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// Most bytes one coalesced key write carries.
+const MAX_COALESCED_KEY_BYTES: usize = 4096;
+
+/// Whether `bytes` is plain typed text that may share a write with other plain typed text:
+/// nothing below 0x20 (no ESC, whose meaning depends on what follows it in the same read, no ^C
+/// or other signal byte, no CR) and non-empty.
+fn is_plain_key_text(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && bytes.iter().all(|&b| b >= 0x20)
 }
 
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
@@ -251,6 +271,7 @@ impl Default for State {
             user_write_finished_at: None,
             last_user_write_at: None,
             user_input_received_at: None,
+            coalesce_keys: false,
         }
     }
 }
@@ -336,7 +357,10 @@ impl State {
                     }
                     self.active_job = Some(job);
                 }
-                Some(entry) => {
+                Some(mut entry) => {
+                    if self.coalesce_keys {
+                        self.coalesce_keys_into(&mut entry);
+                    }
                     self.writing = Some(Writing::new(entry.bytes, entry.class));
                     return;
                 }
@@ -345,6 +369,43 @@ impl State {
                     return;
                 }
             }
+        }
+    }
+
+    /// Merges the typed-text jobs queued directly behind `entry` into it, so a burst of keys that
+    /// piled up while the previous write was in flight goes out as ONE write instead of one write
+    /// (and one wait for its completion event) per key. Order is exactly the queue order: only
+    /// jobs adjacent to `entry` are taken, only of class [`JobClass::UserKey`] holding plain text
+    /// (see [`is_plain_key_text`]), so no reply, command, paste, agent write, signal byte or
+    /// escape sequence is ever moved, merged or split from what follows it.
+    fn coalesce_keys_into(&mut self, entry: &mut QueuedWrite) {
+        if entry.class != JobClass::UserKey
+            || entry.setup.is_some()
+            || entry.is_gated()
+            || !is_plain_key_text(&entry.bytes)
+        {
+            return;
+        }
+        let mut merged = 0usize;
+        while let Some(next) = self.write_list.front() {
+            if next.class != JobClass::UserKey
+                || next.setup.is_some()
+                || next.is_gated()
+                || !is_plain_key_text(&next.bytes)
+                || entry.bytes.len() + next.bytes.len() > MAX_COALESCED_KEY_BYTES
+            {
+                break;
+            }
+            let Some(next) = self.write_list.pop_front() else {
+                break;
+            };
+            entry.bytes.to_mut().extend_from_slice(&next.bytes);
+            merged += 1;
+        }
+        if merged > 0 {
+            warpui::input_order::log_hop("pty_write_coalesced", || {
+                format!("jobs={} bytes={}", merged + 1, entry.bytes.len())
+            });
         }
     }
 
@@ -996,6 +1057,11 @@ where
                     if is_signal_byte(&input) {
                         state.abort(AbortScope::Setup);
                     }
+                    if input.contains(&0x03) {
+                        warpui::input_order::log_hop("ctrl_c_received", || {
+                            format!("queued={}", state.write_list.len())
+                        });
+                    }
                     state.queue_input(input)
                 }
                 Message::AgentInput(input) => {
@@ -1233,6 +1299,11 @@ where
                             state.note_write_finished(current.is_reply(), finished_at);
                             if !current.is_reply() {
                                 warpui::input_order::log_pty_write(current.source.len());
+                                if current.source.contains(&0x03) {
+                                    warpui::input_order::log_hop("ctrl_c_pty_write", || {
+                                        format!("bytes={}", current.source.len())
+                                    });
+                                }
                             }
                             state.note_job_chunk_finished(&current, finished_at);
                             state.goto_next_at(finished_at);
@@ -1344,7 +1415,10 @@ where
                 #[cfg(test)]
                 warp_core::features::set_overrides(feature_flag_overrides);
 
-                let mut state = State::default();
+                let mut state = State {
+                    coalesce_keys: self.pty.coalesces_key_writes() && coalesce_keys_enabled(),
+                    ..State::default()
+                };
                 // Heap (calloc) rather than stack: a stack array is memset up front and
                 // keeps ~256 KB resident per pane even when the pane is idle.
                 let mut buf = vec![0u8; READ_BUFFER_SIZE].into_boxed_slice();
