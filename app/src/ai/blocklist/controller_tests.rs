@@ -3033,3 +3033,95 @@ mod remote_home_1288 {
         }
     }
 }
+
+/// #1362: a submit parked on its attachment read is discarded by Ctrl-C / stop and by pane
+/// close; the read landing afterwards (id-guarded by `seq`) sends nothing. Without the discard
+/// the landing read starts a request.
+mod parked_query_sends {
+    use super::*;
+    use crate::ai::agent::conversation::AIConversationId;
+
+    fn setup(
+        app: &mut App,
+    ) -> (
+        warpui::ViewHandle<crate::terminal::TerminalView>,
+        AIConversationId,
+    ) {
+        initialize_app_for_terminal_view(app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        let terminal = add_window_with_terminal(app, None);
+        let terminal_view_id = terminal.read(app, |view, _| view.id());
+        let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        (terminal, conversation_id)
+    }
+
+    #[test]
+    fn ctrl_c_then_read_lands_sends_nothing() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let seq = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hi",
+                );
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+                controller.land_attachment_read_for_test(seq, ctx);
+                assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+            });
+        });
+    }
+
+    #[test]
+    fn follow_up_supersede_keeps_earlier_parked_send() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "first",
+                );
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::FollowUpSubmitted {
+                        is_for_same_conversation: true,
+                    },
+                    ctx,
+                );
+                assert_eq!(controller.pending_query_send_count_for_test(), 1);
+            });
+        });
+    }
+
+    #[test]
+    fn pane_close_then_read_lands_sends_nothing() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let seq = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hi",
+                );
+                controller.set_suspended_for_close(true);
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+                controller.land_attachment_read_for_test(seq, ctx);
+                assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+            });
+        });
+    }
+}

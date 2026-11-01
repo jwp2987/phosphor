@@ -126,6 +126,22 @@ static FROZEN_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog
 );
 
 #[derive(Clone)]
+/// Count of key events dispatched so far (every keystroke that reached `dispatch_keystroke`).
+/// A pure ordering clock: code that must only act on a key delivered AFTER some other event
+/// (e.g. a card being painted) records [`key_dispatch_seq`] at that event and compares the
+/// seq of the key being handled against it, instead of measuring elapsed time.
+static KEY_DISPATCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The seq of the key currently being dispatched (or of the last one, outside a dispatch).
+pub fn key_dispatch_seq() -> u64 {
+    KEY_DISPATCH_SEQ.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Advances the key clock; called once per dispatched keystroke (also a test seam).
+pub fn bump_key_dispatch_seq() -> u64 {
+    KEY_DISPATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
 pub struct App(Rc<RefCell<AppContext>>);
 
 /// A weak handle to the app, used by the TUI runtime's draw/input loop to reach
@@ -2357,6 +2373,7 @@ impl AppContext {
         keystroke: &Keystroke,
         is_composing: bool,
     ) -> Result<bool> {
+        bump_key_dispatch_seq();
         let mut context_chain = self.contexts_from_responder_chain(window_id, responder_chain)?;
         let mut pending = false;
         for (i, ctx) in context_chain.iter_mut().enumerate().rev() {

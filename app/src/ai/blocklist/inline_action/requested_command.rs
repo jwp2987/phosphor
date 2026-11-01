@@ -115,10 +115,6 @@ const REQUESTED_COMMAND_READ_TO_END_LABEL: &str = "Read to the end to run";
 /// How long the full view must be on screen before an accept counts. A held or repeated Enter,
 /// or a double press, cannot reveal and approve a command in one motion.
 const FULL_VIEW_DWELL: Duration = Duration::from_millis(500);
-/// An Accept that arrives this soon after the card first showed it awaiting approval is ignored:
-/// an Enter the user was already typing when the card appeared must not approve a command they
-/// never read (#1195).
-const ACCEPT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 const LOADING_MESSAGE: &str = "Generating command...";
 const COMMAND_WAITING_FOR_USER_MESSAGE: &str = "OK if I run this command and read the output?";
@@ -248,11 +244,16 @@ pub(crate) fn enter_accepts_requested_command_context() -> ContextPredicate {
         & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
 }
 
-/// Whether an Accept is inside the debounce window after the card first showed it awaiting
-/// approval (#1195). `shown_for` is how long the card has been awaiting; `None` (never rendered
-/// that way) is not debounced.
-pub(crate) fn accept_within_debounce(shown_for: Option<Duration>) -> bool {
-    shown_for.is_some_and(|shown_for| shown_for < ACCEPT_DEBOUNCE)
+/// Whether a key Accept predates the card being painted awaiting approval (#1362, #1195).
+/// `painted_at` is the key clock (`warpui::key_dispatch_seq`) when the card was first rendered
+/// awaiting; `key_seq` is the clock value of the key being handled. A key whose seq is not
+/// strictly greater was delivered before the card was on screen -- the tail of an Enter the user
+/// was already typing -- so it is not a decision, however much wall-clock time has passed.
+/// `None` (never rendered that way, e.g. a programmatic accept) is not stale. Ordering only; no
+/// timer. (Focus is implied: the card's Accept binding needs the card focused, and since #1350
+/// the card never takes focus from the input by itself.)
+pub(crate) fn accept_key_predates_paint(painted_at: Option<u64>, key_seq: u64) -> bool {
+    painted_at.is_some_and(|painted_at| key_seq <= painted_at)
 }
 
 /// Where an accept came from. Only a key can be the tail of an Enter the user was already typing
@@ -263,9 +264,9 @@ pub(crate) enum AcceptSource {
     Pointer,
 }
 
-/// Whether an accept from `source` is ignored by the debounce: keys only.
-pub(crate) fn accept_is_debounced(source: AcceptSource, shown_for: Option<Duration>) -> bool {
-    source == AcceptSource::Key && accept_within_debounce(shown_for)
+/// Whether an accept from `source` is ignored as stale: keys only.
+pub(crate) fn accept_is_stale(source: AcceptSource, painted_at: Option<u64>, key_seq: u64) -> bool {
+    source == AcceptSource::Key && accept_key_predates_paint(painted_at, key_seq)
 }
 
 /// Whether an action in `status` can be accepted by the user: only one that is `Blocked` on
@@ -560,8 +561,9 @@ pub struct RequestedCommandView {
     /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
     /// full view is scrolled to its end -- see [`Self::review_state`].
     full_view_opened: Option<(String, Instant)>,
-    /// When the card was first rendered awaiting the user's Accept; `None` while it is not (#1195).
-    awaiting_accept_since: Cell<Option<Instant>>,
+    /// The key clock (`warpui::key_dispatch_seq`) when the card was first rendered awaiting the
+    /// user's Accept; `None` while it is not (#1195, #1362). Keys at or before it are stale.
+    awaiting_accept_painted_at: Cell<Option<u64>>,
     /// Whether this card is in edit mode, shared with the action model, which refuses user
     /// accepts that bypass the card while it is set (issue #847).
     edit_flag: Rc<Cell<bool>>,
@@ -923,7 +925,7 @@ impl RequestedCommandView {
             explanation: ExplanationState::Idle,
             explanation_request: None,
             full_view_opened: None,
-            awaiting_accept_since: Cell::new(None),
+            awaiting_accept_painted_at: Cell::new(None),
             edit_flag: Rc::new(Cell::new(false)),
             user_committed_edit: false,
             approval_preview: RefCell::new(ApprovalPreviewCache::default()),
@@ -1007,13 +1009,14 @@ impl RequestedCommandView {
         accepts_user_decision(status.as_ref())
     }
 
-    /// Records when the card first showed itself awaiting approval, and forgets it once it no
+    /// Records the key clock when the card first showed itself awaiting approval, and forgets it once it no
     /// longer is (#1195). Called from `render`, hence the `Cell`.
     fn note_awaiting_accept(&self, app: &AppContext) {
         if !self.awaits_user_accept(app) {
-            self.awaiting_accept_since.set(None);
-        } else if self.awaiting_accept_since.get().is_none() {
-            self.awaiting_accept_since.set(Some(Instant::now()));
+            self.awaiting_accept_painted_at.set(None);
+        } else if self.awaiting_accept_painted_at.get().is_none() {
+            self.awaiting_accept_painted_at
+                .set(Some(warpui::key_dispatch_seq()));
         }
     }
 
@@ -1191,15 +1194,16 @@ impl RequestedCommandView {
             );
             return false;
         }
-        // #1195: an Enter already in flight when the card appeared is not a decision.
-        if accept_is_debounced(
+        // #1195 / #1362: a key delivered before the card was painted awaiting approval is not a
+        // decision. Ordering on the key clock, not elapsed time. The hint to press Enter again
+        // is the card's existing behaviour (#1180); this just declines the stale key.
+        if accept_is_stale(
             source,
-            self.awaiting_accept_since
-                .get()
-                .map(|since| since.elapsed()),
+            self.awaiting_accept_painted_at.get(),
+            warpui::key_dispatch_seq(),
         ) {
             log::info!(
-                "Not accepting requested action {:?}: the card appeared a moment ago",
+                "Not accepting requested action {:?}: the key predates the card being shown",
                 self.action_id
             );
             return false;

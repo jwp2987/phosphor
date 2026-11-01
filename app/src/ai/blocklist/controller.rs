@@ -1327,6 +1327,9 @@ impl BlocklistAIController {
     pub fn set_suspended_for_close(&mut self, suspended: bool) {
         self.suspended_for_close = suspended;
         if suspended {
+            // Submits still waiting on an attachment read are dropped with the pane (#1362); a
+            // read that lands later finds no entry (ids are `seq`) and sends nothing.
+            self.pending_query_sends.clear();
             // A closed pane never resumes an agent (#848): a completion held for its turn end
             // would be dropped at the next decision anyway, and must not fire after an undo.
             self.deferred_monitored_completions.clear();
@@ -1927,13 +1930,65 @@ impl BlocklistAIController {
                 }
                 read_attachments(fallback)
             },
-            move |me, read, ctx| {
-                if let Some(entry) = me.pending_query_sends.iter_mut().find(|e| e.seq == seq) {
-                    entry.read = Some(read);
-                }
-                me.drain_ready_query_sends(ctx);
-            },
+            move |me, read, ctx| me.on_attachment_read_landed(seq, read, ctx),
         );
+    }
+
+    /// An attachment read finished. Id-guarded (#1362): if the submit was discarded meanwhile
+    /// (Ctrl-C, stop, pane close) there is no entry with this `seq` and the read is dropped.
+    fn on_attachment_read_landed(
+        &mut self,
+        seq: u64,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(entry) = self.pending_query_sends.iter_mut().find(|e| e.seq == seq) {
+            entry.read = Some(read);
+        }
+        self.drain_ready_query_sends(ctx);
+    }
+
+    /// Test seam: parks a user-query submit as if its attachment read were in flight; returns
+    /// its `seq`.
+    #[cfg(test)]
+    pub(crate) fn park_query_send_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        task_id: TaskId,
+        query: &str,
+    ) -> u64 {
+        let seq = self.next_query_send_seq;
+        self.next_query_send_seq += 1;
+        self.pending_query_sends.push_back(PendingQuerySend {
+            seq,
+            send: UserQuerySend {
+                input_query: InputQueryType::UserSubmittedQueryFromInput {
+                    query: query.to_owned(),
+                    static_query_type: None,
+                    running_command: None,
+                },
+                query: query.to_owned(),
+                inputs: vec![],
+                task_id,
+                conversation_id,
+                user_query_mode: UserQueryMode::Normal,
+                additional_attachments: HashMap::new(),
+                entrypoint_type: EntrypointType::UserInitiated,
+                is_queued_prompt: false,
+            },
+            read: None,
+        });
+        seq
+    }
+
+    #[cfg(test)]
+    pub(crate) fn land_attachment_read_for_test(&mut self, seq: u64, ctx: &mut ModelContext<Self>) {
+        self.on_attachment_read_landed(seq, vec![], ctx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_query_send_count_for_test(&self) -> usize {
+        self.pending_query_sends.len()
     }
 
     /// Tells the user which attached files could not be read; the request is still sent without
@@ -1959,6 +2014,21 @@ impl BlocklistAIController {
                 ctx,
             );
         });
+    }
+
+    /// Drops the queued submits of `conversation_id` (#1362); later ready submits of other
+    /// conversations are released if the dropped entry was blocking them.
+    fn discard_pending_query_sends(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let before = self.pending_query_sends.len();
+        self.pending_query_sends
+            .retain(|entry| entry.send.conversation_id != conversation_id);
+        if self.pending_query_sends.len() != before {
+            self.drain_ready_query_sends(ctx);
+        }
     }
 
     /// Sends, in submit order, every queued submit whose attachment read has finished.
@@ -4787,6 +4857,19 @@ impl BlocklistAIController {
         // concurrent background session in another conversation is left intact; idempotent and a
         // no-op when this conversation has no active background session.
         computer_use::end_background_session(&conversation_id.to_string());
+
+        // A stop / Ctrl-C / delete / revert discards submits of this conversation still waiting
+        // on their attachment read (#1362). A follow-up submit supersedes the running turn, not
+        // earlier queued submits (they stay ordered before it), and an optimistic completion is
+        // not a user action. A read that lands later finds no entry (`seq`-guarded) and sends
+        // nothing.
+        if !matches!(
+            reason,
+            CancellationReason::FollowUpSubmitted { .. }
+                | CancellationReason::OptimisticCLISubagentCompletion
+        ) {
+            self.discard_pending_query_sends(conversation_id, ctx);
+        }
 
         // Cancel any pending auto-resume for this conversation.
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
