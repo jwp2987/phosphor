@@ -695,6 +695,8 @@ struct Model {
     pin: Option<Destination>,
     delivered: Vec<Delivery>,
     discarded: Vec<(EntryId, DiscardReason)>,
+    /// Entries the host turns into a hold the first time they are delivered.
+    requeue: HashMap<EntryId, (GateKind, u64)>,
 }
 
 struct World {
@@ -732,15 +734,13 @@ impl Model {
             return;
         }
         let computed = destination_for(&item.kind, &w.facts);
-        let line_part = matches!(
-            item.kind,
-            EntryKind::Text(_)
-                | EntryKind::Control(_)
-                | EntryKind::Seq(_)
-                | EntryKind::Paste { .. }
-        );
+        // Pty bytes and editor keys know where they go; the line-run pin is for the rest.
+        let intrinsic = intrinsic_destination(&item.kind);
+        let line_part = item.kind.is_line_content();
         let mut dest = computed;
-        if !matches!(computed, Destination::Drop(_))
+        if let Some(own) = intrinsic {
+            dest = own;
+        } else if !matches!(computed, Destination::Drop(_))
             && (line_part || item.kind == EntryKind::Enter)
             && let Some(pin) = self.pin
             && pin_still_valid(pin, &w.facts)
@@ -759,6 +759,13 @@ impl Model {
             self.pin = None;
         } else if line_part {
             self.pin = Some(dest);
+        }
+        if let Some((kind, key)) = self.requeue.remove(&item.id) {
+            // The later stage took the entry into a hold: back to the front under the new gate.
+            let barrier = item.id;
+            self.pending.insert(0, item);
+            self.open_gate(kind, key, barrier);
+            return;
         }
         self.delivered.push(Delivery {
             id: item.id,
@@ -1399,3 +1406,5 @@ fn gate_kind_names_are_unique() {
     names.dedup();
     assert_eq!(names.len(), GateKind::ALL.len());
 }
+
+mod prop_model;
