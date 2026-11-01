@@ -21,8 +21,10 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
-//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`). The other gate kinds and the
-//! trace hops of the buffers that have not moved yet are exercised by the tests only.
+//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`) and the Enter verdict / Tab /
+//! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
+//! the `EnterVerdict` and `PasteReading` gates; see `input/enter_queue.rs`). The other gate kinds
+//! and the trace hops of the buffers that have not moved yet are exercised by the tests only.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
@@ -372,6 +374,32 @@ impl InputQueue {
             .any(|gate| gate.kind == kind && gate.key == key)
     }
 
+    /// How many entries wait behind the gate `(kind, key)`: from its barrier to the next gate's
+    /// (those further on are held by that gate). 0 when the gate is not open (additive, #1353
+    /// phase 3: the Enter that is released asks whether anything was typed behind it).
+    pub fn held_behind_gate(&self, kind: GateKind, key: u64) -> usize {
+        let Some(gate) = self
+            .gates
+            .iter()
+            .find(|gate| gate.kind == kind && gate.key == key)
+        else {
+            return 0;
+        };
+        let upper = self.next_barrier_after(gate.barrier);
+        self.entries
+            .iter()
+            .filter(|entry| entry.id >= gate.barrier && upper.is_none_or(|upper| entry.id < upper))
+            .count()
+    }
+
+    fn next_barrier_after(&self, barrier: EntryId) -> Option<EntryId> {
+        self.gates
+            .iter()
+            .map(|gate| gate.barrier)
+            .filter(|other| *other > barrier)
+            .min()
+    }
+
     /// Whether any gate of `kind` is open.
     pub fn has_gate_kind(&self, kind: GateKind) -> bool {
         self.gates.iter().any(|gate| gate.kind == kind)
@@ -554,6 +582,40 @@ impl InputQueue {
         }
         self.drain(host);
         true
+    }
+
+    /// Closes the gate `(kind, key)` and hands back, without delivering them, the entries that
+    /// waited behind it (in order); whatever else the gate was holding back is then drained as
+    /// usual. For a gate whose owner voids it and wants what was typed behind it back (additive,
+    /// #1353 phase 3). Empty when the gate is not open.
+    pub fn close_gate_taking<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+    ) -> Vec<InputEntry> {
+        let Some(gate) = self
+            .gates
+            .iter()
+            .copied()
+            .find(|gate| gate.kind == kind && gate.key == key)
+        else {
+            return Vec::new();
+        };
+        let upper = self.next_barrier_after(gate.barrier);
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(self.entries.len());
+        for entry in self.entries.drain(..) {
+            if entry.id >= gate.barrier && upper.is_none_or(|upper| entry.id < upper) {
+                taken.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        self.entries = kept;
+        self.close_gates(host, kind, key, "taken");
+        self.drain(host);
+        taken
     }
 
     /// Focus moved. The epoch is stamped on later arrivals; entries already queued are NOT

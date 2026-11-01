@@ -20061,3 +20061,64 @@ fn ctrl_c_stops_the_chunked_line_clear_write() {
         );
     })
 }
+
+/// #1353 phase 3: keys the user types while a paced CLI-agent submit is still being written wait
+/// behind the whole submit (text, then its Enter) instead of landing between its pieces. The
+/// submit's own writes do not wait behind its gate.
+#[test]
+fn keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.paste_queue.set_cli_submit_enabled_for_test(true);
+            view.begin_cli_submit_gate(ctx);
+            assert!(view.cli_submit_gate_open_for_test());
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            // The user types while the submit's Enter is still to come.
+            view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+        });
+        let before_enter: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            before_enter,
+            b"TEXT".to_vec(),
+            "the user's keys wait behind the submit"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            view.end_cli_submit_gate(ctx);
+            assert!(!view.cli_submit_gate_open_for_test());
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            written,
+            b"TEXT\rxy".to_vec(),
+            "the submit is whole, then the keys in typed order"
+        );
+    })
+}
+
+/// #1353 phase 3 kill switch: with the gate off the submit's pieces and the user's keys interleave
+/// as they did (nothing is held).
+#[test]
+fn cli_agent_submit_gate_off_holds_nothing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.paste_queue.set_cli_submit_enabled_for_test(false);
+            view.begin_cli_submit_gate(ctx);
+            assert!(!view.cli_submit_gate_open_for_test());
+        });
+    })
+}

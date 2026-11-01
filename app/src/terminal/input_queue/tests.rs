@@ -521,6 +521,92 @@ fn a_gate_event_raised_during_delivery_releases_the_queue_inside_the_same_drain(
 
 // ---- kill switch ----------------------------------------------------------------------------
 
+// ---- phase 3: the Enter gate's additive API ---------------------------------------------------
+
+#[test]
+fn held_behind_gate_counts_only_what_waits_behind_that_gate() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer(&mut h, text("a"));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 5));
+    assert_eq!(q.held_behind_gate(GateKind::EnterVerdict, 5), 0);
+    q.offer(&mut h, text("b"));
+    q.offer(&mut h, EntryKind::Enter);
+    assert_eq!(q.held_behind_gate(GateKind::EnterVerdict, 5), 2);
+    assert_eq!(
+        q.held_behind_gate(GateKind::EnterVerdict, 6),
+        0,
+        "a gate that is not open holds nothing"
+    );
+    assert_eq!(h.delivered_ids(), vec![1]);
+}
+
+#[test]
+fn close_gate_taking_returns_what_waited_without_delivering_it() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer(&mut h, text("a"));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 5));
+    q.offer(&mut h, text("b"));
+    q.offer(&mut h, EntryKind::Enter);
+    q.offer(&mut h, text("c"));
+    let taken = q.close_gate_taking(&mut h, GateKind::EnterVerdict, 5);
+    assert_eq!(
+        taken.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+        vec![2, 3, 4],
+        "in typed order"
+    );
+    assert_eq!(
+        h.delivered_ids(),
+        vec![1],
+        "what was taken is the caller's to place; nothing of it is delivered"
+    );
+    assert!(q.is_idle());
+    // A second close finds no gate and no entries.
+    assert!(
+        q.close_gate_taking(&mut h, GateKind::EnterVerdict, 5)
+            .is_empty()
+    );
+}
+
+#[test]
+fn close_gate_taking_leaves_what_a_later_gate_holds() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 1));
+    q.offer(&mut h, text("b"));
+    q.open_gate(&mut h, GateSpec::new(GateKind::PasteReading, 9));
+    q.offer(&mut h, text("c"));
+    let taken = q.close_gate_taking(&mut h, GateKind::EnterVerdict, 1);
+    assert_eq!(taken.len(), 1, "only the entry behind the Enter's own gate");
+    assert_eq!(q.queued_len(), 1, "the later gate still holds its entry");
+    assert!(h.delivered.is_empty());
+    q.on_gate_event(&mut h, GateKind::PasteReading, 9);
+    assert_eq!(h.delivered_ids(), vec![2]);
+}
+
+#[test]
+fn enter_gate_releases_keys_in_typed_order_on_its_event() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::EnterVerdict, 1).with_cap(None),
+    );
+    for key in ["a", "b"] {
+        q.offer(&mut h, text(key));
+    }
+    q.offer(&mut h, EntryKind::Enter);
+    q.offer(&mut h, text("c"));
+    assert!(h.delivered.is_empty());
+    assert!(q.on_gate_event(&mut h, GateKind::EnterVerdict, 1));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3, 4]);
+    assert!(
+        !q.on_gate_event(&mut h, GateKind::EnterVerdict, 1),
+        "a late duplicate event is a no-op"
+    );
+}
+
 #[test]
 fn kill_switch_parsing() {
     for area in Area::ALL {

@@ -171,6 +171,15 @@ fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
     }
 }
 
+/// Whether submitting with `strategy` spreads its writes over timers (a delayed Enter), so keys
+/// typed meanwhile could land between them (#1353 phase 3).
+fn strategy_is_paced(strategy: RichInputSubmitStrategy) -> bool {
+    matches!(
+        strategy,
+        RichInputSubmitStrategy::DelayedEnter | RichInputSubmitStrategy::BracketedPasteDelayedEnter
+    )
+}
+
 /// The "Use agent" shortcut the footer and the SSH Warpifying banner display. This is the one
 /// place it is defined: the key handler that switches to agent mode (#976) compares against it
 /// via [`is_use_agent_keystroke`], so what is displayed is exactly what works.
@@ -849,8 +858,15 @@ impl TerminalView {
         //
         // Only applied to known ASCII prefixes to avoid splitting multi-byte
         // UTF-8 characters.
-        if text_bytes.len() > 1 && CLI_AGENT_MODE_SWITCH_PREFIXES.contains(&text_bytes[0]) {
-            self.write_user_bytes_to_pty(vec![text_bytes[0]], ctx);
+        let has_prefix =
+            text_bytes.len() > 1 && CLI_AGENT_MODE_SWITCH_PREFIXES.contains(&text_bytes[0]);
+        // #1353 phase 3: the paced writes below are ONE submit. Keys the user types while it is
+        // still being written wait behind it instead of landing between its pieces.
+        if has_prefix || !images.is_empty() || strategy_is_paced(strategy) {
+            self.begin_cli_submit_gate(ctx);
+        }
+        if has_prefix {
+            self.write_cli_submit_bytes(vec![text_bytes[0]], ctx);
             let rest = text_bytes[1..].to_vec();
             ctx.spawn(
                 Timer::after(CLI_AGENT_PTY_WRITE_DELAY),
@@ -890,6 +906,9 @@ impl TerminalView {
         }
 
         let strategy = rich_input_submit_strategy(agent);
+        if strategy_is_paced(strategy) {
+            self.begin_cli_submit_gate(ctx);
+        }
         self.write_cli_agent_text_then_submit(text_bytes, strategy, ctx);
     }
 
@@ -911,6 +930,7 @@ impl TerminalView {
     ) {
         // Bail if the rich input session was closed before we got here.
         if !self.has_active_cli_agent_input_session(ctx) {
+            self.end_cli_submit_gate(ctx);
             return;
         }
 
@@ -952,7 +972,7 @@ impl TerminalView {
                                 }]),
                                 ..Default::default()
                             });
-                            me.write_user_bytes_to_pty(vec![0x16], ctx);
+                            me.write_cli_submit_bytes(vec![0x16], ctx);
                             true
                         })
                         .await;
@@ -969,6 +989,7 @@ impl TerminalView {
             },
             move |me, ok, ctx| {
                 if !ok || !me.has_active_cli_agent_input_session(ctx) {
+                    me.end_cli_submit_gate(ctx);
                     return;
                 }
                 me.write_cli_agent_text_then_submit(text_bytes, strategy, ctx);
@@ -1095,8 +1116,9 @@ impl TerminalView {
             RichInputSubmitStrategy::Inline => {
                 let mut bytes = text_bytes;
                 bytes.extend_from_slice(b"\r");
-                self.write_user_bytes_to_pty(bytes, ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
                 self.maybe_close_rich_input_after_submit(ctx);
+                self.end_cli_submit_gate(ctx);
             }
             RichInputSubmitStrategy::BracketedPaste => {
                 let mut bytes = Vec::with_capacity(
@@ -1105,17 +1127,19 @@ impl TerminalView {
                 bytes.extend_from_slice(BRACKETED_PASTE_START);
                 bytes.extend_from_slice(&text_bytes);
                 bytes.extend_from_slice(BRACKETED_PASTE_END);
-                self.write_user_bytes_to_pty(bytes, ctx);
-                self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
+                self.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                 self.maybe_close_rich_input_after_submit(ctx);
+                self.end_cli_submit_gate(ctx);
             }
             RichInputSubmitStrategy::DelayedEnter => {
-                self.write_user_bytes_to_pty(text_bytes, ctx);
+                self.write_cli_submit_bytes(text_bytes, ctx);
                 ctx.spawn(
                     Timer::after(CLI_AGENT_PTY_WRITE_DELAY),
                     move |me, _, ctx| {
-                        me.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                        me.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                         me.maybe_close_rich_input_after_submit(ctx);
+                        me.end_cli_submit_gate(ctx);
                     },
                 );
             }
@@ -1126,12 +1150,13 @@ impl TerminalView {
                 bytes.extend_from_slice(BRACKETED_PASTE_START);
                 bytes.extend_from_slice(&text_bytes);
                 bytes.extend_from_slice(BRACKETED_PASTE_END);
-                self.write_user_bytes_to_pty(bytes, ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
                 ctx.spawn(
                     Timer::after(CLI_AGENT_BRACKETED_PASTE_ENTER_DELAY),
                     move |me, _, ctx| {
-                        me.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                        me.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                         me.maybe_close_rich_input_after_submit(ctx);
+                        me.end_cli_submit_gate(ctx);
                     },
                 );
             }

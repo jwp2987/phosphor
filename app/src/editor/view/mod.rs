@@ -3089,6 +3089,29 @@ impl EditorView {
         if matches!(action, EditorAction::Paste | EditorAction::MiddleClickPaste) {
             return false;
         }
+        // #1353 phase 3: an Enter waits for its verdict (or for the route it submitted to to
+        // settle). What is typed behind it is held as plain Text / Enter entries, never put into
+        // the buffer, and the terminal input releases them in order once that Enter has run. Any
+        // other key acts at once: it edits the waiting line, which voids the Enter as before.
+        // (While a paste is read, the paste's gate is the one that matters and the keys behind
+        // it are the editor keys below.)
+        {
+            use crate::terminal::input_queue::GateKind;
+            let held = queue.borrow();
+            if held.has_gate_kind(GateKind::EnterVerdict)
+                && !held.has_gate_kind(GateKind::PasteReading)
+            {
+                drop(held);
+                let kind = match action {
+                    EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
+                    EditorAction::Enter => EntryKind::Enter,
+                    _ => return false,
+                };
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                queue.borrow_mut().offer(&mut host, kind);
+                return true;
+            }
+        }
         let Some(key) = paste_hold::held_form(action) else {
             return false;
         };

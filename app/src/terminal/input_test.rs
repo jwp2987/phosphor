@@ -13202,3 +13202,317 @@ fn test_at_picker_still_opens_in_agent_mode() {
         });
     });
 }
+
+// ---- #1353 phase 3: the Enter verdict / Tab / after-Enter ordering on the input queue -----------
+
+/// Records every key the input queue releases behind an Enter that waited, in release order.
+fn record_released_enter_entries(
+    app: &mut App,
+    input: &ViewHandle<Input>,
+) -> Rc<RefCell<Vec<AfterEnterInput>>> {
+    let released = Rc::new(RefCell::new(Vec::new()));
+    let sink = released.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(input, move |_, event: &super::Event, _| {
+            if let super::Event::ReplayEnterEntry(entry) = event {
+                sink.borrow_mut().push(entry.clone());
+            }
+        });
+    });
+    released
+}
+
+/// One key typed into the input editor, through the editor's own key handler (where the queue
+/// holds it).
+fn type_into_editor(app: &mut App, editor: &ViewHandle<EditorView>, key: HeldPasteKey) {
+    editor.update(app, |editor, ctx| editor.apply_held_paste_key(key, ctx));
+}
+
+/// Waits (event loop turns, bounded) until `done` holds.
+async fn wait_until(app: &App, mut done: impl FnMut(&App) -> bool) {
+    for _ in 0..1000 {
+        if done(app) {
+            return;
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+    }
+}
+
+/// #1353 phase 3, agent mode: an Enter that waits for the autodetect verdict holds the keys typed
+/// behind it, at 10 ms per key, as queue entries. They never enter the buffer (so the line the
+/// Enter submits is exactly the line), a 50 ms stall between the Enter and the verdict releases
+/// nothing, and once the Enter has run they are released in typed order, the Enter among them.
+#[test]
+fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_per_key() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
+        let released = record_released_enter_entries(&mut app, &input);
+
+        let line = "is it true";
+        input.update(&mut app, |input, ctx| {
+            input.set_enter_queue_for_test(true);
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    false, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(line, ctx);
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_some(), "the Enter must be waiting");
+            assert!(
+                input.enter_queue_holds_keys(ctx),
+                "the Enter's gate is open on the queue"
+            );
+        });
+
+        // Typed straight after the Enter at 10 ms per key, an Enter, then more.
+        for ch in "echo hi".chars() {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+            warpui::r#async::Timer::after(Duration::from_millis(10)).await;
+        }
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+        for ch in "ls".chars() {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+            warpui::r#async::Timer::after(Duration::from_millis(10)).await;
+        }
+        // The verdict stalls for 50 ms: nothing is released and nothing is in the buffer.
+        warpui::r#async::Timer::after(Duration::from_millis(50)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "what was typed after the Enter must not join the line it submits"
+            );
+        });
+
+        // The classifier spent its compute cap: the Enter goes ahead on the Enter-time rules.
+        input.update(&mut app, |input, ctx| {
+            if let Some(wait) = input.verdict_wait.as_mut() {
+                wait.compute = ComputeClock::with_spent_for_test(
+                    ENTER_VERDICT_BUDGET + std::time::Duration::from_millis(5),
+                );
+            }
+            input.wait_for_verdict_then_enter(line.to_string(), ctx);
+        });
+        let mut expected: Vec<AfterEnterInput> = "echo hi"
+            .chars()
+            .map(|ch| AfterEnterInput::Text(ch.to_string()))
+            .collect();
+        expected.push(AfterEnterInput::Enter);
+        expected.extend("ls".chars().map(|ch| AfterEnterInput::Text(ch.to_string())));
+        let sink = released.clone();
+        wait_until(&app, |_| sink.borrow().len() >= expected.len()).await;
+        assert_eq!(
+            *released.borrow(),
+            expected,
+            "released in typed order, after the Enter that waited"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(!input.enter_queue_holds_keys(ctx), "the gate is closed");
+        });
+    });
+}
+
+/// #1353 phase 3, terminal mode: Tab, then Enter before the completion lands, then typing. The
+/// Enter holds for the completion (gate open), the keys wait behind it as entries, the buffer is
+/// never touched by them, the completed line is submitted once, and the keys follow it in order.
+#[test]
+fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
+        let released = record_released_enter_entries(&mut app, &input);
+        input.update(&mut app, |input, ctx| {
+            input.set_enter_queue_for_test(true);
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            let wait = input.verdict_wait.as_ref().expect("the Enter must hold");
+            assert!(wait.holds_for_tab_completion());
+            assert!(input.enter_queue_holds_keys(ctx));
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        warpui::r#async::Timer::after(Duration::from_millis(10)).await;
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+        warpui::r#async::Timer::after(Duration::from_millis(10)).await;
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "git checkout fe",
+                "keys typed behind the Enter never enter the buffer"
+            );
+            assert_eq!(input.enter_gate_held_len_for_test(ctx), 3);
+            assert!(
+                input
+                    .verdict_wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.queued.is_empty()),
+                "the wait's own list is not used on the queue path"
+            );
+        });
+        assert!(
+            released.borrow().is_empty(),
+            "nothing is released while the Enter holds"
+        );
+
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert_eq!(executed.borrow().len(), 1);
+        assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
+        });
+        let sink = released.clone();
+        wait_until(&app, |_| sink.borrow().len() >= 3).await;
+        assert_eq!(
+            *released.borrow(),
+            vec![
+                AfterEnterInput::Text("l".to_string()),
+                AfterEnterInput::Text("s".to_string()),
+                AfterEnterInput::Enter,
+            ]
+        );
+        input.read(&app, |input, ctx| {
+            assert!(!input.enter_queue_holds_keys(ctx))
+        });
+    });
+}
+
+/// #1353 phase 3: Ctrl-C while an Enter holds voids it and drops the keys typed behind it with it
+/// (the tty flushes its input), as the buffer did; the gate is gone and a later key is not held.
+#[test]
+fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
+        let released = record_released_enter_entries(&mut app, &input);
+        input.update(&mut app, |input, ctx| {
+            input.set_enter_queue_for_test(true);
+            input.input_enter(ctx);
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.enter_gate_held_len_for_test(ctx), 1)
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::CtrlC));
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.enter_queue_holds_keys(ctx),
+                "the ^C closed the gate and dropped what was held"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            // The ^C clears the line; the edit voids the wait at the next turn of the event loop,
+            // so run that step here.
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.reconcile_verdict_wait(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none());
+            assert!(!input.enter_queue_holds_keys(ctx), "the gate is closed");
+        });
+        deliver_tab_result(&input, &mut app, generation, vec!["feature"], snapshot);
+        assert!(executed.borrow().is_empty(), "nothing is submitted");
+        assert!(
+            released.borrow().is_empty(),
+            "the keys behind a voided Enter are dropped with it"
+        );
+    });
+}
+
+/// #1353 phase 3: an edit of the waiting line itself voids the Enter, and the text that was
+/// already queued behind it is kept in the editor, not lost.
+#[test]
+fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
+        input.update(&mut app, |input, ctx| {
+            input.set_enter_queue_for_test(true);
+            input.input_enter(ctx);
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("s".to_string()));
+        // Backspace is not held: it edits the waiting line, which voids the Enter.
+        type_into_editor(
+            &mut app,
+            &editor,
+            HeldPasteKey::Action(EditorAction::Backspace),
+        );
+        input.update(&mut app, |input, ctx| {
+            input.reconcile_verdict_wait(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the edit voids the Enter");
+            assert!(!input.enter_queue_holds_keys(ctx));
+            assert!(
+                input.buffer_text(ctx).ends_with("ls"),
+                "what was typed behind the void Enter is kept, got {:?}",
+                input.buffer_text(ctx)
+            );
+        });
+        assert!(executed.borrow().is_empty());
+    });
+}
+
+/// #1353 phase 3 kill switch: with the Enter queue off the same keys take the legacy path (they
+/// land in the buffer and are recovered into the wait's own list), and no gate is ever opened.
+#[test]
+fn test_enter_queue_off_keeps_the_legacy_wait_list() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let (input, _executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
+        input.update(&mut app, |input, ctx| {
+            input.set_enter_queue_for_test(false);
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_some());
+            assert!(
+                !input.enter_queue_holds_keys(ctx),
+                "no gate on the legacy path"
+            );
+        });
+        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
+        input.update(&mut app, |input, ctx| {
+            assert!(input.reconcile_verdict_wait(ctx));
+        });
+        input.read(&app, |input, _| {
+            let wait = input.verdict_wait.as_ref().expect("still waiting");
+            assert_eq!(wait.queued, vec![AfterEnterInput::Text("l".to_string())]);
+        });
+    });
+}

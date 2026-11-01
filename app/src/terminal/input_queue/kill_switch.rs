@@ -4,7 +4,7 @@
 //! in the tree until the last phase. `PHOSPHOR_INPUT_QUEUE=legacy` (or `0`/`off`) turns every area
 //! off, and a comma list (`PHOSPHOR_INPUT_QUEUE=paste,ssh`) turns on only the listed areas. The
 //! per-area variable wins over the global one. The default is ON: an area ships on the new path
-//! once its tests pass. Only `Area::Paste` is read so far (phase 1).
+//! once its tests pass. `Area::Paste` (phase 1) and `Area::Enter` (phase 3) are read so far.
 
 use std::sync::OnceLock;
 
