@@ -35041,9 +35041,7 @@ fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String
         FinishReason::Error => "the agent run failed",
         FinishReason::Complete => "the agent run ended",
         FinishReason::Cancelled => "the run was cancelled",
-        FinishReason::CancelledDuringRequestedCommandExecution => {
-            "a command was cancelled"
-        }
+        FinishReason::CancelledDuringRequestedCommandExecution => "a command was cancelled",
     };
     format!("Your {what} was not sent: {why}. It was put back in the input.")
 }
