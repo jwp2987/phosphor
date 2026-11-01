@@ -16,7 +16,7 @@ use std::time::Duration;
 use warpui::r#async::Timer;
 use warpui::{SingletonEntity as _, ViewContext};
 
-use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
+use super::{Input, PasteSource, clipboard_content_with_escaped_paths};
 use crate::editor::DisplayMapStep;
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
@@ -57,9 +57,11 @@ impl Host for InputQueueHost<'_, '_> {
     }
 
     /// The input reaches no pty: on a queue shared with the terminal view, a drain driven from
-    /// here stops at the first pty entry and the view continues it (#1353 step 3).
+    /// here stops at the first pty entry and the view continues it (#1353 step 3). Text and
+    /// Enters typed behind an Enter that waited are routed by the view too (to the editor or the
+    /// pty, decided when they are delivered), so the drain stops at those as well.
     fn handles(&self, entry: &InputEntry, _dest: Destination) -> bool {
-        !is_pty_entry(&entry.kind)
+        !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Text(_) | EntryKind::Enter)
     }
 
     fn deliver(
@@ -131,15 +133,8 @@ impl Host for InputQueueHost<'_, '_> {
                         .update(self.ctx, |editor, ctx| editor.apply_queued_key(key, ctx));
                 }
             }
-            // Typed behind an Enter that waited (#1353 phase 3). The terminal view routes them
-            // (editor or pty) once this drain is over: they are events, not calls, so a delivery
-            // can never re-enter the queue that is delivering it.
-            EntryKind::Text(text) => self
-                .ctx
-                .emit(Event::ReplayEnterEntry(AfterEnterInput::Text(text.clone()))),
-            EntryKind::Enter => self
-                .ctx
-                .emit(Event::ReplayEnterEntry(AfterEnterInput::Enter)),
+            // Typed behind an Enter that waited (#1353 phase 3): the terminal view routes them
+            // (editor or pty) when its drain delivers them; this host never does (`handles`).
             // A ^C that met the Enter's gate: the keys behind it were discarded and the ^C acts
             // through its own path.
             EntryKind::Signal(_) => {}

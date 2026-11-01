@@ -13329,19 +13329,16 @@ fn gated_input_classifier_for_test(app: &mut App) -> async_channel::Sender<()> {
     open
 }
 
-/// Records every key the input queue releases behind an Enter that waited, in release order.
+/// Records every key the pane queue's drain routes behind an Enter that waited, in release order
+/// (the terminal view's delivery of the entries; no event is involved any more).
 fn record_released_enter_entries(
     app: &mut App,
     input: &ViewHandle<Input>,
 ) -> Rc<RefCell<Vec<AfterEnterInput>>> {
     let released = Rc::new(RefCell::new(Vec::new()));
     let sink = released.clone();
-    app.update(|ctx| {
-        ctx.subscribe_to_view(input, move |_, event: &super::Event, _| {
-            if let super::Event::ReplayEnterEntry(entry) = event {
-                sink.borrow_mut().push(entry.clone());
-            }
-        });
+    input.update(app, move |input, _| {
+        input.replayed_sink_for_test = Some(sink);
     });
     released
 }

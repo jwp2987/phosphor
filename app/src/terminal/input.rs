@@ -1252,10 +1252,6 @@ pub enum Event {
     /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
     /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
-    /// One key typed behind an Enter that waited, released by the input queue (#1353 phase 3)
-    /// after that Enter ran and the route it took settled. The terminal view routes it as if it
-    /// had just been typed, in the order the events arrive.
-    ReplayEnterEntry(AfterEnterInput),
 }
 
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
@@ -2185,6 +2181,14 @@ pub struct Input {
     next_verdict_wait_id: u64,
     /// The queue gate of the Enter that waits (or whose keys wait for its route), if one is open.
     enter_gate: Option<enter_queue::EnterGate>,
+    /// A gate this input needed to open while the queue was delivering the Enter that opened it
+    /// (an Enter replayed from the queue that waits again): the delivering host takes it right
+    /// after the call and returns it as the delivery's `OpensGate`, so the entries behind that
+    /// Enter wait for it (#1353, the replay hop is gone).
+    stashed_gate: Option<crate::terminal::input_queue::GateSpec>,
+    /// Where the view records the entries it routes after an Enter that waited, for tests.
+    #[cfg(test)]
+    replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
     /// coalescing stranded the backstop timers on a late wake).
     deferred_enter_activity: DeferredEnterActivity,
@@ -3969,6 +3973,9 @@ impl Input {
             verdict_wait: None,
             next_verdict_wait_id: 0,
             enter_gate: None,
+            stashed_gate: None,
+            #[cfg(test)]
+            replayed_sink_for_test: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_mark: None,
             running_deferred_enter: false,

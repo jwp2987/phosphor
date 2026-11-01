@@ -11825,8 +11825,10 @@ impl TerminalView {
         self.settle_enter_queue(ctx);
     }
 
-    /// Routes one key that was typed behind an Enter that waited, as if it had just been typed
-    /// (the legacy replay and the input queue's release both end here).
+    /// Routes one key that was typed behind an Enter that waited, as if it had just been typed.
+    /// Called by the pane queue's drain when it delivers the entry (`PtyQueueHost`), so the write
+    /// it makes passes through the paste stage (the queue is mid-drain) and the Enter it replays
+    /// that waits again hands its gate back to the drain ([`Input::take_stashed_gate`]).
     fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
         match input {
             AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
@@ -28643,9 +28645,6 @@ impl TerminalView {
             }
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(ctx);
-            }
-            InputEvent::ReplayEnterEntry(entry) => {
-                self.route_after_enter_input(entry, ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {

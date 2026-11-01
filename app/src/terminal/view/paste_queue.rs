@@ -40,7 +40,7 @@ use std::time::Duration;
 use warpui::r#async::Timer;
 use warpui::{SingletonEntity as _, ViewContext};
 
-use super::{Event, TerminalView};
+use super::{AfterEnterInput, Event, TerminalView};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, is_pty_entry, trace,
@@ -180,15 +180,50 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         }
     }
 
+    /// Delivers text or an Enter typed behind an Enter that waited: to the editor or the pty, from
+    /// the facts of this moment. An Enter that waits again returns its gate as `OpensGate`; a key
+    /// the hand-off holds goes back under its gate (`Requeue`).
+    fn deliver_replayed_entry(&mut self, entry: &InputEntry) -> DeliverOutcome {
+        let input = match &entry.kind {
+            EntryKind::Text(text) => AfterEnterInput::Text(text.clone()),
+            _ => AfterEnterInput::Enter,
+        };
+        self.view
+            .input
+            .as_ref(self.ctx)
+            .note_replayed_after_enter(&input);
+        self.view.route_after_enter_input(&input, self.ctx);
+        if let Some(request) = self.view.paste_queue.requeue_request.take() {
+            self.view.paste_queue.requeue_replacement = Some(EntryKind::PtyBytes {
+                bytes: request.bytes,
+                takes_over_agent_control: request.takes_over_agent_control,
+            });
+            return DeliverOutcome::Requeue(request.spec);
+        }
+        match self
+            .view
+            .input
+            .update(self.ctx, |input, _| input.take_stashed_gate())
+        {
+            Some(spec) => DeliverOutcome::OpensGate(spec),
+            None => DeliverOutcome::Delivered,
+        }
+    }
+
     fn deliver_entry(
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
         follow: &mut FollowUps,
     ) -> DeliverOutcome {
+        // Text and Enters typed behind an Enter that waited are routed here, by the view that
+        // reaches both destinations and decides where each goes when it is delivered (#1353).
+        if matches!(entry.kind, EntryKind::Text(_) | EntryKind::Enter) {
+            return self.deliver_replayed_entry(entry);
+        }
         // The pane's queue is shared with the input editor (#1353 step 3): this host reaches both
         // destinations, so an entry that belongs to the editor side (an editor key, an editor
-        // paste, text typed behind an Enter) is delivered through the input's own host.
+        // paste) is delivered through the input's own host.
         if !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Signal(_)) {
             return self.view.deliver_editor_entry(entry, follow, self.ctx);
         }
@@ -288,10 +323,13 @@ impl Host for PtyQueueHost<'_, '_> {
         dest: Destination,
         follow: &mut FollowUps,
     ) -> DeliverOutcome {
-        // Only a pty entry can write a key that the hand-off holds; an editor entry is delivered
-        // by the input's own host.
-        self.view.paste_queue.delivering =
-            is_pty_entry(&entry.kind) || matches!(entry.kind, EntryKind::Signal(_));
+        // Only a pty entry, a signal or text routed here can write a key that the hand-off holds;
+        // an editor entry is delivered by the input's own host.
+        self.view.paste_queue.delivering = is_pty_entry(&entry.kind)
+            || matches!(
+                entry.kind,
+                EntryKind::Signal(_) | EntryKind::Text(_) | EntryKind::Enter
+            );
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
         outcome
