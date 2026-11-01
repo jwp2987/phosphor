@@ -2360,6 +2360,9 @@ pub struct TerminalViewRenderContext {
     /// typed during an ssh connect: a key that neither the terminal nor the input's editor takes
     /// in a focus gap (#1332) is handed to the terminal view, which holds it.
     pub input_view_id: EntityId,
+    /// The input's editor view: when it holds focus it takes (and queues) the key itself, so the
+    /// element must not also take it (#1339).
+    pub input_editor_view_id: EntityId,
     pub ssh_key_hold: Rc<EditorKeyHold>,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
@@ -28803,6 +28806,7 @@ impl TerminalView {
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),
             input_view_id: self.input.id(),
+            input_editor_view_id: self.input.as_ref(ctx).editor().id(),
             ssh_key_hold: self.ssh_editor_key_hold.clone(),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),

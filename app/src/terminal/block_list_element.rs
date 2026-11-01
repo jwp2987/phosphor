@@ -725,8 +725,18 @@ fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bo
 /// that gap was dropped by both, so the held line lost a character. While the hold is active
 /// and the focus is on the input (or inside it), the terminal view takes it and holds it, in
 /// order, with the rest.
-fn terminal_takes_unclaimed_held_key(hold_active: bool, live_input_focus: Option<bool>) -> bool {
-    hold_active && live_input_focus == Some(true)
+///
+/// #1339: "unclaimed" is decided here, not assumed from the dispatch order. The editor and this
+/// element both see the same event, and focus inside the editor is also focus "inside the input":
+/// without the editor check an editor that took (and queued) the key was joined by the terminal
+/// holding it too, and every key typed in that window reached the remote shell twice. The editor
+/// takes the key whenever it holds focus, so the terminal takes it only when it does not.
+fn terminal_takes_unclaimed_held_key(
+    hold_active: bool,
+    live_input_focus: Option<bool>,
+    live_editor_focus: Option<bool>,
+) -> bool {
+    hold_active && live_input_focus == Some(true) && live_editor_focus != Some(true)
 }
 
 /// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
@@ -773,6 +783,8 @@ pub struct BlockListElement {
     ssh_choice_card_view_id: Option<EntityId>,
     /// See `TerminalViewRenderContext::input_view_id` (#1332).
     input_view_id: EntityId,
+    /// See `TerminalViewRenderContext::input_editor_view_id` (#1339).
+    input_editor_view_id: EntityId,
     /// See `TerminalViewRenderContext::ssh_key_hold` (#1332).
     ssh_key_hold: Rc<crate::editor::EditorKeyHold>,
     is_terminal_selecting: bool,
@@ -1147,6 +1159,7 @@ impl BlockListElement {
             settled_ai_focus_view_id: terminal_view_render_context.settled_ai_focus_view_id,
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
             input_view_id: terminal_view_render_context.input_view_id,
+            input_editor_view_id: terminal_view_render_context.input_editor_view_id,
             ssh_key_hold: terminal_view_render_context.ssh_key_hold,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
@@ -1555,6 +1568,7 @@ impl BlockListElement {
         terminal_takes_unclaimed_held_key(
             self.ssh_key_hold.is_active(),
             ctx.live_focus_of(self.input_view_id),
+            ctx.live_focus_of(self.input_editor_view_id),
         )
     }
 
@@ -5642,12 +5656,40 @@ mod tests {
     /// first prompt reached neither the editor nor the terminal and was lost from the held line.
     #[test]
     fn terminal_takes_a_held_ssh_key_the_editor_left_unclaimed() {
-        assert!(super::terminal_takes_unclaimed_held_key(true, Some(true)));
+        assert!(super::terminal_takes_unclaimed_held_key(
+            true,
+            Some(true),
+            Some(false)
+        ));
         // No hold, no change: such a key is dropped as before.
-        assert!(!super::terminal_takes_unclaimed_held_key(false, Some(true)));
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            false,
+            Some(true),
+            Some(false)
+        ));
         // Focus elsewhere (the find bar, another pane) keeps its keys.
-        assert!(!super::terminal_takes_unclaimed_held_key(true, Some(false)));
-        assert!(!super::terminal_takes_unclaimed_held_key(true, None));
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            true,
+            Some(false),
+            Some(false)
+        ));
+        assert!(!super::terminal_takes_unclaimed_held_key(true, None, None));
+    }
+
+    /// #1339: with focus in the input's editor the editor takes and queues the key; the terminal
+    /// taking it too held every key typed in that window twice (`/ttmmpp//zzq-mac.log`).
+    #[test]
+    fn terminal_leaves_a_held_ssh_key_to_the_focused_editor() {
+        // The same key offered to both: exactly one of them takes it.
+        for editor_focus in [Some(true), Some(false)] {
+            let editor_takes = editor_focus.unwrap_or(false);
+            let terminal_takes =
+                super::terminal_takes_unclaimed_held_key(true, Some(true), editor_focus);
+            assert_ne!(
+                editor_takes, terminal_takes,
+                "editor focus {editor_focus:?}"
+            );
+        }
     }
 
     #[test]
