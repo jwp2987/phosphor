@@ -502,8 +502,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_DETECTION_CAP,
-    YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
+    InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_DETECTION_CAP, YoungSubmit,
+    forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -12232,6 +12232,7 @@ impl TerminalView {
                             handoff.queued_line_bytes_stamp(),
                         )
                     });
+                    hold_start.deferred = handoff.take_deferred_key_started();
                 }
                 route
             } else {
@@ -12270,6 +12271,15 @@ impl TerminalView {
                 self.hold_prompt_keys_in_queue(
                     prompt_hold_id,
                     prompt_hold_expiry,
+                    bytes.into_owned(),
+                    takes_over_agent_control,
+                    ctx,
+                );
+            } else if let Some(gate_id) = hold_start.deferred {
+                // A key typed behind an Enter deferred for the shell's report that the queue did
+                // not take (it was idle or mid-delivery): it goes behind the Enter's gate.
+                self.hold_deferred_key_in_queue(
+                    gate_id,
                     bytes.into_owned(),
                     takes_over_agent_control,
                     ctx,
@@ -12647,11 +12657,6 @@ impl TerminalView {
             ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
                 let young = disposition == ReportDisposition::InsertThenSubmitYoung;
                 self.insert_typeahead_from_handoff(ctx);
-                // #1016: keys that reached the editor after the Enter are not part of the line
-                // it submits; they follow it, ahead of the keys already held.
-                self.input.update(ctx, |input, ctx| {
-                    input.hold_text_typed_after_deferred_enter(ctx)
-                });
                 // #933: text the hand-off inserted was never classified (system edits do not
                 // request detection), so a line typed right after a command that reads as
                 // English is classified now, and its Enter waits for the verdict (bounded).
@@ -12741,21 +12746,23 @@ impl TerminalView {
         ctx.spawn(
             Timer::after(TYPEAHEAD_REPORT_PATIENCE),
             move |me, _, ctx| {
-                let held = me
+                let gate = me
                     .model
                     .lock()
                     .typeahead_handoff_mut()
                     .give_up_report_deferral(id);
-                let Some(held) = held else {
+                let Some(gate) = gate else {
                     return;
                 };
+                // The keys typed behind the Enter come back to the editor as text.
+                let held = me.take_deferred_gate_bytes(gate, ctx);
                 log::warn!(
                     "Enter not run: the shell did not report its line within {} ms; the text \
                      stays in the input",
                     TYPEAHEAD_REPORT_PATIENCE.as_millis()
                 );
                 me.input.update(ctx, |input, ctx| {
-                    input.clear_handoff_enter_mark();
+                    input.clear_handoff_enter_hold();
                     let text = text_for_editor(&held);
                     if !text.is_empty() {
                         input.system_insert(&text, ctx);
@@ -12808,14 +12815,21 @@ impl TerminalView {
     /// behind it.
     fn run_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) {
         if !self.submit_deferred_enter(young, ctx) {
-            let release = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .release_after_unsubmitted_enter();
-            if let Some(release) = release {
-                self.release_held_keys(release, ctx);
-            }
+            self.release_keys_held_behind_unsubmitted_enter(ctx);
+        }
+    }
+
+    /// The deferred Enter ran or was kept without writing a command: the keys held behind it are
+    /// released (see [`Self::release_held_keys`]).
+    fn release_keys_held_behind_unsubmitted_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let gate = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_after_unsubmitted_enter();
+        if let Some(gate) = gate {
+            let held = self.take_deferred_gate_bytes(gate, ctx);
+            self.release_held_keys(held, ctx);
         }
     }
 
@@ -13006,15 +13020,8 @@ impl TerminalView {
     /// Enter.
     fn keep_deferred_enter_text(&mut self, ctx: &mut ViewContext<Self>) {
         self.input
-            .update(ctx, |input, _| input.clear_handoff_enter_mark());
-        let release = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .release_after_unsubmitted_enter();
-        if let Some(release) = release {
-            self.release_held_keys(release, ctx);
-        }
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        self.release_keys_held_behind_unsubmitted_enter(ctx);
     }
 
     /// Runs the Enter the typeahead hand-off deferred while a report was outstanding. It runs
@@ -13028,8 +13035,6 @@ impl TerminalView {
     /// shell command.
     fn submit_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) -> bool {
         self.input.update(ctx, |input, ctx| {
-            // #1016: whatever reached the editor since the report went in follows the Enter.
-            input.hold_text_typed_after_deferred_enter(ctx);
             let submitted = if young
                 && (input.buffer_is_slash_command(ctx)
                     || !input_classifier::util::has_no_prose_evidence(&input.buffer_text(ctx)))
@@ -13038,24 +13043,26 @@ impl TerminalView {
             } else {
                 input.input_enter_as_shell_command(ctx)
             };
-            input.clear_handoff_enter_mark();
+            input.clear_handoff_enter_hold();
             submitted
         })
     }
 
-    /// Releases the keys held behind a deferred Enter whose submit wrote no command.
-    fn release_held_keys(&mut self, release: HeldKeysRelease, ctx: &mut ViewContext<Self>) {
-        match release {
-            HeldKeysRelease::ToPty(held) => self.write_to_pty(held, ctx),
-            HeldKeysRelease::ToEditor(held) => {
-                let text = text_for_editor(&held);
-                self.input.update(ctx, |input, ctx| {
-                    if forces_shell_submit(&text) {
-                        input.system_insert(&text, ctx);
-                        input.submit_next_enter_as_shell_command();
-                    }
-                });
-            }
+    /// Releases the keys held behind a deferred Enter whose submit wrote no command: shell lines
+    /// (an Enter among them) go to the pty as typed, never into the editor, where the next Enter
+    /// would submit them as one multi-line buffer -- to the agent, if natural-language detection
+    /// took it for a query (#826 N1); one unfinished line goes back into the editor.
+    fn release_held_keys(&mut self, held: Vec<u8>, ctx: &mut ViewContext<Self>) {
+        if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            self.write_to_pty(held, ctx);
+        } else {
+            let text = text_for_editor(&held);
+            self.input.update(ctx, |input, ctx| {
+                if forces_shell_submit(&text) {
+                    input.system_insert(&text, ctx);
+                    input.submit_next_enter_as_shell_command();
+                }
+            });
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
@@ -28637,6 +28644,8 @@ impl TerminalView {
                 self.register_cli_agent_listener_without_session_start_event(*agent, ctx);
             }
             InputEvent::TypeaheadHandoffEnterDeferred => {
+                // Keys typed from now on, in the editor or here, queue behind the Enter (#1016).
+                self.open_deferred_enter_gate(ctx);
                 self.arm_uncovered_deferral_timer(ctx);
                 self.arm_report_deferral_timer(ctx);
                 if ctx.is_self_or_child_focused() {
@@ -36182,6 +36191,8 @@ struct HandoffHoldStart {
         Duration,
         crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
     )>,
+    /// A key was held behind an Enter deferred for the shell's report: the gate's id.
+    deferred: Option<u64>,
     /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap and the mid-line
     /// stamp to share.
     prompt: Option<(

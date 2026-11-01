@@ -41,6 +41,7 @@ use warpui::r#async::Timer;
 use warpui::{SingletonEntity as _, ViewContext};
 
 use super::{AfterEnterInput, Event, TerminalView};
+use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, is_pty_entry, trace,
@@ -155,6 +156,15 @@ fn signal_bytes(kind: SignalKind) -> &'static [u8] {
         SignalKind::Suspend => &[0x1a],
         SignalKind::Quit => &[0x1c],
     }
+}
+
+/// Net for the gate that holds the keys typed behind a deferred Enter: the patience timers and the
+/// Enter's own events end the hold long before this; logged when it fires.
+const HANDOFF_GATE_LEAK_NET: Duration = Duration::from_secs(60);
+
+/// The spec of the `HandoffReport` gate named `id`.
+fn handoff_report_spec(id: u64) -> GateSpec {
+    GateSpec::new(GateKind::HandoffReport, id).with_cap(Some(HANDOFF_GATE_LEAK_NET))
 }
 
 const PASTE_FAILED_TOAST: &str =
@@ -333,6 +343,13 @@ impl Host for PtyQueueHost<'_, '_> {
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
         outcome
+    }
+
+    /// A ^D (^Z, ^\) typed behind an Enter deferred for the shell's report is typed after the keys
+    /// held there and goes out after them, in typed order: it waits behind the gate like a key
+    /// (^C cancels the deferred Enter first, `cancel_deferred_enter`).
+    fn signal_must_wait(&self, gate: GateKind) -> bool {
+        gate == GateKind::HandoffReport
     }
 
     fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
@@ -734,16 +751,17 @@ impl TerminalView {
             // Nothing delivers from this queue and yet it is borrowed: the key cannot be put
             // behind its gate. It is written as typed, counted by the hand-off, never lost.
             log::warn!("input queue: a held key found the queue busy; writing it as typed");
-            let write = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .route_released_chunk(&bytes);
-            if write {
-                ctx.emit(Event::WriteHandoffUserBytesToPty {
-                    bytes: Cow::Owned(bytes),
-                });
+            {
+                let mut model = self.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                if !handoff.route_released_chunk(&bytes) {
+                    // Absorbed by a deferred Enter: there is no gate to put it behind either.
+                    handoff.take_deferred_key_started();
+                }
             }
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
@@ -881,6 +899,9 @@ impl TerminalView {
         }
     }
 
+    /// Applies one recorded end to the gate named `hold_id`: a young Enter's `PromptSeen` gate, or
+    /// the `HandoffReport` gate of the keys held behind a deferred Enter (one id counter names
+    /// both).
     fn apply_young_hold_end(
         &mut self,
         hold_id: u64,
@@ -888,7 +909,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let queue = self.paste_queue.queue.clone();
-        let entries = {
+        let (kind, entries) = {
             let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: keep the end for the next attempt (the gate's give-up finds it too).
                 self.model
@@ -898,8 +919,24 @@ impl TerminalView {
                 log::warn!("input queue: young hold {hold_id} end deferred, the queue was busy");
                 return;
             };
-            if !guard.has_gate(GateKind::PromptSeen, hold_id) {
-                // Never queued (the hold's keys stayed in the hand-off's buffer) or already taken.
+            if let YoungHoldEnd::SubmitOnReport { deferred_gate } = end {
+                // The report ran the held Enter in the editor: the hold's gate becomes the deferred
+                // Enter's gate in place (the Enter's first byte leaves it), so the keys behind it
+                // are never without a gate. A hold whose keys never reached the queue just opens
+                // the deferred Enter's gate.
+                let mut host = PtyQueueHost::new(self, ctx);
+                let spec = handoff_report_spec(deferred_gate);
+                if !guard.retag_gate(&mut host, GateKind::PromptSeen, hold_id, spec, true) {
+                    guard.open_gate(&mut host, spec);
+                }
+                return;
+            }
+            let kind = if guard.has_gate(GateKind::PromptSeen, hold_id) {
+                GateKind::PromptSeen
+            } else if guard.has_gate(GateKind::HandoffReport, hold_id) {
+                GateKind::HandoffReport
+            } else {
+                // Never queued or already taken.
                 if end == YoungHoldEnd::FollowCommand {
                     drop(guard);
                     self.model
@@ -908,11 +945,15 @@ impl TerminalView {
                         .count_followed_young_hold(hold_id, &[]);
                 }
                 return;
-            }
+            };
             let mut host = PtyQueueHost::new(self, ctx);
-            guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
+            (kind, guard.close_gate_taking(&mut host, kind, hold_id))
         };
-        let chunks = self.bytes_of_taken_entries(entries, ctx);
+        let chunks = if kind == GateKind::HandoffReport && end == YoungHoldEnd::FollowCommand {
+            self.pty_bytes_of_taken_entries(entries, ctx)
+        } else {
+            self.bytes_of_taken_entries(entries, ctx)
+        };
         let held_bytes: usize = chunks.iter().map(Vec::len).sum();
         match end {
             YoungHoldEnd::Dropped => {
@@ -934,20 +975,111 @@ impl TerminalView {
                 }
                 ctx.emit(Event::RetryTypeaheadHandoffRequest);
             }
-            YoungHoldEnd::SubmitOnReport => {
-                // The Enter is run in the editor; the keys typed after it are held behind it.
-                let mut bytes = chunks.concat();
-                if !bytes.is_empty() {
-                    let rest = bytes.split_off(1);
-                    if !rest.is_empty() {
-                        self.model
-                            .lock()
-                            .typeahead_handoff_mut()
-                            .prepend_held_keys(&rest);
+            // Handled above, in place.
+            YoungHoldEnd::SubmitOnReport { .. } => {}
+        }
+    }
+
+    /// Opens the `HandoffReport` gate for the Enter the hand-off just deferred (#1016): every key
+    /// typed from now on, in the editor or on the terminal, is an entry behind it, so arrival
+    /// order is the order and nothing has to be recovered from the editor's buffer. A gate that is
+    /// open already (the report turned a young hold's gate into this one) is left alone.
+    pub(super) fn open_deferred_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(id) = self.model.lock().typeahead_handoff().deferred_gate() else {
+            return;
+        };
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            log::warn!("input queue: the deferred Enter's gate was not opened, the queue was busy");
+            return;
+        };
+        if guard.has_gate(GateKind::HandoffReport, id) {
+            return;
+        }
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.open_gate(&mut host, handoff_report_spec(id));
+    }
+
+    /// A key reached the hand-off while an Enter is deferred and was not queued behind its gate:
+    /// it goes behind the gate now (the gate is opened with it if it is not open).
+    pub(super) fn hold_deferred_key_in_queue(
+        &mut self,
+        gate_id: u64,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.hold_keys_behind_gate(
+            handoff_report_spec(gate_id),
+            bytes,
+            takes_over_agent_control,
+            ctx,
+        );
+    }
+
+    /// Closes the `HandoffReport` gate `gate_id` and returns, as bytes in typed order, the keys
+    /// held behind it (the deferred Enter ran and wrote no command, or its report never came).
+    /// Nothing is delivered: the caller sends the bytes to the pty or the editor.
+    pub(super) fn take_deferred_gate_bytes(
+        &mut self,
+        gate_id: u64,
+        ctx: &mut ViewContext<Self>,
+    ) -> Vec<u8> {
+        let queue = self.paste_queue.queue.clone();
+        let entries = {
+            let Some(mut guard) = queue.try_lock() else {
+                log::warn!("input queue: the deferred Enter's keys could not be taken, queue busy");
+                return Vec::new();
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            let mut entries = Vec::new();
+            // A key held mid-delivery may have opened a second gate under the same id.
+            while guard.has_gate(GateKind::HandoffReport, gate_id) {
+                entries.extend(guard.close_gate_taking(
+                    &mut host,
+                    GateKind::HandoffReport,
+                    gate_id,
+                ));
+            }
+            entries
+        };
+        self.pty_bytes_of_taken_entries(entries, ctx).concat()
+    }
+
+    /// As [`Self::bytes_of_taken_entries`], for keys that go to the pty as typed or come back as
+    /// editor text: an editor key that is plain typing (text, Enter, Backspace) joins the bytes in
+    /// typed order; one that is not (an arrow, a selection) acts on the editor.
+    fn pty_bytes_of_taken_entries(
+        &mut self,
+        entries: Vec<InputEntry>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Vec<Vec<u8>> {
+        let mut chunks = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match entry.kind {
+                EntryKind::Text(text) => chunks.push(text.into_bytes()),
+                EntryKind::Enter => chunks.push(b"\r".to_vec()),
+                EntryKind::Signal(kind) => chunks.push(signal_bytes(kind).to_vec()),
+                EntryKind::EditorKey(payload) => match payload.take() {
+                    Some(HeldPasteKey::Text(text)) => chunks.push(text.into_bytes()),
+                    Some(HeldPasteKey::Action(EditorAction::Enter)) => chunks.push(b"\r".to_vec()),
+                    Some(HeldPasteKey::Action(EditorAction::Backspace)) => chunks.push(vec![0x7f]),
+                    Some(key) => {
+                        self.input.update(ctx, |input, ctx| {
+                            input
+                                .editor()
+                                .update(ctx, |editor, ctx| editor.apply_queued_key(key, ctx))
+                        });
                     }
+                    None => {}
+                },
+                kind => {
+                    let rest = InputEntry { kind, ..entry };
+                    chunks.extend(self.bytes_of_taken_entries(vec![rest], ctx));
                 }
             }
         }
+        chunks
     }
 
     /// The give-up cap of the gate of young hold `hold_id` fired (no prompt came within the
@@ -1023,7 +1155,7 @@ impl TerminalView {
             writes.iter().map(Vec::len).sum::<usize>()
         );
         self.input
-            .update(ctx, |input, _| input.clear_handoff_enter_mark());
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
         trace::release(
             trace::legacy::HANDOFF,
             writes.len(),
@@ -1101,6 +1233,7 @@ impl TerminalView {
                 chunks.len()
             );
         }
+        let mut absorbed: Vec<(u64, Vec<u8>)> = Vec::new();
         let writes = {
             let mut model = self.model.lock();
             let handoff = model.typeahead_handoff_mut();
@@ -1111,11 +1244,17 @@ impl TerminalView {
             for chunk in chunks {
                 if handoff.route_released_chunk(&chunk) {
                     writes.push(chunk);
+                } else if let Some(gate) = handoff.take_deferred_key_started() {
+                    // An Enter was deferred meanwhile: the key is typed behind it.
+                    absorbed.push((gate, chunk));
                 }
             }
             handoff.finish_queued_prompt_hold(hold_id);
             writes
         };
+        for (gate, chunk) in absorbed {
+            self.hold_deferred_key_in_queue(gate, chunk, true, ctx);
+        }
         trace::release(trace::legacy::HANDOFF, writes.len(), held_bytes, "pty");
         for bytes in writes {
             ctx.emit(Event::WriteHandoffUserBytesToPty {

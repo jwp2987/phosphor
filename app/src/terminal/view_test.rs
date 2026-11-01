@@ -14665,11 +14665,12 @@ fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
         terminal.read(&app, |view, _| {
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"\r\x7f".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // The hand-off holds no bytes: the two keys are entries behind the Enter's gate.
+            let queue = view.paste_queue.queue.borrow();
+            assert!(queue.has_gate_kind(crate::terminal::input_queue::GateKind::HandoffReport));
+            assert_eq!(queue.queued_len(), 2);
         });
     })
 }
@@ -16554,11 +16555,10 @@ fn typeahead_handoff_never_submits_a_fragment_without_the_report() {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ho 47");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"\r".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // The Enter typed behind the deferred one waits as an entry behind its gate.
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 1);
         });
     })
 }
@@ -16576,13 +16576,9 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
 
         terminal.update(&mut app, |view, ctx| {
             hold_after_deferred_enter(view);
-            assert_eq!(
-                view.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .on_user_bytes(b"echo 1\recho 2\r"),
-                UserBytesRoute::Held
-            );
+            // The shell lines are typed behind the deferred Enter: entries behind its gate.
+            view.write_user_bytes_to_pty(b"echo 1\recho 2\r".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
             view.handle_typeahead_report_with_handoff(ctx);
 
             assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
@@ -16593,6 +16589,104 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
         });
 
         assert_eq!(*pty_writes.borrow(), vec![b"echo 1\recho 2\r".to_vec()]);
+    })
+}
+
+/// The report arrived and the submit wrote no command, but only an unfinished line was typed
+/// behind the Enter: it goes back into the editor as text (a shell line would have gone to the
+/// pty), and nothing is written.
+#[test]
+fn typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_submit_runs_nothing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.write_user_bytes_to_pty(b"ls -l".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            view.handle_typeahead_report_with_handoff(ctx);
+
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
+        assert!(pty_writes.borrow().is_empty());
+    })
+}
+
+/// The deferred Enter's command is written while keys wait behind its gate: they follow it as
+/// typeahead, in typed order -- an editor key and a terminal key alike -- counted as the lines
+/// they are, and the gate is gone.
+#[test]
+fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_keys_with_it() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.open_deferred_enter_gate(ctx);
+            // An editor key, then terminal keys: arrival order is the order.
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(crate::editor::HeldPasteKey::Text("l".into()), ctx)
+                })
+            });
+            view.write_user_bytes_to_pty(b"s\r".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"p".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 3);
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_report();
+                handoff.on_command_written();
+            }
+            view.drain_young_hold_ends(ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: true,
+                    enters_written: 2,
+                    precmds_seen: 0,
+                }
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"ls\rp".to_vec()]);
+    })
+}
+
+/// Ctrl-C cancels a deferred Enter and voids the keys behind its gate with it.
+#[test]
+fn typeahead_handoff_ctrl_c_voids_the_keys_behind_a_deferred_enters_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.write_user_bytes_to_pty(b"ls\r".to_vec(), ctx);
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 1);
+            view.ctrl_c(ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+        assert!(pty_writes.borrow().is_empty());
     })
 }
 
@@ -16620,14 +16714,19 @@ fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its
                     .typeahead_handoff()
                     .deferred_submit_pending()
             );
-            // The next keys of the same burst reach the editor before the terminal routes them.
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("ec", ctx));
-            // The rest of the burst, and its Enter, are routed to the hold.
-            view.model
-                .lock()
-                .typeahead_handoff_mut()
-                .on_user_bytes(b"ho 2\r");
+            // The event that follows the deferral opens the Enter's gate (in the app it is
+            // delivered between two user events).
+            view.open_deferred_enter_gate(ctx);
+            // The next keys of the same burst reach the editor before the terminal routes them:
+            // they are entries behind the gate, never text in the buffer.
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(crate::editor::HeldPasteKey::Text("ec".into()), ctx)
+                })
+            });
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
+            // The rest of the burst, and its Enter, are routed to the same gate.
+            view.write_user_bytes_to_pty(b"ho 2\r".to_vec(), ctx);
             view.handle_typeahead_report_with_handoff(ctx);
 
             assert_eq!(
@@ -16657,18 +16756,24 @@ fn typeahead_handoff_a_second_editor_enter_is_held_behind_the_deferred_one() {
             view.input
                 .update(ctx, |input, ctx| input.replace_buffer_content("true", ctx));
             view.input.update(ctx, |input, ctx| input.input_enter(ctx));
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("echo 2", ctx));
+            view.open_deferred_enter_gate(ctx);
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(
+                        crate::editor::HeldPasteKey::Text("echo 2".into()),
+                        ctx,
+                    )
+                })
+            });
             view.input.update(ctx, |input, ctx| input.input_enter(ctx));
 
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"echo 2\r".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // `echo 2` and the Enter behind it wait as two entries behind the first Enter's gate.
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
         });
         assert_eq!(*executed.borrow(), 0);
         assert!(pty_writes.borrow().is_empty());
@@ -21605,14 +21710,12 @@ fn a_command_written_behind_a_young_hold_takes_its_keys_with_it() {
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view, queue);
                 hold_a_young_enter(view, queue, &pty_writes, ctx);
-                // What the pty controller does (`write_command`): the buffered hold's keys come
-                // back from the call; a queued hold's are announced, and the view takes them.
-                let returned = view
-                    .model
+                // What the pty controller does (`write_command`): the hold's keys are announced,
+                // and the view takes them.
+                view.model
                     .lock()
                     .typeahead_handoff_mut()
                     .on_command_written();
-                assert_eq!(returned, if queue { Vec::new() } else { b"\rx".to_vec() });
                 view.drain_young_hold_ends(ctx);
                 assert!(!young_gate_open(view));
                 assert!(view.paste_queue.queue.borrow().is_idle());
@@ -21632,8 +21735,8 @@ fn a_command_written_behind_a_young_hold_takes_its_keys_with_it() {
     }
 }
 
-/// The report arrives: the Enter is run in the editor and the key typed after it is held behind
-/// it (#933), the same on both paths.
+/// The report arrives: the Enter is run in the editor and the key typed after it stays held
+/// behind it (#933), in the queue under the deferred Enter's gate.
 #[test]
 fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
     for queue in [true] {
@@ -21656,14 +21759,19 @@ fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
                     handoff.on_report();
                 }
                 view.drain_young_hold_ends(ctx);
+                // The hold's gate became the deferred Enter's gate in place; the Enter that runs
+                // in the editor left it, the key typed behind it is its only entry.
                 assert!(!young_gate_open(view));
-                assert!(view.paste_queue.queue.borrow().is_idle());
+                {
+                    let held = view.paste_queue.queue.borrow();
+                    assert!(
+                        held.has_gate_kind(crate::terminal::input_queue::GateKind::HandoffReport)
+                    );
+                    assert_eq!(held.queued_len(), 1);
+                }
                 assert_eq!(
                     view.model.lock().typeahead_handoff().state(),
-                    &HandoffState::HoldAfterEnter {
-                        held: b"x".to_vec(),
-                        released: true,
-                    },
+                    &HandoffState::HoldAfterEnter { released: true },
                     "queue={queue}"
                 );
             });

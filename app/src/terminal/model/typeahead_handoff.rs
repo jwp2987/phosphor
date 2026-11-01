@@ -31,10 +31,10 @@
 //!
 //! # Where held keys live (#1353 phase 5)
 //!
-//! On the queue path (the only path) this module keeps no bytes for the ConPTY prompt hold (a
-//! `LineEditorActive` gate, released by the line editor's signal), for the young-Enter hold (a
-//! `PromptSeen` gate keyed by the hold's id) nor, since the holder-deletion round, anywhere else
-//! but `HoldAfterEnter.held`. A hold is only a marker here; every way it can end records a
+//! This module keeps no bytes for the ConPTY prompt hold (a `LineEditorActive` gate, released by
+//! the line editor's signal), for the young-Enter hold (a `PromptSeen` gate keyed by the hold's
+//! id) nor for the keys behind a deferred Enter (a `HandoffReport` gate keyed by
+//! [`TypeaheadHandoff::deferred_gate`]). A hold is only a marker here; every way it can end records a
 //! [`YoungHoldEnd`] (or hands the id over synchronously for a signal) and the view turns that into
 //! taking or dropping the gate's entries. A key the queue cannot take at that moment (a write made
 //! while the queue is delivering something) is put back under its gate by the view when that
@@ -171,6 +171,9 @@ pub fn prompt_seq_env_enabled() -> bool {
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
 /// means the signal is not coming. Logged by the view when it fires.
 pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
+
+/// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
+const DEFERRED_GATE_ID_BIT: u64 = 1 << 62;
 
 /// The shell's last Precmd sequence number the app has parsed (#1353 phase 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,10 +312,11 @@ pub enum HandoffState {
     },
     /// The request was written. The editor owns input and the shell's report is outstanding.
     AwaitingReport,
-    /// Enter was pressed while the report was outstanding. Keys typed since are held here, in
-    /// order, and follow the deferred command to the pty once it has been written.
+    /// Enter was pressed while the report was outstanding. Keys typed since are held, in order,
+    /// as entries behind a `HandoffReport` gate of the view's queue (the hand-off keeps no bytes,
+    /// only the gate's id: [`TypeaheadHandoff::deferred_gate`]), and follow the deferred command
+    /// to the pty once it has been written.
     HoldAfterEnter {
-        held: Vec<u8>,
         /// Whether the deferred submit has run (after the report arrived).
         released: bool,
     },
@@ -384,19 +388,6 @@ pub enum ReportDisposition {
     /// Leave it stored and insert it when the editor next takes over, so it is not wiped with a
     /// submitted command's text.
     Stash,
-}
-
-/// Where keys held behind a deferred Enter go when the submit that the report triggered wrote no
-/// command (the report is in, so nothing is outstanding in the tty any more).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HeldKeysRelease {
-    /// One unfinished line (no Enter): back into the editor, for a submit that stays a shell
-    /// command.
-    ToEditor(Vec<u8>),
-    /// Shell lines (an Enter in them): to the pty as typed. Never into the editor, where the
-    /// next Enter would submit them as one multi-line buffer -- to the agent, if natural-language
-    /// detection took it for a query (#826 N1).
-    ToPty(Vec<u8>),
 }
 
 /// What a Ctrl-C written while the pty owns input means for the hand-off.
@@ -485,6 +476,16 @@ pub struct TypeaheadHandoff {
     /// The id of a queued hold whose keys follow the command just written, between that decision
     /// and the view's [`Self::count_followed_young_hold`]. No request is decided meanwhile.
     young_hold_follow_pending: Option<u64>,
+    /// The id of the `HandoffReport` gate that holds the keys typed behind a deferred Enter, while
+    /// the state is [`HandoffState::HoldAfterEnter`]. The ids carry [`DEFERRED_GATE_ID_BIT`], so
+    /// one number never names a young hold's gate as well.
+    deferred_gate: Option<u64>,
+    /// Counts the deferred gates handed out (the low bits of their ids); survives a reset.
+    deferred_gate_seq: u64,
+    /// A key reached the hand-off in `HoldAfterEnter` without having been queued behind the gate
+    /// (the queue was idle or mid-delivery): the view puts it behind the gate
+    /// ([`Self::take_deferred_key_started`]).
+    deferred_key_started: bool,
     /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
@@ -580,8 +581,9 @@ pub enum YoungHoldEnd {
     /// ([`TypeaheadHandoff::count_followed_young_hold`]).
     FollowCommand,
     /// The shell's report arrived: the first held byte (the Enter) is run in the editor and the
-    /// rest becomes the keys held behind it.
-    SubmitOnReport,
+    /// rest becomes the keys held behind it, under the `HandoffReport` gate `deferred_gate`
+    /// (the view turns the hold's gate into that one in place).
+    SubmitOnReport { deferred_gate: u64 },
 }
 
 /// What a queued young hold's give-up cap should do.
@@ -719,7 +721,8 @@ impl TypeaheadHandoff {
 
     /// Routes one chunk that was held (for the prompt, #1162) as the write it was typed as,
     /// bypassing every hold, and returns whether the caller must write it. A chunk the current
-    /// state absorbs (`HoldAfterEnter`) is not written. The view's queue releases a queued prompt
+    /// state absorbs (`HoldAfterEnter`) is not written: the caller puts it behind the deferred
+    /// Enter's gate ([`Self::take_deferred_key_started`]). The view's queue releases a queued prompt
     /// hold chunk by chunk through this (#1353 phase 5).
     pub fn route_released_chunk(&mut self, chunk: &[u8]) -> bool {
         match self.route_user_bytes_unheld(chunk, true) {
@@ -1153,9 +1156,10 @@ impl TypeaheadHandoff {
     /// for is not coming (a program ate the request, the shell hung). The Enter is given up
     /// WITHOUT running: the shell's line still holds the head of what the user typed, so the
     /// editor's text would run as a fragment. Input goes back to the editor; a late report is then
-    /// inserted in front of it like any legacy report. Returns the keys held behind the Enter,
-    /// for the view to put in the editor; `None` when the deferral is over already.
-    pub fn give_up_report_deferral(&mut self, id: u64) -> Option<Vec<u8>> {
+    /// inserted in front of it like any legacy report. Returns the id of the gate that holds the
+    /// keys typed behind the Enter, for the view to take them out and put them in the editor;
+    /// `None` when the deferral is over already.
+    pub fn give_up_report_deferral(&mut self, id: u64) -> Option<u64> {
         if self.report_deferral_id != Some(id) {
             return None;
         }
@@ -1169,12 +1173,8 @@ impl TypeaheadHandoff {
         self.uncovered_deferral_id = None;
         self.deferred_young = false;
         self.drop_young_hold();
-        match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => Some(held),
-            HandoffState::EditorOwned | HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport => {
-                None
-            }
-        }
+        self.state = HandoffState::EditorOwned;
+        self.deferred_gate.take()
     }
 
     /// The patience timer of deferral `id` ran out: the report covering the untracked bytes
@@ -1248,9 +1248,11 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// A command from the input editor was accepted and written (or queued) to the pty. Returns
-    /// the keys held since a deferred Enter, which must be written right after the command.
-    pub fn on_command_written(&mut self) -> Vec<u8> {
+    /// A command from the input editor was accepted and written (or queued) to the pty. The keys
+    /// held behind an Enter (a young hold, or a deferred Enter's `HandoffReport` gate) follow it
+    /// as typeahead: the end is recorded for the view, which writes them behind the command and
+    /// counts them ([`Self::count_followed_young_hold`]).
+    pub fn on_command_written(&mut self) {
         self.forget_untracked_line_bytes();
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
@@ -1259,10 +1261,15 @@ impl TypeaheadHandoff {
         // hold is void.
         let queued_hold = mem::take(&mut self.young_hold_queued);
         let mut queued_hold_follows = false;
+        // Keys held behind a deferred Enter follow its command too.
+        let mut deferred_follows = None;
         self.young_line = false;
         self.deferred_young = false;
-        let (held, enters_before, precmds_seen) = match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => (held, 0, 0),
+        let (enters_before, precmds_seen) = match mem::take(&mut self.state) {
+            HandoffState::HoldAfterEnter { .. } => {
+                deferred_follows = self.deferred_gate.take();
+                (0, 0)
+            }
             // Lines the user already queued are still ahead of this command in the tty.
             HandoffState::PtyOwned {
                 enters_written,
@@ -1270,17 +1277,16 @@ impl TypeaheadHandoff {
                 ..
             } => {
                 queued_hold_follows = queued_hold;
-                (Vec::new(), enters_written, precmds_seen)
+                (enters_written, precmds_seen)
             }
-            HandoffState::EditorOwned | HandoffState::AwaitingReport => (Vec::new(), 0, 0),
+            HandoffState::EditorOwned | HandoffState::AwaitingReport => (0, 0),
         };
         let now = Instant::now();
         self.last_activity_at = Some(now);
         self.command_written_at = Some(now);
-        let (held_enters, wrote_user_bytes) = scan_line_terminators(&held, false);
         self.state = HandoffState::PtyOwned {
-            wrote_user_bytes,
-            enters_written: enters_before.saturating_add(1).saturating_add(held_enters),
+            wrote_user_bytes: false,
+            enters_written: enters_before.saturating_add(1),
             precmds_seen,
         };
         if queued_hold {
@@ -1292,7 +1298,10 @@ impl TypeaheadHandoff {
                 self.young_hold_ends.push((id, YoungHoldEnd::Dropped));
             }
         }
-        held
+        if let Some(id) = deferred_follows {
+            self.young_hold_follow_pending = Some(id);
+            self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+        }
     }
 
     /// The view wrote the keys of queued young hold `id` behind the command (it took them out of
@@ -1738,19 +1747,6 @@ impl TypeaheadHandoff {
         )
     }
 
-    /// Puts `bytes` in front of the keys held behind the deferred Enter (#1016): they reached
-    /// the editor after the Enter was pressed but before the terminal took the keys, so they
-    /// precede everything held. Returns whether an Enter is deferred; if not, nothing changed.
-    pub fn prepend_held_keys(&mut self, bytes: &[u8]) -> bool {
-        match &mut self.state {
-            HandoffState::HoldAfterEnter { held, .. } => {
-                held.splice(0..0, bytes.iter().copied());
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// Whether an Enter is held, for tests.
     #[cfg(test)]
     pub(crate) fn has_young_hold(&self) -> bool {
@@ -1855,12 +1851,20 @@ impl TypeaheadHandoff {
                 self.writes_in_flight = self.writes_in_flight.saturating_add(1);
                 UserBytesRoute::WriteCounted
             }
-            HandoffState::HoldAfterEnter { held, .. } => {
-                held.extend_from_slice(bytes);
+            // The keys typed behind a deferred Enter are entries behind its gate; the view's
+            // queue takes every one of them (the gate is open from the moment the Enter is
+            // deferred), so a key only gets here if the queue was idle or mid-delivery. The view
+            // puts it behind the gate; it is never held here.
+            HandoffState::HoldAfterEnter { .. } if self.deferred_gate.is_some() => {
+                self.deferred_key_started = true;
                 if reaches_shell_line {
                     self.last_line_bytes_at = Some(Instant::now());
                 }
                 UserBytesRoute::Held
+            }
+            HandoffState::HoldAfterEnter { .. } => {
+                log::warn!("typeahead hand-off: a key reached a deferred Enter with no gate");
+                UserBytesRoute::Write
             }
             // In `AwaitingReport` such a write is a key typed into a command drained behind the
             // outstanding request (a queued command written right after it): the tty holds the
@@ -1928,11 +1932,31 @@ impl TypeaheadHandoff {
             self.arm_report_deferral();
         }
         self.deferred_young = self.young_line;
-        self.state = HandoffState::HoldAfterEnter {
-            held: Vec::new(),
-            released: false,
-        };
+        self.deferred_gate = Some(self.next_gate_id());
+        self.state = HandoffState::HoldAfterEnter { released: false };
         true
+    }
+
+    /// The next id of a deferred Enter's gate: a counter tagged with [`DEFERRED_GATE_ID_BIT`], so
+    /// it never equals the id of a young hold's gate (both are recorded in one list of ends).
+    fn next_gate_id(&mut self) -> u64 {
+        self.deferred_gate_seq = self.deferred_gate_seq.wrapping_add(1) & !DEFERRED_GATE_ID_BIT;
+        self.deferred_gate_seq | DEFERRED_GATE_ID_BIT
+    }
+
+    /// The id of the `HandoffReport` gate that holds the keys typed behind the deferred Enter,
+    /// while one is deferred. The view opens it when the Enter is deferred and keys queue behind it
+    /// (the hand-off keeps no bytes).
+    pub fn deferred_gate(&self) -> Option<u64> {
+        self.deferred_gate
+    }
+
+    /// Takes the "a key reached the hand-off while an Enter is deferred, unqueued" flag, returning
+    /// the gate's id: the view puts that key behind the gate.
+    pub fn take_deferred_key_started(&mut self) -> Option<u64> {
+        mem::take(&mut self.deferred_key_started)
+            .then_some(self.deferred_gate)
+            .flatten()
     }
 
     /// The shell reported its line buffer.
@@ -1946,15 +1970,16 @@ impl TypeaheadHandoff {
                 // #933: the user's Enter was held behind the request; run it now, in the editor,
                 // with the keys typed after it held behind it.
                 if mem::take(&mut self.young_hold_queued) {
-                    // Same, with the keys in the view's queue: the view takes them out right after
-                    // this returns (before anything else touches the held keys) and puts all but
-                    // the Enter behind it ([`Self::prepend_held_keys`]).
-                    self.young_hold_ends
-                        .push((self.young_hold_id, YoungHoldEnd::SubmitOnReport));
-                    self.state = HandoffState::HoldAfterEnter {
-                        held: Vec::new(),
-                        released: true,
-                    };
+                    // The keys are in the view's queue: the view turns the hold's gate into the
+                    // deferred Enter's `HandoffReport` gate right after this returns (before
+                    // anything else touches the held keys), dropping the Enter that runs now.
+                    let deferred_gate = self.next_gate_id();
+                    self.deferred_gate = Some(deferred_gate);
+                    self.young_hold_ends.push((
+                        self.young_hold_id,
+                        YoungHoldEnd::SubmitOnReport { deferred_gate },
+                    ));
+                    self.state = HandoffState::HoldAfterEnter { released: true };
                     self.young_line = false;
                     return ReportDisposition::InsertThenSubmitYoung;
                 }
@@ -1988,35 +2013,31 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// The submit run after the report wrote no command: release the keys held behind it.
-    /// Returns `None` unless that is the state (keys held, deferred submit already run).
-    pub fn release_after_unsubmitted_enter(&mut self) -> Option<HeldKeysRelease> {
+    /// The submit run after the report wrote no command: the keys held behind it are released.
+    /// Returns the id of the gate that holds them (the view takes them out and sends them to the
+    /// pty as typed if an Enter is among them, else back to the editor, #826 N1), or `None`
+    /// unless that is the state (keys held, deferred submit already run).
+    pub fn release_after_unsubmitted_enter(&mut self) -> Option<u64> {
         if self.owner() != (Owner::Hold { released: true }) {
             return None;
         }
-        match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => {
-                if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
-                    Some(HeldKeysRelease::ToPty(held))
-                } else {
-                    Some(HeldKeysRelease::ToEditor(held))
-                }
-            }
-            other => {
-                self.state = other;
-                None
-            }
-        }
+        self.state = HandoffState::EditorOwned;
+        self.deferred_gate.take()
     }
 
     /// The session ended: nothing can answer an outstanding request or run held keys.
     pub fn reset_on_exit(&mut self) {
         // A young hold whose keys are in the view's queue ends with the session: the view drops
-        // them, and the ids keep growing so a later hold never reuses the gate's key.
+        // them, and the ids keep growing so a later hold never reuses the gate's key. So do the
+        // keys held behind a deferred Enter.
         self.drop_young_hold();
+        if let Some(gate) = self.deferred_gate.take() {
+            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
+        }
         *self = Self {
             tracks_view_precmds: self.tracks_view_precmds,
             young_hold_id: self.young_hold_id,
+            deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             queued_line_bytes: self.queued_line_bytes.clone(),
             ..Self::default()
@@ -2120,16 +2141,26 @@ impl TypeaheadHandoff {
                 self.uncovered_deferral_id = None;
                 self.report_deferral_id = None;
                 self.state = HandoffState::AwaitingReport;
+                self.drop_deferred_gate();
                 true
             }
             // The deferred submit already ran without writing a command.
             Owner::Hold { released: true } => {
                 self.state = HandoffState::EditorOwned;
+                self.drop_deferred_gate();
                 true
             }
             // #933: an Enter held behind the request is cancelled with its keys.
             Owner::AwaitingReport => self.drop_young_hold(),
             Owner::Editor | Owner::Pty { .. } => false,
+        }
+    }
+
+    /// The keys held behind a deferred Enter are void: the view drops the gate's entries
+    /// ([`YoungHoldEnd::Dropped`]).
+    fn drop_deferred_gate(&mut self) {
+        if let Some(gate) = self.deferred_gate.take() {
+            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
         }
     }
 

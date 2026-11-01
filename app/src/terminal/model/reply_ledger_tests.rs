@@ -253,7 +253,8 @@ fn starting_a_command_forgets_replies_from_before_it() {
 
 #[test]
 fn keys_released_from_a_hold_are_recorded() {
-    // `HeldKeysRelease::ToPty` -> `write_to_pty`: plain bytes, like typed keys.
+    // `release_held_keys` (keys held behind an unsubmitted Enter) -> `write_to_pty`: plain bytes,
+    // like typed keys.
     assert_eq!(filtered(&["\x1b[24;1R"], &["R"], "R"), "R");
     assert_eq!(filtered(&["\x1b[24;1R"], &["R", "c"], "Rc"), "Rc");
 }

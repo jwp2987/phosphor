@@ -178,6 +178,27 @@ impl Input {
         true
     }
 
+    /// Queues an Enter that reached the editor while another is deferred behind the hand-off's
+    /// report, behind that Enter's `HandoffReport` gate. The gate is open from the moment the
+    /// Enter is deferred (the view opens it on `TypeaheadHandoffEnterDeferred`); without it the
+    /// Enter has nowhere to wait and is logged.
+    pub(super) fn queue_enter_behind_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.enter_queue_handle(ctx);
+        if !queue
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::HandoffReport))
+        {
+            log::warn!("input queue: an Enter typed behind a deferred Enter found no gate");
+            return;
+        }
+        let Some(mut queue) = queue.try_lock() else {
+            log::warn!("input queue: an Enter typed behind a deferred Enter found the queue busy");
+            return;
+        };
+        let mut host = InputQueueHost::new(self, ctx);
+        queue.offer(&mut host, EntryKind::Enter);
+    }
+
     /// An Enter typed behind the one that waits, on the queue behind the Enter's gate. The queue
     /// not holding it (mid-drain) is not reachable from a user key; the Enter is then dropped
     /// with a warning (it has nothing to submit: the line it follows is the waiting one).

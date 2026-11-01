@@ -101,14 +101,15 @@ fn awaiting_report_routes_to_the_editor_and_hold_holds() {
     assert!(handoff.defer_enter());
     assert!(handoff.routes_keys_to_pty());
     assert!(!handoff.editor_owns_input());
+    // The keys are entries behind the Enter's gate, which the view opens when it is deferred; the
+    // hand-off keeps no bytes. A key that reaches it anyway is held for the view to put there.
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
     assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    assert_eq!(handoff.take_deferred_key_started(), Some(gate));
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"ls\r".to_vec(),
-            released: false,
-        }
+        &HandoffState::HoldAfterEnter { released: false }
     );
 }
 
@@ -245,15 +246,30 @@ fn two_lines_typed_across_the_boundary_run_once_each_in_order() {
 fn deferred_enter_writes_report_then_command_then_held_keys() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    assert_eq!(handoff.on_user_bytes(b"pwd\rl"), UserBytesRoute::Held);
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
 
-    // The report arrives: insert it, then run the deferred Enter.
+    // The report arrives: insert it, then run the deferred Enter. The keys typed meanwhile
+    // (`pwd`, Enter, `l`, `s`) are entries behind the gate, still held behind it.
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    // Keys typed while the deferred submit is on its way are still held behind it.
-    assert_eq!(handoff.on_user_bytes(b"s"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.deferred_gate(),
+        Some(gate),
+        "the report keeps the gate"
+    );
 
     // The deferred command is written; the held keys follow it, counted as its typeahead.
-    assert_eq!(handoff.on_command_written(), b"pwd\rls".to_vec());
+    handoff.on_command_written();
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::FollowCommand)]
+    );
+    // Until the view has written them no request is decided.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.count_followed_young_hold(gate, b"pwd\rls");
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -614,12 +630,16 @@ fn the_editor_takeover_window_is_tracked() {
 fn a_deferred_enter_waits_for_the_report_however_long_it_takes() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    let gate = handoff.deferred_gate().unwrap();
     // Nothing but the report (or Ctrl-C, or the session ending) releases it.
     assert_eq!(handoff.release_after_unsubmitted_enter(), None);
     assert!(handoff.routes_keys_to_pty());
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(handoff.on_command_written(), b"echo 1\recho 2\r".to_vec());
+    handoff.on_command_written();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::FollowCommand)]
+    );
 }
 
 /// S2: the report arrived and its submit wrote no command: the held keys are released at once,
@@ -627,24 +647,16 @@ fn a_deferred_enter_waits_for_the_report_however_long_it_takes() {
 /// editor (#826 N1).
 #[test]
 fn keys_held_behind_an_unsubmitted_enter_are_released_where_they_belong() {
+    // The hand-off hands the gate over; the view takes the entries out and decides by their
+    // content (view tests: an Enter among them goes to the pty, an unfinished line to the editor).
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    let gate = handoff.deferred_gate().unwrap();
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToPty(b"echo 1\recho 2\r".to_vec()))
-    );
+    assert_eq!(handoff.release_after_unsubmitted_enter(), Some(gate));
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-
-    let mut handoff = awaiting_report();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"ls -l");
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToEditor(b"ls -l".to_vec()))
-    );
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(handoff.release_after_unsubmitted_enter(), None, "once");
 }
 
 /// Released keys that reduce to no editor text must not arm the shell-submit flag, or a later
@@ -710,19 +722,25 @@ fn an_enter_typed_right_after_a_command_is_held_until_the_prompt_and_run_in_the_
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
-    // The view splits the queue's keys at the Enter: the Enter runs in the editor, the rest is
-    // held behind it (`prepend_held_keys` until the gate carries it).
+    // The view turns the hold's gate into the deferred Enter's gate in place: the Enter runs in
+    // the editor, the rest stays held behind it, in the queue.
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::SubmitOnReport)]
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
     );
-    assert!(handoff.prepend_held_keys(&queued.concat()[1..]));
+    assert_ne!(gate, id, "a new gate id");
+    assert_eq!(queued.concat(), b"\rx".to_vec());
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"x".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -973,18 +991,24 @@ fn keys_typed_while_the_request_is_outstanding_queue_behind_a_held_enter() {
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::SubmitOnReport)]
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
     );
-    assert!(handoff.prepend_held_keys(&queued.concat()[1..]));
-    // The order typed is the order executed: the Enter, then d, e, f.
+    // The order typed is the order executed: the Enter, then d, e, f -- the Enter runs in the
+    // editor, the rest stays in the queue behind the new gate.
+    assert_eq!(queued.concat(), b"\rdef".to_vec());
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"def".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -1006,8 +1030,8 @@ fn an_enter_behind_an_unanswered_report_is_given_up_without_running() {
         .take_report_deferral_started()
         .expect("the plain report deferral arms a patience timer");
     assert_eq!(handoff.take_report_deferral_started(), None, "armed once");
-    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
-    assert_eq!(handoff.give_up_report_deferral(id), Some(b"ls".to_vec()));
+    let gate = handoff.deferred_gate().unwrap();
+    assert_eq!(handoff.give_up_report_deferral(id), Some(gate));
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
     assert_eq!(handoff.give_up_report_deferral(id), None, "over already");
 
@@ -1558,7 +1582,11 @@ fn a_command_write_to_preexec_round_trip_seeds_the_hold_before_any_report() {
 
     let mut queued = young_after_submit();
     assert!(!queued.on_preexec(true));
-    assert_eq!(queued.rtt_samples.len(), 0, "a shell-started line is not the command");
+    assert_eq!(
+        queued.rtt_samples.len(),
+        0,
+        "a shell-started line is not the command"
+    );
     assert!(!queued.on_preexec(false));
     assert_eq!(
         queued.rtt_samples.len(),
@@ -2389,19 +2417,23 @@ fn the_report_of_a_queued_young_hold_runs_the_enter_and_asks_the_view_to_split_t
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::SubmitOnReport)]
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
     );
     assert!(!handoff.young_hold_queued());
-    // The view puts the keys after the Enter behind it, as the buffered hold's split did.
-    assert!(handoff.prepend_held_keys(b"x"));
+    // The view turns the hold's gate into the deferred Enter's, dropping the Enter that runs.
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"x".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -2597,4 +2629,91 @@ fn a_command_written_in_a_state_that_cannot_own_the_hold_drops_it() {
     );
     // Nothing follows the command, so nothing waits for the view to write it.
     assert!(handoff.young_hold_follow_pending.is_none());
+}
+
+// ---- the keys behind a deferred Enter are entries behind a `HandoffReport` gate ------------------
+//
+// The hand-off keeps no bytes for them: it names the gate and records every way the hold can end
+// for the view to apply to the queue.
+
+#[test]
+fn a_deferred_enter_names_its_gate_and_every_end_is_recorded_for_the_view() {
+    // Ctrl-C cancels the Enter and voids the keys behind it.
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().expect("a gate");
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::Dropped)]
+    );
+
+    // So does the session ending, and the next gate never reuses an id.
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let first = handoff.deferred_gate().unwrap();
+    handoff.reset_on_exit();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(first, YoungHoldEnd::Dropped)]
+    );
+    let mut handoff2 = awaiting_report();
+    assert!(handoff2.defer_enter());
+    assert!(handoff2.deferred_gate().is_some());
+}
+
+#[test]
+fn a_young_hold_and_a_deferred_enter_never_share_a_gate_id() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (hold, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
+    assert_ne!(gate, hold);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(
+            hold,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
+    );
+}
+
+#[test]
+fn a_chunk_absorbed_by_a_deferred_enter_is_flagged_for_the_view_not_stored() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().unwrap();
+    // A released prompt-hold chunk (or a key the queue could not take) reaches the deferred state:
+    // it is not written, the view is told to put it behind the gate.
+    assert!(!handoff.route_released_chunk(b"x"));
+    assert_eq!(handoff.take_deferred_key_started(), Some(gate));
+    assert_eq!(handoff.take_deferred_key_started(), None, "once");
+}
+
+#[test]
+fn a_given_up_report_deferral_hands_over_its_gate_and_forgets_it() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().unwrap();
+    let id = handoff.take_report_deferral_started().unwrap();
+    assert_eq!(handoff.give_up_report_deferral(id), Some(gate));
+    assert_eq!(handoff.deferred_gate(), None);
+    assert!(
+        !handoff.young_hold_end_pending(),
+        "the view takes the entries synchronously; no end is left behind"
+    );
 }

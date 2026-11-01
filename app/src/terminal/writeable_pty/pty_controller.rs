@@ -1581,7 +1581,6 @@ impl<T: EventLoopSender> PtyController<T> {
         warpui::input_order::log_hop("write_command", String::new);
         let is_editor_command = matches!(source, CommandExecutionSource::User);
         let mut engages_typeahead_handoff = false;
-        let mut handoff_held_bytes: Vec<u8> = Vec::new();
         {
             let mut model = self.terminal_model.lock();
 
@@ -1612,11 +1611,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     == TypeaheadMode::ShellReported;
                 engages_typeahead_handoff = is_editor_command && can_report;
                 if engages_typeahead_handoff {
-                    handoff_held_bytes = model.typeahead_handoff_mut().on_command_written();
-                    // #1033: keys typed behind the command's Enter follow it to the pty.
-                    model
-                        .block_list_mut()
-                        .record_typed_ahead_bytes(&handoff_held_bytes);
+                    // Keys typed behind the command's Enter (a held young Enter, a deferred
+                    // Enter's gate) follow it to the pty: the hand-off records the end and the
+                    // view writes them through `write_handoff_user_bytes`, which records their
+                    // echo (#1033) and keeps them behind a command that is still parked.
+                    model.typeahead_handoff_mut().on_command_written();
                     model
                         .block_list_mut()
                         .early_output_mut()
@@ -1649,21 +1648,18 @@ impl<T: EventLoopSender> PtyController<T> {
             // Cancel the async writer task and clear the async write queue.
             // Check if line editor is active
             self.send_write_to_event_loop(write, ctx);
-            if self.handoff_command_pending || !handoff_held_bytes.is_empty() {
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
+            if self.handoff_command_pending {
                 self.flush_handoff_bytes_after_command(ctx);
             }
         } else if self.handoff_held_command_pending {
             self.pending_writes.push_front(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         } else {
             self.pending_writes.push_back(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         }
         if engages_typeahead_handoff {
