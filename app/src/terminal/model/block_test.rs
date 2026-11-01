@@ -2223,8 +2223,8 @@ fn interactive_prompt_shape_distinguishes_explicit_from_trailing_punctuation() {
         "a long line that happens to end in `?` is output, not a prompt"
     );
     assert!(
-        InteractivePromptShape::TrailingPunctuation.required_consecutive_polls()
-            > InteractivePromptShape::Explicit.required_consecutive_polls(),
+        InteractivePromptShape::TrailingPunctuation.required_quiet()
+            > InteractivePromptShape::Explicit.required_quiet(),
         "a bare `?`/`:` is weaker evidence and must wait longer"
     );
 }
@@ -2244,58 +2244,90 @@ const PASSWORD: (bool, bool) = (false, true);
 /// Raw mode, as a logged-in ssh session or an editor leaves it.
 const RAW: (bool, bool) = (false, false);
 
+/// One observation `at` after `t0`. Nothing here counts polls: only the time between
+/// observations matters.
 fn poll(
     detector: &mut PromptDetector,
+    t0: instant::Instant,
+    at: Duration,
     (echo, canonical): (bool, bool),
     prompt: Option<InteractivePromptCandidate>,
 ) -> Option<PromptDetection> {
-    detector.observe(echo, canonical, || prompt)
+    detector.observe(t0 + at, echo, canonical, || prompt)
 }
 
 #[test]
-fn prompt_detector_debounces_by_shape_and_fires_once_per_episode() {
-    let mut detector = PromptDetector::default();
+fn prompt_detector_fires_after_the_prompt_is_quiet_for_its_duration_not_after_n_polls() {
+    let t0 = instant::Instant::now();
+    let ms = Duration::from_millis;
+    let explicit = INTERACTIVE_PROMPT_QUIET_EXPLICIT;
     let confirm = || Some(candidate("Continue? [y/N] ", 16));
-    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
+    let mut detector = PromptDetector::default();
 
-    // Further output moves the cursor, so it restarts the count.
+    // Further output moves the cursor, so it restarts the clock.
     assert_eq!(
         poll(
             &mut detector,
+            t0,
+            ms(0),
             COOKED,
             Some(candidate("Continue? [y/N] ", 3))
         ),
         None
     );
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, confirm()), None);
+    assert_eq!(poll(&mut detector, t0, ms(100), COOKED, confirm()), None);
+    // Many observations (as output bursts would make) inside the window never fire.
+    for i in 1..200u32 {
+        assert_eq!(
+            poll(&mut detector, t0, ms(100) + ms(10) * i, COOKED, confirm()),
+            None
+        );
     }
     assert_eq!(
-        poll(&mut detector, COOKED, confirm()),
+        detector.next_wake(),
+        Some(t0 + ms(100) + explicit),
+        "the quiet timer is armed for exactly when the window ends"
+    );
+    // One observation at the end of the window is enough: no dependence on how many came before.
+    assert_eq!(
+        poll(&mut detector, t0, ms(100) + explicit, COOKED, confirm()),
         Some(PromptDetection::Interactive)
     );
     assert_eq!(
-        poll(&mut detector, COOKED, confirm()),
+        poll(&mut detector, t0, ms(100) + explicit * 2, COOKED, confirm()),
         None,
         "once per episode"
     );
+    assert_eq!(detector.next_wake(), None, "nothing left to wait for");
 
     // A bare trailing `:` must sit far longer: `printf "Waiting for DB:"; sleep 30`.
     let waiting = || Some(candidate("Waiting for DB:", 15));
     let mut detector = PromptDetector::default();
-    for _ in 1..InteractivePromptShape::TrailingPunctuation.required_consecutive_polls() {
-        assert_eq!(poll(&mut detector, COOKED, waiting()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, ms(0), COOKED, waiting()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, waiting()),
+        poll(&mut detector, t0, explicit * 2, COOKED, waiting()),
+        None
+    );
+    assert_eq!(
+        poll(
+            &mut detector,
+            t0,
+            INTERACTIVE_PROMPT_QUIET_TRAILING,
+            COOKED,
+            waiting()
+        ),
         Some(PromptDetection::Interactive)
     );
+    assert!(INTERACTIVE_PROMPT_QUIET_TRAILING > INTERACTIVE_PROMPT_QUIET_EXPLICIT);
 }
 
 /// An agent-run `ssh` stops on the host-key question, the user answers and hands control
 /// back, and it then stops on the password prompt. Both must be detected.
 #[test]
 fn prompt_detector_rearms_for_a_second_prompt_after_hand_back() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let explicit = INTERACTIVE_PROMPT_QUIET_EXPLICIT;
     let mut detector = PromptDetector::default();
     let host_key = || {
         Some(candidate(
@@ -2303,50 +2335,45 @@ fn prompt_detector_rearms_for_a_second_prompt_after_hand_back() {
             70,
         ))
     };
-    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
 
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, host_key()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, host_key()),
+        poll(&mut detector, t0, explicit, COOKED, host_key()),
         Some(PromptDetection::Interactive)
     );
 
     // The user holds the command: the surface reports no candidate.
-    assert_eq!(poll(&mut detector, COOKED, None), None);
+    assert_eq!(poll(&mut detector, t0, s(10), COOKED, None), None);
 
     // Handed back; ssh now asks for the password.
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(11), PASSWORD, None),
         Some(PromptDetection::Password)
     );
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(12), PASSWORD, None),
         None,
         "once per episode"
     );
 
     // Logged in (raw mode), then a second password prompt later in the same command.
-    assert_eq!(poll(&mut detector, RAW, None), None);
+    assert_eq!(poll(&mut detector, t0, s(13), RAW, None), None);
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(14), PASSWORD, None),
         Some(PromptDetection::Password)
     );
 
     // And the same interactive prompt appearing again after a hand-back fires again.
-    assert_eq!(poll(&mut detector, COOKED, None), None);
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, s(20), COOKED, None), None);
+    assert_eq!(poll(&mut detector, t0, s(21), COOKED, host_key()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, host_key()),
+        poll(&mut detector, t0, s(21) + explicit, COOKED, host_key()),
         Some(PromptDetection::Interactive)
     );
 
     detector.reset();
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(30), PASSWORD, None),
         Some(PromptDetection::Password),
         "a new block starts fresh"
     );

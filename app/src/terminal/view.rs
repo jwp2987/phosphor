@@ -12873,10 +12873,11 @@ impl TerminalView {
         if executor.as_ref(ctx).has_output_watchers() {
             executor.update(ctx, |executor, _| executor.note_output());
         }
+        // Also the signal password/interactive-prompt detection runs on (#1383), for user
+        // commands too, so it is sent whether or not an agent call is awaiting. The receiving
+        // watches gate themselves (inactive block / no stall-eligible screen => no work).
         if let Some(tx) = &self.fullscreen_output_signal {
-            if executor.as_ref(ctx).has_any_awaiting_completion() {
-                let _ = tx.try_send(());
-            }
+            let _ = tx.try_send(());
         }
         // #1354: the bootstrap steps that used to wait a fixed time are judged on the output that
         // can release them: the subshell's first prompt, the setup-line marker of the line just
