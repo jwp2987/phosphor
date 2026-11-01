@@ -7969,3 +7969,83 @@ fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
         assert_eq!(code_pane_count(&workspace, &app), 1);
     });
 }
+
+/// Opens a window the way `open_new_from_path` does and reports whether the first tab's
+/// terminal ended up in agent view.
+fn session_window_enters_agent_view(
+    app: &mut App,
+    apply_default_session_mode: bool,
+    default_mode: DefaultSessionMode,
+) -> bool {
+    AISettings::handle(app).update(app, |settings, ctx| {
+        settings
+            .default_session_mode_internal
+            .set_value(default_mode, ctx)
+            .expect("Failed to set default_session_mode");
+        settings
+            .is_any_ai_enabled
+            .set_value(true, ctx)
+            .expect("Failed to enable AI");
+    });
+    let global_resource_handles = GlobalResourceHandles::mock(app);
+    let (_, workspace) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        Workspace::new(
+            global_resource_handles,
+            None,
+            NewWorkspaceSource::Session {
+                options: Box::new(NewTerminalOptions {
+                    apply_default_session_mode,
+                    ..Default::default()
+                }),
+            },
+            ctx,
+        )
+    });
+    workspace.read(app, |workspace, ctx| {
+        workspace
+            .active_tab_pane_group()
+            .as_ref(ctx)
+            .active_session_view(ctx)
+            .is_some_and(|terminal| {
+                terminal
+                    .as_ref(ctx)
+                    .agent_view_controller()
+                    .as_ref(ctx)
+                    .is_active()
+            })
+    })
+}
+
+// #1325: a first window opened via a path/URL argument must honour `default_session_mode`.
+#[test]
+fn test_session_window_honours_default_session_mode_agent() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        assert!(session_window_enters_agent_view(
+            &mut app,
+            true,
+            DefaultSessionMode::Agent
+        ));
+    });
+}
+
+#[test]
+fn test_session_window_without_opt_in_or_terminal_default_stays_terminal() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // SDK/headless callers do not opt in.
+        assert!(!session_window_enters_agent_view(
+            &mut app,
+            false,
+            DefaultSessionMode::Agent
+        ));
+        // Opted in, but the default is Terminal.
+        assert!(!session_window_enters_agent_view(
+            &mut app,
+            true,
+            DefaultSessionMode::Terminal
+        ));
+    });
+}

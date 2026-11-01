@@ -768,6 +768,10 @@ pub struct NewTerminalOptions {
     pub is_shared_session_creator: IsSharedSessionCreator,
     /// The AI conversation to restore when the terminal is created.
     pub conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+    /// If true, a window opened with these options honours `default_session_mode` (enters
+    /// agent view when the default is Agent and AI is enabled), like a tab from the new-tab
+    /// button. Off by default so headless/SDK terminals keep a plain shell.
+    pub apply_default_session_mode: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

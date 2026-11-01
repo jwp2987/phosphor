@@ -777,10 +777,13 @@ pub(crate) fn open_new_from_path(
 ) -> (WindowId, ViewHandle<RootView>) {
     open_new_with_workspace_source(
         NewWorkspaceSource::Session {
-            options: Box::new(
-                NewTerminalOptions::default()
-                    .with_initial_directory_opt(path_if_directory(&arg.path).map(Into::into)),
-            ),
+            options: Box::new(NewTerminalOptions {
+                // #1325: a window opened from a path/URL argument must honour
+                // `default_session_mode` like any other new window.
+                apply_default_session_mode: true,
+                ..NewTerminalOptions::default()
+                    .with_initial_directory_opt(path_if_directory(&arg.path).map(Into::into))
+            }),
         },
         ctx,
     )
