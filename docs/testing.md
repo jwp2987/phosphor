@@ -147,6 +147,16 @@ Pipelines run only on protected refs: `main`, `build/*` branches, `v*` tags. Eve
 PowerShell 5.1). Project `winters-phosphor/phosphor` (id 88085499), use `glab`; run `glab api user` before
 `git push` if auth fails. Jobs never install anything on the boxes; a missing prerequisite fails with a message.
 
+Box target-dir pruning: the persistent cargo target dirs under `/home/gitlab-runner/.phosphor-build/targets/<label>`
+are shared by every `build/*` branch and used to grow unbounded (2026-11: `ci-test` 219 GB, `ci-check-linux`
+119 GB, disk full, jobs failed). `script/ci/prune_target.sh` runs at the start of `.box_job` (all box jobs) and
+`check-linux`; it never fails a job and logs `[prune_target] <label>: before -> after`. Per label it (1) always
+deletes `incremental/` of release/LTO profiles, drops nextest/junit output older than a day; (2) if the filesystem
+has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 60 GB, others 60 GB) deletes all
+`incremental/`, then files unmodified and unaccessed for 7 days, and if still over, wipes the dir. Plain
+`find`/`du`/`df`, no cargo-sweep; the cargo registry is untouched. Tunables: `PRUNE_MIN_FREE_GB`,
+`PRUNE_STALE_DAYS`, `PRUNE_CAP_GB_<LABEL>`, `PRUNE_DRY_RUN=1`.
+
 | job | stage | trigger | what |
 |---|---|---|---|
 | `guards` | test | automatic | oracle pin fetch + all guards of 2.3 + `macos/test_create_warpctrl_wrapper` + `test_warpctrl_early_dispatch` |

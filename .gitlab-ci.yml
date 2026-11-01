@@ -138,6 +138,7 @@ check-linux:
     # PATH. The runner user (gitlab-runner) has no toolchain of its own, so the maintainer's
     # /home/winters/.cargo/bin comes first. agent-cargo adds $HOME/.cargo/bin itself, but the
     # target check below runs before it.
+    - sh script/ci/prune_target.sh || true
     - export PATH="/home/winters/.cargo/bin:$HOME/.cargo/bin:$PATH"
     # The pinned toolchain must already provide the target; adding one would
     # modify the box's rustup state.
@@ -517,6 +518,8 @@ build-windows-profiling:
     - mkdir -p "$CI_PROJECT_DIR/.ci"
     - touch "$GITHUB_OUTPUT" "$GITHUB_PATH" "$GITHUB_ENV"
     - export PATH="$CARGO_HOME/bin:/home/winters/.cargo/bin:$HOME/.local/bin:$PATH"
+    # Keep the persistent target dirs bounded (script/ci/prune_target.sh; docs/testing.md 2.5).
+    - sh script/ci/prune_target.sh || true
     - command -v cargo-nextest >/dev/null || { echo "ERROR cargo-nextest is missing on this runner (expected in /home/winters/.cargo/bin)" >&2; exit 1; }
 
 .heavy_rules:
