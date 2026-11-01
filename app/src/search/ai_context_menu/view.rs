@@ -30,6 +30,7 @@ use crate::search::data_source::QueryResult;
 use crate::search::data_source::{Query, QueryFilter};
 #[cfg(not(target_family = "wasm"))]
 use crate::search::mixer::AddAsyncSourceOptions;
+use crate::search::mixer::SearchMixerEvent;
 use crate::search::result_renderer::{QueryResultRenderer, QueryResultRendererStyles};
 use crate::search::search_bar::{SearchBar, SearchBarEvent, SearchBarState, SearchResultOrdering};
 use crate::settings::InputSettings;
@@ -74,6 +75,7 @@ use repo_metadata::repositories::DetectedRepositories;
 #[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
+use super::query_gate::QueryGate;
 use super::styles;
 
 const CORNER_RADIUS: f32 = 8.0;
@@ -232,6 +234,8 @@ struct AIContextMenuState {
 }
 
 /// Maximum number of results to display
+/// Safety net for an Enter waiting on results that never arrive (logged when it fires).
+const SELECT_WAIT_GIVE_UP: Duration = Duration::from_secs(3);
 const MAX_SEARCH_RESULTS: usize = 250;
 const MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS: usize = 7;
 
@@ -247,6 +251,8 @@ pub struct AIContextMenu {
     state: AIContextMenuState,
     /// Debounce channel for search queries
     search_debounce_tx: Sender<String>,
+    /// Which query the displayed results answer, and an Enter waiting for the current one (#1365).
+    query_gate: QueryGate,
     handle: WeakViewHandle<Self>,
     /// Keep track of how many times in a row
     /// we had 0 matches and the user continued to make the query longer.
@@ -614,6 +620,17 @@ impl AIContextMenu {
             Self::handle_active_session_change,
         );
 
+        // Results reaching the search bar (event) release an Enter that was waiting for them.
+        ctx.subscribe_to_model(&mixer, |me, _handle, event, _ctx| {
+            if matches!(event, SearchMixerEvent::ResultsChanged) {
+                me.query_gate.results_reported();
+            }
+        });
+        // The search bar updates its state (and notifies) when it has taken the mixer's results.
+        ctx.observe(&search_bar_state, |me, _, ctx| {
+            me.run_deferred_select_if_ready(ctx);
+        });
+
         // Set up debounce system for search queries
         let (search_debounce_tx, search_debounce_rx) = async_channel::unbounded();
         let _ = ctx.spawn_stream_local(
@@ -673,6 +690,7 @@ impl AIContextMenu {
             },
             handle: ctx.handle(),
             search_debounce_tx,
+            query_gate: QueryGate::default(),
             num_consecutive_empty_results_events: 0,
         };
 
@@ -717,7 +735,37 @@ impl AIContextMenu {
         }
     }
 
+    /// Runs the Enter that `select_current_item` deferred, once the results are current.
+    fn run_deferred_select_if_ready(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.query_gate.select_waiting() {
+            return;
+        }
+        let in_main_menu = matches!(self.state.navigation_state, NavigationState::MainMenu);
+        let loading = !in_main_menu && self.mixer.as_ref(ctx).is_loading();
+        if self.query_gate.take_ready_select(loading) {
+            self.select_current_item(ctx);
+        }
+    }
+
     pub fn select_current_item(&mut self, ctx: &mut ViewContext<Self>) {
+        // The query reaches the mixer through a debounce, so right after a key the shown results
+        // (or the main-menu filter) answer an older query. Never act on them: wait for the
+        // current query's results (event driven; the timer below is only a logged give-up) (#1365).
+        if self.query_gate.is_stale() {
+            let wait_id = self.query_gate.defer_select();
+            log::debug!("ai context menu: Enter deferred until results for the typed query arrive");
+            let _ = ctx.spawn(
+                async { warpui::r#async::Timer::after(SELECT_WAIT_GIVE_UP).await },
+                move |me, _, _ctx| {
+                    if me.query_gate.give_up(wait_id) {
+                        log::warn!(
+                            "ai context menu: gave up waiting for results; Enter dropped (acting on nothing)"
+                        );
+                    }
+                },
+            );
+            return;
+        }
         match &self.state.navigation_state {
             NavigationState::MainMenu => {
                 // Select the current category from filtered categories
@@ -761,6 +809,7 @@ impl AIContextMenu {
     }
 
     pub fn close(&mut self, ctx: &mut ViewContext<Self>) {
+        self.query_gate.reset();
         self.num_consecutive_empty_results_events = 0;
         let query_length = self.query(ctx).len();
         let item_count = self.item_count(ctx);
@@ -791,6 +840,7 @@ impl AIContextMenu {
             ctx,
         );
         if categories.len() > 1 {
+            self.query_gate.reset();
             self.state.navigation_state = NavigationState::MainMenu;
             self.state.main_menu_query = String::new();
             self.state.selected_category_index = 0;
@@ -801,6 +851,7 @@ impl AIContextMenu {
 
     pub fn update_search_query(&mut self, query: String, _ctx: &mut ViewContext<Self>) {
         // Send the query through the debounce channel instead of updating directly
+        self.query_gate.request(query.clone());
         let _ = self.search_debounce_tx.try_send(query);
     }
 
@@ -823,6 +874,12 @@ impl AIContextMenu {
             self.check_and_transition_to_all_categories(&query, ctx);
         }
 
+        // Main-menu categories are view state filtered synchronously above, so only the other
+        // states wait for the mixer to answer; an unchanged query produces no new results.
+        let awaits_mixer = !matches!(self.state.navigation_state, NavigationState::MainMenu)
+            && self.search_bar.as_ref(ctx).query(ctx) != query;
+        self.query_gate.applied(&query, awaits_mixer);
+
         self.search_bar.update(ctx, |search_bar, ctx| {
             let prev_query = search_bar.query(ctx);
             // In MainMenu state the mixer has no data sources, so empty results
@@ -843,6 +900,8 @@ impl AIContextMenu {
         });
         if self.num_consecutive_empty_results_events >= MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS {
             self.close(ctx);
+        } else {
+            self.run_deferred_select_if_ready(ctx);
         }
     }
 
