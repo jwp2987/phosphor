@@ -92,15 +92,33 @@ pub(crate) fn set_retry_wait(
 
 /// Conversations that already have a countdown pulse chain running, so a retry and a resume
 /// that overlap share one chain instead of each starting their own.
+///
+/// The value is the chain's generation. A chain keeps going only while the registry still holds
+/// its own generation, so ending the wait ([`clear_retry_wait`]) releases the conversation even
+/// if the chain's next tick never runs (a spawn on a dropped model is cancelled): the entry can
+/// no longer stay behind and stop every later chain from starting (#1381, APP-R8).
 static PULSING_RETRY_WAITS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashSet<AIConversationId>>,
+    std::sync::Mutex<std::collections::HashMap<AIConversationId, u64>>,
 > = std::sync::LazyLock::new(Default::default);
+
+static NEXT_PULSE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Returns whether there was a wait to clear.
 pub(crate) fn clear_retry_wait(conversation_id: AIConversationId) -> bool {
-    RETRY_WAITS
+    let cleared = RETRY_WAITS
         .lock()
-        .is_ok_and(|mut waits| waits.remove(&conversation_id).is_some())
+        .is_ok_and(|mut waits| waits.remove(&conversation_id).is_some());
+    if cleared && let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+        pulsing.remove(&conversation_id);
+    }
+    cleared
+}
+
+#[cfg(test)]
+fn retry_wait_pulse_running(conversation_id: AIConversationId) -> bool {
+    PULSING_RETRY_WAITS
+        .lock()
+        .is_ok_and(|pulsing| pulsing.contains_key(&conversation_id))
 }
 
 /// The wait `conversation_id` is in the middle of, with the time left (rounded up to whole
@@ -138,28 +156,47 @@ pub(crate) fn start_retry_wait_pulse(
     conversation_id: AIConversationId,
     ctx: &mut ModelContext<BlocklistAIHistoryModel>,
 ) {
-    let started = PULSING_RETRY_WAITS
-        .lock()
-        .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
-    if started {
-        retry_wait_pulse_tick(conversation_id, ctx);
+    let generation = PULSING_RETRY_WAITS.lock().ok().and_then(|mut pulsing| {
+        match pulsing.entry(conversation_id) {
+            std::collections::hash_map::Entry::Occupied(_) => None,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                let generation =
+                    NEXT_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                slot.insert(generation);
+                Some(generation)
+            }
+        }
+    });
+    if let Some(generation) = generation {
+        retry_wait_pulse_tick(conversation_id, generation, ctx);
     }
 }
 
 fn retry_wait_pulse_tick(
     conversation_id: AIConversationId,
+    generation: u64,
     ctx: &mut ModelContext<BlocklistAIHistoryModel>,
 ) {
+    // The wait was cleared (and maybe a newer chain started): this chain is done.
+    let owns_chain = PULSING_RETRY_WAITS
+        .lock()
+        .is_ok_and(|pulsing| pulsing.get(&conversation_id) == Some(&generation));
+    if !owns_chain {
+        return;
+    }
     // Wake the views observing the history model so they recompute the label.
     ctx.notify();
     if current_retry_wait(conversation_id).is_some() {
+        // Time itself is the requirement: the label counts down once a second.
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(Duration::from_secs(1)).await;
             },
-            move |_, _, ctx| retry_wait_pulse_tick(conversation_id, ctx),
+            move |_, _, ctx| retry_wait_pulse_tick(conversation_id, generation, ctx),
         );
-    } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+    } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock()
+        && pulsing.get(&conversation_id) == Some(&generation)
+    {
         pulsing.remove(&conversation_id);
     }
 }
