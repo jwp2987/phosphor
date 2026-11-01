@@ -62,6 +62,10 @@ impl AskUserQuestionExecutor {
         }
 
         let receiver = self.result_rx.1.clone();
+        // The channel is shared by every card this executor ever runs. A Stop that raced an
+        // answer (or a `cancel` with nothing waiting) leaves a decision queued; without this
+        // drain the NEXT card would consume it as if the user had just answered (#1278).
+        while receiver.try_recv().is_ok() {}
         ActionExecution::new_async(
             async move { receiver.recv().await },
             |result, _ctx| match result {
