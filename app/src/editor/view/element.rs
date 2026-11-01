@@ -2478,7 +2478,7 @@ impl PaintState {
                 // If the line has no glyphs, the index is zero. Otherwise, we take one more index
                 // beyond the last start index in the line to get the last position.
                 line.last_glyph()
-                    .map_or(0, |glyph| (glyph.index + 1) as u32)
+                    .map_or(0, |glyph| glyph.index.saturating_add(1))
             } else {
                 0
             }

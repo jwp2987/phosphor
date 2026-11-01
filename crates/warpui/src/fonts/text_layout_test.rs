@@ -104,7 +104,7 @@ pub(crate) fn collect_glyph_indices(frame: &TextFrame) -> Vec<Vec<usize>> {
             line.runs
                 .iter()
                 .flat_map(|run| run.glyphs.iter())
-                .map(|glyph| glyph.index)
+                .map(|glyph| glyph.char_index())
                 .collect_vec()
         })
         .collect_vec()
@@ -125,7 +125,7 @@ fn collect_caret_position_last_offsets(frame: &TextFrame) -> Vec<Vec<usize>> {
         .map(|line| {
             line.caret_positions
                 .iter()
-                .map(|caret_position| caret_position.last_offset)
+                .map(|caret_position| caret_position.last())
                 .collect_vec()
         })
         .collect_vec()
@@ -134,7 +134,7 @@ fn collect_caret_position_last_offsets(frame: &TextFrame) -> Vec<Vec<usize>> {
 pub(crate) fn collect_line_caret_position_starts(line: &Line) -> Vec<usize> {
     line.caret_positions
         .iter()
-        .map(|pos| pos.start_offset)
+        .map(|pos| pos.start())
         .collect_vec()
 }
 

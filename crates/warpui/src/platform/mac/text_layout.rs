@@ -823,7 +823,7 @@ fn line_from_ct_line(
             Glyph {
                 id: *glyph_id as GlyphId,
                 position_along_baseline: vec2f(position.x as f32, position.y as f32),
-                index: char_offset + char_index,
+                index: crate::text_layout::narrow_offset(char_offset + char_index),
                 width: advance.width as f32,
             }
         })
@@ -1012,11 +1012,7 @@ fn caret_positions_for_line(
                 (second_index, first_index)
             };
 
-            CaretPosition {
-                position_in_line: pixel_offset as f32,
-                start_offset: start,
-                last_offset: end,
-            }
+            CaretPosition::new(pixel_offset as f32, start, end)
         })
         .collect();
     // Callers assume that carets are sorted by left-to-right visual display order,

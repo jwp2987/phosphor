@@ -171,7 +171,7 @@ impl FrameLayouts {
         // If the row has no glyphs we can't derive column bounds from the layout
         // (this happens for un-laid-out / fontless frames). Return `None` so the
         // caller falls back to logical-line behavior.
-        let first_glyph_index = line.first_glyph()?.index as u32;
+        let first_glyph_index = line.first_glyph()?.index;
         // Derive the row's column bounds from its caret positions when present.
         // A single caret position can span multiple buffer characters (emoji,
         // ligatures, and other shaped clusters), so the row end must be one past
@@ -182,12 +182,12 @@ impl FrameLayouts {
         let start = line
             .caret_positions
             .first()
-            .map_or(first_glyph_index, |caret| caret.start_offset as u32);
+            .map_or(first_glyph_index, |caret| caret.start_offset);
         let end = line
             .caret_positions
             .last()
-            .map(|caret| caret.last_offset as u32 + 1)
-            .or_else(|| line.last_glyph().map(|glyph| glyph.index as u32 + 1))
+            .map(|caret| caret.last_offset.saturating_add(1))
+            .or_else(|| line.last_glyph().map(|glyph| glyph.index.saturating_add(1)))
             .unwrap_or(start);
         Some(start..end)
     }
@@ -207,11 +207,11 @@ impl FrameLayouts {
         }
         if let Some(line) = self.get_line(point.row() as usize) {
             if let Some(glyph) = line.last_glyph() {
-                if point.column() as usize == glyph.index + 1 {
+                if point.column() as usize == glyph.char_index() + 1 {
                     clamp_direction = ClampDirection::Up;
                 }
             } else if let Some(glyph) = line.first_glyph() {
-                if point.column() as usize == glyph.index {
+                if point.column() as usize == glyph.char_index() {
                     clamp_direction = ClampDirection::Down;
                 }
             }

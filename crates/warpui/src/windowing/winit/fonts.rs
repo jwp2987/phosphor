@@ -1055,7 +1055,7 @@ impl TextLayoutSystem {
             line_glyph_start_index = line
                 .caret_positions
                 .last()
-                .map(|position| position.last_offset)
+                .map(|position| position.last())
                 .unwrap_or(line_glyph_start_index)
                 + 1;
 
@@ -1126,11 +1126,7 @@ impl TextLayoutSystem {
                     .char_index(paragraph_byte_offset + glyph.end)
                     .unwrap_or_else(|| str_index_map.num_chars())
                     .saturating_sub(1);
-                caret_positions.push(CaretPosition {
-                    position_in_line: glyph.x,
-                    start_offset,
-                    last_offset,
-                });
+                caret_positions.push(CaretPosition::new(glyph.x, start_offset, last_offset));
                 last_glyph_offset = last_offset;
             }
 
@@ -1151,11 +1147,11 @@ impl TextLayoutSystem {
         }
 
         if has_trailing_newline {
-            caret_positions.push(CaretPosition {
-                position_in_line: layout_line.w,
-                start_offset: last_glyph_offset + 1,
-                last_offset: last_glyph_offset + 1,
-            });
+            caret_positions.push(CaretPosition::new(
+                layout_line.w,
+                last_glyph_offset + 1,
+                last_glyph_offset + 1,
+            ));
         }
 
         Line {

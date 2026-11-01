@@ -117,7 +117,7 @@ impl ShimmeringTextElement {
             .iter()
             .flat_map(|run| run.glyphs.iter())
             .enumerate()
-            .map(|(glyph_index, glyph)| (GlyphIndex(glyph_index), CharOffset::from(glyph.index)))
+            .map(|(glyph_index, glyph)| (GlyphIndex(glyph_index), CharOffset::from(glyph.char_index())))
             .collect()
     }
 

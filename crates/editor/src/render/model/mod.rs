@@ -1217,12 +1217,12 @@ impl CellLayout {
             let char_start = line
                 .caret_positions
                 .first()
-                .map(|cp| cp.start_offset)
+                .map(|cp| cp.start())
                 .unwrap_or(0);
             let char_end = line
                 .caret_positions
                 .last()
-                .map(|cp| cp.last_offset + 1)
+                .map(|cp| cp.last() + 1)
                 .unwrap_or(char_start);
             line_char_ranges.push(CharOffset::from(char_start)..CharOffset::from(char_end));
         }
@@ -1261,7 +1261,7 @@ impl CellLayout {
         }
         if carets
             .first()
-            .is_some_and(|caret| char_offset < caret.start_offset)
+            .is_some_and(|caret| char_offset < caret.start())
         {
             0.0
         } else {
@@ -1311,7 +1311,7 @@ impl CellLayout {
         for caret in carets {
             let distance = (caret.position_in_line - x).abs();
             if distance <= closest_distance {
-                closest = CharOffset::from(caret.start_offset).clamp(range.start, range.end);
+                closest = CharOffset::from(caret.start()).clamp(range.start, range.end);
                 closest_distance = distance;
             }
         }
