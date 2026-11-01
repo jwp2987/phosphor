@@ -307,7 +307,7 @@ impl Input {
             // Clearing walks the whole buffer's styles, so do it once per oversized
             // stretch, not on every edit.
             if !self.decorations_cleared_for_oversized_buffer {
-                self.clear_decorations(ctx);
+                self.clear_decorations_unchecked(ctx);
                 self.decorations_cleared_for_oversized_buffer = true;
             }
             return;
@@ -494,13 +494,36 @@ impl Input {
             return;
         }
 
-        // Clear all decorations before applying the updated ones.
-        self.clear_decorations(ctx);
+        // Clear all decorations before applying the updated ones. The comparison above already
+        // read the buffer's styles, so skip the guard's second scan.
+        self.clear_decorations_unchecked(ctx);
         self.apply_decoration_set(desired, ctx);
     }
 
+    /// Whether the buffer carries any syntax color or error underline, i.e. whether
+    /// [`Self::clear_decorations`] would change anything.
+    pub(super) fn buffer_has_decorations(&self, ctx: &AppContext) -> bool {
+        self.editor.as_ref(ctx).text_style_runs(ctx).any(|run| {
+            let style = run.text_style();
+            style.syntax_color.is_some() || style.error_underline_color.is_some()
+        })
+    }
+
     /// Removes decorations (error underlining, syntax highlighting, and background colors) from the input buffer.
+    ///
+    /// Every style edit relayouts the editor, resets its cursor blink and requests a frame even
+    /// when it changes nothing, and an AI-mode buffer is cleared on every keystroke while it has
+    /// no decorations at all. So a buffer that carries none is left alone: that clear was a
+    /// second, visually identical frame ~10 ms after each key (#1298).
     pub(super) fn clear_decorations(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.buffer_has_decorations(ctx) {
+            self.clear_decorations_unchecked(ctx);
+        }
+    }
+
+    /// [`Self::clear_decorations`] without looking at the buffer's styles first, for callers that
+    /// already know there is something to clear or that must not walk a huge buffer's runs.
+    pub(super) fn clear_decorations_unchecked(&mut self, ctx: &mut ViewContext<Self>) {
         self.editor.update(ctx, |editor, ctx| {
             editor.update_buffer_styles(
                 vec![CharOffset::from(0)..editor.buffer_size(ctx)],

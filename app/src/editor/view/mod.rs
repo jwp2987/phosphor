@@ -1830,6 +1830,10 @@ pub struct EditorView {
     blink_epoch: usize,
     /// Blink toggles since the last cursor activity; see `MAX_IDLE_CURSOR_BLINKS`.
     blinks_since_activity: u32,
+    /// How many times the buffer reported a style update; tests read it to prove that an
+    /// operation which changes no style does not make the editor relayout and request a frame.
+    #[cfg(test)]
+    styles_updated_count: usize,
     single_line: bool,
     /// A cache for text that is cut within the input using ctrl-k/u. This text is not copied to clipboard.
     internal_clipboard: String,
@@ -3309,6 +3313,8 @@ impl EditorView {
             cursors_visible: false,
             blink_epoch: 0,
             blinks_since_activity: 0,
+            #[cfg(test)]
+            styles_updated_count: 0,
             single_line: options.single_line,
             internal_clipboard: "".to_string(),
             propagate_vertical_navigation_keys: options
@@ -3918,6 +3924,11 @@ impl EditorView {
     /// should interface through the [`EditorView`]`.
     fn model(&self) -> &ModelHandle<EditorModel> {
         &self.editor_model
+    }
+
+    #[cfg(test)]
+    pub fn styles_updated_count(&self) -> usize {
+        self.styles_updated_count
     }
 
     #[cfg(test)]
@@ -7797,7 +7808,13 @@ impl EditorView {
             }
             // In these cases, we just need to re-render, which is handled
             // by the invalidation below.
-            EditorModelEvent::DisplayMapUpdated | EditorModelEvent::StylesUpdated => {}
+            EditorModelEvent::DisplayMapUpdated => {}
+            EditorModelEvent::StylesUpdated => {
+                #[cfg(test)]
+                {
+                    self.styles_updated_count += 1;
+                }
+            }
         }
 
         // The editor model can change even when we aren't focused, so we only want to reset the
