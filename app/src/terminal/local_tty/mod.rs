@@ -95,6 +95,15 @@ pub trait EventedPty: EventedReadWrite {
         false
     }
 
+    /// Whether a write must wait for the previous write's completion event before the next can
+    /// start (the Windows ConPTY named pipe: one overlapped write in flight, `WouldBlock` until
+    /// its completion arrives through the poll). Keys that queue up meanwhile are then merged
+    /// into one write by the event loop (see `State::coalesce_keys_into`). A unix pty takes
+    /// writes into the kernel at once, so there is nothing to gain and it keeps one write per job.
+    fn coalesces_key_writes(&self) -> bool {
+        false
+    }
+
     /// Terminate the PTY process
     fn kill(self) -> Result<()>;
 }
