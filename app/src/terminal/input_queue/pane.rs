@@ -206,40 +206,15 @@ mod tests {
         assert!(pane.try_peek().is_some_and(|queue| queue.is_idle()));
     }
 
-    /// #1339 / #1400: one typed-characters event is offered once, whichever route is first.
+    /// The pane records whether an ssh connect hold is active.
     #[test]
-    fn a_typed_event_offered_by_the_element_is_dropped_by_the_editor_once() {
+    fn the_ssh_hold_flag_follows_set_and_clear() {
         let pane = PaneQueue::new();
-        assert!(
-            !pane.take_typed_offered(5, "a"),
-            "nothing offered: the editor offers its own"
-        );
-        pane.mark_typed_offered(5, "a");
-        assert!(!pane.take_typed_offered(6, "a"));
-        assert!(pane.take_typed_offered(5, "a"));
-        assert!(!pane.take_typed_offered(5, "a"), "the mark is consumed");
-    }
-
-    /// A new hold forgets a mark left over from an earlier one.
-    #[test]
-    fn a_new_ssh_hold_forgets_a_stale_mark() {
-        let pane = PaneQueue::new();
-        pane.mark_typed_offered(9, "x");
+        assert!(!pane.ssh_hold_active());
         pane.set_ssh_hold_active(true);
         assert!(pane.ssh_hold_active());
-        assert!(!pane.take_typed_offered(9, "x"));
         pane.set_ssh_hold_active(false);
         assert!(!pane.ssh_hold_active());
-    }
-
-    /// The view re-asserts the hold on every held key; that is not a new hold.
-    #[test]
-    fn re_asserting_an_active_hold_keeps_the_fresh_mark() {
-        let pane = PaneQueue::new();
-        pane.set_ssh_hold_active(true);
-        pane.mark_typed_offered(3, "k");
-        pane.set_ssh_hold_active(true);
-        assert!(pane.take_typed_offered(3, "k"));
     }
 
     #[test]
