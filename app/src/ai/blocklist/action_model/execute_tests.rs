@@ -238,6 +238,52 @@ mod read_file_failures {
     }
 
     #[test]
+    fn first_line_longer_than_the_budget_is_reported_not_read_not_empty() {
+        let dir = TempDir::new().expect("create tempdir");
+        let a = write_file(
+            &dir,
+            "a.txt",
+            b"this first line is far longer than the budget\nmore\n",
+        );
+
+        let result = block_on(read_local_file_context(
+            &[location(&a)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert!(
+            result.file_contexts.is_empty(),
+            "must not hand the model an empty file: {:?}",
+            result.file_contexts
+        );
+        assert_eq!(result.failed_files.len(), 1, "{:?}", result.failed_files);
+        assert!(result.failed_files[0].path.ends_with("a.txt"));
+        assert!(result.failed_files[0].message.contains("size limit"));
+    }
+
+    #[test]
+    fn genuinely_empty_file_is_still_read_as_empty() {
+        let dir = TempDir::new().expect("create tempdir");
+        let a = write_file(&dir, "empty.txt", b"");
+
+        let result = block_on(read_local_file_context(
+            &[location(&a)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert!(result.failed_files.is_empty(), "{:?}", result.failed_files);
+        assert_eq!(result.file_contexts.len(), 1);
+    }
+
+    #[test]
     fn remote_entry_without_content_is_a_failure_not_dropped() {
         use remote_server::proto::{FileContextProto, file_context_proto::Content};
         let with = FileContextProto {
