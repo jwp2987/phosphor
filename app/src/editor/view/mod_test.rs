@@ -5159,3 +5159,74 @@ fn test_right_mid_buffer_moves_cursor_without_pending_accept() {
         });
     })
 }
+
+// #1300: keys typed while a paste is still being read are held and applied behind it, in order.
+#[test]
+fn test_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let hold = view.paste_hold();
+            let id = hold.begin();
+
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Enter, ctx);
+            // Nothing was applied yet, and the Enter did not run on a fragment.
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            let held = hold.complete(id).expect("paste still pending");
+            assert!(matches!(
+                held.as_slice(),
+                [HeldPasteKey::Text(text), HeldPasteKey::Action(EditorAction::Enter)] if text == "xy"
+            ));
+            // The paste lands first, at the cursor that was there when it was asked for.
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            for key in held.into_iter().take(1) {
+                view.apply_held_paste_key(key, ctx);
+            }
+            assert_eq!(view.buffer_text(ctx), "aPASTExy");
+        });
+    })
+}
+
+// #1300: Ctrl-C cancels the pending paste; what was typed before it is applied first.
+#[test]
+fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            let hold = view.paste_hold();
+            let id = hold.begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "");
+            view.handle_action(&EditorAction::CtrlC, ctx);
+            assert!(!hold.has_pending());
+            assert_eq!(view.buffer_text(ctx), "x");
+            // The late read of the cancelled paste pastes nothing.
+            assert!(hold.complete(id).is_none());
+        });
+    })
+}
+
+// #1300: with no paste pending, keys apply at once (the hold is invisible).
+#[test]
+fn test_keys_apply_immediately_when_no_paste_is_pending() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "x");
+        });
+    })
+}

@@ -9,7 +9,7 @@
 
 /// What the caller does with a key typed while a paste may be pending.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum KeyDisposition {
+pub(crate) enum KeyDisposition {
     /// No paste is pending: write the key now.
     PassThrough,
     /// A paste is pending and has taken the key: it is released behind the paste.
@@ -18,22 +18,33 @@ pub(super) enum KeyDisposition {
     CancelledPaste(Vec<Vec<u8>>),
 }
 
-#[derive(Debug, Default)]
-pub(super) struct PasteSequencer {
+/// `K` is what is held behind the paste: raw pty bytes for the terminal (the default), editor keys
+/// for the input editor (#1300).
+#[derive(Debug)]
+pub(crate) struct PasteSequencer<K = Vec<u8>> {
     next_id: u64,
-    pending: Option<PendingPaste>,
+    pending: Option<PendingPaste<K>>,
+}
+
+impl<K> Default for PasteSequencer<K> {
+    fn default() -> Self {
+        Self {
+            next_id: 0,
+            pending: None,
+        }
+    }
 }
 
 #[derive(Debug)]
-struct PendingPaste {
+struct PendingPaste<K> {
     id: u64,
-    held: Vec<Vec<u8>>,
+    held: Vec<K>,
 }
 
-impl PasteSequencer {
+impl<K> PasteSequencer<K> {
     /// Starts a paste and returns its id. A paste already pending is superseded: its result will be
     /// ignored and its held keys carry over to the new one so none is lost or reordered.
-    pub(super) fn begin(&mut self) -> u64 {
+    pub(crate) fn begin(&mut self) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         let held = self
@@ -45,18 +56,49 @@ impl PasteSequencer {
         id
     }
 
-    pub(super) fn is_pending(&self, id: u64) -> bool {
+    pub(crate) fn is_pending(&self, id: u64) -> bool {
         self.pending
             .as_ref()
             .is_some_and(|pending| pending.id == id)
     }
 
-    pub(super) fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
 
+    /// Holds `key` behind the pending paste. Returns false (and drops nothing) when no paste is
+    /// pending: the caller applies the key itself.
+    pub(crate) fn hold(&mut self, key: K) -> bool {
+        match self.pending.as_mut() {
+            Some(pending) => {
+                pending.held.push(key);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Cancels the pending paste and returns the keys held so far, in typing order.
+    pub(crate) fn cancel(&mut self) -> Vec<K> {
+        self.pending
+            .take()
+            .map(|pending| pending.held)
+            .unwrap_or_default()
+    }
+
+    /// The paste `id` is ready. Returns the keys held behind it, in typing order, to write right
+    /// after the paste; `None` if that paste was cancelled or superseded (write nothing).
+    pub(crate) fn complete(&mut self, id: u64) -> Option<Vec<K>> {
+        if !self.is_pending(id) {
+            return None;
+        }
+        self.pending.take().map(|pending| pending.held)
+    }
+}
+
+impl PasteSequencer<Vec<u8>> {
     /// Routes a key typed now. `is_abort` is true for Ctrl-C / Ctrl-D.
-    pub(super) fn on_key(&mut self, bytes: &[u8], is_abort: bool) -> KeyDisposition {
+    pub(crate) fn on_key(&mut self, bytes: &[u8], is_abort: bool) -> KeyDisposition {
         let Some(pending) = self.pending.as_mut() else {
             return KeyDisposition::PassThrough;
         };
@@ -67,15 +109,6 @@ impl PasteSequencer {
         }
         pending.held.push(bytes.to_vec());
         KeyDisposition::Held
-    }
-
-    /// The paste `id` is ready. Returns the keys held behind it, in typing order, to write right
-    /// after the paste; `None` if that paste was cancelled or superseded (write nothing).
-    pub(super) fn complete(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
-        if !self.is_pending(id) {
-            return None;
-        }
-        self.pending.take().map(|pending| pending.held)
     }
 }
 

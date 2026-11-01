@@ -44,6 +44,13 @@ pub trait Clipboard: 'static {
         None
     }
 
+    /// Like [`Self::background_text_reader`] but for a full [`Clipboard::read`]: text, copied paths,
+    /// HTML and images. For the input editor's paste, which may attach an image. `None` keeps the
+    /// read on the main thread (#1300).
+    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
+        None
+    }
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text

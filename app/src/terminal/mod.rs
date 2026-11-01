@@ -28,7 +28,7 @@ pub use audible_bell::AudibleBell;
 pub mod available_shells;
 
 mod block_filter;
-mod paste_sequencer;
+pub(crate) mod paste_sequencer;
 pub mod block_list_element;
 pub mod block_list_viewport;
 pub mod blockgrid_element;

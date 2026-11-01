@@ -185,6 +185,22 @@ impl Clipboard for LinuxClipboard {
         }))
     }
 
+    fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
+        // Same process-global backends as `background_text_reader`; this one also probes the HTML
+        // and image targets, which a silent owner answers only after the arboard timeout (#1300).
+        Some(Box::new(|| {
+            let Ok(mut clipboard) = LinuxClipboard::new() else {
+                return BackgroundTextRead::Content(ClipboardContent::null_value());
+            };
+            let content = clipboard.read();
+            if clipboard.take_read_failure() {
+                BackgroundTextRead::TimedOut
+            } else {
+                BackgroundTextRead::Content(content)
+            }
+        }))
+    }
+
     fn read_plain_text(&mut self) -> String {
         self.read_text_retrying().unwrap_or_default()
     }

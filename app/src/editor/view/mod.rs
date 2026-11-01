@@ -3,6 +3,7 @@ mod figma_utils;
 mod key_hold;
 mod model;
 mod movement;
+mod paste_hold;
 mod snapshot;
 #[cfg(feature = "voice_input")]
 mod voice;
@@ -13,6 +14,7 @@ mod voice;
 pub use {
     element::{EditorDecoratorElements, EditorElement, TextColors},
     key_hold::{EditorKeyHold, HeldEditorKey, TakenKeys},
+    paste_hold::{EditorPasteHold, HeldPasteKey},
     model::{
         Chars, CrdtOperation, DisplayPoint, EditOrigin, EditorSnapshot, InteractionState,
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
@@ -1865,6 +1867,8 @@ pub struct EditorView {
     /// Set on the input's editor by the terminal view: while active, editing keys are queued
     /// there instead of applied, so keys typed during an ssh connect keep their order (#1292).
     key_hold: Option<Rc<EditorKeyHold>>,
+    /// Keys typed while a paste is being read off the UI thread; replayed behind it (#1300).
+    paste_hold: Rc<EditorPasteHold>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
 
     /// The height of the editor at the last render.
@@ -3012,6 +3016,40 @@ impl EditorView {
         self.key_hold = Some(hold);
     }
 
+    /// The hold that queues keys typed while a paste is read off the UI thread (#1300).
+    pub fn paste_hold(&self) -> Rc<EditorPasteHold> {
+        Rc::clone(&self.paste_hold)
+    }
+
+    /// Applies a key that was held behind a paste, exactly as if it had just been typed.
+    pub fn apply_held_paste_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        match key {
+            HeldPasteKey::Text(text) => {
+                self.handle_action(&EditorAction::UserInsert(UserInput::new(text)), ctx)
+            }
+            HeldPasteKey::Action(action) => self.handle_action(&action, ctx),
+        }
+    }
+
+    /// While a paste is being read, queues the editing keys behind it so they apply after the
+    /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
+    /// applied first and the Ctrl-C then acts normally.
+    fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.paste_hold.has_pending() {
+            return false;
+        }
+        if matches!(action, EditorAction::CtrlC) {
+            for key in self.paste_hold.cancel() {
+                self.apply_held_paste_key(key, ctx);
+            }
+            return false;
+        }
+        match paste_hold::held_form(action) {
+            Some(key) => self.paste_hold.hold(key),
+            None => false,
+        }
+    }
+
     /// Queues `action` on the key hold instead of applying it, if the hold is active and the
     /// action is an editing key it can replay. Everything else (Ctrl-C, Escape, Tab, ...) acts
     /// normally.
@@ -3330,6 +3368,7 @@ impl EditorView {
             autosuggestion_state: None,
             pending_autosuggestion_accept: None,
             key_hold: None,
+            paste_hold: Rc::default(),
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
                 editor_height_before_shrink: 0.,
@@ -8716,6 +8755,9 @@ impl TypedActionView for EditorView {
     fn handle_action(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) {
         use EditorAction::*;
         if self.hold_key_for_terminal(action) {
+            return;
+        }
+        if self.hold_key_for_paste(action, ctx) {
             return;
         }
         match action {
