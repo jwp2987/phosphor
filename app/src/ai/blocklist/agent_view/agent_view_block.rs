@@ -48,6 +48,8 @@ pub struct AgentViewEntryBlock {
     origin: AgentViewEntryOrigin,
     /// Cached title for rendering when conversation no longer exists (i.e. after deletion).
     cached_title: Option<String>,
+    /// What this row last saw on a streaming delta; see [`streaming_delta_needs_render`].
+    last_streaming_signature: Option<EntrySignature>,
     state_handles: StateHandles,
 }
 
@@ -64,8 +66,17 @@ impl AgentViewEntryBlock {
         ctx.subscribe_to_model(&history_model, |me, _, event, ctx| match event {
             BlocklistAIHistoryEvent::UpdatedStreamingExchange {
                 conversation_id, ..
+            } if *conversation_id == me.conversation_id => {
+                // One of these arrives per streamed delta, but this row renders only the
+                // conversation's title, status and passive-ness; re-render when one changed
+                // (#1282).
+                let signature = EntrySignature::of(&me.conversation_id, ctx);
+                if !streaming_delta_needs_render(&mut me.last_streaming_signature, signature) {
+                    return;
+                }
+                ctx.notify();
             }
-            | BlocklistAIHistoryEvent::UpdatedConversationStatus {
+            BlocklistAIHistoryEvent::UpdatedConversationStatus {
                 conversation_id, ..
             }
             // A regenerated or renamed title (e.g. `start_title_generation`) otherwise sits
@@ -97,7 +108,74 @@ impl AgentViewEntryBlock {
             origin,
             cached_title: Default::default(),
             state_handles: Default::default(),
+            last_streaming_signature: None,
         }
+    }
+}
+
+/// What a streaming delta could change in [`AgentViewEntryBlock::render`]: the title, the
+/// status and whether the conversation is entirely passive.
+#[derive(Clone, PartialEq, Eq)]
+struct EntrySignature {
+    title: Option<String>,
+    status: ConversationStatus,
+    passive: bool,
+}
+
+impl EntrySignature {
+    fn of(conversation_id: &AIConversationId, app: &warpui::AppContext) -> Option<Self> {
+        let conversation = BlocklistAIHistoryModel::as_ref(app).conversation(conversation_id)?;
+        Some(Self {
+            title: conversation.title(),
+            status: conversation.status().clone(),
+            passive: conversation.is_entirely_passive(),
+        })
+    }
+}
+
+/// Records `current` and returns whether it differs from the signature the row last saw.
+/// Always true when the signature is unknown or the conversation is gone.
+fn streaming_delta_needs_render(
+    last: &mut Option<EntrySignature>,
+    current: Option<EntrySignature>,
+) -> bool {
+    let changed = current.is_none() || *last != current;
+    *last = current;
+    changed
+}
+
+#[cfg(test)]
+mod streaming_signature_tests {
+    use super::*;
+
+    fn sig(title: &str, status: ConversationStatus) -> Option<EntrySignature> {
+        Some(EntrySignature {
+            title: Some(title.to_owned()),
+            status,
+            passive: false,
+        })
+    }
+
+    #[test]
+    fn deltas_with_unchanged_inputs_do_not_render() {
+        let mut last = None;
+        assert!(streaming_delta_needs_render(
+            &mut last,
+            sig("t", ConversationStatus::InProgress)
+        ));
+        assert!(!streaming_delta_needs_render(
+            &mut last,
+            sig("t", ConversationStatus::InProgress)
+        ));
+        assert!(streaming_delta_needs_render(
+            &mut last,
+            sig("t2", ConversationStatus::InProgress)
+        ));
+        assert!(streaming_delta_needs_render(
+            &mut last,
+            sig("t2", ConversationStatus::Success)
+        ));
+        assert!(streaming_delta_needs_render(&mut last, None));
     }
 }
 
