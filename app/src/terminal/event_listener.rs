@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::terminal::event::{Event as TerminalEvent, EvictionStamp};
 use async_channel::Sender;
@@ -33,6 +33,10 @@ pub struct ChannelEventListener {
     /// Monotonic count of blocks evicted by `terminal.max_retained_lines` (#889), shared by every
     /// clone of this listener. See [`EvictionStamp`].
     evicted_blocks_total: Arc<AtomicUsize>,
+    /// Published by the model with each pty read: are these bytes countable for the throughput
+    /// recorder (not in-band output, post-bootstrap)? Lets the recorder run without ever taking
+    /// the model lock (#1377).
+    pty_read_countable: Arc<AtomicBool>,
     /// Events go nowhere (see [`Self::detached`]).
     sink: bool,
 }
@@ -48,6 +52,7 @@ impl ChannelEventListener {
             terminal_events_tx,
             pty_reads_tx,
             evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            pty_read_countable: Arc::new(AtomicBool::new(false)),
             sink: false,
         }
     }
@@ -67,6 +72,7 @@ impl ChannelEventListener {
             terminal_events_tx,
             pty_reads_tx,
             evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            pty_read_countable: Arc::new(AtomicBool::new(false)),
             sink: true,
         }
     }
@@ -138,7 +144,13 @@ impl ChannelEventListener {
         }
     }
 
-    pub fn send_pty_read_event(&self, bytes: &[u8]) {
+    /// The flag the throughput recorder reads instead of locking the model.
+    pub fn pty_read_countable_flag(&self) -> Arc<AtomicBool> {
+        self.pty_read_countable.clone()
+    }
+
+    pub fn send_pty_read_event(&self, bytes: &[u8], countable: bool) {
+        self.pty_read_countable.store(countable, Ordering::Relaxed);
         if self.sink {
             return;
         }

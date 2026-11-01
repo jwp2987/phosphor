@@ -507,7 +507,11 @@ impl<S> TerminalManager<S> {
 
         // This is purely for measuring throughput on WarpDev.
         if FeatureFlag::RecordPtyThroughput.is_enabled() {
-            Self::record_pty_throughput(inactive_pty_reads_rx.clone(), model.clone(), ctx);
+            Self::record_pty_throughput(
+                inactive_pty_reads_rx.clone(),
+                channel_event_proxy.pty_read_countable_flag(),
+                ctx,
+            );
         }
 
         // Initialize the PtyController.
@@ -677,14 +681,14 @@ impl<S> TerminalManager<S> {
     /// is non-zero over some time interval.
     fn record_pty_throughput(
         pty_reads_rx: InactiveReceiver<Arc<Vec<u8>>>,
-        model: Arc<FairMutex<TerminalModel>>,
+        countable: Arc<std::sync::atomic::AtomicBool>,
         ctx: &mut AppContext,
     ) {
         if FeatureFlag::RecordPtyThroughput.is_enabled() {
             let auth_state = AuthStateProvider::as_ref(ctx).get();
             recorder::record_pty_throughput(
                 pty_reads_rx.activate(),
-                model,
+                countable,
                 auth_state.clone(),
                 ctx.background_executor().to_owned(),
             );

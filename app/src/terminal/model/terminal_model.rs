@@ -4094,7 +4094,9 @@ impl ansi::Handler for TerminalModel {
         let bytes = input.bytes();
 
         // Send a copy of the bytes to subscribers.
-        self.event_proxy.send_pty_read_event(bytes);
+        let countable = !self.is_receiving_in_band_command_output()
+            && self.is_active_block_bootstrapped();
+        self.event_proxy.send_pty_read_event(bytes, countable);
 
         // Send a copy of the bytes for the active shared session, if applicable.
         // When processing a synchronized output frame, `on_finish_byte_processing` is called
