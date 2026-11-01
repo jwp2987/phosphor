@@ -684,6 +684,13 @@ pub enum RepaintTrigger {
         /// spawned task's closure reads this cell when it fires, not a value
         /// captured at spawn time, so the upgrade is visible to it.
         layout_required: Rc<Cell<bool>>,
+        /// Later deadlines (and whether each needs layout) that were requested while this
+        /// timer was pending and so were "covered" by it. A covering timer only guarantees ONE
+        /// repaint at its own deadline; an element that asked for a one-shot repaint later than
+        /// that gets nothing from it unless it happens to ask again on that paint. So when this
+        /// timer fires, every follow-up still in the future is re-requested (which re-attaches
+        /// it to the next covering timer, or arms a real one), and the request is never dropped.
+        followups: Rc<RefCell<Vec<(Instant, bool)>>>,
     },
     AssetLoaded {
         asset_handle: AssetHandle,
@@ -692,6 +699,19 @@ pub enum RepaintTrigger {
     RasterReady {
         wait: crate::image_cache::RasterWait,
     },
+}
+
+/// Most follow-up deadlines one repaint timer remembers (see `RepaintTrigger::Timer::followups`).
+const MAX_REPAINT_FOLLOWUPS: usize = 32;
+
+/// Remembers that a repaint was also wanted at `at`, merging with an entry for the same instant
+/// (a layout requirement wins over paint-only).
+fn record_followup(followups: &mut Vec<(Instant, bool)>, at: Instant, layout_required: bool) {
+    if let Some(existing) = followups.iter_mut().find(|(instant, _)| *instant == at) {
+        existing.1 |= layout_required;
+    } else if followups.len() < MAX_REPAINT_FOLLOWUPS {
+        followups.push((at, layout_required));
+    }
 }
 
 type EventMunger = dyn Fn(&mut Event, &mut AppContext);
@@ -4235,6 +4255,19 @@ impl AppContext {
         }
     }
 
+    /// Deadlines of the repaint timers currently pending for `window_id`.
+    #[cfg(test)]
+    pub(crate) fn pending_repaint_timer_deadlines(&self, window_id: WindowId) -> Vec<Instant> {
+        self.repaint_tasks
+            .values()
+            .filter(|task| task.window_id == window_id)
+            .filter_map(|task| match &task.repaint_trigger {
+                RepaintTrigger::Timer { instant, .. } => Some(*instant),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Schedules an asynchronous task for each delayed notify. Removes any existing notify jobs that've been cancelled.
     ///
     /// `layout_required` says whether the scheduled repaint needs a full layout
@@ -4280,6 +4313,7 @@ impl AppContext {
             let RepaintTrigger::Timer {
                 instant,
                 layout_required: existing_layout_required,
+                followups,
             } = &task.repaint_trigger
             else {
                 continue;
@@ -4291,6 +4325,9 @@ impl AppContext {
             if layout_required && !existing_layout_required.get() {
                 existing_layout_required.set(true);
             }
+            if *instant < repaint_at {
+                record_followup(&mut followups.borrow_mut(), repaint_at, layout_required);
+            }
         }
         if covered_by_existing {
             return;
@@ -4299,6 +4336,8 @@ impl AppContext {
         let weak_app = self.weak_self.clone();
         let layout_required = Rc::new(Cell::new(layout_required));
         let layout_required_for_task = layout_required.clone();
+        let followups: Rc<RefCell<Vec<(Instant, bool)>>> = Rc::default();
+        let followups_for_task = followups.clone();
 
         let task_id = TaskId::new();
         let task = self.foreground.spawn(async move {
@@ -4315,6 +4354,16 @@ impl AppContext {
                         invalidation.paint_only_redraw_requested = true;
                     }
                     app.update_windows();
+                    // Re-request the later deadlines this timer was covering (see
+                    // `RepaintTrigger::Timer::followups`). Anything now in the past was served
+                    // by the repaint that just ran.
+                    let now = Instant::now();
+                    let followups = std::mem::take(&mut *followups.borrow_mut());
+                    for (at, layout) in followups {
+                        if at > now {
+                            app.manage_delayed_repaint_timers(window_id, at, layout);
+                        }
+                    }
                 }
             }
         });
@@ -4327,6 +4376,7 @@ impl AppContext {
                 repaint_trigger: RepaintTrigger::Timer {
                     instant: repaint_at,
                     layout_required: layout_required_for_task,
+                    followups: followups_for_task,
                 },
             },
         );
