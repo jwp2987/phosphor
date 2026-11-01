@@ -5,7 +5,7 @@ use super::{
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
     COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
-    AcceptSource, StreamedTextChange, accept_is_debounced, accept_within_debounce, cancel_explanation_for_reason,
+    AcceptSource, StreamedTextChange, accept_is_stale, accept_key_predates_paint, cancel_explanation_for_reason,
     denylisted_command_message, enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
@@ -571,25 +571,30 @@ fn programmatic_expand_clears_user_collapsed_flag() {
     ));
 }
 
-// #1195: an Enter in flight when the approval card appears must not approve the command.
+// #1362 (was #1195): an Enter in flight when the approval card appears must not approve the
+// command. Ordering, not time: a key whose seq is not after the paint seq is stale.
 #[test]
-fn accept_inside_the_debounce_window_is_ignored() {
-    use std::time::Duration;
-    assert!(accept_within_debounce(Some(Duration::ZERO)));
-    assert!(accept_within_debounce(Some(Duration::from_millis(299))));
-    assert!(!accept_within_debounce(Some(Duration::from_millis(300))));
-    assert!(!accept_within_debounce(Some(Duration::from_secs(5))));
-    // A card that was never rendered awaiting approval (programmatic accepts) is not debounced.
-    assert!(!accept_within_debounce(None));
+fn accept_key_queued_before_the_card_painted_is_ignored_whatever_the_delay() {
+    // Card painted when the key clock read 7; keys 5, 6 and 7 were delivered before/at it.
+    assert!(accept_key_predates_paint(Some(7), 5));
+    assert!(accept_key_predates_paint(Some(7), 7));
+    // Still ignored if handled "late": the verdict has no time input at all.
+    assert!(accept_key_predates_paint(Some(7), 6));
 }
 
-// #1195 follow-up: a click on Run inside the window was silently ignored; only keys are debounced.
-// Old code: no `accept_is_debounced`; the click went through the same debounce as Enter.
 #[test]
-fn a_click_on_run_is_never_debounced() {
-    use std::time::Duration;
-    let early = Some(Duration::from_millis(10));
-    assert!(accept_is_debounced(AcceptSource::Key, early));
-    assert!(!accept_is_debounced(AcceptSource::Pointer, early));
-    assert!(!accept_is_debounced(AcceptSource::Key, None));
+fn accept_after_painted_is_honoured_at_any_delay() {
+    // The very next key after the paint approves, even a few microseconds later (< 300 ms).
+    assert!(!accept_key_predates_paint(Some(7), 8));
+    assert!(!accept_key_predates_paint(Some(7), 9_000));
+    // A card never rendered awaiting (programmatic accept) is not stale.
+    assert!(!accept_key_predates_paint(None, 0));
+}
+
+// A click on Run is never stale; only keys are checked.
+#[test]
+fn a_click_on_run_is_never_stale() {
+    assert!(accept_is_stale(AcceptSource::Key, Some(7), 7));
+    assert!(!accept_is_stale(AcceptSource::Pointer, Some(7), 7));
+    assert!(!accept_is_stale(AcceptSource::Key, None, 0));
 }
