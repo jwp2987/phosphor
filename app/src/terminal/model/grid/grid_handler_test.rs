@@ -3725,6 +3725,25 @@ fn selection_parts_join_text_and_snapshots_like_the_inline_path() {
 }
 
 #[test]
+fn selection_render_stops_when_cancelled_and_matches_when_not() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, SelectionPart, SelectionParts,
+    };
+    use std::sync::atomic::AtomicBool;
+    let blockgrid = mock_blockgrid("one\r\ntwo\r\nthree");
+    let end = blockgrid.end_point();
+    let make = || {
+        SelectionParts::new(vec![SelectionPart::Block(BlockTextSnapshot {
+            pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+        })])
+    };
+    let live = AtomicBool::new(false);
+    assert_eq!(make().render_cancellable(&live), Some(make().render()));
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(make().render_cancellable(&cancelled), None);
+}
+
+#[test]
 fn bounded_selection_from_parts_never_renders_snapshots() {
     use crate::terminal::model::grid::text_snapshot::{
         BlockTextSnapshot, BoundedSelection, SelectionPart, SelectionParts,

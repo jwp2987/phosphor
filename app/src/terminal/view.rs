@@ -2743,11 +2743,13 @@ enum PowerShellSetupHold {
 
 pub struct TerminalView {
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
+    /// been told finished (#880).
+    pending_image_ids: std::collections::HashSet<u32>,
     /// Bumped by every selection copy; a huge selection rendered off-thread only writes the
     /// clipboard if no newer copy started meanwhile (#1304).
     selection_copy_seq: u64,
-    /// been told finished (#880).
-    pending_image_ids: std::collections::HashSet<u32>,
+    /// Cancel flag of the in-flight background selection render; set by the next copy (#1382).
+    selection_render_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub model: Arc<FairMutex<TerminalModel>>,
     view_handle: WeakViewHandle<Self>,
 
@@ -4920,6 +4922,7 @@ impl TerminalView {
             is_using_conversation_for_pane_header_title: false,
             ambient_agent_view_model,
             selection_copy_seq: 0,
+            selection_render_cancel: None,
             ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
@@ -22054,11 +22057,19 @@ impl TerminalView {
         then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
     ) {
         let seq = self.selection_copy_seq;
+        // A newer copy cancels the render still running for the previous one (#1382).
+        if let Some(previous) = self.selection_render_cancel.take() {
+            previous.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.selection_render_cancel = Some(cancel.clone());
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
             .name("selection-render".into())
             .spawn(move || {
-                let _ = tx.send(parts.render());
+                if let Some(text) = parts.render_cancellable(&cancel) {
+                    let _ = tx.send(text);
+                }
             });
         if spawned.is_err() {
             self.show_error_toast(
