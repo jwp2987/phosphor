@@ -553,6 +553,28 @@ fn test_deferred_restore_install_clears_stale_selection() {
     assert!(deferred.selection().is_some());
 }
 
+// Installing deferred content tells the view which blocks changed so an active Find can rescan
+// them (they were empty placeholders when it ran); the list is drained once (#1265).
+#[test]
+fn test_deferred_restore_install_reports_installed_blocks_once() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    assert!(
+        deferred.take_installed_restore_blocks().is_empty(),
+        "nothing is installed before install_ready_deferred_restores runs"
+    );
+    assert!(deferred.install_ready_deferred_restores());
+    let installed = deferred.take_installed_restore_blocks();
+    assert_eq!(installed.len(), restored_blocks.len());
+    assert!(
+        deferred.take_installed_restore_blocks().is_empty(),
+        "the installed list is drained by the first take"
+    );
+}
+
 // A block restored as a placeholder and filled in by the background parse must end up identical
 // to one restored eagerly: same text, same grid sizes, same heights (#1254).
 #[test]

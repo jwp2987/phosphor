@@ -12630,6 +12630,7 @@ impl TerminalView {
     /// such as a state change or terminal wakeup to update the view context.
     fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
         warpui::profiling::zone!("grid_update");
+        self.install_deferred_restores_keeping_scroll(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
             self.find_model.update(ctx, |find_model, ctx| {
@@ -20609,6 +20610,53 @@ impl TerminalView {
             ctx.notify();
         }
         reflowed
+    }
+
+    /// Installs background-parsed restored blocks (#1254) from the view, so a scrolled-back
+    /// position can be re-anchored across the height change (the same `ReflowAnchor`
+    /// compensation as a deferred reflow), and rescans the installed blocks for an active Find,
+    /// which ran against their empty placeholders (#1265). Installs done earlier by the model
+    /// itself (pty chunk, layout) still get the Find rescan through the drained list; only the
+    /// scroll compensation needs the pre-install anchor taken here.
+    fn install_deferred_restores_keeping_scroll(&mut self, ctx: &mut ViewContext<Self>) {
+        let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+        let mut model = self.model.lock();
+        let ready = model.block_list().has_ready_deferred_restores();
+        let anchor = if ready
+            && matches!(
+                self.scroll_position.position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ) {
+            self.viewport_state(model.block_list(), input_mode, ctx)
+                .reflow_anchor()
+        } else {
+            None
+        };
+        if ready {
+            model.block_list_mut().install_ready_deferred_restores();
+        }
+        let installed = model.block_list_mut().take_installed_restore_blocks();
+        if installed.is_empty() {
+            return;
+        }
+        let moved = anchor.is_some() && {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            self.scroll_position
+                .compensate_for_reflow(anchor, &viewport)
+        };
+        drop(model);
+        log::debug!(
+            "Installed {} deferred restored block(s); scroll re-anchored: {moved}",
+            installed.len()
+        );
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            self.find_model.update(ctx, |find_model, ctx| {
+                for block_index in installed {
+                    find_model.invalidate_async_find_block(block_index, None, ctx);
+                }
+            });
+        }
+        ctx.notify();
     }
 
     /// Arms the next deferred-reflow chunk, if any block is still stale and none is armed.
