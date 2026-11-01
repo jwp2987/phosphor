@@ -1142,3 +1142,61 @@ fn test_long_words_in_mixed_styles_keep_all_glyphs() {
     let count = glyph_count_with_spans(&text, &[(N, false), (N, true), (1, false)]);
     assert_eq!(count, 2 * N + 1, "word crossing a style boundary");
 }
+
+/// A line with one style run per token must not keep capacity for the rest of the line in each
+/// run (or push-growth slack in the caret list). Before the fix every run's glyph Vec kept the
+/// whole line's capacity, so retained memory grew with `runs * glyphs`.
+#[test]
+fn test_layout_text_retains_no_excess_capacity() {
+    use pathfinder_color::ColorU;
+
+    let (font_db, roboto) = init_fonts();
+    let text = "let alpha = beta + gamma;";
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    // Alternate two syntax colors every 3 chars so the line has many runs.
+    let colors = [ColorU::new(255, 0, 0, 255), ColorU::new(0, 255, 0, 255)];
+    let char_count = text.chars().count();
+    let style_runs: Vec<_> = (0..char_count)
+        .step_by(3)
+        .enumerate()
+        .map(|(i, start)| {
+            (
+                start..(start + 3).min(char_count),
+                StyleAndFont::new(
+                    roboto,
+                    Properties::default(),
+                    TextStyle::new().with_syntax_color(colors[i % 2]),
+                ),
+            )
+        })
+        .collect();
+
+    let frame = font_db.text_layout_system().layout_text(
+        text,
+        line_style,
+        &style_runs,
+        f32::MAX,
+        FRAME_HEIGHT,
+        Default::default(),
+        None,
+    );
+
+    for line in frame.lines() {
+        assert!(line.runs.len() > 3, "expected several runs");
+        for run in &line.runs {
+            assert_eq!(
+                run.glyphs.capacity(),
+                run.glyphs.len(),
+                "a run's glyph Vec must be exactly sized"
+            );
+        }
+        assert_eq!(line.runs.capacity(), line.runs.len());
+        let glyph_count: usize = line.runs.iter().map(|r| r.glyphs.len()).sum();
+        assert!(line.caret_positions.capacity() <= glyph_count + 1);
+    }
+}

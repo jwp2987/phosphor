@@ -45,10 +45,14 @@ impl<'a> RunBuilder<'a> {
     /// NOTE: if there are no glyphs in the run, it is not appended.
     fn flush_current_style_run(&mut self) {
         if !self.glyphs_in_current_run.is_empty() {
-            let excess_capacity =
-                self.glyphs_in_current_run.capacity() - self.glyphs_in_current_run.len();
-            let mut new_glyphs = Vec::with_capacity(excess_capacity);
-            std::mem::swap(&mut new_glyphs, &mut self.glyphs_in_current_run);
+            // Copy the glyphs into an exactly-sized Vec and keep the (line-sized) scratch buffer
+            // for the next run. The old code handed the scratch buffer itself to the run, so
+            // every run kept capacity for the rest of the line: with a run per syntax token that
+            // is O(runs * glyphs) of dead capacity per line, ~5x the live glyph bytes for
+            // highlighted code (a 7 MB file cost ~850 MB of RSS).
+            let mut new_glyphs = Vec::with_capacity(self.glyphs_in_current_run.len());
+            new_glyphs.extend_from_slice(&self.glyphs_in_current_run);
+            self.glyphs_in_current_run.clear();
             self.runs.push(Run {
                 font_id: self.font_in_current_run,
                 glyphs: new_glyphs,
@@ -107,6 +111,7 @@ impl<'a> RunBuilder<'a> {
     /// Returns the final list of [`Run`]s that were computed.
     pub(super) fn build(mut self) -> Vec<Run> {
         self.flush_current_style_run();
+        self.runs.shrink_to_fit();
         self.runs
     }
 }
