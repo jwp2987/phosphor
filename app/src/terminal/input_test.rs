@@ -12249,3 +12249,94 @@ fn export_error_message_names_the_failure() {
     let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
     assert!(super::export_error_message(path, &denied).starts_with("Permission denied"));
 }
+
+/// #1335: a paste into an empty buffer inside the window of an explicit input-type write (the
+/// agent view just entered) is classified like the typed equivalent. Before the fix the first
+/// edit in the window claimed the whole pasted line as the text the explicit write accompanied,
+/// so no verdict was pending and an immediate Enter submitted a shell command to the agent.
+#[test]
+fn test_paste_inside_explicit_window_is_classified_and_enter_routes_it() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        // The explicit write an agent view entry makes: AI, unlocked, window open.
+        let reset_to_agent = |app: &mut App| {
+            input.update(app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: false,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+        };
+
+        // A shell command pasted with its trailing newline, Enter at once.
+        reset_to_agent(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.paste_insert("echo PASTE-G1; echo PASTE-H1\n", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "the pasted line must be waiting for its own verdict"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            input.settle_pending_input_detection_for_submit(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.ai_input_model().as_ref(ctx).input_type().is_shell(),
+                "a pasted shell command Enter-ed at once runs in the shell"
+            );
+        });
+
+        // Prose pasted the same way stays with the agent.
+        reset_to_agent(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.paste_insert("please explain why the build failed", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.settle_pending_input_detection_for_submit(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.ai_input_model().as_ref(ctx).input_type().is_ai(),
+                "pasted prose is not run by the shell"
+            );
+        });
+
+        // A paste into text the user already typed keeps the explicit choice.
+        reset_to_agent(&mut app);
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("x", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_type(InputType::AI, ctx);
+            });
+            input.paste_insert("y", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.detection_pending_for_buffer(ctx),
+                "a non-empty buffer keeps its explicit choice"
+            );
+        });
+    });
+}

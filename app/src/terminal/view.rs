@@ -20965,7 +20965,7 @@ impl TerminalView {
             self.paste_routing(agent_owns_pty, ctx);
         if should_paste_in_input {
             self.input.update(ctx, |input, ctx| {
-                input.system_insert(copied, ctx);
+                input.paste_insert(copied, ctx);
             });
         } else {
             self.write_user_bytes_to_pty(paste_bytes_for_pty(copied, needs_bracketed_paste), ctx);
@@ -21060,7 +21060,7 @@ impl TerminalView {
             // We put everything from the clipboard into the input box, even
             // if it includes non-printable characters.
             self.input.update(ctx, |input, ctx| {
-                input.system_insert(&copied, ctx);
+                input.paste_insert(&copied, ctx);
             });
         } else {
             // We need to replace newlines (either \n or \r\n) with \r, as
@@ -24337,7 +24337,7 @@ impl TerminalView {
         let clipboard_text = ctx.clipboard().read_plain_text();
 
         self.input.update(ctx, |input, ctx| {
-            input.system_insert(clipboard_text.as_str(), ctx);
+            input.paste_insert(clipboard_text.as_str(), ctx);
             ctx.focus_self();
         });
         send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
