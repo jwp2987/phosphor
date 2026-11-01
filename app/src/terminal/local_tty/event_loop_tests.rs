@@ -58,7 +58,13 @@ impl io::Read for FakeReader {
 
 /// A pty writer that records what the event loop writes.
 #[derive(Clone, Default)]
-struct CaptureWriter(Arc<Mutex<Vec<u8>>>, Option<WriteProbe>);
+struct CaptureWriter(
+    Arc<Mutex<Vec<u8>>>,
+    Option<WriteProbe>,
+    /// When set, how many more bytes the "tty" takes before it answers `WouldBlock` (a full input
+    /// queue); a test refills it to model the shell reading.
+    Option<Arc<Mutex<usize>>>,
+);
 
 /// Records how many reads had been made when the first write happened.
 #[derive(Clone)]
@@ -77,8 +83,17 @@ impl io::Write for CaptureWriter {
                 Ordering::SeqCst,
             );
         }
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
+        let mut take = buf.len();
+        if let Some(budget) = &self.2 {
+            let mut budget = budget.lock().unwrap();
+            if *budget == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            take = take.min(*budget);
+            *budget -= take;
+        }
+        self.0.lock().unwrap().extend_from_slice(&buf[..take]);
+        Ok(take)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -459,6 +474,14 @@ impl GateHarness {
         let mut can_write = true;
         if state.needs_write() {
             self.event_loop.pty_write(state, &mut can_write).unwrap();
+        }
+    }
+
+    /// One write pass with the caller's `can_write` flag (a `WouldBlock` clears it).
+    fn pass_with(&mut self, state: &mut State, can_write: &mut bool) {
+        self.event_loop.refresh_reply_gate(state);
+        if state.needs_write() && *can_write {
+            self.event_loop.pty_write(state, can_write).unwrap();
         }
     }
 
@@ -1503,4 +1526,152 @@ fn abort_message_cuts_a_job_and_discard_leaves_it() {
         b"one",
         "no further chunk after the abort"
     );
+}
+
+// ---- #1384 P3: the macOS line-clear payload as one job, paced by the tty mode ----
+
+/// The pacing the line-clear payload asks for.
+fn mac_pacing() -> Pacing {
+    Pacing::GapIfCanonical {
+        dur: Duration::from_millis(10),
+        why: "test: canonical tty drops silently",
+    }
+}
+
+/// A harness with a "tty" that takes `budget` bytes and then answers `WouldBlock`.
+fn throttled_harness(mode: u8, budget: usize) -> (GateHarness, Arc<Mutex<usize>>) {
+    let (mut pty, _) = FakePty::new(None);
+    let budget = Arc::new(Mutex::new(budget));
+    pty.writer.2 = Some(budget.clone());
+    pty.mode.store(mode, Ordering::SeqCst);
+    let mode = pty.mode.clone();
+    let written = pty.writer.0.clone();
+    (
+        GateHarness {
+            event_loop: new_event_loop(pty).expect("event loop"),
+            mode,
+            written,
+        },
+        budget,
+    )
+}
+
+/// Raw / line-editor tty: no gap. Every chunk goes back to back, a full tty answers `WouldBlock`
+/// and the rest is delivered, in order and in full, as the tty drains (POLLOUT), with no timer.
+#[test]
+fn line_clear_payload_in_raw_mode_has_no_gap_and_survives_wouldblock() {
+    let payload: Vec<u8> = (0..4200u32).map(|i| (i % 251) as u8).collect();
+    let chunks: Vec<Vec<u8>> = payload.chunks(1000).map(<[u8]>::to_vec).collect();
+    let (mut h, budget) = throttled_harness(MODE_RAW, 1024);
+    let mut state = State::default();
+    state.queue_setup(chunks, mac_pacing());
+    h.event_loop.refresh_reply_gate(&mut state);
+    assert_eq!(state.pty_canonical, Some(false));
+
+    let mut can_write = true;
+    let mut rounds = 0;
+    while state.needs_write() {
+        rounds += 1;
+        assert!(rounds < 50, "never finished");
+        h.pass_with(&mut state, &mut can_write);
+        // No gap is ever armed: the poll deadline stays empty, only POLLOUT wakes the loop.
+        assert_eq!(state.job_timeout(), None);
+        if !can_write {
+            // The tty drained 1 KB (the shell read): writable again.
+            *budget.lock().unwrap() = 1024;
+            can_write = true;
+        }
+    }
+    assert_eq!(h.take_written(), payload, "every byte, in order, none lost");
+    assert!(rounds > 1, "the fake tty did push back");
+}
+
+/// Canonical tty (cooked, no newline): the named gap stays, because the tty drops silently.
+#[test]
+fn line_clear_payload_in_canonical_mode_keeps_the_named_gap() {
+    let (mut h, _) = throttled_harness(MODE_CANONICAL, usize::MAX);
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B"]), mac_pacing());
+    h.event_loop.refresh_reply_gate(&mut state);
+    let mut can_write = true;
+    h.pass_with(&mut state, &mut can_write);
+    assert_eq!(h.take_written(), b"A", "the second chunk waits for the gap");
+    let wait = state.job_timeout().expect("a gap is armed");
+    assert!(wait <= Duration::from_millis(10), "{wait:?}");
+    assert!(matches!(
+        state.active_job.as_ref().unwrap().pacing(),
+        Pacing::Gap { dur, .. } if dur == Duration::from_millis(10)
+    ));
+}
+
+/// A tty whose mode cannot be read is treated as canonical: the safe side.
+#[test]
+fn line_clear_payload_with_unknown_mode_keeps_the_gap() {
+    let (mut h, _) = throttled_harness(MODE_UNKNOWN, usize::MAX);
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B"]), mac_pacing());
+    h.event_loop.refresh_reply_gate(&mut state);
+    let mut can_write = true;
+    h.pass_with(&mut state, &mut can_write);
+    assert_eq!(h.take_written(), b"A");
+    assert!(state.job_timeout().is_some());
+}
+
+/// ^C aborts the line-clear job at a chunk boundary, in raw mode too (chunks are the boundaries).
+#[test]
+fn ctrl_c_aborts_the_line_clear_job_at_a_chunk_boundary() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (mut pty, _) = FakePty::new(None);
+    pty.mode.store(MODE_RAW, Ordering::SeqCst);
+    let budget = Arc::new(Mutex::new(1000usize));
+    pty.writer.2 = Some(budget.clone());
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    let mut state = State::default();
+    let chunks: Vec<Vec<u8>> = (0..4).map(|i| vec![b'a' + i; 1000]).collect();
+    tx.send(Message::SetupChunked {
+        chunks,
+        pacing: mac_pacing(),
+    })
+    .unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    event_loop.refresh_reply_gate(&mut state);
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert_eq!(written.lock().unwrap().len(), 1000, "first chunk in full");
+    assert!(!can_write, "then the tty is full");
+
+    tx.send(Message::Input(Cow::Borrowed(&[0x03]))).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    *budget.lock().unwrap() = usize::MAX;
+    can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    let out = written.lock().unwrap().clone();
+    assert_eq!(
+        out.len(),
+        1001,
+        "chunk 1 and the ^C, nothing of 2..4: {}",
+        out.len()
+    );
+    assert_eq!(out[1000], 0x03);
+    assert!(state.active_job.is_none());
+}
+
+/// A user key typed during the line-clear job waits for the whole job.
+#[test]
+fn a_key_during_the_line_clear_job_waits_behind_all_of_it() {
+    let (mut h, _) = throttled_harness(MODE_RAW, usize::MAX);
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B", b"C"]), mac_pacing());
+    state.queue_input(Cow::Borrowed(b"k"));
+    h.event_loop.refresh_reply_gate(&mut state);
+    let mut can_write = true;
+    h.pass_with(&mut state, &mut can_write);
+    assert_eq!(h.take_written(), b"ABCk");
 }

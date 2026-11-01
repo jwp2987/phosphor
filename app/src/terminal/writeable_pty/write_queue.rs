@@ -88,6 +88,13 @@ pub enum Pacing {
     /// `dur` between the end of one chunk and the start of the next. `why` names the missing
     /// signal and is logged once per job.
     Gap { dur: Duration, why: &'static str },
+    /// `Gap` only while the tty is canonical (cooked) when the job starts to be written; with a
+    /// non-canonical (raw / line-editor) tty it resolves to `None` and POLLOUT governs, because a
+    /// non-canonical tty reports a full input queue with a real `EAGAIN` and loses nothing. A
+    /// canonical tty with no newline in the line silently drops input past its queue size (macOS:
+    /// 1024 B) with no signal at all (#1384 P0), so there the gap stays. If the mode cannot be
+    /// read the gap is kept. Resolved by [`SetupJob::resolve_pacing`].
+    GapIfCanonical { dur: Duration, why: &'static str },
 }
 
 /// A `SetupChunked` job: its chunks, and where the writer is in them.
@@ -126,6 +133,19 @@ impl SetupJob {
 
     pub fn pacing(&self) -> Pacing {
         self.pacing
+    }
+
+    /// Settles a [`Pacing::GapIfCanonical`] from the tty mode read when the job starts being
+    /// written (`canonical`: `Some(true)` cooked, `Some(false)` raw, `None` unknown). Other
+    /// pacings are left alone.
+    pub fn resolve_pacing(&mut self, canonical: Option<bool>) {
+        if let Pacing::GapIfCanonical { dur, why } = self.pacing {
+            self.pacing = if canonical == Some(false) {
+                Pacing::None
+            } else {
+                Pacing::Gap { dur, why }
+            };
+        }
     }
 
     /// Whether the next chunk may start now.

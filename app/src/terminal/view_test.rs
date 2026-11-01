@@ -18707,7 +18707,7 @@ fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
             view.typed_characters_on_terminal("hunter2", ctx);
             assert!(view.ssh_typeahead_holding);
             view.model.lock().process_bytes("Password: ");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(view.ssh_held_is_empty());
             assert!(!view.ssh_typeahead_holding);
             assert!(!view.ssh_editor_key_hold.is_active());
@@ -20033,7 +20033,7 @@ fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes()
                 },
             );
             // Nothing has been rendered since the alt screen opened: the tree is stale.
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
             *view.size_info
         });
@@ -20050,7 +20050,7 @@ fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes()
 
         terminal.update(&mut app, |view, ctx| {
             ansi::Handler::input(view.model.lock().alt_screen_mut(), 'x');
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::PaintOnly));
 
             // Leaving the alt screen changes what `render` builds: the next wakeup re-renders.
@@ -20060,7 +20060,7 @@ fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes()
                     save_cursor_and_clear_screen: true,
                 },
             );
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
         });
     })
@@ -20089,7 +20089,7 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
             // itself a render input (block visibility/height), so it goes in before the first
             // render; the wakeup under test below only extends the line already there.
             ansi::Handler::input(&mut *view.model.lock(), 'x');
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
             *view.size_info
         });
@@ -20106,7 +20106,7 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
 
         terminal.update(&mut app, |view, ctx| {
             ansi::Handler::input(&mut *view.model.lock(), 'y');
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Relayout));
 
             // Entering the alt screen changes what `render` builds: the next wakeup re-renders.
@@ -20116,7 +20116,7 @@ fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes(
                     save_cursor_and_clear_screen: true,
                 },
             );
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
         });
     })
@@ -20155,7 +20155,7 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
         warpui::r#async::Timer::after(Duration::from_millis(300)).await;
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("some rc output\r\n");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert_eq!(setup_lines_written(&pty_writes), 1, "no marker, no line");
 
@@ -20163,7 +20163,7 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
         terminal.update(&mut app, |view, ctx| {
             let stale = format!("\x1b]7771;{};0\x07\x1b]7771;{token};5\x07", token + 1);
             view.model.lock().process_bytes(stale.as_str());
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert_eq!(setup_lines_written(&pty_writes), 1);
 
@@ -20171,9 +20171,9 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
         terminal.update(&mut app, |view, ctx| {
             let marker = format!("\x1b]7771;{token};0\x07");
             view.model.lock().process_bytes(marker.as_str());
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             // A second wakeup for the same marker does not write the next line too.
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert_eq!(setup_lines_written(&pty_writes), 2);
     })
@@ -20200,14 +20200,14 @@ fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
         // Slower than the old AUTO_WARPIFY_DELAY, silent: nothing is written.
         warpui::r#async::Timer::after(Duration::from_millis(1200)).await;
         terminal.update(&mut app, |view, ctx| {
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert!(pty_writes.borrow().is_empty(), "no prompt yet");
 
         // A banner line that ends in a newline is not a prompt.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("loading profile\r\n");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert!(
             pty_writes.borrow().is_empty(),
@@ -20217,7 +20217,7 @@ fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
         // The prompt: the bootstrap goes in.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("bash-5.1$ ");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
         });
         assert!(!pty_writes.borrow().is_empty(), "bootstrap at the prompt");
         let after_prompt = pty_writes.borrow().len();
@@ -20225,7 +20225,7 @@ fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
         // Exactly once: more output does not start a second one.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("x");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(view.awaiting_subshell_prompt.is_none());
         });
         assert_eq!(pty_writes.borrow().len(), after_prompt);
@@ -20255,7 +20255,7 @@ fn deferred_subshell_setup_is_released_by_the_output_after_the_answer() {
         terminal.update(&mut app, |view, ctx| {
             // The shell took the answer and printed its prompt; no poll runs here.
             view.model.lock().process_bytes("\r\nme@host ~ % ");
-            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             assert!(
                 view.subshell_setup_deferred.is_none(),
                 "released by the output"
@@ -20296,24 +20296,99 @@ fn deferred_subshell_setup_reads_only_the_tail_of_the_output() {
     })
 }
 
-/// #1354: a ^C in the middle of the chunked mac line-clear write stops it; the chunks after it were
-/// free-standing timers that were still typed into the shell.
+/// #1384 P3: the ssh-warpify payload leaves the view as ONE event (the PTY controller owns the
+/// chunks and the pacing), and a ^C / ^D or a cancelled warpify emits the cut that replaced the
+/// view-side generation chain (#1354).
 #[test]
-fn ctrl_c_stops_the_chunked_line_clear_write() {
+fn line_clear_payload_is_one_event_and_ctrl_c_emits_the_cut() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let events: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::WriteLineClearSetupToPty { payload } => {
+                    seen.borrow_mut().push(format!("setup:{}", payload.len()))
+                }
+                Event::CancelPacedSetupWrites => seen.borrow_mut().push("cancel".into()),
+                Event::WriteBytesToPty { bytes } => {
+                    seen.borrow_mut().push(format!("bytes:{}", bytes.len()))
+                }
+                _ => {}
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             view.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(vec![b'x'; 3500], ctx);
             view.write_user_bytes_to_pty(vec![0x03], ctx);
         });
-        warpui::r#async::Timer::after(Duration::from_millis(200)).await;
-        let total: usize = pty_writes.borrow().iter().map(Vec::len).sum();
+        let events = events.borrow();
+        assert_eq!(events[0], "setup:3500", "{events:?}");
+        assert!(events.iter().any(|e| e == "cancel"), "{events:?}");
         assert!(
-            total < 2000,
-            "only the first chunk and the ^C may be written, got {total} bytes"
+            events.iter().position(|e| e == "cancel") < events.iter().position(|e| e == "bytes:1"),
+            "the cut goes before the ^C byte: {events:?}"
         );
+    })
+}
+
+/// #1384 P5: entering the alt screen re-sends the window size ONCE, on the program's first
+/// output, not on a timer; later output sends no more, and leaving the alt screen cancels a
+/// re-send that has not happened yet.
+#[cfg(feature = "local_tty")]
+#[test]
+fn alt_screen_winsize_is_re_sent_once_on_first_output_and_cancelled_on_exit() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let resizes = Rc::new(RefCell::new(0usize));
+        let counter = resizes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::Resize { .. }) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_mode(ansi::Mode::SwapScreen {
+                save_cursor_and_clear_screen: true,
+            });
+            view.resize_alt_screen_redundantly(ctx);
+        });
+        assert_eq!(
+            *resizes.borrow(),
+            0,
+            "nothing is sent until the program speaks"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), 1, "the first output re-sends once");
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), 1, "later output sends nothing more");
+
+        // Exit before any output: the pending re-send is cancelled.
+        terminal.update(&mut app, |view, ctx| {
+            view.resize_alt_screen_redundantly(ctx);
+            assert!(view.alt_screen_resend_pending);
+            view.handle_terminal_event(
+                &ModelEvent::TerminalModeSwapped(crate::terminal::event::TerminalMode::BlockList),
+                ctx,
+            );
+            assert!(
+                !view.alt_screen_resend_pending,
+                "leaving the alt screen cancels it"
+            );
+        });
+        let after_exit = *resizes.borrow();
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), after_exit, "no re-send after the exit");
     })
 }
 

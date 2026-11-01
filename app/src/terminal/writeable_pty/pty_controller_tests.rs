@@ -3030,3 +3030,99 @@ fn bracketed_paste_decision_is_shared_with_the_command_bytes() {
         );
     }
 }
+
+// ---- #1384 P3: the ssh-warpify line-clear payload is one job ----
+
+fn line_clear_prefix() -> Vec<u8> {
+    vec![b' ', escape_sequences::C0::VT, escape_sequences::C0::NAK]
+}
+
+/// With the writer-owned queue the payload is ONE `SetupChunked` job of 1000-byte chunks whose
+/// pacing is decided by the writer from the tty mode; nothing is timer-chained on the UI side.
+#[test]
+fn line_clear_payload_is_one_setup_job_paced_by_tty_mode() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let payload: Vec<u8> = (0..4500).map(|i| (i % 251) as u8).collect();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(payload.clone(), ctx);
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
+        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+            panic!("expected a setup job: {:?}", messages[0]);
+        };
+        assert!(matches!(
+            pacing,
+            Pacing::GapIfCanonical { dur, .. } if *dur == Duration::from_millis(10)
+        ));
+        assert!(chunks.iter().all(|c| c.len() <= 1000));
+        let mut expected = line_clear_prefix();
+        expected.extend_from_slice(&payload);
+        assert_eq!(chunks.concat(), expected);
+    });
+}
+
+/// A ^C aborts the line-clear job before it goes out, and a cancelled warpify does too.
+#[test]
+fn ctrl_c_and_cancel_abort_the_line_clear_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(vec![b'x'; 3000], ctx);
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            controller.write_line_clear_setup(vec![b'y'; 3000], ctx);
+            controller.cancel_paced_writes(ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        let tail: Vec<_> = messages.iter().rev().take(2).collect();
+        assert!(
+            matches!(tail[0], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(tail[1], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+    });
+}
+
+/// Kill switch: the timer chain of before, first chunk at once, the rest left to timers, and a
+/// cancel drops them.
+#[test]
+fn line_clear_payload_without_the_queue_uses_the_timer_chain() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(false);
+            controller.write_line_clear_setup(vec![b'x'; 3500], ctx);
+            assert_eq!(
+                controller.paced_writes_remaining(),
+                3,
+                "4 chunks, 1 written"
+            );
+            controller.cancel_paced_writes(ctx);
+            assert_eq!(controller.paced_writes_remaining(), 0);
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_input_matches(&messages[0], {
+            let mut first = line_clear_prefix();
+            first.extend_from_slice(&[b'x'; 997]);
+            first
+        });
+    });
+}
