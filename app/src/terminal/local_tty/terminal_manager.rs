@@ -1201,7 +1201,10 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
 /// raises nothing when termios changes, so only sampling can see it. Every other path is
 /// output-driven and does not depend on the poll tick.
 #[cfg(unix)]
-struct PromptWatch<S: TerminalSurface> {
+struct PromptWatch<S: TerminalSurface>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
     detector: RefCell<PromptDetector>,
     /// Whether the active block is one the poller was started for and is still wanted.
     active: std::cell::Cell<bool>,

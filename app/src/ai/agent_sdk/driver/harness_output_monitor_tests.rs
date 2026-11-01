@@ -202,9 +202,10 @@ mod watch {
     trait FuseWith: std::future::Future + Sized {
         /// Run `self` while `side` runs alongside; resolve with `self`'s output.
         async fn fuse_with<S: std::future::Future<Output = ()>>(self, side: S) -> Self::Output {
-            futures::pin_mut!(self);
+            let this = self;
+            futures::pin_mut!(this);
             futures::pin_mut!(side);
-            match futures::future::select(self, side).await {
+            match futures::future::select(this, side).await {
                 futures::future::Either::Left((out, _)) => out,
                 futures::future::Either::Right(((), rest)) => rest.await,
             }

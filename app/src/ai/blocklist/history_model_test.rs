@@ -9,7 +9,7 @@ use crate::{
     ai::{
         agent::{
             api::ServerConversationToken,
-            conversation::{AIConversationId, ConversationStatus, TodoStatus},
+            conversation::{AIConversation, AIConversationId, ConversationStatus, TodoStatus},
             todos::AIAgentTodoList,
             AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIAgentTodo,
             AIAgentTodoId, FinishedAIAgentOutput, RenderableAIError, Shared,

@@ -179,14 +179,14 @@ pub(crate) fn terminate_and_reap(mut child: std::process::Child) {
     let spawned = std::thread::Builder::new()
         .name("PTY child reaper".into())
         .spawn(move || {
-            if let Some(work) = thread_work.lock().ok().and_then(|mut w| w.take()) {
+            if let Some(mut work) = thread_work.lock().ok().and_then(|mut w| w.take()) {
                 work();
             }
         });
     if let Err(err) = spawned {
         // Out of threads: do it here rather than leak a zombie and a live process tree.
         log::error!("Failed to spawn the child reaper thread ({err}); reaping inline");
-        if let Some(work) = work.lock().ok().and_then(|mut w| w.take()) {
+        if let Some(mut work) = work.lock().ok().and_then(|mut w| w.take()) {
             work();
         }
     }

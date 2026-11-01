@@ -320,7 +320,7 @@ impl EventLoop {
                     }
                 }
                 api::Message::KillChildRequest { pid } => {
-                    let result = match self.children.remove(&pid) {
+                    let result: std::io::Result<std::process::ExitStatus> = match self.children.remove(&pid) {
                         Some(child) => {
                             // Kill the whole tree (#975; see `Children::drop`) and reap the
                             // shell on a reaper thread: this loop serves every tab, so a grace

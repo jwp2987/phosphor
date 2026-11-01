@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use warpui::ViewContext;
+use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
 use super::TerminalView;

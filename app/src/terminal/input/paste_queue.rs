@@ -14,7 +14,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use warpui::ViewContext;
+use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
 use super::{Input, PasteSource, clipboard_content_with_escaped_paths};
