@@ -1,3 +1,4 @@
+mod awake_time;
 pub mod settings;
 mod stack;
 

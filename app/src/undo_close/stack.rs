@@ -13,6 +13,7 @@ use crate::{
     workspace::Workspace,
 };
 
+use super::awake_time::{awake_now, remaining_grace};
 use super::{settings::UndoCloseSettingsChangedEvent, UndoCloseSettings};
 
 /// A unique identifier for an item in the undo close stack.
@@ -35,6 +36,9 @@ struct UndoData {
 /// Data needed to handle expiration for items in the undo close stack.
 struct ExpiryData {
     id: ItemId,
+    /// [`awake_now`] when the item was pushed; the grace period is measured on that clock so a
+    /// suspend between close and undo does not use it up.
+    pushed_awake: std::time::Duration,
     task_handle: SpawnedFutureHandle,
 }
 
@@ -378,19 +382,31 @@ impl UndoCloseStack {
         }
     }
 
-    /// Pushes a new item onto the stack.
-    fn push_item(&mut self, closed_item: ClosedItem, ctx: &mut ModelContext<Self>) {
-        let settings = UndoCloseSettings::as_ref(ctx);
-        if !*settings.enabled {
-            closed_item.discard(ctx);
-            return;
-        }
-
-        let id = ItemId::new();
-        let grace_period = *settings.grace_period;
-        let task_handle = ctx.spawn_abortable(
-            warpui::r#async::Timer::after(grace_period),
+    /// Arms the expiry timer for item `id` to fire after `wait`. When it fires, the item expires
+    /// only if the awake clock says the whole `grace_period` has been spent; if the machine slept
+    /// in the meantime, the timer is re-armed for the awake time that is left.
+    fn arm_expiry(
+        id: ItemId,
+        pushed_awake: std::time::Duration,
+        grace_period: std::time::Duration,
+        wait: std::time::Duration,
+        ctx: &mut ModelContext<Self>,
+    ) -> SpawnedFutureHandle {
+        ctx.spawn_abortable(
+            warpui::r#async::Timer::after(wait),
             move |me, _, ctx| {
+                if let Some(left) =
+                    remaining_grace(grace_period, awake_now().saturating_sub(pushed_awake))
+                {
+                    // Woke from a suspend (or the timer fired early): give the item its
+                    // remaining awake grace instead of expiring it at once.
+                    if let Some(item) = me.stack.iter_mut().find(|item| item.expiry_data.id == id) {
+                        log::debug!("Undo close expiry deferred {left:?}: machine was asleep");
+                        item.expiry_data.task_handle =
+                            Self::arm_expiry(id, pushed_awake, grace_period, left, ctx);
+                    }
+                    return;
+                }
                 let initial_len = me.stack.len();
                 if let Some(pos) = me.stack.iter().position(|item| item.expiry_data.id == id) {
                     let removed_item = me.stack.remove(pos);
@@ -406,11 +422,29 @@ impl UndoCloseStack {
                 }
             },
             |_, _| {},
-        );
+        )
+    }
+
+    /// Pushes a new item onto the stack.
+    fn push_item(&mut self, closed_item: ClosedItem, ctx: &mut ModelContext<Self>) {
+        let settings = UndoCloseSettings::as_ref(ctx);
+        if !*settings.enabled {
+            closed_item.discard(ctx);
+            return;
+        }
+
+        let id = ItemId::new();
+        let grace_period = *settings.grace_period;
+        let pushed_awake = awake_now();
+        let task_handle = Self::arm_expiry(id, pushed_awake, grace_period, grace_period, ctx);
 
         self.stack.push(UndoData {
             closed_item,
-            expiry_data: ExpiryData { id, task_handle },
+            expiry_data: ExpiryData {
+                id,
+                pushed_awake,
+                task_handle,
+            },
         })
     }
 }
