@@ -820,3 +820,21 @@ fn test_exec_outside_desktop_entry_group_is_not_used() {
         },
     )
 }
+
+#[test]
+fn output_with_timeout_returns_stdout_of_a_fast_command() {
+    let mut command = command::blocking::Command::new("echo");
+    command.arg("hi");
+    let out = super::output_with_timeout(command, std::time::Duration::from_secs(5));
+    assert_eq!(out.as_deref(), Some(&b"hi\n"[..]));
+}
+
+#[test]
+fn output_with_timeout_gives_up_on_a_hung_command() {
+    let mut command = command::blocking::Command::new("sleep");
+    command.arg("30");
+    let start = std::time::Instant::now();
+    let out = super::output_with_timeout(command, std::time::Duration::from_millis(100));
+    assert!(out.is_none());
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
