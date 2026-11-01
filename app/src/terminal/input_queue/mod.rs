@@ -363,6 +363,15 @@ pub trait Host {
         true
     }
 
+    /// What goes back to the front of the queue after [`DeliverOutcome::Requeue`]: by default the
+    /// entry that was delivered (a key or a paste whose bytes a later stage took into a hold). A
+    /// host whose delivery had other effects (it wrote part of the entry, or delivered an entry
+    /// of another shape) says what is left: the same entry id, so the gate's barrier holds
+    /// everything behind it, with the remaining content.
+    fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
+        entry.clone()
+    }
+
     /// Whether a signal meeting `gate` must wait like any entry (an interrupt must not land in
     /// the middle of the remote bootstrap, #1001).
     fn signal_must_wait(&self, _gate: GateKind) -> bool {
@@ -948,7 +957,7 @@ impl InputQueue {
             }
             DeliverOutcome::Requeue(spec) => {
                 // Not delivered: back to the front, held by the new gate along with the rest.
-                self.entries.push_front(entry.clone());
+                self.entries.push_front(host.requeued_entry(entry));
                 self.push_gate(host, spec, entry.id);
             }
         }

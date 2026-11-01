@@ -318,14 +318,11 @@ impl<T: EventLoopSender> PtyController<T> {
                 // decision again. The hand-off decides no request while the hold is live.
                 let mut released_queued_hold = false;
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    let (held_chunks, queued_hold) = {
+                    let queued_hold = {
                         let mut model = me.terminal_model.lock();
                         let handoff = model.typeahead_handoff_mut();
-                        handoff.release_prompt_hold_on_signal_any()
+                        handoff.release_queued_prompt_hold_on_signal()
                     };
-                    for chunk in held_chunks {
-                        me.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
-                    }
                     if let Some(hold_id) = queued_hold {
                         released_queued_hold = true;
                         ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });

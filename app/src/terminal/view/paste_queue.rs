@@ -74,8 +74,15 @@ pub(super) struct PasteQueueState {
     /// Set while the queue delivers an entry the hand-off may hold again (a key or a paste): the
     /// stage then asks the host to put the entry back instead of keeping the bytes itself.
     requeueable_delivery: bool,
+    /// Set for the whole of an entry's delivery. A key the hand-off holds while it is set cannot
+    /// be offered to the queue (the drain owns it): it is recorded in `requeue_request` and the
+    /// host puts it back under its gate when the delivery returns, whatever the entry was.
+    delivering: bool,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
+    /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
+    /// itself the entry the held bytes belong to (set by the host from the kind it delivered).
+    requeue_replacement: Option<EntryKind>,
     /// The stamp for keys queued behind a prompt hold (shared with the hand-off).
     pub(super) line_stamp: Option<crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp>,
 }
@@ -85,6 +92,8 @@ pub(super) struct RequeueRequest {
     spec: GateSpec,
     /// The bytes the stage was handed (a paste's payload goes back to the payload map).
     bytes: Vec<u8>,
+    /// Whether the bytes take agent control, for an entry made of them.
+    takes_over_agent_control: bool,
 }
 
 /// How a queued prompt hold ended.
@@ -117,7 +126,9 @@ impl PasteQueueState {
             cli_submit_gate: None,
             next_cli_submit_key: 0,
             requeueable_delivery: false,
+            delivering: false,
             requeue_request: None,
+            requeue_replacement: None,
             line_stamp: None,
         }
     }
@@ -168,20 +179,8 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             written: true,
         }
     }
-}
 
-impl Host for PtyQueueHost<'_, '_> {
-    fn facts(&self) -> DestFacts {
-        // Lock-free by design (3.2): the stages after this one decide agent / hidden-input /
-        // subshell / hand-off routing exactly as before.
-        DestFacts {
-            pty_takes_input: true,
-            pty_open: true,
-            ..DestFacts::default()
-        }
-    }
-
-    fn deliver(
+    fn deliver_entry(
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
@@ -193,6 +192,9 @@ impl Host for PtyQueueHost<'_, '_> {
         if !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Signal(_)) {
             return self.view.deliver_editor_entry(entry, follow, self.ctx);
         }
+        // Whether the entry delivered is itself what a hold of its bytes puts back (a key or a
+        // paste written as one piece); any other kind is replaced by a key of the held bytes.
+        let mut requeues_itself = false;
         match &entry.kind {
             EntryKind::Paste {
                 paste_id,
@@ -206,6 +208,7 @@ impl Host for PtyQueueHost<'_, '_> {
                     self.written = true;
                 }
                 Some(bytes) => {
+                    requeues_itself = true;
                     self.view.paste_queue.requeueable_delivery = true;
                     self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
                         Cow::Owned(bytes),
@@ -220,6 +223,7 @@ impl Host for PtyQueueHost<'_, '_> {
                 bytes,
                 takes_over_agent_control,
             } => {
+                requeues_itself = true;
                 self.view.paste_queue.requeueable_delivery = true;
                 self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
                     Cow::Owned(bytes.clone()),
@@ -246,15 +250,59 @@ impl Host for PtyQueueHost<'_, '_> {
         // entry goes back to the front of the queue under the hold's gate, to be taken out again
         // when the line editor signals.
         if let Some(request) = self.view.paste_queue.requeue_request.take() {
-            if let EntryKind::Paste { paste_id, .. } = &entry.kind {
-                self.view
-                    .paste_queue
-                    .payloads
-                    .insert(*paste_id, request.bytes);
+            if requeues_itself {
+                if let EntryKind::Paste { paste_id, .. } = &entry.kind {
+                    self.view
+                        .paste_queue
+                        .payloads
+                        .insert(*paste_id, request.bytes);
+                }
+            } else {
+                // Another kind of entry (a routed paste, an ssh-held text) wrote the key that was
+                // held: what goes back under the gate is that key, not the entry that wrote it.
+                self.view.paste_queue.requeue_replacement = Some(EntryKind::PtyBytes {
+                    bytes: request.bytes,
+                    takes_over_agent_control: request.takes_over_agent_control,
+                });
             }
             return DeliverOutcome::Requeue(request.spec);
         }
         DeliverOutcome::Delivered
+    }
+}
+
+impl Host for PtyQueueHost<'_, '_> {
+    fn facts(&self) -> DestFacts {
+        // Lock-free by design (3.2): the stages after this one decide agent / hidden-input /
+        // subshell / hand-off routing exactly as before.
+        DestFacts {
+            pty_takes_input: true,
+            pty_open: true,
+            ..DestFacts::default()
+        }
+    }
+
+    fn deliver(
+        &mut self,
+        entry: &InputEntry,
+        dest: Destination,
+        follow: &mut FollowUps,
+    ) -> DeliverOutcome {
+        // Only a pty entry can write a key that the hand-off holds; an editor entry is delivered
+        // by the input's own host.
+        self.view.paste_queue.delivering =
+            is_pty_entry(&entry.kind) || matches!(entry.kind, EntryKind::Signal(_));
+        let outcome = self.deliver_entry(entry, dest, follow);
+        self.view.paste_queue.delivering = false;
+        outcome
+    }
+
+    fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
+        let mut remaining = entry.clone();
+        if let Some(kind) = self.view.paste_queue.requeue_replacement.take() {
+            remaining.kind = kind;
+        }
+        remaining
     }
 
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
@@ -588,13 +636,6 @@ impl TerminalView {
         }
     }
 
-    /// Whether the hand-off's prompt hold may keep its keys in the queue right now: either the
-    /// queue is free (a direct write) or the entry being delivered can go back to the front (a
-    /// key or a paste).
-    pub(super) fn handoff_hold_can_queue(&self) -> bool {
-        self.paste_queue.requeueable_delivery || self.paste_queue.queue.try_lock().is_some()
-    }
-
     /// The hand-off just held `bytes` for the prompt and told us it keeps no copy (#1353 phase 5):
     /// they become the first entry of a `LineEditorActive` gate, opened by the line editor's
     /// signal ([`Self::on_prompt_hold_released`]) with the hold's give-up cap as the only timer.
@@ -633,14 +674,42 @@ impl TerminalView {
         takes_over_agent_control: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.paste_queue.requeueable_delivery {
-            // The queue is delivering this very entry: the host puts it back under the gate.
-            self.paste_queue.requeue_request = Some(RequeueRequest { spec, bytes });
+        if self.paste_queue.delivering {
+            // The queue is delivering the entry that wrote this key: the host puts the key back
+            // at the front of the queue under the gate when the delivery returns (the drain owns
+            // the queue until then). A second held write of the same delivery joins the first, in
+            // typed order.
+            match self.paste_queue.requeue_request.as_mut() {
+                Some(request) => request.bytes.extend_from_slice(&bytes),
+                None => {
+                    self.paste_queue.requeue_request = Some(RequeueRequest {
+                        spec,
+                        bytes,
+                        takes_over_agent_control,
+                    });
+                }
+            }
             return;
         }
         let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            // Nothing delivers from this queue and yet it is borrowed: the key cannot be put
+            // behind its gate. It is written as typed, counted by the hand-off, never lost.
+            log::warn!("input queue: a held key found the queue busy; writing it as typed");
+            let write = self
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .route_released_chunk(&bytes);
+            if write {
+                ctx.emit(Event::WriteHandoffUserBytesToPty {
+                    bytes: Cow::Owned(bytes),
+                });
+            }
+            return;
+        };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.lock().offer_gated(
+        guard.offer_gated(
             &mut host,
             EntryKind::PtyBytes {
                 bytes,

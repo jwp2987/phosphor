@@ -21223,9 +21223,7 @@ fn ssh_queue_enter_runs_the_held_line_once() {
 
 // ---- #1353 phase 5: the typeahead hand-off's prompt hold on the one input queue ---------------
 //
-// Every scenario runs on both paths: `queue == true` holds the keys as entries behind a
-// `LineEditorActive` gate (`queue == false`, the hand-off's
-// own buffer). Not compiled/run when written.
+// The keys are entries behind a `LineEditorActive` gate (the hand-off keeps no bytes).
 
 /// A ConPTY session whose running command just printed its prompt: the pty owns input, the
 /// precmd arrived and the line editor has not signalled yet, so keys are held for it (#1162).
@@ -21248,19 +21246,14 @@ fn prompt_gate_open(view: &TerminalView) -> bool {
         .has_gate_kind(crate::terminal::input_queue::GateKind::LineEditorActive)
 }
 
-/// What the pty controller does on the line editor's ready signal (`SetBracketedPaste`): keys
-/// the hand-off buffered are written now; keys in the view's queue are released by the view.
+/// What the pty controller does on the line editor's ready signal (`SetBracketedPaste`): the
+/// keys in the view's queue are released by the view.
 fn line_editor_signal(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
-    let (chunks, queued) = view
+    let queued = view
         .model
         .lock()
         .typeahead_handoff_mut()
-        .release_prompt_hold_on_signal_any();
-    for bytes in chunks {
-        ctx.emit(Event::WriteHandoffUserBytesToPty {
-            bytes: Cow::Owned(bytes),
-        });
-    }
+        .release_queued_prompt_hold_on_signal();
     if let Some(hold_id) = queued {
         view.on_prompt_hold_released(hold_id, ctx);
     }
@@ -21492,9 +21485,8 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
 
 // ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
 //
-// Every scenario runs on both paths: `queue == true` holds the Enter and the keys behind it as
-// entries behind a `PromptSeen` gate (`queue == false`, the
-// hand-off's own buffer and the view's window timer). Not compiled/run when written.
+// The Enter and the keys behind it are entries behind a `PromptSeen` gate (the hand-off keeps no
+// bytes and the view no window timer).
 
 /// A command that was written just now with a line typed into it: an Enter typed now is held,
 /// because the shell may already be back at a prompt the app has not noticed (#933).
@@ -21551,14 +21543,10 @@ fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
             terminal.update(&mut app, |view, ctx| {
                 young_enter_setup(view, queue);
                 hold_a_young_enter(view, queue, &pty_writes, ctx);
-                if queue {
-                    let token = view.paste_queue.queue.borrow().gates()[0].token;
-                    view.on_paste_queue_give_up(token, ctx);
-                    // A second timer for the same gate changes nothing.
-                    view.on_paste_queue_give_up(token, ctx);
-                } else {
-                    view.release_expired_young_hold(1, ctx);
-                }
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                // A second timer for the same gate changes nothing.
+                view.on_paste_queue_give_up(token, ctx);
                 assert!(!young_gate_open(view));
                 assert!(view.paste_queue.queue.borrow().is_idle());
                 assert!(!view.model.lock().typeahead_handoff().has_young_hold());
