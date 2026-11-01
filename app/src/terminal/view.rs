@@ -691,6 +691,9 @@ enum StaleReflowWork {
     All,
 }
 
+/// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
+const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
+
 const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
@@ -32431,21 +32434,23 @@ impl TerminalView {
     ) {
         match check_type {
             SshLoginStatus::RecheckBeforeWarpifying => {
-                // After we receive a line of output from ssh that is NOT prompting for user input (unlike "Enter passphrase: "),
-                // we wait and repeat the check after a small delay in case the state returned to something that's user-input bound.
-                // For example, say the output that kicked off this event was "Permission denied, please try again." and
-                // ssh will subsequently re-prompt for user input. We want to avoid assuming that ssh authentication is completed until
-                // we confirm twice that user input is not currently being requested.
-                // Note: 100ms is an estimate, not backed by any particular technical happenings.
+                // After a line of ssh output that is NOT a prompt (could be a banner, or "Permission
+                // denied" before a re-prompt), login is only declared done if no prompt shows up
+                // again. That is decided from OUTPUT EVENTS in the model (#1374): a re-prompt in
+                // any later chunk withdraws this recheck (`check_for_end_of_ssh_login`), and the
+                // known mid-auth lines never request it. This timer is only the logged give-up
+                // for a .hushlogin host with an unrecognised prompt: there is no remote signal
+                // to wait for, so after the grace period quiet output is taken as "login done".
                 let active_block_id = self.model.lock().block_list().active_block_id().clone();
                 ctx.spawn(
                     async {
-                        warpui::r#async::Timer::after(Duration::from_secs(3)).await;
+                        warpui::r#async::Timer::after(SSH_LOGIN_RECHECK_GIVE_UP).await;
                         active_block_id
                     },
                     move |terminal_view, active_block_id, _| {
                         let mut model = terminal_view.model.lock();
                         if model.block_list().active_block_id() == &active_block_id {
+                            log::debug!("ssh login recheck gave up waiting for a re-prompt (#1374)");
                             model.check_for_end_of_ssh_login(true);
                         }
                     },

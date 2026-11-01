@@ -2749,6 +2749,15 @@ impl TerminalModel {
             return;
         }
 
+        // #1374: the delayed confirmation only means something while a recheck is pending. If a
+        // re-prompt withdrew it (state back to Monitoring), the timer is stale and must not
+        // declare login done.
+        if confirmation_check
+            && ssh_login_state.notification_state
+                != SshLoginNotificationState::SentInitialNotification
+        {
+            return;
+        }
         let is_initial_check = !confirmation_check;
         // Scan only the rows that could have changed since the last check (new rows,
         // plus any still-mutable on-screen rows) instead of re-rendering the whole
@@ -2789,12 +2798,12 @@ impl TerminalModel {
                 }
             }
             SshLoginState::Authenticating => {
-                // False alarm case. If this is the confirmation check and it's detected that
-                // we have NOT completed login, then we should start over and go back to monitoring
-                // each output chunk for lines indicating login completion.
-                if !is_initial_check {
-                    ssh_login_state.notification_state = SshLoginNotificationState::Monitoring;
-                }
+                // False alarm case. A prompt that is back on screen means login is NOT complete,
+                // so go back to monitoring each output chunk for lines indicating completion.
+                // #1374: this is decided by the output event itself, on the initial (per-chunk)
+                // check too, so a re-prompt that arrives at any time after the "NonSshOutput"
+                // line withdraws the pending recheck instead of racing its timer.
+                ssh_login_state.notification_state = SshLoginNotificationState::Monitoring;
             }
         }
 
