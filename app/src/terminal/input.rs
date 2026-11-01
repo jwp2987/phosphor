@@ -10916,6 +10916,30 @@ impl Input {
         reader: warpui::clipboard::BackgroundTextReader,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.start_background_paste_with_backstop(reader, Self::paste_backstop(), ctx);
+    }
+
+    /// How long the editor holds typed keys for a clipboard read before giving up on it (#1331).
+    /// The platform readers bound their own wait; this is the backstop for one that does not (a
+    /// wedged reader thread), so the held keys are ALWAYS applied. `PHOSPHOR_PASTE_BACKSTOP_MS`
+    /// overrides it; `0` turns the backstop off (the old behaviour: wait for the reader).
+    #[cfg(not(target_family = "wasm"))]
+    fn paste_backstop() -> Option<Duration> {
+        const DEFAULT_MS: u64 = 3_000;
+        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MS);
+        (ms > 0).then(|| Duration::from_millis(ms))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste_with_backstop(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        backstop: Option<Duration>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let hold = self.editor.as_ref(ctx).paste_hold();
         let id = hold.begin();
         let (tx, rx) = futures::channel::oneshot::channel();
@@ -10931,6 +10955,19 @@ impl Input {
         ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
             me.finish_background_paste(id, read, ctx)
         });
+        // A read that outlives the backstop fails the paste: the keys held behind it are applied
+        // (in order) and the user is told. The reader's late answer finds the paste gone.
+        if let Some(backstop) = backstop {
+            ctx.spawn(Timer::after(backstop), move |me, _, ctx| {
+                if me.editor.as_ref(ctx).paste_hold().is_pending(id) {
+                    me.finish_background_paste(
+                        id,
+                        Some(warpui::clipboard::BackgroundTextRead::TimedOut),
+                        ctx,
+                    );
+                }
+            });
+        }
         // Say what is happening when the read takes noticeable time.
         ctx.spawn(
             Timer::after(Duration::from_millis(750)),
@@ -10976,7 +11013,7 @@ impl Input {
                     ToastStack::handle(ctx).update(ctx, |ts, ctx| {
                         ts.add_ephemeral_toast(
                             DismissibleToast::error(
-                                "Paste failed \u{2014} clipboard read timed out".to_string(),
+                                "Paste failed \u{2014} the clipboard did not answer; your typing was kept".to_string(),
                             ),
                             window_id,
                             ctx,

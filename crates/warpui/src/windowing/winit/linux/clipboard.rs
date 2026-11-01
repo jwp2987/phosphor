@@ -30,6 +30,42 @@ const TEXT_READ_TIMEOUT_FLOOR: Duration = Duration::from_millis(8);
 /// typed behind a paste) for arboard's whole 10 s first-answer timeout.
 const PROBE_BUDGET: Duration = Duration::from_millis(750);
 
+/// How long the input editor's paste may wait, in total, for a clipboard owner that never answers
+/// (#1331). arboard waits 10 s per attempt and the text read retries, so a hung owner (a crashed
+/// clipboard manager, a remote-desktop bridge) held the typed keys for 30+ s. Only the wait for
+/// the owner's FIRST answer is capped; a transfer that has started keeps its stall window.
+const FULL_READ_BUDGET: Duration = Duration::from_millis(2_000);
+
+/// How long quitting waits for an in-flight copy to land before handing the clipboard to the
+/// clipboard manager, and for the whole handoff (#1330). Quit must never hang on the clipboard.
+const EXIT_PENDING_WRITE_WAIT: Duration = Duration::from_millis(300);
+const EXIT_HANDOFF_BUDGET: Duration = Duration::from_millis(600);
+
+/// Whether a read that came back with nothing was a timeout. arboard flags the first slow failure,
+/// but once `FULL_READ_BUDGET` is spent the retries fail instantly (which looks like an empty
+/// clipboard), so a read that ran to the budget with no text also counts.
+fn read_timed_out(flagged: bool, elapsed: Duration, budget: Duration, has_text: bool) -> bool {
+    flagged || (!has_text && elapsed >= budget)
+}
+
+/// Quit-time handoff: waits (bounded) for in-flight copies, then runs `handoff`. Returns whether
+/// the handoff ran.
+fn flush_for_exit(
+    mut pending_write: impl FnMut() -> bool,
+    mut sleep: impl FnMut(),
+    max_polls: usize,
+    handoff: impl FnOnce(),
+) -> bool {
+    for _ in 0..max_polls {
+        if !pending_write() {
+            break;
+        }
+        sleep();
+    }
+    handoff();
+    true
+}
+
 /// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop.
 struct ProbeBudget;
 
@@ -198,6 +234,30 @@ impl Clipboard for LinuxClipboard {
         }))
     }
 
+    fn flush_on_exit(&mut self) {
+        // The X11 selection dies with the process unless the clipboard manager takes it over
+        // (ICCCM SAVE_TARGETS). arboard only does that when its last handle drops, which never
+        // happens for a long-lived app (#1330). Run it on a helper thread so a wedged X
+        // connection cannot hold the quit past the budget. Wayland has no such protocol.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("clipboard-exit".into())
+            .spawn(move || {
+                let poll = Duration::from_millis(10);
+                flush_for_exit(
+                    || crate::clipboard::pending_write(ClipboardTarget::Clipboard).is_some(),
+                    || std::thread::sleep(poll),
+                    (EXIT_PENDING_WRITE_WAIT.as_millis() / poll.as_millis()) as usize,
+                    arboard::hand_over_to_clipboard_manager,
+                );
+                let _ = done_tx.send(());
+            })
+            .is_ok();
+        if spawned && done_rx.recv_timeout(EXIT_HANDOFF_BUDGET).is_err() {
+            log::warn!("Clipboard handoff on exit did not finish in time; quitting anyway");
+        }
+    }
+
     fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
         // Same process-global backends as `background_text_reader`; this one also probes the HTML
         // and image targets, which a silent owner answers only after the arboard timeout (#1300).
@@ -209,8 +269,17 @@ impl Clipboard for LinuxClipboard {
             let Ok(mut clipboard) = LinuxClipboard::new() else {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
+            let started = Instant::now();
+            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
             let content = clipboard.read();
-            if clipboard.take_read_failure() {
+            arboard::set_first_answer_deadline(None);
+            let flagged = clipboard.take_read_failure();
+            if read_timed_out(
+                flagged,
+                started.elapsed(),
+                FULL_READ_BUDGET,
+                !content.plain_text.is_empty(),
+            ) {
                 BackgroundTextRead::TimedOut
             } else {
                 BackgroundTextRead::Content(content)

@@ -285,3 +285,41 @@ mod read_retry_tests {
         assert_eq!(reads, 1);
     }
 }
+
+mod bounded_wait_tests {
+    use super::super::{flush_for_exit, read_timed_out};
+    use std::time::Duration;
+
+    #[test]
+    fn spent_budget_with_no_text_is_a_timeout() {
+        let budget = Duration::from_secs(2);
+        // The retries after the first slow failure return instantly and look like "empty".
+        assert!(read_timed_out(false, budget, budget, false));
+        assert!(read_timed_out(true, Duration::ZERO, budget, true));
+        assert!(!read_timed_out(
+            false,
+            Duration::from_millis(5),
+            budget,
+            false
+        ));
+        assert!(!read_timed_out(false, budget, budget, true));
+    }
+
+    #[test]
+    fn exit_handoff_runs_even_when_a_write_never_finishes() {
+        let mut ran = false;
+        let mut sleeps = 0;
+        let did = flush_for_exit(|| true, || sleeps += 1, 5, || ran = true);
+        assert!(did && ran);
+        assert_eq!(sleeps, 5, "the wait for in-flight copies is bounded");
+    }
+
+    #[test]
+    fn exit_handoff_does_not_wait_when_nothing_is_pending() {
+        let mut ran = false;
+        let mut sleeps = 0;
+        flush_for_exit(|| false, || sleeps += 1, 5, || ran = true);
+        assert!(ran);
+        assert_eq!(sleeps, 0);
+    }
+}

@@ -12113,6 +12113,60 @@ fn test_slow_clipboard_read_does_not_block_and_keys_follow_the_paste() {
     });
 }
 
+/// #1331: a clipboard read that never answers fails the paste at the backstop; the keys typed
+/// meanwhile are applied in order (none dropped) and the late answer is ignored.
+#[test]
+fn test_stalled_clipboard_read_applies_held_keys_at_the_backstop() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ab", ctx);
+        });
+
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("LATE".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste_with_backstop(
+                reader,
+                Some(Duration::from_millis(100)),
+                ctx,
+            )
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
+            editor.apply_held_paste_key(HeldPasteKey::Text("z".to_string()), ctx);
+            editor.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Backspace), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "ab"));
+
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        // The reader is still parked, yet the keys landed in typing order and nothing was pasted.
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abxy")
+        });
+        release.send(()).unwrap();
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abxy")
+        });
+    });
+}
+
 /// #1300: an Enter typed while the read is pending submits the whole line, pasted text included.
 #[test]
 fn test_enter_during_a_pending_paste_submits_the_full_line() {

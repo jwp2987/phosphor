@@ -58,6 +58,10 @@ pub trait Clipboard: 'static {
         None
     }
 
+    /// Called once as the app quits, so what the user copied outlives the process: on X11 it asks
+    /// the clipboard manager to take the data over (#1330). Must be bounded and must not panic.
+    fn flush_on_exit(&mut self) {}
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text
