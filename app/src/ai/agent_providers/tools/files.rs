@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use warp_multi_agent_api as api;
 
 use super::OpenAiTool;
@@ -99,7 +99,10 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
     /// indistinguishable from a complete one — the model silently never learns
     /// that a path it asked for was missing, oversized or undecodable (#369).
     /// Omitted entirely when nothing failed, so the common case is unchanged.
-    fn read_files_json(files: Vec<Value>, failed_reads: &[api::read_files_result::FailedRead]) -> Value {
+    fn read_files_json(
+        files: Vec<Value>,
+        failed_reads: &[api::read_files_result::FailedRead],
+    ) -> Value {
         if failed_reads.is_empty() {
             return json!({ "status": "ok", "files": files });
         }
@@ -108,6 +111,21 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
             .map(|f| json!({ "path": f.path, "message": f.message }))
             .collect();
         json!({ "status": "ok", "files": files, "failed_files": failed })
+    }
+
+    /// One file entry. `line_range` is included when the content is a slice (a requested
+    /// range, or the per-file truncation), so the model knows it did not get the whole file
+    /// and which lines it did get (#1278).
+    fn file_entry(
+        path: &str,
+        content: &str,
+        line_range: Option<&api::FileContentLineRange>,
+    ) -> Value {
+        let mut entry = json!({ "path": path, "content": content });
+        if let Some(r) = line_range {
+            entry["line_range"] = json!({ "start": r.start, "end": r.end });
+        }
+        entry
     }
 
     let r = match result {
@@ -119,18 +137,16 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
             let files: Vec<Value> = s
                 .files
                 .iter()
-                .map(|f| {
-                    let (path, content) = match &f.content {
-                        Some(api::any_file_content::Content::TextContent(t)) => {
-                            (t.file_path.clone(), t.content.clone())
-                        }
-                        Some(api::any_file_content::Content::BinaryContent(b)) => (
-                            b.file_path.clone(),
-                            format!("<binary, {} bytes>", b.data.len()),
-                        ),
-                        None => (String::new(), String::new()),
-                    };
-                    json!({ "path": path, "content": content })
+                .map(|f| match &f.content {
+                    Some(api::any_file_content::Content::TextContent(t)) => {
+                        file_entry(&t.file_path, &t.content, t.line_range.as_ref())
+                    }
+                    Some(api::any_file_content::Content::BinaryContent(b)) => file_entry(
+                        &b.file_path,
+                        &format!("<binary, {} bytes>", b.data.len()),
+                        None,
+                    ),
+                    None => file_entry("", "", None),
                 })
                 .collect();
             read_files_json(files, &s.failed_reads)
@@ -139,7 +155,7 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
             let files: Vec<Value> = s
                 .files
                 .iter()
-                .map(|f| json!({ "path": f.file_path, "content": f.content }))
+                .map(|f| file_entry(&f.file_path, &f.content, f.line_range.as_ref()))
                 .collect();
             read_files_json(files, &s.failed_reads)
         }
@@ -156,3 +172,7 @@ pub static READ_FILES: OpenAiTool = OpenAiTool {
     from_args,
     result_to_json,
 };
+
+#[cfg(test)]
+#[path = "files_tests.rs"]
+mod tests;
