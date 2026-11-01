@@ -441,7 +441,14 @@ fn apply_tab_groups_setting_to_feature_flag(available_in_build: bool, ctx: &AppC
 /// password and re-pushes the global proxy settings. Also used by the NetworkSettings change
 /// subscription to keep the password from being lost.
 pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext) {
+    use super::network::{NetworkSettings, ProxyMode};
     use super::network_secrets::ProxyCredentials;
+    // The keychain read is deferred until a custom proxy could actually use the password
+    // (#1164 item 6). Switching mode to Custom re-enters here via the NetworkSettings
+    // subscription, which loads it then.
+    if matches!(*NetworkSettings::as_ref(ctx).proxy_mode.value(), ProxyMode::Custom) {
+        ProxyCredentials::handle(ctx).update(ctx, |creds, ctx| creds.ensure_loaded(ctx));
+    }
     let password = ProxyCredentials::as_ref(ctx).password().to_string();
     apply_network_settings_to_global_slots(ctx, &password);
 }

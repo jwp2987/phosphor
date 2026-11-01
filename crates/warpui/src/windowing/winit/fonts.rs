@@ -407,7 +407,14 @@ pub struct TextLayoutSystem {
     loaded_font_ids_since_last_raster: RwLock<Vec<FontId>>,
     #[cfg(not(target_os = "windows"))]
     fallback_fonts: DashMap<FontId, Vec<FontId>>,
+    /// Per-face font bytes kept alive across calls (#1168 F3). `fontdb`'s `with_face_data` memory
+    /// maps the font file anew on every call, and the text layout / raster paths call it per
+    /// glyph or per run; caching one mapping per face turns each later read into a hash lookup.
+    face_data_cache: DashMap<fontdb::ID, (SharedFaceData, u32)>,
 }
+
+/// Font bytes shared between the cache and in-flight reads (an `Mmap` or fontdb's shared data).
+type SharedFaceData = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
 pub struct FontDB {
     text_layout_system: TextLayoutSystem,
@@ -575,6 +582,7 @@ impl TextLayoutSystem {
             fallback_fonts: Default::default(),
             #[cfg(feature = "fontkit-rasterizer")]
             loaded_font_ids_since_last_raster: Default::default(),
+            face_data_cache: Default::default(),
         }
     }
 
@@ -671,12 +679,40 @@ impl TextLayoutSystem {
         font_data_callback: F,
     ) -> Option<T> {
         let internal_font_id = *self.font_id_map.read().get_by_left(&font_id)?;
+        if let Some((data, index)) = self.cached_face_data(internal_font_id) {
+            return Some(font_data_callback(AsRef::<[u8]>::as_ref(&*data), index));
+        }
         self.font_store
             .read()
             .db()
             .with_face_data(internal_font_id, |font_data, index| {
                 font_data_callback(font_data, index)
             })
+    }
+
+    /// Returns the cached bytes of a face, establishing the cache entry on first use. `None`
+    /// means no shared bytes are available (e.g. the file can't be mapped, or Windows, where a
+    /// long-lived mapping would lock the font file); callers then use fontdb's per-call read.
+    fn cached_face_data(&self, id: fontdb::ID) -> Option<(SharedFaceData, u32)> {
+        if let Some(entry) = self.face_data_cache.get(&id) {
+            return Some(entry.value().clone());
+        }
+        let (source, index) = self.font_store.read().db().face_source(id)?;
+        let data: SharedFaceData = match source {
+            Source::Binary(data) | Source::SharedFile(_, data) => data,
+            #[cfg(not(target_os = "windows"))]
+            Source::File(path) => {
+                let file = std::fs::File::open(&path).ok()?;
+                // SAFETY: the same assumption fontdb itself makes for every `with_face_data`
+                // call: installed font files are not truncated while the app runs.
+                let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+                Arc::new(map)
+            }
+            #[cfg(target_os = "windows")]
+            Source::File(_) => return None,
+        };
+        self.face_data_cache.insert(id, (data.clone(), index));
+        Some((data, index))
     }
 
     /// Returns the [`Source`] and corresponding font index of a font identified by
