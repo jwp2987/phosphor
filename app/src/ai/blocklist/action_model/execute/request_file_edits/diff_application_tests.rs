@@ -1634,3 +1634,48 @@ fn a_remote_tilde_with_unknown_home_is_refused_before_any_io() {
         ));
     });
 }
+
+/// #1277: a batch whose second diff fails to match yields an error for the whole batch (no
+/// diffs are returned to be written), and the first file is untouched on disk.
+#[test]
+fn batch_with_a_failing_second_diff_applies_nothing() {
+    App::test((), |app| async move {
+        let mut first = NamedTempFile::new().unwrap();
+        write!(&mut first, "alpha\nbeta\n").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let mut second = NamedTempFile::new().unwrap();
+        write!(&mut second, "gamma\n").unwrap();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let good = ParsedDiff::StrReplaceEdit {
+            file: Some(first_path.clone()),
+            search: Some("1|alpha".to_string()),
+            replace: Some("ALPHA".to_string()),
+        };
+        let bad = ParsedDiff::StrReplaceEdit {
+            file: Some(second_path.clone()),
+            search: Some("1|does not exist".to_string()),
+            replace: Some("x".to_string()),
+        };
+
+        let result = apply_edits(
+            vec![FileEdit::Edit(good), FileEdit::Edit(bad)],
+            &SessionContext::new_for_test(),
+            &AIIdentifiers::default(),
+            app.background_executor(),
+            Arc::new(AuthState::new_for_test()),
+            false,
+            |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+        )
+        .await;
+
+        let errors = result.expect_err("a failing diff fails the whole batch");
+        assert!(
+            matches!(&errors[..], [DiffApplicationError::UnmatchedDiffs { file, .. }] if *file == second_path)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&first_path).unwrap(),
+            "alpha\nbeta\n"
+        );
+    })
+}
