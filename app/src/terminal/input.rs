@@ -723,7 +723,7 @@ pub enum InputSuggestionsMode {
 
         /// Stores the suggestions for the original buffer_text_original.
         /// Used to filter down results during prefix search.
-        completion_results: SuggestionResults,
+        completion_results: Arc<SuggestionResults>,
 
         /// Stores the original trigger of the completions, so that we can track whether the menu
         /// was opened automatically (AsYouType) or manually (with Tab)
@@ -11397,7 +11397,7 @@ impl Input {
         &self,
         replacement_start: usize,
         buffer_text_original: &str,
-        completion_results: &SuggestionResults,
+        completion_results: &Arc<SuggestionResults>,
         is_user_edit: bool,
         ctx: &mut ViewContext<Input>,
     ) -> bool {
@@ -11454,16 +11454,15 @@ impl Input {
             // If the user continues to type with the tab suggestions open, we perform a
             // prefix search on the original results to filter the suggestions.
             let should_close = self.input_suggestions.update(ctx, |suggestions, ctx| {
-                suggestions.prefix_search_for_tab_completion(
+                // Large result sets are filtered off the UI thread; the previous list stays up
+                // until the result lands (and an empty result closes the menu then).
+                // We should close the menu now only if the (inline) filter left no results.
+                suggestions.refilter_tab_completions(
                     current_word,
                     completion_results,
                     TabCompletionsPreselectOption::Unchanged,
                     ctx,
-                );
-
-                // We should close the menu if there aren't any results
-                // after filtering.
-                suggestions.items().is_empty()
+                )
             });
 
             ctx.notify();
@@ -12360,7 +12359,7 @@ impl Input {
                             // Moved, not cloned: `results` is not read again, and a deep copy
                             // of a large listing (thousands of files) cost main-thread time
                             // before the menu's first frame.
-                            completion_results: results,
+                            completion_results: Arc::new(results),
                             trigger: completions_trigger,
                             menu_position,
                         },
@@ -12712,7 +12711,25 @@ impl Input {
     ///
     /// If tab is not bound to "open completion suggestions menu" nor is the suggestions menu
     /// already open, inserts a tab char into the input editor.
+    /// Makes the open completion menu's list match the current text before a key acts on it:
+    /// a background refilter that has not landed yet is redone inline (never act on a stale
+    /// list). Closes the menu if the current text matches nothing.
+    fn flush_pending_suggestion_refilter(&mut self, ctx: &mut ViewContext<Self>) {
+        let flushed = self
+            .input_suggestions
+            .update(ctx, |suggestions, ctx| suggestions.flush_pending_refilter(ctx));
+        if flushed == Some(true)
+            && matches!(
+                self.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            )
+        {
+            self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
+        }
+    }
+
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.flush_pending_suggestion_refilter(ctx);
         if matches!(
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
@@ -13124,6 +13141,7 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        self.flush_pending_suggestion_refilter(ctx);
         warpui::input_order::log_hop("enter_begin", || {
             format!("deferred={}", self.running_deferred_enter)
         });
