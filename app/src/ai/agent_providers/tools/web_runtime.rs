@@ -20,13 +20,13 @@
 //!   * 25s timeout
 //!   * SSE response → `result.content[0].text`
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
 use reqwest::redirect::Policy;
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
@@ -690,7 +690,18 @@ pub async fn run_websearch(
 /// won't trigger auto-resume and the model will get stuck waiting for a result. See
 /// `chat_stream::dispatch_byop_web_tool` and the controller's `needs_byop_local_resume` check.
 pub fn fetch_output_to_json(out: &FetchOutput) -> Value {
-    let mut v = serde_json::to_value(out).unwrap_or_else(|_| json!({"status": "serialize_error"}));
+    // A fetched image is carried as a `data:` base64 URL (up to 5 MB). The tool result is text,
+    // so the model cannot see the image; inlining the base64 only fills the 40k result cap
+    // with unusable characters. Report the mime and size instead (#1278).
+    let mut out = out.clone();
+    for attachment in &mut out.attachments {
+        let bytes = attachment.url.len().saturating_mul(3) / 4;
+        attachment.url = format!(
+            "<{} image, about {bytes} bytes; image data omitted because tool results are text>",
+            attachment.mime
+        );
+    }
+    let mut v = serde_json::to_value(&out).unwrap_or_else(|_| json!({"status": "serialize_error"}));
     if let Some(obj) = v.as_object_mut() {
         obj.insert("_byop_intercepted".to_owned(), Value::Bool(true));
     }

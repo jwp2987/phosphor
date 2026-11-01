@@ -436,12 +436,26 @@ fn build_git_ls_files_command(
 }
 
 fn build_find_command(patterns: &[String], target_path: &str, shell_type: ShellType) -> String {
-    // Preserve the existing `find` expression while making each model-provided
-    // pattern a quoted `-name` argument instead of shell syntax.
+    // Each model-provided pattern is a quoted `-name` argument instead of shell syntax.
+    // `-name` only sees the basename, so a leading `**/` (the tool description's own example,
+    // `**/*.rs`) is dropped: the search is already recursive. Without that it never matched.
     let pattern_args = patterns
         .iter()
-        .map(|pattern| format!("-name {}", shell_quote_arg(pattern, shell_type)))
+        .map(|pattern| {
+            let mut pattern = pattern.as_str();
+            while let Some(rest) = pattern.strip_prefix("**/") {
+                pattern = rest;
+            }
+            format!("-name {}", shell_quote_arg(pattern, shell_type))
+        })
         .join(" -o ");
+    // `-a` binds tighter than `-o`, so without grouping `-type f -name A -o -name B` applied the
+    // file-type test to the first pattern only and returned directories for the rest.
+    let pattern_args = if patterns.len() > 1 {
+        format!("\\( {pattern_args} \\)")
+    } else {
+        pattern_args
+    };
     format!(
         "find {} -type f {pattern_args}",
         shell_quote_arg(target_path, shell_type)

@@ -278,3 +278,32 @@ fn should_autoexecute_uses_active_terminal_profile_permission() {
         assert!(result);
     });
 }
+
+/// #1278: a decision queued while no card was waiting (Stop racing an answer) must not be
+/// consumed by the next card. Old code left it in the shared channel.
+#[test]
+fn execute_drains_a_stale_decision_from_an_earlier_card() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let (history, _profiles) = initialize_ask_user_question_test(&mut app, terminal_view_id);
+        let executor = app.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let action = build_action("ask-user-question");
+        let conversation_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, true, false, ctx)
+        });
+
+        let stale_left = executor.update(&mut app, |executor, ctx| {
+            executor.cancel(); // nothing is waiting: this decision is stale
+            let _ = executor.execute(
+                ExecuteActionInput {
+                    action: &action,
+                    conversation_id,
+                },
+                ctx,
+            );
+            executor.result_rx.1.try_recv().is_ok()
+        });
+
+        assert!(!stale_left);
+    });
+}

@@ -135,9 +135,8 @@ fn create_accepts_the_contents_synonym() {
 
 #[test]
 fn both_synonyms_together_still_parse() {
-    let result = apply_file_diffs(
-        r#"{"operations":[{"op":"create","path":"a.txt","contents":"x"}]}"#,
-    );
+    let result =
+        apply_file_diffs(r#"{"operations":[{"op":"create","path":"a.txt","contents":"x"}]}"#);
     assert_eq!(result.new_files[0].file_path, "a.txt");
     assert_eq!(result.new_files[0].content, "x");
 }
@@ -197,4 +196,35 @@ fn edit_canonical_search_replace_still_unaffected() {
     );
     assert_eq!(result.diffs[0].search, "x");
     assert_eq!(result.diffs[0].replace, "y");
+}
+
+/// #1277: the success result must tell the model what landed (post-edit text and range) and
+/// whether the user changed the diff, not just the paths. Old code emitted bare path strings.
+#[test]
+fn success_result_carries_content_range_and_user_edit_flag() {
+    let result =
+        api::message::tool_call_result::Result::ApplyFileDiffs(api::ApplyFileDiffsResult {
+            result: Some(api::apply_file_diffs_result::Result::Success(
+                api::apply_file_diffs_result::Success {
+                    updated_files_v2: vec![
+                        api::apply_file_diffs_result::success::UpdatedFileContent {
+                            file: Some(api::FileContent {
+                                file_path: "a.rs".into(),
+                                content: "fn a() {}".into(),
+                                line_range: Some(api::FileContentLineRange { start: 3, end: 9 }),
+                            }),
+                            was_edited_by_user: true,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )),
+        });
+    let json = (APPLY_FILE_DIFFS.result_to_json)(&result).expect("claims its own result");
+    let f = &json["updated_files"][0];
+    assert_eq!(f["path"], "a.rs");
+    assert_eq!(f["edited_by_user"], true);
+    assert_eq!(f["content"], "fn a() {}");
+    assert_eq!(f["line_range"]["start"], 3);
+    assert_eq!(f["line_range"]["end"], 9);
 }

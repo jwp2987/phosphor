@@ -14,8 +14,22 @@ fn build_find_command_single_quotes_patterns_and_path() {
 
     assert_eq!(
         command,
-        r#"find '/tmp/repo path' -type f -name '$(touch /tmp/zap-poc)*.rs' -o -name 'owner'"'"'s*.rs'"#
+        r#"find '/tmp/repo path' -type f \( -name '$(touch /tmp/zap-poc)*.rs' -o -name 'owner'"'"'s*.rs' \)"#
     );
+}
+
+/// #1278: the `-type f` test must apply to every `-o` alternative, and `**/` (the tool
+/// description's own example) must not be handed to `-name`, where it can never match.
+#[test]
+fn build_find_command_groups_alternatives_and_strips_globstar_prefix() {
+    let patterns = vec!["**/*.rs".to_string(), "*.toml".to_string()];
+    let command = build_find_command(&patterns, "/r", ShellType::Bash);
+    assert_eq!(
+        command,
+        r#"find '/r' -type f \( -name '*.rs' -o -name '*.toml' \)"#
+    );
+    let single = build_find_command(&["**/**/x.rs".to_string()], "/r", ShellType::Bash);
+    assert_eq!(single, "find '/r' -type f -name 'x.rs'");
 }
 
 #[test]

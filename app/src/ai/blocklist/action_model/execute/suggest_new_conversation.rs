@@ -52,6 +52,9 @@ impl SuggestNewConversationExecutor {
 
         let message_id = message_id.clone();
         let receiver = self.suggest_new_conversation_result_rx.clone().1;
+        // Drop any decision left over from an earlier card (a late Accept after Stop) so it
+        // cannot be consumed in place of this call's Reject (#1278).
+        while receiver.try_recv().is_ok() {}
         // Zap: there's no "Start a new conversation?" confirmation modal view
         // component, so this fast-fails with Reject to prevent the BYOP loop from
         // hanging forever waiting on the receiver. The model seeing Rejected is fine
