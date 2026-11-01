@@ -19,3 +19,13 @@
 
 Re-pin: diff `src/` against the new upstream release and re-apply the two constants and the
 `timeout_end = Instant::now() + SHORT_TIMEOUT_DUR` line.
+
+`src/platform/linux/x11.rs` (first-answer cap, #1192):
+
+- New `set_first_answer_deadline(Option<Instant>)` (thread-local, re-exported from the crate root on
+  Linux). While set, a read's wait for the owner's FIRST answer ends at that deadline instead of
+  `LONG_TIMEOUT_DUR`; a transfer that has started keeps its stall window. Phosphor sets it for the
+  html/image probes that follow a successful text read, so an owner that ignores a probe cannot
+  hold the UI thread for 10 s.
+- Re-pin: re-apply the thread-local, `first_answer_deadline`, the `timeout_end` line in
+  `read_single`, and the re-export in `platform/linux/mod.rs` and `lib.rs`.

@@ -18,6 +18,7 @@ const KDE_EXCLUSION_MIME: &str = "x-kde-passwordManagerHint";
 const KDE_EXCLUSION_HINT: &[u8] = b"secret";
 
 mod x11;
+pub use x11::set_first_answer_deadline;
 
 #[cfg(feature = "wayland-data-control")]
 mod wayland;

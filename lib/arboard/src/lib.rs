@@ -25,7 +25,9 @@ mod platform;
 	unix,
 	not(any(target_os = "macos", target_os = "android", target_os = "emscripten")),
 ))]
-pub use platform::{ClearExtLinux, GetExtLinux, LinuxClipboardKind, SetExtLinux};
+pub use platform::{
+	set_first_answer_deadline, ClearExtLinux, GetExtLinux, LinuxClipboardKind, SetExtLinux,
+};
 
 #[cfg(windows)]
 pub use platform::SetExtWindows;
