@@ -2749,7 +2749,7 @@ fn straddle_rewind_followup_requests_are_clean_and_durable() {
         let restored_tasks: Vec<api::Task> = loop {
             match receiver.recv_timeout(Duration::from_secs(2)) {
                 Ok(ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. }) => {
-                    break updated_tasks;
+                    break updated_tasks.into_iter().map(|t| (*t).clone()).collect();
                 }
                 Ok(_) => continue,
                 Err(_) => panic!("rewind must persist a task snapshot"),
@@ -3570,7 +3570,7 @@ fn persisted_agent_conversation_from_update_event(event: ModelEvent) -> AgentCon
             last_modified_at: Utc::now().naive_utc(),
             summary: None,
         },
-        tasks: updated_tasks,
+        tasks: updated_tasks.into_iter().map(|t| (*t).clone()).collect(),
     }
 }
 
@@ -4353,7 +4353,7 @@ fn test_optimistic_root_restore_round_trip_yields_in_progress_optimistic_root() 
                 last_modified_at: Utc::now().naive_utc(),
                 summary: None,
             },
-            tasks: updated_tasks,
+            tasks: updated_tasks.into_iter().map(|t| (*t).clone()).collect(),
         };
         let restored = convert_persisted_conversation_to_ai_conversation_with_metadata(persisted)
             .expect("empty-tasks restore must succeed");

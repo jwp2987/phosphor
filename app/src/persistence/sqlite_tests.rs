@@ -3045,7 +3045,7 @@ fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
         .sender
         .send(ModelEvent::UpdateMultiAgentConversation {
             conversation_id: "conversation-lone".to_string(),
-            updated_tasks: vec![task],
+            updated_tasks: vec![std::sync::Arc::new(task)],
             conversation_data: serde_json::from_str(r#"{"server_conversation_token":null}"#)
                 .expect("minimal conversation data"),
             task_retention: crate::persistence::PersistedTaskRetention::DeleteMissing,

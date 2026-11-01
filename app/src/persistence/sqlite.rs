@@ -2967,7 +2967,7 @@ fn handle_model_event_unsettled(
         } => upsert_agent_conversation_with_retention(
             connection,
             &conversation_id,
-            &updated_tasks,
+            updated_tasks.iter().map(|task| &**task),
             conversation_data,
             task_retention,
         )

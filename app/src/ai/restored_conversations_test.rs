@@ -449,7 +449,7 @@ mod startup_restore {
             upsert_agent_conversation_with_retention(
                 conn,
                 &conversation_id,
-                &updated_tasks,
+                updated_tasks.iter().map(|t| &**t),
                 conversation_data,
                 task_retention,
             )
