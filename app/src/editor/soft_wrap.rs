@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use warpui::text_layout;
 
-use crate::editor::{view::DisplayPoint, Point};
+use crate::editor::{Point, view::DisplayPoint};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct SoftWrapPoint(Point);
@@ -45,18 +45,47 @@ pub enum ClampDirection {
 /// the Arc, Mutex and Option.
 ///
 /// When this is None, we haven't yet laid out the text.
-pub struct SoftWrapState(Arc<Mutex<Option<FrameLayouts>>>);
+pub struct SoftWrapState {
+    layouts: Arc<Mutex<Option<FrameLayouts>>>,
+    /// Counts the layouts stored so far. A key that reads the layout (End, Up, Down) applied after
+    /// an edit must wait for a layout newer than the edit; this is the event that says one came.
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Told (bounded, one pending) each time a layout is stored.
+    layout_waker: Arc<Mutex<Option<async_channel::Sender<()>>>>,
+}
 
 impl SoftWrapState {
     pub fn update(&self, new_value: FrameLayouts) {
-        *self.0.lock() = Some(new_value);
+        *self.layouts.lock() = Some(new_value);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(waker) = self.layout_waker.lock().as_ref() {
+            let _ = waker.try_send(());
+        }
+    }
+
+    /// The number of layouts stored so far.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a layout has been stored at all (false before the first frame).
+    pub fn is_laid_out(&self) -> bool {
+        self.layouts.lock().is_some()
+    }
+
+    /// Sends on `waker` each time a layout is stored from now on.
+    pub fn set_layout_waker(&self, waker: async_channel::Sender<()>) {
+        *self.layout_waker.lock() = Some(waker);
     }
 
     pub fn read<T, F: FnOnce(anyhow::Result<&FrameLayouts>) -> T>(&self, callback: F) -> T {
-        let frame_layouts = self.0.lock();
+        let frame_layouts = self.layouts.lock();
         match &*frame_layouts {
             Some(frame_layouts) => callback(Ok(frame_layouts)),
-            None => callback(Err(anyhow!("No frame layout. This should only happen if we attempt to read before a frame of the editor has been laid out"))),
+            None => callback(Err(anyhow!(
+                "No frame layout. This should only happen if we attempt to read before a frame of the editor has been laid out"
+            ))),
         }
     }
 }

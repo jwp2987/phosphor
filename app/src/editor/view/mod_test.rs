@@ -5273,9 +5273,8 @@ fn test_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
         view.update(&mut app, |view, ctx| {
             view.move_to_buffer_end(ctx);
             let hold = view.paste_hold();
-            // The `PasteSequencer` path that `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores; the queue
-            // path has its own twin of this test below.
-            hold.set_uses_queue(false);
+            // The `PasteSequencer` path plain editors use; the queue path has its own twin of
+            // this test below.
             let id = hold.begin();
 
             view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
@@ -5324,7 +5323,6 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
         });
         view.update(&mut app, |view, ctx| {
             let hold = view.paste_hold();
-            hold.set_uses_queue(false);
             let id = hold.begin();
             view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
             assert_eq!(view.buffer_text(ctx), "");
@@ -5347,7 +5345,6 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
 fn start_queued_paste(view: &mut EditorView, ctx: &mut ViewContext<EditorView>) -> u64 {
     use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec};
     let hold = view.paste_hold();
-    assert!(hold.uses_queue(), "the queue is the default path");
     let id = hold.next_queue_paste_id();
     let queue = hold.queue();
     let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
@@ -5414,7 +5411,7 @@ fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
     })
 }
 
-// #1389, legacy `PasteSequencer` path (`PHOSPHOR_INPUT_QUEUE_PASTE=0`): the twin of the test above.
+// #1389, `PasteSequencer` path (plain editors): the twin of the test above.
 // The `for key in held` replay must not compute a cursor motion on a stale display map either.
 #[test]
 fn test_legacy_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
@@ -5426,7 +5423,6 @@ fn test_legacy_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
         view.update(&mut app, |view, ctx| {
             view.move_to_buffer_end(ctx);
             let hold = view.paste_hold();
-            hold.set_uses_queue(false);
             let id = hold.begin();
             view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
             view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);

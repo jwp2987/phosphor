@@ -13,8 +13,8 @@
 
 use std::time::Duration;
 
-use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
+use warpui::{SingletonEntity as _, ViewContext};
 
 use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
 use crate::editor::DisplayMapStep;
@@ -113,11 +113,16 @@ impl Host for InputQueueHost<'_, '_> {
                     .paste_hold()
                     .display_map_step(payload, follow.flushing());
                 if let DisplayMapStep::Wait(spec) = step {
-                    self.input
-                        .editor
-                        .as_ref(self.ctx)
-                        .paste_hold()
-                        .request_display_step();
+                    let hold = self.input.editor.as_ref(self.ctx).paste_hold();
+                    hold.request_display_step();
+                    // A key that reads the soft-wrap layout also waits for a layout NEWER than the
+                    // edits before it: the display map catching up is not enough for the last
+                    // frame's layout (a large paste, #1389). Before the first frame there is none.
+                    let soft = self.input.editor.as_ref(self.ctx).soft_wrap_state(self.ctx);
+                    hold.set_layout_wait(
+                        (payload.reads_soft_wrap_layout() && soft.is_laid_out())
+                            .then(|| soft.generation()),
+                    );
                     return DeliverOutcome::Requeue(spec);
                 }
                 if let Some(key) = payload.take() {
@@ -228,6 +233,18 @@ impl Input {
         let Some(key) = hold.take_display_gate() else {
             return;
         };
+        if let Some(seen) = hold.layout_wait() {
+            let soft = self.editor.as_ref(ctx).soft_wrap_state(ctx);
+            if soft.generation() == seen {
+                // No frame has been laid out since the edits: the gate stays closed and the
+                // layout that lands runs this step again (the gate's cap is the logged give-up
+                // for a view that is never rendered).
+                hold.restore_display_gate(key);
+                hold.arm_layout_wake(&soft);
+                return;
+            }
+        }
+        hold.set_layout_wait(None);
         let queue = hold.queue();
         let Some(mut guard) = queue.try_lock() else {
             log::warn!("input queue: display-map replay step found the queue busy");

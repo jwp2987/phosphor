@@ -21,27 +21,25 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
-//! One queue per pane (merge steps 1-4, `kill_switch::Area::Shared`): the terminal view's
-//! [`PaneQueue`] is adopted by the input editor, so editor keys and pty keys are ordered by one
-//! instance. A [`Host`] says which entries it can deliver ([`Host::handles`]); a drain driven from
-//! the editor side stops at a pty entry and the view continues it (`pending_foreign`). The
-//! editor's wait for a fresh display map (#1389) is the [`GateKind::EditorDisplayMap`] gate.
+//! One queue per pane: the terminal view's [`PaneQueue`] is adopted by the input editor, so editor
+//! keys and pty keys are ordered by one instance, and EVERY key from every route lands in it.
+//! A [`Host`] says which entries it can deliver ([`Host::handles`]); a drain driven from the
+//! editor side stops at a pty entry and the view continues it (`pending_foreign`). The editor's
+//! wait for a fresh display map (#1389) is the [`GateKind::EditorDisplayMap`] gate. Every gate
+//! holds every key ([`InputQueue::holds_keys`]); an entry records its origin ([`Origin`]) and its
+//! content, and where it goes is decided when it is drained.
 //!
-//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`), the subshell setup /
-//! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
-//! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
-//! the `EnterVerdict`, `TabCompletion` and `CliSubmit` gates; see `input/enter_queue.rs`), and the ssh connect
-//! typeahead (phase 4, `kill_switch::Area::Ssh`, `view/ssh_queue.rs`), and the typeahead hand-off's
-//! ConPTY prompt hold (phase 5, `kill_switch::Area::Handoff`, `LineEditorActive` gate, entries put
-//! back with [`DeliverOutcome::Requeue`]; see `view/paste_queue.rs`). The other gate kinds and
-//! the trace hops of the buffers that have not moved yet are exercised by the tests only.
+//! Consumers: paste, the subshell setup / bootstrap holds, the Enter verdict / Tab / after-Enter
+//! ordering plus the paced CLI-agent submit (`input/enter_queue.rs`), the ssh connect typeahead
+//! (`view/ssh_queue.rs`) and the typeahead hand-off's ConPTY prompt hold (`LineEditorActive` gate,
+//! entries put back with [`DeliverOutcome::Requeue`]; see `view/paste_queue.rs`). The old holders
+//! and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are gone; the revert path is git.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
 
 mod destination;
 mod gates;
-pub mod kill_switch;
 mod pane;
 pub mod trace;
 
@@ -106,6 +104,15 @@ impl EditorKeyPayload {
             .borrow()
             .as_ref()
             .is_some_and(HeldPasteKey::needs_fresh_display_map)
+    }
+
+    /// Delivering this key reads the soft-wrap LAYOUT of the last rendered frame (visual line
+    /// start / end, Up, Down), which only a render after the edits before it brings up to date.
+    pub fn reads_soft_wrap_layout(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(HeldPasteKey::reads_soft_wrap_layout)
     }
 
     /// The key, once. `None` if it was already delivered.
@@ -228,9 +235,19 @@ impl fmt::Debug for EntryKind {
     }
 }
 
+/// The `class` of an [`EntryKind::Held`] entry: printable characters, a control key, a paste, a
+/// control sequence (arrows, ...).
+pub const HELD_TYPED: u8 = 0;
+pub const HELD_KEY: u8 = 1;
+pub const HELD_PASTE: u8 = 2;
+pub const HELD_SEQ: u8 = 3;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     Keyboard,
+    /// Offered by the input editor's key handler (the editor route), as opposed to the terminal
+    /// element's (`Keyboard`). The content is what was typed; the destination is decided at drain.
+    Editor,
     /// Re-offered by a delivery follow-up.
     Replay(EntryId),
     /// Synthesized (mouse report, wheel to arrow).
@@ -484,15 +501,11 @@ impl InputQueue {
             .min()
     }
 
-    /// Keys typed into the input editor wait behind some open gate (see
-    /// [`GateKind::holds_editor_keys`]).
-    pub fn holds_editor_keys(&self) -> bool {
-        self.gates.iter().any(Gate::holds_editor_keys)
-    }
-
-    /// Keys typed for the pty wait behind some open gate (see [`GateKind::holds_pty_keys`]).
-    pub fn holds_pty_keys(&self) -> bool {
-        self.gates.iter().any(Gate::holds_pty_keys)
+    /// A key typed now, from any route and for any destination, waits in the queue: some gate is
+    /// open, or entries are still queued (a stopped drain), so arrival order is kept. Every gate
+    /// holds every key; where a key goes is decided when it drains.
+    pub fn holds_keys(&self) -> bool {
+        !self.is_idle()
     }
 
     /// A paste read for the input editor is pending.

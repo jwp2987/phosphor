@@ -10,9 +10,10 @@
 //! `PasteReading` gate; the keys typed behind it are `EditorKey` entries; the reader's result
 //! opens the gate; ^C cancels the paste and delivers what was typed before it). The editor's keys
 //! reach `InputQueue::offer` whenever the queue is not idle; idle, the cost is one borrow-flag
-//! read (no lock, no allocation). `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores the sequencer path
-//! below, which stays in the tree. The queue lives here (one per editor) because the editor-bound
-//! read is started by the terminal input, which has no handle on the terminal view's queue.
+//! read (no lock, no allocation). The sequencer below remains for PLAIN editors (search boxes,
+//! notebooks), which have no pty and no pane queue (#1380). The queue lives here (one per editor)
+//! because the editor-bound read is started by the terminal input, which has no handle on the
+//! terminal view's queue; a terminal input adopts the pane's one queue ([`Self::adopt_queue`]).
 //!
 //! The queue can hold a password typed blind, so `Debug` shows only kinds.
 
@@ -24,7 +25,6 @@ use std::time::Duration;
 use warpui::ViewContext;
 
 use super::{EditorAction, EditorView};
-use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateToken, Host, InputEntry, PaneQueue, PasteOwner, is_pty_entry,
@@ -48,6 +48,26 @@ impl HeldPasteKey {
     }
 }
 
+impl HeldPasteKey {
+    /// Applying this key reads the soft-wrap layout the last rendered frame stored (visual line
+    /// start / end, Up, Down and their selections). That layout describes the buffer as of that
+    /// frame, so after an edit it is stale until a newer frame is laid out; the display map alone
+    /// catching up is not enough (a large paste, #1389).
+    pub fn reads_soft_wrap_layout(&self) -> bool {
+        matches!(
+            self,
+            Self::Action(
+                EditorAction::Up
+                    | EditorAction::Down
+                    | EditorAction::SelectUp
+                    | EditorAction::SelectDown
+                    | EditorAction::MoveToVisualLineStart
+                    | EditorAction::MoveToVisualLineEnd
+            )
+        )
+    }
+}
+
 impl fmt::Debug for HeldPasteKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -64,8 +84,6 @@ pub struct EditorPasteHold {
     /// The pane's queue handle. A plain editor keeps its own; the terminal input swaps in the
     /// terminal view's so the pane has ONE ([`Self::adopt_queue`]).
     pane_queue: RefCell<PaneQueue>,
-    /// Paste ordering runs on `queue` (`PHOSPHOR_INPUT_QUEUE_PASTE`, default on).
-    queue_enabled: Cell<bool>,
     /// Replayed keys that wait for the display map to catch up with the edits before them (#1389).
     replay: RefCell<VecDeque<HeldPasteKey>>,
     /// A `ReplayHeldKeys` step is already queued as an effect.
@@ -78,6 +96,9 @@ pub struct EditorPasteHold {
     display_gate_enabled: Cell<bool>,
     /// The key of the display-map gate that is open, if one is.
     display_gate: Cell<Option<u64>>,
+    /// The layout generation the open display-map gate waits to be passed: its key reads the
+    /// soft-wrap layout, which must be a layout newer than the edits before the key.
+    layout_wait: Cell<Option<u64>>,
     next_display_gate: Cell<u64>,
     /// The step that closes the gate is running: the display map is current for the FIRST key it
     /// delivers (consumed by that key).
@@ -100,12 +121,12 @@ impl Default for EditorPasteHold {
         Self {
             sequencer: RefCell::default(),
             pane_queue: RefCell::new(PaneQueue::new()),
-            queue_enabled: Cell::new(kill_switch::is_enabled(Area::Paste)),
             replay: RefCell::default(),
             replay_scheduled: Cell::new(false),
             replaying: Cell::new(false),
             display_gate_enabled: Cell::new(false),
             display_gate: Cell::new(None),
+            layout_wait: Cell::new(None),
             next_display_gate: Cell::new(0),
             map_fresh: Cell::new(false),
             display_step_waker: RefCell::new(None),
@@ -153,17 +174,6 @@ impl EditorPasteHold {
         self.replaying.replace(on)
     }
 
-    /// Whether paste ordering runs on the input queue instead of the sequencer.
-    pub fn uses_queue(&self) -> bool {
-        self.queue_enabled.get()
-    }
-
-    /// Tests flip the path per hold (the kill switch itself is read once per process).
-    #[cfg(test)]
-    pub fn set_uses_queue(&self, on: bool) {
-        self.queue_enabled.set(on);
-    }
-
     /// The pane's queue (a cheap handle; clones share the queue).
     pub fn queue(&self) -> PaneQueue {
         self.pane_queue.borrow().clone()
@@ -194,12 +204,8 @@ impl EditorPasteHold {
     }
 
     /// Turns the display-map gate on (the queue is shared with the terminal view and `waker`
-    /// reaches the input that runs the replay step). Only with the queue path on: the sequencer
-    /// path keeps the replay list.
+    /// reaches the input that runs the replay step). A plain editor keeps the replay list.
     pub fn enable_display_gate(&self, waker: async_channel::Sender<()>) {
-        if !self.queue_enabled.get() {
-            return;
-        }
         *self.display_step_waker.borrow_mut() = Some(waker);
         self.display_gate_enabled.set(true);
     }
@@ -245,6 +251,29 @@ impl EditorPasteHold {
         }
     }
 
+    /// Has the soft-wrap layout `soft` send the display-step waker each time a layout is stored,
+    /// so a replay step that waits for a newer layout runs again the moment one lands.
+    pub fn arm_layout_wake(&self, soft: &crate::editor::soft_wrap::SoftWrapState) {
+        if let Some(waker) = self.display_step_waker.borrow().as_ref() {
+            soft.set_layout_waker(waker.clone());
+        }
+    }
+
+    /// The open gate waits for a layout newer than `generation` (see [`Self::layout_wait`]).
+    pub fn set_layout_wait(&self, generation: Option<u64>) {
+        self.layout_wait.set(generation);
+    }
+
+    /// The layout generation the open gate waits to pass, if its key reads the layout.
+    pub fn layout_wait(&self) -> Option<u64> {
+        self.layout_wait.get()
+    }
+
+    /// Puts a gate back that the replay step could not close yet (it waits for a layout).
+    pub fn restore_display_gate(&self, key: u64) {
+        self.display_gate.set(Some(key));
+    }
+
     /// The open display-map gate, once: the replay step takes it to close it.
     pub fn take_display_gate(&self) -> Option<u64> {
         self.display_gate.take()
@@ -255,16 +284,15 @@ impl EditorPasteHold {
         self.map_fresh.set(fresh);
     }
 
-    /// The queue holds input that keys typed into the editor must wait behind: a paste being read
-    /// for the editor, an Enter waiting for its verdict (see [`GateKind::holds_editor_keys`]; on a
-    /// queue shared with the terminal view, gates that only hold pty keys do not count). False
-    /// while the queue is mid-drain: a key applied by a delivery is part of that delivery and must
-    /// not be held again.
+    /// The queue holds input that keys typed into the editor must wait behind: any open gate (a
+    /// paste being read, an Enter waiting for its verdict, an ssh connect, a subshell setup, ...),
+    /// or entries still queued. Every gate holds every key. False while the queue is mid-drain: a
+    /// key applied by a delivery is part of that delivery and must not be held again.
     pub fn queue_is_busy(&self) -> bool {
         self.pane_queue
             .borrow()
             .try_peek()
-            .is_some_and(|queue| queue.holds_editor_keys())
+            .is_some_and(|queue| queue.holds_keys())
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already
@@ -274,14 +302,10 @@ impl EditorPasteHold {
     }
 
     pub fn has_pending(&self) -> bool {
-        if self.queue_enabled.get() {
-            return self
-                .pane_queue
-                .borrow()
-                .try_peek()
-                .is_some_and(|queue| queue.has_editor_paste_reading());
-        }
-        self.sequencer.borrow().has_pending()
+        self.pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|queue| queue.has_editor_paste_reading())
     }
 
     /// A paste begun with [`Self::begin`] is pending, whichever path the input uses. The input's
@@ -292,14 +316,10 @@ impl EditorPasteHold {
     }
 
     pub fn is_pending(&self, id: u64) -> bool {
-        if self.queue_enabled.get() {
-            return self
-                .pane_queue
-                .borrow()
-                .try_peek()
-                .is_some_and(|queue| queue.has_gate(GateKind::PasteReading, id));
-        }
-        self.sequencer.borrow().is_pending(id)
+        self.pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate(GateKind::PasteReading, id))
     }
 
     /// Holds `key` behind the pending paste; false when none is pending.

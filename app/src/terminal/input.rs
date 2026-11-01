@@ -1249,8 +1249,8 @@ pub enum Event {
     /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
     TypeaheadHandoffEnterDeferred,
     /// Input the user typed after an Enter that waited for its classification verdict (#1016).
-    /// The Enter has now run; the terminal view routes these, in order, as if typed after it.
-    /// The terminal view drains [`Input::take_after_enter_replay`] once the pty route is settled.
+    /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
+    /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
     /// One key typed behind an Enter that waited, released by the input queue (#1353 phase 3)
     /// after that Enter ran and the route it took settled. The terminal view routes it as if it
@@ -1363,7 +1363,6 @@ struct VerdictWait {
     /// must not touch the one that replaced it.
     id: u64,
     text: String,
-    queued: Vec<AfterEnterInput>,
     hold: EnterHold,
     /// The compute the job this Enter waits for (the classifier, the completer) has spent (#1351).
     /// The give-up cap is measured on it, never on the age of the Enter.
@@ -1479,17 +1478,6 @@ impl VerdictWait {
             EnterHold::Verdict { .. } => None,
             EnterHold::TabCompletion { since } => Some(since),
         }
-    }
-
-    /// The text typed behind the Enter, without the Enters (they have nothing to submit).
-    fn queued_text(&self) -> String {
-        self.queued
-            .iter()
-            .filter_map(|input| match input {
-                AfterEnterInput::Text(text) => Some(text.as_str()),
-                AfterEnterInput::Enter => None,
-            })
-            .collect()
     }
 }
 
@@ -2195,10 +2183,6 @@ pub struct Input {
     verdict_wait: Option<VerdictWait>,
     /// The id given to the next [`VerdictWait`] (#1206).
     next_verdict_wait_id: u64,
-    /// #1353 phase 3: the Enter verdict / Tab / after-Enter ordering runs on the editor's input
-    /// queue (`PHOSPHOR_INPUT_QUEUE_ENTER`, default on). Off keeps the legacy `verdict_wait.queued`
-    /// + `after_enter_replay` path, which stays in the tree.
-    enter_queue_enabled: bool,
     /// The queue gate of the Enter that waits (or whose keys wait for its route), if one is open.
     enter_gate: Option<enter_queue::EnterGate>,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
@@ -2206,19 +2190,6 @@ pub struct Input {
     deferred_enter_activity: DeferredEnterActivity,
     /// The editor's text boundary at an Enter deferred behind the typeahead hand-off (#1016).
     handoff_enter_mark: Option<HandoffEnterMark>,
-    /// Input typed after a deferred Enter, held until the terminal view has routed it (#1016).
-    /// While it is non-empty or `after_enter_replay_open` is set, every new key appends here
-    /// instead of being routed, so nothing overtakes what was typed earlier.
-    after_enter_replay: Vec<AfterEnterInput>,
-    /// A replay is in progress: the Enter has run but the queue is not drained yet.
-    after_enter_replay_open: bool,
-    /// The deferred Enter submitted a shell command, so the replay must wait until the pty has
-    /// taken the command and routes keys (before that, routed text lands in the editor and the
-    /// shell's typeahead report is later inserted in front of it).
-    after_enter_replay_awaits_pty: bool,
-    /// Bumped every time a replay opens (#1206), so the view's wait-for-pty tick armed for an
-    /// earlier replay cannot drain a later one.
-    after_enter_replay_generation: u64,
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
@@ -3997,14 +3968,9 @@ impl Input {
             multiline_submit_confirmed: false,
             verdict_wait: None,
             next_verdict_wait_id: 0,
-            enter_queue_enabled: enter_queue::enabled_by_default(),
             enter_gate: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_mark: None,
-            after_enter_replay: Vec::new(),
-            after_enter_replay_open: false,
-            after_enter_replay_awaits_pty: false,
-            after_enter_replay_generation: 0,
             running_deferred_enter: false,
             ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
@@ -8357,17 +8323,6 @@ impl Input {
         });
     }
 
-    /// Hands the editor the hold the terminal view uses to keep the keys typed during an ssh
-    /// connect in order (#1292).
-    pub(crate) fn set_editor_key_hold(
-        &mut self,
-        hold: Rc<crate::editor::EditorKeyHold>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.editor
-            .update(ctx, |editor, _| editor.set_key_hold(hold));
-    }
-
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
         self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {
@@ -11091,7 +11046,7 @@ impl Input {
         self.process_paste_content(content, ctx);
     }
 
-    /// Reads the clipboard on a worker thread; [`Self::finish_background_paste`] inserts it.
+    /// Reads the clipboard on a worker thread; the paste's queue entry inserts it (`paste_queue`).
     #[cfg(not(target_family = "wasm"))]
     fn start_background_paste(
         &mut self,
@@ -11146,129 +11101,8 @@ impl Input {
         source: PasteSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        let hold = self.editor.as_ref(ctx).paste_hold();
-        // #1353 phase 1: the paste is an entry of the editor's input queue. A queue that is
-        // mid-drain cannot take a new gate (not reachable from a user paste); fall back to the
-        // sequencer rather than panic on a borrow.
-        if hold.uses_queue() && hold.queue().try_lock().is_some() {
-            self.start_queued_read(reader, backstop, source, ctx);
-            return;
-        }
-        let id = hold.begin();
-        let (tx, rx) = futures::channel::oneshot::channel();
-        let spawned = std::thread::Builder::new()
-            .name("paste-read".into())
-            .spawn(move || {
-                let _ = tx.send(reader());
-            });
-        if spawned.is_err() {
-            self.finish_background_paste(id, None, ctx);
-            return;
-        }
-        ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
-            me.finish_background_paste_as(id, read, source, ctx)
-        });
-        // A read that outlives the backstop fails the paste: the keys held behind it are applied
-        // (in order) and the user is told. The reader's late answer finds the paste gone.
-        if let Some(backstop) = backstop {
-            ctx.spawn(Timer::after(backstop), move |me, _, ctx| {
-                if me.editor.as_ref(ctx).paste_hold().is_pending(id) {
-                    me.finish_background_paste(
-                        id,
-                        Some(warpui::clipboard::BackgroundTextRead::TimedOut),
-                        ctx,
-                    );
-                }
-            });
-        }
-        // Say what is happening when the read takes noticeable time.
-        ctx.spawn(
-            Timer::after(Duration::from_millis(750)),
-            move |me, _, ctx| {
-                if me.editor.as_ref(ctx).paste_hold().is_pending(id)
-                    && ctx.has_singleton_model::<ToastStack>()
-                {
-                    let window_id = ctx.window_id();
-                    ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                        ts.add_ephemeral_toast(
-                            DismissibleToast::success(
-                                "Pasting from the clipboard\u{2026} (Ctrl-C cancels)".to_string(),
-                            ),
-                            window_id,
-                            ctx,
-                        );
-                    });
-                }
-            },
-        );
-    }
-
-    /// The paste `id` was read (`None`: the reader thread died): paste it where the cursor still
-    /// is, then apply the keys typed meanwhile, in order. A cancelled or superseded paste does
-    /// nothing.
-    #[cfg(not(target_family = "wasm"))]
-    fn finish_background_paste(
-        &mut self,
-        id: u64,
-        read: Option<warpui::clipboard::BackgroundTextRead>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.finish_background_paste_as(id, read, PasteSource::Clipboard, ctx);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    fn finish_background_paste_as(
-        &mut self,
-        id: u64,
-        read: Option<warpui::clipboard::BackgroundTextRead>,
-        source: PasteSource,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(held) = self.editor.as_ref(ctx).paste_hold().complete(id) else {
-            return;
-        };
-        match read {
-            Some(warpui::clipboard::BackgroundTextRead::Content(content)) => match source {
-                PasteSource::Clipboard => self.process_paste_content(content, ctx),
-                PasteSource::EditorMiddleClick => {
-                    self.editor.update(ctx, |editor, ctx| {
-                        editor.insert_middle_click_content(content, ctx)
-                    });
-                }
-                PasteSource::TerminalMiddleClick(shell_dialect) => {
-                    let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
-                    self.system_insert(&text, ctx);
-                }
-                PasteSource::TerminalPaste(shell_dialect) => {
-                    let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
-                    self.paste_insert(&text, ctx);
-                }
-                PasteSource::PlainTextPaste => {
-                    self.paste_insert(content.plain_text.as_str(), ctx);
-                }
-            },
-            Some(warpui::clipboard::BackgroundTextRead::TooLarge(bytes)) => {
-                self.show_paste_too_large_toast(bytes, ctx);
-            }
-            Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => {
-                if ctx.has_singleton_model::<ToastStack>() {
-                    let window_id = ctx.window_id();
-                    ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                        ts.add_ephemeral_toast(
-                            DismissibleToast::error(
-                                "Paste failed \u{2014} the clipboard did not answer; your typing was kept".to_string(),
-                            ),
-                            window_id,
-                            ctx,
-                        );
-                    });
-                }
-            }
-        }
-        if !held.is_empty() {
-            self.request_detection_for_pasted_text(ctx);
-        }
-        self.replay_held_paste_keys(held, ctx);
+        // The paste is an entry of the pane's input queue (#1353).
+        self.start_queued_read(reader, backstop, source, ctx);
     }
 
     /// Requests input-type detection for the text a background paste just inserted, before the
@@ -11293,50 +11127,6 @@ impl Input {
             return;
         }
         self.request_input_detection_for_current_buffer(ctx);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    /// Applies keys that were held behind a paste, in typing order. A held paste starts its own
-    /// read; the keys after it wait behind that one.
-    fn replay_held_paste_keys(
-        &mut self,
-        held: Vec<crate::editor::HeldPasteKey>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let hold = self.editor.as_ref(ctx).paste_hold();
-        let mut keys = held.into_iter();
-        while let Some(key) = keys.next() {
-            if matches!(
-                key,
-                crate::editor::HeldPasteKey::Action(EditorAction::Paste)
-            ) {
-                // The editor would only emit the event, to be handled after this loop's keys.
-                self.process_paste_event(ctx);
-                if hold.has_pending() {
-                    for rest in keys {
-                        hold.hold(rest);
-                    }
-                    return;
-                }
-                continue;
-            }
-            if matches!(
-                key,
-                crate::editor::HeldPasteKey::Action(EditorAction::MiddleClickPaste)
-            ) {
-                // Same as a held paste: the editor would only emit the request, too late.
-                self.process_middle_click_paste_event(ctx);
-                if hold.has_pending() {
-                    for rest in keys {
-                        hold.hold(rest);
-                    }
-                    return;
-                }
-                continue;
-            }
-            self.editor
-                .update(ctx, |editor, ctx| editor.apply_held_paste_key(key, ctx));
-        }
     }
 
     /// Inserts (or attaches) what the clipboard held.
@@ -14166,10 +13956,6 @@ impl Input {
         if !self.running_deferred_enter && self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
             return true;
         }
-        if self.after_enter_replay_open && !self.running_deferred_enter {
-            self.queue_after_enter_replay(AfterEnterInput::Enter);
-            return true;
-        }
         let Some(text) = self.verdict_needed_before_submit(ctx) else {
             return false;
         };
@@ -14230,10 +14016,7 @@ impl Input {
     /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
     /// Returns whether the Enter was taken.
     fn hold_enter_for_tab_completion(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if self.running_deferred_enter
-            || self.after_enter_replay_open
-            || self.enter_queue_awaits_route(ctx)
-        {
+        if self.running_deferred_enter || self.enter_queue_awaits_route(ctx) {
             return false;
         }
         if self
@@ -14316,7 +14099,6 @@ impl Input {
         self.verdict_wait = Some(VerdictWait {
             id,
             text,
-            queued: Vec::new(),
             hold,
             compute,
             watch_epoch: 0,
@@ -14649,18 +14431,15 @@ impl Input {
             Some(suffix) => {
                 let text = wait.text.clone();
                 // Keys that reached the buffer anyway (an insertion that did not come through the
-                // editor's key handler) go behind the Enter on the queue when its gate holds the
-                // Enter (#1353 phase 3), else on the wait's own list.
-                if !self.queue_behind_enter(AfterEnterInput::Text(suffix.clone()), ctx)
-                    && let Some(wait) = self.verdict_wait.as_mut()
-                {
-                    match wait.queued.last_mut() {
-                        Some(AfterEnterInput::Text(queued)) => queued.push_str(&suffix),
-                        _ => wait.queued.push(AfterEnterInput::Text(suffix)),
-                    }
+                // editor's key handler) go behind the Enter on the queue (#1353). If the queue
+                // cannot take them (mid-drain, which user input never reaches) they stay in the
+                // buffer rather than being lost.
+                if self.queue_behind_enter(AfterEnterInput::Text(suffix), ctx) {
+                    self.editor
+                        .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+                } else {
+                    log::warn!("input queue: keys typed behind a waiting Enter stay in the buffer");
                 }
-                self.editor
-                    .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
                 true
             }
             None => {
@@ -14679,9 +14458,8 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                let mut rest = wait.map(|wait| wait.queued_text()).unwrap_or_default();
                 // Typed behind the void Enter on the queue: kept in the editor too.
-                rest.push_str(&self.void_enter_gate(ctx));
+                let rest = self.void_enter_gate(ctx);
                 if !rest.is_empty() {
                     self.system_insert(&rest, ctx);
                 }
@@ -14697,25 +14475,12 @@ impl Input {
         if let Some(wait) = wait.as_ref() {
             wait.compute.stop_notifying();
         }
-        let queued = wait.map(|wait| wait.queued).unwrap_or_default();
-        // Open the replay before the submit so nothing typed from here on can be routed
-        // ahead of the queue (#1016); the view drains it once the pty route is settled.
-        let has_queued = !queued.is_empty();
         self.end_deferred_enter_activity();
-        if has_queued {
-            self.after_enter_replay = queued;
-            self.after_enter_replay_open = true;
-            self.after_enter_replay_awaits_pty = false;
-            self.after_enter_replay_generation = self.after_enter_replay_generation.wrapping_add(1);
-        }
         self.last_enter_submitted_shell_command = false;
         self.running_deferred_enter = true;
         self.input_enter(ctx);
         self.running_deferred_enter = false;
-        if has_queued {
-            self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
-            ctx.emit(Event::ReplayAfterDeferredEnter);
-        } else if self.enter_gate.is_some() {
+        if self.enter_gate.is_some() {
             // #1353 phase 3: what was typed behind this Enter is queued behind its gate. The gate
             // stays closed until the route the Enter took has settled; with nothing behind it,
             // it closes now.
@@ -14788,64 +14553,6 @@ impl Input {
         self.ai_input_model
             .update(ctx, |model, _| model.abandon_pending_detection());
         self.submit_held_enter(ctx);
-    }
-
-    /// Whether input typed after a deferred Enter is still waiting to be routed (#1016): new
-    /// keys must queue behind it rather than overtake it.
-    pub(crate) fn after_enter_replay_open(&self) -> bool {
-        self.after_enter_replay_open
-    }
-
-    /// Whether the replay must wait for the pty to take the submitted shell command.
-    pub(crate) fn after_enter_replay_awaits_pty(&self) -> bool {
-        self.after_enter_replay_awaits_pty
-    }
-
-    /// Identifies the current replay (#1206): a tick armed while an earlier replay waited for the
-    /// pty must not drain this one.
-    pub(crate) fn after_enter_replay_generation(&self) -> u64 {
-        self.after_enter_replay_generation
-    }
-
-    /// Appends `input` behind what is already waiting; adjacent text is merged.
-    pub(crate) fn queue_after_enter_replay(&mut self, input: AfterEnterInput) {
-        match (self.after_enter_replay.last_mut(), input) {
-            (Some(AfterEnterInput::Text(queued)), AfterEnterInput::Text(more)) => {
-                queued.push_str(&more)
-            }
-            (_, input) => self.after_enter_replay.push(input),
-        }
-    }
-
-    /// Takes the whole replay queue and closes the replay: the caller routes it in order.
-    pub(crate) fn take_after_enter_replay(&mut self) -> Vec<AfterEnterInput> {
-        self.after_enter_replay_open = false;
-        self.after_enter_replay_awaits_pty = false;
-        std::mem::take(&mut self.after_enter_replay)
-    }
-
-    /// Opens a replay holding `queued`, as a submitted deferred Enter does.
-    #[cfg(test)]
-    pub(crate) fn open_after_enter_replay_for_test(
-        &mut self,
-        queued: Vec<AfterEnterInput>,
-        awaits_pty: bool,
-    ) {
-        self.after_enter_replay = queued;
-        self.after_enter_replay_open = true;
-        self.after_enter_replay_awaits_pty = awaits_pty;
-        self.after_enter_replay_generation = self.after_enter_replay_generation.wrapping_add(1);
-    }
-
-    /// The replay queue, for tests.
-    #[cfg(test)]
-    pub(crate) fn after_enter_replay_for_test(&self) -> &[AfterEnterInput] {
-        &self.after_enter_replay
-    }
-
-    /// Drops the replay (the user interrupted).
-    pub(crate) fn clear_after_enter_replay(&mut self) {
-        let _ = self.take_after_enter_replay();
     }
 
     /// Marks the typeahead the hand-off just inserted as young (#933).

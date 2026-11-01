@@ -9,7 +9,13 @@
 #
 # Matches a bare word `queue` (not `write_queue`, `pane_queue`, ...) or a `queue()` call followed
 # by `.borrow(`, `.borrow_mut(` or `.try_borrow*(`, across line breaks. Test files, the wrapper
-# itself and `EditorKeyHold` (a plain `Vec` queue, unrelated) are exempt.
+# itself are exempt.
+#
+# Second guard (#1353, holder deletion): the legacy holders and their kill switches were deleted
+# on purpose (every keystroke lands in the one pane queue; the revert path is git). Production
+# code may not bring back a `PHOSPHOR_INPUT_QUEUE_*` / `PHOSPHOR_TEST_*_QUEUE` switch or one of
+# the deleted holder names (`EditorKeyHold`, `after_enter_replay`, `held_user_bytes`,
+# `subshell_setup_held_bytes`, `VerdictWait::queued`, the `SshTypeahead` field).
 #
 # Exit 0: clean. Exit 1: prints each offending file.
 set -uo pipefail
@@ -18,7 +24,7 @@ cd "$(dirname "$0")/.."
 status=0
 while IFS= read -r file; do
     case "$file" in
-        */tests.rs|*_test.rs|*_tests.rs|*/input_queue/pane.rs|*/editor/view/key_hold.rs) continue ;;
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*|*/input_queue/pane.rs) continue ;;
     esac
     hits="$(perl -0777 -ne '
         while (/(?:^|[^_\w])queue\s*(?:\(\s*\))?\s*\.\s*(?:try_)?borrow(?:_mut)?\s*\(/g) {
@@ -33,9 +39,23 @@ while IFS= read -r file; do
     fi
 done < <(git ls-files 'app/src/terminal/*.rs' 'app/src/editor/*.rs' 2>/dev/null)
 
+if ((status != 0)); then
+    echo "Use PaneQueue::lock/try_lock (mutable) or peek/try_peek (inspection); see input_queue/pane.rs." >&2
+fi
+
+banned='PHOSPHOR_INPUT_QUEUE_|PHOSPHOR_TEST_[A-Z]+_QUEUE|EditorKeyHold|\bafter_enter_replay|held_user_bytes|kill_switch::|ssh_editor_key_hold'
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*) continue ;;
+    esac
+    if grep -nE "$banned" "$file" | grep -vE '^\s*[0-9]+:\s*//' >/dev/null; then
+        printf 'check_queue_access: a deleted input holder or kill switch is back in %s:\n' "$file" >&2
+        grep -nE "$banned" "$file" | grep -vE '^[0-9]+:\s*//' >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/*.rs' 2>/dev/null)
+
 if ((status == 0)); then
     echo "check_queue_access: ok"
-else
-    echo "Use PaneQueue::lock/try_lock (mutable) or peek/try_peek (inspection); see input_queue/pane.rs." >&2
 fi
 exit "$status"

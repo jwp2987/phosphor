@@ -21,8 +21,6 @@
 //! stages after this one: the queue only orders. Its facts are therefore lock-free constants
 //! (the pty is open and takes the bytes); the model lock is never taken here.
 //!
-//! `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores the old `PasteSequencer` path, which stays in the tree.
-//!
 //! Phase 2 puts the two subshell buffers on the SAME queue instance. A `SubshellSetup` gate is
 //! open from the moment a warpify setup is announced until its end (`release_subshell_setup_held_bytes`:
 //! the first prompt after `Bootstrapped`, abandoned, skipped, timed out); a `SubshellBootstrapWrite`
@@ -33,18 +31,16 @@
 //! gates are also opened lazily by the first key, so a state set up without `write_init_subshell_
 //! bytes_to_pty` behaves the same. Caps (logged when they fire): the old 90 s typed-input hold
 //! limit, and N bootstrap lines x 2 s. PowerShell's line-by-line setup (#1048) stays on its own
-//! state machine. `PHOSPHOR_INPUT_QUEUE_SUBSHELL=0` restores the old buffers, which stay in the
-//! tree and are also the fallback for a write made while the queue is delivering.
+//! state machine.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
+use warpui::{SingletonEntity as _, ViewContext};
 
 use super::{Event, TerminalView};
-use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, is_pty_entry, trace,
@@ -60,31 +56,21 @@ pub(super) struct PasteQueueState {
     pub(super) payloads: HashMap<u64, Vec<u8>>,
     /// Queued pastes refused by the size cap (#1382): already told, so no generic failure toast.
     pub(super) refused: std::collections::HashSet<u64>,
-    /// `PHOSPHOR_INPUT_QUEUE_PASTE`; false keeps the legacy `PasteSequencer` path.
-    pub(super) enabled: bool,
-    /// `PHOSPHOR_INPUT_QUEUE_SUBSHELL` (#1353 phase 2); false keeps the legacy
-    /// `subshell_bootstrap_in_flight.held_user_bytes` and `subshell_setup_held_bytes` buffers.
-    pub(super) subshell_enabled: bool,
+    /// Pastes whose payload is TEXT that goes where a paste made at that moment would go
+    /// ([`TerminalView::deliver_paste_text`]): the paste held during an ssh connect (#1292) and
+    /// the CLI-agent paste. Their destination is decided when they drain, not when they were read.
+    pub(super) routed_pastes: std::collections::HashSet<u64>,
+    /// The subset of `routed_pastes` read for the ssh hold: cancelled with the hold (a prompt,
+    /// ^C, a new command) so a late answer is never pasted anywhere.
+    pub(super) ssh_pastes: std::collections::HashSet<u64>,
     /// Ctrl-C / Ctrl-D typed while the paced bootstrap lines are being written. Like the buffer it
     /// replaces they wait for the last line (an interrupt in the middle of the setup script would
     /// leave a half-run bootstrap); [`TerminalView::settle_subshell_bootstrap_gate`] sends them
     /// first, ahead of everything held, when the bootstrap ends.
     pub(super) pending_aborts: Vec<(Vec<u8>, bool)>,
-    /// #1353 phase 3 (`PHOSPHOR_INPUT_QUEUE_ENTER`): a paced CLI-agent submit holds the queue with
-    /// a gate, so keys typed meanwhile wait behind it. Tests default to off (see
-    /// `cli_submit_enabled_by_default`).
-    cli_submit_enabled: bool,
     /// The key of the gate the CLI-agent submit in progress holds, if one is.
     cli_submit_gate: Option<u64>,
     next_cli_submit_key: u64,
-    /// #1353 phase 5 (`PHOSPHOR_INPUT_QUEUE_HANDOFF`): the keys of the hand-off's prompt hold
-    /// (ConPTY, #1162) are entries of this queue behind a `LineEditorActive` gate. Tests default
-    /// to off (see `handoff_queue_enabled_by_default`).
-    pub(super) handoff_enabled: bool,
-    /// #1353 step 3 (`PHOSPHOR_INPUT_QUEUE_SHARED`): the pane's input editor adopts THIS queue, so
-    /// editor keys, pty keys and the gates between them are ordered by one instance. False keeps
-    /// the editor's private queue (the behaviour before the merge).
-    pub(super) shared: bool,
     /// Set while the queue delivers an entry the hand-off may hold again (a key or a paste): the
     /// stage then asks the host to put the entry back instead of keeping the bytes itself.
     requeueable_delivery: bool,
@@ -115,34 +101,9 @@ pub(super) enum PromptHoldEnd {
 /// far beyond any of them. Logged when it fires.
 const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
 
-fn cli_submit_enabled_by_default() -> bool {
-    if cfg!(test) {
-        return std::env::var("PHOSPHOR_TEST_ENTER_QUEUE").is_ok_and(|value| value == "1");
-    }
-    kill_switch::is_enabled(Area::Enter)
-}
-
-/// Whether the hand-off's prompt hold lives in the queue: the Handoff area's kill switch AND the
-/// Paste area's (the queue is only fed while that one is on). Tests default to the legacy buffer
-/// (`PHOSPHOR_TEST_HANDOFF_QUEUE=1` runs the suite on the queue).
-pub(super) fn handoff_queue_enabled_by_default() -> bool {
-    if cfg!(test) {
-        return std::env::var("PHOSPHOR_TEST_HANDOFF_QUEUE").is_ok_and(|value| value == "1");
-    }
-    kill_switch::is_enabled(Area::Handoff) && kill_switch::is_enabled(Area::Paste)
-}
-
-/// Whether the editor and the terminal view of a pane share one queue: the Shared area's kill
-/// switch AND the Paste area's (the editor only feeds its queue while that one is on). Tests run
-/// shared by default so the whole suite checks the merge; `PHOSPHOR_TEST_SHARED_QUEUE=0` runs it
-/// on two instances.
-pub(super) fn shared_queue_enabled_by_default() -> bool {
-    if cfg!(test) {
-        return std::env::var("PHOSPHOR_TEST_SHARED_QUEUE").map_or(true, |value| value != "0")
-            && kill_switch::is_enabled(Area::Paste);
-    }
-    kill_switch::is_enabled(Area::Shared) && kill_switch::is_enabled(Area::Paste)
-}
+/// Net for a PowerShell setup gate nothing ever closed: twice the typed-input hold limit that
+/// releases it in every normal case (the setup's own events end it). Logged when it fires.
+const POWERSHELL_GATE_LEAK_NET: Duration = Duration::from_secs(180);
 
 impl PasteQueueState {
     pub(super) fn new() -> Self {
@@ -150,32 +111,19 @@ impl PasteQueueState {
             queue: PaneQueue::new(),
             payloads: HashMap::new(),
             refused: Default::default(),
-            enabled: kill_switch::is_enabled(Area::Paste),
-            subshell_enabled: kill_switch::is_enabled(Area::Subshell),
+            routed_pastes: Default::default(),
+            ssh_pastes: Default::default(),
             pending_aborts: Vec::new(),
-            cli_submit_enabled: cli_submit_enabled_by_default(),
             cli_submit_gate: None,
             next_cli_submit_key: 0,
-            handoff_enabled: handoff_queue_enabled_by_default(),
-            shared: shared_queue_enabled_by_default(),
             requeueable_delivery: false,
             requeue_request: None,
             line_stamp: None,
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn set_handoff_enabled_for_test(&mut self, on: bool) {
-        self.handoff_enabled = on;
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_cli_submit_enabled_for_test(&mut self, on: bool) {
-        self.cli_submit_enabled = on;
-    }
-
     /// The next paste id of this pane (one counter, shared with the editor's pastes).
-    fn next_paste_id(&mut self) -> u64 {
+    pub(super) fn next_paste_id(&mut self) -> u64 {
         self.queue.next_paste_id(PasteOwner::Pty)
     }
 }
@@ -250,6 +198,13 @@ impl Host for PtyQueueHost<'_, '_> {
                 paste_id,
                 payload: Some(_),
             } => match self.view.paste_queue.payloads.remove(paste_id) {
+                Some(bytes) if self.view.paste_queue.routed_pastes.remove(paste_id) => {
+                    // Text read for an ssh hold / a CLI agent: routed now, as a paste made now.
+                    self.view.paste_queue.ssh_pastes.remove(paste_id);
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    self.view.deliver_paste_text(&text, self.ctx);
+                    self.written = true;
+                }
                 Some(bytes) => {
                     self.view.paste_queue.requeueable_delivery = true;
                     self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
@@ -313,6 +268,8 @@ impl Host for PtyQueueHost<'_, '_> {
         }
         if let EntryKind::Paste { paste_id, .. } = &entry.kind {
             self.view.paste_queue.payloads.remove(paste_id);
+            self.view.paste_queue.routed_pastes.remove(paste_id);
+            self.view.paste_queue.ssh_pastes.remove(paste_id);
         }
         match why {
             // The reader gave nothing (or never answered): say so; the keys behind it follow.
@@ -352,17 +309,13 @@ impl Host for PtyQueueHost<'_, '_> {
 }
 
 impl TerminalView {
-    /// Whether a paste is still being read for this pane (either path).
+    /// Whether a paste is still being read for this pane. Mid-drain (borrowed) means the paste
+    /// that was pending has just been delivered.
     pub(super) fn paste_pending(&self) -> bool {
-        if self.paste_queue.enabled {
-            // Mid-drain (borrowed) means the paste that was pending has just been delivered.
-            self.paste_queue
-                .queue
-                .try_peek()
-                .is_some_and(|queue| queue.has_pty_paste_reading())
-        } else {
-            self.paste_sequencer.has_pending()
-        }
+        self.paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.has_pty_paste_reading())
     }
 
     /// A user key arrives while the queue may be holding input. Returns `None` when nothing is
@@ -376,18 +329,18 @@ impl TerminalView {
         abort_as_entry: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Option<bool> {
-        // Nothing holds pty keys: the queue is idle, or (shared with the editor) only editor gates
-        // are open, which never held a pty key.
+        // Nothing holds keys: the queue is idle (or mid-drain: this write is part of delivering an
+        // entry). Every gate holds every key, whichever route typed it.
         if self
             .paste_queue
             .queue
             .try_peek()
-            .map_or(true, |queue| !queue.holds_pty_keys())
+            .map_or(true, |queue| !queue.holds_keys())
         {
             return None;
         }
         // Only the ssh connect hold is open: it holds its own keys (before they get here); what
-        // reaches the writer now was never held by the legacy ssh hold either.
+        // reaches the writer now is a deliberate pass-through or passive traffic.
         if self.only_ssh_gates_open() {
             return None;
         }
@@ -399,7 +352,7 @@ impl TerminalView {
                 .paste_queue
                 .queue
                 .try_peek()
-                .map_or(true, |queue| !queue.holds_pty_keys())
+                .map_or(true, |queue| !queue.holds_keys())
             {
                 return None;
             }
@@ -407,12 +360,11 @@ impl TerminalView {
         let kind = match abort_signal(bytes).filter(|_| !abort_as_entry) {
             Some(signal) => {
                 // Ctrl-C / Ctrl-D skips an announced subshell setup (the held keys follow it).
-                if self.paste_queue.subshell_enabled
-                    && self
-                        .paste_queue
-                        .queue
-                        .try_peek()
-                        .is_some_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
+                if self
+                    .paste_queue
+                    .queue
+                    .try_peek()
+                    .is_some_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
                 {
                     self.subshell_bootstrap_announced = None;
                 }
@@ -489,13 +441,10 @@ impl TerminalView {
     /// Starts the gate of a paced CLI-agent submit (#1353 phase 3): until
     /// [`Self::end_cli_submit_gate`], pty keys the user types queue behind the submit instead of
     /// landing between its writes. One submit at a time; a second begin while one is in progress is
-    /// part of it. A no-op when the queue path or its kill switch is off.
+    /// part of it.
     pub(super) fn begin_cli_submit_gate(&mut self, ctx: &mut ViewContext<Self>) {
         use crate::terminal::input_queue::GateSpec;
-        if !self.paste_queue.enabled
-            || !self.paste_queue.cli_submit_enabled
-            || self.paste_queue.cli_submit_gate.is_some()
-        {
+        if self.paste_queue.cli_submit_gate.is_some() {
             return;
         }
         self.paste_queue.next_cli_submit_key += 1;
@@ -600,6 +549,12 @@ impl TerminalView {
             #[cfg(not(target_family = "wasm"))]
             warpui::clipboard::abandon_pending_reads();
         }
+        if kind == Some(GateKind::PowershellSetup) {
+            // Nothing closed the PowerShell gate: the setup is treated as over and its keys go.
+            log::warn!("input queue: PowerShell setup gate never closed; releasing the held keys");
+            self.release_subshell_setup_held_bytes(ctx);
+            return;
+        }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
             // keys are delivered, so none of them is held a second time.
@@ -626,20 +581,18 @@ impl TerminalView {
                 legacy::SUBSHELL_BOOTSTRAP
             }
             Some(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
+            Some(queue) if queue.has_gate_kind(GateKind::PowershellSetup) => legacy::SUBSHELL_SETUP,
             Some(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
             Some(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
         }
     }
 
-    /// Whether the hand-off's prompt hold may keep its keys in the queue right now: the queue
-    /// path is on, and either the queue is free (a direct write) or the entry being delivered can
-    /// go back to the front (a key or a paste).
+    /// Whether the hand-off's prompt hold may keep its keys in the queue right now: either the
+    /// queue is free (a direct write) or the entry being delivered can go back to the front (a
+    /// key or a paste).
     pub(super) fn handoff_hold_can_queue(&self) -> bool {
-        self.paste_queue.enabled
-            && self.paste_queue.handoff_enabled
-            && (self.paste_queue.requeueable_delivery
-                || self.paste_queue.queue.try_lock().is_some())
+        self.paste_queue.requeueable_delivery || self.paste_queue.queue.try_lock().is_some()
     }
 
     /// The hand-off just held `bytes` for the prompt and told us it keeps no copy (#1353 phase 5):
@@ -706,8 +659,7 @@ impl TerminalView {
         bytes: Cow<'static, [u8]>,
         ctx: &mut ViewContext<Self>,
     ) -> Cow<'static, [u8]> {
-        if !self.paste_queue.enabled
-            || !bytes.iter().any(super::is_signal_byte)
+        if !bytes.iter().any(super::is_signal_byte)
             || !self
                 .paste_queue
                 .queue
@@ -756,10 +708,7 @@ impl TerminalView {
         bytes: Cow<'static, [u8]>,
         ctx: &mut ViewContext<Self>,
     ) -> Cow<'static, [u8]> {
-        if !self.paste_queue.enabled
-            || !bytes.iter().any(super::is_signal_byte)
-            || !self.young_hold_gate_open()
-        {
+        if !bytes.iter().any(super::is_signal_byte) || !self.young_hold_gate_open() {
             return bytes;
         }
         let ended = {
@@ -815,9 +764,6 @@ impl TerminalView {
     /// dropped, written behind the command, or split at the Enter. Called from the few places a
     /// hold can end, never per key.
     pub(super) fn drain_young_hold_ends(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.paste_queue.enabled {
-            return;
-        }
         let ends = self
             .model
             .lock()
@@ -1073,6 +1019,133 @@ impl TerminalView {
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
     }
 
+    /// The reader's result for paste `id` (`None`: the clipboard owner never answered). Opens the
+    /// paste's gate: the paste is delivered, then the keys typed behind it, in order. A cancelled
+    /// or given-up paste is not in the queue any more and the late result changes nothing.
+    pub(super) fn finish_queued_background_paste(
+        &mut self,
+        id: u64,
+        bytes: Result<Vec<u8>, PasteFailure>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        if queue.peek().has_gate(GateKind::PasteReading, id) {
+            let (entries, held_bytes) = queue.peek().queued_summary();
+            // The paste itself is one of the queued entries.
+            trace::release(
+                trace::legacy::PASTE_PTY,
+                entries.saturating_sub(1),
+                held_bytes,
+                "pty",
+            );
+        }
+        let result = match bytes {
+            Ok(bytes) => {
+                self.paste_queue.payloads.insert(id, bytes);
+                // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery
+                // moves them instead of copying a multi-MB paste.
+                Ok(Vec::new())
+            }
+            Err(failure) => {
+                if let PasteFailure::TooLarge(bytes) = failure {
+                    // Its own message; the gate still opens so the keys behind it follow.
+                    self.paste_queue.refused.insert(id);
+                    self.show_error_toast(
+                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
+                        ctx,
+                    );
+                }
+                Err(())
+            }
+        };
+        {
+            let mut host = PtyQueueHost::new(self, ctx);
+            queue.lock().on_paste_read(&mut host, id, result);
+        }
+        // A result that arrived after its paste was cancelled or given up has no entry to claim it.
+        // A paste that is still queued (its own gate is closed but another gate, such as the
+        // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
+        // them here lost the paste.
+        let still_queued = queue.peek().entries().any(
+            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
+        );
+        if !still_queued {
+            self.paste_queue.payloads.remove(&id);
+            self.paste_queue.refused.remove(&id);
+        }
+    }
+
+    /// Whether the PowerShell setup gate is open (#1048: its keys are entries of the queue).
+    pub(super) fn powershell_gate_open(&self) -> bool {
+        self.paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::PowershellSetup))
+    }
+
+    /// A key typed (or released from another gate) while a PowerShell setup governs input is held
+    /// behind the `PowershellSetup` gate, in typed order. The first one opens the gate with its
+    /// entry (or goes back under it when the queue is delivering it); later ones queue behind.
+    pub(super) fn hold_powershell_keys(
+        &mut self,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.paste_queue.requeueable_delivery && self.powershell_gate_open() {
+            let queue = self.paste_queue.queue.clone();
+            let Some(mut guard) = queue.try_lock() else {
+                log::warn!("input queue: PowerShell setup key not held, the queue was busy");
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.offer(
+                &mut host,
+                EntryKind::PtyBytes {
+                    bytes,
+                    takes_over_agent_control,
+                },
+            );
+            return;
+        }
+        let spec =
+            GateSpec::new(GateKind::PowershellSetup, 0).with_cap(Some(POWERSHELL_GATE_LEAK_NET));
+        self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
+    }
+
+    /// Takes the keys held for the PowerShell setup out of the queue, in typed order, as bytes.
+    /// The gate closes with them; the caller holds again what it does not consume.
+    pub(super) fn take_powershell_held_bytes(&mut self, ctx: &mut ViewContext<Self>) -> Vec<u8> {
+        let queue = self.paste_queue.queue.clone();
+        let entries = {
+            let Some(mut guard) = queue.try_lock() else {
+                return Vec::new();
+            };
+            if !guard.has_gate_kind(GateKind::PowershellSetup) {
+                return Vec::new();
+            }
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::PowershellSetup, 0)
+        };
+        self.bytes_of_taken_entries(entries, ctx).concat()
+    }
+
+    /// The PowerShell setup is over: the gate closes (its event) and the queue's one drain writes
+    /// what it held, in typed order.
+    pub(super) fn close_powershell_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            return;
+        };
+        if !guard.has_gate_kind(GateKind::PowershellSetup) {
+            return;
+        }
+        let (chunks, bytes) = guard.queued_since_gate(GateKind::PowershellSetup);
+        trace::release(trace::legacy::SUBSHELL_SETUP, chunks, bytes, "pty");
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::PowershellSetup, 0);
+    }
+
     /// Whether the subshell setup gate is open (keys are held behind a setup that is not over).
     pub(super) fn subshell_setup_gate_open(&self) -> bool {
         self.paste_queue
@@ -1096,16 +1169,14 @@ impl TerminalView {
                 Some(queue) => (
                     queue.has_gate_kind(GateKind::SubshellSetup),
                     queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
-                    queue
-                        .gates()
-                        .iter()
-                        .filter(|gate| gate.holds_pty_keys())
-                        .all(|gate| {
-                            matches!(
-                                gate.kind,
-                                GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
-                            )
-                        }),
+                    queue.gates().iter().all(|gate| {
+                        matches!(
+                            gate.kind,
+                            GateKind::SubshellSetup
+                                | GateKind::SubshellBootstrapWrite
+                                | GateKind::PowershellSetup
+                        )
+                    }),
                 ),
                 None => return SubshellPrep::Normal,
             };
@@ -1304,9 +1375,7 @@ impl TerminalView {
         );
         // A subshell setup in progress holds this paste too: its gates open before the paste
         // entry exists, so the paste waits behind them like any key.
-        if self.paste_queue.subshell_enabled {
-            self.prepare_subshell_gates(&[], ctx);
-        }
+        self.prepare_subshell_gates(&[], ctx);
         let queue = self.paste_queue.queue.clone();
         {
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1343,61 +1412,5 @@ impl TerminalView {
                 }
             },
         );
-    }
-
-    /// The reader's result for paste `id` (`None`: the clipboard owner never answered). Opens the
-    /// paste's gate: the paste is delivered, then the keys typed behind it, in order. A cancelled
-    /// or given-up paste is not in the queue any more and the late result changes nothing.
-    fn finish_queued_background_paste(
-        &mut self,
-        id: u64,
-        bytes: Result<Vec<u8>, PasteFailure>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let queue = self.paste_queue.queue.clone();
-        if queue.peek().has_gate(GateKind::PasteReading, id) {
-            let (entries, held_bytes) = queue.peek().queued_summary();
-            // The paste itself is one of the queued entries.
-            trace::release(
-                trace::legacy::PASTE_PTY,
-                entries.saturating_sub(1),
-                held_bytes,
-                "pty",
-            );
-        }
-        let result = match bytes {
-            Ok(bytes) => {
-                self.paste_queue.payloads.insert(id, bytes);
-                // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery
-                // moves them instead of copying a multi-MB paste.
-                Ok(Vec::new())
-            }
-            Err(failure) => {
-                if let PasteFailure::TooLarge(bytes) = failure {
-                    // Its own message; the gate still opens so the keys behind it follow.
-                    self.paste_queue.refused.insert(id);
-                    self.show_error_toast(
-                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
-                        ctx,
-                    );
-                }
-                Err(())
-            }
-        };
-        {
-            let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().on_paste_read(&mut host, id, result);
-        }
-        // A result that arrived after its paste was cancelled or given up has no entry to claim it.
-        // A paste that is still queued (its own gate is closed but another gate, such as the
-        // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
-        // them here lost the paste.
-        let still_queued = queue.peek().entries().any(
-            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
-        );
-        if !still_queued {
-            self.paste_queue.payloads.remove(&id);
-            self.paste_queue.refused.remove(&id);
-        }
     }
 }

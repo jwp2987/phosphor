@@ -7428,7 +7428,7 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
             let wait = input.verdict_wait.as_ref().expect("still waiting");
             assert_eq!(wait.text, line);
             assert_eq!(
-                wait.queued,
+                input.enter_gate_held_for_test(ctx),
                 vec![
                     AfterEnterInput::Text("echo hi".to_string()),
                     AfterEnterInput::Enter
@@ -7698,7 +7698,7 @@ fn test_burst_of_lines_behind_a_waiting_enter_keeps_every_line_and_enter_in_orde
             assert_eq!(input.buffer_text(ctx), line);
             let wait = input.verdict_wait.as_ref().expect("still waiting");
             assert_eq!(wait.text, line);
-            assert_eq!(wait.queued, expected);
+            assert_eq!(input.enter_gate_held_for_test(ctx), expected);
         });
     });
 }
@@ -10455,7 +10455,7 @@ fn completer_autosuggestion_is_skipped_for_buffers_past_the_background_parse_cap
     ));
 }
 
-/// #1016: an Enter pressed while the replay of input typed behind a deferred Enter is pending
+/// #1016: an Enter pressed while input typed behind a waiting Enter is still queued behind its gate
 /// queues behind that input; it never submits the editor ahead of it.
 #[test]
 fn test_enter_while_after_enter_replay_pending_queues_in_order() {
@@ -10466,17 +10466,15 @@ fn test_enter_while_after_enter_replay_pending_queues_in_order() {
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
 
         input.update(&mut app, |input, ctx| {
-            input.open_after_enter_replay_for_test(
-                vec![AfterEnterInput::Text("echo X".to_string())],
-                true,
-            );
+            input.open_enter_gate(1, crate::terminal::input_queue::GateKind::EnterVerdict, ctx);
+            assert!(input.queue_behind_enter(AfterEnterInput::Text("echo X".to_string()), ctx));
             input.input_enter(ctx);
-            input.queue_after_enter_replay(AfterEnterInput::Text("ls".to_string()));
+            assert!(input.queue_behind_enter(AfterEnterInput::Text("ls".to_string()), ctx));
             input.input_enter(ctx);
         });
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [
                     AfterEnterInput::Text("echo X".to_string()),
                     AfterEnterInput::Enter,
@@ -10505,23 +10503,28 @@ fn test_waiting_enter_with_keys_typed_behind_it_submits_instead_of_queueing_itse
             input.user_insert("true", ctx);
             // The Enter is waiting; two characters typed behind it are still in the buffer, for
             // the wait's reconcile to take out (it moves them into the queue, never both).
-            input.start_verdict_wait(
+            let wait_id = input.start_verdict_wait(
                 "true".to_string(),
                 EnterHold::Verdict {
                     since: Instant::now(),
                 },
                 ctx,
             );
+            input.open_enter_gate(
+                wait_id,
+                crate::terminal::input_queue::GateKind::EnterVerdict,
+                ctx,
+            );
             input.user_insert("ec", ctx);
             input.wait_for_verdict_then_enter("true".to_string(), ctx);
         });
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert!(
                 input.last_enter_submitted_shell_command,
                 "the waiting Enter must submit the line it waited for"
             );
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [AfterEnterInput::Text("ec".to_string())],
                 "only the keys typed behind the Enter replay; the Enter itself already ran"
             );
@@ -10543,11 +10546,16 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert("true", ctx);
-            input.start_verdict_wait(
+            let wait_id = input.start_verdict_wait(
                 "true".to_string(),
                 EnterHold::Verdict {
                     since: Instant::now(),
                 },
+                ctx,
+            );
+            input.open_enter_gate(
+                wait_id,
+                crate::terminal::input_queue::GateKind::EnterVerdict,
                 ctx,
             );
             // Typed behind the waiting Enter, one key at a time, the way a fast typist's keys
@@ -10559,7 +10567,7 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
             // notification releases the Enter.
             input.release_verdict_wait_if_settled(ctx);
         });
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert!(
                 input.verdict_wait.is_none(),
                 "the verdict released the Enter"
@@ -10569,7 +10577,7 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
                 "the released Enter must submit the line it waited for"
             );
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [AfterEnterInput::Text("echo".to_string())],
                 "every key typed behind the Enter survives the release, in order"
             );
@@ -10582,13 +10590,13 @@ fn test_verdict_landing_releases_waiting_enter_once_and_keeps_typed_keys_in_orde
             input.wait_for_verdict_then_enter("true".to_string(), ctx);
             input.release_verdict_wait_if_settled(ctx);
         });
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert!(
                 !input.last_enter_submitted_shell_command,
                 "the Enter must be released exactly once"
             );
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [AfterEnterInput::Text("echo".to_string())],
                 "the late timer must not touch the replay"
             );
@@ -10714,8 +10722,11 @@ fn test_keys_typed_behind_waiting_enter_keep_its_verdict_pending() {
                 line,
                 "keys typed behind the Enter are moved behind it at once"
             );
-            let wait = input.verdict_wait.as_ref().expect("still waiting");
-            assert_eq!(wait.queued, vec![AfterEnterInput::Text("ec".to_string())]);
+            assert!(input.verdict_wait.is_some(), "still waiting");
+            assert_eq!(
+                input.enter_gate_held_for_test(ctx),
+                vec![AfterEnterInput::Text("ec".to_string())]
+            );
             assert!(
                 input
                     .ai_input_model()
@@ -11047,7 +11058,6 @@ fn test_keys_typed_behind_waiting_enter_recognises_suffix_and_cursor_insertion()
     let wait = VerdictWait {
         id: 1,
         text: "show the file".to_string(),
-        queued: Vec::new(),
         hold: EnterHold::Verdict {
             since: Instant::now(),
         },
@@ -11130,8 +11140,11 @@ fn test_keys_typed_behind_waiting_enter_pressed_mid_line_queue_behind_it() {
                 line,
                 "keys typed at the cursor are moved behind the Enter, not merged into its line"
             );
-            let wait = input.verdict_wait.as_ref().expect("the Enter still waits");
-            assert_eq!(wait.queued, vec![AfterEnterInput::Text(" all".to_string())]);
+            assert!(input.verdict_wait.is_some(), "the Enter still waits");
+            assert_eq!(
+                input.enter_gate_held_for_test(ctx),
+                vec![AfterEnterInput::Text(" all".to_string())]
+            );
             assert!(
                 input
                     .ai_input_model()
@@ -11705,7 +11718,7 @@ fn test_completion_landing_during_deferred_enter_is_dropped() {
             let wait = input.verdict_wait.as_ref().expect("still waiting");
             assert_eq!(wait.text, line);
             assert!(
-                wait.queued.is_empty(),
+                input.enter_gate_held_for_test(ctx).is_empty(),
                 "nothing may be replayed into the next prompt"
             );
         });
@@ -11810,7 +11823,7 @@ fn test_tab_then_enter_single_match_submits_completed_line() {
                 "git checkout feature",
                 "the buffer holds exactly the submitted line"
             );
-            assert!(input.after_enter_replay_for_test().is_empty());
+            assert!(input.enter_gate_held_for_test(ctx).is_empty());
         });
 
         // A copy of the result arriving after the submit is dropped.
@@ -11906,7 +11919,7 @@ fn test_tab_then_enter_keys_typed_during_hold_replay_after_submit() {
         assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
         input.read(&app, |input, ctx| {
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [AfterEnterInput::Text("ls".to_string())]
             );
             // Never in the old buffer: only the submitted line remains.
@@ -12472,14 +12485,13 @@ fn test_view_routed_pastes_insert_through_the_background_reader() {
         ),
         (PasteSource::PlainTextPaste, "abtext"),
     ];
-    for queue in [true, false] {
+    for queue in [true] {
         for (source, expected) in cases.clone() {
             App::test((), move |mut app| async move {
                 initialize_app(&mut app);
                 let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
                 let input = terminal.read(&app, |terminal, _| terminal.input().clone());
                 let editor = input.read(&app, |input, _| input.editor().clone());
-                editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
                 input.update(&mut app, |input, ctx| {
                     input.clear_buffer_and_reset_undo_stack(ctx);
                     input.user_insert("ab", ctx);
@@ -12564,18 +12576,17 @@ fn test_stalled_clipboard_read_applies_held_keys_at_the_backstop() {
 
 /// #1353 phase 1: text typed before a paste, while its read is pending, and after the read, in
 /// every split, lands in typed order around the pasted text (editor-bound, agent-mode input).
-/// Runs on the input queue and on the legacy sequencer (the kill switch), with the same result.
+/// Runs on the input queue.
 #[test]
 fn test_editor_paste_with_typed_keys_in_every_interleaving_keeps_typed_order() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
-    for queue in [true, false] {
+    for queue in [true] {
         App::test((), move |mut app| async move {
             initialize_app(&mut app);
             let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
             let input = terminal.read(&app, |terminal, _| terminal.input().clone());
             let editor = input.read(&app, |input, _| input.editor().clone());
-            editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
             let typed = ["x", "y", "z"];
             for paste_after in 0..=typed.len() {
                 input.update(&mut app, |input, ctx| {
@@ -12689,13 +12700,12 @@ fn test_editor_paste_failed_read_applies_the_held_keys() {
 fn test_editor_paste_over_the_size_cap_is_refused_and_the_keys_kept() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
-    for queue in [true, false] {
+    for queue in [true] {
         App::test((), move |mut app| async move {
             initialize_app(&mut app);
             let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
             let input = terminal.read(&app, |terminal, _| terminal.input().clone());
             let editor = input.read(&app, |input, _| input.editor().clone());
-            editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(queue));
             input.update(&mut app, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
                 input.user_insert("ab", ctx);
@@ -12723,57 +12733,6 @@ fn test_editor_paste_over_the_size_cap_is_refused_and_the_keys_kept() {
             });
         });
     }
-}
-
-/// #1353 phase 1: the backstop is one timer, logged when it fires; the keys are applied in order
-/// and the late answer is ignored. Kill switch twin of `test_stalled_clipboard_read_applies_held_keys_at_the_backstop`.
-#[test]
-fn test_stalled_clipboard_read_on_the_legacy_sequencer_applies_held_keys_at_the_backstop() {
-    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
-
-    App::test((), |mut app| async move {
-        initialize_app(&mut app);
-        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
-        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
-        let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(false));
-        input.update(&mut app, |input, ctx| {
-            input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("ab", ctx);
-        });
-        let (release, parked) = std::sync::mpsc::channel::<()>();
-        let reader: BackgroundTextReader = Box::new(move || {
-            let _ = parked.recv_timeout(Duration::from_secs(20));
-            BackgroundTextRead::Content(ClipboardContent::plain_text("LATE".to_string()))
-        });
-        input.update(&mut app, |input, ctx| {
-            input.start_background_paste_with_backstop(
-                reader,
-                Some(Duration::from_millis(100)),
-                ctx,
-            )
-        });
-        editor.update(&mut app, |editor, ctx| {
-            editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
-        });
-        assert!(editor.read(&app, |editor, _| {
-            editor.paste_hold().queue().borrow().is_idle()
-        }));
-        for _ in 0..1000 {
-            if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
-                break;
-            }
-            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
-        }
-        input.read(&app, |input, ctx| {
-            assert_eq!(input.buffer_text(ctx), "abxy")
-        });
-        release.send(()).unwrap();
-        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-        input.read(&app, |input, ctx| {
-            assert_eq!(input.buffer_text(ctx), "abxy")
-        });
-    });
 }
 
 /// #1331: a middle-click read of a primary selection whose owner never answers returns to the UI
@@ -13424,12 +13383,10 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
         let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
         let released = record_released_enter_entries(&mut app, &input);
 
         let line = "is it true";
         input.update(&mut app, |input, ctx| {
-            input.set_enter_queue_for_test(true);
             input.ai_input_model().update(ctx, |ai_input, ctx| {
                 ai_input.set_input_config(
                     InputConfig {
@@ -13526,10 +13483,8 @@ fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_
         ensure_input_classifier_for_test(&mut app);
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
         let released = record_released_enter_entries(&mut app, &input);
         input.update(&mut app, |input, ctx| {
-            input.set_enter_queue_for_test(true);
             input.input_enter(ctx);
         });
         input.read(&app, |input, ctx| {
@@ -13549,13 +13504,6 @@ fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_
                 "keys typed behind the Enter never enter the buffer"
             );
             assert_eq!(input.enter_gate_held_len_for_test(ctx), 3);
-            assert!(
-                input
-                    .verdict_wait
-                    .as_ref()
-                    .is_some_and(|wait| wait.queued.is_empty()),
-                "the wait's own list is not used on the queue path"
-            );
         });
         assert!(
             released.borrow().is_empty(),
@@ -13592,10 +13540,8 @@ fn test_enter_queue_ctrl_c_voids_the_held_enter_and_the_keys_behind_it() {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
         let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
         let released = record_released_enter_entries(&mut app, &input);
         input.update(&mut app, |input, ctx| {
-            input.set_enter_queue_for_test(true);
             input.input_enter(ctx);
         });
         type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
@@ -13636,9 +13582,7 @@ fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         let (input, executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
         let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
         input.update(&mut app, |input, ctx| {
-            input.set_enter_queue_for_test(true);
             input.input_enter(ctx);
         });
         type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
@@ -13665,35 +13609,62 @@ fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
     });
 }
 
-/// #1353 phase 3 kill switch: with the Enter queue off the same keys take the legacy path (they
-/// land in the buffer and are recovered into the wait's own list), and no gate is ever opened.
+/// #1389: cursor keys typed behind a LARGE paste (100 KB and 1 MB) are applied after the paste's
+/// edit is fully reflected, whatever its size: Left lands before the last pasted character and the
+/// text typed after it goes there, End (a visual-line key) then takes the cursor to the end.
 #[test]
-fn test_enter_queue_off_keeps_the_legacy_wait_list() {
-    App::test((), |mut app| async move {
-        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let (input, _executed, _generation, _snapshot) = tab_enter_fixture(&mut app, true).await;
-        let editor = input.read(&app, |input, _| input.editor().clone());
-        editor.read(&app, |editor, _| editor.paste_hold().set_uses_queue(true));
-        input.update(&mut app, |input, ctx| {
-            input.set_enter_queue_for_test(false);
-            input.input_enter(ctx);
+fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    for size in [100 * 1024usize, 1024 * 1024] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("a", ctx);
+            });
+            let pasted = "p".repeat(size);
+            let content = pasted.clone();
+            let (release, parked) = std::sync::mpsc::channel::<()>();
+            let reader: BackgroundTextReader = Box::new(move || {
+                let _ = parked.recv_timeout(Duration::from_secs(20));
+                BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+            });
+            input.update(&mut app, |input, ctx| {
+                input.start_background_paste(reader, ctx)
+            });
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::Left, ctx);
+                editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
+                editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
+            });
+            input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
+            release.send(()).unwrap();
+            for _ in 0..4000 {
+                let idle = editor.read(&app, |editor, _| {
+                    let hold = editor.paste_hold();
+                    !hold.has_pending() && hold.queue().peek().is_idle()
+                });
+                if idle {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            let expected = format!("a{}zp!", &pasted[..size - 1]);
+            input.read(&app, |input, ctx| {
+                let text = input.buffer_text(ctx);
+                assert_eq!(text.len(), expected.len(), "size {size}");
+                assert!(
+                    text == expected,
+                    "size {size}: keys landed in the wrong place"
+                );
+            });
         });
-        input.read(&app, |input, ctx| {
-            assert!(input.verdict_wait.is_some());
-            assert!(
-                !input.enter_queue_holds_keys(ctx),
-                "no gate on the legacy path"
-            );
-        });
-        type_into_editor(&mut app, &editor, HeldPasteKey::Text("l".to_string()));
-        input.update(&mut app, |input, ctx| {
-            assert!(input.reconcile_verdict_wait(ctx));
-        });
-        input.read(&app, |input, _| {
-            let wait = input.verdict_wait.as_ref().expect("still waiting");
-            assert_eq!(wait.queued, vec![AfterEnterInput::Text("l".to_string())]);
-        });
-    });
+    }
 }
 
 /// #1353 merge step 4 (X5), #1389 on the pane's shared queue: keys typed while a paste is read are
