@@ -3052,6 +3052,8 @@ mod parked_query_sends {
         app.add_singleton_model(|_| {
             crate::GlobalResourceHandlesProvider::new(global_resource_handles)
         });
+        // A give-up toasts the user (`notify_attachment_read_failures`); production registers this.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(app, None);
         let terminal_view_id = terminal.read(app, |view, _| view.id());
         let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
