@@ -157,13 +157,24 @@ pub fn run(identity_key: &str) -> anyhow::Result<()> {
                 Ok(())
             });
         }
+        // Readiness pipe: the daemon writes one byte once its socket is bound and listening.
+        // `None` (pipe creation failed) falls back to polling for the socket file.
+        let ready = ReadyPipe::new()
+            .map_err(|e| log::warn!("Proxy: readiness pipe unavailable, will poll: {e}"))
+            .ok();
+        if let Some(ready) = &ready {
+            cmd.env(READY_FD_ENV, ready.write_fd().to_string());
+        }
         cmd.spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn daemon: {e}"))?;
 
-        // Wait for the daemon's socket to appear before releasing the flock.
+        // Wait for the daemon's socket to be ready before releasing the flock.
         // Holding the lock here prevents a concurrent proxy from acquiring it,
         // reading a stale PID file, and racing to spawn a second daemon.
-        wait_for_socket(&socket_path)?;
+        match ready {
+            Some(ready) => ready.wait_for_daemon(DAEMON_READY_TIMEOUT)?,
+            None => wait_for_socket(&socket_path)?,
+        }
 
         flock_wait(pid_fd, libc::LOCK_UN)?;
         drop(pid_file);
@@ -192,12 +203,131 @@ fn check_daemon_running(pid_path: &std::path::Path) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
-/// Poll until the daemon's socket file appears or the timeout elapses.
+/// Environment variable carrying the write end of the readiness pipe to the daemon.
+pub(super) const READY_FD_ENV: &str = "PHOSPHOR_DAEMON_READY_FD";
+
+/// Give-up safety net for a daemon that neither signals readiness nor exits.
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A pipe the daemon uses to tell the proxy "my socket is bound and listening".
 ///
-/// After we spawn the daemon there is a race: the daemon needs time to bind
-/// and listen on the socket before the proxy can connect to it.  We poll
-/// until the socket file is present rather than connecting immediately,
-/// which would fail with "no such file" if the daemon hasn't started yet.
+/// This replaces polling for the socket file every 20 ms: the proxy blocks in `poll(2)` on the
+/// read end and wakes exactly when the daemon signals, or when the daemon exits without
+/// signalling (EOF, which reports a startup failure at once instead of after a 10 s timeout).
+pub(super) struct ReadyPipe {
+    read: std::os::unix::io::OwnedFd,
+    write: Option<std::os::unix::io::OwnedFd>,
+}
+
+impl ReadyPipe {
+    pub(super) fn new() -> std::io::Result<Self> {
+        use std::os::unix::io::FromRawFd as _;
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` has room for the two descriptors pipe(2) writes.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: both descriptors were just created and are owned by nobody else.
+        let (read, write) = unsafe {
+            (
+                std::os::unix::io::OwnedFd::from_raw_fd(fds[0]),
+                std::os::unix::io::OwnedFd::from_raw_fd(fds[1]),
+            )
+        };
+        // The read end must not leak into the daemon; the write end must (it is inherited).
+        // SAFETY: fcntl on a descriptor we own.
+        if unsafe { libc::fcntl(read.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            read,
+            write: Some(write),
+        })
+    }
+
+    /// The descriptor number the daemon inherits.
+    pub(super) fn write_fd(&self) -> std::os::unix::io::RawFd {
+        self.write.as_ref().map_or(-1, |fd| fd.as_raw_fd())
+    }
+
+    /// Takes the write end (so a test, or the parent after spawn, can close/use it).
+    #[cfg(test)]
+    pub(super) fn take_write(&mut self) -> Option<std::os::unix::io::OwnedFd> {
+        self.write.take()
+    }
+
+    /// Blocks until the daemon signals readiness.  Errors if the daemon exits first (EOF) or
+    /// `timeout` elapses (logged: the signal never arrived).
+    pub(super) fn wait_for_daemon(mut self, timeout: Duration) -> anyhow::Result<()> {
+        // Close our copy of the write end so the daemon's exit is observable as EOF.
+        self.write = None;
+        let start = instant::Instant::now();
+        loop {
+            let remaining = timeout.saturating_sub(start.elapsed());
+            let mut pfd = libc::pollfd {
+                fd: self.read.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ms = remaining.as_millis().min(libc::c_int::MAX as u128) as libc::c_int;
+            // SAFETY: `pfd` is a valid pollfd and nfds is 1.
+            let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+            if r < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                anyhow::bail!("waiting for daemon readiness failed: {err}");
+            }
+            if r == 0 {
+                log::error!("Proxy: daemon gave no readiness signal within {timeout:?}");
+                anyhow::bail!("timed out waiting for daemon to become ready");
+            }
+            let mut byte = [0u8; 1];
+            // SAFETY: reading one byte into a one-byte buffer from a descriptor we own.
+            let n = unsafe { libc::read(self.read.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
+            return match n {
+                1 => {
+                    log::info!("Proxy: daemon ready after {:?}", start.elapsed());
+                    Ok(())
+                }
+                0 => anyhow::bail!("daemon exited before it was ready"),
+                _ => {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    anyhow::bail!("reading daemon readiness failed: {err}")
+                }
+            };
+        }
+    }
+}
+
+/// Daemon side: if the proxy passed a readiness pipe, signal that the socket is bound and
+/// listening, then close it.  A no-op when the daemon was started some other way.
+pub(super) fn signal_ready_from_env() {
+    use std::io::Write as _;
+    use std::os::unix::io::FromRawFd as _;
+    let Some(fd) = std::env::var(READY_FD_ENV)
+        .ok()
+        .and_then(|v| v.parse::<libc::c_int>().ok())
+    else {
+        return;
+    };
+    // The descriptor is closed below, so a stale copy of the variable in a child's environment
+    // names nothing.  (`remove_var` is unsafe in edition 2024 and not worth it here.)
+    // SAFETY: the proxy created this descriptor for us and passes it nowhere else.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    if let Err(e) = file.write_all(&[1]) {
+        log::warn!("Daemon: could not signal readiness: {e}");
+    }
+    // Dropping `file` closes the descriptor.
+}
+
+/// Fallback when no readiness pipe could be created: poll until the daemon's socket file
+/// appears or the timeout elapses.  There is no OS event for "a file appeared" short of a
+/// watcher on the directory, which is not worth setting up for this rare path.
 fn wait_for_socket(socket_path: &std::path::Path) -> anyhow::Result<()> {
     const TIMEOUT: Duration = Duration::from_secs(10);
     const POLL_INTERVAL: Duration = Duration::from_millis(20);

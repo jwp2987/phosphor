@@ -75,6 +75,49 @@ pub enum Event {
     RequestFinished { succeeded: bool },
 }
 
+/// The delay after which a countdown of `remaining` renders different text.  Matches the
+/// flooring in `serialized_time_until_refresh`; one second of margin lands the wake just past
+/// the boundary.
+fn countdown_text_change_delay(remaining: std::time::Duration) -> std::time::Duration {
+    let secs = remaining.as_secs();
+    let unit = if secs >= 24 * 3600 {
+        24 * 3600
+    } else if secs >= 3600 {
+        3600
+    } else {
+        60
+    };
+    let boundary = (secs / unit) * unit;
+    std::time::Duration::from_secs(secs - boundary + 1)
+}
+
+#[cfg(test)]
+mod countdown_tests {
+    use super::countdown_text_change_delay as delay;
+    use std::time::Duration;
+
+    #[test]
+    fn wakes_at_the_next_unit_boundary_not_every_minute() {
+        // 365 days: text is "365 days"; it next changes when 364d23h... i.e. within a day.
+        assert_eq!(
+            delay(Duration::from_secs(365 * 86400 + 5000)),
+            Duration::from_secs(5001)
+        );
+        // 3 hours 10 min: next change in 10 min (+1 s), not 60 s.
+        assert_eq!(
+            delay(Duration::from_secs(3 * 3600 + 600)),
+            Duration::from_secs(601)
+        );
+        // 5 minutes 20 s: the minute label drops after 20 s.
+        assert_eq!(
+            delay(Duration::from_secs(5 * 60 + 20)),
+            Duration::from_secs(21)
+        );
+        // Under a minute: label reads "0 minutes" until the countdown ends.
+        assert_eq!(delay(Duration::from_secs(30)), Duration::from_secs(31));
+    }
+}
+
 /// Private interface.
 impl Requests {
     fn remaining_time_to_refresh_std(&self) -> Result<std::time::Duration, OutOfRangeError> {
@@ -232,6 +275,16 @@ impl Requests {
 
     pub fn request_limit(&self) -> usize {
         self.request_limit_info.limit
+    }
+
+    /// How long until the text from [`Self::serialized_time_until_refresh`] next changes, or
+    /// `None` when no countdown is shown.  The text is floored to days, hours or minutes, so it
+    /// only changes on a unit boundary (and when the countdown ends).
+    pub fn time_until_countdown_text_changes(&self) -> Option<std::time::Duration> {
+        match self.remaining_time_to_refresh_std() {
+            Ok(t) if !t.is_zero() => Some(countdown_text_change_delay(t)),
+            _ => None,
+        }
     }
 
     /// Returns the next refresh time based on the latest rate limit info as a formatted string.

@@ -101,3 +101,40 @@ fn cleanup_leaves_a_live_unversioned_daemons_files_alone() {
 
     ChannelState::set_app_version(None);
 }
+
+/// The daemon's readiness byte wakes the proxy; no polling and no timing assumption.
+#[test]
+fn ready_pipe_wakes_on_the_daemon_signal() {
+    let mut pipe = ReadyPipe::new().expect("pipe");
+    let write = pipe.take_write().expect("write end");
+    let mut file = std::fs::File::from(write);
+    std::io::Write::write_all(&mut file, &[1]).expect("signal");
+    // Hold the write end open past the wait: readiness must come from the byte, not from EOF.
+    pipe.wait_for_daemon(Duration::from_secs(30))
+        .expect("ready signal");
+    drop(file);
+}
+
+/// A daemon that exits before binding closes the pipe: the proxy learns of the failure
+/// immediately (EOF) rather than after the give-up timeout.
+#[test]
+fn ready_pipe_reports_daemon_exit_as_eof() {
+    let mut pipe = ReadyPipe::new().expect("pipe");
+    drop(pipe.take_write());
+    let err = pipe
+        .wait_for_daemon(Duration::from_secs(30))
+        .expect_err("EOF is a failure");
+    assert!(err.to_string().contains("exited before it was ready"));
+}
+
+/// The give-up safety net: a daemon that neither signals nor exits still ends the wait.
+#[test]
+fn ready_pipe_gives_up_when_no_signal_arrives() {
+    let mut pipe = ReadyPipe::new().expect("pipe");
+    let _keep_open = pipe.take_write();
+    // `wait_for_daemon` closes its own copy; `_keep_open` is the "daemon" holding it.
+    let err = pipe
+        .wait_for_daemon(Duration::from_millis(50))
+        .expect_err("no signal");
+    assert!(err.to_string().contains("timed out"));
+}

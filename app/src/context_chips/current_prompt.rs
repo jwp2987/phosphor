@@ -102,6 +102,56 @@ fn poll_decision(in_foreground: bool, since_editor_activity: Option<Duration>) -
     PollDecision::Run
 }
 
+/// Whether `kind` is a git chip fed by the per-repo status watcher on a local session.
+///
+/// For these, the poll is gone, not just slowed: the filesystem watcher
+/// (`GitRepoStatusModel`, attached by the terminal view via `set_git_repo_status`) pushes branch,
+/// ahead/behind and diff-stat changes, and block completion refreshes the chips after any command
+/// run in the terminal (`cd`, `git init`, `git clone`).  Only a remote (ssh) session has no
+/// watcher and no event source for the remote repo, so it keeps polling (see
+/// `REMOTE_POLL_INTERVAL`).
+fn is_git_chip_driven_by_watcher(kind: &ContextChipKind, session_is_remote: bool) -> bool {
+    !session_is_remote
+        && matches!(
+            kind,
+            ContextChipKind::ShellGitBranch
+                | ContextChipKind::GitBranchStatus
+                | ContextChipKind::GitDiffStats
+        )
+}
+
+/// When a chip's poll should next fire, or `None` if it should not poll at all.
+///
+/// * Local git chips: never (see [`is_git_chip_driven_by_watcher`]).
+/// * The clock chips display minutes, so they only change on a minute boundary: wake once per
+///   minute, aligned to it, instead of every second.  Here time itself is the requirement.
+/// * Everything else: the configured (remote-adjusted) interval.
+///
+/// `millis_into_minute` is the wall clock's position within the current minute.
+fn next_poll_delay(
+    kind: &ContextChipKind,
+    base: Duration,
+    session_is_remote: bool,
+    millis_into_minute: u64,
+) -> Option<Duration> {
+    if is_git_chip_driven_by_watcher(kind, session_is_remote) {
+        return None;
+    }
+    if matches!(kind, ContextChipKind::Time12 | ContextChipKind::Time24) {
+        // 10 ms past the boundary so the render sees the new minute.
+        return Some(Duration::from_millis(
+            60_000 - (millis_into_minute % 60_000) + 10,
+        ));
+    }
+    Some(effective_poll_interval(base, session_is_remote))
+}
+
+fn millis_into_current_minute() -> u64 {
+    use chrono::Timelike as _;
+    let now = chrono::Local::now();
+    u64::from(now.second()) * 1000 + u64::from(now.timestamp_subsec_millis() % 1000)
+}
+
 /// Upper bound for a chip's shell command when its policy sets no timeout of its own. A hung
 /// helper (a stuck `git`, a network mount) would otherwise run forever, and on every refresh
 /// another one would pile up behind it.
@@ -1184,7 +1234,19 @@ impl CurrentPrompt {
                 allow_fingerprint_skip,
                 ctx,
             );
-            let interval = effective_poll_interval(*interval, self.session_is_remote(ctx));
+            let Some(interval) = next_poll_delay(
+                chip_kind,
+                *interval,
+                self.session_is_remote(ctx),
+                millis_into_current_minute(),
+            ) else {
+                // Event-driven chip: no timer (see `is_git_chip_driven_by_watcher`).
+                if let Some(state) = self.states.get_mut(chip_kind) {
+                    state.refresh_handle = None;
+                    state.parked = false;
+                }
+                return;
+            };
             let chip_kind_clone = chip_kind.clone();
             let future = ctx.spawn(
                 async move {

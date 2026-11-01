@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Local;
 
@@ -130,6 +129,8 @@ pub struct AIAssistantPanelView {
     input_suggestions_view: ViewHandle<InputSuggestions>,
     input_suggestions_mode: InputSuggestionsMode,
     requests_model: ModelHandle<Requests>,
+    /// Whether the per-minute countdown re-render is armed.
+    tick_pending: bool,
     focus_state: PanelFocusState,
 
     resizable_state_handle: ResizableStateHandle,
@@ -215,7 +216,11 @@ impl AIAssistantPanelView {
         ctx.subscribe_to_model(&requests_model, move |me, _, event, ctx| {
             me.handle_requests_model_event(event, ctx);
         });
-        ctx.observe(&requests_model, |_, _, ctx| ctx.notify());
+        ctx.observe(&requests_model, |me, _, ctx| {
+            // New rate-limit info may have introduced a "... until refresh" countdown.
+            me.ensure_tick(ctx);
+            ctx.notify();
+        });
 
         let transcript_view =
             ctx.add_typed_action_view(|ctx| Transcript::new(&requests_model, ctx));
@@ -246,13 +251,14 @@ impl AIAssistantPanelView {
             input_suggestions_view,
             input_suggestions_mode: InputSuggestionsMode::Closed,
             requests_model,
+            tick_pending: false,
             focus_state: PanelFocusState::Editor,
 
             resizable_state_handle,
             mouse_state_handles: Default::default(),
         };
 
-        panel.tick(ctx);
+        panel.ensure_tick(ctx);
         panel.on_active_session_change(active_session_model, ctx);
         panel
     }
@@ -273,18 +279,31 @@ impl AIAssistantPanelView {
         });
     }
 
-    // Every minute, we re-render to make the next refresh time tick.
-    fn tick(&self, ctx: &mut ViewContext<Self>) {
-        ctx.spawn(
-            async move { Timer::after(Duration::from_secs(60)).await },
-            |view, _, ctx| {
-                view.transcript_view.update(ctx, |_, ctx| {
-                    ctx.notify();
-                });
+    /// The only time-dependent text in the panel is the "N minutes until refresh" countdown in
+    /// the request-limit footer, so a re-render is scheduled for the instant that text next
+    /// changes (time itself is the requirement there).  With no countdown nothing changes with
+    /// the clock, so no timer runs; this is re-armed when the request model reports new
+    /// rate-limit info.
+    fn ensure_tick(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.tick_pending {
+            return;
+        }
+        let Some(delay) = self
+            .requests_model
+            .as_ref(ctx)
+            .time_until_countdown_text_changes()
+        else {
+            return;
+        };
+        self.tick_pending = true;
+        ctx.spawn(async move { Timer::after(delay).await }, |view, _, ctx| {
+            view.tick_pending = false;
+            view.transcript_view.update(ctx, |_, ctx| {
                 ctx.notify();
-                view.tick(ctx);
-            },
-        );
+            });
+            ctx.notify();
+            view.ensure_tick(ctx);
+        });
     }
 
     fn format_as_code_block(&self, content: &str) -> String {

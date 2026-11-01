@@ -55,7 +55,8 @@ use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::{
-    effective_command_timeout, effective_poll_interval, poll_decision, ActiveChipSurfaces,
+    effective_command_timeout, effective_poll_interval, next_poll_delay, poll_decision,
+    ActiveChipSurfaces,
     ChipState, ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext,
     DEFAULT_CHIP_COMMAND_TIMEOUT, REMOTE_POLL_INTERVAL,
     TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
@@ -1560,4 +1561,44 @@ fn parked_poll_stays_parked_while_the_terminal_is_not_on_screen() {
             assert!(!current_prompt.states[&ContextChipKind::ShellGitBranch].parked);
         });
     });
+}
+
+/// Local git chips are driven by the repo watcher and block completion: no poll timer. A remote
+/// (ssh) session has no watcher, so it keeps its (120 s) poll.
+#[test]
+fn local_git_chips_do_not_poll_but_remote_ones_do() {
+    let thirty = Duration::from_secs(30);
+    for kind in [
+        ContextChipKind::ShellGitBranch,
+        ContextChipKind::GitBranchStatus,
+        ContextChipKind::GitDiffStats,
+    ] {
+        assert_eq!(next_poll_delay(&kind, thirty, false, 0), None, "{kind:?}");
+        assert_eq!(
+            next_poll_delay(&kind, thirty, true, 0),
+            Some(REMOTE_POLL_INTERVAL),
+            "{kind:?}"
+        );
+    }
+    // Non-git slow chips are unchanged.
+    assert_eq!(
+        next_poll_delay(&ContextChipKind::Date, Duration::from_secs(1800), false, 0),
+        Some(Duration::from_secs(1800))
+    );
+}
+
+/// The clock chips show minutes, so they wake on the minute boundary, not every second.
+#[test]
+fn clock_chips_wake_on_the_minute_boundary() {
+    let one_s = Duration::from_secs(1);
+    for kind in [ContextChipKind::Time12, ContextChipKind::Time24] {
+        assert_eq!(
+            next_poll_delay(&kind, one_s, false, 0),
+            Some(Duration::from_millis(60_010))
+        );
+        assert_eq!(
+            next_poll_delay(&kind, one_s, false, 59_500),
+            Some(Duration::from_millis(510))
+        );
+    }
 }

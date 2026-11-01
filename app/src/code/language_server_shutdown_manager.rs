@@ -18,6 +18,20 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use crate::code::local_code_editor::LocalCodeEditorView;
 use crate::terminal::TerminalView;
 
+/// Why this is a poll, and why it is bounded.
+///
+/// "No terminal and no open editor references this workspace root" has no single event source:
+/// the referencing views disappear through many unrelated paths (pane/tab/window close, the
+/// undo-close grace expiry dropping the view, a terminal `cd`ing out of the root, an editor
+/// navigating to another file) and the UI framework has no view-dropped notification to
+/// subscribe to.  Hooking each path would silently leak a server whenever a new path is added,
+/// so a sweep is the safety net that guarantees servers are eventually reaped.
+///
+/// It is not an always-on idle wake-up: it is armed only when an LSP server is started
+/// (`persisted_workspace.rs`) and disarms itself on the first pass that finds no server
+/// roots left (`scan_and_shutdown_unused_servers` returning `false`).  A user with no LSP
+/// server running has no timer at all.  Shutdown timing is a resource-reaping heuristic, not
+/// correctness: nothing waits on it.
 const SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct LanguageServerShutdownManager {

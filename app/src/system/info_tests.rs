@@ -66,3 +66,18 @@ fn all_processes_refresh_kind_does_not_sample_cpu_or_memory() {
     assert!(own.cpu());
     assert!(own.memory());
 }
+
+/// No consumer, no timer: without `heap_usage_tracking` the 5 s self-rescheduling refresh
+/// must not be started (it would wake the process forever for no subscriber).
+#[test]
+fn refresh_timer_only_scheduled_when_a_consumer_exists() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(SystemInfo::new);
+        app.read(|ctx| {
+            assert_eq!(
+                handle.as_ref(ctx).refresh_scheduled(),
+                cfg!(feature = "heap_usage_tracking")
+            );
+        });
+    });
+}

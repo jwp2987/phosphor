@@ -52,6 +52,8 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
     log::info!("Daemon bound to {}", socket_path.display());
 
     std::fs::write(&pid_path, std::process::id().to_string())?;
+    // The socket is bound and listening and the PID file is written: tell the proxy.
+    proxy::signal_ready_from_env();
 
     super::run_daemon_app(identity_key, move |ctx| {
         // Spawn the Unix socket accept loop.  The listener and connection
