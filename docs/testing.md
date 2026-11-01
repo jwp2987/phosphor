@@ -172,12 +172,13 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `diag-mac`, `diag-windows` | test | manual | read-only environment reports |
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
 | `build-{linux,macos,windows}-profiling` | build | manual | unstripped `profiling` profile binary (`docs/profiling.md`) |
+| `app-test-linux-wayland`, `app-test-linux-x11`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
 | `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms |
 
 Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status -b build/<name>` or
 `glab api "projects/88085499/pipelines?ref=build/<name>&per_page=1"`; play a manual job with
 `glab api -X POST projects/88085499/jobs/<id>/play`. `script/ci/ci_seq.py build/<name> [skip...]` plays
-check-linux, then the macOS/Windows builds, the Linux tests and the Linux build in order. Heavy suites are
+check-linux, then the macOS/Windows builds, the Linux tests and the Linux build in order, then the `app-test-*` jobs of every build that succeeded. Heavy suites are
 long: ask first. Cancelling a running build can orphan cargo processes under `gitlab-runner`.
 
 ### 2.6 Environment switches (kill switches and test knobs)
@@ -242,6 +243,55 @@ merged `Cargo.toml` / `.gitlab-ci.yml` before relying on them.
 | cargo-fuzz targets | parser/protocol fuzzing (escape sequences, OSC, DCS hooks) | `cargo +nightly fuzz run <target>` on the box, never in CI by default |
 | cargo-mutants | do the tests catch a mutated line | `cargo mutants -p <crate>` on the box (slow, manual) |
 | manual CI jobs | the above as `when: manual` jobs | play from the pipeline page; heavy ones ask first |
+
+### 2.8 Real-app tests in CI (`app-test-*`, stage `apptest`)
+
+The release-test matrix of 3.5 is automated against the BUILT artifact, per platform, in BOTH session modes (terminal and
+agent). Code: `script/realapp/appci/` (Python: `run.py` driver, `cases.py`, `backend.py`, `profile.py`, `app.py`, `sshd.py`,
+`report.py`), entry points `script/realapp/linux/wayland_session.sh`, `mac/ci/app_test.sh`, `windows/ci/app_test.ps1`.
+Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
+`script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them.
+
+| job | runner | session | input / screenshots |
+|---|---|---|---|
+| `app-test-linux-wayland` | box (`little-thing`, resource_group `little-thing-gui`) | headless sway, `WLR_BACKENDS=headless`, gles2 on `/dev/dri/renderD128` (pixman fallback), 1600x1000; full matrix as a native Wayland client, then a reduced set under XWayland (`--mode xwayland`, app forced to X11) | `wtype` (`-d N` = 10-25 ms/key, text + Enter in one call), `grim`, `wl-copy`/`wl-paste` |
+| `app-test-linux-x11` | box | private Xvfb (software GL) | `xdotool`, `xsel`, `import`/`ffmpeg` |
+| `app-test-macos` | `Mac` (user `gitrunner`) | must be the logged-in Aqua session | `cliclick` + `osascript`, `screencapture`, `pbcopy`; frontmost-app guard before every burst; `caffeinate` |
+| `app-test-windows` | `windows` (console desktop, the runner is NOT a session-0 service) | the interactive desktop | `SendKeys` (foreground-guarded), `CopyFromScreen`; side-by-side install; backup + md5-verified restore of app data, uninstall key, PATH, shortcuts, `phosphor://` handler; `WINPUSH.lock`; exact-PID stop |
+
+Session handling (Linux): own short `XDG_RUNTIME_DIR` (falls back to `/tmp/pa-*` when the job dir is too long for the 108-byte socket
+limit), private `HOME` per mode with an owner-like scratch config and **no credentials**, app under its own `dbus-run-session`, a local ssh
+server on 127.0.0.1 (system `sshd` as the CI user with a `ForceCommand` into a scratch remote home; else `fakesshd.py` when paramiko
+exists; else the ssh cases SKIP). Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
+Scratch config: `general.default_session_mode` = `terminal` or `agent`; agent mode adds autodetect + natural-language detection; a
+provider is configured only when the CI variable `APPCI_OLLAMA_URL` is set (then `approval_card_pause` runs; otherwise it skips).
+
+Machine-checkable output (`appci-out/<mode>/run/`): `results.json` (summary + one object per case: name, mode, status
+pass/fail/skip, detail, metrics, shots), `junit.xml` (GitLab test report), `summary.md`, `shots/*.png`, `logs/<mode>/` (app log with
+`warp::input_order` at debug and synthetic text only, `rec.log` = the exact command line the shell received per prompt, sshd log,
+sway/GPU info). A case passes only if the effect file the typed command writes AND the shell's own `rec.log` match the typed commands
+exactly; an empty `rec.log` is noted and the effect file alone decides.
+
+Cases (each in both modes unless noted): `mode_proof` (screenshot + OCR when tesseract exists), `cadence` (real key spacing measured at
+the pty), `fast_typing` (10-25 ms/key, Enter in the same call, gaps 0 and 250 ms), `rollover` (next key down before the previous is
+up), `expert_fuzz` (seeded typos fixed with BackSpace / Left+insert / Ctrl-W), `paste_instant_enter`, `arrows_behind_paste` (#1389),
+`big_paste` (`APPCI_BIG_MB`, default 1, byte-exact), `tab_enter` (gaps 0/50/150 ms, no stray uncompleted file), `ctrl_c_d` (Ctrl-C
+delivery latency, Ctrl-D in `cat` and in a nested bash), `read_x`, `subshells` (bash twice incl. typing during setup, zsh, fish, nu where
+installed), `alt_screen` (less, vim), `ssh_connect_typing` (0/100/200/300 ms after Enter, `APPCI_SSH_TRIALS` per gap, exact remote
+command, nothing local), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs xterm in the same session when installed),
+`latency_key_log` (key to first frame from the app's own `input_order` log), `approval_card_pause` (agent, needs a provider),
+`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
+(`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
+
+Budgets: these jobs check CI-sized bounds, not the owner's absolute budgets of 3.6 (software or headless GPU, input tool spawn cost in the
+numbers): Enter to start must be no more than 5 ms worse than xterm in the same session (80 ms absolute without a reference), key to frame
+p50 <= 20 ms / p99 <= 60 ms, Ctrl-C median <= 40 ms over the measured tool floor, idle CPU <= `APPCI_IDLE_CPU_MAX` (15 %) of one core.
+Every number is in `metrics` for trend comparison; the owner budgets still need the real-GPU runs of 3.2-3.4.
+
+Not covered by these jobs (still manual, section 3): the owner's real-config copy (CI has none, by design), reference-terminal
+comparison beyond Enter latency, mouse selection/copy cases, Install-vs-"continue without installing" ssh flows, 24-tab soak, kill-switch A/B.
+`APPCI_SCALE` (e.g. 0.3) shortens counts for a smoke run; `run.py --backend sim` runs the case logic against a bash in a pty (no GUI) to
+test the harness itself.
 
 ## 3. Real-app testing
 
@@ -308,7 +358,7 @@ code-refuter agents.
 - Where: laptop or the build box, private Xvfb display (e.g. `:75`, `:98`/`:99`; two agents can use two
   displays), release `.deb` extracted to scratch (never `/opt/phosphor`), isolated `HOME`, `dbus-run-session`.
   Software rendering (llvmpipe): compare ratios and trends, not absolutes; use a real GPU session for absolute
-  numbers; Wayland is not covered by XTEST.
+  numbers; Wayland is covered by the CI harness (2.8: headless sway + wtype/grim); XTEST only reaches X11.
 - Launch gotchas (each cost a failed run): under `dbus-run-session` gnome-keyring defers to the user's daemon
   and the app hangs after "Running app with windowing system: X11". Use a private `XDG_RUNTIME_DIR`, unset
   `GNOME_KEYRING_CONTROL` and `SSH_AUTH_SOCK`, and start `printf "" | gnome-keyring-daemon --unlock --components=secrets`

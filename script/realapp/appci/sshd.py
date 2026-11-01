@@ -1,0 +1,75 @@
+# appci/sshd.py: a local ssh server on 127.0.0.1 so the ssh cases need no external host.
+# Preferred: the system OpenSSH sshd run as the CI user (no root: pubkey only, ForceCommand starts bash with
+# HOME = the scratch "remote" home so the real home is never touched). Fallback: script/realapp/linux/bin/fakesshd.py
+# when python3-paramiko is importable. Neither available -> start() returns None and the ssh cases SKIP.
+import os, shutil, socket, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _free_port():
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
+
+
+def start(prof, run):
+    """returns dict(port, ident, kind, popen) or None"""
+    d = os.path.join(run, "ssh"); os.makedirs(d, exist_ok=True)
+    port = _free_port()
+    sshd = shutil.which("sshd") or ("/usr/sbin/sshd" if os.path.exists("/usr/sbin/sshd") else None)
+    kg = shutil.which("ssh-keygen")
+    if sshd and kg:
+        for k in ("hostkey", "clientkey"):
+            if not os.path.exists(os.path.join(d, k)):
+                subprocess.run([kg, "-q", "-t", "ed25519", "-N", "", "-f", os.path.join(d, k)], check=True)
+        shutil.copy(os.path.join(d, "clientkey.pub"), os.path.join(d, "authorized_keys"))
+        os.chmod(os.path.join(d, "authorized_keys"), 0o600)
+        force = os.path.join(d, "force.sh")
+        open(force, "w").write('#!/bin/bash\nexport HOME="%s"\ncd "$HOME"\nif [ -n "$SSH_ORIGINAL_COMMAND" ]; then exec bash -c "$SSH_ORIGINAL_COMMAND"; else exec bash -l -i; fi\n' % prof.rhome)
+        os.chmod(force, 0o755)
+        conf = os.path.join(d, "sshd_config")
+        open(conf, "w").write("\n".join([
+            "Port %d" % port, "ListenAddress 127.0.0.1", "HostKey %s/hostkey" % d, "PidFile %s/sshd.pid" % d,
+            "AuthorizedKeysFile %s/authorized_keys" % d, "PasswordAuthentication no", "KbdInteractiveAuthentication no",
+            "UsePAM no", "StrictModes no", "PubkeyAuthentication yes", "ForceCommand " + force, "LogLevel ERROR",
+            "PermitTTY yes", "X11Forwarding no", ""]))
+        log = open(os.path.join(d, "sshd.log"), "w")
+        p = subprocess.Popen([sshd, "-D", "-e", "-f", conf], stdout=log, stderr=log, start_new_session=True)
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close(); break
+            except OSError:
+                if p.poll() is not None:
+                    break
+                time.sleep(0.1)
+        else:
+            p.kill()
+        if p.poll() is None:
+            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "openssh", "popen": p}
+    try:
+        import paramiko  # noqa: F401
+    except ImportError:
+        return None
+    fk = os.path.join(run, "fk"); os.makedirs(fk + "/fakessh", exist_ok=True); os.makedirs(fk + "/raw", exist_ok=True)
+    for k in ("hostkey", "clientkey"):
+        if not os.path.exists(fk + "/fakessh/" + k):
+            subprocess.run([kg, "-q", "-t", "ed25519", "-N", "", "-f", fk + "/fakessh/" + k], check=True)
+    if os.path.islink(fk + "/remote_home") or os.path.exists(fk + "/remote_home"):
+        pass
+    else:
+        os.symlink(prof.rhome, fk + "/remote_home")
+    env = dict(os.environ, PHOSPHOR_LINUX_RUN=fk)
+    p = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "linux", "bin", "fakesshd.py"), str(port)], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1.5)
+    if p.poll() is not None:
+        return None
+    return {"port": port, "ident": fk + "/fakessh/clientkey", "kind": "fakesshd", "popen": p}
+
+
+def stop(info):
+    if info and info.get("popen") and info["popen"].poll() is None:
+        info["popen"].terminate()
+        try:
+            info["popen"].wait(5)
+        except Exception:
+            info["popen"].kill()
