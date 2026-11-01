@@ -5324,7 +5324,48 @@ fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
             view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
             finish_queued_paste(view, ctx, id, Ok(Vec::new()));
             assert!(!view.paste_hold().has_pending());
+            // x and y are applied at once; the Left (and z behind it) wait for the display map to
+            // catch up with the edits before them, so they apply when this update's effects flush
+            // (#1389).
+            assert_eq!(view.buffer_text(ctx), "aPASTExy");
+        });
+        // After the flush: the Left saw the map with "aPASTExy" and moved before the y.
+        view.read(&app, |view, ctx| {
             assert_eq!(view.buffer_text(ctx), "aPASTExzy");
+            assert!(!view.paste_hold().replay_pending());
+        });
+    })
+}
+
+// #1389, legacy `PasteSequencer` path (`PHOSPHOR_INPUT_QUEUE_PASTE=0`): the twin of the test above.
+// The `for key in held` replay must not compute a cursor motion on a stale display map either.
+#[test]
+fn test_legacy_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let hold = view.paste_hold();
+            hold.set_uses_queue(false);
+            let id = hold.begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Left, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            let held = hold.complete(id).expect("paste still pending");
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            for key in held {
+                view.apply_held_paste_key(key, ctx);
+            }
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "aPASTExzy");
+            assert!(!view.paste_hold().replay_pending());
         });
     })
 }

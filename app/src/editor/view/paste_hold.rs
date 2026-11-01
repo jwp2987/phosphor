@@ -17,6 +17,7 @@
 //! The queue can hold a password typed blind, so `Debug` shows only kinds.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::fmt;
 use std::rc::Rc;
 use std::time::Duration;
@@ -56,6 +57,12 @@ pub struct EditorPasteHold {
     /// Paste ordering runs on `queue` (`PHOSPHOR_INPUT_QUEUE_PASTE`, default on).
     queue_enabled: Cell<bool>,
     next_paste_id: Cell<u64>,
+    /// Replayed keys that wait for the display map to catch up with the edits before them (#1389).
+    replay: RefCell<VecDeque<HeldPasteKey>>,
+    /// A `ReplayHeldKeys` step is already queued as an effect.
+    replay_scheduled: Cell<bool>,
+    /// A replayed key is being applied right now (it must not be queued again).
+    replaying: Cell<bool>,
 }
 
 impl Default for EditorPasteHold {
@@ -65,11 +72,53 @@ impl Default for EditorPasteHold {
             queue: Rc::default(),
             queue_enabled: Cell::new(kill_switch::is_enabled(Area::Paste)),
             next_paste_id: Cell::new(0),
+            replay: RefCell::default(),
+            replay_scheduled: Cell::new(false),
+            replaying: Cell::new(false),
         }
     }
 }
 
 impl EditorPasteHold {
+    /// Replayed keys are waiting for the display map (see [`needs_fresh_display_map`]).
+    pub fn replay_pending(&self) -> bool {
+        !self.replay.borrow().is_empty()
+    }
+
+    pub fn replay_push(&self, key: HeldPasteKey) {
+        self.replay.borrow_mut().push_back(key);
+    }
+
+    pub fn replay_pop(&self) -> Option<HeldPasteKey> {
+        self.replay.borrow_mut().pop_front()
+    }
+
+    /// Whether the next waiting key is one that can be applied without a fresh display map.
+    pub fn replay_next_needs_fresh_map(&self) -> bool {
+        self.replay
+            .borrow()
+            .front()
+            .is_some_and(needs_fresh_display_map)
+    }
+
+    /// Marks a `ReplayHeldKeys` step as queued; false if one already was.
+    pub fn replay_mark_scheduled(&self) -> bool {
+        !self.replay_scheduled.replace(true)
+    }
+
+    pub fn replay_clear_scheduled(&self) {
+        self.replay_scheduled.set(false);
+    }
+
+    pub fn is_replaying(&self) -> bool {
+        self.replaying.get()
+    }
+
+    /// Sets the "applying a replayed key" flag, returning the previous value.
+    pub fn set_replaying(&self, on: bool) -> bool {
+        self.replaying.replace(on)
+    }
+
     /// Whether paste ordering runs on the input queue instead of the sequencer.
     pub fn uses_queue(&self) -> bool {
         self.queue_enabled.get()
@@ -211,6 +260,25 @@ impl Host for EditorQueueHost<'_, '_> {
 
     fn warn(&mut self, line: &str) {
         log::warn!("{line}");
+    }
+}
+
+/// Whether replaying `key` reads the display map (cursor motion, deletion by display position), so
+/// it must wait until the edits replayed before it have reached the map (#1389). The map follows
+/// buffer edits only when the update's effects flush, which cannot happen inside one replay.
+/// Typed text and the Enter family read the buffer, not the map, and apply at once.
+pub(super) fn needs_fresh_display_map(key: &HeldPasteKey) -> bool {
+    match key {
+        HeldPasteKey::Text(_) => false,
+        HeldPasteKey::Action(action) => !matches!(
+            action,
+            EditorAction::Enter
+                | EditorAction::Newline
+                | EditorAction::CtrlEnter
+                | EditorAction::ShiftEnter
+                | EditorAction::AltEnter
+                | EditorAction::CmdEnter
+        ),
     }
 }
 

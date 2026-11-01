@@ -2222,6 +2222,11 @@ pub struct Input {
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
+    /// #1348 / owner rule: text typed while an ssh connect was in progress was handed back to this
+    /// editor (the connect ended without a remote shell), so the line may be one the user meant
+    /// for the remote machine. The first Enter after that hand-back is not executed (it may have
+    /// been typed in the same burst as the line); the user sees the line and presses Enter again.
+    ssh_handover_enter_guard: bool,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -4000,6 +4005,7 @@ impl Input {
             after_enter_replay_awaits_pty: false,
             after_enter_replay_generation: 0,
             running_deferred_enter: false,
+            ssh_handover_enter_guard: false,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -13497,6 +13503,9 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.hold_back_enter_after_ssh_handover(ctx) {
+            return;
+        }
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         warpui::input_order::log_hop("enter_begin", || {
@@ -14841,6 +14850,48 @@ impl Input {
         self.last_enter_submitted_shell_command = false;
         self.input_enter(ctx);
         self.last_enter_submitted_shell_command
+    }
+
+    /// Arms the guard of [`Self::hold_back_enter_after_ssh_handover`]: typed text was handed back
+    /// to this editor, unexecuted, because the ssh connect ended without a remote shell.
+    pub(crate) fn arm_ssh_handover_enter_guard(&mut self) {
+        self.ssh_handover_enter_guard = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ssh_handover_enter_guard_armed(&self) -> bool {
+        self.ssh_handover_enter_guard
+    }
+
+    /// The first Enter after typed text was handed back to the editor (ssh ended without a remote
+    /// shell) is consumed, not executed: a line meant for the remote machine must never run
+    /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
+    /// An empty buffer has nothing to run, so the guard is simply dropped.
+    fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.ssh_handover_enter_guard {
+            return false;
+        }
+        self.ssh_handover_enter_guard = false;
+        if self.editor.as_ref(ctx).is_empty(ctx) {
+            return false;
+        }
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return true;
+        }
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::new(
+                    "Enter was held back: the SSH session ended while this was being typed. \
+                     Check the line, then press Enter to run it here"
+                        .to_string(),
+                    ToastFlavor::Default,
+                ),
+                window_id,
+                ctx,
+            );
+        });
+        true
     }
 
     /// Remembers a submit for the misroute recovery (#835).
