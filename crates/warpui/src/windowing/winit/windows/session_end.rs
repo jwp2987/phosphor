@@ -398,6 +398,37 @@ unsafe extern "system" fn session_end_subclass_proc(
     reply
 }
 
+/// Blocks this thread until a new message is posted to its queue or `timeout` passes, instead of a
+/// fixed sleep: the wake-up message `run_shutdown_before_returning` waits for is posted, so
+/// `QS_POSTMESSAGE` is the signal. The caller drains its wake-up message with `PeekMessageW`
+/// right before calling this, which marks everything already queued as seen, so only a message
+/// posted after that wakes the wait (hence no `MWMO_INPUTAVAILABLE`, which would return at once
+/// while any unrelated message sits in the queue). The timeout is the deadline's give-up net.
+fn wait_for_posted_message(timeout: Duration) {
+    const QS_POSTMESSAGE: u32 = 0x0008;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        // `HANDLE` is pointer-sized; no handles are passed (count 0, null array).
+        fn MsgWaitForMultipleObjectsEx(
+            count: u32,
+            handles: *const isize,
+            milliseconds: u32,
+            wake_mask: u32,
+            flags: u32,
+        ) -> u32;
+    }
+
+    // Round up so a sub-millisecond remainder still waits rather than returning at once.
+    let milliseconds = timeout
+        .as_millis()
+        .saturating_add(1)
+        .min(u32::MAX as u128 - 1) as u32;
+    // SAFETY: zero handles with a null array is valid for `MsgWaitForMultipleObjectsEx`, which
+    // then waits only on the thread's message queue.
+    unsafe { MsgWaitForMultipleObjectsEx(0, std::ptr::null(), milliseconds, QS_POSTMESSAGE, 0) };
+}
+
 /// Delivers the posted `TerminateFromSignal` to the main loop from inside the
 /// `WM_ENDSESSION` callback and waits (at most [`SHUTDOWN_DEADLINE`]) for the shutdown it runs.
 ///
@@ -425,7 +456,7 @@ fn run_shutdown_before_returning() {
         SHUTDOWN_DEADLINE,
         || started.elapsed(),
         || matches!(RUNTIME.lock().state, SessionEndState::Exiting { .. }),
-        |_remaining| {
+        |remaining| {
             let mut msg = MSG::default();
             // SAFETY: `msg` is a valid out-pointer; the filter admits only the wake-up
             // message, and dispatching it is what the thread's own message loop would do.
@@ -434,7 +465,7 @@ fn run_shutdown_before_returning() {
             {
                 unsafe { DispatchMessageW(&msg) };
             }
-            std::thread::sleep(Duration::from_millis(2));
+            wait_for_posted_message(remaining);
         },
     );
     match outcome {

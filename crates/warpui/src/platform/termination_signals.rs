@@ -473,9 +473,12 @@ pub(crate) fn run_deadline_watchdog(
     exit: impl FnOnce(i32),
 ) {
     sleep(deadline);
+    // The step still running is what a truncated flush hangs on: name it (the quit path
+    // records each step in `shutdown_progress`).
     log::error!(
-        "Graceful shutdown did not finish within {}s; exiting",
-        deadline.as_secs()
+        "Graceful shutdown did not finish within {}s; exiting while step `{}` was still running",
+        deadline.as_secs(),
+        super::shutdown_progress::current_step()
     );
     exit(exit_code);
 }

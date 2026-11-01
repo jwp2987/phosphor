@@ -88,6 +88,18 @@ fn gate_pending_query_expires() {
 }
 
 #[test]
+fn gate_expiry_is_an_explicit_give_up_that_clears_the_pending_query() {
+    // UI-A3: the expiry is a logged give-up, not a silent elapsed-time comparison.
+    let t0 = Instant::now();
+    let mut gate = SessionEndGate::new();
+    gate.note_query(t0);
+    gate.expire_stale_query(t0 + QUERY_PENDING_MAX - Duration::from_secs(1));
+    assert!(gate.query_pending_since.is_some());
+    gate.expire_stale_query(t0 + QUERY_PENDING_MAX);
+    assert!(gate.query_pending_since.is_none());
+}
+
+#[test]
 fn gate_stays_closed_to_closing_panes_for_a_session_that_is_ending() {
     let t0 = Instant::now();
     let mut gate = SessionEndGate::new();

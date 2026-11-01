@@ -127,6 +127,13 @@ pub enum CustomEvent {
     MomentumScroll {
         window_id: winit::window::WindowId,
     },
+    /// A touch has been held in place for the long-press duration (armed at touch-down, so the
+    /// context menu opens while the finger is still down). `generation` identifies the touch
+    /// the timer was armed for; a stale one is ignored.
+    TouchLongPress {
+        window_id: winit::window::WindowId,
+        generation: u64,
+    },
 }
 
 #[derive(Debug)]

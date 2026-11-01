@@ -827,6 +827,37 @@ fn test_pending_paint_only_timer_upgrades_when_a_layout_required_repaint_joins_i
     })
 }
 
+/// A one-shot repaint request later than a pending timer is "covered" by it. The covering
+/// timer only repaints once, at its own deadline, so the later request must be re-armed when it
+/// fires rather than silently dropped (UI-A7).
+#[test]
+fn test_repaint_request_covered_by_an_earlier_timer_is_rearmed_when_that_timer_fires() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let start = instant::Instant::now();
+        let early = start + Duration::from_millis(40);
+        let late = start + Duration::from_millis(400);
+        app.update(|ctx| {
+            ctx.manage_delayed_repaint_timers(window_id, early, false);
+            // Covered by the earlier timer: no second timer is spawned...
+            ctx.manage_delayed_repaint_timers(window_id, late, false);
+            assert_eq!(ctx.pending_repaint_timer_deadlines(window_id), vec![early]);
+        });
+
+        // ...but once the early timer has fired, the late request must still be pending.
+        Timer::after(Duration::from_millis(150)).await;
+        app.update(|ctx| {
+            let pending = ctx.pending_repaint_timer_deadlines(window_id);
+            assert!(
+                pending.iter().any(|deadline| *deadline >= late),
+                "the covered request at +400ms was dropped; pending: {pending:?}"
+            );
+        });
+    })
+}
+
 /// A child view that counts its own `render` calls on top of its element's
 /// layout/paint counts. Stands in for a `TerminalView` in a tab. See issue #805.
 #[derive(Default)]

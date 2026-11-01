@@ -16,9 +16,9 @@
 //! * when a pane group's directories later point into an evicted repo, detection is re-run so
 //!   it is re-indexed exactly as on first entry (this also covers restoring a closed tab).
 
+use instant::Instant;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use instant::Instant;
 use std::time::Duration;
 
 use repo_metadata::repositories::{DetectedRepositories, RepoDetectionSource};
@@ -31,8 +31,6 @@ use super::working_directories::{WorkingDirectoriesEvent, WorkingDirectoriesMode
 
 /// How long a repo must be unreferenced before it is evicted.
 pub(crate) const IDLE_GRACE: Duration = Duration::from_secs(5 * 60);
-/// How often idle repos are checked.
-const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Whether a repo at `repo` is referenced by any of `paths` (equal, inside, or containing).
 pub(crate) fn is_referenced<'a>(repo: &Path, mut paths: impl Iterator<Item = &'a PathBuf>) -> bool {
@@ -74,6 +72,15 @@ impl IdleTracker {
         }
         due
     }
+
+    /// How long from `now` until the earliest tracked repo reaches `grace`, or `None` when no
+    /// repo is currently idle (so nothing needs a timer).
+    pub(crate) fn next_due_in(&self, now: Instant, grace: Duration) -> Option<Duration> {
+        self.idle_since
+            .values()
+            .map(|since| grace.saturating_sub(now.saturating_duration_since(*since)))
+            .min()
+    }
 }
 
 #[derive(Default)]
@@ -83,6 +90,10 @@ pub struct RepoIdleEvictor {
     tracker: IdleTracker,
     /// Repo roots this model evicted, so a later visit can re-trigger detection.
     evicted: HashSet<PathBuf>,
+    /// Identifies the one eviction timer that is armed; a firing from a replaced timer is stale.
+    timer_generation: u64,
+    /// When the armed timer is due, if one is armed.
+    timer_due: Option<Instant>,
 }
 
 impl Entity for RepoIdleEvictor {
@@ -102,8 +113,7 @@ fn local_paths(paths: impl IntoIterator<Item = LocalOrRemotePath>) -> Vec<PathBu
 }
 
 impl RepoIdleEvictor {
-    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        Self::schedule_sweep(ctx);
+    pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
         Self::default()
     }
 
@@ -144,8 +154,11 @@ impl RepoIdleEvictor {
                     self.repositories.insert(*pane_group_id, paths);
                 }
             }
-            WorkingDirectoriesEvent::FocusedRepoChanged { .. } => {}
+            WorkingDirectoriesEvent::FocusedRepoChanged { .. } => return,
         }
+        // Whether a repo is idle only changes when a pane group's directories do, so this is the
+        // moment to start (or restart) its grace clock; there is no periodic sweep.
+        self.evaluate_and_arm(ctx);
     }
 
     /// Re-runs repo detection for paths that moved into a repo we evicted, which makes
@@ -183,19 +196,45 @@ impl RepoIdleEvictor {
         }
     }
 
-    fn schedule_sweep(ctx: &mut ModelContext<Self>) {
+    /// Refreshes the idle clocks, evicts what is due, and arms ONE timer for the earliest repo
+    /// still waiting out its grace period. Runs on a `WorkingDirectoriesEvent` (the only thing
+    /// that makes a repo newly idle or referenced again) and when that timer fires; with no idle
+    /// repo nothing is armed, so an idle app has no wakeups from here.
+    ///
+    /// The timer itself is genuine pacing: `IDLE_GRACE` is a retention policy ("keep a repo's
+    /// tree five minutes after the last tab leaves"), so elapsed time is the requirement.
+    fn evaluate_and_arm(&mut self, ctx: &mut ModelContext<Self>) {
+        self.evict_due(ctx);
+        let now = Instant::now();
+        let Some(wait) = self.tracker.next_due_in(now, IDLE_GRACE) else {
+            // Nothing idle: any armed timer is now pointless, so make it stale.
+            self.timer_generation = self.timer_generation.wrapping_add(1);
+            self.timer_due = None;
+            return;
+        };
+        let due = now + wait;
+        // Keep an armed timer that fires no later than needed; an early firing just re-arms.
+        if self.timer_due.is_some_and(|armed| armed <= due) {
+            return;
+        }
+        self.timer_generation = self.timer_generation.wrapping_add(1);
+        self.timer_due = Some(due);
+        let generation = self.timer_generation;
         let _ = ctx.spawn(
-            async {
-                warpui::r#async::Timer::after(SWEEP_INTERVAL).await;
+            async move {
+                warpui::r#async::Timer::after(wait).await;
             },
-            |me, _, ctx| {
-                me.sweep(ctx);
-                Self::schedule_sweep(ctx);
+            move |me, _, ctx| {
+                if me.timer_generation != generation {
+                    return;
+                }
+                me.timer_due = None;
+                me.evaluate_and_arm(ctx);
             },
         );
     }
 
-    fn sweep(&mut self, ctx: &mut ModelContext<Self>) {
+    fn evict_due(&mut self, ctx: &mut ModelContext<Self>) {
         let candidates: Vec<(StandardizedPath, PathBuf)> = RepoMetadataModel::as_ref(ctx)
             .idle_evictable_local_repositories(ctx)
             .into_iter()

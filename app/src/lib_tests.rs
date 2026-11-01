@@ -206,6 +206,18 @@ fn will_terminate_runs_every_step_once_in_order() {
 }
 
 #[test]
+fn will_terminate_records_the_running_step_for_the_watchdog_log() {
+    // UI-A2: the quit watchdog's give-up log names the step still running. Every run ends on the
+    // last step, so this holds even with other tests running the sequence concurrently.
+    let mut steps = RecordedSteps::default();
+    run_will_terminate_steps(&mut steps);
+    assert_eq!(
+        warpui::platform::shutdown_progress::current_step(),
+        "tear_down_diagnostics"
+    );
+}
+
+#[test]
 fn will_terminate_starts_server_shutdown_before_the_writer_join() {
     // The writer join is unbounded; server shutdowns must progress during it rather
     // than queue behind it and eat the SIGTERM deadline.

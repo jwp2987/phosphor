@@ -124,6 +124,10 @@ NSUInteger activeScreenId() {
     // being hidden.  This allows us to hide the app before running any
     // slower termination logic.
     BOOL terminateOnHide;
+
+    // Set once `applicationDidHide:` has resumed termination, so the 5s fallback
+    // can tell whether it is firing because the hide notification never came.
+    BOOL hideNotified;
 }
 
 - (id)init {
@@ -290,6 +294,11 @@ NSUInteger activeScreenId() {
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
+                         // Give-up net for a hide notification that never came: say so
+                         // (the normal path already terminated and set `hideNotified`).
+                         if (!self->hideNotified) {
+                             warp_app_terminate_hide_fallback_fired(application);
+                         }
                          [application terminate:nil];
                        });
     } else {
@@ -305,6 +314,7 @@ NSUInteger activeScreenId() {
 
 - (void)applicationDidHide:(NSNotification *)note {
     if (terminateOnHide) {
+        hideNotified = YES;
         NSApplication *app = note.object;
         [app terminate:nil];
     }

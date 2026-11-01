@@ -511,6 +511,14 @@ pub(crate) extern "C-unwind" fn warp_app_terminate_declined(_this: &mut Object) 
     super::delegate::cancel_terminating_request();
 }
 
+/// The 5s fallback after `applicationShouldTerminate:` hid the app fired without
+/// `applicationDidHide:` ever having resumed termination: the hide notification is only an
+/// event, so this give-up net is logged rather than silent.
+#[unsafe(no_mangle)]
+pub(crate) extern "C-unwind" fn warp_app_terminate_hide_fallback_fired(_this: &mut Object) {
+    log::warn!("applicationDidHide never arrived within 5s of the quit; terminating anyway");
+}
+
 #[unsafe(no_mangle)]
 extern "C-unwind" fn warp_app_new_window(this: &mut Object) {
     let app = unsafe { get_app(this) };

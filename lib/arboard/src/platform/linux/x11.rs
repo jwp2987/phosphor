@@ -26,6 +26,8 @@ use std::{
 	time::{Duration, Instant},
 };
 
+use std::os::fd::AsRawFd;
+
 use log::{error, trace, warn};
 use parking_lot::{Condvar, Mutex, MutexGuard, RwLock};
 use x11rb::{
@@ -161,6 +163,38 @@ fn deadline_after_progress(now: Instant) -> Instant {
 mod phosphor_timeout_tests {
 	use super::*;
 
+	/// The X read loop sleeps in poll(2) on the connection fd: it returns as soon as bytes arrive,
+	/// and otherwise at the deadline (not busy-looping on a 1 ms sleep).
+	#[test]
+	fn fd_wait_wakes_on_data_and_otherwise_at_the_deadline() {
+		let mut fds = [0 as libc::c_int; 2];
+		// SAFETY: `fds` has room for the two descriptors `pipe` writes.
+		assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+		let (rd, wr) = (fds[0], fds[1]);
+
+		let t0 = Instant::now();
+		wait_fd_readable(rd, t0 + Duration::from_millis(60));
+		assert!(
+			t0.elapsed() >= Duration::from_millis(50),
+			"returned before the deadline"
+		);
+
+		let writer = std::thread::spawn(move || {
+			std::thread::sleep(Duration::from_millis(20));
+			// SAFETY: `wr` is the open write end of the pipe; one byte from a valid buffer.
+			unsafe { libc::write(wr, [1u8].as_ptr().cast(), 1) };
+		});
+		let t1 = Instant::now();
+		wait_fd_readable(rd, t1 + Duration::from_secs(10));
+		assert!(t1.elapsed() < Duration::from_secs(5), "did not wake on data");
+		writer.join().unwrap();
+		// SAFETY: closing the two descriptors opened above, once.
+		unsafe {
+			libc::close(rd);
+			libc::close(wr);
+		}
+	}
+
 	/// #1192: once the text is in hand the html/image probes get a short budget, so an owner that
 	/// never answers a probe cannot hold the UI thread for the full first-answer timeout.
 	#[test]
@@ -229,6 +263,27 @@ struct GlobalClipboard {
 
 	/// Join handle to the thread which serves selection requests.
 	server_handle: JoinHandle<()>,
+}
+
+/// Blocks until the X connection's fd `fd` has bytes to read or `deadline` passes. The caller re-checks both
+/// its event queue and its deadline afterwards, so a spurious or failed wake is harmless; on a
+/// `poll` error this naps briefly so the caller's loop cannot spin.
+fn wait_fd_readable(fd: std::os::fd::RawFd, deadline: Instant) {
+	let remaining = deadline.saturating_duration_since(Instant::now());
+	if remaining.is_zero() {
+		return;
+	}
+	// Round up so a sub-millisecond remainder still waits instead of spinning at timeout 0.
+	let timeout_ms = remaining
+		.as_millis()
+		.saturating_add(1)
+		.min(libc::c_int::MAX as u128) as libc::c_int;
+	let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+	// SAFETY: `pfd` is a valid, initialised pollfd and we pass a count of exactly one.
+	let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+	if rc < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+		std::thread::sleep(Duration::from_millis(1));
+	}
 }
 
 struct XContext {
@@ -495,7 +550,9 @@ impl Inner {
 			let event = match event {
 				Some(e) => e,
 				None => {
-					std::thread::sleep(Duration::from_millis(1));
+					// Nothing queued: sleep in poll(2) on the X connection until the owner's
+					// reply arrives or the deadline passes, instead of a 1 ms sleep loop.
+					wait_fd_readable(reader.conn.stream().as_raw_fd(), timeout_end);
 					continue;
 				}
 			};

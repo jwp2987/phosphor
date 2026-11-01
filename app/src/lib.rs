@@ -2476,14 +2476,25 @@ trait WillTerminateSteps {
 /// - App services are torn down before the autoupdate relaunch, so the new process
 ///   doesn't find this one.
 fn run_will_terminate_steps(steps: &mut impl WillTerminateSteps) {
+    use warpui::platform::shutdown_progress::set_step;
+    // `set_step` lets the quit watchdog's give-up log name the step still running.
+    set_step("begin_server_shutdown");
     steps.begin_server_shutdown();
+    set_step("flush_notebooks");
     steps.flush_notebooks();
+    set_step("flush_app_snapshot");
     steps.flush_app_snapshot();
+    set_step("terminate_persistence_writer");
     steps.terminate_persistence_writer();
+    set_step("tear_down_terminal_server");
     steps.tear_down_terminal_server();
+    set_step("tear_down_app_services");
     steps.tear_down_app_services();
+    set_step("finish_server_shutdown");
     steps.finish_server_shutdown();
+    set_step("relaunch_for_autoupdate");
     steps.relaunch_for_autoupdate();
+    set_step("tear_down_diagnostics");
     steps.tear_down_diagnostics();
 }
 
@@ -2527,8 +2538,9 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
             ::settings::PrivatePreferences::as_ref(self.ctx).flush_pending_writes();
         }
         // Unbounded on purpose: this drains queued writes and checkpoints the WAL, and
-        // abandoning it loses the last app state. The SIGTERM path's 5s watchdog still
-        // bounds it there.
+        // abandoning it loses the last app state. It waits on the writer thread's own
+        // completion (the join), not a timer. The SIGTERM path's 5s watchdog is only a
+        // logged give-up for a wedged writer; it names this step when it fires.
         PersistenceWriter::handle(self.ctx).update(self.ctx, |writer, _ctx| {
             writer.terminate();
         });

@@ -3,6 +3,8 @@ mod key_events;
 
 #[cfg(test)]
 mod drag_drop_tests;
+#[cfg(test)]
+mod touch_long_press_tests;
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -125,6 +127,9 @@ enum TouchPurpose {
     /// A tap that hasn't yet been classified.
     /// Stores (initial touch, click count, start time for long-press detection).
     Tap(Touch, u32, Instant),
+    /// The long-press timer fired while the finger was still down and the context menu has been
+    /// requested; the rest of the touch (moves, release) does nothing more.
+    LongPressed,
     /// Dragging the window via touch in the titlebar region.
     /// Stores the starting touch position (window-relative).
     WindowDrag {
@@ -175,6 +180,12 @@ struct WindowState {
     scroll_velocity: Option<ScrollVelocity>,
     /// Abort handle for momentum scrolling timer. Present only during the momentum phase.
     momentum_scroll_abort: Option<AbortHandle>,
+    /// Abort handle for the long-press timer armed at touch-down; cleared when the touch moves
+    /// out of its tap slop, ends or is cancelled.
+    long_press_abort: Option<AbortHandle>,
+    /// Bumped for every touch-down and every touch end, so a long-press event that was already
+    /// in flight when its touch finished is recognised as stale.
+    touch_generation: u64,
     /// Failure history for frames that could not be drawn; see [`draw_retry`].
     draw_retry: DrawRetryState,
     /// When set, a frame was skipped for a transient reason and a redraw must be requested once
@@ -206,6 +217,8 @@ impl WindowState {
             last_touch_purpose: None,
             scroll_velocity: None,
             momentum_scroll_abort: None,
+            long_press_abort: None,
+            touch_generation: 0,
             draw_retry: DrawRetryState::default(),
             redraw_retry_at: None,
             owed_redraw: Default::default(),
@@ -221,6 +234,14 @@ impl WindowState {
             abort_handle.abort();
         }
         self.scroll_velocity = None;
+    }
+
+    /// Cancels the pending long-press timer, if any, and invalidates its in-flight event.
+    fn cancel_long_press(&mut self) {
+        if let Some(abort_handle) = self.long_press_abort.take() {
+            abort_handle.abort();
+        }
+        self.touch_generation = self.touch_generation.wrapping_add(1);
     }
 
     /// Clears the held-button state, but only if `button` is the one recorded as held.
@@ -328,6 +349,9 @@ fn convert_touch_started(
     let click_count = window_state.determine_click_count_and_update_button_state(MouseButton::Left);
     window_state.current_mouse_button_pressed = None;
 
+    // A new touch: any earlier long-press event still in flight is stale.
+    window_state.touch_generation = window_state.touch_generation.wrapping_add(1);
+
     // Store click_count and start time for double-tap and long-press detection.
     window_state.last_touch_purpose = Some(TouchPurpose::Tap(touch, click_count, Instant::now()));
 
@@ -337,6 +361,60 @@ fn convert_touch_started(
         is_first_mouse: false,
         modifiers: from_winit_modifiers_state(window_state.modifiers),
     }))
+}
+
+/// Arms the long-press timer for the touch that just began. The press-and-hold is judged by this
+/// timer firing while the finger is still down (and has not left its tap slop), not by comparing
+/// elapsed time at release.
+fn start_long_press_timer(
+    ui_app: &crate::App,
+    proxy: &EventLoopProxy<CustomEvent>,
+    window_id: winit::window::WindowId,
+    window_state: &mut WindowState,
+) {
+    if let Some(previous) = window_state.long_press_abort.take() {
+        previous.abort();
+    }
+    let generation = window_state.touch_generation;
+    let proxy = proxy.clone();
+    let (future, abort_handle) = futures::future::abortable(async move {
+        Timer::after(LONG_PRESS_DURATION).await;
+        let _ = proxy.send_event(CustomEvent::TouchLongPress {
+            window_id,
+            generation,
+        });
+    });
+    ui_app.read(|ctx| {
+        ctx.foreground_executor()
+            .spawn(async move {
+                let _ = future.await;
+            })
+            .detach();
+    });
+    window_state.long_press_abort = Some(abort_handle);
+}
+
+/// Decides what the long-press timer firing means for the touch it was armed for: the context
+/// menu opens only if that touch is still a pending tap; any other state (the touch moved, ended,
+/// was cancelled, or a newer touch began) means the event is stale.
+fn convert_touch_long_press(
+    window_state: &mut WindowState,
+    generation: u64,
+) -> Option<crate::event::Event> {
+    if window_state.touch_generation != generation
+        || !matches!(window_state.last_touch_purpose, Some(TouchPurpose::Tap(..)))
+    {
+        return None;
+    }
+    window_state.long_press_abort = None;
+    window_state.last_touch_purpose = Some(TouchPurpose::LongPressed);
+    window_state.current_mouse_button_pressed = None;
+    Some(crate::event::Event::RightMouseDown {
+        position: window_state.last_cursor_position.to_vec2f(),
+        cmd: window_state.modifiers.super_key(),
+        shift: window_state.modifiers.shift_key(),
+        click_count: 1,
+    })
 }
 
 /// Handles the `TouchPhase::Moved` phase of a touch event.
@@ -362,6 +440,8 @@ fn convert_touch_moved(
             }
 
             window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
+            // Moved out of the tap slop: this is no longer a press-and-hold.
+            window_state.cancel_long_press();
 
             // Double-tap + drag = text selection
             if click_count >= 2 {
@@ -448,6 +528,8 @@ fn convert_touch_moved(
             current_touch: touch.location,
             start_touch,
         }),
+        // The context menu is already requested; further finger movement does nothing.
+        Some(TouchPurpose::LongPressed) => None,
         None => None,
     }
 }
@@ -462,9 +544,28 @@ fn convert_touch_ended(
     window_state: &mut WindowState,
     scale_factor: f32,
 ) -> Option<ConvertedEvent> {
+    // The touch is over: the long-press timer (if it has not fired) must not fire later.
+    window_state.cancel_long_press();
+
+    // The timer already requested the context menu while the finger was down; the release has
+    // nothing left to do.
+    if matches!(
+        &window_state.last_touch_purpose,
+        Some(TouchPurpose::LongPressed)
+    ) {
+        window_state.last_touch_purpose = None;
+        window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
+        window_state.current_mouse_button_pressed = None;
+        return None;
+    }
+
     // Check the purpose but don't clear it yet - we'll clear it later
     // in handle_converted_warpui_event after checking if we need to
     // update the soft keyboard.
+    //
+    // Fallback only: the long-press timer armed at touch-down normally fires first. If the event
+    // loop was too busy to deliver it before the release, the hold is still honoured here (and
+    // the late timer event is stale, so the menu opens exactly once).
     let is_long_press =
         if let Some(TouchPurpose::Tap(_, _, start_time)) = &window_state.last_touch_purpose {
             start_time.elapsed() >= LONG_PRESS_DURATION
@@ -515,6 +616,7 @@ fn convert_touch_cancelled(
     window_state: &mut WindowState,
     scale_factor: f32,
 ) -> Option<ConvertedEvent> {
+    window_state.cancel_long_press();
     window_state.last_touch_purpose.take();
     window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
     window_state.current_mouse_button_pressed = None;
@@ -992,6 +1094,17 @@ impl EventLoop {
             }
             Event::UserEvent(CustomEvent::FlushOwedRedraws) => {
                 self.flush_owed_redraws(true);
+            }
+            Event::UserEvent(CustomEvent::TouchLongPress {
+                window_id,
+                generation,
+            }) => {
+                let Some(window_state) = self.state.windows.get_mut(&window_id) else {
+                    return;
+                };
+                if let Some(event) = convert_touch_long_press(window_state, generation) {
+                    self.handle_converted_warpui_event(window_id, event);
+                }
             }
             Event::UserEvent(CustomEvent::MomentumScroll { window_id }) => {
                 let Some(window_state) = self.state.windows.get_mut(&window_id) else {
@@ -1555,7 +1668,13 @@ impl EventLoop {
             },
             // Handle and convert touch events into mouse events.
             WindowEvent::Touch(touch) => match touch.phase {
-                TouchPhase::Started => convert_touch_started(touch, window_state, scale_factor),
+                TouchPhase::Started => {
+                    let converted = convert_touch_started(touch, window_state, scale_factor);
+                    if converted.is_some() {
+                        start_long_press_timer(&self.ui_app, &self.proxy, window_id, window_state);
+                    }
+                    converted
+                }
                 TouchPhase::Moved => {
                     let titlebar_height = self
                         .ui_app
