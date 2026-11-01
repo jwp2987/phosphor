@@ -375,3 +375,35 @@ fn reopen_remote_buffer_keeps_the_buffer_when_the_host_has_no_client() {
         });
     })
 }
+
+/// #1329: once the last strong handle to a buffer is dropped (the editor closed),
+/// `remove_deallocated_buffers` must drop the model's bookkeeping for it, so the file's content
+/// is not kept alive by `GlobalBufferModel`.
+#[cfg(feature = "local_fs")]
+#[test]
+fn dropping_the_last_buffer_handle_lets_the_model_release_it() {
+    use super::BufferLocation;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let dir = std::env::temp_dir().join(format!("gbm-release-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.txt");
+        std::fs::write(&path, "line\n".repeat(1000)).unwrap();
+
+        let state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        let file_id = state.file_id;
+        let handle = gbm(&app);
+        app.read(|ctx| assert!(handle.as_ref(ctx).buffers.contains_key(&file_id)));
+
+        drop(state);
+        gbm(&app).update(&mut app, |gbm, ctx| gbm.remove_deallocated_buffers(ctx));
+        app.read(|ctx| assert!(!handle.as_ref(ctx).buffers.contains_key(&file_id)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}

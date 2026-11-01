@@ -1,4 +1,5 @@
 pub mod external_editor;
+pub mod size_guard;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
