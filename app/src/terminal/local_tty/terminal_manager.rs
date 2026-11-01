@@ -1090,10 +1090,25 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     let prompt_detector: Rc<RefCell<PromptDetector>> = Rc::default();
     let prompt_detector_for_termios = prompt_detector.clone();
 
-    // Notices a waited agent command stalled on a pager or other full-screen program; reset
-    // per block (#855).
-    let fullscreen_detector: Rc<RefCell<FullscreenStallDetector>> = Rc::default();
-    let fullscreen_detector_for_termios = fullscreen_detector.clone();
+    // Notices a waited agent command stalled on a pager or other full-screen program (#855).
+    // Judged when the terminal produces output, plus one quiet timer while a stall-eligible
+    // screen is shown -- no polling tick (#1365). Reset per block.
+    let fullscreen_watch = Rc::new(FullscreenWatch {
+        detector: RefCell::default(),
+        active: std::cell::Cell::new(false),
+        epoch: std::cell::Cell::new(0),
+        armed_for: std::cell::Cell::new(None),
+        surface: surface.downgrade(),
+        poller: terminal_attributes_poller.downgrade(),
+    });
+    let (output_tx, output_rx) = async_channel::bounded::<()>(1);
+    surface.update(ctx, |surface, _| surface.set_output_signal(output_tx));
+    let watch_for_output = fullscreen_watch.clone();
+    let _ = ctx.spawn_stream_local(
+        output_rx,
+        move |_, _, ctx| watch_for_output.observe(ctx),
+        |_, _| {},
+    );
 
     // On block start, record the active block index and ask the surface whether
     // password-prompt polling is useful before starting the poller. On block
@@ -1115,7 +1130,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                     })
                 });
                 prompt_detector.borrow_mut().reset();
-                fullscreen_detector.borrow_mut().reset();
+                fullscreen_watch.restart(should_poll);
                 if should_poll {
                     *block_index.borrow_mut() =
                         Some(model.lock().block_list().active_block_index());
@@ -1132,6 +1147,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                 }
             }
             TerminalModelEvent::AfterBlockCompleted(completed) => {
+                fullscreen_watch.restart(false);
                 if let Some(surface) = surface_weak_handle.upgrade(ctx) {
                     let should_stop = surface.read(ctx, |surface, _ctx| {
                         surface.should_stop_password_prompt_polling(completed)
@@ -1170,34 +1186,6 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
         let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
         let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
 
-        // A full-screen program (pager, editor, TUI) under an agent command that is waiting
-        // for it to finish: close a known pager, otherwise give the command to the user.
-        // Only the foreground process NAME decides whether a key is sent; an unknown or
-        // unidentifiable process never gets one.
-        let fingerprint = surface.read(ctx, |surface, ctx| {
-            surface.fullscreen_stall_fingerprint(!is_canonical, ctx)
-        });
-        let poller_for_name = poller_weak_handle_for_termios.upgrade(ctx);
-        let stall = fullscreen_detector_for_termios.borrow_mut().observe(
-            fingerprint,
-            instant::Instant::now(),
-            || {
-                poller_for_name
-                    .as_ref()?
-                    .as_ref(ctx)
-                    .foreground_process_names()
-                    .map(|names| is_closable_pager_group(&names))
-            },
-        );
-        match stall {
-            Some(FullscreenStall::ClosePager) => {
-                surface.update(ctx, |surface, ctx| surface.on_stalled_pager(ctx));
-            }
-            Some(FullscreenStall::HandToUser) => {
-                surface.update(ctx, |surface, ctx| surface.on_stalled_fullscreen_app(ctx));
-            }
-            None => {}
-        }
         let detection =
             prompt_detector_for_termios
                 .borrow_mut()
@@ -1231,6 +1219,95 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
             }
         }
     });
+}
+
+/// Event-driven stall detection for a waited agent command on a full-screen program (#855,
+/// #1365). `observe` runs when the terminal produced output and when the single quiet timer it
+/// arms fires; the timer exists only while a stall-eligible screen is tracked and is armed once
+/// per unchanged screen. The termios is read on demand (a cheap ioctl); nothing here ticks.
+#[cfg(unix)]
+struct FullscreenWatch<S: TerminalSurface> {
+    detector: RefCell<FullscreenStallDetector>,
+    /// Whether the active block is one the poller was started for.
+    active: std::cell::Cell<bool>,
+    /// Bumped to invalidate a pending quiet timer.
+    epoch: std::cell::Cell<u64>,
+    /// The instant the pending quiet timer is armed for.
+    armed_for: std::cell::Cell<Option<instant::Instant>>,
+    surface: warpui::WeakViewHandle<S>,
+    poller: warpui::WeakModelHandle<TerminalAttributesPoller>,
+}
+
+#[cfg(unix)]
+impl<S: TerminalSurface> FullscreenWatch<S> {
+    /// New block (or block end): forget the screen and any pending timer.
+    fn restart(&self, active: bool) {
+        self.detector.borrow_mut().reset();
+        self.active.set(active);
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.armed_for.set(None);
+    }
+
+    fn observe(self: &Rc<Self>, ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>) {
+        if !self.active.get() {
+            return;
+        }
+        let (Some(surface), Some(poller)) = (self.surface.upgrade(ctx), self.poller.upgrade(ctx))
+        else {
+            return;
+        };
+        // A full-screen program (pager, editor, TUI) under an agent command that is waiting
+        // for it to finish: close a known pager, otherwise give the command to the user.
+        // Only the foreground process NAME decides whether a key is sent; an unknown or
+        // unidentifiable process never gets one.
+        let is_raw_mode = poller
+            .as_ref(ctx)
+            .current_attributes()
+            .is_some_and(|termios| !termios.local_flags.contains(LocalFlags::ICANON));
+        let fingerprint = surface.read(ctx, |surface, ctx| {
+            surface.fullscreen_stall_fingerprint(is_raw_mode, ctx)
+        });
+        let now = instant::Instant::now();
+        let stall = self.detector.borrow_mut().observe(fingerprint, now, || {
+            poller
+                .as_ref(ctx)
+                .foreground_process_names()
+                .map(|names| is_closable_pager_group(&names))
+        });
+        match stall {
+            Some(FullscreenStall::ClosePager) => {
+                surface.update(ctx, |surface, ctx| surface.on_stalled_pager(ctx));
+            }
+            Some(FullscreenStall::HandToUser) => {
+                surface.update(ctx, |surface, ctx| surface.on_stalled_fullscreen_app(ctx));
+            }
+            None => {}
+        }
+
+        // Arm the one quiet timer, unless one is already armed for this exact instant.
+        let wake = self.detector.borrow().next_wake(now);
+        if wake == self.armed_for.get() {
+            return;
+        }
+        self.armed_for.set(wake);
+        let epoch = self.epoch.get().wrapping_add(1);
+        self.epoch.set(epoch);
+        if let Some(at) = wake {
+            let me = self.clone();
+            let _ =
+                ctx.spawn(
+                    async move {
+                        warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                    },
+                    move |_, _, ctx| {
+                        if me.epoch.get() == epoch {
+                            me.armed_for.set(None);
+                            me.observe(ctx);
+                        }
+                    },
+                );
+        }
+    }
 }
 
 /// Contains necessary logic for stopping the current shared session.

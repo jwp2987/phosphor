@@ -2502,6 +2502,64 @@ fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold(
     assert_eq!(asked, 1);
 }
 
+/// #1365: the detector is driven by output events plus ONE quiet timer armed from `next_wake`.
+/// Output flowing on a non-eligible screen arms nothing; an unchanged eligible screen arms the
+/// same instant however often output is observed, and the stall fires exactly once, at the
+/// instants the timer was armed for.
+#[test]
+fn fullscreen_detector_is_driven_by_output_events_and_one_quiet_timer() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let mut detector = FullscreenStallDetector::default();
+    let mut fired = Vec::new();
+    // Output flowing, nothing stall-eligible: never a timer to arm.
+    for n in 0..10 {
+        assert_eq!(detector.observe(None, sec(n), || Some(false)), None);
+        assert_eq!(detector.next_wake(sec(n)), None);
+    }
+    // A full-screen program appears; repeated output with the same screen arms the same instant.
+    assert_eq!(detector.observe(Some(5), sec(10), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(10)), Some(sec(13)));
+    assert_eq!(detector.observe(Some(5), sec(11), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(11)), Some(sec(13)));
+    // Only the armed instants wake it: 3 s (not a pager yet decided), then 5 s (hand to user).
+    let mut now = sec(11);
+    while let Some(at) = detector.next_wake(now) {
+        now = at;
+        if let Some(stall) = detector.observe(Some(5), now, || Some(false)) {
+            fired.push((now, stall));
+        }
+    }
+    assert_eq!(fired, vec![(sec(15), FullscreenStall::HandToUser)]);
+    assert_eq!(
+        detector.next_wake(now),
+        None,
+        "fired once; nothing left to arm"
+    );
+    // A changed screen restarts the episode.
+    assert_eq!(detector.observe(Some(6), sec(20), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(20)), Some(sec(23)));
+}
+
+#[test]
+fn fullscreen_detector_next_wake_follows_a_closed_pager_to_the_handover() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let mut detector = FullscreenStallDetector::default();
+    detector.observe(Some(7), sec(0), || Some(true));
+    assert_eq!(detector.next_wake(sec(0)), Some(sec(3)));
+    assert_eq!(
+        detector.observe(Some(7), sec(3), || Some(true)),
+        Some(FullscreenStall::ClosePager)
+    );
+    assert_eq!(detector.next_wake(sec(3)), Some(sec(8)));
+    assert_eq!(
+        detector.observe(Some(7), sec(8), || Some(true)),
+        Some(FullscreenStall::HandToUser)
+    );
+    assert_eq!(detector.next_wake(sec(8)), None);
+}
+
 #[test]
 fn fullscreen_detector_never_closes_what_it_cannot_identify() {
     for pager in [None, Some(false)] {
