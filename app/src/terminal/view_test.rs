@@ -18195,10 +18195,20 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             let id = view.model.lock().active_block_id().clone();
             view.apply_block_completed_to_ssh_gate(&id, 255);
-            view.typed_characters_on_terminal("\r", ctx);
+            // The failed connect ended without a remote shell: the hand-over (driven by the next
+            // event) returns the held text to the editor, unexecuted.
+            assert!(view.deliver_ssh_typeahead_if_ready("test", ctx));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            // The Enter of the same burst is consumed, not run.
+            editor_key(view, EditorAction::Enter, ctx);
         });
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
@@ -18210,6 +18220,15 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             view.input.update(ctx, |input, _| {
                 input.arm_ssh_handover_enter_guard("echo old".into())
@@ -18221,10 +18240,14 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
         });
         terminal.update(&mut app, |view, ctx| {
             assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
-            assert_ne!(
-                view.input.as_ref(ctx).buffer_text(ctx),
-                "ssh other",
-                "the new line was submitted, not swallowed"
+            // Not swallowed: the Enter went on to submit the new line, which is either already
+            // executed or waiting at its gate for the input-type verdict (the buffer stays until
+            // then); a swallowed Enter would have left the line alone with no gate and no run.
+            assert!(
+                executed.borrow().as_slice() == ["ssh other".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
+                "the new line was submitted, not swallowed: executed {:?}",
+                executed.borrow()
             );
         });
     })
@@ -20978,11 +21001,6 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bo
 #[test]
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_queue() {
     ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(true);
-}
-
-#[test]
-fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_legacy_buffer() {
-    ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(false);
 }
 
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {

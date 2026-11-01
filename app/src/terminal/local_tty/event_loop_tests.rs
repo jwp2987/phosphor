@@ -35,12 +35,20 @@ struct FakeReader {
 struct Flood {
     chunk: usize,
     reads: usize,
+    /// When set, a Ctrl-C (ETX) is sent into the channel while the read with this number (1-based)
+    /// is in progress: a key typed in the middle of a flood, not before the pass began.
+    etx_during_read: Option<(usize, mio_channel::Sender<Message>)>,
 }
 
 impl io::Read for FakeReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(flood) = &mut self.flood {
+            if let Some((at, tx)) = &flood.etx_during_read {
+                if self.reads.load(Ordering::SeqCst) == *at {
+                    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+                }
+            }
             if flood.reads == 0 {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
@@ -899,7 +907,11 @@ fn flood_harness(
     Arc<Mutex<Vec<u8>>>,
 ) {
     let (mut pty, _) = FakePty::new(None);
-    pty.reader.flood = Some(Flood { chunk, reads });
+    pty.reader.flood = Some(Flood {
+        chunk,
+        reads,
+        etx_during_read: None,
+    });
     let read_count = pty.reader.reads.clone();
     let at_first_write = Arc::new(AtomicUsize::new(usize::MAX));
     pty.writer.1 = Some(WriteProbe {
@@ -1109,14 +1121,35 @@ fn etx_during_a_flood_is_written_within_one_read_pass() {
     assert!(at_first_write.load(Ordering::SeqCst) <= 4);
 }
 
-/// A keystroke waiting in the channel ends the read pass after the read in progress, not after
+/// A keystroke that arrives in the middle of a flood is written before the next read, not after
 /// MAX_LOCKED_READ bytes more: the pty reader parses ~16 KB in a few ms, so a whole 64 KB pass
-/// was the longest a Ctrl-C could wait behind a flood. On the old loop the ETX is written after
-/// four 16 KB reads (a full pass), so `at_first_write == 1` fails.
+/// was the longest a Ctrl-C could wait behind a flood. The ETX is sent while read 2 is in
+/// progress; on the old loop it is written after four 16 KB reads (a full pass), so
+/// `at_first_write == 2` fails. (A key already waiting when the pass starts is written before the
+/// first read: `input_waiting_when_a_read_pass_starts_is_written_before_the_first_read`.)
 #[test]
-fn input_waiting_during_a_flood_ends_the_pass_after_one_read() {
-    let (mut event_loop, tx, reads, at_first_write, written) = flood_harness(0x4000, 1_000);
-    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+fn input_arriving_during_a_flood_is_written_before_the_next_read() {
+    let (mut pty, _) = FakePty::new(None);
+    let (tx, rx) = mio_channel::channel::<Message>();
+    pty.reader.flood = Some(Flood {
+        chunk: 0x4000,
+        reads: 1_000,
+        etx_during_read: Some((2, tx)),
+    });
+    let reads = pty.reader.reads.clone();
+    let at_first_write = Arc::new(AtomicUsize::new(usize::MAX));
+    pty.writer.1 = Some(WriteProbe {
+        reads: reads.clone(),
+        reads_at_first_write: at_first_write.clone(),
+    });
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
 
     let mut state = State::default();
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
@@ -1126,7 +1159,7 @@ fn input_waiting_during_a_flood_ends_the_pass_after_one_read() {
         .expect("service_io");
 
     assert_eq!(&*written.lock().unwrap(), b"\x03");
-    assert_eq!(at_first_write.load(Ordering::SeqCst), 1);
+    assert_eq!(at_first_write.load(Ordering::SeqCst), 2);
     // The flood was still read to its end afterwards: ending the pass early drops no output.
     assert!(reads.load(Ordering::SeqCst) > 1_000);
     assert!(!can_read);
@@ -1140,7 +1173,11 @@ fn input_waiting_during_a_flood_ends_the_pass_after_one_read() {
 fn a_reader_with_buffered_output_waits_for_the_model_lock_instead_of_spinning() {
     let (mut pty, _) = FakePty::new(None);
     // One three-byte echo, then `WouldBlock`.
-    pty.reader.flood = Some(Flood { chunk: 3, reads: 1 });
+    pty.reader.flood = Some(Flood {
+        chunk: 3,
+        reads: 1,
+        etx_during_read: None,
+    });
     let reads = pty.reader.reads.clone();
     let (_tx, rx) = mio_channel::channel::<Message>();
     let terminal = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));

@@ -658,6 +658,18 @@ impl TerminalView {
             self.release_subshell_setup_held_bytes(ctx);
             return;
         }
+        if kind == Some(GateKind::SubshellBootstrapWrite)
+            && self.subshell_bootstrap_in_flight.is_some()
+        {
+            // The cap passed while the paced lines are still being written: releasing the keys
+            // now would land them among the setup lines (#1399). The gate stays; its event (the
+            // last line written, or the bootstrap abandoned) delivers them in order.
+            log::warn!(
+                "input queue: bootstrap-write gate cap passed with lines still to write; \
+                 the held keys wait for the last line"
+            );
+            return;
+        }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
             // keys are delivered, so none of them is held a second time.
