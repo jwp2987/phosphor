@@ -32513,7 +32513,9 @@ impl TerminalView {
                     move |terminal_view, active_block_id, _| {
                         let mut model = terminal_view.model.lock();
                         if model.block_list().active_block_id() == &active_block_id {
-                            log::debug!("ssh login recheck gave up waiting for a re-prompt (#1374)");
+                            log::debug!(
+                                "ssh login recheck gave up waiting for a re-prompt (#1374)"
+                            );
                             model.check_for_end_of_ssh_login(true);
                         }
                     },
