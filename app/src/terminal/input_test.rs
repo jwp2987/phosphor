@@ -12156,3 +12156,16 @@ fn test_enter_during_a_pending_paste_submits_the_full_line() {
         input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
     });
 }
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn export_error_message_names_the_failure() {
+    let path = std::path::Path::new("/nonexistent-dir/out.md");
+    let not_found = std::io::Error::from(std::io::ErrorKind::NotFound);
+    assert_eq!(
+        super::export_error_message(path, &not_found),
+        "Directory not found: /nonexistent-dir"
+    );
+    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    assert!(super::export_error_message(path, &denied).starts_with("Permission denied"));
+}
