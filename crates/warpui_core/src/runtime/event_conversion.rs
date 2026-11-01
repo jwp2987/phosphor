@@ -1,8 +1,7 @@
 //! Conversion from raw crossterm input events to the
 //! [`TuiEvent`](crate::elements::tui::TuiEvent) vocabulary.
 
-use std::time::Duration;
-
+use crate::multi_click::multi_click_interval;
 use instant::Instant;
 use ratatui::crossterm::event::{
     Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
@@ -311,11 +310,6 @@ fn key_without_modifiers(code: KeyCode) -> Option<String> {
     }
 }
 
-/// Maximum delay between consecutive presses of the same button for them to
-/// count as part of the same multi-click (double/triple). Roughly the standard
-/// desktop double-click window.
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
-
 /// The pointer button a [`ClickTracker`] is tracking a multi-click run for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClickButton {
@@ -328,7 +322,7 @@ enum ClickButton {
 ///
 /// crossterm only reports raw button presses, so the `*MouseDown` events arrive
 /// with `click_count: 1`. This tracker remembers the previous press and, when
-/// the next one is the **same button**, lands within [`MULTI_CLICK_INTERVAL`],
+/// the next one is the **same button**, lands within [`multi_click_interval`],
 /// and on (or within one cell of) the same position, escalates the count
 /// `1 -> 2 -> 3` before wrapping back to `1`. Anything else — a different
 /// button, a slower press, or a press elsewhere — resets to a single click.
@@ -375,7 +369,7 @@ impl ClickTracker {
         let count = match self.last {
             Some(last)
                 if last.button == button
-                    && now.duration_since(last.at) <= MULTI_CLICK_INTERVAL
+                    && now.duration_since(last.at) <= multi_click_interval()
                     && last.position.is_adjacent(position) =>
             {
                 // Wrap 3 -> 1 so a fourth fast click starts a fresh cycle.
