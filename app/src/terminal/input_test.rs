@@ -2589,8 +2589,8 @@ fn test_completions_while_typing_doesnt_hide_autosuggestion() {
     });
 }
 
-// #1355: a keystroke that invalidates an as-you-type completion menu hides it at once (no
-// 750 ms wait, so a stale item can't be accepted); the new results then re-open it.
+// #1355: a keystroke that invalidates an as-you-type completion menu keeps it up marked stale (no
+// 750 ms wait) but is marked stale and can't be accepted; new results clear the flag.
 #[test]
 fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
     App::test((), |mut app| async move {
@@ -2630,18 +2630,37 @@ fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
             ));
         });
 
-        // The keystroke: the stale menu is hidden immediately.
+        // The keystroke: the menu stays up (no flicker) but is stale.
         input.update(&mut app, |input, ctx| input.user_insert("z", ctx));
         input.read(&app, |input, ctx| {
             assert!(
-                !matches!(
-                    input.suggestions_mode_model.as_ref(ctx).mode(),
-                    InputSuggestionsMode::CompletionSuggestions { .. }
-                ),
-                "stale menu must not stay up after the keystroke"
+                input.completion_menu_stale,
+                "keystroke must mark the menu stale"
             );
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
         });
 
+        // Acting on the stale menu behaves as if no menu were open: it is dropped and the
+        // buffer is untouched (the old item is not inserted).
+        input.update(&mut app, |input, ctx| {
+            assert!(input.drop_stale_completion_menu(ctx));
+        });
+        input.read(&app, |input, ctx| {
+            assert!(!input.completion_menu_stale);
+            assert_eq!(input.editor.as_ref(ctx).buffer_text(ctx), "open-file z");
+            assert!(!matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+
+        // New results for the current buffer open the menu, not stale.
+        input.update(&mut app, |input, _ctx| {
+            input.completion_menu_stale = true;
+        });
         // The new results show the menu again.
         input.update(&mut app, |input, ctx| {
             input.handle_completion_suggestions_results(
@@ -2656,6 +2675,10 @@ fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
             );
         });
         input.read(&app, |input, ctx| {
+            assert!(
+                !input.completion_menu_stale,
+                "new results clear the stale flag"
+            );
             assert!(matches!(
                 input.suggestions_mode_model.as_ref(ctx).mode(),
                 InputSuggestionsMode::CompletionSuggestions { .. }

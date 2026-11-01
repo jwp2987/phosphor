@@ -1958,6 +1958,9 @@ pub struct Input {
     /// not stop a result already queued for delivery, and the buffer-text check alone cannot
     /// tell a stale result from a valid one when the text happens to match (#1165).
     input_generation: u64,
+    /// The open as-you-type completion menu lists results for text the user has since edited;
+    /// accepting is disabled until the new results arrive (#1355).
+    completion_menu_stale: bool,
     /// `input_generation` when the last next-command suggestion was requested from this input.
     next_command_request_generation: u64,
     decorations_future_handle: Option<SpawnedFutureHandle>,
@@ -3851,6 +3854,7 @@ impl Input {
             completions_abort_handle: None,
             tab_completion_request: None,
             input_generation: 0,
+            completion_menu_stale: false,
             next_command_request_generation: 0,
             menu_positioning_provider,
             universal_developer_input_button_bar,
@@ -7823,6 +7827,17 @@ impl Input {
             return;
         }
 
+        // A click or key on a stale completion menu (#1355) must not insert its old items.
+        if matches!(
+            event,
+            InputSuggestionsEvent::ConfirmSuggestion { .. }
+                | InputSuggestionsEvent::ConfirmAndExecuteSuggestion { .. }
+                | InputSuggestionsEvent::Select(_)
+        ) && self.drop_stale_completion_menu(ctx)
+        {
+            return;
+        }
+
         match event {
             InputSuggestionsEvent::ConfirmSuggestion {
                 suggestion,
@@ -10170,12 +10185,13 @@ impl Input {
                             self.maybe_generate_autosuggestion(ctx);
 
                             // The keystroke invalidated the menu on screen (it lists the
-                            // results for the OLD text), so it is hidden right now rather
-                            // than after a delay: accepting a stale item would insert the
-                            // wrong completion (#1355). The new request above answers
-                            // asynchronously, and its results re-open the menu. No timer:
-                            // the results (or their absence) are the signal.
-                            self.close_input_suggestions(/*should_focus_input=*/ false, ctx);
+                            // results for the OLD text). It stays up, so there is no flicker,
+                            // but is marked stale: accepting it is disabled (Tab, Enter and
+                            // clicks act as if no menu were open, see
+                            // `drop_stale_completion_menu`) so a stale item can't be inserted
+                            // (#1355). The new request's results replace it and clear the
+                            // flag; if they are empty, the menu closes then. No timer.
+                            self.completion_menu_stale = true;
                         } else {
                             let buffer_text_original = buffer_text_original.clone();
                             let completion_results = completion_results.clone();
@@ -12427,6 +12443,8 @@ impl Input {
         {
             return;
         }
+        // These results answer the current buffer: they replace (or close) any stale menu.
+        self.completion_menu_stale = false;
 
         match results {
             None => {
@@ -12899,7 +12917,25 @@ impl Input {
         }
     }
 
+    /// If the open completion menu is stale (#1355), closes it so the action that follows (Tab,
+    /// Enter, a click) behaves exactly as if no menu were open. True if it was closed.
+    fn drop_stale_completion_menu(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.completion_menu_stale {
+            return false;
+        }
+        self.completion_menu_stale = false;
+        if matches!(
+            self.suggestions_mode_model.as_ref(ctx).mode(),
+            InputSuggestionsMode::CompletionSuggestions { .. }
+        ) {
+            self.close_input_suggestions(/*should_focus_input=*/ false, ctx);
+            return true;
+        }
+        false
+    }
+
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         if matches!(
             self.suggestions_mode_model.as_ref(ctx).mode(),
@@ -13330,6 +13366,7 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         warpui::input_order::log_hop("enter_begin", || {
             format!("deferred={}", self.running_deferred_enter)
