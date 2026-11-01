@@ -71,8 +71,8 @@ use crate::{
             block::{
                 model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
                 AIBlock, AIBlockAction, AIBlockStateHandles, ActionButtons,
-                AutonomySettingSpeedbump, EmbeddedCodeEditorView, EmptyEnterHint, RequestedEdit, TextLocation,
-                TodoListElementState,
+                AutonomySettingSpeedbump, EmbeddedCodeEditorView, EmptyEnterHint, RequestedEdit,
+                TextLocation, TodoListElementState,
             },
             history_model::BlocklistAIHistoryModel,
             inline_action::{
