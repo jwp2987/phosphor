@@ -5096,8 +5096,8 @@ impl BlocklistAIController {
                                 );
                                 if completed_successfully {
                                     if let Some(pending_title_generation) =
-                                        response_stream.update(ctx, |response_stream, _| {
-                                            response_stream.take_pending_title_generation()
+                                        response_stream.update(ctx, |response_stream, ctx| {
+                                            response_stream.take_pending_title_generation(ctx)
                                         })
                                     {
                                         self.start_title_generation(

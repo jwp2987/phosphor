@@ -85,6 +85,62 @@ fn without_a_factory_run_declines_so_callers_stay_synchronous() {
     assert!(run(|_| ()).is_none());
 }
 
+/// A handle whose reads of the key "hang" never return until `release` is set, like a locked
+/// keyring whose D-Bus call is waiting on a prompt nobody answers.
+struct Hanging {
+    release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl SecureStorage for Hanging {
+    fn write_value(&self, _key: &str, _value: &str) -> Result<(), Error> {
+        Ok(())
+    }
+    fn read_value(&self, key: &str) -> Result<String, Error> {
+        if key == "hang" {
+            let (lock, cv) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = cv.wait(released).unwrap();
+            }
+        }
+        Ok(format!("value:{key}"))
+    }
+    fn remove_value(&self, _key: &str) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_stuck_call_is_given_up_on_and_later_calls_use_a_fresh_worker() {
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let for_factory = release.clone();
+    set_give_up_for_test(Some(std::time::Duration::from_millis(150)));
+    set_factory_for_test(Some(Arc::new(move || -> Model {
+        Box::new(Hanging {
+            release: for_factory.clone(),
+        })
+    })));
+
+    let stuck = run(|s| s.read_value("hang")).unwrap();
+    // Queued behind the stuck call: it would never run on the old worker.
+    let behind = run(|s| s.read_value("behind")).unwrap();
+    assert_eq!(futures_lite_block_on(stuck.wait()), None);
+    assert_eq!(futures_lite_block_on(behind.wait()), None);
+
+    // A later call is served by a fresh worker instead of hanging forever.
+    let later = run(|s| s.read_value("later")).unwrap();
+    assert_eq!(
+        futures_lite_block_on(later.wait()).unwrap().unwrap(),
+        "value:later"
+    );
+
+    // Unblock the abandoned thread so the test leaves nothing parked.
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    set_give_up_for_test(None);
+    set_factory_for_test(None);
+}
+
 fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
     warpui::r#async::block_on(f)
 }
