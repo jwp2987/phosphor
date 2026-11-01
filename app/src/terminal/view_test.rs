@@ -18860,6 +18860,12 @@ fn queue_restore_notice_says_it_was_put_back_and_why() {
         let prompt = queue_restore_notice(reason, false);
         assert!(prompt.contains("queued prompt"), "{prompt}");
         assert!(prompt.contains("put back in the input"), "{prompt}");
+        // The toast truncates behind "Show more" past roughly the failure toast's length, which
+        // hid the put-back sentence (#1324).
+        assert!(
+            prompt.chars().count() <= 88,
+            "too long for the toast: {prompt}"
+        );
     }
     assert!(queue_restore_notice(FinishReason::Error, true).contains("queued command"));
     assert_ne!(

@@ -35029,7 +35029,8 @@ fn restored_orphans_notice(count: usize) -> String {
 }
 
 /// The notice shown when a queued prompt or command is put back in the input because the turn
-/// it was waiting on ended without completing (#1026): says that it was put back and why.
+/// it was waiting on ended without completing (#1026): says that it was put back and why. Keep
+/// the wording short: the toast truncates behind "Show more", and the put-back fact is last (#1324).
 fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String {
     let what = if is_command {
         "queued command"
@@ -35039,10 +35040,8 @@ fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String
     let why = match finish_reason {
         FinishReason::Error => "the agent run failed",
         FinishReason::Complete => "the agent run ended",
-        FinishReason::Cancelled => "the agent run was stopped or a command was rejected",
-        FinishReason::CancelledDuringRequestedCommandExecution => {
-            "the agent's running command was cancelled"
-        }
+        FinishReason::Cancelled => "the run was cancelled",
+        FinishReason::CancelledDuringRequestedCommandExecution => "a command was cancelled",
     };
     format!("Your {what} was not sent: {why}. It was put back in the input.")
 }
