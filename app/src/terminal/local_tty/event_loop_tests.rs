@@ -17,6 +17,8 @@ struct FakePty {
     writer: CaptureWriter,
     /// What `is_canonical` reports: 0 = cannot tell, 1 = raw, 2 = canonical.
     mode: Arc<AtomicU8>,
+    /// Every `on_resize` call, as (rows, columns).
+    resizes: Arc<Mutex<Vec<(usize, usize)>>>,
 }
 
 /// A pty reader that reports end-of-file, or fails with a fixed errno on every read.
@@ -98,6 +100,7 @@ impl FakePty {
                 reader: FakeReader::default(),
                 writer: CaptureWriter::default(),
                 mode: Arc::new(AtomicU8::new(MODE_UNKNOWN)),
+                resizes: Arc::default(),
             },
             killed,
         )
@@ -157,7 +160,12 @@ impl local_tty::EventedPty for FakePty {
         None
     }
 
-    fn on_resize(&mut self, _: &SizeInfo) {}
+    fn on_resize(&mut self, size: &SizeInfo) {
+        self.resizes
+            .lock()
+            .unwrap()
+            .push((size.rows(), size.columns()));
+    }
 
     fn kill(self) -> anyhow::Result<()> {
         self.killed.store(true, Ordering::SeqCst);
@@ -1056,4 +1064,53 @@ fn a_reader_with_buffered_output_waits_for_the_model_lock_instead_of_spinning() 
     let reads = reads.load(Ordering::SeqCst);
     assert!(reads < 10, "the reader made {reads} reads while it waited");
     assert!(!can_read);
+}
+
+/// #1376: a window drag sends a Resize per pixel; only the last size reaches the pty (one
+/// ioctl), and it is applied before input sent after it.
+#[test]
+fn a_resize_burst_applies_only_the_last_size_and_keeps_write_order() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (pty, _) = FakePty::new(None);
+    let resizes = pty.resizes.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    for n in 10..60 {
+        tx.send(Message::Resize(SizeInfo::new_without_font_metrics(n, n)))
+            .unwrap();
+    }
+    event_loop.drain_recv_channel(&mut State::default());
+    assert_eq!(*resizes.lock().unwrap(), vec![(59, 59)]);
+
+    // A resize, then input, then another resize: both applied, each in order around the write.
+    resizes.lock().unwrap().clear();
+    let mut state = State::default();
+    tx.send(Message::Resize(SizeInfo::new_without_font_metrics(20, 20)))
+        .unwrap();
+    tx.send(Message::Resize(SizeInfo::new_without_font_metrics(21, 21)))
+        .unwrap();
+    tx.send(Message::Input(Cow::Borrowed(b"x"))).unwrap();
+    tx.send(Message::Resize(SizeInfo::new_without_font_metrics(30, 30)))
+        .unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    assert_eq!(*resizes.lock().unwrap(), vec![(21, 21), (30, 30)]);
+}
+
+/// #1376: a failed poll no longer panics the reader: it is retried a few times, then the session
+/// ends cleanly. EINTR is always just retried.
+#[test]
+fn a_poll_error_is_recoverable_not_a_panic() {
+    let eintr = io::Error::from(ErrorKind::Interrupted);
+    let other = io::Error::from_raw_os_error(libc::ENOMEM);
+    assert_eq!(poll_error_action(&eintr, 100), PollErrorAction::Retry);
+    assert_eq!(poll_error_action(&other, 1), PollErrorAction::Retry);
+    assert_eq!(
+        poll_error_action(&other, MAX_CONSECUTIVE_POLL_ERRORS + 1),
+        PollErrorAction::EndSession
+    );
 }

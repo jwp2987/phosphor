@@ -1,14 +1,15 @@
-//! Tests for shutting down the PTY reader thread (#1135).
+//! Tests for shutting down the PTY reader thread (#1135, #1376).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::*;
 
-/// Closing a tab must not wait out a reader that is busy: the join moves to a background thread
-/// after the timeout, and still collects the reader once it finishes.
+/// Closing a tab (`wait == false`) never joins on the calling thread: it returns while the reader
+/// is still running (it cannot finish until released, so a join here would deadlock the test),
+/// and a background reaper still collects the reader once it finishes.
 #[test]
-fn a_busy_reader_does_not_block_the_caller_past_the_timeout() {
+fn closing_does_not_join_on_the_calling_thread() {
     let release = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
     let handle = {
@@ -21,12 +22,8 @@ fn a_busy_reader_does_not_block_the_caller_past_the_timeout() {
         })
     };
 
-    let started = Instant::now();
-    join_event_loop(handle, Some(Duration::from_millis(50)));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "join_event_loop waited for a busy reader"
-    );
+    // Would never return if this joined in place: the reader waits on `release`, set below.
+    join_event_loop(handle, false);
     assert!(!finished.load(Ordering::SeqCst));
 
     // The background join still lets the reader finish.
@@ -38,10 +35,36 @@ fn a_busy_reader_does_not_block_the_caller_past_the_timeout() {
     assert!(finished.load(Ordering::SeqCst));
 }
 
+/// Closing N tabs in a row hands N joins to reapers without waiting on any of them.
 #[test]
-fn a_reader_that_exits_promptly_is_joined_in_place() {
-    let handle = std::thread::spawn(|| {});
-    let started = Instant::now();
-    join_event_loop(handle, Some(Duration::from_secs(10)));
-    assert!(started.elapsed() < Duration::from_secs(5));
+fn closing_many_tabs_never_waits_on_a_reader() {
+    let release = Arc::new(AtomicBool::new(false));
+    let handles: Vec<_> = (0..16)
+        .map(|_| {
+            let release = release.clone();
+            std::thread::spawn(move || {
+                while !release.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        join_event_loop(handle, false);
+    }
+    release.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn waiting_join_blocks_until_the_reader_finished() {
+    let finished = Arc::new(AtomicBool::new(false));
+    let handle = {
+        let finished = finished.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            finished.store(true, Ordering::SeqCst);
+        })
+    };
+    join_event_loop(handle, true);
+    assert!(finished.load(Ordering::SeqCst));
 }

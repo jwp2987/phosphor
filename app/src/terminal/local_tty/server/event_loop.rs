@@ -321,14 +321,13 @@ impl EventLoop {
                 }
                 api::Message::KillChildRequest { pid } => {
                     let result = match self.children.remove(&pid) {
-                        Some(mut child) => {
-                            // Kill the whole tree first (#975; see `Children::drop`), then the
-                            // shell itself directly so it dies even if the group signal failed
-                            // and `wait` below cannot block forever.
-                            if matches!(child.try_wait(), Ok(None)) {
-                                local_tty::process_tree::terminate_shell_tree(pid);
-                            }
-                            child.kill().and_then(|_| child.wait())
+                        Some(child) => {
+                            // Kill the whole tree (#975; see `Children::drop`) and reap the
+                            // shell on a reaper thread: this loop serves every tab, so a grace
+                            // period or `wait` here would serialise tab closes (#1376). The
+                            // request means "terminate", which is now under way.
+                            local_tty::process_tree::terminate_and_reap(child);
+                            Ok(std::process::ExitStatus::default())
                         }
                         None => {
                             log::info!("Did not find child shell process with pid {pid}; assuming it has already terminated.");
