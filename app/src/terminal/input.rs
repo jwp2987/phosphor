@@ -1698,13 +1698,6 @@ impl CompleterData {
             .and_then(BlockMetadata::session_id)
     }
 
-    /// The session a command about to run belongs to: the input's active block metadata (set by
-    /// the Precmd), else the block list's active block, which `can_execute_command` consults.
-    fn command_session_id(&self) -> Option<SessionId> {
-        self.active_block_session_id()
-            .or_else(|| self.model.lock().block_list().active_block().session_id())
-    }
-
     pub fn completion_session_context(&self, app: &AppContext) -> Option<SessionContext> {
         let active_block_session_id = self.active_block_session_id()?;
         let current_session = self.sessions.as_ref(app).get(active_block_session_id);
@@ -2534,6 +2527,13 @@ enum Executing {
 }
 
 impl Input {
+    /// The session a command about to run belongs to: the input's active block metadata (set by
+    /// the Precmd), else the block list's active block, which `can_execute_command` consults.
+    fn command_session_id(&self) -> Option<SessionId> {
+        self.active_block_session_id()
+            .or_else(|| self.model.lock().block_list().active_block().session_id())
+    }
+
     /// Whether a queued prompt is currently being edited inline.
     ///
     /// Ported from the oracle for #399 item 6. Drives the
