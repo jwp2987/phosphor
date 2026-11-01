@@ -623,7 +623,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
         # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
-        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        # (Probed with the session-state API: a cmdlet call costs ~0.3 ms on Windows PowerShell 5.1,
+        # and nothing is left behind unless the agent wrapper ran, #1280.)
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ok') -or $null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ec')) {
+            Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        }
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 
@@ -639,7 +643,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         # Phosphor: the agent wrapper saved the user's $LASTEXITCODE and reset it; the code is
         # computed, so put the user's value back.
-        if (Microsoft.PowerShell.Management\Test-Path variable:global:__phosphor_ap_lecset) {
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_lecset')) {
             if ($global:__phosphor_ap_lecset) {
                 $global:LASTEXITCODE = $global:__phosphor_ap_lec
             } else {
@@ -705,13 +709,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # prompts, and we don't want to invoke 'git' before we've sourced the
             # user's rcfiles and have a fully-populated PATH.
             if ($global:WARP_BOOTSTRAPPED -eq 1) {
-                if (Microsoft.PowerShell.Management\Test-Path env:VIRTUAL_ENV) {
+                # Read the environment directly: Test-Path env:X is a provider call per variable.
+                if ($null -ne $env:VIRTUAL_ENV) {
                     $virtualEnv = $env:VIRTUAL_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:CONDA_DEFAULT_ENV) {
+                if ($null -ne $env:CONDA_DEFAULT_ENV) {
                     $condaEnv = $env:CONDA_DEFAULT_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:KUBECONFIG) {
+                if ($null -ne $env:KUBECONFIG) {
                     $kubeConfig = $env:KUBECONFIG
                 }
 
