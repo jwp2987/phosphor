@@ -900,6 +900,11 @@ const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
 /// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
 /// written right behind the ^C were lost with it.
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
+/// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
+/// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
+/// if it never does (the Ctrl-C killed the wrapper's session, a host without the hook), the held
+/// keys are released after this, with a log line.
+const POWERSHELL_ABORT_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -3215,6 +3220,13 @@ pub struct TerminalView {
     /// Tags each held line submitted under [`PowerShellSetupHold::LineRunning`], so a grace
     /// timer of an earlier line never ends the hold of a later one.
     powershell_setup_hold_generation: u64,
+    /// The token of the marker-paced PowerShell setup (#1372), `None` for a timed one (kill
+    /// switch, give-up). A Ctrl-C that skips the setup ends its settle on that token's
+    /// "PSReadLine is about to read" marker instead of `POWERSHELL_ABORT_SETTLE`.
+    powershell_setup_marker_token: Option<u64>,
+    /// The model's setup-marker count when the Ctrl-C was written: only a marker that arrives
+    /// after it is the shell's answer to it.
+    powershell_abort_marker_count: u64,
     /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
@@ -4956,6 +4968,8 @@ impl TerminalView {
             subshell_setup_held_bytes: Vec::new(),
             powershell_setup_hold: PowerShellSetupHold::Off,
             powershell_setup_hold_generation: 0,
+            powershell_setup_marker_token: None,
+            powershell_abort_marker_count: 0,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
             awaiting_subshell_prompt: None,
@@ -12134,9 +12148,30 @@ impl TerminalView {
             self.powershell_setup_hold_generation += 1;
             let generation = self.powershell_setup_hold_generation;
             self.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation };
-            ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
-                me.end_powershell_abort_wait(generation, ctx)
-            });
+            if let Some(token) = self.powershell_setup_marker_token {
+                // #1372: the console flushes its input while it processes the Ctrl-C, so the held
+                // keys wait for the shell to say PSReadLine is reading again (the marker its
+                // read hook prints), not for a fixed time. The timer is only the give-up net.
+                self.powershell_abort_marker_count = self.model.lock().setup_line_marker_count();
+                ctx.spawn(
+                    Timer::after(POWERSHELL_ABORT_MARKER_GIVE_UP),
+                    move |me, _, ctx| {
+                        if me.powershell_setup_hold
+                            == (PowerShellSetupHold::AfterAbort { generation })
+                        {
+                            log::warn!(
+                                "PowerShell did not signal it was reading again after the Ctrl-C \
+                                 (setup token {token}); releasing the held keys"
+                            );
+                            me.end_powershell_abort_wait(generation, ctx);
+                        }
+                    },
+                );
+            } else {
+                ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
+                    me.end_powershell_abort_wait(generation, ctx)
+                });
+            }
             return written;
         }
         if is_abort_key(&bytes) && !self.subshell_setup_held_bytes.is_empty() {
@@ -13282,6 +13317,22 @@ impl TerminalView {
         }
         if self.subshell_bootstrap_in_flight.is_some() {
             self.advance_subshell_bootstrap_on_marker(ctx);
+        }
+        if let PowerShellSetupHold::AfterAbort { generation } = self.powershell_setup_hold {
+            if let Some(token) = self.powershell_setup_marker_token {
+                let acknowledged = {
+                    let model = self.model.lock();
+                    powershell_abort_acknowledged(
+                        model.last_setup_line_marker(),
+                        model.setup_line_marker_count(),
+                        self.powershell_abort_marker_count,
+                        token,
+                    )
+                };
+                if acknowledged {
+                    self.end_powershell_abort_wait(generation, ctx);
+                }
+            }
         }
         // Before the user answered, the answer is the event and there is nothing to judge.
         if let Some(since) = self
@@ -19864,14 +19915,25 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        // #1354/#1372: bash, zsh, fish and nushell print a marker after each line they ran; the next line is
-        // written when it arrives, not after `line_delay`. Other shells (and
+        // #1354/#1372: bash, zsh, fish, nushell and PowerShell print a marker once they ran a line
+        // (PowerShell: once PSReadLine is about to read again); the next line is written when it
+        // arrives, not after `line_delay`, which stays as the give-up pacing. Other shells (and
         // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
+        // PowerShell (#1372): its marker is printed when PSReadLine is about to read, i.e. after
+        // the redraw that a marker at the end of the line would race (#1047).
         let marked = !crate::terminal::bootstrap::bootstrap_timed()
             && matches!(
                 shell_type,
-                Some(ShellType::Bash | ShellType::Zsh | ShellType::Fish | ShellType::Nu)
+                Some(
+                    ShellType::Bash
+                        | ShellType::Zsh
+                        | ShellType::Fish
+                        | ShellType::Nu
+                        | ShellType::PowerShell
+                )
             );
+        self.powershell_setup_marker_token =
+            (marked && shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
         let all_lines = init_subshell_command_lines_with_markers(
             shell_type,
             &self.env_vars,
@@ -20027,6 +20089,8 @@ impl TerminalView {
              subshell setup on timers"
         );
         in_flight.marker_token = None;
+        // A PowerShell whose markers do not come will not answer a Ctrl-C with one either.
+        self.powershell_setup_marker_token = None;
         let line_delay = in_flight.line_delay;
         let lines: Vec<String> = in_flight.pending_lines.drain(..).collect();
         for (index, line) in lines.into_iter().enumerate() {
@@ -36033,6 +36097,24 @@ enum PowerShellSetupCtrlC {
     StopProfiles,
     /// Skip setup: ^C to the shell, the held keys after it.
     SkipSetup,
+}
+
+/// Whether the shell has answered a Ctrl-C that skipped a marker-paced PowerShell setup (#1372):
+/// a marker arrived after the Ctrl-C was written (`count` is past `count_at_abort`), it is this
+/// setup's, and it is the "PSReadLine is about to read" one -- not a line's own marker, which can
+/// still be in flight from before the Ctrl-C.
+fn powershell_abort_acknowledged(
+    last_marker: Option<(u64, usize)>,
+    count: u64,
+    count_at_abort: u64,
+    token: u64,
+) -> bool {
+    count > count_at_abort
+        && last_marker
+            == Some((
+                token,
+                crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX,
+            ))
 }
 
 fn powershell_setup_ctrl_c_route(hold: PowerShellSetupHold, stalled: bool) -> PowerShellSetupCtrlC {

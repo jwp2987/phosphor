@@ -505,6 +505,9 @@ pub struct TerminalModel {
     /// [`Handler::setup_line_consumed`]. The view reads it when output arrives to write the next
     /// typed setup line (#1354).
     last_setup_line_marker: Option<(u64, usize)>,
+    /// How many setup-line markers have arrived, ever: tells a repeat of the same marker from a
+    /// fresh one (#1372).
+    setup_line_marker_count: u64,
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
@@ -1247,6 +1250,7 @@ impl TerminalModel {
             reply_ledger: SharedReplyLedger::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,
+            setup_line_marker_count: 0,
             agent_display_commands: HashMap::new(),
             command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
@@ -1938,6 +1942,11 @@ impl TerminalModel {
     /// The latest setup-line marker the shell printed: `(setup token, line index)`.
     pub fn last_setup_line_marker(&self) -> Option<(u64, usize)> {
         self.last_setup_line_marker
+    }
+
+    /// How many setup-line markers have arrived (never reset).
+    pub fn setup_line_marker_count(&self) -> u64 {
+        self.setup_line_marker_count
     }
 
     /// Forgets the setup-line marker, when a new setup starts.
@@ -4019,6 +4028,7 @@ impl ansi::Handler for TerminalModel {
 
     fn setup_line_consumed(&mut self, token: u64, index: usize) {
         self.last_setup_line_marker = Some((token, index));
+        self.setup_line_marker_count += 1;
     }
 
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {

@@ -3914,9 +3914,11 @@ fn marked_nu_setup_lines_end_in_a_nu_marker_except_the_last() {
             "{index}: stays out of history"
         );
     }
-    assert!(marked
-        .iter()
-        .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES));
+    assert!(
+        marked
+            .iter()
+            .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES)
+    );
 }
 
 /// #1372: typed into a real nushell, the marked lines print every marker in order and the script
@@ -3945,4 +3947,96 @@ fn marked_nu_setup_lines_print_their_markers_in_a_real_shell() {
         from += found + marker.len();
     }
     assert!(session.raw.contains("STAGE2-RAN"), "{:?}", session.raw);
+}
+
+/// #1372: the PowerShell setup lines carry the marker mechanics -- a `PSConsoleHostReadLine`
+/// wrapper installed by the first line that prints the pending index when PSReadLine is about to
+/// read, a pending index set by each of the first two lines -- and the last line, an unmarked
+/// build and the history handler's trailing comment word are untouched.
+#[test]
+fn marked_powershell_setup_lines_set_a_pending_marker_and_install_the_read_hook() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let session = SessionId::from(18_446_744_073_709_551_000u64);
+            let plain = init_subshell_command_lines(Some(ShellType::PowerShell), &[], session, ctx);
+            let marked = init_subshell_command_lines_with_markers(
+                Some(ShellType::PowerShell),
+                &[],
+                session,
+                true,
+                ctx,
+            );
+            assert_eq!(plain.len(), 3);
+            assert_eq!(marked.len(), 3);
+            assert_eq!(plain[2], marked[2], "the last line is unmarked");
+            assert!(!plain[0].contains("7771") && !plain[1].contains("7771"));
+            // Line 0 installs the hook that prints the marker, outside the history guard, before
+            // the comment word; line 1 records that it ran.
+            assert!(marked[0].starts_with(plain[0].trim_end_matches(" # apikey")));
+            assert!(marked[0].trim_end().ends_with("# apikey"), "{}", marked[0]);
+            assert!(marked[0].contains("PSConsoleHostReadLine"));
+            assert!(marked[0].contains(&format!("]7771;{};", session.as_u64())));
+            assert!(marked[0].contains("$global:_phMk = 0"));
+            assert!(marked[1].starts_with(plain[1].as_str()));
+            assert!(marked[1].ends_with("$global:_phMk = 1"), "{}", marked[1]);
+            for line in &marked {
+                assert!(line.starts_with(' ') || line.starts_with("if "), "{line}");
+                assert!(!line.contains('\u{1b}'), "no escape byte is typed");
+                assert!(
+                    line.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                    "{}",
+                    line.len()
+                );
+            }
+        });
+    });
+}
+
+/// #1372: every PowerShell setup line, plain and marked, parses as PowerShell. The history
+/// handler line shipped with an unescaped `'` inside a single-quoted string and never parsed, so
+/// Windows PowerShell sat at its `>>` continuation prompt. Skipped without pwsh.
+#[test]
+#[cfg(unix)]
+fn powershell_setup_lines_parse_as_powershell() {
+    use std::process::Command;
+    if Command::new("pwsh")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg("1")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let dir = std::env::temp_dir().join(format!("phosphor-pwsh-parse-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            for marked in [false, true] {
+                let lines = init_subshell_command_lines_with_markers(
+                    Some(ShellType::PowerShell),
+                    &[],
+                    SessionId::from(42u64),
+                    marked,
+                    ctx,
+                );
+                for (index, line) in lines.iter().enumerate() {
+                    let file = dir.join(format!("line{marked}{index}.ps1"));
+                    std::fs::write(&file, line).unwrap();
+                    let out = Command::new("pwsh")
+                        .arg("-NoProfile")
+                        .arg("-Command")
+                        .arg("$e = $null; $t = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:PHOSPHOR_PARSE_FILE, [ref]$t, [ref]$e); $e | ForEach-Object { $_.Message }")
+                        .env("PHOSPHOR_PARSE_FILE", &file)
+                        .output()
+                        .unwrap();
+                    let errors = String::from_utf8_lossy(&out.stdout);
+                    assert!(errors.trim().is_empty(), "marked={marked} line {index}: {errors}");
+                }
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    });
 }

@@ -20179,6 +20179,115 @@ fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
     })
 }
 
+/// #1372: a PowerShell setup is paced by markers too (printed when PSReadLine is about to read, so
+/// after its redraw): line N+1 is written on line N's marker only. The kill switch keeps timers.
+#[test]
+fn powershell_setup_lines_follow_the_read_markers_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("powershell", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+            view.subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("a PowerShell setup is paced by markers")
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the first line");
+
+        // Longer than the old 300 ms per line: still nothing without a marker.
+        warpui::r#async::Timer::after(Duration::from_millis(700)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("PS C:\\> ");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "no marker, no line");
+
+        // The marker of line 0 releases line 1, that of line 1 releases line 2 -- and the
+        // "reading again" marker is no line's marker.
+        let ready = crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX;
+        for (marker_index, written) in [(ready, 1), (0, 2), (1, 3)] {
+            terminal.update(&mut app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};{marker_index}\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                written,
+                "marker {marker_index}"
+            );
+        }
+    })
+}
+
+/// #1372: the keys held behind a Ctrl-C that skipped a PowerShell setup are released by the
+/// shell's "PSReadLine is about to read" marker that follows the Ctrl-C -- not after 500 ms, not by
+/// a line's own marker, and not by a marker that was already there when the Ctrl-C was written.
+#[test]
+fn powershell_abort_settle_ends_on_the_read_marker_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("powershell", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+            view.powershell_setup_marker_token.expect("marker-paced")
+        });
+        let ready = crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX;
+        let send_marker = |app: &mut App, index: usize| {
+            terminal.update(app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};{index}\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            });
+        };
+        send_marker(&mut app, 0);
+        send_marker(&mut app, 1);
+        // A "reading" marker from before the Ctrl-C does not count.
+        send_marker(&mut app, ready);
+        assert_eq!(
+            setup_lines_written(&pty_writes),
+            3,
+            "the whole setup is out"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
+            view.subshell_setup_held_bytes.push(b"ls\r".to_vec());
+            view.write_user_bytes_to_pty(vec![3], ctx);
+            assert!(matches!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::AfterAbort { .. }
+            ));
+        });
+        let held_written = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| {
+            writes.borrow().iter().any(|w| w.as_slice() == b"ls\r")
+        };
+        warpui::r#async::Timer::after(Duration::from_millis(900)).await;
+        send_marker(&mut app, 1);
+        assert!(
+            !held_written(&pty_writes),
+            "neither time nor a line marker ends it"
+        );
+        send_marker(&mut app, ready);
+        assert!(
+            held_written(&pty_writes),
+            "the read marker after the Ctrl-C does"
+        );
+        terminal.read(&app, |view, _| {
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+        });
+    })
+}
+
 /// #1354: the bootstrap of an auto-warpified subshell goes in at the subshell's first prompt, however
 /// long that takes -- a subshell slower than the old fixed 1 s still gets it, once, after its
 /// prompt, and nothing before.
