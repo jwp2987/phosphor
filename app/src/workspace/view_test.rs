@@ -8097,6 +8097,9 @@ fn test_open_conversation_already_live_in_a_pane_does_not_restore_again() {
     crate::i18n::init(Some("en"));
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // Focusing the live pane reaches the terminal view's queued-prompt handling, which reads
+        // this singleton (lib.rs registers it in production; `initialize_app` does not).
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
         let workspace = mock_workspace(&mut app);
 
         workspace.update(&mut app, |workspace, ctx| {
