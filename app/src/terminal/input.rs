@@ -11072,6 +11072,7 @@ impl Input {
         let clipboard_content_str = self
             .editor
             .read(ctx, |editor, _| editor.clipboard_text_content(content));
+        self.forget_explicit_input_type_for_paste(&clipboard_content_str, ctx);
         self.editor.update(ctx, |editor, ctx| {
             editor.user_initiated_insert(
                 &clipboard_content_str,
@@ -12881,6 +12882,24 @@ impl Input {
     // included in the string).
     pub fn system_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
         self.insert_internal(text, EditOrigin::UserInitiated, ctx)
+    }
+
+    /// Inserts text the user pasted (#1335). A paste into an empty buffer is a new question for
+    /// autodetection even when it lands inside the window of an explicit input-type write (an
+    /// agent view just entered, a mode toggle): the first edit inside that window is otherwise
+    /// claimed as the text the explicit write accompanied, which suppresses the verdict for the
+    /// whole pasted line and leaves Enter to submit it on the inherited type (the agent's). Typed
+    /// text only ever claims one character. A non-empty buffer keeps the explicit choice.
+    pub fn paste_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        self.forget_explicit_input_type_for_paste(text, ctx);
+        self.system_insert(text, ctx)
+    }
+
+    fn forget_explicit_input_type_for_paste(&self, text: &str, ctx: &mut ViewContext<Self>) {
+        if self.editor.as_ref(ctx).is_empty(ctx) && !text.trim().is_empty() {
+            self.ai_input_model
+                .update(ctx, |model, _| model.clear_explicit_input_type_set());
+        }
     }
 
     pub fn has_pending_command(&self) -> bool {
