@@ -4556,7 +4556,7 @@ impl<'a> Positioned<'a, Paragraph> {
     }
 
     pub fn end_y_offset(&self) -> Pixels {
-        self.start_y_offset + self.item.height + self.style.top_offset()
+        self.start_y_offset + self.item.height() + self.style.top_offset()
     }
 
     /// The bounding box of the character at `offset`, if within this paragraph.
