@@ -1859,3 +1859,87 @@ fn test_running_count_matches_recount_after_chunks_and_invalidations() {
         });
     });
 }
+
+#[test]
+fn big_results_are_dropped_off_the_calling_thread() {
+    let mut results = BlockFindResults::default();
+    let matches: Vec<AbsoluteMatch> = (0..1_000_000u64).map(make_match).collect();
+    results.count_add(matches.len());
+    results
+        .terminal_matches
+        .insert((BlockIndex(1), GridType::Output), matches);
+
+    // A new query clears the previous 1M-match scan; freeing it must not happen inline (#1327).
+    assert!(results.clear_off_thread());
+    assert_eq!(results.running_visible_count(), 0);
+    assert!(results.terminal_matches.is_empty());
+
+    // Small result sets are cheap to free and are dropped inline.
+    let mut small = BlockFindResults::default();
+    small.count_add(3);
+    small.terminal_matches.insert(
+        (BlockIndex(1), GridType::Output),
+        (0..3).map(make_match).collect(),
+    );
+    assert!(!small.clear_off_thread());
+    assert_eq!(small.running_visible_count(), 0);
+}
+
+#[test]
+fn scan_slices_adapt_to_keep_the_lock_hold_short() {
+    use super::background_task::next_slice_rows;
+    use std::time::Duration;
+
+    // A slow slice (many matches) halves the next one, down to a floor.
+    let mut rows = 1000;
+    for _ in 0..20 {
+        rows = next_slice_rows(rows, Duration::from_millis(40));
+    }
+    assert_eq!(rows, 4);
+    // A fast slice grows it back, capped at the per-message row count.
+    for _ in 0..20 {
+        rows = next_slice_rows(rows, Duration::from_micros(100));
+    }
+    assert_eq!(rows, 1000);
+    // A slice near the target is left alone.
+    assert_eq!(next_slice_rows(100, Duration::from_millis(1)), 100);
+}
+
+#[test]
+fn update_dirty_matches_binary_search_matches_overlap_semantics() {
+    let block_index = BlockIndex(1);
+    let grid_type = GridType::Output;
+    let mut results = BlockFindResults::default();
+    // One match every 10 rows: 0, 10, 20, ... 990.
+    let initial: Vec<AbsoluteMatch> = (0..100).map(|i| make_match(i * 10)).collect();
+    results.count_add(initial.len());
+    results
+        .terminal_matches
+        .insert((block_index, grid_type), initial);
+
+    // Rows 100..=300 hold matches 100, 110, ..., 300 (21 of them); replace with two.
+    let changed = results.update_dirty_matches(
+        block_index,
+        grid_type,
+        100..=300,
+        vec![make_match(150), make_match(250)],
+    );
+    assert!(changed);
+    let stored = &results.terminal_matches[&(block_index, grid_type)];
+    assert_eq!(stored.len(), 100 - 21 + 2);
+    assert_eq!(stored[9].start_row(), 90);
+    assert_eq!(stored[10].start_row(), 150);
+    assert_eq!(stored[11].start_row(), 250);
+    assert_eq!(stored[12].start_row(), 310);
+    assert_eq!(results.running_visible_count(), results.recount_visible());
+
+    // A dirty range strictly between two matches inserts without replacing.
+    let changed =
+        results.update_dirty_matches(block_index, grid_type, 311..=315, vec![make_match(312)]);
+    assert!(changed);
+    let stored = &results.terminal_matches[&(block_index, grid_type)];
+    assert_eq!(stored[12].start_row(), 310);
+    assert_eq!(stored[13].start_row(), 312);
+    assert_eq!(stored[14].start_row(), 320);
+    assert_eq!(results.running_visible_count(), results.recount_visible());
+}

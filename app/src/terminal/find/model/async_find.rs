@@ -338,7 +338,32 @@ fn visible_in(matches: &[AbsoluteMatch]) -> usize {
     matches.iter().filter(|m| !m.is_filtered).count()
 }
 
+/// Match count above which dropping stored results is handed to a background thread.
+const BACKGROUND_DROP_THRESHOLD: usize = 20_000;
+
 impl BlockFindResults {
+    /// Empties the results and drops the old storage off the calling (UI) thread when it is big.
+    /// Freeing a million-match scan is tens of milliseconds, paid on every keystroke of a new
+    /// query otherwise (#1327).
+    fn clear_off_thread(&mut self) -> bool {
+        let big = self.visible_count.get() > BACKGROUND_DROP_THRESHOLD;
+        let old = std::mem::take(self);
+        if !big {
+            drop(old);
+            return false;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            // If the thread cannot start, the closure (and `old`) is dropped right here.
+            let _ = std::thread::Builder::new()
+                .name("find-drop".into())
+                .spawn(move || drop(old));
+        }
+        #[cfg(target_family = "wasm")]
+        drop(old);
+        true
+    }
+
     /// Returns the total number of *visible* matches across all blocks.
     ///
     /// Output matches hidden by an active block filter (`is_filtered`) are
@@ -475,16 +500,14 @@ impl BlockFindResults {
 
         // Find the range of matches that overlap with the dirty range.
         // A match overlaps if: match.start <= dirty.end AND match.end >= dirty.start
-        let replace_start = matches
-            .iter()
-            .position(|m| m.end_row() >= *dirty_range.start())
-            .unwrap_or(matches.len());
+        // Matches are sorted and do not overlap, so both predicates are monotone and binary
+        // search finds the same positions as a linear scan without touching every match.
+        let replace_start = matches.partition_point(|m| m.end_row() < *dirty_range.start());
 
-        let replace_end = matches
-            .iter()
-            .rposition(|m| m.start_row() <= *dirty_range.end())
-            .map(|pos| pos + 1)
-            .unwrap_or(replace_start);
+        let replace_end = match matches.partition_point(|m| m.start_row() <= *dirty_range.end()) {
+            0 => replace_start,
+            end => end,
+        };
 
         let replace_range = if replace_start <= replace_end {
             replace_start..replace_end
@@ -889,7 +912,7 @@ impl AsyncFindController {
 
         self.current_config = Some(config.clone());
         self.block_sort_direction = block_sort_direction;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.current_find_options = Some(options.clone());
@@ -1109,7 +1132,7 @@ impl AsyncFindController {
     pub fn clear_results(&mut self, ctx: &mut ModelContext<TerminalFindModel>) {
         self.cancel_current_find();
         self.current_config = None;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.status = AsyncFindStatus::Idle;
@@ -1235,16 +1258,16 @@ impl AsyncFindController {
         else {
             return false;
         };
-        let len_before = matches.len();
-        let visible_before = visible_in(matches);
-        matches.retain(|m| !m.is_truncated(num_lines_truncated));
-        let changed = matches.len() != len_before;
-        let visible_after = visible_in(matches);
-        count_sub(
-            &self.block_results.visible_count,
-            visible_before.saturating_sub(visible_after),
-        );
-        changed
+        // Matches are sorted and do not overlap, so the truncated ones are a prefix: find it by
+        // binary search instead of re-counting every stored match (#1327).
+        let truncated = matches.partition_point(|m| m.is_truncated(num_lines_truncated));
+        if truncated == 0 {
+            return false;
+        }
+        let removed_visible = visible_in(&matches[..truncated]);
+        matches.drain(..truncated);
+        count_sub(&self.block_results.visible_count, removed_visible);
+        true
     }
 
     /// Recomputes `is_filtered` for the Output-grid matches of `block_index`,
@@ -1351,7 +1374,7 @@ impl AsyncFindController {
 
         self.current_config = Some(config.clone());
         self.block_sort_direction = block_sort_direction;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.current_find_options = Some(options.clone());
