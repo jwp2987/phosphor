@@ -22,10 +22,11 @@
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
 //! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`), the subshell setup /
-//! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), and the Enter verdict / Tab /
+//! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
 //! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
-//! the `EnterVerdict` and `PasteReading` gates; see `input/enter_queue.rs`). The other gate kinds
-//! and the trace hops of the buffers that have not moved yet are exercised by the tests only.
+//! the `EnterVerdict` and `PasteReading` gates; see `input/enter_queue.rs`), and the ssh connect
+//! typeahead (phase 4, `kill_switch::Area::Ssh`, `view/ssh_queue.rs`). The other gate kinds and
+//! the trace hops of the buffers that have not moved yet are exercised by the tests only.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
@@ -129,6 +130,13 @@ pub enum EntryKind {
     },
     /// A key for the input editor, held behind a paste (phase 1).
     EditorKey(EditorKeyPayload),
+    /// Input whose form the host owns (phase 4: the ssh connect typeahead keeps typed text, keys,
+    /// pastes and escape sequences as they were produced, `class` says which). The queue only
+    /// orders it; the host routes it at delivery from the facts of that moment.
+    Held {
+        class: u8,
+        text: String,
+    },
 }
 
 impl EntryKind {
@@ -143,6 +151,7 @@ impl EntryKind {
             EntryKind::Raw(_) => "raw",
             EntryKind::PtyBytes { .. } => "pty_bytes",
             EntryKind::EditorKey(_) => "editor_key",
+            EntryKind::Held { .. } => "held",
         }
     }
 
@@ -155,6 +164,7 @@ impl EntryKind {
             EntryKind::Raw(bytes) => bytes.len(),
             EntryKind::PtyBytes { bytes, .. } => bytes.len(),
             EntryKind::EditorKey(key) => key.len(),
+            EntryKind::Held { text, .. } => text.len(),
             EntryKind::Enter | EntryKind::Signal(_) => 0,
         }
     }
@@ -173,6 +183,7 @@ impl EntryKind {
                 | EntryKind::Paste { .. }
                 | EntryKind::PtyBytes { .. }
                 | EntryKind::EditorKey(_)
+                | EntryKind::Held { .. }
         )
     }
 }
@@ -433,6 +444,43 @@ impl InputQueue {
             .fold((0, 0), |(count, bytes), entry| {
                 (count + 1, bytes + entry.kind.len())
             })
+    }
+
+    /// The queued entries in order (inspection; content is never to be logged).
+    pub fn entries(&self) -> impl Iterator<Item = &InputEntry> + '_ {
+        self.entries.iter()
+    }
+
+    /// Removes the gate `(kind, key)` WITHOUT delivering what it held, and returns those entries
+    /// (from its barrier up to the next gate's) in order. For a hold that is cancelled by an event
+    /// that also voids its keys (^C flushes the tty's input, a password prompt appeared). Needs no
+    /// host: nothing is delivered, and entries behind a later gate keep waiting for it.
+    pub fn drop_gate(&mut self, kind: GateKind, key: u64) -> Vec<InputEntry> {
+        let Some(index) = self
+            .gates
+            .iter()
+            .position(|gate| gate.kind == kind && gate.key == key)
+        else {
+            return Vec::new();
+        };
+        let gate = self.gates.remove(index);
+        let upper = self
+            .gates
+            .iter()
+            .map(|g| g.barrier)
+            .filter(|barrier| *barrier > gate.barrier)
+            .min();
+        let mut kept = VecDeque::with_capacity(self.entries.len());
+        let mut removed = Vec::new();
+        for entry in self.entries.drain(..) {
+            if entry.id >= gate.barrier && upper.is_none_or(|upper| entry.id < upper) {
+                removed.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        self.entries = kept;
+        removed
     }
 
     /// Whether the head entry waits behind a gate. Invariant: a non-empty queue always has a

@@ -1163,3 +1163,83 @@ fn model_long_runs() {
         run_seed(seed, 3000);
     }
 }
+
+// ---- phase 4: the ssh connect hold ----------------------------------------------------------
+
+fn held(class: u8, s: &str) -> EntryKind {
+    EntryKind::Held {
+        class,
+        text: s.to_owned(),
+    }
+}
+
+#[test]
+fn held_entries_wait_behind_the_ssh_gate_and_the_close_delivers_them_in_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 3).with_cap(None),
+    );
+    q.offer(&mut h, held(0, "echo "));
+    q.offer(&mut h, held(1, "\r"));
+    q.offer(&mut h, held(3, "\u{1b}[A"));
+    assert!(h.delivered.is_empty());
+    assert!(h.armed.is_empty(), "the ssh gate carries no cap of its own");
+    assert_eq!(q.entries().count(), 3);
+    assert!(q.on_gate_event(&mut h, GateKind::SshConnect, 3));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3]);
+    assert!(q.is_idle());
+    assert!(
+        !q.on_gate_event(&mut h, GateKind::SshConnect, 3),
+        "a second hand-over finds nothing"
+    );
+    assert_eq!(h.delivered.len(), 3);
+}
+
+#[test]
+fn drop_gate_removes_the_gate_and_its_entries_without_delivering() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+    );
+    q.offer(&mut h, held(0, "blind"));
+    q.offer(&mut h, held(1, "\r"));
+    let removed = q.drop_gate(GateKind::SshConnect, 1);
+    assert_eq!(removed.len(), 2);
+    assert!(matches!(&removed[0].kind, EntryKind::Held { class: 0, text } if text == "blind"));
+    assert!(q.is_idle());
+    assert!(h.delivered.is_empty());
+    // Keys typed after the drop pass straight through.
+    q.offer(&mut h, text("yes"));
+    assert_eq!(h.delivered.len(), 1);
+    assert!(
+        q.drop_gate(GateKind::SshConnect, 1).is_empty(),
+        "no gate, nothing to drop"
+    );
+}
+
+#[test]
+fn drop_gate_leaves_entries_behind_a_later_gate_waiting() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+    );
+    q.offer(&mut h, held(0, "a"));
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SubshellSetup, 0).with_cap(None),
+    );
+    q.offer(&mut h, text("b"));
+    let removed = q.drop_gate(GateKind::SshConnect, 1);
+    assert_eq!(removed.len(), 1);
+    assert_eq!(
+        q.entries().count(),
+        1,
+        "b still waits for the subshell gate"
+    );
+}

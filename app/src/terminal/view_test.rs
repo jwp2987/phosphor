@@ -17570,7 +17570,7 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
             view.typed_characters_on_terminal("during-connect", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding, "the keys are held (#1292)");
-            assert_eq!(view.ssh_typeahead.len_bytes(), 26);
+            assert_eq!(view.ssh_held_bytes(), 26);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
                 "",
@@ -17680,7 +17680,7 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             view.typed_characters_on_terminal("echo hi", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding);
-            assert!(!view.ssh_typeahead.is_empty());
+            assert!(!view.ssh_held_is_empty());
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
@@ -17772,7 +17772,7 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
             );
             assert!(view.ssh_remote_prompt_seen);
             assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
         });
         let writes = pty_writes.borrow();
         let delivered = String::from_utf8_lossy(&writes.concat()).into_owned();
@@ -17827,7 +17827,7 @@ fn ssh_paste_after_enter_is_held_whole() {
             view.paste(false, ctx);
             assert!(view.ssh_typeahead_holding, "the paste is held (#1292)");
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![HeldInput::Paste("echo pasted\n".to_owned())]
             );
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
@@ -18079,7 +18079,7 @@ fn ssh_editor_enter_during_hold_is_held_not_submitted() {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             view.drain_editor_keys_into_ssh_hold(ctx);
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![
                     HeldInput::Typed("echo QWERTY".to_owned()),
                     HeldInput::Key("\r".to_owned())
@@ -18106,7 +18106,7 @@ fn ssh_prompt_arrival_discards_editor_queued_keys() {
             view.reset_ssh_typeahead();
             assert!(view.ssh_editor_key_hold.is_empty());
             view.drain_editor_keys_into_ssh_hold(ctx);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
         });
     })
 }
@@ -18129,7 +18129,7 @@ fn ssh_paste_across_gate_release_is_held_whole() {
             view.paste(false, ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![
                     HeldInput::Typed("echo QW".to_owned()),
                     HeldInput::Paste("ERTY".to_owned())
@@ -18164,7 +18164,7 @@ fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_typeahead.is_empty(), "the blind text is gone");
+            assert!(view.ssh_held_is_empty(), "the blind text is gone");
         });
         let writes = pty_writes.borrow();
         assert!(
@@ -18205,7 +18205,7 @@ fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
                 // Immediately after the prompt: old code discarded this as the burst's tail.
                 view.typed_characters_on_terminal("yes", ctx);
                 view.keydown_on_terminal("\r", ctx);
-                assert!(view.ssh_typeahead.is_empty());
+                assert!(view.ssh_held_is_empty());
                 assert!(!view.ssh_typeahead_holding, "{prompt:?}");
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             });
@@ -18242,7 +18242,7 @@ fn ssh_banner_does_not_end_the_hold() {
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding, "a banner is not a prompt");
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![
                     HeldInput::Typed("echo QWERTY".to_owned()),
                     HeldInput::Key("\r".to_owned())
@@ -18278,7 +18278,7 @@ fn ssh_password_and_hostkey_prompts_end_the_hold() {
                 view.model.lock().process_bytes(prompt);
                 view.typed_characters_on_terminal("x", ctx);
                 assert!(!view.ssh_typeahead_holding, "{prompt:?}");
-                assert!(view.ssh_typeahead.is_empty(), "{prompt:?}");
+                assert!(view.ssh_held_is_empty(), "{prompt:?}");
             });
         })
     }
@@ -18298,7 +18298,7 @@ fn ssh_ctrl_c_ends_the_hold() {
             release_ssh_gate_for_test(view);
             view.keydown_on_terminal("\u{3}", ctx);
             assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_typeahead.is_empty(), "^C flushes the typeahead");
+            assert!(view.ssh_held_is_empty(), "^C flushes the typeahead");
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
         });
@@ -18320,7 +18320,7 @@ fn ssh_hold_resets_on_new_command() {
             assert!(view.ssh_typeahead_holding);
             submit_command(view, "ls", ctx);
             assert!(!view.ssh_typeahead_holding);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             view.typed_characters_on_terminal("pwd", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pwd");
         });
@@ -18576,7 +18576,7 @@ fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
                 !view.ssh_typeahead_holding,
                 "the hand-over ran inside the precmd handler"
             );
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
         });
         // The keys arrived at the remote shell's input, as typed: through the pty or the
         // editor, never lost and never split.
@@ -18654,7 +18654,7 @@ fn ssh_held_and_editor_queued_keys_are_delivered_in_order_at_the_precmd_event() 
             first_precmd_processed_for_test(view, ctx);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             assert!(view.ssh_editor_key_hold.is_empty());
         });
     })
@@ -18708,7 +18708,7 @@ fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
             assert!(view.ssh_typeahead_holding);
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_wakeup(Wakeup::Output, ctx);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             assert!(!view.ssh_typeahead_holding);
             assert!(!view.ssh_editor_key_hold.is_active());
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
@@ -18788,13 +18788,13 @@ fn ssh_text_typed_before_a_prompt_is_not_shown_later() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![HeldInput::Typed("hunter2".to_owned())]
             );
             view.typed_characters_on_terminal("hunter2", ctx);
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\r", ctx);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
@@ -18901,11 +18901,11 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert!(!view.ssh_typeahead.is_empty());
+            assert!(!view.ssh_held_is_empty());
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(
-                view.ssh_typeahead.is_empty(),
+                view.ssh_held_is_empty(),
                 "discarded when the prompt appeared"
             );
             release_ssh_gate_for_test(view);
@@ -18937,11 +18937,11 @@ fn ssh_blind_password_after_a_banner_is_never_shown() {
             // ...a banner arrives (the first output), the user keeps going blind: still held.
             view.model.lock().process_bytes("Authorized users only\r\n");
             view.keydown_on_terminal("\r", ctx);
-            assert!(!view.ssh_typeahead.is_empty());
+            assert!(!view.ssh_held_is_empty());
             // The prompt discards it, however it got there.
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             view.deliver_ssh_typeahead_if_ready("test", ctx);
@@ -18979,16 +18979,16 @@ fn ssh_held_line_is_never_glued_to_existing_editor_text() {
             view.input
                 .update(ctx, |input, ctx| input.replace_buffer_content("world", ctx));
             view.ssh_typeahead_holding = true;
-            view.ssh_typeahead.push(HeldInput::from_chars("hello "));
+            view.ssh_hold_push(HeldInput::from_chars("hello "), ctx);
             view.finish_ssh_typeahead(ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world");
-            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_held_is_empty());
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
             });
             view.ssh_typeahead_holding = true;
-            view.ssh_typeahead.push(HeldInput::from_chars("hello"));
-            view.ssh_typeahead.push(HeldInput::from_chars("\r"));
+            view.ssh_hold_push(HeldInput::from_chars("hello"), ctx);
+            view.ssh_hold_push(HeldInput::from_chars("\r"), ctx);
             view.finish_ssh_typeahead(ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "hello");
         });
@@ -19029,7 +19029,7 @@ fn ssh_enter_just_after_release_stays_with_its_held_letters() {
             assert!(view.ssh_connect_gate.is_none());
             view.keydown_on_terminal("\r", ctx);
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![
                     HeldInput::Typed("exit".to_owned()),
                     HeldInput::Key("\r".to_owned())
@@ -19346,7 +19346,7 @@ fn ssh_silent_connect_holds_paste_but_not_interrupts() {
             view.keydown_on_terminal("\u{1c}", ctx);
             view.control_sequence_on_terminal(b"\x1b[A", ctx);
             assert_eq!(
-                view.ssh_typeahead.take(),
+                view.ssh_hold_take(),
                 vec![HeldInput::Seq("\x1b[A".to_owned())],
                 "an arrow key is held with the typing, not written into the bootstrap"
             );
@@ -20376,4 +20376,321 @@ fn cli_agent_submit_gate_off_holds_nothing() {
             assert!(!view.cli_submit_gate_open_for_test());
         });
     })
+}
+
+// ---- #1353 phase 4: the ssh connect typeahead on the one input queue ---------------------------
+//
+// Every scenario runs on both paths: `queue == true` holds the keys as entries behind an
+// `SshConnect` gate, `queue == false` is `PHOSPHOR_INPUT_QUEUE_SSH=0` (the legacy buffer).
+
+fn ssh_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+}
+
+fn ssh_queue_is_idle(view: &TerminalView) -> bool {
+    view.paste_queue.queue.borrow().is_idle()
+}
+
+/// Runs `body` on a fresh view with the ssh hold on the given path.
+fn with_ssh_hold_path(
+    queue: bool,
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>, &Rc<RefCell<Vec<Vec<u8>>>>)
+    + 'static,
+) {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.ssh_iq.enabled = queue;
+            register_local_session_for_ssh_test(view, ctx);
+            body(view, ctx, &pty_writes);
+        });
+    })
+}
+
+fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        assert!(!ssh_gate_open(view), "nothing held yet: no gate");
+        view.typed_characters_on_terminal("echo ", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        view.typed_characters_on_terminal("b", ctx);
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(
+            ssh_gate_open(view),
+            queue,
+            "the gate is the hold on the queue path"
+        );
+        assert_eq!(view.ssh_held_bytes(), 7);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        // The one hand-over point delivers; a second one finds nothing.
+        assert!(view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+        assert!(!view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "echo ab",
+            "once, in order"
+        );
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view), "nothing left queued");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_queue_keys_during_connect_are_delivered_once_in_order() {
+    ssh_keys_during_connect_are_delivered_once_in_order(true);
+}
+
+#[test]
+fn ssh_legacy_keys_during_connect_are_delivered_once_in_order() {
+    ssh_keys_during_connect_are_delivered_once_in_order(false);
+}
+
+fn ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("echo ab", ctx);
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        // Focus is already in the editor (agent mode): a key reaching it before the hand-over is
+        // queued behind the held ones, never applied ahead of them.
+        editor_text(view, "c", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+        editor_text(view, "d", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abcd");
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+#[test]
+fn ssh_queue_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
+    ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys(true);
+}
+
+#[test]
+fn ssh_legacy_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
+    ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys(false);
+}
+
+fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.model
+            .lock()
+            .simulate_long_running_block("ssh host", "");
+        view.warpify_state
+            .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+        view.typed_characters_on_terminal("blind", ctx);
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(ssh_gate_open(view), queue);
+        view.model.lock().process_bytes("Password: ");
+        view.typed_characters_on_terminal("hunter2", ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(!ssh_gate_open(view), "the prompt event dropped the gate");
+        assert!(ssh_queue_is_idle(view));
+        let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            writes, b"hunter2",
+            "only the post-prompt key reaches the prompt"
+        );
+    });
+}
+
+#[test]
+fn ssh_queue_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
+    ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty(true);
+}
+
+#[test]
+fn ssh_legacy_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
+    ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty(false);
+}
+
+fn ssh_failed_connect_returns_the_text_to_the_input(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("echo hi", ctx);
+        view.keydown_on_terminal("\r", ctx);
+        assert!(view.ssh_typeahead_holding);
+        // No remote prompt ever came: the connect ended.
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "echo hi",
+            "shown, not run"
+        );
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view));
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_queue_failed_connect_returns_the_text_to_the_input() {
+    ssh_failed_connect_returns_the_text_to_the_input(true);
+}
+
+#[test]
+fn ssh_legacy_failed_connect_returns_the_text_to_the_input() {
+    ssh_failed_connect_returns_the_text_to_the_input(false);
+}
+
+fn ssh_repeated_connects_each_get_their_own_hold(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, _| {
+        for round in ["one", "two", "three"] {
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal(round, ctx);
+            assert_eq!(ssh_gate_open(view), queue, "{round}");
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), round);
+            assert!(
+                ssh_queue_is_idle(view),
+                "{round}: no gate or entry carried over"
+            );
+            view.input.update(ctx, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx)
+            });
+        }
+    });
+}
+
+#[test]
+fn ssh_queue_repeated_connects_each_get_their_own_hold() {
+    ssh_repeated_connects_each_get_their_own_hold(true);
+}
+
+#[test]
+fn ssh_legacy_repeated_connects_each_get_their_own_hold() {
+    ssh_repeated_connects_each_get_their_own_hold(false);
+}
+
+fn ssh_interrupt_discards_the_held_keys(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("abc", ctx);
+        release_ssh_gate_for_test(view);
+        view.keydown_on_terminal("\u{3}", ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view));
+        view.typed_characters_on_terminal("ls", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+    });
+}
+
+#[test]
+fn ssh_queue_interrupt_discards_the_held_keys() {
+    ssh_interrupt_discards_the_held_keys(true);
+}
+
+#[test]
+fn ssh_legacy_interrupt_discards_the_held_keys() {
+    ssh_interrupt_discards_the_held_keys(false);
+}
+
+fn ssh_overflow_drops_the_whole_run(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        let big = "x".repeat(40 * 1024);
+        view.ssh_typeahead_holding = true;
+        view.ssh_hold_push(HeldInput::from_chars("head"), ctx);
+        view.ssh_hold_push(HeldInput::from_chars(&big), ctx);
+        let outcome = view.ssh_hold_push(HeldInput::from_chars(&big), ctx);
+        assert_eq!(outcome, SshTypeaheadPush::Overflowed);
+        assert!(
+            view.ssh_held_is_empty(),
+            "the whole run is gone, head included"
+        );
+        assert_eq!(
+            view.ssh_hold_push(HeldInput::from_chars("more"), ctx),
+            SshTypeaheadPush::Ignored
+        );
+        assert!(view.ssh_held_is_empty());
+        release_ssh_gate_for_test(view);
+        view.finish_ssh_typeahead(ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "a truncated line never shows"
+        );
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+#[test]
+fn ssh_queue_overflow_drops_the_whole_run() {
+    ssh_overflow_drops_the_whole_run(true);
+}
+
+#[test]
+fn ssh_legacy_overflow_drops_the_whole_run() {
+    ssh_overflow_drops_the_whole_run(false);
+}
+
+/// The queue path hands the held line to the remote shell exactly as the legacy buffer does: the
+/// same commands run, none twice, and the Enter stays behind the text it ends.
+#[test]
+fn ssh_queue_enter_runs_the_held_line_like_the_legacy_hold() {
+    let runs: Rc<RefCell<Vec<Vec<String>>>> = Rc::new(RefCell::new(Vec::new()));
+    for queue in [false, true] {
+        let runs = runs.clone();
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                view.ssh_iq.enabled = queue;
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("echo hi", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert_eq!(ssh_gate_open(view), queue);
+                executed.borrow_mut().clear();
+                view.ssh_remote_prompt_seen = true;
+                first_precmd_processed_for_test(view, ctx);
+                release_ssh_gate_for_test(view);
+                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+                assert!(ssh_queue_is_idle(view));
+            });
+            let ran = executed.borrow().clone();
+            assert!(
+                ran.iter().filter(|c| c.as_str() == "echo hi").count() <= 1,
+                "{ran:?}"
+            );
+            runs.borrow_mut().push(ran);
+        });
+    }
+    let runs = runs.borrow();
+    assert_eq!(
+        runs[0], runs[1],
+        "legacy and queue hand over the same commands"
+    );
 }

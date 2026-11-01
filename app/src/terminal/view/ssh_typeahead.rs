@@ -74,6 +74,31 @@ impl HeldInput {
             Self::Typed(s) | Self::Key(s) | Self::Paste(s) | Self::Seq(s) => s.len(),
         }
     }
+
+    /// Byte length of the held text.
+    pub(super) fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    /// The `(class, text)` an input-queue `Held` entry carries (#1353 phase 4).
+    pub(super) fn into_parts(self) -> (u8, String) {
+        match self {
+            Self::Typed(s) => (0, s),
+            Self::Key(s) => (1, s),
+            Self::Paste(s) => (2, s),
+            Self::Seq(s) => (3, s),
+        }
+    }
+
+    /// Inverse of [`HeldInput::into_parts`].
+    pub(super) fn from_parts(class: u8, text: String) -> Self {
+        match class {
+            0 => Self::Typed(text),
+            1 => Self::Key(text),
+            2 => Self::Paste(text),
+            _ => Self::Seq(text),
+        }
+    }
 }
 
 /// What [`SshTypeahead::push`] did.
