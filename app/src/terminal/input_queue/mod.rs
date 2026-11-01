@@ -455,6 +455,31 @@ impl InputQueue {
             .min()
     }
 
+    /// Keys typed into the input editor wait behind some open gate (see
+    /// [`GateKind::holds_editor_keys`]).
+    pub fn holds_editor_keys(&self) -> bool {
+        self.gates.iter().any(Gate::holds_editor_keys)
+    }
+
+    /// Keys typed for the pty wait behind some open gate (see [`GateKind::holds_pty_keys`]).
+    pub fn holds_pty_keys(&self) -> bool {
+        self.gates.iter().any(Gate::holds_pty_keys)
+    }
+
+    /// A paste read for the input editor is pending.
+    pub fn has_editor_paste_reading(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::PasteReading && is_editor_paste_id(gate.key))
+    }
+
+    /// A paste read for the pty is pending.
+    pub fn has_pty_paste_reading(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::PasteReading && !is_editor_paste_id(gate.key))
+    }
+
     /// Whether any gate of `kind` is open.
     pub fn has_gate_kind(&self, kind: GateKind) -> bool {
         self.gates.iter().any(|gate| gate.kind == kind)

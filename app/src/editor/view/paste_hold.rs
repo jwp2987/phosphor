@@ -27,7 +27,7 @@ use super::{EditorAction, EditorView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateToken, Host, InputEntry, PaneQueue, PasteOwner,
+    GateToken, Host, InputEntry, PaneQueue, PasteOwner, is_pty_entry,
 };
 use crate::terminal::paste_sequencer::PasteSequencer;
 
@@ -140,13 +140,34 @@ impl EditorPasteHold {
         self.pane_queue.borrow().next_paste_id(PasteOwner::Editor)
     }
 
-    /// The queue holds input right now (a paste is being read). False while it is mid-drain: a
-    /// key applied by a delivery is part of that delivery and must not be held again.
+    /// Replaces this editor's private queue with the pane's shared one (#1353 step 3): the terminal
+    /// view's queue, so editor keys, pty keys and the gates between them are ordered by ONE
+    /// queue. Refused (false) unless the private queue is idle and not mid-drain; nothing held is
+    /// ever moved or dropped.
+    pub fn adopt_queue(&self, queue: PaneQueue) -> bool {
+        let idle = self
+            .pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|current| current.is_idle());
+        if !idle {
+            log::warn!("input queue: the editor's queue was busy; it keeps its own");
+            return false;
+        }
+        *self.pane_queue.borrow_mut() = queue;
+        true
+    }
+
+    /// The queue holds input that keys typed into the editor must wait behind: a paste being read
+    /// for the editor, an Enter waiting for its verdict (see [`GateKind::holds_editor_keys`]; on a
+    /// queue shared with the terminal view, gates that only hold pty keys do not count). False
+    /// while the queue is mid-drain: a key applied by a delivery is part of that delivery and must
+    /// not be held again.
     pub fn queue_is_busy(&self) -> bool {
         self.pane_queue
             .borrow()
             .try_peek()
-            .is_some_and(|queue| !queue.is_idle())
+            .is_some_and(|queue| queue.holds_editor_keys())
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already
@@ -161,7 +182,7 @@ impl EditorPasteHold {
                 .pane_queue
                 .borrow()
                 .try_peek()
-                .is_some_and(|queue| queue.has_gate_kind(GateKind::PasteReading));
+                .is_some_and(|queue| queue.has_editor_paste_reading());
         }
         self.sequencer.borrow().has_pending()
     }
@@ -216,6 +237,12 @@ impl Host for EditorQueueHost<'_, '_> {
             input_box_visible: true,
             ..DestFacts::default()
         }
+    }
+
+    /// The editor reaches no pty: on a queue shared with the terminal view, a drain driven from
+    /// here stops at the first pty entry and the view continues it (#1353 step 3).
+    fn handles(&self, entry: &InputEntry, _dest: Destination) -> bool {
+        !is_pty_entry(&entry.kind)
     }
 
     fn deliver(

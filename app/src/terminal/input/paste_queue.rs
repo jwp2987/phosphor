@@ -19,7 +19,7 @@ use warpui::r#async::Timer;
 use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry,
+    GateSpec, GateToken, Host, InputEntry, PaneQueue, is_pty_entry,
 };
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
@@ -53,6 +53,12 @@ impl Host for InputQueueHost<'_, '_> {
             input_box_visible: true,
             ..DestFacts::default()
         }
+    }
+
+    /// The input reaches no pty: on a queue shared with the terminal view, a drain driven from
+    /// here stops at the first pty entry and the view continues it (#1353 step 3).
+    fn handles(&self, entry: &InputEntry, _dest: Destination) -> bool {
+        !is_pty_entry(&entry.kind)
     }
 
     fn deliver(
@@ -170,6 +176,42 @@ impl Host for InputQueueHost<'_, '_> {
 }
 
 impl Input {
+    /// Makes the terminal view's queue this input's queue (#1353 step 3): the editor adopts it, so
+    /// the pane has ONE queue. False when the editor's own queue is busy (it then keeps it).
+    pub(crate) fn adopt_pane_queue(
+        &mut self,
+        queue: PaneQueue,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.editor
+            .update(ctx, |editor, _| editor.paste_hold().adopt_queue(queue))
+    }
+
+    /// An entry of the pane's shared queue that the editor side delivers, handed over by the
+    /// terminal view's drain (#1353 step 3): the view reaches both destinations, so when its drain
+    /// meets an editor key, an editor paste or text typed behind an Enter it delivers it through
+    /// this input's own host, exactly as an editor-driven drain would have.
+    pub(crate) fn deliver_pane_queue_entry(
+        &mut self,
+        entry: &InputEntry,
+        follow: &mut FollowUps,
+        ctx: &mut ViewContext<Self>,
+    ) -> DeliverOutcome {
+        let mut host = InputQueueHost::new(self, ctx);
+        host.deliver(entry, Destination::Editor, follow)
+    }
+
+    /// The editor-side form of [`Host::discarded`] for an entry the view's drain removed.
+    pub(crate) fn discard_pane_queue_entry(
+        &mut self,
+        entry: &InputEntry,
+        why: DiscardReason,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut host = InputQueueHost::new(self, ctx);
+        host.discarded(entry, why);
+    }
+
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = self.editor.as_ref(ctx).paste_hold().queue();

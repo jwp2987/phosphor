@@ -240,12 +240,15 @@ impl TerminalView {
     /// not held behind them (the held keys were taken before they got there; anything else is
     /// passive traffic the legacy hold never held either).
     pub(super) fn only_ssh_gates_open(&self) -> bool {
+        // Gates that only hold editor keys (an Enter waiting for its verdict) are not the pty's:
+        // they never held a pty key, so they do not count either way.
         self.paste_queue.queue.try_peek().is_some_and(|queue| {
-            !queue.gates().is_empty()
-                && queue
-                    .gates()
-                    .iter()
-                    .all(|gate| gate.kind == GateKind::SshConnect)
+            let mut pty_gates = queue
+                .gates()
+                .iter()
+                .filter(|gate| gate.holds_pty_keys())
+                .peekable();
+            pty_gates.peek().is_some() && pty_gates.all(|gate| gate.kind == GateKind::SshConnect)
         })
     }
 }

@@ -47,7 +47,7 @@ use super::{Event, TerminalView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, trace,
+    GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -81,6 +81,10 @@ pub(super) struct PasteQueueState {
     /// (ConPTY, #1162) are entries of this queue behind a `LineEditorActive` gate. Tests default
     /// to off (see `handoff_queue_enabled_by_default`).
     pub(super) handoff_enabled: bool,
+    /// #1353 step 3 (`PHOSPHOR_INPUT_QUEUE_SHARED`): the pane's input editor adopts THIS queue, so
+    /// editor keys, pty keys and the gates between them are ordered by one instance. False keeps
+    /// the editor's private queue (the behaviour before the merge).
+    pub(super) shared: bool,
     /// Set while the queue delivers an entry the hand-off may hold again (a key or a paste): the
     /// stage then asks the host to put the entry back instead of keeping the bytes itself.
     requeueable_delivery: bool,
@@ -128,6 +132,18 @@ pub(super) fn handoff_queue_enabled_by_default() -> bool {
     kill_switch::is_enabled(Area::Handoff) && kill_switch::is_enabled(Area::Paste)
 }
 
+/// Whether the editor and the terminal view of a pane share one queue: the Shared area's kill
+/// switch AND the Paste area's (the editor only feeds its queue while that one is on). Tests run
+/// shared by default so the whole suite checks the merge; `PHOSPHOR_TEST_SHARED_QUEUE=0` runs it
+/// on two instances.
+pub(super) fn shared_queue_enabled_by_default() -> bool {
+    if cfg!(test) {
+        return std::env::var("PHOSPHOR_TEST_SHARED_QUEUE").map_or(true, |value| value != "0")
+            && kill_switch::is_enabled(Area::Paste);
+    }
+    kill_switch::is_enabled(Area::Shared) && kill_switch::is_enabled(Area::Paste)
+}
+
 impl PasteQueueState {
     pub(super) fn new() -> Self {
         Self {
@@ -141,6 +157,7 @@ impl PasteQueueState {
             cli_submit_gate: None,
             next_cli_submit_key: 0,
             handoff_enabled: handoff_queue_enabled_by_default(),
+            shared: shared_queue_enabled_by_default(),
             requeueable_delivery: false,
             requeue_request: None,
             line_stamp: None,
@@ -220,8 +237,14 @@ impl Host for PtyQueueHost<'_, '_> {
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
-        _follow: &mut FollowUps,
+        follow: &mut FollowUps,
     ) -> DeliverOutcome {
+        // The pane's queue is shared with the input editor (#1353 step 3): this host reaches both
+        // destinations, so an entry that belongs to the editor side (an editor key, an editor
+        // paste, text typed behind an Enter) is delivered through the input's own host.
+        if !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Signal(_)) {
+            return self.view.deliver_editor_entry(entry, follow, self.ctx);
+        }
         match &entry.kind {
             EntryKind::Paste {
                 paste_id,
@@ -280,6 +303,10 @@ impl Host for PtyQueueHost<'_, '_> {
     }
 
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
+        if !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Signal(_)) {
+            self.view.discard_editor_entry(entry, why, self.ctx);
+            return;
+        }
         if matches!(entry.kind, EntryKind::Held { .. }) {
             // An ssh-typeahead entry voided by a signal: the hold already said so.
             return;
@@ -332,7 +359,7 @@ impl TerminalView {
             self.paste_queue
                 .queue
                 .try_peek()
-                .is_some_and(|queue| queue.has_gate_kind(GateKind::PasteReading))
+                .is_some_and(|queue| queue.has_pty_paste_reading())
         } else {
             self.paste_sequencer.has_pending()
         }
@@ -349,11 +376,13 @@ impl TerminalView {
         abort_as_entry: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Option<bool> {
+        // Nothing holds pty keys: the queue is idle, or (shared with the editor) only editor gates
+        // are open, which never held a pty key.
         if self
             .paste_queue
             .queue
             .try_peek()
-            .map_or(true, |queue| queue.is_idle())
+            .map_or(true, |queue| !queue.holds_pty_keys())
         {
             return None;
         }
@@ -370,7 +399,7 @@ impl TerminalView {
                 .paste_queue
                 .queue
                 .try_peek()
-                .map_or(true, |queue| queue.is_idle())
+                .map_or(true, |queue| !queue.holds_pty_keys())
             {
                 return None;
             }
@@ -411,6 +440,50 @@ impl TerminalView {
         let mut host = PtyQueueHost::new(self, ctx);
         queue.lock().offer(&mut host, kind);
         Some(host.written)
+    }
+
+    /// Delivers an entry that belongs to the editor side of the shared pane queue through the
+    /// input's own host. Follow-ups the editor delivery asks for go back to the draining queue.
+    fn deliver_editor_entry(
+        &mut self,
+        entry: &InputEntry,
+        follow: &mut FollowUps,
+        ctx: &mut ViewContext<Self>,
+    ) -> DeliverOutcome {
+        self.input.update(ctx, |input, input_ctx| {
+            input.deliver_pane_queue_entry(entry, follow, input_ctx)
+        })
+    }
+
+    /// The editor-side form of [`Host::discarded`], for an entry this view's drain removed.
+    fn discard_editor_entry(
+        &mut self,
+        entry: &InputEntry,
+        why: DiscardReason,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input.update(ctx, |input, input_ctx| {
+            input.discard_pane_queue_entry(entry, why, input_ctx)
+        });
+    }
+
+    /// A drain driven from the editor side stopped at an entry only this view can deliver (a pty
+    /// key, a pty paste) and poked the queue's waker (#1353 step 3). Continues the drain here,
+    /// where both destinations are reachable. Idempotent: nothing pending, nothing to do.
+    pub(super) fn on_pane_queue_needs_drain(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        if !queue
+            .try_peek()
+            .is_some_and(|queue| queue.pending_foreign())
+        {
+            return;
+        }
+        let Some(mut guard) = queue.try_lock() else {
+            log::warn!("input queue: pane drain requested while the queue was busy");
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.poke(&mut host);
     }
 
     /// Starts the gate of a paced CLI-agent submit (#1353 phase 3): until
@@ -660,7 +733,7 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
         };
-        let mut combined = self.bytes_of_taken_entries(entries).concat();
+        let mut combined = self.bytes_of_taken_entries(entries, ctx).concat();
         trace::release(trace::legacy::HANDOFF, 1, combined.len(), "pty");
         combined.extend_from_slice(&bytes);
         Cow::Owned(combined)
@@ -711,7 +784,7 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
         };
-        let chunks = self.bytes_of_taken_entries(entries);
+        let chunks = self.bytes_of_taken_entries(entries, ctx);
         if !before_eof {
             return bytes;
         }
@@ -786,7 +859,7 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
         };
-        let chunks = self.bytes_of_taken_entries(entries);
+        let chunks = self.bytes_of_taken_entries(entries, ctx);
         let held_bytes: usize = chunks.iter().map(Vec::len).sum();
         match end {
             YoungHoldEnd::Dropped => {
@@ -880,7 +953,7 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
         };
-        let chunks = self.bytes_of_taken_entries(entries);
+        let chunks = self.bytes_of_taken_entries(entries, ctx);
         let writes = {
             let mut model = self.model.lock();
             let handoff = model.typeahead_handoff_mut();
@@ -912,9 +985,19 @@ impl TerminalView {
     }
 
     /// The bytes of entries taken out of a hand-off gate, one chunk per entry, in order.
-    fn bytes_of_taken_entries(&mut self, entries: Vec<InputEntry>) -> Vec<Vec<u8>> {
+    fn bytes_of_taken_entries(
+        &mut self,
+        entries: Vec<InputEntry>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Vec<Vec<u8>> {
         let mut chunks = Vec::with_capacity(entries.len());
         for entry in entries {
+            // An entry of the editor side that ended up in this gate's segment (the queue is
+            // shared with the editor): never lost, delivered to the editor.
+            if !is_pty_entry(&entry.kind) {
+                self.deliver_editor_entry(&entry, &mut FollowUps::default(), ctx);
+                continue;
+            }
             match entry.kind {
                 EntryKind::PtyBytes { bytes, .. } => chunks.push(bytes),
                 EntryKind::Paste { paste_id, .. } => {
@@ -956,7 +1039,7 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
         };
-        let chunks = self.bytes_of_taken_entries(entries);
+        let chunks = self.bytes_of_taken_entries(entries, ctx);
         let held_bytes: usize = chunks.iter().map(Vec::len).sum();
         if how == PromptHoldEnd::GaveUp {
             // The safety net fired: no signal came. Ids and counts only, never bytes.
@@ -1013,12 +1096,16 @@ impl TerminalView {
                 Some(queue) => (
                     queue.has_gate_kind(GateKind::SubshellSetup),
                     queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
-                    queue.gates().iter().all(|gate| {
-                        matches!(
-                            gate.kind,
-                            GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
-                        )
-                    }),
+                    queue
+                        .gates()
+                        .iter()
+                        .filter(|gate| gate.holds_pty_keys())
+                        .all(|gate| {
+                            matches!(
+                                gate.kind,
+                                GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
+                            )
+                        }),
                 ),
                 None => return SubshellPrep::Normal,
             };

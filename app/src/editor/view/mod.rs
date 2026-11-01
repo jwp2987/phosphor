@@ -3170,8 +3170,7 @@ impl EditorView {
         {
             use crate::terminal::input_queue::GateKind;
             let held = queue.peek();
-            if held.has_gate_kind(GateKind::EnterVerdict)
-                && !held.has_gate_kind(GateKind::PasteReading)
+            if held.has_gate_kind(GateKind::EnterVerdict) && !held.has_editor_paste_reading()
             {
                 drop(held);
                 let kind = match action {

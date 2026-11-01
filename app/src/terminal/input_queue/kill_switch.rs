@@ -99,7 +99,7 @@ pub fn parse_enabled(global: Option<&str>, per_area: Option<&str>, area: Area) -
 
 /// Whether `area` runs on the new queue. Read once per process.
 pub fn is_enabled(area: Area) -> bool {
-    static CACHE: [OnceLock<bool>; 6] = [const { OnceLock::new() }; 5];
+    static CACHE: [OnceLock<bool>; 6] = [const { OnceLock::new() }; 6];
     *CACHE[area.index()].get_or_init(|| {
         parse_enabled(
             std::env::var("PHOSPHOR_INPUT_QUEUE").ok().as_deref(),

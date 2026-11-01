@@ -361,3 +361,130 @@ fn two_destination_drain_keeps_arrival_order_and_never_strands_a_stop() {
         assert!(rig.violations.borrow().is_empty(), "seed={seed}");
     }
 }
+
+// ---- which keys a gate holds (parity table) -----------------------------------------------
+
+#[test]
+fn the_key_holding_table_is_parity_with_the_two_instance_behaviour() {
+    let editor_gates = [
+        GateKind::PasteReading,
+        GateKind::EnterVerdict,
+        GateKind::TabCompletion,
+        GateKind::HandoffReport,
+    ];
+    let not_pty_gates = [
+        GateKind::EnterVerdict,
+        GateKind::TabCompletion,
+        GateKind::EditorFocusPending,
+    ];
+    for kind in GateKind::ALL {
+        assert_eq!(
+            kind.holds_editor_keys(),
+            editor_gates.contains(&kind),
+            "{kind:?}: editor keys"
+        );
+        assert_eq!(
+            kind.holds_pty_keys(),
+            !not_pty_gates.contains(&kind),
+            "{kind:?}: pty keys"
+        );
+    }
+}
+
+#[test]
+fn a_paste_gate_holds_only_the_keys_of_its_owner() {
+    let pane = PaneQueue::new();
+    let pty_id = pane.next_paste_id(PasteOwner::Pty);
+    let editor_id = pane.next_paste_id(PasteOwner::Editor);
+    let mut rig = Rig::new();
+    let mut view = rig.view();
+    rig.queue
+        .open_gate(&mut view, GateSpec::new(GateKind::PasteReading, pty_id));
+    assert!(rig.queue.holds_pty_keys());
+    assert!(
+        !rig.queue.holds_editor_keys(),
+        "a pty paste never held editor keys"
+    );
+    assert!(rig.queue.has_pty_paste_reading());
+    assert!(!rig.queue.has_editor_paste_reading());
+    rig.queue
+        .open_gate(&mut view, GateSpec::new(GateKind::PasteReading, editor_id));
+    assert!(rig.queue.holds_editor_keys());
+    assert!(rig.queue.has_editor_paste_reading());
+    rig.queue
+        .on_gate_event(&mut view, GateKind::PasteReading, pty_id);
+    assert!(
+        !rig.queue.holds_pty_keys(),
+        "with the pty paste gone, only the editor's gate is open"
+    );
+    assert!(rig.queue.holds_editor_keys());
+}
+
+// ---- X4: a signal meets gates of both sides -----------------------------------------------
+
+/// An editor ^C walks the gates in arrival order and applies each one's own plan (the table of
+/// `signal_plan`): the Enter's gate discards what was typed behind it; the pty setup gate behind
+/// it releases (the signal goes first), and the pty entry it held is handed to the view.
+#[test]
+fn an_editor_interrupt_applies_each_gates_plan_across_both_sides() {
+    let mut rig = Rig::new();
+    let mut ed = rig.editor();
+    let mut view = rig.view();
+    rig.queue
+        .open_gate(&mut ed, GateSpec::new(GateKind::EnterVerdict, 1));
+    rig.queue.offer(
+        &mut ed,
+        EntryKind::Text("typed behind the Enter".to_owned()),
+    );
+    rig.queue
+        .open_gate(&mut view, GateSpec::new(GateKind::SubshellSetup, 0));
+    rig.queue.offer(&mut view, pty_key("p"));
+    assert_eq!(rig.queue.queued_len(), 2);
+
+    let discarded = Rc::new(RefCell::new(Vec::new()));
+    struct Spy<'a> {
+        inner: SideHost,
+        discarded: &'a Rc<RefCell<Vec<(u64, DiscardReason)>>>,
+    }
+    impl Host for Spy<'_> {
+        fn facts(&self) -> DestFacts {
+            self.inner.facts()
+        }
+        fn handles(&self, entry: &InputEntry, dest: Destination) -> bool {
+            self.inner.handles(entry, dest)
+        }
+        fn deliver(
+            &mut self,
+            entry: &InputEntry,
+            dest: Destination,
+            follow: &mut FollowUps,
+        ) -> DeliverOutcome {
+            self.inner.deliver(entry, dest, follow)
+        }
+        fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
+            self.discarded.borrow_mut().push((entry.id.0, why));
+        }
+        fn arm_give_up(&mut self, _t: GateToken, _k: GateKind, _a: std::time::Duration) {}
+        fn warn(&mut self, line: &str) {
+            panic!("unexpected warning: {line}");
+        }
+    }
+    let mut spy = Spy {
+        inner: rig.editor(),
+        discarded: &discarded,
+    };
+    rig.queue
+        .offer(&mut spy, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(
+        *discarded.borrow(),
+        vec![(1, DiscardReason::SignalDiscard(GateKind::EnterVerdict))],
+        "the Enter's gate voids what was typed behind it"
+    );
+    // The signal itself went through the editor host (no-op delivery), the setup gate released,
+    // and the pty entry waits for the view.
+    assert!(rig.queue.pending_foreign());
+    assert_eq!(rig.queue.queued_len(), 1);
+    rig.queue.poke(&mut view);
+    assert!(rig.queue.is_idle());
+    assert!(rig.violations.borrow().is_empty());
+}
