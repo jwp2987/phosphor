@@ -1,5 +1,6 @@
 pub mod active_session;
 pub mod command_executor;
+mod git_branch_cache;
 
 use async_channel::Sender;
 pub use command_executor::*;
@@ -2238,6 +2239,15 @@ impl Session {
     }
 
     pub async fn git_branches_for_command_corrections(&self, working_dir: &str) -> Vec<String> {
+        // Reuse the last list while the repository's HEAD and branch refs are unchanged (#1342).
+        let stamp = (self.is_local() && std::env::var_os(git_branch_cache::DISABLE_ENV).is_none())
+            .then(|| git_branch_cache::branch_stamp(working_dir))
+            .flatten();
+        if let Some(stamp) = &stamp {
+            if let Some(branches) = git_branch_cache::lookup(self.id(), working_dir, stamp) {
+                return branches;
+            }
+        }
         // Running `git branch` outside a repository always fails; skip the process spawn
         // (and the log noise) when we can cheaply tell the local directory isn't in a repo.
         if self.is_local() && local_dir_is_outside_git_repo(Path::new(working_dir)) {
@@ -2266,10 +2276,13 @@ impl Session {
                     );
                     return vec![];
                 };
-                let res = output_string
+                let res: Vec<String> = output_string
                     .lines()
                     .map(|s| s.trim().to_string())
                     .collect();
+                if let Some(stamp) = stamp {
+                    git_branch_cache::store(self.id(), working_dir, stamp, res.clone());
+                }
                 res
             }
             _ => {
