@@ -96,3 +96,23 @@ recordings under `app/src/terminal/ref_tests/data/` (first byte = read size), th
 seeds are the hook JSON of `ansi/mod_test.rs` in each frame (first byte = frame), `input_queue`
 has a few random byte seeds. A crash lands in `fuzz/artifacts/<target>/`; reproduce with
 `cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>`.
+
+## cargo-mutants
+
+`.cargo/mutants.toml` (the location cargo-mutants reads) sets the test command
+(`nextest ... -p warp_tui --lib --features warp/gui`, since `-p warp_tui` alone does not
+compile), generous timeouts and the excludes (tests, generated code, platform-only files,
+vendored crates, logging). Always narrow the run:
+
+```
+cargo mutants -p warp --file app/src/terminal/pane_key.rs
+cargo mutants -p warp --file app/src/terminal/model/key_facts.rs --file app/src/terminal/model/typeahead_handoff.rs
+cargo mutants -p warpui_core --file crates/warpui_core/src/clipboard.rs   # use the warpui_core tests
+cargo mutants --list --file app/src/terminal/pane_key.rs                  # preview, runs nothing
+```
+
+A surviving mutant is a behavior no test pins: add the test, do not weaken the mutant list.
+Results are in `mutants.out/` (`missed.txt`, `caught.txt`).
+
+Note for the model-checker runs: `RUSTFLAGS` in the environment replaces `build.rustflags` of
+`.cargo/config.toml` (the v0 symbol mangling and the mac link args); that is fine for tests.
