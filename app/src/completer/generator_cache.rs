@@ -29,6 +29,13 @@ use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use crate::terminal::model::session::SessionId;
 
 /// How long a finished generator result is reused.
+///
+/// #1381: not a correctness delay for anything this session does. The events that change a
+/// generator's answer from inside the session (a command is submitted, a block completes, the
+/// cwd changes -- the cwd is part of the key) already invalidate it ([`invalidate_session`]).
+/// This bounds the staleness of a change made outside the session (another terminal, an editor,
+/// a daemon), for which a generator like `git branch` or `docker ps` has no event source; a
+/// watcher per cwd per generator would cost far more than the 5 s of reuse saves.
 pub(super) const GENERATOR_CACHE_TTL: Duration = Duration::from_secs(5);
 
 /// How long a git alias lookup is reused while the git config files it reads are unchanged

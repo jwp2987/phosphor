@@ -591,7 +591,7 @@ mod late_commands {
             assert!(!session.top_level_commands().any(|c| c == "zorkle"));
 
             install(dir.path(), "zorkle", 0o755);
-            // The earlier miss is remembered for a few seconds ...
+            // The earlier miss is remembered until a command completes ...
             session.discover_command_word("zorkle");
             assert_eq!(session.knows_command_word("zorkle"), Some(false));
             // ... until a command that may have installed something runs.
@@ -601,6 +601,24 @@ mod late_commands {
             assert!(session.top_level_commands().any(|c| c == "zorkle"));
             // Bootstrap-known names are untouched.
             assert_eq!(session.knows_command_word("git"), Some(true));
+        });
+    }
+
+    /// #1381: a miss is not a 3 s timer. It holds as long as nothing ran, however long that is,
+    /// and ends at the next completed command, even a harmless-looking one (a build or an
+    /// install script can create an executable).
+    #[test]
+    fn a_miss_lasts_until_the_next_command_completes_not_for_a_fixed_time() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let session = session_with_path(dir.path());
+            session.discover_command_word("zorkle");
+            install(dir.path(), "zorkle", 0o755);
+            assert!(!session.command_word_needs_probe("zorkle"));
+            session.note_user_command("make-it-somehow");
+            assert!(session.command_word_needs_probe("zorkle"));
+            session.discover_command_word("zorkle");
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
         });
     }
 
