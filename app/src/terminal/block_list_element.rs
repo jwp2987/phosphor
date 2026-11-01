@@ -719,6 +719,16 @@ fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bo
     live_focus.unwrap_or(snapshot_focused)
 }
 
+/// #1332: whether the terminal view takes a key that nothing else took, because it is holding the
+/// keys typed during an ssh connect. Between the ssh block ending and the remote shell's first
+/// prompt focus moves to the input while the editor is not yet accepting keys; a key typed in
+/// that gap was dropped by both, so the held line lost a character. While the hold is active
+/// and the focus is on the input (or inside it), the terminal view takes it and holds it, in
+/// order, with the rest.
+fn terminal_takes_unclaimed_held_key(hold_active: bool, live_input_focus: Option<bool>) -> bool {
+    hold_active && live_input_focus == Some(true)
+}
+
 /// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
 /// `block_menu_items_start_origin` in `paint`), so the PS1 run time never sits under it.
 const PS1_DURATION_RIGHT_RESERVED_PX: f32 = 144.;
@@ -761,6 +771,10 @@ pub struct BlockListElement {
     settled_ai_focus_view_id: Option<EntityId>,
     /// See `TerminalViewRenderContext::ssh_choice_card_view_id` (#1087).
     ssh_choice_card_view_id: Option<EntityId>,
+    /// See `TerminalViewRenderContext::input_view_id` (#1332).
+    input_view_id: EntityId,
+    /// See `TerminalViewRenderContext::ssh_key_hold` (#1332).
+    ssh_key_hold: Rc<crate::editor::EditorKeyHold>,
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
@@ -1132,6 +1146,8 @@ impl BlockListElement {
             approval_card_view_id: terminal_view_render_context.approval_card_view_id,
             settled_ai_focus_view_id: terminal_view_render_context.settled_ai_focus_view_id,
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
+            input_view_id: terminal_view_render_context.input_view_id,
+            ssh_key_hold: terminal_view_render_context.ssh_key_hold,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
@@ -1533,8 +1549,17 @@ impl BlockListElement {
         )
     }
 
+    /// See [`terminal_takes_unclaimed_held_key`] (#1332). Only reached for a key the input's
+    /// editor, which sits above this element, did not take.
+    fn takes_unclaimed_held_key(&self, ctx: &EventContext) -> bool {
+        terminal_takes_unclaimed_held_key(
+            self.ssh_key_hold.is_active(),
+            ctx.live_focus_of(self.input_view_id),
+        )
+    }
+
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if self.terminal_focused_now(ctx)
+        if (self.terminal_focused_now(ctx) || self.takes_unclaimed_held_key(ctx))
             && !chars.is_empty()
             && chars.chars().all(|c| c.is_control())
         {
@@ -1565,7 +1590,8 @@ impl BlockListElement {
         if (self.terminal_focused_now(ctx)
             || on_approval_card
             || on_ssh_choice_card
-            || on_settled_ai_target)
+            || on_settled_ai_target
+            || self.takes_unclaimed_held_key(ctx))
             && !chars.is_empty()
         {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
@@ -5606,6 +5632,18 @@ mod tests {
         assert!(!super::terminal_accepts_keys(true, Some(false)));
         assert!(super::terminal_accepts_keys(true, None));
         assert!(!super::terminal_accepts_keys(false, None));
+    }
+
+    /// #1332: a key typed in the focus gap between the ssh block ending and the remote shell's
+    /// first prompt reached neither the editor nor the terminal and was lost from the held line.
+    #[test]
+    fn terminal_takes_a_held_ssh_key_the_editor_left_unclaimed() {
+        assert!(super::terminal_takes_unclaimed_held_key(true, Some(true)));
+        // No hold, no change: such a key is dropped as before.
+        assert!(!super::terminal_takes_unclaimed_held_key(false, Some(true)));
+        // Focus elsewhere (the find bar, another pane) keeps its keys.
+        assert!(!super::terminal_takes_unclaimed_held_key(true, Some(false)));
+        assert!(!super::terminal_takes_unclaimed_held_key(true, None));
     }
 
     #[test]

@@ -111,3 +111,23 @@ fn burst_continues_only_for_a_quick_follow_up() {
     ));
     assert!(!burst_continues(Some(now), now + SSH_TYPEAHEAD_BURST_GAP));
 }
+
+/// #1332: the held Enter was delivered at the `Bootstrapped` hook, before the first prompt's Precmd
+/// was processed, and refused (`HistoryNotAppendable`). Delivery waits while that is the only
+/// obstacle, and never longer than the cap.
+#[test]
+fn delivery_waits_for_the_first_precmd_but_only_up_to_the_cap() {
+    assert!(delivery_waits_for_first_precmd(true, Duration::ZERO));
+    assert!(delivery_waits_for_first_precmd(
+        true,
+        SSH_TYPEAHEAD_PRECMD_WAIT_CAP - Duration::from_millis(1)
+    ));
+    assert!(
+        !delivery_waits_for_first_precmd(true, SSH_TYPEAHEAD_PRECMD_WAIT_CAP),
+        "the keys are never kept back for good"
+    );
+    assert!(
+        !delivery_waits_for_first_precmd(false, Duration::ZERO),
+        "a session that can take the command is not waited for"
+    );
+}
