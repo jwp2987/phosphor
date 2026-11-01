@@ -69,6 +69,7 @@ pub struct SystemInfo {
     long_os_version: Option<String>,
     /// Whether the self-rescheduling refresh timer was started (see
     /// [`REFRESH_POLL_ENABLED`]).
+    #[cfg_attr(not(test), allow(dead_code))]
     refresh_scheduled: bool,
 }
 
