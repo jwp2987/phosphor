@@ -17127,6 +17127,10 @@ fn ssh_control_only_output_does_not_open_the_gate() {
         // A real prompt ends it.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("host's password: ");
+            // A person answers a prompt a while after reading it; an instant Enter would be the
+            // tail of the burst the prompt cut off, which is discarded with it (#1292).
+            view.ssh_typeahead_last_key_at =
+                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.keydown_on_terminal("\r", ctx);
         });
         assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
