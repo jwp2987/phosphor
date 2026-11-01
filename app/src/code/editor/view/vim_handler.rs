@@ -550,14 +550,14 @@ impl VimHandler for CodeEditorView {
 
     fn search_word_at_cursor(&mut self, direction: &Direction, ctx: &mut ViewContext<Self>) {
         self.last_search_direction = *direction;
-        let Some(find_bar) = &self.find_bar else {
-            return;
-        };
-
         let word_under_cursor = self.model.as_ref(ctx).word_under_cursor_for_search(ctx);
 
         if let Some(word) = word_under_cursor {
             if !word.trim().is_empty() {
+                // The find bar is created on first use (#1267), so `*` before any find must make it.
+                let Some(find_bar) = self.ensure_find_bar(ctx) else {
+                    return;
+                };
                 find_bar.update(ctx, |find_bar, ctx| {
                     find_bar.set_find_query(ctx, &word);
                     find_bar.set_open(true);
