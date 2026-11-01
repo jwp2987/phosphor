@@ -10,6 +10,7 @@ pub mod windows;
 
 pub mod headless;
 pub mod session_end_gate;
+pub mod shutdown_progress;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod termination_signals;
 

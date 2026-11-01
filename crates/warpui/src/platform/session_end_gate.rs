@@ -84,6 +84,22 @@ impl SessionEndGate {
         }
     }
 
+    /// Gives up on a `WM_ENDSESSION` that never followed the query once [`QUERY_PENDING_MAX`] has
+    /// passed, and says so (once). Equivalent to the elapsed-time check in
+    /// [`Self::session_end_active`], but the give-up is no longer silent.
+    fn expire_stale_query(&mut self, now: Instant) {
+        if let Some(since) = self.query_pending_since
+            && now.saturating_duration_since(since) >= QUERY_PENDING_MAX
+        {
+            log::warn!(
+                "no WM_ENDSESSION arrived within {}s of WM_QUERYENDSESSION; no longer holding \
+                 exited panes open",
+                QUERY_PENDING_MAX.as_secs()
+            );
+            self.query_pending_since = None;
+        }
+    }
+
     fn session_end_active(&self, now: Instant) -> bool {
         self.ending
             || self
@@ -110,6 +126,7 @@ impl SessionEndGate {
     /// A shell process died (called from the exit watcher at that instant). Counted only when a
     /// session end is pending or under way right now: those are the shells Windows killed.
     pub(crate) fn note_shell_exit(&mut self, now: Instant) {
+        self.expire_stale_query(now);
         if self.session_end_active(now) {
             self.session_exits = self.session_exits.saturating_add(1);
         }
@@ -121,6 +138,7 @@ impl SessionEndGate {
     /// tabs), and, after a cancel, for each exit that was counted while the session end was
     /// pending. Consumes one counted exit per call.
     pub(crate) fn should_keep_exited_pane(&mut self, now: Instant) -> bool {
+        self.expire_stale_query(now);
         let counted = self.session_exits > 0;
         self.session_exits = self.session_exits.saturating_sub(1);
         self.session_end_active(now) || (self.cancelled && counted)
