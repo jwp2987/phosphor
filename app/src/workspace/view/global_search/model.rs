@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::workspace::view::global_search::view::GlobalSearchEvent;
 use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
 use anyhow::Result;
 use futures::StreamExt as _;
-use instant::Instant;
 use num_traits::SaturatingSub;
 use regex::escape;
 use remote_server::manager::RemoteServerManager;
-use remote_server::proto::{ripgrep_search_response, RipgrepSearchRequest, RipgrepSearchSuccess};
+use remote_server::proto::{RipgrepSearchRequest, RipgrepSearchSuccess, ripgrep_search_response};
 use string_offset::ByteOffset;
 use warp_ripgrep::search::{Match as RipgrepMatch, Submatch};
 use warp_util::host_id::HostId;
@@ -67,6 +67,89 @@ impl Entity for GlobalSearch {
     type Event = GlobalSearchEvent;
 }
 
+/// What `pump_matches` hands to its sink.
+enum Emit {
+    /// One of the first `START_BATCH_AFTER_COUNT` matches, shown immediately.
+    Single(GlobalSearchMatch),
+    /// A batch of later matches.
+    Batch(Vec<GlobalSearchMatch>),
+}
+
+/// Whether `search_id` is still the model's current search. A flush that was in
+/// flight when a newer search started must not emit its (stale) results.
+fn batch_is_current(model: &GlobalSearch, search_id: u32) -> bool {
+    model
+        .active_search
+        .as_ref()
+        .is_some_and(|a| a.search_id == search_id)
+}
+
+/// Drives a stream of raw matches into `emit`, expanding submatches and batching
+/// after the first `START_BATCH_AFTER_COUNT`. A pending batch is flushed when it
+/// reaches `MAX_BATCH_SIZE`, when the stream ends, or when the one-shot deadline
+/// from `make_deadline` (armed when the batch gets its first match, dropped when
+/// the batch flushes for any reason) fires, so no batch waits on an unrelated
+/// future match. The deadline is a give-up bound on display latency, not a
+/// correctness dependency. Returns the total match count.
+async fn pump_matches<S, D, E, EF>(
+    mut stream: S,
+    make_deadline: impl Fn() -> D,
+    mut emit: E,
+) -> usize
+where
+    S: futures::Stream<Item = RipgrepMatch> + Unpin,
+    D: Future + Unpin,
+    E: FnMut(Emit) -> EF,
+    EF: Future<Output = ()>,
+{
+    let mut total_match_count: usize = 0;
+    let mut num_unbatched_emitted: usize = 0;
+    let mut batch: Vec<GlobalSearchMatch> = Vec::new();
+    let mut deadline: Option<D> = None;
+
+    loop {
+        let raw_match = match deadline.as_mut() {
+            Some(d) => match futures::future::select(stream.next(), d).await {
+                futures::future::Either::Left((item, _)) => item,
+                futures::future::Either::Right(_) => {
+                    deadline = None;
+                    emit(Emit::Batch(std::mem::take(&mut batch))).await;
+                    continue;
+                }
+            },
+            None => stream.next().await,
+        };
+        let Some(raw_match) = raw_match else { break };
+
+        // Expand each submatch into its own result row (matching
+        // the old per-submatch behavior). Each row gets the line
+        // text trimmed up to that particular submatch.
+        let raw_match = GlobalSearch::local_match_to_global(raw_match);
+        for per_submatch in GlobalSearch::expand_submatches(raw_match) {
+            total_match_count += 1;
+
+            if num_unbatched_emitted < START_BATCH_AFTER_COUNT {
+                num_unbatched_emitted += 1;
+                emit(Emit::Single(per_submatch)).await;
+            } else {
+                if batch.is_empty() {
+                    deadline = Some(make_deadline());
+                }
+                batch.push(per_submatch);
+                if batch.len() >= MAX_BATCH_SIZE {
+                    deadline = None;
+                    emit(Emit::Batch(std::mem::take(&mut batch))).await;
+                }
+            }
+        }
+    }
+
+    if !batch.is_empty() {
+        emit(Emit::Batch(batch)).await;
+    }
+    total_match_count
+}
+
 async fn flush_batch(
     spawner: &ModelSpawner<GlobalSearch>,
     search_id: u32,
@@ -79,8 +162,10 @@ async fn flush_batch(
     let items = std::mem::take(batch);
 
     let _ = spawner
-        .spawn(move |_me, ctx| {
-            ctx.emit(GlobalSearchEvent::ProgressBatch { search_id, items });
+        .spawn(move |me, ctx| {
+            if batch_is_current(me, search_id) {
+                ctx.emit(GlobalSearchEvent::ProgressBatch { search_id, items });
+            }
         })
         .await;
 }
@@ -439,48 +524,30 @@ impl GlobalSearch {
             warp_ripgrep::search::search_streaming(&[pattern], &roots, ignore_case, multiline)?;
         futures::pin_mut!(stream);
 
-        let mut total_match_count: usize = 0;
-        let mut num_unbatched_emitted: usize = 0;
-        let mut batch: Vec<GlobalSearchMatch> = Vec::new();
-        let mut last_batch_flush_at = Instant::now();
-
-        while let Some(raw_match) = stream.next().await {
-            // Expand each submatch into its own result row (matching
-            // the old per-submatch behavior). Each row gets the line
-            // text trimmed up to that particular submatch.
-            let raw_match = Self::local_match_to_global(raw_match);
-            for per_submatch in Self::expand_submatches(raw_match) {
-                total_match_count += 1;
-
-                if num_unbatched_emitted < START_BATCH_AFTER_COUNT {
-                    num_unbatched_emitted += 1;
-
-                    let _ = spawner
-                        .spawn(move |_me, ctx| {
-                            ctx.emit(GlobalSearchEvent::Progress {
-                                search_id,
-                                result: per_submatch,
-                            });
-                        })
-                        .await;
-                } else {
-                    batch.push(per_submatch);
-
-                    let too_big = batch.len() >= MAX_BATCH_SIZE;
-                    let too_old =
-                        last_batch_flush_at.elapsed().as_millis() >= MAX_BATCH_AGE_MS as u128;
-
-                    if too_big || too_old {
-                        flush_batch(&spawner, search_id, &mut batch).await;
-                        last_batch_flush_at = Instant::now();
+        let total_match_count = pump_matches(
+            stream,
+            || warpui::r#async::Timer::after(Duration::from_millis(MAX_BATCH_AGE_MS)),
+            |emit| {
+                let spawner = spawner.clone();
+                async move {
+                    match emit {
+                        Emit::Single(result) => {
+                            let _ = spawner
+                                .spawn(move |me, ctx| {
+                                    if batch_is_current(me, search_id) {
+                                        ctx.emit(GlobalSearchEvent::Progress { search_id, result });
+                                    }
+                                })
+                                .await;
+                        }
+                        Emit::Batch(mut items) => {
+                            flush_batch(&spawner, search_id, &mut items).await;
+                        }
                     }
                 }
-            }
-        }
-
-        if !batch.is_empty() {
-            flush_batch(&spawner, search_id, &mut batch).await;
-        }
+            },
+        )
+        .await;
 
         Ok(total_match_count)
     }
