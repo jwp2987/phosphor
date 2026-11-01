@@ -91,3 +91,16 @@ fn no_repo_means_no_stamp() {
         assert_eq!(got, None);
     }
 }
+
+/// #1371: a watcher refs event (epoch bump) invalidates a cached list even when every file stamp
+/// (mtime, len) is identical. On the old file-only stamp this was a hit and served a stale list.
+#[test]
+fn refs_epoch_change_is_a_miss_with_identical_file_stamps() {
+    let id = SessionId::from(9005);
+    store(id, "/r", stamp(3).with_epoch(7), vec!["* main".into()]);
+    assert_eq!(
+        lookup(id, "/r", &stamp(3).with_epoch(7)),
+        Some(vec!["* main".to_string()])
+    );
+    assert_eq!(lookup(id, "/r", &stamp(3).with_epoch(8)), None);
+}

@@ -493,3 +493,68 @@ fn config_stamp_changes_when_gitconfig_changes() {
     std::fs::remove_dir_all(&dir).ok();
     assert_ne!(before, after);
 }
+
+/// #1371: an `[include]`d file (and a nested one) is part of the stamp, so an alias added there
+/// is not hidden by the 30 minute reuse. Failed on the old stamp, which never read includes.
+#[test]
+fn config_stamp_follows_includes() {
+    let dir = std::env::temp_dir().join(format!("phosphor-stamp-inc-{}", std::process::id()));
+    let git = dir.join("repo").join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let inner = dir.join("inner.conf");
+    let outer = dir.join("outer.conf");
+    std::fs::write(&inner, "[alias]\n co = checkout\n").unwrap();
+    std::fs::write(&outer, "[include]\n\tpath = inner.conf\n").unwrap();
+    std::fs::write(
+        git.join("config"),
+        format!(
+            "[includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+            dir.display(),
+            outer.display()
+        ),
+    )
+    .unwrap();
+    let pwd = dir.join("repo").to_string_lossy().into_owned();
+    let before = config_stamp(&pwd);
+    std::fs::write(&inner, "[alias]\n co = checkout\n st = status\n").unwrap();
+    let after = config_stamp(&pwd);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_ne!(before, after);
+}
+
+#[test]
+fn include_targets_resolve_relative_home_and_ignore_other_sections() {
+    let text = "[user]\n path = nope\n[include]\n path = rel.conf\n[includeIf \"gitdir:~/w/\"]\n path = ~/h.conf\n";
+    let t = config_include_targets(text, Path::new("/a/b/config"), Some(Path::new("/home/u")));
+    assert_eq!(
+        t,
+        vec![
+            PathBuf::from("/a/b/rel.conf"),
+            PathBuf::from("/home/u/h.conf")
+        ]
+    );
+}
+
+/// A linked worktree's `.git` file leads to the common dir's config.
+#[test]
+fn config_stamp_covers_worktree_common_dir_config() {
+    let dir = std::env::temp_dir().join(format!("phosphor-stamp-wt-{}", std::process::id()));
+    let common = dir.join("main").join(".git");
+    let wt_git = common.join("worktrees").join("w");
+    std::fs::create_dir_all(&wt_git).unwrap();
+    std::fs::create_dir_all(dir.join("w")).unwrap();
+    std::fs::write(wt_git.join("commondir"), "../..\n").unwrap();
+    std::fs::write(
+        dir.join("w").join(".git"),
+        format!("gitdir: {}\n", wt_git.display()),
+    )
+    .unwrap();
+    let cfg = common.join("config");
+    std::fs::write(&cfg, "[alias]\n a = b\n").unwrap();
+    let pwd = dir.join("w").to_string_lossy().into_owned();
+    let before = config_stamp(&pwd);
+    std::fs::write(&cfg, "[alias]\n a = b\n c = d\n").unwrap();
+    let after = config_stamp(&pwd);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_ne!(before, after);
+}

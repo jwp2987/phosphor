@@ -284,6 +284,10 @@ pub async fn list_local_branches(_repo_path: &Path) -> HashSet<String> {
 #[derive(Default)]
 struct BranchCache {
     branches: std::collections::HashMap<std::path::PathBuf, HashSet<String>>,
+    /// Names handed out for new worktree branches whose `git worktree add -b` may not have run
+    /// yet, so a stale or cold list cannot offer the same name twice. Dropped once a listing
+    /// contains them.
+    reserved: std::collections::HashMap<std::path::PathBuf, HashSet<String>>,
     generation: std::collections::HashMap<std::path::PathBuf, u64>,
 }
 
@@ -291,7 +295,44 @@ static BRANCH_CACHE: std::sync::LazyLock<std::sync::Mutex<BranchCache>> =
     std::sync::LazyLock::new(Default::default);
 
 pub(crate) fn cached_local_branches(repo_path: &Path) -> Option<HashSet<String>> {
-    BRANCH_CACHE.lock().ok()?.branches.get(repo_path).cloned()
+    let cache = BRANCH_CACHE.lock().ok()?;
+    let listed = cache.branches.get(repo_path);
+    let reserved = cache.reserved.get(repo_path);
+    match (listed, reserved) {
+        (None, None) => None,
+        (l, r) => Some(
+            l.into_iter()
+                .chain(r)
+                .flat_map(|set| set.iter().cloned())
+                .collect(),
+        ),
+    }
+}
+
+/// Remembers `name` as taken for `repo_path` until a branch listing contains it.
+pub(crate) fn reserve_branch_name(repo_path: &Path, name: &str) {
+    const MAX_RESERVED: usize = 64;
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return;
+    };
+    let set = cache.reserved.entry(repo_path.to_path_buf()).or_default();
+    if set.len() >= MAX_RESERVED {
+        set.clear();
+    }
+    set.insert(name.to_owned());
+}
+
+/// Bumped whenever a repository watcher reports that `HEAD` or a local branch ref changed.
+/// Branch-list caches record it before listing and are invalid once it moves, so they follow the
+/// event instead of trusting a file mtime (coarse mtimes and same-mtime swaps go stale).
+static REFS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn note_refs_changed() {
+    REFS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn refs_epoch() -> u64 {
+    REFS_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Starts a refresh for `repo_path`, returning its generation.
@@ -315,6 +356,9 @@ pub(crate) fn finish_branch_refresh(
     };
     if cache.generation.get(repo_path) != Some(&generation) {
         return false;
+    }
+    if let Some(reserved) = cache.reserved.get_mut(repo_path) {
+        reserved.retain(|name| !branches.contains(name));
     }
     cache.branches.insert(repo_path.to_path_buf(), branches);
     true

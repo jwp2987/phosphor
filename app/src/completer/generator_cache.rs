@@ -99,29 +99,140 @@ pub(super) fn is_alias_lookup_script(script: &str) -> bool {
     script.starts_with("git ") && script.contains(" config ") && script.contains("alias")
 }
 
-/// Stamps the git config files visible from `pwd`: the global ones and the repository's own.
+/// How deep `[include]` chains are followed (git itself stops at 10).
+const CONFIG_INCLUDE_MAX_DEPTH: usize = 10;
+
+/// The `path = ...` targets of every `[include]` / `[includeIf ...]` section in git config
+/// `text`. Conditions are not evaluated: stamping a file git ends up not reading only costs a
+/// spurious re-run when it changes. Relative targets are relative to the including file; `~/`
+/// is the home directory.
+pub(super) fn config_include_targets(
+    text: &str,
+    including_file: &Path,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut in_include = false;
+    let mut targets = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(section) = line.strip_prefix('[') {
+            let name = section
+                .split(|c: char| c == ']' || c.is_whitespace() || c == '"')
+                .next()
+                .unwrap_or("");
+            in_include =
+                name.eq_ignore_ascii_case("include") || name.eq_ignore_ascii_case("includeif");
+            continue;
+        }
+        if !in_include {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() {
+            continue;
+        }
+        let target = if let Some(rest) = value.strip_prefix("~/") {
+            match home {
+                Some(home) => home.join(rest),
+                None => continue,
+            }
+        } else if Path::new(value).is_absolute() {
+            PathBuf::from(value)
+        } else {
+            including_file
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join(value)
+        };
+        targets.push(target);
+    }
+    targets
+}
+
+/// Every file in `roots` plus, transitively, the files they include.
+pub(super) fn config_files_with_includes(roots: Vec<PathBuf>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut queue: Vec<(PathBuf, usize)> = roots.into_iter().map(|p| (p, 0)).collect();
+    while let Some((path, depth)) = queue.pop() {
+        if seen.contains(&path) {
+            continue;
+        }
+        seen.push(path.clone());
+        if depth >= CONFIG_INCLUDE_MAX_DEPTH {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for target in config_include_targets(&text, &path, home) {
+                queue.push((target, depth + 1));
+            }
+        }
+    }
+    seen.sort();
+    seen
+}
+
+/// The repository's own config file for the repo containing `pwd`: `.git/config`, or for a
+/// worktree/submodule the common dir's config that the `.git` pointer file leads to.
+fn repo_config_path(pwd: &str) -> Option<PathBuf> {
+    for dir in Path::new(pwd).ancestors() {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return Some(dot_git.join("config"));
+        } else if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let gitdir = text.trim().strip_prefix("gitdir:")?.trim();
+            let gitdir = if Path::new(gitdir).is_absolute() {
+                PathBuf::from(gitdir)
+            } else {
+                dir.join(gitdir)
+            };
+            // A linked worktree keeps `commondir` (usually `../..`); a submodule's gitdir is the
+            // common dir itself.
+            let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+                Ok(rel) => gitdir.join(rel.trim()),
+                Err(_) => gitdir,
+            };
+            return Some(common.join("config"));
+        }
+    }
+    None
+}
+
+/// Stamps every git config file an alias lookup can read from `pwd`: system, global (including
+/// `$XDG_CONFIG_HOME`, `$GIT_CONFIG_GLOBAL` / `$GIT_CONFIG_SYSTEM`), the repository's own, and
+/// everything they `[include]`. There is no event source for "git's config changed" (git offers
+/// none), so the files are stamped, not watched.
 pub(super) fn config_stamp(pwd: &str) -> ConfigStamp {
+    let home = dirs::home_dir();
     let mut paths: Vec<PathBuf> = Vec::new();
-    if let Some(home) = dirs::home_dir() {
+    match std::env::var_os("GIT_CONFIG_SYSTEM") {
+        Some(p) => paths.push(PathBuf::from(p)),
+        None => {
+            paths.push(PathBuf::from("/etc/gitconfig"));
+            if let Some(pd) = std::env::var_os("PROGRAMDATA") {
+                paths.push(Path::new(&pd).join("Git").join("config"));
+            }
+        }
+    }
+    if let Some(p) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+        paths.push(PathBuf::from(p));
+    }
+    if let Some(home) = &home {
         paths.push(home.join(".gitconfig"));
         paths.push(home.join(".config").join("git").join("config"));
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         paths.push(Path::new(&xdg).join("git").join("config"));
     }
-    for dir in Path::new(pwd).ancestors() {
-        let dot_git = dir.join(".git");
-        if dot_git.is_dir() {
-            paths.push(dot_git.join("config"));
-            break;
-        } else if dot_git.is_file() {
-            // A worktree or submodule: stamp the pointer file; the config lives elsewhere.
-            paths.push(dot_git);
-            break;
-        }
-    }
+    paths.extend(repo_config_path(pwd));
     ConfigStamp(
-        paths
+        config_files_with_includes(paths, home.as_deref())
             .into_iter()
             .map(|path| {
                 let meta = std::fs::metadata(&path)

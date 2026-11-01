@@ -604,38 +604,54 @@ fn budgeted_autosuggestion_scan_defers_long_walks_and_agrees_otherwise() {
 
 #[cfg(feature = "local_fs")]
 #[test]
-fn similar_history_context_cache_reuses_result_per_block_until_ttl() {
+fn similar_history_context_cache_reuses_result_per_block_until_a_write() {
     use std::cell::Cell;
-    use std::time::Instant;
 
     let cache = SimilarHistoryContextCache::default();
     let calls = Cell::new(0);
+    let epoch = Cell::new(10u64);
     let compute = || {
         calls.set(calls.get() + 1);
         Vec::new()
     };
-    let start = Instant::now();
     let pwd = Some("/repo".to_owned());
     let exit_ok = ExitCode::from(0);
 
-    // Every keystroke after the same block: one query.
-    for keystroke in 0..5 {
-        let now = start + Duration::from_millis(keystroke * 100);
-        cache.get_or_compute_at(now, "ls", &pwd, exit_ok, None, compute);
+    // Every keystroke after the same block: one query, however long it takes.
+    for _ in 0..5 {
+        cache.get_or_compute_at(|| epoch.get(), "ls", &pwd, exit_ok, None, compute);
     }
     assert_eq!(calls.get(), 1);
 
     // A different block (command, pwd or exit code) re-queries ...
-    cache.get_or_compute_at(start, "pwd", &pwd, exit_ok, None, compute);
+    cache.get_or_compute_at(|| epoch.get(), "pwd", &pwd, exit_ok, None, compute);
     assert_eq!(calls.get(), 2);
-    cache.get_or_compute_at(start, "pwd", &None, exit_ok, None, compute);
+    cache.get_or_compute_at(|| epoch.get(), "pwd", &None, exit_ok, None, compute);
     assert_eq!(calls.get(), 3);
-    cache.get_or_compute_at(start, "pwd", &None, ExitCode::from(1), None, compute);
+    cache.get_or_compute_at(
+        || epoch.get(),
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
     assert_eq!(calls.get(), 4);
 
-    // ... and so does the same block once the entry has aged out.
+    // ... and so does the same block once the writer has committed (the finished-state update
+    // landing after the first keystroke). The old 5 s TTL served the stale answer here.
+    epoch.set(11);
     cache.get_or_compute_at(
-        start + SIMILAR_HISTORY_CONTEXT_CACHE_TTL,
+        || epoch.get(),
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
+    assert_eq!(calls.get(), 5);
+    cache.get_or_compute_at(
+        || epoch.get(),
         "pwd",
         &None,
         ExitCode::from(1),

@@ -155,80 +155,61 @@ fn main_branch_cache_is_reused_only_while_fresh() {
     );
 }
 
-// ── command-completion refresh gating (#1334 follow-up) ─────────────────────
+// ── command-completion refresh gating (#1334 follow-up, #1371) ───────────────
 
 #[test]
-fn empty_enter_with_quiet_watcher_runs_no_git() {
-    let mut gate = RefreshGate::default();
-    let t0 = Instant::now();
-    gate.refresh_started(t0);
-    let later = t0 + Duration::from_secs(10);
-    assert_eq!(gate.decide("", true, later, false), RefreshDecision::Skip);
-    assert_eq!(
-        gate.decide("  \t", true, later, false),
-        RefreshDecision::Skip
-    );
-    assert_eq!(
-        gate.decide("ls -la", true, later, false),
-        RefreshDecision::Skip
-    );
+fn only_empty_enter_with_quiet_watcher_skips() {
+    let gate = RefreshGate::default();
+    assert_eq!(gate.decide("", true, false), RefreshDecision::Skip);
+    assert_eq!(gate.decide("  \t", true, false), RefreshDecision::Skip);
 }
 
 #[test]
-fn watcher_change_forces_refresh_then_clears() {
+fn plain_command_refreshes_even_before_watcher_reports() {
+    // `echo x >> tracked`: the block completes before the watcher flushes, so `dirty` is still
+    // false. The old gate skipped here and the chip lagged the edit.
+    let gate = RefreshGate::default();
+    assert_eq!(
+        gate.decide("echo x >> tracked", true, false),
+        RefreshDecision::Refresh
+    );
+    assert_eq!(gate.decide("ls -la", true, false), RefreshDecision::Refresh);
+}
+
+#[test]
+fn dirty_untrusted_vcs_and_kill_switch_refresh() {
     let mut gate = RefreshGate::default();
-    let t0 = Instant::now();
-    gate.refresh_started(t0);
     gate.mark_dirty();
-    let later = t0 + Duration::from_secs(10);
-    assert_eq!(gate.decide("", true, later, false), RefreshDecision::Now);
-    gate.refresh_started(later);
+    assert_eq!(gate.decide("", true, false), RefreshDecision::Refresh);
+    let gate = RefreshGate::default();
+    assert_eq!(gate.decide("", false, false), RefreshDecision::Refresh);
+    assert_eq!(gate.decide("", true, true), RefreshDecision::Refresh);
     assert_eq!(
-        gate.decide("", true, later + Duration::from_secs(1), false),
-        RefreshDecision::Skip
+        gate.decide("git switch b", true, false),
+        RefreshDecision::Refresh
     );
 }
 
 #[test]
-fn vcs_commands_and_untrusted_state_always_refresh() {
+fn request_during_flight_reruns_once_after_it() {
     let mut gate = RefreshGate::default();
-    let t0 = Instant::now();
-    gate.refresh_started(t0);
-    let later = t0 + Duration::from_secs(10);
-    assert_eq!(
-        gate.decide("git switch b", true, later, false),
-        RefreshDecision::Now
-    );
-    gate.refresh_started(later);
-    let later = later + Duration::from_secs(10);
-    // No metadata / dead watcher: cannot trust "nothing changed".
-    assert_eq!(gate.decide("", false, later, false), RefreshDecision::Now);
-    // Kill switch.
-    assert_eq!(gate.decide("ls", true, later, true), RefreshDecision::Now);
+    assert!(gate.request_refresh(), "first request starts a refresh");
+    // Edits arrive while it runs: coalesced into one pending re-run, never dropped.
+    assert!(!gate.request_refresh());
+    assert!(!gate.request_refresh());
+    assert!(gate.refresh_finished(), "pending request must re-run");
+    assert!(gate.request_refresh());
+    assert!(!gate.refresh_finished(), "nothing pending, no re-run");
+    assert!(gate.request_refresh(), "idle gate starts immediately");
 }
 
 #[test]
-fn burst_collapses_to_one_refresh() {
+fn starting_a_refresh_clears_dirty() {
     let mut gate = RefreshGate::default();
-    let t0 = Instant::now();
-    gate.refresh_started(t0);
     gate.mark_dirty();
-    let t1 = t0 + Duration::from_millis(50);
-    assert_eq!(
-        gate.decide("make", true, t1, false),
-        RefreshDecision::Defer(REFRESH_COALESCE_WINDOW - Duration::from_millis(50))
-    );
-    // Further completions while the deferred refresh is pending are absorbed.
-    assert_eq!(
-        gate.decide("git status", true, t1, false),
-        RefreshDecision::Skip
-    );
-    gate.deferred_fired();
-    gate.refresh_started(t0 + REFRESH_COALESCE_WINDOW);
-    assert_eq!(
-        gate.decide("git status", true, t0 + Duration::from_secs(5), false),
-        RefreshDecision::Now
-    );
+    assert!(gate.request_refresh());
+    gate.refresh_finished();
+    assert_eq!(gate.decide("", true, false), RefreshDecision::Skip);
 }
 
 #[test]
