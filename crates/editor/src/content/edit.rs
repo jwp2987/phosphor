@@ -1164,6 +1164,10 @@ fn layout_text_block(
         true
     };
 
+    // `paragraphs` was sized by an overestimate (one slot per run for code blocks); drop the
+    // slack before the vector is retained for the lifetime of the block.
+    paragraphs.shrink_to_fit();
+
     let block_item = match &text_block.style {
         BufferBlockStyle::CodeBlock { code_block_type } => {
             let code_block_type = code_block_type.clone();

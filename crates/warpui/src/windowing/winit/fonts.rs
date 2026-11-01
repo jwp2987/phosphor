@@ -1107,7 +1107,9 @@ impl TextLayoutSystem {
             str_index_map,
             paragraph_byte_offset,
         );
-        let mut caret_positions = vec![];
+        // At most one caret per glyph, plus the trailing-newline caret; sized exactly so the
+        // retained line carries no push-growth slack.
+        let mut caret_positions = Vec::with_capacity(layout_line.glyphs.len() + 1);
         let mut chars_with_missing_glyphs = vec![];
         let mut last_glyph_offset: usize = 0;
 
