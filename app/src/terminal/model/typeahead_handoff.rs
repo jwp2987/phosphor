@@ -86,6 +86,21 @@ impl std::fmt::Debug for ForegroundProbe {
 /// fast typing, below the stale-count reset (250 ms) that re-runs a waiting decision.
 pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 
+/// On a ConPTY session (#1162): the longest raw user keys typed between a prompt's precmd and the
+/// shell's line editor becoming active are held. Git Bash's readline switches the tty mode,
+/// enables bracketed paste and draws the prompt right after the prompt hook (measured: a key
+/// written ~6 ms before that start-up output vanished below the app). The line editor's own
+/// signal normally ends the hold within ~50 ms; after this long the keys are written anyway.
+pub const CONPTY_PROMPT_HOLD_EXPIRY: Duration = Duration::from_millis(150);
+
+/// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
+pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
+
+/// Whether the ConPTY prompt hold is on by default: it is, unless the kill switch says `0`.
+pub fn conpty_prompt_hold_env_enabled() -> bool {
+    std::env::var(CONPTY_PROMPT_HOLD_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// The longest a young line's deferred Enter waits for the verdict of its input-type detection
 /// (#933). A verdict that has not come by then means the classifier is not going to answer; the
 /// Enter then submits on the Enter-time rules without it (#1174), never kept in the editor.
@@ -132,7 +147,7 @@ pub fn young_submit_decision(
 
 /// Control bytes that signal or end input (^C, ^Z, ^\\, ^D). They are never held: they drop a
 /// held Enter and are written at once.
-fn is_signal_byte(byte: &u8) -> bool {
+pub fn is_signal_byte(byte: &u8) -> bool {
     matches!(byte, 0x03 | 0x04 | 0x1a | 0x1c)
 }
 
@@ -329,6 +344,23 @@ pub struct TypeaheadHandoff {
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
     conpty_input: bool,
+    /// Whether the ConPTY prompt hold is on (see [`CONPTY_PROMPT_HOLD_EXPIRY`]); it also needs
+    /// `conpty_input`, so no other platform is ever affected.
+    prompt_hold_enabled: bool,
+    /// When the last precmd arrived, until the shell's line editor is active (or a command
+    /// starts): keys typed in between are held.
+    awaiting_line_editor_since: Option<Instant>,
+    /// Raw user keys held between a precmd and the line editor becoming active (#1162), in typed
+    /// order. Separate from `young_hold`, which holds an Enter for a different reason.
+    prompt_hold: Option<Vec<u8>>,
+    /// The length of each routed write appended to `prompt_hold`.
+    prompt_hold_chunks: Vec<usize>,
+    /// A prompt hold was just created, so the view must arm its expiry timer.
+    prompt_hold_started: bool,
+    /// Identifies the current prompt hold; a timer armed for an earlier one must not release it.
+    prompt_hold_id: u64,
+    /// When the last precmd arrived, whether or not a hold follows (for the release hop).
+    last_precmd_at: Option<Instant>,
     /// When the user last typed a byte that reached the shell's line.
     last_line_bytes_at: Option<Instant>,
     /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
@@ -377,6 +409,110 @@ impl TypeaheadHandoff {
     /// Marks the session's input as going through ConPTY (#1162).
     pub fn set_conpty_input(&mut self, conpty_input: bool) {
         self.conpty_input = conpty_input;
+    }
+
+    /// Turns the ConPTY prompt hold on or off (#1162). Only has an effect on a ConPTY session.
+    pub fn set_conpty_prompt_hold(&mut self, enabled: bool) {
+        self.prompt_hold_enabled = enabled;
+    }
+
+    fn should_hold_for_prompt(&self, reaches_shell_line: bool, now: Instant) -> bool {
+        self.conpty_input
+            && self.prompt_hold_enabled
+            && reaches_shell_line
+            && matches!(self.state, HandoffState::PtyOwned { .. })
+            && self
+                .awaiting_line_editor_since
+                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_EXPIRY)
+    }
+
+    /// Takes the "a prompt hold was just created" flag, returning its id so the view arms the
+    /// expiry timer once.
+    pub fn take_prompt_hold_started(&mut self) -> Option<u64> {
+        mem::take(&mut self.prompt_hold_started).then_some(self.prompt_hold_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_prompt_hold(&self) -> bool {
+        self.prompt_hold.is_some()
+    }
+
+    /// A signal or EOF byte is about to be written while keys are held for the prompt: the held
+    /// keys (an Enter among them may have to run before the ^C reaches it) are returned with
+    /// `bytes`, to be routed and written as one user write, in typed order.
+    pub fn take_prompt_hold_before_signal(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !bytes.iter().any(is_signal_byte) {
+            return None;
+        }
+        self.awaiting_line_editor_since = None;
+        self.prompt_hold_chunks.clear();
+        let mut held = self.prompt_hold.take()?;
+        held.extend_from_slice(bytes);
+        Some(held)
+    }
+
+    /// Routes the held prompt keys one chunk per original key event, in order, and returns the
+    /// chunks to write. A chunk the current state absorbs (`HoldAfterEnter`) is not returned.
+    fn drain_prompt_hold(&mut self) -> Vec<Vec<u8>> {
+        let Some(bytes) = self.prompt_hold.take() else {
+            self.prompt_hold_chunks.clear();
+            return Vec::new();
+        };
+        let lengths = mem::take(&mut self.prompt_hold_chunks);
+        let lengths = if lengths.iter().sum::<usize>() == bytes.len() {
+            lengths
+        } else {
+            vec![bytes.len()]
+        };
+        let mut start = 0;
+        let mut chunks = Vec::with_capacity(lengths.len());
+        for len in lengths {
+            let chunk = bytes[start..start + len].to_vec();
+            start += len;
+            match self.route_user_bytes_unheld(&chunk, true) {
+                UserBytesRoute::WriteCounted => chunks.push(chunk),
+                UserBytesRoute::Write => {
+                    // Not counted by the route, but the writer retires every chunk it writes.
+                    self.writes_in_flight = self.writes_in_flight.saturating_add(1);
+                    chunks.push(chunk);
+                }
+                UserBytesRoute::Held => (),
+            }
+        }
+        chunks
+    }
+
+    /// The shell's line editor became active (#1162): the held keys are due now, in typed
+    /// order, ahead of any request. Called before the hand-off decides on a request, so the
+    /// decision sees the keys as written. Also ends the wait for the line editor.
+    pub fn release_prompt_hold_on_active(&mut self) -> Vec<Vec<u8>> {
+        self.awaiting_line_editor_since = None;
+        let waited_ms = self
+            .last_precmd_at
+            .map(|at| at.elapsed().as_secs_f64() * 1000.0);
+        let chunks = self.drain_prompt_hold();
+        warpui::input_order::log_hop("line_editor_active", || {
+            format!(
+                "since_precmd_ms={} released_chunks={}",
+                waited_ms.map_or_else(|| "none".to_string(), |ms| format!("{ms:.1}")),
+                chunks.len()
+            )
+        });
+        chunks
+    }
+
+    /// The expiry of prompt hold `id` ran out with no line editor signal: the keys are written
+    /// anyway. `None` when that hold is gone already.
+    pub fn expire_prompt_hold(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
+        if id != self.prompt_hold_id || self.prompt_hold.is_none() {
+            return None;
+        }
+        self.awaiting_line_editor_since = None;
+        let chunks = self.drain_prompt_hold();
+        warpui::input_order::log_hop("prompt_hold_expired", || {
+            format!("released_chunks={}", chunks.len())
+        });
+        Some(chunks)
     }
 
     /// Whether, on a ConPTY session, the user typed into the shell's line so recently that a
@@ -815,7 +951,13 @@ impl TypeaheadHandoff {
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
         self.activity_generation = self.activity_generation.wrapping_add(1);
-        self.last_activity_at = Some(Instant::now());
+        let now = Instant::now();
+        self.last_activity_at = Some(now);
+        self.last_precmd_at = Some(now);
+        if self.conpty_input && self.prompt_hold_enabled {
+            self.awaiting_line_editor_since = Some(now);
+        }
+        warpui::input_order::log_hop("precmd_seen", String::new);
         if let HandoffState::PtyOwned { precmds_seen, .. } = &mut self.state {
             *precmds_seen = precmds_seen.saturating_add(1);
         }
@@ -826,6 +968,8 @@ impl TypeaheadHandoff {
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
         self.activity_generation = self.activity_generation.wrapping_add(1);
+        // The shell took a line: its line editor is not about to start.
+        self.awaiting_line_editor_since = None;
         self.last_activity_at = Some(Instant::now());
         // The editor's command reached the shell: one write-to-preexec loop measured. A line the
         // shell started itself ran ahead of that command, so its preexec is not the command's and
@@ -985,6 +1129,26 @@ impl TypeaheadHandoff {
             if reaches_shell_line {
                 self.last_line_bytes_at = Some(Instant::now());
             }
+            return UserBytesRoute::Held;
+        }
+        // #1162: keys typed after a prompt's precmd and before its line editor is active stay
+        // behind any key already held for it, never overtaking.
+        if let Some(hold) = &mut self.prompt_hold {
+            hold.extend_from_slice(bytes);
+            self.prompt_hold_chunks.push(bytes.len());
+            if reaches_shell_line {
+                self.last_line_bytes_at = Some(Instant::now());
+            }
+            return UserBytesRoute::Held;
+        }
+        if self.young_hold.is_none()
+            && self.should_hold_for_prompt(reaches_shell_line, Instant::now())
+        {
+            self.prompt_hold = Some(bytes.to_vec());
+            self.prompt_hold_chunks = vec![bytes.len()];
+            self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
+            self.prompt_hold_started = true;
+            self.last_line_bytes_at = Some(Instant::now());
             return UserBytesRoute::Held;
         }
         if self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now()) {

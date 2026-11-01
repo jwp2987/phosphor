@@ -463,6 +463,19 @@ impl<T: EventLoopSender> PtyController<T> {
     /// set when this re-runs a decision that had to wait, rather than answering a fresh
     /// activation of the shell's line editor.
     fn decide_typeahead_handoff_request(&mut self, is_retry: bool, ctx: &mut ModelContext<Self>) {
+        // #1162: raw keys held since the prompt's precmd are written first, in typed order,
+        // ahead of any request and queued command: the line editor is active now. A retry is not
+        // a fresh activation, and an expiry timer releases what a retry would see.
+        if !is_retry {
+            let held_chunks = self
+                .terminal_model
+                .lock()
+                .typeahead_handoff_mut()
+                .release_prompt_hold_on_active();
+            for chunk in held_chunks {
+                self.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
+            }
+        }
         // The editor's command is still queued behind this activation: write it (and the keys
         // typed after it) first. The decision belongs to the prompt that follows it.
         if self.handoff_command_pending {
@@ -608,6 +621,18 @@ impl<T: EventLoopSender> PtyController<T> {
         bytes: Cow<'static, [u8]>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.write_handoff_user_bytes_inner(bytes, true, ctx);
+    }
+
+    /// As [`Self::write_handoff_user_bytes`]. `may_retry` is whether the write may re-run a
+    /// waiting request decision; the decision that is releasing held keys passes `false`, as it
+    /// is about to decide itself.
+    fn write_handoff_user_bytes_inner(
+        &mut self,
+        bytes: Cow<'static, [u8]>,
+        may_retry: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
         // fresh one) rather than leave nobody to.
         let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
@@ -643,7 +668,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.handoff_request_waiting
             )
         });
-        if writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
+        if may_retry && writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
             self.retry_typeahead_handoff_request(ctx);
         }
     }
