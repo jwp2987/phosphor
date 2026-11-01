@@ -374,7 +374,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
@@ -473,7 +473,7 @@ use crate::terminal::block_list_element::{
 };
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::block_list_viewport::{InputMode, ScrollPosition, ViewportState};
-use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines};
+use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines_with_markers};
 use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
 use crate::terminal::event_listener::Wakeup;
@@ -799,6 +799,20 @@ const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
 const SUBSHELL_SETUP_DEFER_POLL: Duration = Duration::from_millis(250);
+/// How many rows from the end of the active block's output the deferred-setup checks look at.
+const OUTPUT_TAIL_ROWS: usize = 16;
+/// Give-up net for the event-driven subshell bootstrap (#1354): a typed setup line whose
+/// setup-line marker has not arrived this long after it was written is treated as lost, and the
+/// rest of the lines fall back to the timed pacing. Logged when it fires. Not what sequences
+/// the lines: the marker is.
+const SUBSHELL_SETUP_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
+/// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
+/// Logged when it fires.
+const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
+/// completed (#1354); the prompt itself is what releases it. Logged when it fires.
+const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
 /// this long (the shell took the answer and went quiet) before setup is written, when the
 /// answer left no visible newline behind (#1032).
@@ -2656,6 +2670,30 @@ struct DeferredSubshellSetup {
     notified: bool,
 }
 
+/// What a bootstrap trigger does once the subshell draws its first prompt (#1354).
+enum SubshellPromptTrigger {
+    /// A warpify-initiated subshell command: run the bootstrap probe.
+    AutoWarpify { shell_type: ShellType },
+    /// The subshell's rc file reported itself (`SourcedRcFileForWarp`): bootstrap it.
+    RcFile {
+        shell_type: ShellType,
+        uname: Option<String>,
+        disable_tmux: bool,
+    },
+}
+
+/// A bootstrap trigger that waits for the subshell's first prompt instead of a fixed delay
+/// (#1354). The prompt is seen as output that moved the active block's cursor and left it in
+/// unterminated text; `baseline` is the cursor state when the trigger was armed, so text printed
+/// before it (the subshell command's own echo) is not mistaken for the prompt.
+struct AwaitingSubshellPrompt {
+    trigger: SubshellPromptTrigger,
+    block_id: BlockId,
+    baseline: (usize, usize, usize),
+    /// Tells a give-up timer which arming it belongs to.
+    id: u64,
+}
+
 /// Bookkeeping for the paced subshell bootstrap write (see
 /// `TerminalView::write_init_subshell_bytes_to_pty`).
 struct SubshellBootstrapInFlight {
@@ -2665,6 +2703,17 @@ struct SubshellBootstrapInFlight {
     block_id: BlockId,
     remaining_lines: usize,
     held_user_bytes: Vec<Vec<u8>>,
+    /// Event-driven pacing (#1354): the lines not yet written, oldest first. Line N+1 is written
+    /// when the shell printed the setup-line marker of line N (see
+    /// `bootstrap::init_subshell_command_lines_with_markers`), not after a delay. Empty when the
+    /// lines are paced by timers instead.
+    pending_lines: VecDeque<String>,
+    /// The setup the markers belong to; `None` while the lines are paced by timers.
+    marker_token: Option<u64>,
+    /// Index of the line whose marker releases the next one.
+    awaiting_marker: usize,
+    /// Pacing used if the markers turn out not to come (the give-up net).
+    line_delay: Duration,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -3064,6 +3113,18 @@ pub struct TerminalView {
     /// (`Password:`, a passphrase or `read -p` prompt, #1032). Nothing of the setup is written
     /// while this is `Some`; typing goes straight to the pty, where it answers the prompt.
     subshell_setup_deferred: Option<DeferredSubshellSetup>,
+    /// A subshell bootstrap trigger (auto-warpify, rc-file) waiting for the subshell's first
+    /// prompt (#1354). At most one: a newer trigger replaces an older one, so a subshell is
+    /// bootstrapped once.
+    awaiting_subshell_prompt: Option<AwaitingSubshellPrompt>,
+    awaiting_subshell_prompt_id: u64,
+    /// A block completed and a pending command waits for the prompt that follows it (#1354).
+    pending_command_awaits_precmd: bool,
+    /// Same for the remote `cd` of a replayed ssh split.
+    ssh_split_cd_awaits_precmd: bool,
+    /// Bumped to cancel the rest of the chunked mac line-clear write (#1354): a ^C, the ssh
+    /// warpify being cancelled.
+    chunked_clear_write_generation: u64,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -4773,6 +4834,11 @@ impl TerminalView {
             powershell_setup_hold_generation: 0,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
+            awaiting_subshell_prompt: None,
+            awaiting_subshell_prompt_id: 0,
+            pending_command_awaits_precmd: false,
+            ssh_split_cd_awaits_precmd: false,
+            chunked_clear_write_generation: 0,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -11043,8 +11109,10 @@ impl TerminalView {
     fn active_output_ends_in_unterminated_text(&self) -> bool {
         let model = self.model.lock();
         let grid = model.block_list().active_block().output_grid();
+        // The visible-text test needs only the end of the output (#1354): this runs on every
+        // output wakeup while a setup is deferred, and used to copy all of it each time.
         grid.grid_handler().cursor_point().col > 0
-            && output_has_visible_text(&grid.contents_to_string(false, None))
+            && output_has_visible_text(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
     }
 
     /// #1001: whether an interrupt falls into the connect window before the remote session is
@@ -11653,13 +11721,37 @@ impl TerminalView {
         ];
         to_write.extend_from_slice(&data.into());
 
-        for (i, chunk) in to_write.chunks(1000).enumerate() {
-            let chunk = chunk.to_vec();
-            ctx.spawn(
-                Timer::after(Duration::from_millis(i as u64 * 10)),
-                move |me, _, ctx| me.write_to_pty(chunk, ctx),
-            );
+        // #1354: one cancellable sequence. Each chunk schedules the next, so a ^C or a cancelled
+        // ssh warpify (which bump the generation) stops it: nothing more is typed into the shell
+        // afterwards, the closing CR included. The gap is the macOS workaround itself (the tty
+        // input queue holds ~1 KB while the shell is not reading); how fast the shell reads is
+        // not observable, so it stays a time.
+        self.chunked_clear_write_generation += 1;
+        let generation = self.chunked_clear_write_generation;
+        let chunks: VecDeque<Vec<u8>> = to_write.chunks(1000).map(<[u8]>::to_vec).collect();
+        self.write_next_chunked_clear_chunk(generation, chunks, ctx);
+    }
+
+    fn write_next_chunked_clear_chunk(
+        &mut self,
+        generation: u64,
+        mut chunks: VecDeque<Vec<u8>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if generation != self.chunked_clear_write_generation {
+            return;
         }
+        let Some(chunk) = chunks.pop_front() else {
+            return;
+        };
+        self.write_to_pty(chunk, ctx);
+        if chunks.is_empty() {
+            return;
+        }
+        ctx.spawn(
+            Timer::after(Duration::from_millis(10)),
+            move |me, _, ctx| me.write_next_chunked_clear_chunk(generation, chunks, ctx),
+        );
     }
 
     /// Ends the current line before writing the given bytes to the PTY.
@@ -11730,6 +11822,10 @@ impl TerminalView {
             }
         }
         self.note_input_for_deferred_subshell_setup(&bytes);
+        if is_abort_key(&bytes) {
+            // Ctrl-C / Ctrl-D: the rest of a chunked line-clear write is dropped (#1354).
+            self.chunked_clear_write_generation += 1;
+        }
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
@@ -12741,6 +12837,24 @@ impl TerminalView {
         if self.ssh_typeahead_holding {
             self.deliver_ssh_typeahead_if_ready("output", ctx);
         }
+        // #1354: the bootstrap steps that used to wait a fixed time are judged on the output that
+        // can release them: the subshell's first prompt, the setup-line marker of the line just
+        // typed, the answer to a prompt a setup waits behind.
+        if self.awaiting_subshell_prompt.is_some() {
+            self.check_awaiting_subshell_prompt(ctx);
+        }
+        if self.subshell_bootstrap_in_flight.is_some() {
+            self.advance_subshell_bootstrap_on_marker(ctx);
+        }
+        // Before the user answered, the answer is the event and there is nothing to judge.
+        if let Some(since) = self
+            .subshell_setup_deferred
+            .as_ref()
+            .filter(|d| d.answered_at.is_some())
+            .map(|d| d.since)
+        {
+            self.check_deferred_subshell_setup(since, false, ctx);
+        }
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
@@ -13026,6 +13140,125 @@ impl TerminalView {
             .unwrap_or_default()
     }
 
+    /// The (rows, cursor row, cursor column) of the active block's output: it changes whenever
+    /// something is printed, and costs no copy of the output.
+    fn active_output_position(&self) -> (usize, usize, usize) {
+        let model = self.model.lock();
+        let grid = model.block_list().active_block().output_grid();
+        let cursor = grid.grid_handler().cursor_point();
+        (grid.len(), cursor.row, cursor.col)
+    }
+
+    /// Whether the active block's output has a prompt on its last line that was drawn after
+    /// `baseline` was taken: the cursor moved and sits in unterminated text. This is how the first
+    /// prompt of a not-yet-bootstrapped subshell is seen (#1354); no hook reports it.
+    fn active_output_shows_prompt_after(&self, baseline: (usize, usize, usize)) -> bool {
+        let position = self.active_output_position();
+        position != baseline && position.2 > 0
+    }
+
+    /// Arms a bootstrap trigger to fire at the subshell's first prompt; returns its id for the
+    /// give-up timer. A trigger armed earlier is replaced: one subshell, one bootstrap.
+    fn arm_awaiting_subshell_prompt(
+        &mut self,
+        trigger: SubshellPromptTrigger,
+        _ctx: &mut ViewContext<Self>,
+    ) -> u64 {
+        self.awaiting_subshell_prompt_id += 1;
+        let id = self.awaiting_subshell_prompt_id;
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        let baseline = self.active_output_position();
+        self.awaiting_subshell_prompt = Some(AwaitingSubshellPrompt {
+            trigger,
+            block_id,
+            baseline,
+            id,
+        });
+        id
+    }
+
+    /// Output arrived while a trigger waits for the subshell's first prompt: fires it if the
+    /// prompt is there.
+    fn check_awaiting_subshell_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(awaiting) = self.awaiting_subshell_prompt.as_ref() else {
+            return;
+        };
+        let id = awaiting.id;
+        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
+            // The subshell's command is over (or another block took over).
+            self.awaiting_subshell_prompt = None;
+            return;
+        }
+        if self.active_output_shows_prompt_after(awaiting.baseline) {
+            self.fire_awaiting_subshell_prompt(id, "first prompt", ctx);
+        }
+    }
+
+    /// Runs the trigger armed as `id`, once: a prompt, the give-up net and a replaced trigger
+    /// all end up here, and only the first for the current arming does anything.
+    fn fire_awaiting_subshell_prompt(&mut self, id: u64, why: &str, ctx: &mut ViewContext<Self>) {
+        if self.awaiting_subshell_prompt.as_ref().map(|a| a.id) != Some(id) {
+            return;
+        }
+        let Some(awaiting) = self.awaiting_subshell_prompt.take() else {
+            return;
+        };
+        if why != "first prompt" {
+            log::warn!("Subshell bootstrap started by the {why}: no prompt was seen");
+        }
+        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
+            return;
+        }
+        match awaiting.trigger {
+            SubshellPromptTrigger::AutoWarpify { shell_type } => {
+                self.warpify_state.abort_auto_warpify();
+                self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            }
+            SubshellPromptTrigger::RcFile {
+                shell_type,
+                uname,
+                disable_tmux,
+            } => self.start_rc_file_subshell_bootstrap(shell_type, uname, disable_tmux, ctx),
+        }
+    }
+
+    /// The subshell whose rc file reported itself is ready for its bootstrap (#1354).
+    fn start_rc_file_subshell_bootstrap(
+        &mut self,
+        shell_type: ShellType,
+        uname: Option<String>,
+        disable_tmux: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let uname = uname.unwrap_or_default();
+        let (is_ssh, is_tmux_control_mode_active, has_ai_metadata) = {
+            let lock = self.model.lock();
+            let has_ai_metadata = lock
+                .block_list()
+                .active_block()
+                .agent_interaction_metadata()
+                .is_some();
+            (
+                lock.is_ssh_block(),
+                lock.tmux_control_mode_active(),
+                has_ai_metadata,
+            )
+        };
+        // Never warpify for agent-requested commands.
+        if has_ai_metadata {
+            return;
+        }
+        // To simplify the implementation, we do not support warpifying while SSH-warpified.
+        if is_tmux_control_mode_active {
+            return;
+        }
+        if is_ssh && !disable_tmux {
+            self.continue_warpify_ssh_session(&uname, shell_type, ctx);
+        } else {
+            self.trigger_subshell_bootstrap(Some(shell_type), true, ctx);
+        }
+    }
+
     /// Turns the active session into a bootstrapped subshell by writing the InitShell DCS hook
     fn trigger_subshell_bootstrap(
         &mut self,
@@ -13146,6 +13379,7 @@ impl TerminalView {
     }
 
     fn cancel_bootstrap_workflow(&mut self, ctx: &mut ViewContext<Self>) {
+        self.chunked_clear_write_generation += 1;
         self.clear_ssh_blocks(ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
@@ -15754,15 +15988,35 @@ impl TerminalView {
                     } else if let Some(shell_type) = self.pending_auto_bootstrap_shell_type.take() {
                         // If there is a subshell we're waiting to bootstrap until we receive
                         // the preexec hook, now we can bootstrap it.
-                        let auto_warpify_abort_handle = ctx.spawn_abortable(
-                            Timer::after(Duration::from_millis(AUTO_WARPIFY_DELAY)),
-                            move |me, _, ctx| {
-                                me.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
-                            },
-                            |_, _| (),
-                        );
-                        self.warpify_state
-                            .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        if crate::terminal::bootstrap::bootstrap_timed() {
+                            // PHOSPHOR_BOOTSTRAP_TIMED=1: the old fixed delay.
+                            let auto_warpify_abort_handle = ctx.spawn_abortable(
+                                Timer::after(Duration::from_millis(AUTO_WARPIFY_DELAY)),
+                                move |me, _, ctx| {
+                                    me.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+                                },
+                                |_, _| (),
+                            );
+                            self.warpify_state
+                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        } else {
+                            // #1354: bootstrap when the subshell draws its first prompt, however
+                            // long that takes; the timer is only the give-up net for a prompt
+                            // that never reads as one.
+                            let id = self.arm_awaiting_subshell_prompt(
+                                SubshellPromptTrigger::AutoWarpify { shell_type },
+                                ctx,
+                            );
+                            let auto_warpify_abort_handle = ctx.spawn_abortable(
+                                Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP),
+                                move |me, _, ctx| {
+                                    me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx);
+                                },
+                                |_, _| (),
+                            );
+                            self.warpify_state
+                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        }
                     } else {
                         // Wait 1 second before showing the banner, just to make sure the
                         // command stays running for a bit. If the command fails instantly,
@@ -15927,6 +16181,13 @@ impl TerminalView {
                 // future already resolved, abort has no effect. We handle this as early as possible
                 // because the abort is time sensitive.
                 self.warpify_state.abort_auto_warpify();
+                if self
+                    .awaiting_subshell_prompt
+                    .as_ref()
+                    .is_some_and(|a| matches!(a.trigger, SubshellPromptTrigger::AutoWarpify { .. }))
+                {
+                    self.awaiting_subshell_prompt = None;
+                }
 
                 // #1069: a user block completing before the replayed ssh bootstrapped means that
                 // ssh failed or exited; nothing armed by the split may outlive it. The bootstrap
@@ -15937,12 +16198,35 @@ impl TerminalView {
                     BlockType::BootstrapHidden | BlockType::BootstrapVisible(_)
                         if self.ssh_split_follow_up.has_ready_cd() =>
                     {
-                        let _ = ctx.spawn(
-                            async move {
-                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
-                            },
-                            |me, _, ctx| me.run_ssh_split_cd(ctx),
-                        );
+                        if crate::terminal::bootstrap::bootstrap_timed() {
+                            let _ = ctx.spawn(
+                                async move {
+                                    warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY)
+                                        .await;
+                                },
+                                |me, _, ctx| me.run_ssh_split_cd(ctx),
+                            );
+                        } else {
+                            // #1354: the `cd` goes out at the prompt this completion is
+                            // followed by (`Handler(Precmd)`), not after a fixed delay.
+                            self.ssh_split_cd_awaits_precmd = true;
+                            let _ = ctx.spawn(
+                                async move {
+                                    warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP)
+                                        .await;
+                                },
+                                |me, _, ctx| {
+                                    if me.ssh_split_cd_awaits_precmd {
+                                        log::warn!(
+                                            "No prompt after the ssh split bootstrap block; \
+                                             running the remote cd anyway"
+                                        );
+                                        me.ssh_split_cd_awaits_precmd = false;
+                                        me.run_ssh_split_cd(ctx);
+                                    }
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -16079,12 +16363,36 @@ impl TerminalView {
                 // Additionally, it's possible for hooks to install themselves after the warp
                 // precmd. For example, `fig_precmd` does this.
                 if self.is_login_shell_bootstrapped {
-                    let _ = ctx.spawn(
-                        async move {
-                            warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
-                        },
-                        Self::execute_pending_command,
-                    );
+                    if crate::terminal::bootstrap::bootstrap_timed() {
+                        let _ = ctx.spawn(
+                            async move {
+                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
+                            },
+                            Self::execute_pending_command,
+                        );
+                    } else {
+                        // #1354: the command is released by the prompt this completion is
+                        // followed by (`Handler(Precmd)`), and then by the pty controller's own
+                        // gate (the line editor being active). Late-installing hooks like
+                        // `fig_precmd` have no signal of their own; the line editor gate is what
+                        // covers them. The timer is only the give-up net.
+                        self.pending_command_awaits_precmd = true;
+                        let _ = ctx.spawn(
+                            async move {
+                                warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP).await;
+                            },
+                            |me, _, ctx| {
+                                if me.pending_command_awaits_precmd {
+                                    log::warn!(
+                                        "No prompt after a completed block; running the pending \
+                                         command anyway"
+                                    );
+                                    me.pending_command_awaits_precmd = false;
+                                    me.execute_pending_command((), ctx);
+                                }
+                            },
+                        );
+                    }
                 }
 
                 // When a block completes, we need to update the prompt for the next
@@ -16599,41 +16907,42 @@ impl TerminalView {
                 let uname = event.uname.clone();
                 let disable_tmux = event.tmux == Some(false);
 
-                ctx.spawn(
-                    async {
-                        warpui::r#async::Timer::after(*TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY)
-                            .await
-                    },
-                    move |me, _, ctx| {
-                        let uname = uname.to_owned().unwrap_or_default();
-                        let (is_ssh, is_tmux_control_mode_active, has_ai_metadata) = {
-                            let lock = me.model.lock();
-                            let has_ai_metadata = lock
-                                .block_list()
-                                .active_block()
-                                .agent_interaction_metadata()
-                                .is_some();
-                            (
-                                lock.is_ssh_block(),
-                                lock.tmux_control_mode_active(),
-                                has_ai_metadata,
+                if crate::terminal::bootstrap::bootstrap_timed() {
+                    ctx.spawn(
+                        async {
+                            warpui::r#async::Timer::after(*TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY)
+                                .await
+                        },
+                        move |me, _, ctx| {
+                            me.start_rc_file_subshell_bootstrap(
+                                shell_type,
+                                uname,
+                                disable_tmux,
+                                ctx,
                             )
-                        };
-                        // Never warpify for agent-requested commands.
-                        if has_ai_metadata {
-                            return;
-                        }
-                        // To simplify the implementation, we do not support warpifying while SSH-warpified.
-                        if is_tmux_control_mode_active {
-                            return;
-                        }
-                        if is_ssh && !disable_tmux {
-                            me.continue_warpify_ssh_session(&uname, shell_type, ctx);
-                        } else {
-                            me.trigger_subshell_bootstrap(Some(shell_type), true, ctx);
-                        }
-                    },
-                );
+                        },
+                    );
+                } else {
+                    // #1354: other commands in the rc file ("poetry shell" sourcing a venv) run
+                    // before the subshell shows its prompt; the bootstrap goes in at that prompt
+                    // instead of 100 ms after the snippet. The timer is only the give-up net.
+                    let id = self.arm_awaiting_subshell_prompt(
+                        SubshellPromptTrigger::RcFile {
+                            shell_type,
+                            uname,
+                            disable_tmux,
+                        },
+                        ctx,
+                    );
+                    let _ = ctx.spawn(
+                        async {
+                            warpui::r#async::Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP).await
+                        },
+                        move |me, _, ctx| {
+                            me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx)
+                        },
+                    );
+                }
             }
             ModelEvent::PromptUpdated => {
                 self.input.update(ctx, |input, ctx| {
@@ -16707,6 +17016,16 @@ impl TerminalView {
                 }
                 if !self.subshell_bootstrap_pending() {
                     self.dismiss_subshell_setup_waiting_toast(ctx);
+                }
+                // #1354: the prompt after a completed block releases the remote `cd` of an ssh
+                // split and the pending command (queued behind the line editor becoming active).
+                if self.ssh_split_cd_awaits_precmd {
+                    self.ssh_split_cd_awaits_precmd = false;
+                    self.run_ssh_split_cd(ctx);
+                }
+                if self.pending_command_awaits_precmd {
+                    self.pending_command_awaits_precmd = false;
+                    self.execute_pending_command((), ctx);
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
@@ -18934,7 +19253,7 @@ impl TerminalView {
             .block_list()
             .active_block()
             .output_grid()
-            .contents_to_string(false, None);
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
         output_tail_is_input_prompt(&contents).then(|| {
             contents
                 .trim_end_matches('\n')
@@ -18945,13 +19264,16 @@ impl TerminalView {
         })
     }
 
+    /// The last rows of the active block's output, which is all a deferred setup compares
+    /// (#1354): copying the whole output on every poll held the model lock on the UI thread for
+    /// as long as the output was long.
     fn active_output_snapshot(&self) -> String {
         self.model
             .lock()
             .block_list()
             .active_block()
             .output_grid()
-            .contents_to_string(false, None)
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS))
     }
 
     fn defer_subshell_setup(
@@ -18986,6 +19308,19 @@ impl TerminalView {
     /// shell moved on, drops it if another block took over. Never aborts the shell and never
     /// types into the prompt.
     fn poll_deferred_subshell_setup(&mut self, since: Instant, ctx: &mut ViewContext<Self>) {
+        self.check_deferred_subshell_setup(since, true, ctx);
+    }
+
+    /// The check behind [`Self::poll_deferred_subshell_setup`]. Run on output (the event: the
+    /// shell took the answer and printed its next prompt, #1354) with `reschedule` false, and by
+    /// the slow timer, which is left as the net for the one case no output shows: an answer after
+    /// which the shell prints nothing, so the prompt text stays on screen (the quiet rule).
+    fn check_deferred_subshell_setup(
+        &mut self,
+        since: Instant,
+        reschedule: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let output = self.active_output_snapshot();
         let prompt_visible = self.active_output_input_prompt_line().is_some();
         let block_id = self.model.lock().block_list().active_block().id().clone();
@@ -19036,7 +19371,9 @@ impl TerminalView {
                 });
             }
         }
-        self.schedule_subshell_setup_poll(since, ctx);
+        if reschedule {
+            self.schedule_subshell_setup_poll(since, ctx);
+        }
     }
 
     /// Notes what the user sends while a subshell setup is deferred (#1032): a line sent to the
@@ -19067,7 +19404,21 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        let all_lines = init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx);
+        // #1354: bash, zsh and fish print a marker after each line they ran; the next line is
+        // written when it arrives, not after `line_delay`. Other shells (and
+        // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
+        let marked = !crate::terminal::bootstrap::bootstrap_timed()
+            && matches!(
+                shell_type,
+                Some(ShellType::Bash | ShellType::Zsh | ShellType::Fish)
+            );
+        let all_lines = init_subshell_command_lines_with_markers(
+            shell_type,
+            &self.env_vars,
+            session_id,
+            marked,
+            ctx,
+        );
         // A bootstrap still in flight belongs to an older shell: release what it held first.
         self.finish_subshell_bootstrap(ctx);
         // The tty echoes these lines as soon as they are written, whether or not the shell reads
@@ -19077,6 +19428,7 @@ impl TerminalView {
         {
             let mut model = self.model.lock();
             model.clear_setup_echo();
+            model.clear_setup_line_marker();
             if shell_type != Some(ShellType::PowerShell) {
                 // The first line goes out behind ` ^K ^U`, whose echo comes first.
                 if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
@@ -19148,12 +19500,106 @@ impl TerminalView {
             block_id: self.model.lock().block_list().active_block().id().clone(),
             remaining_lines: rest.len(),
             held_user_bytes: Vec::new(),
+            pending_lines: if marked {
+                rest.clone().into()
+            } else {
+                VecDeque::new()
+            },
+            marker_token: marked.then(|| session_id.as_u64()),
+            awaiting_marker: 0,
+            line_delay,
         });
+        if marked {
+            // The first line is out; the shell's marker for it releases the second.
+            self.arm_subshell_marker_give_up(generation, 0, ctx);
+            return;
+        }
         for (index, line) in rest.into_iter().enumerate() {
             ctx.spawn(
                 Timer::after(line_delay * (index as u32 + 1)),
                 move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
             );
+        }
+    }
+
+    /// The give-up net behind the setup-line markers: if the marker of line `awaiting` has not
+    /// come by `SUBSHELL_SETUP_MARKER_GIVE_UP`, it is not coming (the shell swallowed it, or never
+    /// ran the line) and the remaining lines are written on the timed pacing instead.
+    fn arm_subshell_marker_give_up(
+        &mut self,
+        generation: u64,
+        awaiting: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.spawn(
+            Timer::after(SUBSHELL_SETUP_MARKER_GIVE_UP),
+            move |me, _, ctx| me.subshell_marker_given_up(generation, awaiting, ctx),
+        );
+    }
+
+    fn subshell_marker_given_up(
+        &mut self,
+        generation: u64,
+        awaiting: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() else {
+            return;
+        };
+        if in_flight.generation != generation
+            || in_flight.marker_token.is_none()
+            || in_flight.awaiting_marker != awaiting
+        {
+            return;
+        }
+        log::warn!(
+            "Setup line {awaiting} was not acknowledged by the shell; writing the rest of the \
+             subshell setup on timers"
+        );
+        in_flight.marker_token = None;
+        let line_delay = in_flight.line_delay;
+        let lines: Vec<String> = in_flight.pending_lines.drain(..).collect();
+        for (index, line) in lines.into_iter().enumerate() {
+            ctx.spawn(
+                Timer::after(line_delay * (index as u32 + 1)),
+                move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
+            );
+        }
+    }
+
+    /// Output arrived during an event-paced subshell setup: when the shell printed the marker of
+    /// the line just written, the next line goes out (#1354). Never before, however long it has
+    /// been.
+    fn advance_subshell_bootstrap_on_marker(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_ref() else {
+            return;
+        };
+        let Some(token) = in_flight.marker_token else {
+            return;
+        };
+        let awaited = in_flight.awaiting_marker;
+        if self.model.lock().last_setup_line_marker() != Some((token, awaited)) {
+            return;
+        }
+        self.write_next_marked_subshell_line(ctx);
+    }
+
+    /// Writes the next pending setup line of an event-paced setup and waits for its marker.
+    fn write_next_marked_subshell_line(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() else {
+            return;
+        };
+        let Some(line) = in_flight.pending_lines.pop_front() else {
+            return;
+        };
+        in_flight.awaiting_marker += 1;
+        let generation = in_flight.generation;
+        let awaiting = in_flight.awaiting_marker;
+        let more = !in_flight.pending_lines.is_empty();
+        // Also ends the bootstrap (releasing held keys) when this was the last line.
+        self.write_subshell_bootstrap_line(generation, line, ctx);
+        if more {
+            self.arm_subshell_marker_give_up(generation, awaiting, ctx);
         }
     }
 
