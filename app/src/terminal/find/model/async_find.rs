@@ -79,6 +79,10 @@ pub enum FindTaskMessage {
         view_id: EntityId,
         total_index: TotalIndex,
     },
+    /// The initial block list the background task collected for a full scan
+    /// (#1320). Sent before any result for those blocks; the main thread records
+    /// each block's `TotalIndex` so results can be ordered.
+    BlocksCollected(Vec<BlockInfo>),
     /// The work queue has drained (current batch of work is complete).
     Done,
 }
@@ -831,48 +835,10 @@ impl AsyncFindController {
         self.current_find_options = Some(options.clone());
         self.status = AsyncFindStatus::Scanning;
 
-        // Build the work queue from the current block list.
+        // The work queue is filled by the background task itself: collecting the block list
+        // walks every block, which must not happen on the UI thread (#1320).
         let queue = FindWorkQueue::new();
-        let block_info = {
-            let mut model = self.terminal_model.lock();
-            let info = collect_block_info(model.block_list(), &config);
-            // Clear stale dirty ranges on the active block, since the full scan
-            // covers all of its current content. Without this, the first
-            // incremental update could redundantly re-scan already-covered rows.
-            if let Some(output_grid) = model
-                .block_list_mut()
-                .active_block_mut()
-                .grid_of_type_mut(GridType::Output)
-            {
-                output_grid.grid_handler_mut().take_find_dirty_rows_range();
-            }
-            info
-        };
-        queue.enqueue_full_scan(&block_info);
         self.work_queue = Some(queue.clone());
-
-        // Populate TotalIndex maps from the block info so that
-        // compute_focused_terminal_match can order results correctly.
-        for info in &block_info {
-            match info {
-                BlockInfo::Terminal {
-                    block_index,
-                    total_index,
-                } => {
-                    self.block_results
-                        .terminal_total_indices
-                        .insert(*block_index, *total_index);
-                }
-                BlockInfo::RichContent {
-                    view_id,
-                    total_index,
-                } => {
-                    self.block_results
-                        .ai_total_indices
-                        .insert(*view_id, *total_index);
-                }
-            }
-        }
 
         // Create result channel and spawn streams.
         let (result_tx, result_rx) = async_channel::unbounded();
@@ -885,6 +851,7 @@ impl AsyncFindController {
             self.terminal_model.clone(),
             queue,
             result_tx,
+            true,
             ctx,
         ));
     }
@@ -1002,6 +969,31 @@ impl AsyncFindController {
                     }
                 }
                 changed
+            }
+            FindTaskMessage::BlocksCollected(block_info) => {
+                for info in &block_info {
+                    match info {
+                        BlockInfo::Terminal {
+                            block_index,
+                            total_index,
+                        } => {
+                            self.block_results
+                                .terminal_total_indices
+                                .entry(*block_index)
+                                .or_insert(*total_index);
+                        }
+                        BlockInfo::RichContent {
+                            view_id,
+                            total_index,
+                        } => {
+                            self.block_results
+                                .ai_total_indices
+                                .entry(*view_id)
+                                .or_insert(*total_index);
+                        }
+                    }
+                }
+                false
             }
             FindTaskMessage::Done => {
                 let changed = self.status != AsyncFindStatus::Complete;
@@ -1273,45 +1265,10 @@ impl AsyncFindController {
         self.current_find_options = Some(options.clone());
         self.status = AsyncFindStatus::Scanning;
 
-        // Build the work queue from the current block list.
+        // The work queue is filled by the background task itself: collecting the block list
+        // walks every block, which must not happen on the UI thread (#1320).
         let queue = FindWorkQueue::new();
-        let block_info = {
-            let mut model = self.terminal_model.lock();
-            let info = collect_block_info(model.block_list(), &config);
-            // Clear stale dirty ranges (same rationale as in start_find).
-            if let Some(output_grid) = model
-                .block_list_mut()
-                .active_block_mut()
-                .grid_of_type_mut(GridType::Output)
-            {
-                output_grid.grid_handler_mut().take_find_dirty_rows_range();
-            }
-            info
-        };
-        queue.enqueue_full_scan(&block_info);
         self.work_queue = Some(queue.clone());
-
-        // Populate TotalIndex maps from the block info.
-        for info in &block_info {
-            match info {
-                BlockInfo::Terminal {
-                    block_index,
-                    total_index,
-                } => {
-                    self.block_results
-                        .terminal_total_indices
-                        .insert(*block_index, *total_index);
-                }
-                BlockInfo::RichContent {
-                    view_id,
-                    total_index,
-                } => {
-                    self.block_results
-                        .ai_total_indices
-                        .insert(*view_id, *total_index);
-                }
-            }
-        }
 
         // Create result channel and spawn streams.
         let (result_tx, result_rx) = async_channel::unbounded();
@@ -1324,6 +1281,7 @@ impl AsyncFindController {
             self.terminal_model.clone(),
             queue,
             result_tx,
+            true,
             ctx,
         ));
     }
@@ -1399,6 +1357,26 @@ impl AsyncFindController {
 /// An empty old_query is not considered a valid refinement base.
 fn is_query_refinement(old_query: &str, new_query: &str) -> bool {
     !old_query.is_empty() && new_query.starts_with(old_query) && new_query.len() > old_query.len()
+}
+
+/// Collects the blocks for a full scan and clears the active block's stale find dirty ranges,
+/// both under the caller's single hold of the model lock. Runs on the find background task
+/// (#1320): the O(blocks) walk must not happen on the UI thread.
+pub(crate) fn collect_block_info_for_full_scan(
+    model: &mut crate::terminal::model::TerminalModel,
+    config: &AsyncFindConfig,
+) -> Vec<BlockInfo> {
+    let info = collect_block_info(model.block_list(), config);
+    // The full scan covers all of the active block's current content, so the first
+    // incremental update must not redundantly re-scan already-covered rows.
+    if let Some(output_grid) = model
+        .block_list_mut()
+        .active_block_mut()
+        .grid_of_type_mut(GridType::Output)
+    {
+        output_grid.grid_handler_mut().take_find_dirty_rows_range();
+    }
+    info
 }
 
 /// Collects information about blocks to search.
