@@ -184,6 +184,38 @@ impl LocalControlModeSetting {
     }
 }
 
+/// Outcome of a write queued on the secure-storage worker: `Ok(changed_in_storage)`.
+pub(crate) type PendingModeWrite = secure_storage::background::BackgroundResult<Result<bool>>;
+
+impl LocalControlModeSetting {
+    /// [`Setting::set_value`], but when the write is queued off-thread the caller gets its
+    /// eventual outcome, so a UI can surface a failure (the in-memory value is already updated).
+    /// `None` means the write already completed synchronously (an `Err` is returned directly).
+    pub(crate) fn set_value_tracked(
+        &mut self,
+        new_value: LocalControlMode,
+        ctx: &mut ModelContext<LocalControlSettings>,
+    ) -> Result<Option<PendingModeWrite>> {
+        // The compare-and-write runs on the secure-storage worker, ordered after the startup read
+        // and any earlier write.
+        self.awaiting_load = false;
+        let to_store = new_value;
+        let (changed_in_storage, pending) = match secure_storage::background::run_or_inline(
+            move |storage| write_local_control_mode_to_secure_storage(&to_store, storage),
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => (!self.is_explicitly_set, Some(result)),
+            Err(result) => (result?, None),
+        };
+        if self.value() != &new_value || changed_in_storage {
+            self.inner = self.validate(new_value);
+            self.is_explicitly_set = true;
+            Self::emit_changed(ctx, settings::ChangeEventReason::LocalChange);
+        }
+        Ok(pending)
+    }
+}
+
 impl Setting for LocalControlModeSetting {
     type Group = LocalControlSettings;
     type Value = LocalControlMode;
@@ -270,24 +302,8 @@ impl Setting for LocalControlModeSetting {
         new_value: Self::Value,
         ctx: &mut ModelContext<Self::Group>,
     ) -> Result<()> {
-        // The compare-and-write runs on the secure-storage worker, ordered after the startup read
-        // and any earlier write. A failure there is reported but cannot reach this caller.
-        self.awaiting_load = false;
-        let to_store = new_value;
-        let changed_in_storage = match secure_storage::background::run_or_inline(
-            move |storage| write_local_control_mode_to_secure_storage(&to_store, storage),
-            ctx.secure_storage(),
-        ) {
-            Ok(result) => {
-                report_background_failure(result, ctx);
-                !self.is_explicitly_set
-            }
-            Err(result) => result?,
-        };
-        if self.value() != &new_value || changed_in_storage {
-            self.inner = self.validate(new_value);
-            self.is_explicitly_set = true;
-            Self::emit_changed(ctx, settings::ChangeEventReason::LocalChange);
+        if let Some(pending) = self.set_value_tracked(new_value, ctx)? {
+            report_background_failure(pending, ctx);
         }
         Ok(())
     }

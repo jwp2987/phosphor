@@ -701,13 +701,64 @@ impl AvailableShells {
             NewSessionShell::SystemDefault => AvailableShell::default(),
             NewSessionShell::Custom(_) => AvailableShell::try_from(preference).unwrap_or_default(),
             // TODO(DAN): This should be cached in the model. Also handle custom
-            preference => self
-                .scanned()
-                .shells
+            preference => match self.scanned_if_ready() {
+                Some(result) => result
+                    .shells
+                    .iter()
+                    .find(|shell| shell.matches_preference(&preference))
+                    .cloned()
+                    .unwrap_or_default(),
+                // The background scan has not finished (#1310). The first tab must still start
+                // the shell the user chose, so resolve just that one directly.
+                None => self
+                    .resolve_preferred_directly(&preference)
+                    .unwrap_or_default(),
+            },
+        }
+    }
+
+    /// The scan result if the background scan has already finished; never waits.
+    fn scanned_if_ready(&self) -> Option<&ScanResult> {
+        if let Some(result) = self.result.get() {
+            return Some(result);
+        }
+        let mut done = self.scan.done.lock().unwrap_or_else(|e| e.into_inner());
+        let result = done.take()?;
+        drop(done);
+        Some(self.result.get_or_init(|| result))
+    }
+
+    /// Builds the [`AvailableShell`] for a saved preference without the scan: one
+    /// `file_exists_and_is_executable` check of the saved path (a single `stat`, microseconds
+    /// unless the path itself sits on a hung mount -- the case the scan was moved off the UI
+    /// thread to avoid, but here only one entry is touched, not every PATH directory). `None`
+    /// when the shell no longer exists, so the caller falls back to the default exactly as it
+    /// does for a finished scan that lacks it.
+    fn resolve_preferred_directly(&self, preference: &NewSessionShell) -> Option<AvailableShell> {
+        match preference {
+            NewSessionShell::Executable(path) | NewSessionShell::MSYS2(path) => {
+                let path = PathBuf::from(path);
+                let command = path.file_name()?.to_str()?.to_owned();
+                let shell_type = Self::get_shell_types()
+                    .into_iter()
+                    .find(|(_, name)| *name == command)?
+                    .0;
+                if !file_exists_and_is_executable(&path) {
+                    return None;
+                }
+                Some(if matches!(preference, NewSessionShell::MSYS2(_)) {
+                    AvailableShell::new_msys2(command, path, shell_type)
+                } else {
+                    AvailableShell::new_local_executable(command, path, shell_type)
+                })
+            }
+            // WSL distributions were captured on the main thread when the model was built.
+            NewSessionShell::WSL(distro) => self
+                .wsl_names
                 .iter()
-                .find(|shell| shell.matches_preference(&preference))
-                .cloned()
-                .unwrap_or_default(),
+                .any(|name| name == distro)
+                .then(|| AvailableShell::new_wsl(distro.clone())),
+            NewSessionShell::SystemDefault | NewSessionShell::Custom(_) => None,
         }
     }
 
