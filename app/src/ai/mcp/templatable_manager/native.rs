@@ -2531,21 +2531,38 @@ fn read_legacy_env_vars_in_background(
 ) -> impl std::future::Future<Output = Vec<(SyncId, MCPServer)>> + Send + 'static {
     let (tx, rx) = futures::channel::oneshot::channel();
     let fallback = pending.clone();
+    // Dropping the returned future (the caller gave up on the start) cancels the read between
+    // servers, so an abandoned start does not keep walking the database (#1382).
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_for_thread = cancel.clone();
     let spawned = std::thread::Builder::new()
         .name("mcp-env-read".into())
         .spawn(move || {
             if let Some(conn) = connection {
                 let mut conn = conn.lock();
                 for (_, server) in pending.iter_mut() {
+                    if cancel_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
                     server.fill_environment_variables(&mut conn);
                 }
             }
             let _ = tx.send(pending);
         });
     async move {
+        let _cancel_on_drop = CancelFlagOnDrop(cancel);
         if spawned.is_err() {
             return fallback;
         }
         rx.await.unwrap_or(fallback)
+    }
+}
+
+/// Sets the flag when dropped (the future holding it finished or was abandoned).
+struct CancelFlagOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelFlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }

@@ -1242,6 +1242,24 @@ Thumbs.db
         }
     }
 
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn symlink_epoch_map_is_cleaned_and_stale_scans_never_match_again() {
+        let mut model = LocalRepoMetadataModel::new_for_test();
+        let repo = StandardizedPath::try_from_local(&std::env::temp_dir()).unwrap();
+        let first = model.next_symlink_epoch(&repo);
+        assert!(model.symlink_epoch_is_current(&repo, first));
+        // Repo removed: the slot is gone and the in-flight scan is stale.
+        model.forget_symlink_epoch(&repo);
+        assert!(model.symlink_scan_epoch.is_empty());
+        assert!(!model.symlink_epoch_is_current(&repo, first));
+        // Re-added: a new epoch that the old scan's epoch cannot equal.
+        let second = model.next_symlink_epoch(&repo);
+        assert_ne!(first, second);
+        assert!(!model.symlink_epoch_is_current(&repo, first));
+        assert!(model.symlink_epoch_is_current(&repo, second));
+    }
+
     #[test]
     fn test_canonicalized_path_functionality() {
         use warp_util::standardized_path::StandardizedPath;

@@ -860,12 +860,20 @@ impl LocalRepoMetadataModel {
 
     #[cfg(feature = "local_fs")]
     fn next_symlink_epoch(&mut self, repo_path: &StandardizedPath) -> u64 {
-        let slot = self
-            .symlink_scan_epoch
-            .entry(repo_path.clone())
-            .or_insert(0);
-        *slot += 1;
-        *slot
+        // Epochs come from one process-wide counter, never from the per-repo slot, so removing
+        // a repo's slot (see `forget_symlink_epoch`) can never let a stale in-flight scan match
+        // a later epoch of the same repo path (#1382).
+        static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let epoch = NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.symlink_scan_epoch.insert(repo_path.clone(), epoch);
+        epoch
+    }
+
+    /// Drops the epoch slot of a repo that is gone; any scan still in flight for it no longer
+    /// matches and is ignored, and the map does not keep an entry per repo ever seen.
+    #[cfg(feature = "local_fs")]
+    fn forget_symlink_epoch(&mut self, repo_path: &StandardizedPath) {
+        self.symlink_scan_epoch.remove(repo_path);
     }
 
     #[cfg(feature = "local_fs")]
@@ -909,8 +917,8 @@ impl LocalRepoMetadataModel {
         repo_path: &StandardizedPath,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Invalidate any in-flight background scan for this repo.
-        self.next_symlink_epoch(repo_path);
+        // Invalidate any in-flight background scan for this repo (its epoch no longer matches).
+        self.forget_symlink_epoch(repo_path);
         let previously_watched = self.symlink_targets.keys().cloned().collect();
         self.remove_symlink_targets_for_repo(repo_path);
         self.sync_symlink_target_watches(previously_watched, ctx);

@@ -160,12 +160,43 @@ fn resolve_current_user_cached(
 }
 
 /// Resolves the current user on a background thread so the first new tab hits the cache.
+///
+/// Single-flight (#1382): a prewarm already running is not joined by a second thread, and a
+/// user that is already cached needs no thread at all.
 pub fn prewarm_current_user() {
-    let _ = std::thread::Builder::new()
+    prewarm_with(
+        &PREWARM_IN_FLIGHT,
+        &CURRENT_USER_CACHE,
+        resolve_current_user_uncached,
+    );
+}
+
+static PREWARM_IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Starts at most one background resolution at a time; returns whether a thread was started.
+fn prewarm_with(
+    in_flight: &'static std::sync::atomic::AtomicBool,
+    cache: &'static std::sync::Mutex<Option<CurrentUser>>,
+    resolve: fn() -> Option<CurrentUser>,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    if cache.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return false;
+    }
+    if in_flight.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    let spawned = std::thread::Builder::new()
         .name("prewarm-current-user".into())
-        .spawn(|| {
-            let _ = resolve_current_user();
+        .spawn(move || {
+            let _ = resolve_current_user_cached(cache, resolve);
+            in_flight.store(false, Ordering::Release);
         });
+    if spawned.is_err() {
+        in_flight.store(false, Ordering::Release);
+        return false;
+    }
+    true
 }
 
 fn resolve_current_user_uncached() -> Option<CurrentUser> {
@@ -1220,6 +1251,36 @@ fn failed_current_user_resolution_is_not_cached() {
         resolve_current_user_cached(&cache, || Some(user.clone())),
         Some(user)
     );
+}
+
+#[test]
+fn prewarm_is_single_flight_and_skips_a_filled_cache() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    static CACHE: std::sync::Mutex<Option<CurrentUser>> = std::sync::Mutex::new(None);
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: AtomicBool = AtomicBool::new(false);
+    fn slow_resolve() -> Option<CurrentUser> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        while !RELEASE.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        Some(CurrentUser {
+            name: "u".into(),
+            dir: "/h".into(),
+            shell: "/bin/sh".into(),
+        })
+    }
+    assert!(prewarm_with(&IN_FLIGHT, &CACHE, slow_resolve));
+    // Second request while the first is still resolving does not start another thread.
+    assert!(!prewarm_with(&IN_FLIGHT, &CACHE, slow_resolve));
+    RELEASE.store(true, Ordering::SeqCst);
+    while IN_FLIGHT.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    // Filled cache: no thread at all.
+    assert!(!prewarm_with(&IN_FLIGHT, &CACHE, slow_resolve));
 }
 
 #[cfg(test)]

@@ -1000,3 +1000,18 @@ fn refs_epoch_advances_on_note() {
     super::note_refs_changed();
     assert!(super::refs_epoch() > before);
 }
+
+#[test]
+fn repo_branch_cache_stays_bounded() {
+    let mut cache = super::BranchCache::default();
+    for i in 0..(super::MAX_CACHED_REPOS + 20) {
+        let repo = std::path::PathBuf::from(format!("/repos/r{i}"));
+        super::evict_branch_cache_if_full(&mut cache, &repo);
+        cache.branches.insert(repo, Default::default());
+    }
+    assert_eq!(cache.branches.len(), super::MAX_CACHED_REPOS);
+    // A repo already cached is updated in place, never evicting another.
+    let existing = cache.branches.keys().next().unwrap().clone();
+    super::evict_branch_cache_if_full(&mut cache, &existing);
+    assert_eq!(cache.branches.len(), super::MAX_CACHED_REPOS);
+}

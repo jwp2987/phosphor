@@ -360,8 +360,24 @@ pub(crate) fn finish_branch_refresh(
     if let Some(reserved) = cache.reserved.get_mut(repo_path) {
         reserved.retain(|name| !branches.contains(name));
     }
+    evict_branch_cache_if_full(&mut cache, repo_path);
     cache.branches.insert(repo_path.to_path_buf(), branches);
     true
+}
+
+/// Most repos whose branch list is kept; one repo is evicted to make room for a new one.
+const MAX_CACHED_REPOS: usize = 64;
+
+/// Keeps the per-repo maps bounded: repos ever opened in this process would otherwise
+/// accumulate forever (#1382). An evicted repo just re-lists on its next refresh.
+fn evict_branch_cache_if_full(cache: &mut BranchCache, keep: &Path) {
+    if cache.branches.contains_key(keep) || cache.branches.len() < MAX_CACHED_REPOS {
+        return;
+    }
+    if let Some(victim) = cache.branches.keys().find(|k| k.as_path() != keep).cloned() {
+        cache.branches.remove(&victim);
+        cache.generation.remove(&victim);
+    }
 }
 
 #[cfg(not(feature = "local_fs"))]

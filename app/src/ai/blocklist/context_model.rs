@@ -360,12 +360,25 @@ pub struct ReadAttachment {
 /// inline caps per file). Order is preserved. Callers on the UI thread run this on a worker
 /// thread and continue with [`context_and_files_from_read`] when it returns.
 pub fn read_attachments(attachments: Vec<PendingAttachment>) -> Vec<ReadAttachment> {
+    read_attachments_cancellable(attachments, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// [`read_attachments`] that checks `cancel` before each file and skips the remaining reads once
+/// it is set (the result is then discarded by the caller; #1382).
+pub fn read_attachments_cancellable(
+    attachments: Vec<PendingAttachment>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<ReadAttachment> {
     attachments
         .into_iter()
         .map(|attachment| {
             let file_context = match &attachment {
-                PendingAttachment::File(file) => read_pending_file_for_context(file),
-                PendingAttachment::Image(_) => None,
+                PendingAttachment::File(file)
+                    if !cancel.load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    read_pending_file_for_context(file)
+                }
+                _ => None,
             };
             ReadAttachment {
                 attachment,

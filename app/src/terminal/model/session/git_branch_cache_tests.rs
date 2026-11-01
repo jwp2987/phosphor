@@ -104,3 +104,25 @@ fn refs_epoch_change_is_a_miss_with_identical_file_stamps() {
     );
     assert_eq!(lookup(id, "/r", &stamp(3).with_epoch(8)), None);
 }
+
+/// #1382: a full cache evicts only the oldest entry; it used to clear every session's list.
+#[test]
+fn full_cache_evicts_only_the_oldest_entry() {
+    let mut cache: CacheMap = HashMap::new();
+    let id = SessionId::from(9100);
+    for i in 0..MAX_CACHED_ENTRIES {
+        store_in(&mut cache, (id, format!("/d{i}")), stamp(1), vec![]);
+    }
+    assert_eq!(cache.len(), MAX_CACHED_ENTRIES);
+    store_in(&mut cache, (id, "/new".to_string()), stamp(1), vec![]);
+    assert_eq!(cache.len(), MAX_CACHED_ENTRIES);
+    assert!(cache.contains_key(&(id, "/new".to_string())));
+    assert!(
+        !cache.contains_key(&(id, "/d0".to_string())),
+        "oldest evicted"
+    );
+    assert!(
+        cache.contains_key(&(id, "/d1".to_string())),
+        "the rest are kept"
+    );
+}

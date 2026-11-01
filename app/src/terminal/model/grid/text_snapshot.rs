@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::terminal::model::block::{BlockGridPoint, SnapshotSliceCursor};
 use crate::terminal::model::blocks::BlockList;
 use crate::terminal::model::BlockId;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::terminal::model::cell::Flags;
 use crate::util::extensions::TrimStringExt;
@@ -116,11 +117,28 @@ impl GridTextSnapshot {
         res
     }
 
+    /// Like [`Self::render`], but checks `cancel` every [`CANCEL_CHECK_ROWS`] rows and returns
+    /// `None` once it is set, so a superseded copy stops burning a core (#1382).
+    pub fn render_cancellable(&self, cancel: &AtomicBool) -> Option<String> {
+        let mut res = String::new();
+        for (index, row) in self.rows.iter().enumerate() {
+            if index % CANCEL_CHECK_ROWS == 0 && cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            row.render_into(&self.tabs, self.columns, &mut res);
+        }
+        res.trim_trailing_newline();
+        Some(res)
+    }
+
     /// Number of captured rows.
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
 }
+
+/// How many rows a cancellable render processes between checks of its cancel flag.
+const CANCEL_CHECK_ROWS: usize = 1024;
 
 /// The text of one block's selected range: one snapshot per grid it spans (prompt, rprompt,
 /// command, output).
@@ -139,6 +157,18 @@ impl BlockTextSnapshot {
                 .filter(|content| !content.is_empty()),
             "\n",
         )
+    }
+
+    /// Cancellable [`Self::render`]; `None` when `cancel` was set.
+    pub fn render_cancellable(&self, cancel: &AtomicBool) -> Option<String> {
+        let mut out: Vec<String> = Vec::new();
+        for piece in &self.pieces {
+            let content = piece.render_cancellable(cancel)?;
+            if !content.is_empty() {
+                out.push(content);
+            }
+        }
+        Some(out.join("\n"))
     }
 
     /// Number of captured rows across all grids.
@@ -286,5 +316,20 @@ impl SelectionParts {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Cancellable [`Self::render`]; `None` when `cancel` was set before it finished.
+    pub fn render_cancellable(self, cancel: &AtomicBool) -> Option<String> {
+        let mut out = Vec::with_capacity(self.parts.len());
+        for part in self.parts {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            out.push(match part {
+                SelectionPart::Text(text) => text,
+                SelectionPart::Block(snapshot) => snapshot.render_cancellable(cancel)?,
+            });
+        }
+        Some(out.join("\n"))
     }
 }
