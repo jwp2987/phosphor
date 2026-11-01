@@ -50,6 +50,8 @@ mod tests {
                 #[cfg(feature = "local_fs")]
                 symlink_targets: Default::default(),
                 #[cfg(feature = "local_fs")]
+                symlink_scan_epoch: Default::default(),
+                #[cfg(feature = "local_fs")]
                 repo_watches: Default::default(),
                 auto_indexed: Default::default(),
             }
@@ -2079,6 +2081,40 @@ Thumbs.db
                 });
             },
         );
+    }
+
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn scheduled_symlink_refresh_does_not_scan_inline_and_drops_stale_results() {
+        VirtualFS::test("scheduled_symlink_refresh_stale", |dirs, mut vfs| {
+            vfs.mkdir("repo/.agents/skills").mkdir("outside/shared");
+            let repo = dirs.tests().join("repo");
+            let target = dirs.tests().join("outside/shared");
+            std::os::unix::fs::symlink(&target, repo.join(".agents/skills/first")).unwrap();
+
+            App::test((), |mut app| async move {
+                let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model.set_emit_incremental_updates(true);
+                    model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                    model.repositories.insert(
+                        repo_path.clone(),
+                        IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                    );
+                    model.schedule_symlink_refresh(&repo_path, ctx);
+                    // The UI-thread entry point returned without scanning.
+                    assert!(model.symlink_targets.is_empty());
+                    // Invalidate the in-flight scan (as a repo clear/removal does).
+                    model.clear_symlink_targets_for_repo(&repo_path, ctx);
+                });
+                // Let the background scan complete; its result must be dropped.
+                warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+                model_handle.read(&app, |model, _ctx| {
+                    assert!(model.symlink_targets.is_empty());
+                });
+            });
+        });
     }
 
     #[cfg(all(unix, feature = "local_fs"))]

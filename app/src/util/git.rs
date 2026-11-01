@@ -248,13 +248,76 @@ pub fn list_local_branches_sync(repo_path: &Path) -> HashSet<String> {
         .output();
 
     match output {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect(),
+        Ok(out) if out.status.success() => {
+            parse_branch_list(&String::from_utf8_lossy(&out.stdout))
+        }
         _ => HashSet::new(),
     }
+}
+
+/// Parses `git branch --list --format=%(refname:short)` output.
+pub(crate) fn parse_branch_list(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// Non-blocking variant of [`list_local_branches_sync`] (#1313). Empty set on any failure.
+#[cfg(feature = "local_fs")]
+pub async fn list_local_branches(repo_path: &Path) -> HashSet<String> {
+    match run_git_command(repo_path, &["branch", "--list", "--format=%(refname:short)"]).await {
+        Ok(out) => parse_branch_list(&out),
+        Err(_) => HashSet::new(),
+    }
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn list_local_branches(_repo_path: &Path) -> HashSet<String> {
+    HashSet::new()
+}
+
+/// Per-repo cache of local branch names, filled off the UI thread. UI-thread code reads it with
+/// [`cached_local_branches`] and never runs git; a refresh result is only stored if no newer
+/// refresh was started for the same repo (generation check).
+#[derive(Default)]
+struct BranchCache {
+    branches: std::collections::HashMap<std::path::PathBuf, HashSet<String>>,
+    generation: std::collections::HashMap<std::path::PathBuf, u64>,
+}
+
+static BRANCH_CACHE: std::sync::LazyLock<std::sync::Mutex<BranchCache>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn cached_local_branches(repo_path: &Path) -> Option<HashSet<String>> {
+    BRANCH_CACHE.lock().ok()?.branches.get(repo_path).cloned()
+}
+
+/// Starts a refresh for `repo_path`, returning its generation.
+pub(crate) fn begin_branch_refresh(repo_path: &Path) -> u64 {
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return 0;
+    };
+    let slot = cache.generation.entry(repo_path.to_path_buf()).or_insert(0);
+    *slot += 1;
+    *slot
+}
+
+/// Stores `branches` unless a newer refresh was started. Returns whether it was stored.
+pub(crate) fn finish_branch_refresh(
+    repo_path: &Path,
+    generation: u64,
+    branches: HashSet<String>,
+) -> bool {
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return false;
+    };
+    if cache.generation.get(repo_path) != Some(&generation) {
+        return false;
+    }
+    cache.branches.insert(repo_path.to_path_buf(), branches);
+    true
 }
 
 #[cfg(not(feature = "local_fs"))]

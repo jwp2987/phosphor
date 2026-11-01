@@ -198,19 +198,17 @@ impl FileSearchModel {
         arc
     }
 
-    /// Gets repository contents with git status information for prioritization.
-    /// Reuses the cached repo contents from `get_repo_contents`.
+    /// Gets repository contents plus the repo root whose `git status` should be
+    /// consulted for prioritization. Never runs git: the UI-thread caller gets
+    /// the cached contents immediately and awaits
+    /// [`git_changed_files_async`] off the main thread (#1312).
     #[cfg(feature = "local_fs")]
-    pub fn get_repo_contents_with_git_status(
+    pub fn get_repo_contents_with_git_root(
         &self,
         app: &AppContext,
-    ) -> (Arc<Vec<FileSearchResult>>, HashSet<String>) {
+    ) -> (Arc<Vec<FileSearchResult>>, Option<PathBuf>) {
         let contents = self.get_repo_contents("", app);
-        let git_changed_files = self
-            .repo_root(app)
-            .and_then(|repo_root| self.get_git_changed_files(&repo_root).ok())
-            .unwrap_or_default();
-        (contents, git_changed_files)
+        (contents, self.repo_root(app))
     }
 
     /// Gets repository contents from the LocalRepoMetadataModel for the current working directory (WASM stub)
@@ -229,13 +227,13 @@ impl FileSearchModel {
         Arc::new(Vec::new())
     }
 
-    /// Gets repository contents with git status information for prioritization (WASM stub)
+    /// Gets repository contents plus the git root (WASM stub)
     #[cfg(not(feature = "local_fs"))]
-    pub fn get_repo_contents_with_git_status(
+    pub fn get_repo_contents_with_git_root(
         &self,
         _app: &AppContext,
-    ) -> (Arc<Vec<FileSearchResult>>, HashSet<String>) {
-        (Arc::new(Vec::new()), HashSet::new())
+    ) -> (Arc<Vec<FileSearchResult>>, Option<PathBuf>) {
+        (Arc::new(Vec::new()), None)
     }
 
     /// Builds the [`GetContentsArgs`] used to traverse repo metadata.
@@ -609,25 +607,9 @@ impl FileSearchModel {
             return Ok(changed_files);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        for line in stdout.lines() {
-            if line.len() >= 3 {
-                // Git status --porcelain format: XY filename
-                // Where X is index status, Y is working tree status
-                let filename = &line[3..];
-
-                // Handle quoted filenames (for special characters)
-                let clean_filename = if filename.starts_with('"') && filename.ends_with('"') {
-                    // Basic unquoting - in practice git escapes special chars
-                    &filename[1..filename.len() - 1]
-                } else {
-                    filename
-                };
-
-                changed_files.insert(clean_filename.to_string());
-            }
-        }
+        changed_files.extend(parse_porcelain_status(&String::from_utf8_lossy(
+            &output.stdout,
+        )));
 
         Ok(changed_files)
     }
@@ -642,3 +624,67 @@ impl Entity for FileSearchModel {
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+/// Parses `git status --porcelain` output into the set of changed paths.
+pub(crate) fn parse_porcelain_status(stdout: &str) -> HashSet<String> {
+    let mut changed_files = HashSet::new();
+    for line in stdout.lines() {
+        if line.len() >= 3 {
+            // Format: XY filename (X = index status, Y = working tree status)
+            let filename = &line[3..];
+            // Basic unquoting of filenames with special characters.
+            let clean_filename = if filename.starts_with('"') && filename.ends_with('"') {
+                &filename[1..filename.len() - 1]
+            } else {
+                filename
+            };
+            changed_files.insert(clean_filename.to_string());
+        }
+    }
+    changed_files
+}
+
+/// Runs `git status --porcelain` without blocking the calling thread. Returns
+/// an empty set when `repo_path` is `None` or git fails. Results are tied to
+/// the repo passed in, so a result for a stale query/repo is simply dropped by
+/// the search mixer along with its query.
+#[cfg(feature = "local_fs")]
+pub(crate) async fn git_changed_files_async(repo_path: Option<PathBuf>) -> HashSet<String> {
+    let Some(repo_path) = repo_path else {
+        return HashSet::new();
+    };
+    log::debug!("[GIT OPERATION] model.rs git_changed_files_async git status --porcelain");
+    let output = command::r#async::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo_path)
+        .output()
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            parse_porcelain_status(&String::from_utf8_lossy(&out.stdout))
+        }
+        _ => HashSet::new(),
+    }
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub(crate) async fn git_changed_files_async(_repo_path: Option<PathBuf>) -> HashSet<String> {
+    HashSet::new()
+}
+
+#[cfg(test)]
+mod git_status_tests {
+    use super::*;
+
+    #[test]
+    fn parses_porcelain_lines() {
+        let got = parse_porcelain_status(" M src/a.rs\n?? \"b c.rs\"\nA  d.rs\n");
+        assert!(got.contains("src/a.rs") && got.contains("b c.rs") && got.contains("d.rs"));
+    }
+
+    #[test]
+    fn no_repo_yields_empty_without_running_git() {
+        let got = futures::executor::block_on(git_changed_files_async(None));
+        assert!(got.is_empty());
+    }
+}
