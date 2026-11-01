@@ -1698,6 +1698,13 @@ impl CompleterData {
             .and_then(BlockMetadata::session_id)
     }
 
+    /// The session a command about to run belongs to: the input's active block metadata (set by
+    /// the Precmd), else the block list's active block, which `can_execute_command` consults.
+    fn command_session_id(&self) -> Option<SessionId> {
+        self.active_block_session_id()
+            .or_else(|| self.model.lock().block_list().active_block().session_id())
+    }
+
     pub fn completion_session_context(&self, app: &AppContext) -> Option<SessionContext> {
         let active_block_session_id = self.active_block_session_id()?;
         let current_session = self.sessions.as_ref(app).get(active_block_session_id);
@@ -6792,6 +6799,14 @@ impl Input {
             }
 
             log::warn!("Tried to execute command but can_execute_command was false: {reason:?}");
+            return false;
+        }
+
+        if self.command_session_id().is_none() {
+            // Bootstrapped and appendable per the block list, but the Precmd metadata has not
+            // reached the input yet. Refuse like any other not-ready state; the caller keeps the
+            // line (a held ssh key is retried) instead of the old `expect` crashing the app.
+            log::warn!("Tried to execute command but no session id is known yet");
             return false;
         }
 
@@ -16220,9 +16235,11 @@ impl Input {
 
         self.cancel_decorations_job();
 
-        let session_id = self
-            .active_block_session_id()
-            .expect("session_id should be set (via bootstrap) before executing command");
+        let Some(session_id) = self.command_session_id() else {
+            // `try_execute_command_from_source` refuses before getting here; never crash on it.
+            log::error!("start_block_and_write_command_to_pty: no session id, command not run");
+            return;
+        };
         crate::completer::invalidate_shared_directory_cache(session_id);
 
         // If the SelectedWorkflowState is populated with a workflow, we count this as a workflow execution.
