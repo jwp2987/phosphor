@@ -2853,6 +2853,35 @@ fn ssh_login_reprompt_withdraws_pending_recheck() {
     assert_eq!(state(&model), SshLoginNotificationState::Monitoring);
 }
 
+/// #1374: the remote shell's bootstrap DCS arriving right after a non-prompt line completes the
+/// login at once, with no confirmation check involved.
+#[test]
+fn ssh_login_remote_bootstrap_dcs_completes_login_immediately() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+    model.process_bytes("some banner text\r\n");
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_eq!(
+        state(&model),
+        SshLoginNotificationState::SentInitialNotification
+    );
+    model.init_shell(InitShellValue {
+        shell: "bash".into(),
+        user: "u".to_owned(),
+        hostname: "myhost".to_owned(),
+        session_id: 0.into(),
+        ..Default::default()
+    });
+    assert_eq!(state(&model), SshLoginNotificationState::Completed);
+}
+
 #[test]
 fn dropped_oversized_apc_abandons_pending_kitty_transmission() {
     let mut terminal = TerminalModel::mock(None, None);

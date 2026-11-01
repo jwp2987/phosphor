@@ -2811,6 +2811,27 @@ impl TerminalModel {
         self.notify_on_end_of_ssh_login = Some(ssh_login_state);
     }
 
+    /// #1374: a shell on the far side of the ssh connection announced itself with its own
+    /// bootstrap DCS (`InitShell` / `Bootstrapped`). That is a positive "login is done" signal, so
+    /// the login is declared complete at once -- no re-check, no 3 s give-up. Hosts that never send
+    /// it still rely on the output heuristic and the logged give-up in the view.
+    /// (The plain precmd DCS is deliberately not used: the LOCAL shell sends one when a failed
+    /// `ssh` returns to its prompt, which must not be read as a finished login.)
+    fn note_remote_shell_bootstrap_signal(&mut self) {
+        let Some(mut ssh_login) = self.notify_on_end_of_ssh_login.clone() else {
+            return;
+        };
+        if &ssh_login.block_id != self.block_list().active_block().id()
+            || ssh_login.notification_state == SshLoginNotificationState::Completed
+        {
+            return;
+        }
+        self.event_proxy
+            .send_terminal_event(Event::DetectedEndOfSshLogin(SshLoginStatus::ReadyToWarpify));
+        ssh_login.notification_state = SshLoginNotificationState::Completed;
+        self.notify_on_end_of_ssh_login = Some(ssh_login);
+    }
+
     pub fn is_ssh_block(&self) -> bool {
         self.notify_on_end_of_ssh_login.is_some()
     }
@@ -3821,6 +3842,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn init_shell(&mut self, data: InitShellValue) {
+        self.note_remote_shell_bootstrap_signal();
         if !self.ignore_bootstrapping_messages {
             // The setup script has been read and run: its echo is over (#1038).
             self.disarm_setup_echo();
