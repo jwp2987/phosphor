@@ -152,3 +152,53 @@ fn model_availability_probe_is_exclusive_and_loses_no_owner_change() {
         assert!(cache.begin(ClipboardTarget::Clipboard).is_some());
     });
 }
+
+/// The blocked-reader cap (#1375): with `max` readers allowed to be blocked, the platform call
+/// of a reader never overlaps another's, and a reader turned away answers `TimedOut` without
+/// calling it. Every interleaving of the count's increment, the check and the guard's decrement
+/// is covered under loom.
+#[test]
+fn model_tracked_reader_cap_never_overlaps_blocking_calls() {
+    check(|| {
+        // The tracker must be `'static`; one is leaked per execution (a few bytes).
+        let tracker: &'static ReaderTracker = Box::leak(Box::new(ReaderTracker::new()));
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let concurrent = concurrent.clone();
+            let reader = tracked_reader_with(
+                tracker,
+                1,
+                SLOW_READ,
+                ReadRequestId::next(),
+                ReadKind::Full,
+                Box::new(move || {
+                    assert_eq!(
+                        concurrent.fetch_add(1, Ordering::SeqCst),
+                        0,
+                        "two platform calls blocked at once past a cap of 1"
+                    );
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                    ReadOutcome::Content(ClipboardContent::default())
+                }),
+            );
+            handles.push(thread::spawn(reader));
+        }
+        let outcomes: Vec<ReadOutcome> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, ReadOutcome::Content(_))),
+            "the first reader always runs"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| matches!(outcome, ReadOutcome::Content(_) | ReadOutcome::TimedOut))
+        );
+        assert_eq!(tracker.in_flight(), 0, "a reader leaked its in-flight slot");
+    });
+}
