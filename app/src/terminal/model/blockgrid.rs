@@ -190,6 +190,49 @@ impl BlockGrid {
         }
     }
 
+    /// Identifies output row `row` by content rather than position: the index of the logical
+    /// (unwrapped) line it belongs to, and how many wrapped rows into that line it is. Survives a
+    /// column change, which re-wraps lines but never merges or splits them (#1328). `None` when
+    /// the row is out of range or the displayed rows differ from the stored ones (filtering).
+    pub fn row_content_anchor(&self, row: usize) -> Option<(usize, usize)> {
+        if row >= self.len() || self.len_displayed() != self.len() {
+            return None;
+        }
+        let handler = self.grid_handler();
+        let (mut line, mut line_start) = (0, 0);
+        for r in 0..row {
+            if !handler.row_wraps(r) {
+                line += 1;
+                line_start = r + 1;
+            }
+        }
+        Some((line, row - line_start))
+    }
+
+    /// Inverse of [`Self::row_content_anchor`] on the (possibly re-wrapped) grid: the row holding
+    /// the `offset`th wrapped row of logical line `line`, clamped to that line's last row.
+    pub fn row_for_content_anchor(&self, (line, offset): (usize, usize)) -> Option<usize> {
+        let total = self.len();
+        if total == 0 || self.len_displayed() != total {
+            return None;
+        }
+        let handler = self.grid_handler();
+        let mut current = 0;
+        let mut start = None;
+        for r in 0..total {
+            if current == line && start.is_none() {
+                start = Some(r);
+            }
+            if !handler.row_wraps(r) {
+                if start.is_some() {
+                    return Some((start? + offset).min(r));
+                }
+                current += 1;
+            }
+        }
+        start.map(|s| (s + offset).min(total - 1))
+    }
+
     /// Returns the length of the blockgrid containing only displayed rows.
     /// When `trim_trailing_blank_rows` is set, caps at the bottommost visible
     /// content row to exclude trailing blank rows from the displayed height.

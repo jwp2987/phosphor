@@ -7,11 +7,11 @@ mod rich_content;
 mod testing;
 
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use alt_screen::{AltScreenFindRun, run_find_on_alt_screen};
-pub use async_find::{AsyncFindController, AsyncFindStatus};
+pub use async_find::{AbsoluteMatch, AsyncFindController, AsyncFindStatus};
 use block_list::run_find_on_block_list;
 pub use block_list::{BlockGridMatch, BlockListFindRun, BlockListMatch};
 use parking_lot::FairMutex;
@@ -46,13 +46,14 @@ pub enum BlockFindRenderData<'a> {
     },
     /// Data from the asynchronous find path.
     ///
-    /// For the async path, we pre-compute and store converted matches since they use
-    /// absolute coordinates internally and need conversion to relative Points.
+    /// Matches use absolute coordinates internally and need conversion to relative Points. The
+    /// command grid is small and converted up front; the output grid can hold hundreds of
+    /// thousands of matches (#1327), so it is converted per paint for the visible rows only.
     Async {
         /// Pre-converted command grid matches (filtered for truncation).
         command_matches: Vec<RangeInclusive<Point>>,
-        /// Pre-converted output grid matches (filtered for truncation).
-        output_matches: Vec<RangeInclusive<Point>>,
+        /// The block's stored output matches and the grid to convert them against.
+        output: Option<(&'a [AbsoluteMatch], &'a GridHandler)>,
         /// Focused range in command grid, if any.
         focused_command_range: Option<RangeInclusive<Point>>,
         /// Focused range in output grid, if any.
@@ -92,22 +93,12 @@ impl<'a> BlockFindRenderData<'a> {
             })
             .unwrap_or_default();
 
-        // Convert output grid matches, skipping any hidden by an active block
-        // filter so highlights match the (filtered) visible content. Uses
-        // original coordinates (see command_matches above).
-        let output_matches = output_grid
-            .and_then(|grid| {
-                controller
-                    .matches_for_block_grid(block_index, GridType::Output)
-                    .map(|matches| {
-                        matches
-                            .iter()
-                            .filter(|m| !m.is_filtered)
-                            .filter_map(|m| m.to_original_range(grid))
-                            .collect::<Vec<_>>()
-                    })
-            })
-            .unwrap_or_default();
+        // Output matches are converted lazily, see `output_grid_matches_in_rows`.
+        let output = output_grid.and_then(|grid| {
+            controller
+                .matches_for_block_grid(block_index, GridType::Output)
+                .map(|matches| (matches.as_slice(), grid))
+        });
 
         // Get focused match ranges (also in original coordinates).
         let focused_match = controller.focused_terminal_match();
@@ -122,7 +113,7 @@ impl<'a> BlockFindRenderData<'a> {
 
         Self::Async {
             command_matches,
-            output_matches,
+            output,
             focused_command_range,
             focused_output_range,
         }
@@ -142,15 +133,45 @@ impl<'a> BlockFindRenderData<'a> {
         }
     }
 
-    /// Returns an iterator over match ranges for the output grid.
-    pub fn output_grid_matches(
+    /// Returns the match ranges for the output grid, in original grid coordinates. With
+    /// `rows` (the displayed rows about to be painted, only valid while no block filter is
+    /// active) only matches touching those rows are returned, so a query with hundreds of
+    /// thousands of matches costs a paint only what is on screen (#1327).
+    pub fn output_grid_matches_in_rows(
         &self,
-    ) -> Option<Box<dyn Iterator<Item = &RangeInclusive<Point>> + '_>> {
+        rows: Option<Range<usize>>,
+    ) -> Option<Vec<RangeInclusive<Point>>> {
         match self {
-            Self::Sync { run, block_index } => {
-                Some(run.matches_for_block_grid(*block_index, GridType::Output))
+            Self::Sync { run, block_index } => Some(
+                run.matches_for_block_grid(*block_index, GridType::Output)
+                    .filter(|m| {
+                        rows.as_ref()
+                            .is_none_or(|r| m.end().row >= r.start && m.start().row < r.end)
+                    })
+                    .cloned()
+                    .collect(),
+            ),
+            Self::Async { output, .. } => {
+                let (matches, grid) = (*output)?;
+                let window = match &rows {
+                    Some(r) => {
+                        let truncated = grid.num_lines_truncated();
+                        let (first, end) = (r.start as u64 + truncated, r.end as u64 + truncated);
+                        // Matches are sorted and do not overlap, so both bounds are monotone.
+                        let lo = matches.partition_point(|m| m.end_row() < first);
+                        let hi = matches.partition_point(|m| m.start_row() < end);
+                        &matches[lo..hi.max(lo)]
+                    }
+                    None => matches,
+                };
+                Some(
+                    window
+                        .iter()
+                        .filter(|m| !m.is_filtered)
+                        .filter_map(|m| m.to_original_range(grid))
+                        .collect(),
+                )
             }
-            Self::Async { output_matches, .. } => Some(Box::new(output_matches.iter())),
         }
     }
 

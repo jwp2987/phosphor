@@ -3982,3 +3982,35 @@ fn test_flat_storage_at_finish_reduces_finished_block_memory() {
         "estimated memory must drop: {bytes_on} B vs {bytes_off} B"
     );
 }
+
+#[test]
+fn test_output_row_content_anchor_survives_a_column_change() {
+    // #1328: a scroll offset kept in rows lands on different content once lines re-wrap.
+    let mut block_list = block_list_with_finished_blocks(0);
+    let cols = block_list.size().columns();
+    let line = "x".repeat(cols * 2 + 3);
+    let output: String = (0..40).map(|_| format!("{line}\n")).collect();
+    let index = insert_block(&mut block_list, "cmd\n", &output);
+
+    // Three rows per logical line at the original width.
+    let old_row = 10 * 3 + 1;
+    let anchor = block_list.blocks()[index.0]
+        .output_grid()
+        .row_content_anchor(old_row)
+        .expect("row in range");
+    assert_eq!(anchor, (10, 1));
+
+    resize_columns(&mut block_list, cols / 2);
+
+    let grid = block_list.blocks()[index.0].output_grid();
+    let new_row = grid
+        .row_for_content_anchor(anchor)
+        .expect("line still there");
+    assert_ne!(new_row, old_row, "lines re-wrapped to more rows");
+    // The same logical line and wrapped offset, not the same row number.
+    assert_eq!(grid.row_content_anchor(new_row), Some(anchor));
+    // A wrapped offset past the line's new end clamps to its last row.
+    let last_of_line = grid.row_for_content_anchor((10, 1000)).unwrap();
+    assert_eq!(grid.row_content_anchor(last_of_line).unwrap().0, 10);
+    assert_eq!(grid.row_content_anchor(last_of_line + 1).unwrap().0, 11);
+}

@@ -897,11 +897,15 @@ impl AsyncFindController {
                             .insert(block_index, total_index);
                     }
 
-                    self.block_results
+                    let stored = self
+                        .block_results
                         .terminal_matches
                         .entry((block_index, grid_type))
-                        .or_default()
-                        .extend(matches);
+                        .or_default();
+                    // Only the appended tail is new: re-flagging every earlier match on each
+                    // chunk made a many-match scan quadratic on the UI thread (#1327).
+                    let first_new = stored.len();
+                    stored.extend(matches);
 
                     // Auto-select the first match when results first arrive.
                     if self.focused_match_index.is_none() {
@@ -911,7 +915,7 @@ impl AsyncFindController {
                     // Mark any of the newly-arrived output matches that fall in
                     // filter-hidden rows so they're excluded from the count,
                     // focus, and highlights (also re-clamps focus).
-                    self.recompute_filtered_for_block(block_index);
+                    self.recompute_filtered_for_block_from(block_index, first_new);
                     true
                 }
             }
@@ -1179,6 +1183,11 @@ impl AsyncFindController {
     /// Returns `true` if any match's filtered flag flipped or the focused match
     /// index moved as a result.
     pub(crate) fn recompute_filtered_for_block(&mut self, block_index: BlockIndex) -> bool {
+        self.recompute_filtered_for_block_from(block_index, 0)
+    }
+
+    /// [`Self::recompute_filtered_for_block`] for the Output matches from index `first` on.
+    fn recompute_filtered_for_block_from(&mut self, block_index: BlockIndex, first: usize) -> bool {
         let mut flags_changed = false;
         {
             let model = self.terminal_model.lock();
@@ -1192,7 +1201,7 @@ impl AsyncFindController {
                 .terminal_matches
                 .get_mut(&(block_index, GridType::Output))
             {
-                for absolute_match in matches.iter_mut() {
+                for absolute_match in matches.iter_mut().skip(first) {
                     // Convert the absolute row back to the grid's *original*
                     // (unfiltered) row index and check whether that row is
                     // currently displayed. We intentionally do NOT use

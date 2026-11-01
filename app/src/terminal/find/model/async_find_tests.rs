@@ -16,7 +16,7 @@ use crate::terminal::SizeInfo;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::find::model::block_list::run_find_on_block_list;
 use crate::terminal::find::model::{FindOptions, TerminalFindModel};
-use crate::terminal::find::{BlockListMatch, RichContentMatchId};
+use crate::terminal::find::{BlockFindRenderData, BlockListMatch, RichContentMatchId};
 use crate::terminal::model::TerminalModel;
 use crate::terminal::model::ansi::{Handler, PreexecValue};
 use crate::terminal::model::blocks::TotalIndex;
@@ -1675,4 +1675,86 @@ fn test_wakeup_after_a_dirty_range_wakeup_rescans_the_active_block_once() {
         test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
         assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
     });
+}
+
+#[test]
+fn test_render_data_converts_only_the_visible_rows_of_a_huge_match_set() {
+    // #1327: converting every match of a block on every paint froze the UI for seconds.
+    let terminal_model = TerminalModel::mock(None, None);
+    let block = terminal_model.block_list().active_block();
+    let grid = block.output_grid().grid_handler();
+    let matches: Vec<AbsoluteMatch> = (0..200_000u64).map(make_match).collect();
+    let data = BlockFindRenderData::Async {
+        command_matches: Vec::new(),
+        output: Some((matches.as_slice(), grid)),
+        focused_command_range: None,
+        focused_output_range: None,
+    };
+
+    let windowed = data.output_grid_matches_in_rows(Some(1000..1040)).unwrap();
+    assert_eq!(windowed.len(), 40);
+    assert_eq!(windowed[0].start().row, 1000);
+    assert_eq!(windowed[39].start().row, 1039);
+    // No window (a block filter is active) still converts everything.
+    assert_eq!(
+        data.output_grid_matches_in_rows(None).unwrap().len(),
+        matches.len()
+    );
+    // A window past the last match is empty rather than an error.
+    assert!(
+        data.output_grid_matches_in_rows(Some(300_000..300_040))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_appended_chunks_flag_only_the_new_tail_as_filtered() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            let mut controller = AsyncFindController::new(terminal_model);
+            controller.set_test_status(AsyncFindStatus::Scanning);
+            model.async_find_controller = Some(controller);
+            model
+        });
+        model.update(&mut app, |model, ctx| {
+            let controller = model.async_find_controller.as_mut().unwrap();
+            let active = controller_active_block(controller);
+            // A stale flag on an already-stored match survives a later chunk: only the appended
+            // tail is re-evaluated.
+            for chunk in [vec![make_match(0)], vec![make_match(1), make_match(2)]] {
+                controller.process_message(
+                    FindTaskMessage::BlockGridMatches {
+                        block_index: active,
+                        grid_type: GridType::Output,
+                        matches: chunk,
+                    },
+                    ctx,
+                );
+                if let Some(stored) = controller
+                    .block_results_mut()
+                    .terminal_matches
+                    .get_mut(&(active, GridType::Output))
+                    && stored.len() == 1
+                {
+                    stored[0].is_filtered = true;
+                }
+            }
+            let stored =
+                &controller.block_results_mut().terminal_matches[&(active, GridType::Output)];
+            assert!(stored[0].is_filtered, "earlier matches are not re-flagged");
+            assert!(!stored[1].is_filtered && !stored[2].is_filtered);
+        });
+    });
+}
+
+fn controller_active_block(controller: &AsyncFindController) -> BlockIndex {
+    controller
+        .terminal_model
+        .lock()
+        .block_list()
+        .active_block_index()
 }

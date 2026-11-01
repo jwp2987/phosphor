@@ -3074,6 +3074,14 @@ impl BlockListElement {
 
             let output_grid_properties =
                 Properties::default().weight(block_grid_params.grid_render_params.font_weight);
+            // Find highlights only matter for the rows about to be painted (#1327).
+            let output_find_matches = find_render_data.as_ref().and_then(|data| {
+                data.output_grid_matches_in_rows(block.output_grid().visible_row_window(
+                    *grid_origin,
+                    viewport_origin,
+                    block_grid_params,
+                ))
+            });
             let output_focused_range = find_render_data
                 .as_ref()
                 .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
@@ -3091,9 +3099,7 @@ impl BlockListElement {
                         })
                         .map(|url| &url.inner),
                     hovered_secret,
-                    find_render_data
-                        .as_ref()
-                        .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
+                    output_find_matches.as_ref().map(|matches| matches.iter()),
                     output_focused_range.as_ref(),
                     output_grid_properties,
                     block_grid_params,
@@ -3124,9 +3130,7 @@ impl BlockListElement {
                         .map(|url| &url.inner),
                     hovered_secret,
                     // Render find matches in output grid
-                    find_render_data
-                        .as_ref()
-                        .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
+                    output_find_matches.as_ref().map(|matches| matches.iter()),
                     output_focused_range.as_ref(),
                     output_grid_properties,
                     block_grid_params,
