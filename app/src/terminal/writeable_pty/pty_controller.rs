@@ -1868,6 +1868,7 @@ impl<T: EventLoopSender> PtyController<T> {
             before_write_fn: Some(Box::new(move || {
                 let mut model = terminal_model.lock();
                 let outcome = start_command_execution_for_source(&mut model, source);
+                model.publish_key_facts();
                 if outcome.is_accepted() {
                     if let Some(annotate_block) = annotate_block {
                         annotate_block(&mut model);
@@ -1937,7 +1938,11 @@ impl<T: EventLoopSender> PtyController<T> {
         // get written to the active block.
         // TODO: reconsider this behavior since the output was not the result of a command, and given the function name
         // is start_command_execution and no command was executed.
-        self.terminal_model.lock().start_command_execution();
+        {
+            let mut model = self.terminal_model.lock();
+            model.start_command_execution();
+            model.publish_key_facts();
+        }
     }
 
     /// Resizes the PTY's size (i.e. its notion of the number of columns and rows in the screen) via

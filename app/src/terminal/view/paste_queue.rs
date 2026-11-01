@@ -753,8 +753,7 @@ impl TerminalView {
             // behind its gate. It is written as typed, counted by the hand-off, never lost.
             log::warn!("input queue: a held key found the queue busy; writing it as typed");
             {
-                let mut model = self.model.lock();
-                let mut handoff = model.typeahead_handoff_mut();
+                let mut handoff = self.handoff.write();
                 if !handoff.route_released_chunk(&bytes) {
                     // Absorbed by a deferred Enter: there is no gate to put it behind either.
                     handoff.take_deferred_key_started();
@@ -766,14 +765,17 @@ impl TerminalView {
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        guard.offer_gated(
-            &mut host,
-            EntryKind::PtyBytes {
-                bytes,
-                takes_over_agent_control,
-            },
-            spec,
-        );
+        let kind = EntryKind::PtyBytes {
+            bytes,
+            takes_over_agent_control,
+        };
+        if guard.has_gate(spec.kind, spec.key) {
+            // The gate is open already (a key the queue did not take reached the hand-off):
+            // the key joins what it holds, in arrival order, instead of opening a second gate.
+            guard.offer(&mut host, kind);
+        } else {
+            guard.offer_gated(&mut host, kind, spec);
+        }
     }
 
     /// A signal or EOF is about to be written while keys are held for the prompt in the queue:
@@ -795,9 +797,8 @@ impl TerminalView {
             return bytes;
         }
         let hold_id = {
-            let mut model = self.model.lock();
-            model
-                .typeahead_handoff_mut()
+            self.handoff
+                .write()
                 .take_queued_prompt_hold_for_signal(&bytes)
         };
         let Some(hold_id) = hold_id else {
@@ -838,9 +839,8 @@ impl TerminalView {
             return bytes;
         }
         let ended = {
-            let mut model = self.model.lock();
-            model
-                .typeahead_handoff_mut()
+            self.handoff
+                .write()
                 .take_queued_young_hold_for_signal(&bytes)
         };
         let Some((hold_id, before_eof)) = ended else {
@@ -875,10 +875,7 @@ impl TerminalView {
         if !self.young_hold_gate_open() {
             return;
         }
-        let ended = {
-            let mut model = self.model.lock();
-            model.typeahead_handoff_mut().check_queued_young_hold()
-        };
+        let ended = { self.handoff.write().check_queued_young_hold() };
         if ended {
             self.drain_young_hold_ends(ctx);
         }
@@ -1125,8 +1122,7 @@ impl TerminalView {
         };
         let chunks = self.bytes_of_taken_entries(entries, ctx);
         let writes = {
-            let mut model = self.model.lock();
-            let mut handoff = model.typeahead_handoff_mut();
+            let mut handoff = self.handoff.write();
             if routed {
                 handoff.route_expired_young_chunks(chunks)
             } else {
@@ -1220,8 +1216,7 @@ impl TerminalView {
         }
         let mut absorbed: Vec<(u64, Vec<u8>)> = Vec::new();
         let writes = {
-            let mut model = self.model.lock();
-            let mut handoff = model.typeahead_handoff_mut();
+            let mut handoff = self.handoff.write();
             if how == PromptHoldEnd::GaveUp {
                 handoff.expire_queued_prompt_hold(hold_id);
             }

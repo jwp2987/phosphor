@@ -10597,7 +10597,12 @@ impl TerminalView {
     /// (#1255).
     fn non_editor_typed_event_wanted(&self, ctx: &ViewContext<Self>) -> bool {
         SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id())
-            || self.model.lock().shared_session_status().is_executor()
+            // Never waits for the pty reader (#1403): when the model is busy the copy is made
+            // (a key is a few bytes) and dropped if nothing consumes it.
+            || self
+                .model
+                .try_lock()
+                .is_none_or(|model| model.shared_session_status().is_executor())
     }
 
     fn emit_non_editor_typed_event(&self, chars: Vec<u8>, ctx: &mut ViewContext<Self>) {
@@ -12141,7 +12146,7 @@ impl TerminalView {
     /// key is not offered to the paste stage again (#1353).
     fn write_user_bytes_to_pty_after_paste_stage(
         &mut self,
-        mut bytes: Cow<'static, [u8]>,
+        bytes: Cow<'static, [u8]>,
         takes_over_agent_control: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
@@ -12335,13 +12340,32 @@ impl TerminalView {
         let bytes_vec = self
             .non_editor_typed_event_wanted(ctx)
             .then(|| bytes.to_vec());
-        self.clear_selected_blocks(ctx);
-        self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
+        // Nothing before the write waits for the pty reader (#1403): the selection reset has
+        // nothing to do unless something is selected, and the scroll update, which needs the
+        // model, runs now if it is free and right after the write is emitted if it is not.
+        if !self.selected_blocks.is_empty() || self.agent_transcript_selection.is_some() {
+            self.clear_selected_blocks(ctx);
+        }
+        let scroll_now = self.model.try_lock().is_some();
+        if scroll_now {
+            self.update_scroll_position_locking(
+                ScrollPositionUpdate::AfterWriteUserBytesToPty,
+                ctx,
+            );
+        }
         input_queue::trace::deliver(bytes.len(), "pty");
         if handoff_route == UserBytesRoute::WriteCounted {
             ctx.emit(Event::WriteHandoffUserBytesToPty { bytes });
         } else {
             self.write_to_pty(bytes, ctx);
+        }
+        if !scroll_now {
+            ctx.spawn(async {}, |me, _, ctx| {
+                me.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterWriteUserBytesToPty,
+                    ctx,
+                );
+            });
         }
         if let Some(bytes_vec) = bytes_vec {
             self.emit_non_editor_typed_event(bytes_vec, ctx);

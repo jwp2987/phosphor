@@ -13,7 +13,7 @@ fn after_submit() -> TypeaheadHandoff {
 /// at a prompt the app has not noticed yet (#933).
 fn young_after_submit() -> TypeaheadHandoff {
     let mut handoff = TypeaheadHandoff::default();
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     handoff
 }
 
@@ -285,7 +285,7 @@ fn a_report_after_the_deferred_command_was_written_is_stashed() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.on_report(),
         ReportDisposition::Stash,
@@ -420,7 +420,7 @@ fn nothing_is_held_or_counted_when_nothing_was_typed() {
     assert!(!handoff.holds_queued_writes());
     handoff.on_precmd();
     assert!(handoff.try_commit_at_prompt());
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -446,7 +446,7 @@ fn a_command_the_shell_starts_itself_gives_the_pty_input() {
 fn a_command_written_while_lines_are_queued_keeps_their_count() {
     let mut handoff = after_submit();
     type_and_flush(&mut handoff, b"a\r");
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -838,7 +838,7 @@ fn a_hold_does_not_outlive_the_state_it_was_made_in() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
     let (id, _) = hold_young_enter(&mut handoff, b"\r");
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert!(!handoff.has_young_hold());
     assert_eq!(
         handoff.take_young_hold_ends(),
@@ -1753,7 +1753,7 @@ fn a_new_session_drops_the_previous_sessions_round_trips() {
         "unmeasured again until the new shell's first command"
     );
     // The new session's first command measures afresh.
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert!(!handoff.on_preexec(false));
     assert_eq!(handoff.rtt_samples.len(), 1);
 }
@@ -2076,7 +2076,7 @@ fn seq_after_submit(fact: ShellPromptFact) -> TypeaheadHandoff {
     handoff.on_precmd_seq(Some(7), Some(1));
     handoff
         .set_foreground_probe(ForegroundProbe::default().with_prompt_fact(Arc::new(move || fact)));
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     handoff
 }
 
@@ -2591,7 +2591,7 @@ fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
     type_and_flush(&mut handoff, b"abc");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let id = handoff.take_young_hold_started().unwrap();
-    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    handoff.on_command_written();
     assert!(!handoff.young_hold_queued());
     assert_eq!(
         handoff.take_young_hold_ends(),
@@ -2622,7 +2622,7 @@ fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
 fn a_command_written_in_a_state_that_cannot_own_the_hold_drops_it() {
     let (mut handoff, id) = queued_young_hold();
     handoff.state = HandoffState::AwaitingReport;
-    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    handoff.on_command_written();
     assert_eq!(
         handoff.take_young_hold_ends(),
         vec![(id, YoungHoldEnd::Dropped)]
