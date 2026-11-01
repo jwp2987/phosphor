@@ -36,12 +36,15 @@ pub trait PtyHandle: Send + Sync {
 struct DirectPtyHandle {
     /// `None` once [`PtyHandle::kill`] has handed the child to a reaper thread.
     child: Option<Child>,
+    /// The child's pid, kept after the hand-off so `pid()` never reports 0 (a 0 pid reaching
+    /// `kill`/`killpg` would signal Phosphor's own process group).
+    pid: u32,
 }
 
 #[cfg(unix)]
 impl PtyHandle for DirectPtyHandle {
     fn pid(&self) -> u32 {
-        self.child.as_ref().map_or(0, Child::id)
+        self.pid
     }
 
     fn has_process_terminated(&mut self) -> Result<bool> {
@@ -241,9 +244,13 @@ impl PtySpawner {
                     event_loop_tx,
                 )
             })?;
+        #[cfg(unix)]
+        let child_pid = pty_spawn_info.child.id();
         let direct_pty_handle = Box::new(DirectPtyHandle {
             #[cfg(unix)]
             child: Some(pty_spawn_info.child),
+            #[cfg(unix)]
+            pid: child_pid,
             #[cfg(windows)]
             child: pty_spawn_info.child,
         });
