@@ -54,6 +54,12 @@ pub enum PtyIntent {
     /// its agent action was cancelled or its conversation stopped.
     DiscardHeldTypeaheadCommand,
     WriteBytes(Cow<'static, [u8]>),
+    /// The ssh-warpify one-line payload, written as one cancellable job after a line-clear
+    /// (#1384 P3).
+    WriteLineClearSetup(Vec<u8>),
+    /// Cut what is left of a paced setup write (a line-clear payload or a bootstrap): the ssh
+    /// warpify was cancelled, or a ^C / ^D went out (#1384 P3).
+    CancelPacedSetupWrites,
     /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
     /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).
     WriteHandoffUserBytes(Cow<'static, [u8]>),

@@ -39,9 +39,7 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 use super::Message;
-use super::write_queue::AbortScope;
-#[cfg(feature = "local_fs")]
-use super::write_queue::Pacing;
+use super::write_queue::{AbortScope, Pacing};
 
 /// Gap between the chunks of a bootstrap written into a subshell behind a user-space pty relay
 /// (`sudo -i`, `su`, `script`, `ksu`, ...). #960: such a relay deadlocks when ~120KB is flooded
@@ -56,9 +54,20 @@ const RELAY_BOOTSTRAP_PACING: Duration = Duration::from_millis(25);
 #[cfg(feature = "local_fs")]
 const CONTAINER_BOOTSTRAP_PACING: Duration = Duration::from_millis(50);
 
+/// Gap between the 1000-byte chunks of the ssh-warpify line-clear payload while the tty is
+/// canonical (cooked, no newline in the line). Reason: P0 (#1384) measured that a canonical tty
+/// accepts a write and then SILENTLY drops everything past its input queue (macOS: 1024 B; Linux
+/// N_TTY: 4095 B), with no `EAGAIN`, no `POLLOUT` change and no readable counter in advance, so
+/// there is no signal to wait on and the gap stays. A non-canonical tty (a bash/zsh line editor at
+/// its prompt) gives a real `EAGAIN` instead, and then no gap is used (see
+/// [`Pacing::GapIfCanonical`]).
+const MAC_TTY_INPUT_QUEUE_PACING: Duration = Duration::from_millis(10);
+/// Chunk size of the line-clear payload: under the macOS tty input queue (1024 B).
+const MAC_TTY_INPUT_QUEUE_CHUNK: usize = 1000;
+
 /// Whether the writer-owned job queue (#1384) is used for the paced bootstrap writes.
 /// `PHOSPHOR_PTY_WRITE_QUEUE=0` turns it off and the timer-chained writes of before are used.
-fn write_queue_enabled() -> bool {
+pub(crate) fn write_queue_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         let off = std::env::var("PHOSPHOR_PTY_WRITE_QUEUE").is_ok_and(|v| v.trim() == "0");
@@ -1154,12 +1163,10 @@ impl<T: EventLoopSender> PtyController<T> {
     /// chunk is written: a ^C, the pty shutting down, the shell exiting or a newer bootstrap
     /// bumps `paced_write_generation`, and nothing more is written (previously every chunk was a
     /// free-standing timer that typed itself into the live shell regardless).
-    #[cfg(feature = "local_fs")]
     fn start_paced_writes(
         &mut self,
         chunks: Vec<Vec<u8>>,
-        gap: Duration,
-        why: &'static str,
+        pacing: Pacing,
         ctx: &mut ModelContext<PtyController<T>>,
     ) {
         if self.write_queue && self.tmux_control_mode.is_none() {
@@ -1168,15 +1175,14 @@ impl<T: EventLoopSender> PtyController<T> {
             // the generation below.
             self.cancel_paced_writes(ctx);
             self.setup_job_sent = true;
-            self.send_message_to_event_loop(
-                Message::SetupChunked {
-                    chunks,
-                    pacing: Pacing::Gap { dur: gap, why },
-                },
-                ctx,
-            );
+            self.send_message_to_event_loop(Message::SetupChunked { chunks, pacing }, ctx);
             return;
         }
+        // The timer path cannot read the tty mode where the writer does, so it keeps the gap.
+        let gap = match pacing {
+            Pacing::Gap { dur, .. } | Pacing::GapIfCanonical { dur, .. } => dur,
+            Pacing::None => Duration::ZERO,
+        };
         self.cancel_paced_writes(ctx);
         let generation = self.paced_write_generation;
         self.paced_write_queue = chunks.into();
@@ -1184,7 +1190,6 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// One step of [`Self::start_paced_writes`]: write the next chunk and chain the one after it.
-    #[cfg(feature = "local_fs")]
     fn write_next_paced_chunk(
         &mut self,
         generation: u64,
@@ -1207,8 +1212,44 @@ impl<T: EventLoopSender> PtyController<T> {
         });
     }
 
+    /// Writes the ssh-warpify one-line payload (#1384 P3): ctrl-k ctrl-u to clear the line, then
+    /// `payload`, as ONE job in 1000-byte chunks. Nothing a user types lands inside it, a ^C / ^D
+    /// or [`Self::cancel_paced_writes`] cuts it at a chunk boundary.
+    ///
+    /// Pacing: with the writer-owned queue the gap is used only while the tty is canonical (cooked
+    /// tty drops input past its queue size silently, so there is no signal to wait on); a
+    /// non-canonical tty (a line editor at its prompt) pushes back with `EAGAIN` / `POLLOUT` and
+    /// loses nothing, so the chunks go back to back. The kill switch
+    /// (`PHOSPHOR_PTY_WRITE_QUEUE=0`) and the remote / ConPTY pty keep the timer chain with the
+    /// gap always on, as before.
+    pub fn write_line_clear_setup(&mut self, payload: Vec<u8>, ctx: &mut ModelContext<Self>) {
+        // Ctrl-u + ctrl-k clears everything before the cursor, then everything after the cursor.
+        // Ctrl-c is dangerous because it could cancel an ongoing command. We add an arbitrary
+        // space first so that the ctrl-u always clears at least one character, avoiding the
+        // audible bell.
+        let mut to_write = vec![
+            b' ',
+            escape_sequences::C0::VT,  // ctrl-k to clear forward
+            escape_sequences::C0::NAK, // ctrl-u to clear backward
+        ];
+        to_write.extend_from_slice(&payload);
+        let chunks: Vec<Vec<u8>> = to_write
+            .chunks(MAC_TTY_INPUT_QUEUE_CHUNK)
+            .map(<[u8]>::to_vec)
+            .collect();
+        self.start_paced_writes(
+            chunks,
+            Pacing::GapIfCanonical {
+                dur: MAC_TTY_INPUT_QUEUE_PACING,
+                why: "canonical tty silently drops input past its queue (macOS 1024 B) with no \
+                      EAGAIN or POLLOUT (#1384 P0)",
+            },
+            ctx,
+        );
+    }
+
     /// Drops what is left of a paced bootstrap write (see [`Self::start_paced_writes`]).
-    fn cancel_paced_writes(&mut self, ctx: &mut ModelContext<Self>) {
+    pub fn cancel_paced_writes(&mut self, ctx: &mut ModelContext<Self>) {
         self.paced_write_generation = self.paced_write_generation.wrapping_add(1);
         self.paced_write_queue.clear();
         if std::mem::take(&mut self.setup_job_sent) {
@@ -1319,8 +1360,10 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             self.start_paced_writes(
                 chunks,
-                CONTAINER_BOOTSTRAP_PACING,
-                "docker/podman exec -it double-pty proxy drops bursts; its consumption is unobservable (#960)",
+                Pacing::Gap {
+                    dur: CONTAINER_BOOTSTRAP_PACING,
+                    why: "docker/podman exec -it double-pty proxy drops bursts; its consumption is unobservable (#960)",
+                },
                 ctx,
             );
         } else if pending_session_info.subshell_info.is_some() {
@@ -1352,8 +1395,10 @@ impl<T: EventLoopSender> PtyController<T> {
             };
             self.start_paced_writes(
                 chunks,
-                RELAY_BOOTSTRAP_PACING,
-                "user-space pty relay deadlocks on a flood; its consumption is unobservable (#960)",
+                Pacing::Gap {
+                    dur: RELAY_BOOTSTRAP_PACING,
+                    why: "user-space pty relay deadlocks on a flood; its consumption is unobservable (#960)",
+                },
                 ctx,
             );
         } else {

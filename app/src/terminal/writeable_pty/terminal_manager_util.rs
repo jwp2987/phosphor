@@ -128,6 +128,16 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     }
                 });
             }
+            PtyIntent::WriteLineClearSetup(payload) => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.write_line_clear_setup(payload, ctx);
+                });
+            }
+            PtyIntent::CancelPacedSetupWrites => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.cancel_paced_writes(ctx);
+                });
+            }
             PtyIntent::WriteHandoffUserBytes(bytes) => {
                 controller.update(ctx, |controller, ctx| {
                     controller.write_handoff_user_bytes(bytes, ctx);

@@ -128,6 +128,10 @@ pub struct State {
     /// `write_list`, and until it is finished nothing from the list is started except a reply at
     /// the head, and only between two of its chunks. A user key behind it waits for all of it.
     active_job: Option<SetupJob>,
+    /// Whether the pty was canonical when the loop last looked (`None`: not looked at, or cannot
+    /// be told). Read on demand, only while a setup job whose pacing depends on it is waiting to
+    /// start; see [`Pacing::GapIfCanonical`].
+    pty_canonical: Option<bool>,
     /// The id the next submitted job gets (monotonic, in every log line about it).
     next_job_id: JobId,
     parser: ansi::Processor,
@@ -236,6 +240,7 @@ impl Default for State {
             parser: ansi::Processor::new(),
             writing: None,
             active_job: None,
+            pty_canonical: None,
             next_job_id: 1,
             reply_gate_open: true,
             gated_count: 0,
@@ -314,11 +319,20 @@ impl State {
                     setup: Some(job),
                     ..
                 }) => {
+                    let mut job = job;
+                    let canonical = self.pty_canonical;
+                    job.resolve_pacing(canonical);
                     match job.pacing() {
                         Pacing::Gap { dur, why } => log::info!(
-                            "pty write job {id}: setup, paced {dur:?} between chunks ({why})"
+                            "pty write job {id}: setup, paced {dur:?} between chunks ({why}; tty canonical: \
+                             {canonical:?})"
                         ),
-                        Pacing::None => log::info!("pty write job {id}: setup, unpaced"),
+                        Pacing::None => log::info!(
+                            "pty write job {id}: setup, unpaced (tty canonical: {canonical:?})"
+                        ),
+                        Pacing::GapIfCanonical { .. } => {
+                            log::warn!("pty write job {id}: setup, pacing left unresolved")
+                        }
                     }
                     self.active_job = Some(job);
                 }
@@ -400,6 +414,17 @@ impl State {
     #[inline]
     fn has_gated(&self) -> bool {
         self.gated_count > 0
+    }
+
+    /// Whether a setup job that has not started yet is paced by the tty mode, so the loop must
+    /// read it before the job is picked.
+    fn needs_canonical_probe(&self) -> bool {
+        self.write_list.iter().any(|entry| {
+            entry
+                .setup
+                .as_ref()
+                .is_some_and(|job| matches!(job.pacing(), Pacing::GapIfCanonical { .. }))
+        })
     }
 
     /// Whether some replies are being withheld right now.
@@ -902,6 +927,13 @@ where
             None
         };
         state.set_reply_gate(canonical);
+        // The tty mode a setup job is paced by is read here, on demand, just before the job can be
+        // picked (one cheap `tcgetattr`, only while such a job waits).
+        state.pty_canonical = if state.needs_canonical_probe() {
+            self.pty.is_canonical()
+        } else {
+            None
+        };
     }
 
     /// Drain the channel.

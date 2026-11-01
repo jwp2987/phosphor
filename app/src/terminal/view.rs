@@ -755,6 +755,12 @@ mod focus_reclaim_tests {
 /// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
 const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 
+/// How long the alt-screen winsize re-send waits for the program's first output before it gives up
+/// and re-sends anyway (and the second look for `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`). A safety
+/// net for output that never comes; logged when it fires (#1384 P5).
+#[cfg(feature = "local_tty")]
+const ALT_SCREEN_RESEND_GIVE_UP: Duration = Duration::from_millis(500);
+
 const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
@@ -1933,6 +1939,13 @@ pub enum Event {
     WriteBytesToPty {
         bytes: Cow<'static, [u8]>,
     },
+    /// The ssh-warpify one-line payload: the PTY controller clears the line and writes it as one
+    /// cancellable job (#1384 P3).
+    WriteLineClearSetupToPty {
+        payload: Vec<u8>,
+    },
+    /// Cut what is left of a paced setup write (#1384 P3).
+    CancelPacedSetupWrites,
     /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001): ends an ssh
     /// client that is connecting even when it has already put the tty in raw mode.
     SigintForegroundToPty,
@@ -2860,6 +2873,12 @@ pub struct TerminalView {
     last_footer_fingerprint: Option<FooterFingerprint>,
     /// Whether a settle check after a paint-only wakeup is already scheduled.
     alt_screen_settle_check_pending: bool,
+    /// Bumped on every alt-screen entry and exit: a pending winsize re-send of an older
+    /// generation does nothing (#1384 P5).
+    alt_screen_resend_generation: u64,
+    /// The alt screen was entered and the program has not produced output since: its first
+    /// output sends the one winsize re-send (#1384 P5).
+    alt_screen_resend_pending: bool,
 
     /// Scroll state for scrolling horizontally.
     horizontal_clipped_scroll_state: ClippedScrollStateHandle,
@@ -3213,9 +3232,6 @@ pub struct TerminalView {
     pending_command_awaits_precmd: bool,
     /// Same for the remote `cd` of a replayed ssh split.
     ssh_split_cd_awaits_precmd: bool,
-    /// Bumped to cancel the rest of the chunked mac line-clear write (#1354): a ^C, the ssh
-    /// warpify being cancelled.
-    chunked_clear_write_generation: u64,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -4827,6 +4843,8 @@ impl TerminalView {
             last_wakeup_redraw: None,
             last_footer_fingerprint: None,
             alt_screen_settle_check_pending: false,
+            alt_screen_resend_generation: 0,
+            alt_screen_resend_pending: false,
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             rich_content_drag_selecting: Default::default(),
@@ -4944,7 +4962,6 @@ impl TerminalView {
             awaiting_subshell_prompt_id: 0,
             pending_command_awaits_precmd: false,
             ssh_split_cd_awaits_precmd: false,
-            chunked_clear_write_generation: 0,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -11957,54 +11974,17 @@ impl TerminalView {
         }
     }
 
-    /// Ends the current line before writing 1000 byte chunks to the pty with a small delay in
-    /// between to work around a macos pty bug.
-    fn clear_line_editor_and_write_to_pty_with_mac_workaround_hack<B: Into<Cow<'static, [u8]>>>(
+    /// Ends the current line, then writes `data` (the ssh-warpify one-line payload) as ONE job the
+    /// PTY controller owns (#1384 P3): 1000-byte chunks, back to back when the tty is
+    /// non-canonical, 10 ms apart only while it is canonical (a cooked macOS tty silently drops
+    /// input past 1 KB). It replaces the view-side timer chain and its generation; a ^C / ^D or a
+    /// cancelled warpify cuts it through [`Event::CancelPacedSetupWrites`] (#1354).
+    fn clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
         &mut self,
-        data: B,
+        data: Vec<u8>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Ctrl-u + ctrl-k clears everything before the cursor, then everything after the cursor.
-        // Ctrl-c is dangerous because it could cancel an ongoing command. We add an arbitrary space
-        // first so that the ctrl-u always clears at least one character, avoiding the audible bell.
-        let mut to_write = vec![
-            b' ',
-            escape_sequences::C0::VT,  // ctrl-k to clear forward
-            escape_sequences::C0::NAK, // ctrl-u to clear backward
-        ];
-        to_write.extend_from_slice(&data.into());
-
-        // #1354: one cancellable sequence. Each chunk schedules the next, so a ^C or a cancelled
-        // ssh warpify (which bump the generation) stops it: nothing more is typed into the shell
-        // afterwards, the closing CR included. The gap is the macOS workaround itself (the tty
-        // input queue holds ~1 KB while the shell is not reading); how fast the shell reads is
-        // not observable, so it stays a time.
-        self.chunked_clear_write_generation += 1;
-        let generation = self.chunked_clear_write_generation;
-        let chunks: VecDeque<Vec<u8>> = to_write.chunks(1000).map(<[u8]>::to_vec).collect();
-        self.write_next_chunked_clear_chunk(generation, chunks, ctx);
-    }
-
-    fn write_next_chunked_clear_chunk(
-        &mut self,
-        generation: u64,
-        mut chunks: VecDeque<Vec<u8>>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if generation != self.chunked_clear_write_generation {
-            return;
-        }
-        let Some(chunk) = chunks.pop_front() else {
-            return;
-        };
-        self.write_to_pty(chunk, ctx);
-        if chunks.is_empty() {
-            return;
-        }
-        ctx.spawn(
-            Timer::after(Duration::from_millis(10)),
-            move |me, _, ctx| me.write_next_chunked_clear_chunk(generation, chunks, ctx),
-        );
+        ctx.emit(Event::WriteLineClearSetupToPty { payload: data });
     }
 
     /// Ends the current line before writing the given bytes to the PTY.
@@ -12118,7 +12098,7 @@ impl TerminalView {
         self.note_input_for_deferred_subshell_setup(&bytes);
         if is_abort_key(&bytes) {
             // Ctrl-C / Ctrl-D: the rest of a chunked line-clear write is dropped (#1354).
-            self.chunked_clear_write_generation += 1;
+            ctx.emit(Event::CancelPacedSetupWrites);
         }
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
@@ -13270,6 +13250,11 @@ impl TerminalView {
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
     fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+        // #1384 P5: the first output after the alt screen was entered re-sends the window size.
+        #[cfg(feature = "local_tty")]
+        if self.alt_screen_resend_pending {
+            self.resend_alt_screen_winsize_on_first_output(ctx);
+        }
         // #1348: output is the event that shows a host-key / password prompt (or ends a connect
         // silently); the held keys are judged on it, not on a timer or the next key.
         if self.ssh_typeahead_holding {
@@ -13831,7 +13816,7 @@ impl TerminalView {
     }
 
     fn cancel_bootstrap_workflow(&mut self, ctx: &mut ViewContext<Self>) {
-        self.chunked_clear_write_generation += 1;
+        ctx.emit(Event::CancelPacedSetupWrites);
         self.clear_ssh_blocks(ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
@@ -17167,6 +17152,11 @@ impl TerminalView {
                 ctx.notify();
             }
             ModelEvent::TerminalModeSwapped(mode) => {
+                // Leaving (or re-entering) the alt screen cancels a pending winsize re-send
+                // (#1384 P5).
+                self.alt_screen_resend_generation =
+                    self.alt_screen_resend_generation.wrapping_add(1);
+                self.alt_screen_resend_pending = false;
                 #[cfg(feature = "local_tty")]
                 {
                     let active_command = self
@@ -19529,53 +19519,110 @@ impl TerminalView {
     // padding that the alt-screen doesn't. So we do this to avoid a race condition between
     // (1) resizing right after swapping terminal modes, and
     // (2) the alt-screen app registering its resize handler
+    //
+    // #1384 P5: the re-send is driven by the program's first output after the alt screen was
+    // entered (`handle_terminal_wakeup` -> `resend_alt_screen_winsize_on_first_output`): output
+    // is the signal that the program is up and has registered what it is going to register.
+    // The 500 ms timer left is a give-up net for a program that stays silent (logged when it
+    // fires), and a second look for the apps in `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`. Leaving
+    // the alt screen cancels it (generation). `PHOSPHOR_PTY_WRITE_QUEUE=0` restores the two
+    // unconditional 500 ms re-sends.
     #[cfg(feature = "local_tty")]
     fn resize_alt_screen_redundantly(&mut self, ctx: &mut ViewContext<Self>) {
         use futures_lite::StreamExt;
 
-        // Resize twice, half a second apart.
-        ctx.spawn_stream_local(
-            async_io::Timer::interval(Duration::from_millis(500)).take(2),
-            |view, _, ctx| {
-                let model = view.model.lock();
+        if !crate::terminal::writeable_pty::pty_controller::write_queue_enabled() {
+            // Resize twice, half a second apart.
+            ctx.spawn_stream_local(
+                async_io::Timer::interval(Duration::from_millis(500)).take(2),
+                |view, _, ctx| view.resend_alt_screen_winsize(ctx),
+                |_, _| {},
+            );
+            return;
+        }
 
-                // If the alt-screen was exited since the timer expired,
-                // there's nothing to do.
-                if !model.is_alt_screen_active() {
-                    return;
-                }
-
-                let correct_size_info = *view.size_info;
-                let active_command = model
-                    .block_list()
-                    .active_block()
-                    .top_level_command(view.sessions.as_ref(ctx));
-
-                // Drop the lock since the resize methods will take an explicit lock.
-                drop(model);
-
-                // This is a workaround for alt-screen programs that _cache_ resizes during init
-                // but don't actually redraw the contents. For example, we've seen this happen with
-                // certain emacs setups. So we fake a winsize before immediately correcting it to
-                // invalidate that cache.
-                if active_command
-                    .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
-                {
-                    let mut wrong_size_info = *view.size_info;
-                    wrong_size_info.pane_width_px += 1.;
-                    view.resize_internal(
-                        SizeUpdateBuilder::for_refresh(wrong_size_info).build(view, ctx),
-                        ctx,
-                    );
-                }
-
-                // Send the resize as a refresh to force a size update.
-                view.resize_internal(
-                    SizeUpdateBuilder::for_refresh(correct_size_info).build(view, ctx),
-                    ctx,
+        self.alt_screen_resend_generation = self.alt_screen_resend_generation.wrapping_add(1);
+        let generation = self.alt_screen_resend_generation;
+        self.alt_screen_resend_pending = true;
+        ctx.spawn(Timer::after(ALT_SCREEN_RESEND_GIVE_UP), move |me, _, ctx| {
+            if me.alt_screen_resend_generation != generation {
+                return;
+            }
+            let silent = std::mem::take(&mut me.alt_screen_resend_pending);
+            let problem_app = me.alt_screen_app_has_resize_problems(ctx);
+            if silent {
+                // No event came: the program printed nothing since entering the alt screen.
+                log::info!(
+                    "alt-screen winsize re-send: no program output within {ALT_SCREEN_RESEND_GIVE_UP:?}, giving up waiting"
                 );
-            },
-            |_, _| {},
+            } else if problem_app {
+                log::info!("alt-screen winsize re-send: second send for a known problem app");
+            } else {
+                return;
+            }
+            me.resend_alt_screen_winsize(ctx);
+        });
+    }
+
+    /// The first program output after the alt screen was entered: the one event-driven re-send
+    /// of the window size (#1384 P5). A no-op unless a re-send is pending.
+    #[cfg(feature = "local_tty")]
+    fn resend_alt_screen_winsize_on_first_output(&mut self, ctx: &mut ViewContext<Self>) {
+        if !std::mem::take(&mut self.alt_screen_resend_pending) {
+            return;
+        }
+        log::debug!("alt-screen winsize re-send: first program output after entering");
+        self.resend_alt_screen_winsize(ctx);
+    }
+
+    #[cfg(feature = "local_tty")]
+    fn alt_screen_app_has_resize_problems(&self, ctx: &ViewContext<Self>) -> bool {
+        let model = self.model.lock();
+        model
+            .block_list()
+            .active_block()
+            .top_level_command(self.sessions.as_ref(ctx))
+            .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
+    }
+
+    /// Re-sends the current window size to the alt-screen program, if it is still there.
+    #[cfg(feature = "local_tty")]
+    fn resend_alt_screen_winsize(&mut self, ctx: &mut ViewContext<Self>) {
+        let model = self.model.lock();
+
+        // If the alt-screen was exited since, there's nothing to do.
+        if !model.is_alt_screen_active() {
+            return;
+        }
+
+        let correct_size_info = *self.size_info;
+        let active_command = model
+            .block_list()
+            .active_block()
+            .top_level_command(self.sessions.as_ref(ctx));
+
+        // Drop the lock since the resize methods will take an explicit lock.
+        drop(model);
+
+        // This is a workaround for alt-screen programs that _cache_ resizes during init
+        // but don't actually redraw the contents. For example, we've seen this happen with
+        // certain emacs setups. So we fake a winsize before immediately correcting it to
+        // invalidate that cache.
+        if active_command
+            .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
+        {
+            let mut wrong_size_info = *self.size_info;
+            wrong_size_info.pane_width_px += 1.;
+            self.resize_internal(
+                SizeUpdateBuilder::for_refresh(wrong_size_info).build(self, ctx),
+                ctx,
+            );
+        }
+
+        // Send the resize as a refresh to force a size update.
+        self.resize_internal(
+            SizeUpdateBuilder::for_refresh(correct_size_info).build(self, ctx),
+            ctx,
         );
     }
 
@@ -33057,6 +33104,10 @@ impl PtyIntentEvent for Event {
             Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Event::DiscardHeldTypeaheadCommand => Some(PtyIntent::DiscardHeldTypeaheadCommand),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
+            Event::WriteLineClearSetupToPty { payload } => {
+                Some(PtyIntent::WriteLineClearSetup(payload.clone()))
+            }
+            Event::CancelPacedSetupWrites => Some(PtyIntent::CancelPacedSetupWrites),
             Event::SigintForegroundToPty => Some(PtyIntent::SigintForeground),
             Event::WriteHandoffUserBytesToPty { bytes } => {
                 Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))
