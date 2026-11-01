@@ -1772,3 +1772,35 @@ fn the_kill_switch_and_other_platforms_never_hold() {
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
     assert!(!handoff.has_prompt_hold());
 }
+
+#[test]
+fn a_precmd_with_no_line_editor_signal_holds_only_for_the_short_expiry() {
+    // #1343: the editor was still flagged active at the precmd, so neither the bracketed-paste
+    // signal nor the fallback timer follows it. Old behaviour: keys were held the full 150 ms
+    // and released in one burst.
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.prompt_hold_expiry(), CONPTY_PROMPT_HOLD_EXPIRY);
+    handoff.note_no_line_editor_signal();
+    assert_eq!(
+        handoff.prompt_hold_expiry(),
+        CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY
+    );
+    // Within the short window keys are still held, in order.
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
+    // Past it a new key is no longer held (it would have been, with the 150 ms window).
+    let mut late = conpty_awaiting_line_editor();
+    late.note_no_line_editor_signal();
+    late.awaiting_line_editor_since =
+        Some(Instant::now() - CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY - Duration::from_millis(1));
+    assert_eq!(late.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+    assert!(!late.has_prompt_hold());
+}
+
+#[test]
+fn the_next_precmd_expects_a_signal_again() {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.note_no_line_editor_signal();
+    handoff.on_precmd();
+    assert_eq!(handoff.prompt_hold_expiry(), CONPTY_PROMPT_HOLD_EXPIRY);
+}

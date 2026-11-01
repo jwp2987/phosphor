@@ -257,6 +257,19 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
             }
+            ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                // #1343: a precmd that finds the line editor still flagged active is followed by
+                // no activation (neither the bracketed-paste signal nor the fallback timer), so
+                // keys held for the prompt expire on the shorter no-signal delay.
+                if FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && me.line_editor_status.as_ref(ctx).is_line_editor_active()
+                {
+                    me.terminal_model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .note_no_line_editor_signal();
+                }
+            }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
                     buffer: Default::default(),

@@ -93,6 +93,14 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// signal normally ends the hold within ~50 ms; after this long the keys are written anyway.
 pub const CONPTY_PROMPT_HOLD_EXPIRY: Duration = Duration::from_millis(150);
 
+/// The longest the prompt hold lasts for a precmd that no line-editor signal will follow (#1343):
+/// the status model arms its activation (the bracketed-paste signal, or the 50 ms fallback) only
+/// when the editor is inactive at the precmd. A precmd that finds it still flagged active gets no
+/// signal at all, and waiting the full [`CONPTY_PROMPT_HOLD_EXPIRY`] only delays the keys, then
+/// releases them in one burst (measured: 7 writes within 1 ms after 158 ms). The fallback's
+/// own delay plus a margin is as long as a signal could have taken.
+pub const CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY: Duration = Duration::from_millis(70);
+
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
 pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
 
@@ -350,6 +358,9 @@ pub struct TypeaheadHandoff {
     /// When the last precmd arrived, until the shell's line editor is active (or a command
     /// starts): keys typed in between are held.
     awaiting_line_editor_since: Option<Instant>,
+    /// Whether the current precmd will be followed by a line-editor signal (#1343). Cleared when
+    /// the controller finds the editor already active at the precmd.
+    line_editor_signal_expected: bool,
     /// Raw user keys held between a precmd and the line editor becoming active (#1162), in typed
     /// order. Separate from `young_hold`, which holds an Enter for a different reason.
     prompt_hold: Option<Vec<u8>>,
@@ -423,7 +434,23 @@ impl TypeaheadHandoff {
             && matches!(self.state, HandoffState::PtyOwned { .. })
             && self
                 .awaiting_line_editor_since
-                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_EXPIRY)
+                .is_some_and(|at| now.saturating_duration_since(at) < self.prompt_hold_expiry())
+    }
+
+    /// How long keys are held for the current precmd: the full expiry when a line-editor signal
+    /// is coming, the shorter one when none will (#1343).
+    pub fn prompt_hold_expiry(&self) -> Duration {
+        if self.line_editor_signal_expected {
+            CONPTY_PROMPT_HOLD_EXPIRY
+        } else {
+            CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY
+        }
+    }
+
+    /// The precmd's prompt found the line editor still flagged active, so no activation (and no
+    /// release) will follow it (#1343): the hold expires after the shorter delay.
+    pub fn note_no_line_editor_signal(&mut self) {
+        self.line_editor_signal_expected = false;
     }
 
     /// Takes the "a prompt hold was just created" flag, returning its id so the view arms the
@@ -956,6 +983,7 @@ impl TypeaheadHandoff {
         self.last_precmd_at = Some(now);
         if self.conpty_input && self.prompt_hold_enabled {
             self.awaiting_line_editor_since = Some(now);
+            self.line_editor_signal_expected = true;
         }
         warpui::input_order::log_hop("precmd_seen", String::new);
         if let HandoffState::PtyOwned { precmds_seen, .. } = &mut self.state {

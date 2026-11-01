@@ -501,9 +501,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    CONPTY_PROMPT_HOLD_EXPIRY, HeldKeysRelease, InterruptOutcome, ReportDisposition,
-    UserBytesRoute, YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor,
-    young_submit_decision,
+    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungSubmit,
+    forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -11822,19 +11821,19 @@ impl TerminalView {
                 });
             }
             // #1162: keys held between a prompt's precmd and its line editor becoming active.
-            let prompt_hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
+            let prompt_hold = if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                let mut model = self.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff
                     .take_prompt_hold_started()
+                    .map(|id| (id, handoff.prompt_hold_expiry()))
             } else {
                 None
             };
-            if let Some(prompt_hold_id) = prompt_hold_id {
-                ctx.spawn(
-                    Timer::after(CONPTY_PROMPT_HOLD_EXPIRY),
-                    move |me, _, ctx| me.release_expired_prompt_hold(prompt_hold_id, ctx),
-                );
+            if let Some((prompt_hold_id, prompt_hold_expiry)) = prompt_hold {
+                ctx.spawn(Timer::after(prompt_hold_expiry), move |me, _, ctx| {
+                    me.release_expired_prompt_hold(prompt_hold_id, ctx)
+                });
             }
             return true;
         }
@@ -11876,8 +11875,7 @@ impl TerminalView {
         }
     }
 
-    /// The line editor never signalled within [`CONPTY_PROMPT_HOLD_EXPIRY`]
-    /// (#1162): the keys held since the prompt's precmd are written anyway, in typed order.
+    /// The line editor never signalled within the prompt hold's expiry (#1162, #1343): the keys held since the prompt's precmd are written anyway, in typed order.
     fn release_expired_prompt_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
         let chunks = self
             .model
