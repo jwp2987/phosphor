@@ -264,3 +264,39 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
     }
     assert_eq!(TRACKER.in_flight(), 0);
 }
+
+/// #1353 phase 6 (INP-A4): a paste that gives up on its read signals the readers' cancel flag, and
+/// the count of readers still blocked in the OS is what it reports.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn abandoning_pending_reads_reports_the_blocked_readers() {
+    static TRACKER: ReaderTracker = ReaderTracker::new();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let reader = tracked_reader_with(
+        &TRACKER,
+        2,
+        std::time::Duration::from_secs(60),
+        Box::new(move || {
+            let _ = release_rx.recv();
+            BackgroundTextRead::Content(ClipboardContent::default())
+        }),
+    );
+    assert_eq!(TRACKER.abandon_pending(), 0, "nothing is blocked yet");
+    let handle = std::thread::spawn(reader);
+    while TRACKER.in_flight() < 1 {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        TRACKER.abandon_pending(),
+        1,
+        "the wedged reader is the abandoned one"
+    );
+    release_tx.send(()).unwrap();
+    // The abandoned read still returns what it read (another paste may be waiting on one made
+    // before the abandon); it is only logged.
+    assert!(matches!(
+        handle.join().unwrap(),
+        BackgroundTextRead::Content(_)
+    ));
+    assert_eq!(TRACKER.in_flight(), 0);
+}

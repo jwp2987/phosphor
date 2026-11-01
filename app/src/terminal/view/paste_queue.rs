@@ -492,6 +492,12 @@ impl TerminalView {
             self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
             return;
         }
+        if kind == Some(GateKind::PasteReading) {
+            // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
+            // cancel flag is signalled and the blocked-reader count / log reflect it.
+            #[cfg(not(target_family = "wasm"))]
+            warpui::clipboard::abandon_pending_reads();
+        }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
             // keys are delivered, so none of them is held a second time.
