@@ -17314,17 +17314,17 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
             view.typed_characters_on_terminal("ho TY$((20+1))-$(uname -n)", ctx);
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding);
-            // The remote shell's first prompt: the gate hands input over.
+            // Fixed setup: a command runs in the foreground, so the keys that are delivered go
+            // to the pty, where the assertions below can read them.
+            view.model.lock().simulate_long_running_block("sleep 5", "");
+            // The remote shell's first prompt: the gate hands input over, and the held keys are
+            // delivered in the handling of that same event (#1348), not later.
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(
                 view.ssh_connect_gate.is_none(),
                 "the first remote prompt releases the gate"
             );
             assert!(view.ssh_remote_prompt_seen);
-            // Fixed setup: a command runs in the foreground, so the keys that are delivered go
-            // to the pty, where the assertions below can read them.
-            view.model.lock().simulate_long_running_block("sleep 5", "");
-            view.poll_ssh_typeahead(false, ctx);
             assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_typeahead.is_empty());
         });
@@ -17496,7 +17496,7 @@ fn ssh_line_typed_across_gate_release_is_held_whole() {
                 "still held until the poll decides"
             );
             // No remote prompt ever came: the line is shown, unexecuted.
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
             view.input.update(ctx, |input, ctx| {
@@ -17553,7 +17553,7 @@ fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
                 "",
                 "queued, not applied"
             );
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
@@ -17590,7 +17590,7 @@ fn ssh_editor_backspace_in_the_gap_edits_the_held_text() {
             editor_key(view, EditorAction::Backspace, ctx);
             editor_text(view, "c", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
@@ -17908,7 +17908,7 @@ fn ssh_failing_connect_shows_the_held_text_unexecuted() {
             view.apply_block_completed_to_ssh_gate(&armed, 255);
             assert!(view.ssh_connect_gate.is_none(), "failure releases the gate");
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo LOCAL-OK-42");
         });
@@ -17948,7 +17948,7 @@ fn ssh_clean_end_without_remote_shows_the_held_text_unexecuted() {
             view.keydown_on_terminal("\r", ctx);
             assert!(view.ssh_typeahead_holding);
             view.apply_block_completed_to_ssh_gate(&armed, 0);
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
@@ -18093,7 +18093,7 @@ fn ssh_lines_typed_during_connect_are_kept_in_the_editor_not_run() {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "exit\nls -l");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
@@ -18123,12 +18123,11 @@ fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(view.ssh_connect_gate.is_none());
             assert!(view.ssh_remote_prompt_seen);
+            // #1348: delivery is part of the prompt event's own handling, not a later turn.
             assert!(
-                view.ssh_typeahead_holding,
-                "delivery happens in the deferred poll"
+                !view.ssh_typeahead_holding,
+                "the hand-over ran inside the precmd handler"
             );
-            view.poll_ssh_typeahead(false, ctx);
-            assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_typeahead.is_empty());
         });
         // The keys arrived at the remote shell's input, as typed: through the pty or the
@@ -18141,6 +18140,186 @@ fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
             "pty {delivered:?}, editor {editor:?}"
         );
     })
+}
+
+/// The remote session came up and its bootstrap ended: the next `Precmd` is its first prompt.
+fn remote_first_prompt_is_next_for_test(view: &mut TerminalView) {
+    let gate = view.ssh_connect_gate.as_mut().expect("gate armed");
+    gate.saw_pending = true;
+    gate.bootstrap_done_at = Some(Instant::now());
+}
+
+/// #1348 / #1345: the hand-over (reset, held keys in order, hold ended) happens inside the
+/// handling of the remote prompt's `Precmd`. A key that reaches the editor right after that event
+/// lands behind the held keys, exactly once. On the old code the keys were delivered by a later
+/// timer turn: the buffer was still empty after the event and the next key was queued in the
+/// editor's hold instead of being applied.
+#[test]
+fn ssh_key_right_after_the_precmd_event_lands_after_the_held_keys_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo ZQ", ctx);
+            assert!(view.ssh_typeahead_holding);
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                !view.ssh_typeahead_holding,
+                "hold ended in the precmd handler"
+            );
+            assert!(!view.ssh_editor_key_hold.is_active());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQ");
+            // The very next key, queued behind the event by the loop.
+            editor_text(view, "CON", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQCON");
+            editor_text(view, "_1", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQCON_1");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1348: keys held by the view, a Backspace and text queued by the editor in the gap, and the
+/// precmd: one hand-over, exact order, nothing lost or doubled.
+#[test]
+fn ssh_held_and_editor_queued_keys_are_delivered_in_order_at_the_precmd_event() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo abX", ctx);
+            // Typed after the model applied the prompt and before the view handled it: the
+            // editor's hold queues them, the hand-over replays them behind the held keys.
+            editor_key(view, EditorAction::Backspace, ctx);
+            editor_text(view, "c", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+            assert!(view.ssh_typeahead.is_empty());
+            assert!(view.ssh_editor_key_hold.is_empty());
+        });
+    })
+}
+
+/// #1348: two connects in one tab each hand over exactly once, with no state left from the first.
+#[test]
+fn ssh_repeated_connects_in_one_tab_each_hand_over_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
+            for line in ["echo one", "echo two"] {
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal(line, ctx);
+                assert!(view.ssh_typeahead_holding);
+                remote_first_prompt_is_next_for_test(view);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(!view.ssh_typeahead_holding);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx)
+                });
+            }
+        });
+    })
+}
+
+/// #1348: a host-key / password prompt is judged on the OUTPUT that shows it: the wakeup for that
+/// output discards what was held and releases the editor's hold, with no key and no timer. On the
+/// old code only a later key or the 100 ms poll noticed, and the editor kept queueing keys meant
+/// for the prompt.
+#[test]
+fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.model.lock().process_bytes("Password: ");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            assert!(view.ssh_typeahead.is_empty());
+            assert!(!view.ssh_typeahead_holding);
+            assert!(!view.ssh_editor_key_hold.is_active());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1348 safety net: no prompt ever arrives (the gate hits its ceiling). The give-up hand-over
+/// returns the typed text to the input, unexecuted, and ends the hold.
+#[test]
+fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo lost", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert!(
+                view.ssh_typeahead_deadline_armed.is_some(),
+                "the one-shot safety net is armed"
+            );
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.deliver_ssh_typeahead_if_ready("give_up", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1348: the give-up deadline mirrors the gate's time conditions and nothing else.
+#[test]
+fn ssh_gate_give_up_deadline_mirrors_its_time_conditions() {
+    let t0 = Instant::now();
+    let mut gate = SshConnectGate::new(t0);
+    let ceiling = t0 + SSH_CONNECT_SILENCE_CEILING;
+    assert_eq!(gate.give_up_deadline(false), Some(ceiling));
+    assert_eq!(gate.give_up_deadline(true), Some(ceiling));
+    gate.block_done_at = Some(t0 + Duration::from_secs(1));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(1) + SSH_CONNECT_POST_BLOCK_GRACE)
+    );
+    assert_eq!(
+        gate.give_up_deadline(true),
+        Some(ceiling),
+        "pending: only the ceiling"
+    );
+    gate.saw_pending = true;
+    gate.bootstrap_done_at = Some(t0 + Duration::from_secs(2));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(2) + SSH_CONNECT_FIRST_PROMPT_GRACE)
+    );
 }
 
 /// #1113: text typed blind before a prompt appears (it could be a password) is discarded when
@@ -18317,7 +18496,7 @@ fn ssh_blind_password_after_a_banner_is_never_shown() {
             assert!(view.ssh_typeahead.is_empty());
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            view.poll_ssh_typeahead(false, ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
     })

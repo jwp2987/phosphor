@@ -1570,9 +1570,7 @@ impl BlockListElement {
         if editor_focus == Some(true) {
             self.ssh_key_hold.end_settle();
         }
-        let rescue = self
-            .ssh_key_hold
-            .rescues_unclaimed_keys(std::time::Instant::now());
+        let rescue = self.ssh_key_hold.rescues_unclaimed_keys();
         let input_focus = ctx.live_focus_of(self.input_view_id);
         let taken = terminal_takes_unclaimed_held_key(rescue, input_focus, editor_focus);
         // Only while a rescue is possible: keeps the log quiet for ordinary typing.
@@ -5727,13 +5725,11 @@ mod tests {
     #[test]
     fn key_between_hold_off_and_editor_focus_is_not_dropped() {
         use crate::editor::EditorKeyHold;
-        use std::time::{Duration, Instant};
         let hold = EditorKeyHold::default();
-        let t0 = Instant::now();
         hold.set_active(true);
         hold.set_active(false);
-        hold.begin_settle(t0);
-        let rescue = hold.rescues_unclaimed_keys(t0 + Duration::from_millis(10));
+        hold.begin_settle();
+        let rescue = hold.rescues_unclaimed_keys();
         // Input focused, editor not yet: nobody else takes it, the terminal must.
         assert!(super::terminal_takes_unclaimed_held_key(
             rescue,
