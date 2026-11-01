@@ -1593,8 +1593,9 @@ fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
     assert!(!wait(true, false, true, Classifiable, true), "second Enter after giving up");
 }
 
-/// #1158: a waiting Enter polls only within the budget; past it, a late verdict is dropped and the
-/// Enter submits on the Enter-time rules. It is never kept in the editor, however long it waited.
+/// #1158/#1351: a waiting Enter keeps waiting while the classifier's own compute is within the cap;
+/// past it, a slow verdict is dropped and the Enter submits on the Enter-time rules. It is never
+/// kept in the editor, however long it waited.
 #[test]
 fn enter_verdict_wait_is_bounded_and_never_swallows_the_enter() {
     use std::time::Duration;

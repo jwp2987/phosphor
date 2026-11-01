@@ -373,9 +373,12 @@ impl Input {
                 self.decorations_cancel = Some(cancel.clone());
 
                 let completion_session = completion_context.session.clone();
+                let compute_clock = self.ai_input_model.as_ref(ctx).detection_clock();
 
                 self.decorations_future_handle = Some(ctx.spawn_abortable(
                     async move {
+                        // The parse is a stage of the detection request's compute (#1351).
+                        let _compute = compute_clock.begin();
                         // #1019: a program installed since the bootstrap scan is a command.
                         completion_context
                             .session
@@ -417,6 +420,7 @@ impl Input {
                     // Use a dedicated detection context that does not expose top-level commands.
                     let buffer_text = self.editor.as_ref(ctx).buffer_text(ctx);
                     let ai_input_model = self.ai_input_model.clone();
+                    let compute_clock = ai_input_model.as_ref(ctx).detection_clock();
                     // No abort handle is kept for this job, but it still gets the cancel
                     // flag so the next edit stops it (#1031).
                     self.cancel_decorations_job();
@@ -424,6 +428,8 @@ impl Input {
                     self.decorations_cancel = Some(cancel.clone());
                     ctx.spawn(
                         async move {
+                            // The parse is a stage of the detection request's compute (#1351).
+                            let _compute = compute_clock.begin();
                             parse_current_commands_and_tokens_cancellable(
                                 buffer_text,
                                 &detection_ctx,

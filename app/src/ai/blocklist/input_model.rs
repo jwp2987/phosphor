@@ -26,6 +26,7 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 pub use input_classifier::InputType;
 
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
+use super::compute_clock::ComputeClock;
 use super::context_model::BlocklistAIContextModel;
 use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
 use super::history_model::BlocklistAIHistoryModel;
@@ -257,6 +258,9 @@ pub struct BlocklistAIInputModel {
     policy: InputModePolicyHandle,
 
     autodetect_abort_handle: Option<AbortHandle>,
+    /// Compute the jobs of the current detection request have spent (#1351). Replaced by each
+    /// new request.
+    detection_clock: ComputeClock,
     model: Arc<FairMutex<TerminalModel>>,
 }
 
@@ -376,6 +380,7 @@ impl BlocklistAIInputModel {
             terminal_view_id,
             policy,
             autodetect_abort_handle: None,
+            detection_clock: ComputeClock::default(),
             model,
         })
     }
@@ -532,7 +537,7 @@ impl BlocklistAIInputModel {
                             // be sent to the agent, and if the input would otherwise trigger a
                             // false-negative classification, we'd drop the user right into shell
                             // mode.
-                            me.temporarily_disable_autodetection();
+                            me.temporarily_disable_autodetection(ctx);
                         }
                         me.set_input_config_internal(
                             InputConfig {
@@ -585,6 +590,7 @@ impl BlocklistAIInputModel {
             was_lock_set_with_empty_buffer: false,
             misroute: MisrouteMemory::default(),
             autodetect_abort_handle: None,
+            detection_clock: ComputeClock::default(),
             model,
         }
     }
@@ -592,7 +598,7 @@ impl BlocklistAIInputModel {
     /// Applies a policy-produced config update.
     fn apply_policy_update(&mut self, update: PolicyConfigUpdate, ctx: &mut ModelContext<Self>) {
         if update.temporarily_disable_autodetection {
-            self.temporarily_disable_autodetection();
+            self.temporarily_disable_autodetection(ctx);
         }
         self.set_input_config_internal(update.config, ctx);
     }
@@ -687,7 +693,7 @@ impl BlocklistAIInputModel {
     /// Swaps between Agent/Shell input types while preserving lock state. Temporarily disables
     /// autodetection.
     pub fn set_input_type(&mut self, input_type: InputType, ctx: &mut ModelContext<Self>) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         let current_config = self.input_config();
         self.set_input_config_internal(current_config.with_input_type(input_type), ctx);
     }
@@ -791,7 +797,7 @@ impl BlocklistAIInputModel {
         is_input_buffer_empty: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         self.set_input_config_internal(new_config, ctx);
         if new_config.is_locked {
             self.abort_in_progress_detection();
@@ -807,7 +813,7 @@ impl BlocklistAIInputModel {
         was_lock_set_with_empty_buffer: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         self.set_input_config_internal(new_config, ctx);
         self.abort_in_progress_detection();
         self.was_lock_set_with_empty_buffer = was_lock_set_with_empty_buffer;
@@ -853,12 +859,23 @@ impl BlocklistAIInputModel {
     /// [`ExplicitInputTypeSet`]). An explicit write also settles any pending detection: the user
     /// (or a flow acting for them) has decided, so a classifier verdict must not be waited for or
     /// override it at submission.
-    fn temporarily_disable_autodetection(&mut self) {
+    fn temporarily_disable_autodetection(&mut self, ctx: &mut ModelContext<Self>) {
         self.explicit_input_type_set = Some(ExplicitInputTypeSet {
             at: Instant::now(),
             buffer_text: None,
         });
-        self.pending_detection_buffer = None;
+        if self.pending_detection_buffer.take().is_some() {
+            // The verdict is no longer wanted: an Enter waiting on it is released by this event
+            // (#1351), not found by a timer.
+            self.wake_verdict_waiter(ctx);
+        }
+    }
+
+    /// Notifies observers if an Enter is waiting on the verdict (see [`Self::settle_detection`]).
+    fn wake_verdict_waiter(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed) {
+            ctx.notify();
+        }
     }
 
     /// Returns `true` if a detection request for `buffer_text` falls under the explicit-write
@@ -911,6 +928,7 @@ impl BlocklistAIInputModel {
         }
         self.drop_typeahead_prefix_unless_leading(&buffer_text);
         self.pending_detection_buffer = Some(buffer_text);
+        self.detection_clock = ComputeClock::default();
         self.config_when_requested = self.input_config;
     }
 
@@ -998,6 +1016,18 @@ impl BlocklistAIInputModel {
     #[cfg(test)]
     pub(crate) fn typeahead_prefix(&self) -> Option<&str> {
         self.typeahead_prefix.as_deref()
+    }
+
+    /// Delivers the verdict `input_type` for `buffer_text` the way the classifier's result does:
+    /// applies it and settles the pending detection, notifying observers (#1351), for view tests.
+    #[cfg(test)]
+    pub(crate) fn deliver_verdict_for_test(
+        &mut self,
+        input_type: InputType,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.settle_with_route(input_type, buffer_text, ctx);
     }
 
     /// Whether the buffer carries typeahead provenance (#886) for an edit to re-check.
@@ -1468,6 +1498,12 @@ impl BlocklistAIInputModel {
         offer
     }
 
+    /// The compute clock of the current detection request (#1351): what an Enter waiting for the
+    /// verdict measures its give-up cap on, and gets stage-start events from.
+    pub fn detection_clock(&self) -> ComputeClock {
+        self.detection_clock.clone()
+    }
+
     /// Aborts any in progress work for autodetection.
     pub fn abort_in_progress_detection(&mut self) {
         if let Some(handle) = self.autodetect_abort_handle.take() {
@@ -1686,9 +1722,12 @@ impl BlocklistAIInputModel {
             history_close_match_allowed(in_active_agent_view, &classify_snapshot);
 
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
+        let compute_clock = self.detection_clock.clone();
         let handle = ctx
             .spawn(
                 async move {
+                    // The clock starts when this job runs, not when it was queued (#1351).
+                    let _compute = compute_clock.begin();
                     // First check if the token is a natural language word, if the user was already
                     // in AI mode before this buffer's autodetection began.
                     if matches!(shortcut_input_type, InputType::AI)
@@ -2150,33 +2189,41 @@ pub fn should_wait_for_verdict_before_submit(
         && !gave_up_on_this_text
 }
 
-/// The longest an Enter waits for the verdict of the detection requested for its text (#1158).
+/// The most compute the jobs of a detection request may spend before an Enter that waits for the
+/// verdict gives up on it (#1158, #1351).
 ///
-/// 20 ms = the 10 ms input-background debounce (an Enter within it of the last edit, i.e. a paste
-/// or burst, has no job running yet) plus at most 10 ms of local classifier compute (parse
-/// without generators, alias expansion, history match, model). Past it the classifier is late and
-/// the Enter decides on the Enter-time rules that already ran (known head, history, syntax,
-/// request shape) instead of holding: it is never kept in the editor and never waits on I/O. It
-/// used to be 5 s, on a verdict that waited for remote completion generators (0.8-3.8 s).
+/// This caps the classifier's OWN work (parse without generators, alias expansion, history match,
+/// model), measured on the request's [`ComputeClock`] from when a job actually started running to
+/// now. It is never measured from the Enter: a main-thread stall (frame, reflow, big paste) that
+/// delays the Enter's handling of a verdict already computed and queued must not count against
+/// the classifier. A verdict that lands, or is already queued, always decides the route. Past the
+/// cap the classifier is slow and the Enter decides on the Enter-time rules that already ran
+/// (known head, history, syntax, request shape) instead of holding: it is never kept in the editor
+/// and never waits on I/O. It used to be 5 s, on a verdict that waited for remote completion
+/// generators (0.8-3.8 s).
 pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(20);
 
-/// What a waiting Enter does at each poll (#1158).
+/// What a waiting Enter does when it is woken (#1158).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnterVerdictWait {
     /// The verdict for the exact buffer text has landed: submit on it.
     Submit,
-    /// Within the budget: poll again.
+    /// Within the compute cap: keep waiting for the verdict event.
     Wait,
-    /// The verdict is late: abandon it and submit on the Enter-time rules.
+    /// The classifier spent its compute cap: abandon it and submit on the Enter-time rules.
     SubmitWithoutVerdict,
 }
 
-/// Decides [`EnterVerdictWait`] from whether the verdict is still pending and how long the Enter
-/// has waited. Never "keep in editor": a late verdict is no reason to swallow the Enter.
-pub fn enter_verdict_wait_decision(verdict_pending: bool, waited: Duration) -> EnterVerdictWait {
+/// Decides [`EnterVerdictWait`] from whether the verdict is still pending and how much compute
+/// the classifier has spent on it. Never "keep in editor": a slow verdict is no reason to swallow
+/// the Enter.
+pub fn enter_verdict_wait_decision(
+    verdict_pending: bool,
+    classifier_compute: Duration,
+) -> EnterVerdictWait {
     if !verdict_pending {
         EnterVerdictWait::Submit
-    } else if waited >= ENTER_VERDICT_BUDGET {
+    } else if classifier_compute >= ENTER_VERDICT_BUDGET {
         EnterVerdictWait::SubmitWithoutVerdict
     } else {
         EnterVerdictWait::Wait

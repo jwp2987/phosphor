@@ -16,6 +16,7 @@ mod passive_suggestions;
 pub(super) use controller::RequestInput;
 pub mod history_model;
 pub mod inline_action;
+pub mod compute_clock;
 pub mod input_model;
 pub mod misroute_recovery;
 // Local (non-cloud) multi-agent orchestration core: pure helpers for walking
