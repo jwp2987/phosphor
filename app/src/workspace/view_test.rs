@@ -8049,3 +8049,43 @@ fn test_session_window_without_opt_in_or_terminal_default_stays_terminal() {
         ));
     });
 }
+
+/// #1361: a database notice raised before any window is active is not lost and is not shown by a
+/// window that is not active; it shows the moment that window becomes the active one, with no
+/// timer involved.
+#[test]
+fn database_notice_pending_before_activation_shows_on_activation() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // Drain anything an earlier test in this process left pending.
+        while crate::persistence::take_database_problem_notice().is_some() {}
+        crate::persistence::record_partial_restore(std::path::Path::new("/tmp/warp.sqlite"), 2);
+
+        // `NotStealFocus`: no window is active while the workspace is built.
+        let workspace = mock_workspace(&mut app);
+        let window_id = app.read(|ctx| {
+            assert_eq!(ctx.windows().active_window(), None);
+            workspace.window_id(ctx)
+        });
+        let has_toasts = |app: &App| {
+            workspace.read(app, |workspace, ctx| {
+                workspace.toast_stack.as_ref(ctx).has_toasts()
+            })
+        };
+        assert!(
+            !has_toasts(&app),
+            "an inactive window must not take the notice"
+        );
+
+        app.update(|ctx| {
+            WindowManager::handle(ctx).update(ctx, |manager, ctx| {
+                manager.set_active_window_for_test(Some(window_id), ctx);
+            });
+        });
+        assert!(
+            has_toasts(&app),
+            "the pending notice shows when the window activates"
+        );
+    });
+}

@@ -12,6 +12,8 @@ cfg_if::cfg_if! {
 
 mod database_notice;
 pub use database_notice::{DatabaseProblem, DatabaseProblemNotice};
+#[cfg(test)]
+pub(crate) use database_notice::record_partial_restore;
 
 pub use persistence::model;
 #[cfg_attr(not(feature = "local_fs"), expect(unused_imports))]
