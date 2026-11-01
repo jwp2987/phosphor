@@ -11,7 +11,7 @@ use crate::{
     report_if_error, send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,
     terminal::{
-        available_shells::{AvailableShell, AvailableShells},
+        available_shells::{AvailableShell, AvailableShells, AvailableShellsEvent},
         local_tty::shell::is_valid_path_or_command_for_supported_shell,
         session_settings::{SessionSettings, SessionSettingsChangedEvent},
     },
@@ -82,6 +82,18 @@ impl StartupShellView {
             }
             ctx.notify()
         });
+
+        // The shell list may still be scanning when this view is built (#1364): rebuild the
+        // dropdown when the scan completes instead of keeping the incomplete list.
+        ctx.subscribe_to_model(
+            &AvailableShells::handle(ctx),
+            |me, _, event, ctx| match event {
+                AvailableShellsEvent::ScanComplete => {
+                    Self::update_dropdown_state(me.shell_dropdown.clone(), ctx);
+                    ctx.notify();
+                }
+            },
+        );
 
         let shell_dropdown = ctx.add_typed_action_view(|ctx| {
             let mut dropdown = Dropdown::new(ctx);

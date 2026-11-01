@@ -1288,3 +1288,54 @@ fn test_over_limit_repo_is_marked_once_and_other_errors_are_not() {
     assert!(!model.record_index_failure(other_root.clone(), &other));
     assert!(!model.over_limit_roots.contains(&other_root));
 }
+
+/// #1364: a `cd` starts an async fast-path scan; the rules are cached when it lands, so the
+/// request path finds them without walking the disk and without a time budget.
+#[cfg(feature = "local_fs")]
+#[test]
+fn prewarm_fast_path_fills_the_cache_asynchronously() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "prewarmed rules").unwrap();
+
+        let model = app.add_model(|_| ProjectContextModel::default());
+        model.update(&mut app, |model, ctx| {
+            model.prewarm_fast_path(&cwd, ctx);
+            // Nothing is scanned on the calling thread.
+            assert!(model.fast_path_cache.borrow().is_empty());
+            assert!(model.fast_path_in_flight.contains(&cwd));
+        });
+
+        app.finish_pending_tasks().await;
+
+        model.read(&app, |model, _| {
+            assert!(model.fast_path_in_flight.is_empty());
+            let cached = model.fast_path_cache.borrow();
+            let entry = cached.get(&cwd).expect("scan result was cached");
+            assert_eq!(entry.rules.len(), 1);
+            assert_eq!(entry.rules[0].content, "prewarmed rules");
+            drop(cached);
+            let found = model.find_rules_with_fast_path(&cwd).expect("rules found");
+            assert_eq!(found.active_rules[0].content, "prewarmed rules");
+        });
+    });
+}
+
+/// #1364: the fast-path scan is complete, not truncated by a wall-clock budget: every level up
+/// to `MAX_WALK_DEPTH` is visited regardless of how long the stats take.
+#[cfg(feature = "local_fs")]
+#[test]
+fn fast_path_scan_is_not_time_truncated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("AGENTS.md"), "top").unwrap();
+    let mut deep = root.clone();
+    for level in 0..(MAX_WALK_DEPTH - 1) {
+        deep = deep.join(format!("d{level}"));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    let entry = scan_fast_path_isolated(&deep);
+    assert_eq!(entry.rules.len(), 1);
+    assert_eq!(entry.rules[0].content, "top");
+}

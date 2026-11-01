@@ -426,16 +426,18 @@ impl TryFrom<NewSessionShell> for AvailableShell {
 
 #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
 pub struct AvailableShells {
-    /// Result of the background PATH / `/etc/shells` scan (#1310). Filled once the scan thread
-    /// finishes; read lazily by [`Self::scanned`].
+    /// The finished PATH / `/etc/shells` scan (#1310, #1364). `None` until the scan thread's
+    /// completion is delivered to the model (as a main-thread callback, which then emits
+    /// [`AvailableShellsEvent::ScanComplete`]). Readers never wait for it.
     #[cfg(feature = "local_tty")]
-    scan: Arc<ShellScan>,
-    /// The scan result, adopted from `scan` the first time it is observed complete.
-    #[cfg(feature = "local_tty")]
-    result: std::sync::OnceLock<ScanResult>,
-    /// Stand-in served if the scan has not finished within the bounded wait.
+    result: Option<ScanResult>,
+    /// Stand-in served while the scan has not completed. Callers treat it as "not known yet" and
+    /// refresh when the completion event arrives.
     #[cfg(feature = "local_tty")]
     empty: ScanResult,
+    /// Identifies the current scan so a superseded scan's completion is ignored.
+    #[cfg(feature = "local_tty")]
+    scan_generation: u64,
     /// `PATH` the current scan was started with, to detect a change.
     #[cfg(feature = "local_tty")]
     scanned_path: std::ffi::OsString,
@@ -453,24 +455,11 @@ struct ScanResult {
     shell_counts: HashMap<String, usize>,
 }
 
-/// Hand-off slot between the scan thread and the model.
-#[cfg(feature = "local_tty")]
-#[derive(Default)]
-struct ShellScan {
-    done: std::sync::Mutex<Option<ScanResult>>,
-    cv: std::sync::Condvar,
-}
-
-/// How long a synchronous reader waits for an unfinished scan before serving the empty list.
-/// Bounded so a hung PATH entry (dead NFS mount) can never freeze the UI; the scan itself keeps
-/// running and later reads see its result. `PHOSPHOR_SHELL_SCAN_WAIT_MS` overrides it.
-#[cfg(feature = "local_tty")]
-fn scan_wait() -> std::time::Duration {
-    let ms = std::env::var("PHOSPHOR_SHELL_SCAN_WAIT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(300);
-    std::time::Duration::from_millis(ms)
+/// Emitted when a background shell scan has completed and [`AvailableShells`] now serves the
+/// real list. Anything that rendered or cached the shell list before this must refresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AvailableShellsEvent {
+    ScanComplete,
 }
 
 #[cfg(not(feature = "local_tty"))]
@@ -486,41 +475,68 @@ impl AvailableShells {
 
 #[cfg(feature = "local_tty")]
 impl AvailableShells {
-    pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
+    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         #[cfg(windows)]
-        let wsl_names: Vec<String> = super::wsl::WslInfo::as_ref(_ctx)
+        let wsl_names: Vec<String> = super::wsl::WslInfo::as_ref(ctx)
             .distributions()
             .map(|distro| distro.name.to_owned())
             .collect();
         #[cfg(not(windows))]
         let wsl_names: Vec<String> = Vec::new();
         let scanned_path = std::env::var_os("PATH").unwrap_or_default();
-        let scan = Self::start_scan(scanned_path.clone(), wsl_names.clone());
-        Self {
-            scan,
-            result: std::sync::OnceLock::new(),
+        let mut me = Self {
+            result: None,
             empty: ScanResult::default(),
+            scan_generation: 0,
             scanned_path,
             wsl_names,
-        }
+        };
+        me.start_scan(ctx);
+        me
     }
 
     /// Starts the shell scan on a background thread. The scan is `canonicalize` + `stat` per
     /// shell per PATH directory; on a slow PATH entry that used to stall launch (#1310).
-    fn start_scan(env_path: std::ffi::OsString, wsl_names: Vec<String>) -> Arc<ShellScan> {
-        let scan = Arc::new(ShellScan::default());
-        let slot = scan.clone();
+    /// Completion is delivered to the model as an event (#1364) rather than awaited by readers.
+    fn start_scan(&mut self, ctx: &mut ModelContext<Self>) {
+        self.scan_generation += 1;
+        let generation = self.scan_generation;
+        let env_path = self.scanned_path.clone();
+        let wsl_names = self.wsl_names.clone();
+        let (tx, rx) = futures::channel::oneshot::channel::<ScanResult>();
         let spawned = std::thread::Builder::new()
             .name("available-shells-scan".into())
             .spawn(move || {
-                let result = Self::scan_shells(&env_path, &wsl_names);
-                *slot.done.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-                slot.cv.notify_all();
+                // A dropped receiver (model gone) is fine: nobody is waiting for the list.
+                let _ = tx.send(Self::scan_shells(&env_path, &wsl_names));
             });
         if let Err(err) = spawned {
             log::warn!("Failed to start the shell scan thread: {err}");
+            return;
         }
-        scan
+        ctx.spawn(rx, move |me, result, ctx| match result {
+            Ok(result) => {
+                me.adopt_scan(generation, result, ctx);
+            }
+            Err(_) => log::warn!("The shell scan ended without producing a result"),
+        });
+    }
+
+    /// Installs a finished scan unless it was superseded by a rescan, and tells subscribers.
+    /// Returns whether the result was adopted.
+    fn adopt_scan(
+        &mut self,
+        generation: u64,
+        result: ScanResult,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if generation != self.scan_generation {
+            return false;
+        }
+        self.result = Some(result);
+        ctx.emit(AvailableShellsEvent::ScanComplete);
+        ctx.notify();
+        true
     }
 
     fn scan_shells(env_path: &std::ffi::OsStr, _wsl_names: &[String]) -> ScanResult {
@@ -568,41 +584,23 @@ impl AvailableShells {
         }
     }
 
-    /// The scan result. Never blocks longer than [`scan_wait`]: if the background scan has not
-    /// finished, serves an empty list (callers already treat "shell not found" as the system
-    /// default) and a later call picks the result up.
+    /// The scan result, or the empty stand-in while the scan has not completed. Never waits:
+    /// callers treat an empty answer as "not known yet" and subscribe to
+    /// [`AvailableShellsEvent::ScanComplete`] to refresh (#1364).
     fn scanned(&self) -> &ScanResult {
-        if let Some(result) = self.result.get() {
-            return result;
-        }
-        let mut guard = self.scan.done.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_none() {
-            let (g, _timeout) = self
-                .scan
-                .cv
-                .wait_timeout_while(guard, scan_wait(), |done| done.is_none())
-                .unwrap_or_else(|e| e.into_inner());
-            guard = g;
-        }
-        match guard.take() {
-            Some(result) => {
-                drop(guard);
-                self.result.get_or_init(|| result)
-            }
-            None => &self.empty,
-        }
+        self.result.as_ref().unwrap_or(&self.empty)
     }
 
     /// Restarts the scan if the process `PATH` differs from the one the last scan used.
-    /// Returns whether a rescan was started. The next reader waits (bounded) for the new scan.
-    pub fn rescan_if_path_changed(&mut self) -> bool {
+    /// Returns whether a rescan was started. Until it completes, readers keep the previous
+    /// list (if any) and are told by [`AvailableShellsEvent::ScanComplete`] when the new one lands.
+    pub fn rescan_if_path_changed(&mut self, ctx: &mut ModelContext<Self>) -> bool {
         let current = std::env::var_os("PATH").unwrap_or_default();
         if current == self.scanned_path {
             return false;
         }
-        self.scan = Self::start_scan(current.clone(), self.wsl_names.clone());
-        self.result = std::sync::OnceLock::new();
         self.scanned_path = current;
+        self.start_scan(ctx);
         true
     }
 
@@ -717,15 +715,9 @@ impl AvailableShells {
         }
     }
 
-    /// The scan result if the background scan has already finished; never waits.
+    /// The scan result if the background scan has already completed; never waits.
     fn scanned_if_ready(&self) -> Option<&ScanResult> {
-        if let Some(result) = self.result.get() {
-            return Some(result);
-        }
-        let mut done = self.scan.done.lock().unwrap_or_else(|e| e.into_inner());
-        let result = done.take()?;
-        drop(done);
-        Some(self.result.get_or_init(|| result))
+        self.result.as_ref()
     }
 
     /// Builds the [`AvailableShell`] for a saved preference without the scan: one
@@ -1147,7 +1139,7 @@ fn command_name_matches(stored: &str, requested: &str, is_windows: bool) -> bool
 }
 
 impl Entity for AvailableShells {
-    type Event = ();
+    type Event = AvailableShellsEvent;
 }
 impl SingletonEntity for AvailableShells {}
 
