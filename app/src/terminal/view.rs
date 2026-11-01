@@ -18733,6 +18733,12 @@ impl TerminalView {
         session: Option<Arc<Session>>,
         history_commands: Vec<HistoryEntry>,
     ) -> Vec<Correction> {
+        // An empty Enter has nothing to correct; skip the session metadata work, including the
+        // `git branch` spawn (#1342).
+        if command.trim().is_empty() {
+            return vec![];
+        }
+
         // Create the command
         let (input, output, working_dir) =
             (command.as_str(), output_truncated.as_str(), pwd.as_deref());

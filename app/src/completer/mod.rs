@@ -716,12 +716,17 @@ impl SessionContext {
         env_vars: &Option<HashMap<String, String>>,
     ) -> generator_cache::GeneratorRunResult {
         let detached = self.session.is_local();
-        let outcome = generator_cache::GENERATOR_CACHE.lock().get_or_start_with(
-            key,
-            Instant::now(),
-            detached,
-            |run_id| self.start_generator_run(handle, key.clone(), run_id, env_vars.clone()),
-        );
+        // Alias lookups read config files only: keep them across commands, checked against the
+        // files' stamp (#1342). Local sessions only; the remote's files are not visible here.
+        let stamp = (detached
+            && generator_cache::is_alias_lookup_script(&key.script)
+            && std::env::var_os(generator_cache::ALIAS_CACHE_DISABLE_ENV).is_none())
+        .then(|| generator_cache::config_stamp(&key.pwd));
+        let outcome = generator_cache::GENERATOR_CACHE
+            .lock()
+            .get_or_start_stamped(key, Instant::now(), detached, stamp, |run_id| {
+                self.start_generator_run(handle, key.clone(), run_id, env_vars.clone())
+            });
         match outcome {
             Ok(result) => result,
             Err(run) => run.await,
