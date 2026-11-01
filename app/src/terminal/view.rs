@@ -14508,14 +14508,28 @@ impl TerminalView {
 
     /// Recomputes the chip values for the Zap prompt (i.e. _not_ PS1).
     fn refresh_warp_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        self.refresh_warp_prompt_after(None, ctx);
+    }
+
+    /// `completed_command` is the command of the block that just finished, when known; the git
+    /// status refresh may then be skipped or coalesced if nothing could have changed. `None`
+    /// always refreshes.
+    fn refresh_warp_prompt_after(
+        &mut self,
+        completed_command: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Ask the per-repo sub-model to re-fetch metadata so the chip values
         // reflect the latest git state (branch, diff stats, etc.).
         #[cfg(feature = "local_fs")]
         if let Some(handle) = &self.git_repo_status {
-            handle.update(ctx, |model, ctx| {
-                model.refresh_metadata(ctx);
+            handle.update(ctx, |model, ctx| match completed_command {
+                Some(command) => model.refresh_metadata_after_command(command, ctx),
+                None => model.refresh_metadata(ctx),
             });
         }
+        #[cfg(not(feature = "local_fs"))]
+        let _ = completed_command;
         self.input.update(ctx, |input, ctx| {
             input.update_prompt_display_chips(ctx);
         });
@@ -15924,7 +15938,19 @@ impl TerminalView {
                         .block_list()
                         .is_bootstrapping_precmd_done()
                 {
-                    self.refresh_warp_prompt(ctx);
+                    let completed_command = match &block_type {
+                        BlockType::User(user_block_completed) => Some(
+                            user_block_completed
+                                .command
+                                .get_with(|compute| {
+                                    let model = self.model.lock();
+                                    compute(model.block_list())
+                                })
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
+                    self.refresh_warp_prompt_after(completed_command.as_deref(), ctx);
 
                     // If the completed command was a `gh` or `gt` invocation, eagerly refresh PR
                     // info since these don't touch .git/ and won't be caught by the filesystem watcher.

@@ -271,6 +271,17 @@ impl GitRepoStatusModel {
         }
     }
 
+    /// Refresh after a block completed with `command`; the local backend may skip or coalesce it
+    /// (see [`LocalGitRepoStatusModel::refresh_metadata_after_command`]). Remote asks as usual.
+    pub fn refresh_metadata_after_command(&self, command: &str, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => {
+                m.update(ctx, |m, ctx| m.refresh_metadata_after_command(command, ctx))
+            }
+            Self::Remote(m) => m.update(ctx, |m, ctx| m.request_snapshot(ctx)),
+        }
+    }
+
     /// Force a metadata refresh (branch names, diff stats). For the remote
     /// backend this asks the daemon to push a fresh snapshot.
     pub fn refresh_metadata(&self, ctx: &mut ModelContext<Self>) {
@@ -305,6 +316,8 @@ pub struct LocalGitRepoStatusModel {
     /// six git processes and its answer only moves when refs do, so refreshes inside
     /// [`MAIN_BRANCH_CACHE_TTL`] reuse it (#1334). A HEAD/ref/remote-ref update clears it.
     main_branch_cache: Option<(String, Instant)>,
+    /// Decides whether a command-completion refresh can be skipped or coalesced (#1334 follow-up).
+    refresh_gate: RefreshGate,
 }
 
 /// How long a detected main branch is reused by metadata refreshes (#1334).
@@ -319,6 +332,100 @@ pub(super) fn fresh_cached_main_branch(
 ) -> Option<String> {
     let (name, detected_at) = cache.as_ref()?;
     (now.saturating_duration_since(*detected_at) < MAIN_BRANCH_CACHE_TTL).then(|| name.clone())
+}
+
+/// Bursts of command completions inside this window collapse into one metadata refresh.
+#[cfg(feature = "local_fs")]
+const REFRESH_COALESCE_WINDOW: Duration = Duration::from_millis(200);
+
+/// What a command-completion refresh request should do.
+#[cfg(feature = "local_fs")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefreshDecision {
+    /// Nothing could have changed; reuse the last result (no git processes).
+    Skip,
+    /// Refresh once after this delay; further requests meanwhile are absorbed.
+    Defer(Duration),
+    /// Refresh right now.
+    Now,
+}
+
+/// Kill switch: `PHOSPHOR_GIT_REFRESH_ALWAYS=1` restores a refresh after every block.
+#[cfg(feature = "local_fs")]
+fn refresh_always_env() -> bool {
+    std::env::var_os("PHOSPHOR_GIT_REFRESH_ALWAYS").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Whether the command names a VCS tool, i.e. could change git state in a way that must not wait
+/// for (or depend on) the file watcher. Plain file edits and build output are the watcher's job.
+#[cfg(feature = "local_fs")]
+pub(super) fn command_may_change_git_state(command: &str) -> bool {
+    const VCS: &[&str] = &[
+        "git", "gh", "gt", "hub", "jj", "hg", "sl", "svn", "stg", "lazygit", "pijul",
+    ];
+    command
+        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .any(|tok| {
+            let tok = tok.trim_end_matches(".exe");
+            VCS.contains(&tok) || tok.starts_with("git-")
+        })
+}
+
+/// Pure bookkeeping behind command-completion refreshes, kept free of the app context so it can
+/// be unit-tested.
+#[cfg(feature = "local_fs")]
+#[derive(Debug, Default)]
+pub(super) struct RefreshGate {
+    /// The watcher reported a relevant change since the last refresh started.
+    dirty: bool,
+    last_refresh: Option<Instant>,
+    deferred_pending: bool,
+}
+
+#[cfg(feature = "local_fs")]
+impl RefreshGate {
+    pub(super) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Any refresh (forced or not) clears the dirty flag and opens the coalescing window.
+    pub(super) fn refresh_started(&mut self, now: Instant) {
+        self.dirty = false;
+        self.last_refresh = Some(now);
+    }
+
+    pub(super) fn deferred_fired(&mut self) {
+        self.deferred_pending = false;
+    }
+
+    /// `trusted` is true when metadata exists and the repo watcher is live; without it we cannot
+    /// know nothing changed, so only coalescing applies.
+    pub(super) fn decide(
+        &mut self,
+        command: &str,
+        trusted: bool,
+        now: Instant,
+        always: bool,
+    ) -> RefreshDecision {
+        if self.deferred_pending {
+            return RefreshDecision::Skip;
+        }
+        if trusted
+            && !always
+            && !self.dirty
+            && (command.trim().is_empty() || !command_may_change_git_state(command))
+        {
+            return RefreshDecision::Skip;
+        }
+        if let Some(last) = self.last_refresh {
+            let elapsed = now.saturating_duration_since(last);
+            if elapsed < REFRESH_COALESCE_WINDOW {
+                self.deferred_pending = true;
+                return RefreshDecision::Defer(REFRESH_COALESCE_WINDOW - elapsed);
+            }
+        }
+        RefreshDecision::Now
+    }
 }
 
 /// Whether a freshly loaded/pushed snapshot warrants a `MetadataChanged`
@@ -356,6 +463,7 @@ impl LocalGitRepoStatusModel {
             has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
             main_branch_cache: None,
+            refresh_gate: RefreshGate::default(),
         };
 
         // Kick off initial metadata computation.
@@ -395,6 +503,9 @@ impl LocalGitRepoStatusModel {
                 move |me, update: RepositoryUpdate, ctx| {
                     if update.commit_updated || update.remote_ref_updated {
                         me.main_branch_cache = None;
+                    }
+                    if Self::is_head_change(&update) || Self::should_refresh_metadata(&update) {
+                        me.refresh_gate.mark_dirty();
                     }
                     if Self::is_head_change(&update) {
                         // A HEAD / branch-ref change must not wait out the 5s
@@ -438,6 +549,7 @@ impl LocalGitRepoStatusModel {
     /// events that may have changed git state (block completed, agent file
     /// edits, etc.).
     pub fn refresh_metadata(&mut self, ctx: &mut ModelContext<Self>) {
+        self.refresh_gate.refresh_started(Instant::now());
         if let Some(handle) = self.computing_metadata_abort_handle.take() {
             handle.abort();
         }
@@ -454,6 +566,30 @@ impl LocalGitRepoStatusModel {
                 me.handle_metadata_result(result, ctx);
             },
         ));
+    }
+
+    /// Refresh after a block completed with `command`, skipping or coalescing when nothing could
+    /// have changed: an empty Enter or a command that doesn't touch VCS state, with the watcher
+    /// silent since the last refresh, reuses the last result; bursts collapse into one refresh.
+    /// Any watcher event, a VCS command, or a dead watcher still refreshes.
+    pub fn refresh_metadata_after_command(&mut self, command: &str, ctx: &mut ModelContext<Self>) {
+        let trusted = self.metadata.is_some() && self.subscriber_id.is_some();
+        match self
+            .refresh_gate
+            .decide(command, trusted, Instant::now(), refresh_always_env())
+        {
+            RefreshDecision::Skip => {}
+            RefreshDecision::Now => self.refresh_metadata(ctx),
+            RefreshDecision::Defer(delay) => {
+                ctx.spawn(
+                    async move { warpui::r#async::Timer::after(delay).await },
+                    |me, _, ctx| {
+                        me.refresh_gate.deferred_fired();
+                        me.refresh_metadata(ctx);
+                    },
+                );
+            }
+        }
     }
 
     // ── internal helpers ────────────────────────────────────────────────
