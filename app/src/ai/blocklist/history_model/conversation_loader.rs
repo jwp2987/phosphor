@@ -171,7 +171,7 @@ pub(super) mod load_pool {
     impl<K, V> InFlight<K, V>
     where
         K: std::hash::Hash + Eq + Clone + Send + 'static,
-        V: Clone + Send + 'static,
+        V: Clone + Default + Send + 'static,
     {
         pub(in super::super) fn new() -> Self {
             Self {
@@ -198,11 +198,17 @@ pub(super) mod load_pool {
                 return Ok(join(existing.clone()));
             }
             let (tx, rx) = futures::channel::oneshot::channel::<Slot<V>>();
+            // A load that never finishes (its `run` failed, or the callback was dropped) resolves
+            // its joiners with `V::default()` (an absent result) instead of panicking them.
             let shared = rx
-                .map(|r| r.expect("a load's finish callback is always called"))
+                .map(|r| r.unwrap_or_else(|_| std::sync::Arc::new(Mutex::new(V::default()))))
                 .boxed()
                 .shared();
             map.insert(key.clone(), shared.clone());
+            // `run` may finish synchronously (the callback locks this same registry), so the lock
+            // must not be held across it. The entry is already registered, so a request arriving
+            // meanwhile joins it rather than starting a second load.
+            drop(map);
             let registry = self.map.clone();
             let finish_key = key.clone();
             let finish = Box::new(move |value: V| {
@@ -213,7 +219,10 @@ pub(super) mod load_pool {
                 let _ = tx.send(std::sync::Arc::new(Mutex::new(value)));
             });
             if let Err(e) = run(finish) {
-                map.remove(&key);
+                self.map
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&key);
                 return Err(e);
             }
             Ok(join(shared))
