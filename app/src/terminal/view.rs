@@ -22530,6 +22530,26 @@ impl TerminalView {
         let mut menu_items = Vec::new();
         let model = self.model.lock();
 
+        // A path / URL under the pointer (Cmd/Ctrl + right-click in a mouse-reporting TUI, or a
+        // plain right-click otherwise) gets Open / Show in Finder / Copy path first (#1347).
+        if let Some(link) = self.highlighted_link.as_ref() {
+            let remote = self.alt_link_session_is_remote(ctx);
+            let url_content = match link {
+                GridHighlightedLink::Url(url) => {
+                    Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes))
+                }
+                _ => None,
+            };
+            menu_items.extend(link_detection::alt_screen_link_menu_items(
+                link,
+                url_content,
+                remote,
+            ));
+            if !menu_items.is_empty() {
+                menu_items.push(MenuItem::Separator);
+            }
+        }
+
         let semantic_selection = SemanticSelection::as_ref(ctx);
         // Only whether a selection exists matters here; do not format it (#1304).
         if model.has_selection_range(semantic_selection, self.is_inverted_blocklist(ctx)) {
@@ -22568,6 +22588,20 @@ impl TerminalView {
             menu_items.append(&mut pane_context_menu_items);
         }
         menu_items
+    }
+
+    /// Whether the active session is a remote one, where a local reveal in the file manager
+    /// would show the wrong machine's filesystem.
+    fn alt_link_session_is_remote(&self, ctx: &AppContext) -> bool {
+        #[cfg(feature = "local_fs")]
+        {
+            self.session_is_remote(self.active_block_session_id(), ctx)
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            let _ = ctx;
+            false
+        }
     }
 
     fn alt_screen_context_menu(&mut self, position: Vector2F, ctx: &mut ViewContext<Self>) {
