@@ -635,3 +635,26 @@ fn no_two_settings_declare_the_same_toml_path() {
         duplicates.join("\n  ")
     );
 }
+
+/// #1381 (APP-19): a Create/Modify event for the settings file voids the restore that a Delete
+/// event queued. Without it, an editor whose delete-to-write gap exceeded the 300 ms timer had
+/// the file restored from memory under it.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_file_event_cancels_the_pending_settings_restore() {
+    let pending = super::PendingRestore::default();
+    let token = pending.begin();
+    assert!(
+        pending.is_current(token),
+        "nothing has happened since the delete"
+    );
+    pending.cancel();
+    assert!(
+        !pending.is_current(token),
+        "the recreated file must void the restore"
+    );
+    // A later deletion gets a fresh token, and an older timer cannot act for it.
+    let second = pending.begin();
+    assert!(pending.is_current(second));
+    assert!(!pending.is_current(token));
+}
