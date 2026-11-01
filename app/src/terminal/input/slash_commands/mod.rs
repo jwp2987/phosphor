@@ -218,6 +218,24 @@ impl SlashCommandTrigger {
     }
 }
 
+/// Result of statting the `/open-file` target (done off the UI thread).
+#[cfg(feature = "local_fs")]
+#[derive(Debug, PartialEq, Eq)]
+enum OpenFileTarget {
+    File,
+    NotAFile,
+    Missing,
+}
+
+#[cfg(feature = "local_fs")]
+fn probe_open_file_target(path: &std::path::Path) -> OpenFileTarget {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => OpenFileTarget::File,
+        Ok(_) => OpenFileTarget::NotAFile,
+        Err(_) => OpenFileTarget::Missing,
+    }
+}
+
 #[cfg(feature = "local_fs")]
 fn open_file_command_path(
     session: &Session,
@@ -712,32 +730,39 @@ impl Input {
                         let (file_path, line_col) =
                             open_file_command_path(&session, &current_dir, args);
 
-                        match std::fs::metadata(&file_path) {
-                            Ok(metadata) if metadata.is_file() => {
-                                use crate::util::file::external_editor;
+                        // The stat runs off the UI thread (network volumes / privacy
+                        // prompts can stall it); the open or the error toast is handled
+                        // back on the main thread with the same messages as before.
+                        ctx.spawn(
+                            async move {
+                                let kind = probe_open_file_target(&file_path);
+                                (file_path, kind)
+                            },
+                            move |_me, (file_path, kind), ctx| match kind {
+                                OpenFileTarget::File => {
+                                    use crate::util::file::external_editor;
 
-                                ctx.dispatch_typed_action(&TerminalAction::OpenCodeInWarp {
-                                    path: file_path,
-                                    layout: external_editor::settings::EditorLayout::SplitPane,
-                                    line_col,
-                                });
-                            }
-                            Ok(_) => {
-                                show_error_toast(
-                                    "The /open-file command only works for files, not directories"
-                                        .to_owned(),
-                                    ctx,
-                                );
-                                return true;
-                            }
-                            Err(_) => {
-                                show_error_toast(
-                                    format!("File not found: {}", file_path.display()),
-                                    ctx,
-                                );
-                                return true;
-                            }
-                        }
+                                    ctx.dispatch_typed_action(&TerminalAction::OpenCodeInWarp {
+                                        path: file_path,
+                                        layout: external_editor::settings::EditorLayout::SplitPane,
+                                        line_col,
+                                    });
+                                }
+                                OpenFileTarget::NotAFile => {
+                                    show_error_toast(
+                                        "The /open-file command only works for files, not directories"
+                                            .to_owned(),
+                                        ctx,
+                                    );
+                                }
+                                OpenFileTarget::Missing => {
+                                    show_error_toast(
+                                        format!("File not found: {}", file_path.display()),
+                                        ctx,
+                                    );
+                                }
+                            },
+                        );
                     }
                     _ => {
                         use crate::server::telemetry::PaletteSource;
@@ -1456,6 +1481,22 @@ impl Input {
 mod tests {
     use super::*;
     use crate::search::slash_command_menu::static_commands::commands;
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn open_file_target_probe_classifies_file_dir_and_missing() {
+        let dir = std::env::temp_dir().join(format!("open-file-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(probe_open_file_target(&file), OpenFileTarget::File);
+        assert_eq!(probe_open_file_target(&dir), OpenFileTarget::NotAFile);
+        assert_eq!(
+            probe_open_file_target(&dir.join("missing")),
+            OpenFileTarget::Missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `/model` is supported in the TUI and executes immediately (no queued
     /// prompt) — it must not be classified as a prompt-submitting command.
