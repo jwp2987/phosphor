@@ -223,8 +223,8 @@ fn single_line_cell_layout(char_count: usize, line_height: f32, line_width: f32)
     };
     for i in 0..char_count {
         carets.push(CaretPosition {
-            start_offset: i,
-            last_offset: i,
+            start_offset: i as u32,
+            last_offset: i as u32,
             position_in_line: i as f32 * char_width,
         });
     }

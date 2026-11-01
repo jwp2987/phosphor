@@ -101,7 +101,7 @@ impl<'a> RunBuilder<'a> {
         self.glyphs_in_current_run.push(Glyph {
             id: glyph.glyph_id as u32,
             position_along_baseline: vec2f(glyph.x + gpos_x_offset, glyph.y - gpos_y_offset),
-            index: glyph_char_index,
+            index: crate::text_layout::narrow_offset(glyph_char_index),
             width: glyph.w,
         });
 

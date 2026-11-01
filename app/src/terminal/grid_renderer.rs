@@ -1571,7 +1571,7 @@ fn paint_line(
         let glyph_color = run.styles.foreground_color.unwrap_or_default();
 
         for glyph in &run.glyphs {
-            let glyph_x = character_index_to_cell_map[glyph.index] as f32 * cell_width;
+            let glyph_x = character_index_to_cell_map[glyph.char_index()] as f32 * cell_width;
             let glyph_origin = baseline + vec2f(glyph_x, 0.);
 
             scene.draw_glyph(

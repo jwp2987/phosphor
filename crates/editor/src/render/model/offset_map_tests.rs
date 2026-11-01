@@ -217,7 +217,7 @@ fn test_end_to_end() {
         };
 
         // The `TextFrame` includes each character we paint: "HellotestWorld".
-        let line = &paragraph.frame.lines()[0];
+        let line = &paragraph.frame().expect("hydrated").lines()[0];
         assert_eq!(
             line.runs.iter().map(|run| run.glyphs.len()).sum::<usize>(),
             14

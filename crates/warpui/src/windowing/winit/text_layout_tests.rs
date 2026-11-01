@@ -786,7 +786,7 @@ fn test_softwrap_caret_positions_are_contiguous() -> Result<()> {
     let all_caret_starts: Vec<usize> = frame
         .lines()
         .iter()
-        .flat_map(|line| line.caret_positions.iter().map(|c| c.start_offset))
+        .flat_map(|line| line.caret_positions.iter().map(|c| c.start()))
         .collect();
 
     // The caret positions should be monotonically non-decreasing across all lines.
@@ -878,7 +878,7 @@ fn test_softwrap_caret_positions_multi_paragraph() -> Result<()> {
     let all_caret_starts: Vec<usize> = frame
         .lines()
         .iter()
-        .flat_map(|line| line.caret_positions.iter().map(|c| c.start_offset))
+        .flat_map(|line| line.caret_positions.iter().map(|c| c.start()))
         .collect();
 
     for window in all_caret_starts.windows(2) {
@@ -1046,7 +1046,7 @@ fn test_capped_word_line_positions_reach_true_text_end() {
     }
     let last = lines.last().unwrap();
     assert_eq!(last.end_index(), n, "End on the last row");
-    assert_eq!(last.last_glyph().unwrap().index + 1, n, "Down/clamp column");
+    assert_eq!(last.last_glyph().unwrap().char_index() + 1, n, "Down/clamp column");
     assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), n, "click past the end");
     let home = last.first_index();
     assert!(home > 0 && home < cosmic_text::MAX_SHAPED_WORD_BYTES, "Home {home}");
@@ -1061,7 +1061,7 @@ fn test_capped_word_followed_by_words_keeps_true_offsets() {
     let frame = frame_wrapped(&text, 400.);
     let last = frame.lines().last().unwrap();
     assert_eq!(last.end_index(), total);
-    assert_eq!(last.last_glyph().unwrap().index + 1, total);
+    assert_eq!(last.last_glyph().unwrap().char_index() + 1, total);
     assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), total);
 }
 
@@ -1114,7 +1114,7 @@ fn test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end() {
     // Painting walks only `runs[*].glyphs` and `caret_positions`, so both bound the paint cost.
     assert!(line.caret_positions.len() <= cap + 1);
     assert_eq!(line.end_index(), n);
-    assert_eq!(line.last_glyph().unwrap().index + 1, n);
+    assert_eq!(line.last_glyph().unwrap().char_index() + 1, n);
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "layout_line of a 3 MB word took {elapsed:?}"
