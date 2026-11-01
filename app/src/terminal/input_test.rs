@@ -2589,6 +2589,104 @@ fn test_completions_while_typing_doesnt_hide_autosuggestion() {
     });
 }
 
+// #1355: a keystroke that invalidates an as-you-type completion menu keeps it up marked stale (no
+// 750 ms wait) but is marked stale and can't be accepted; new results clear the flag.
+#[test]
+fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .completions_open_while_typing
+                .set_value(true, ctx);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("a.txt"), argument_suggestion("b.txt")],
+                    (10, 10),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+
+        // The keystroke: the menu stays up (no flicker) but is stale.
+        input.update(&mut app, |input, ctx| input.user_insert("z", ctx));
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.completion_menu_stale,
+                "keystroke must mark the menu stale"
+            );
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+
+        // Acting on the stale menu behaves as if no menu were open: it is dropped and the
+        // buffer is untouched (the old item is not inserted).
+        input.update(&mut app, |input, ctx| {
+            assert!(input.drop_stale_completion_menu(ctx));
+        });
+        input.read(&app, |input, ctx| {
+            assert!(!input.completion_menu_stale);
+            assert_eq!(input.editor.as_ref(ctx).buffer_text(ctx), "open-file z");
+            assert!(!matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+
+        // New results for the current buffer open the menu, not stale.
+        input.update(&mut app, |input, _ctx| {
+            input.completion_menu_stale = true;
+        });
+        // The new results show the menu again.
+        input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("z.txt")],
+                    (10, 11),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.completion_menu_stale,
+                "new results clear the stale flag"
+            );
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+        });
+    });
+}
+
 #[test]
 fn test_agent_mode_set_while_typing_slash_command() {
     App::test((), |mut app| async move {

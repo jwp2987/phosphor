@@ -5110,9 +5110,10 @@ fn test_pending_accept_dropped_when_buffer_changed() {
     })
 }
 
-// The accept is dropped if the ghost lands after the window.
+// #1355: the accept is keyed to the buffer, not a clock: a ghost landing 200 ms later for the
+// same buffer is still accepted.
 #[test]
-fn test_pending_accept_dropped_when_ghost_is_late() {
+fn test_pending_accept_applied_when_ghost_is_late() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
@@ -5121,9 +5122,33 @@ fn test_pending_accept_dropped_when_ghost_is_late() {
         view.update(&mut app, |view, ctx| {
             view.move_to_buffer_end(ctx);
             view.move_right(false, ctx);
-            if let Some((_, at)) = view.pending_autosuggestion_accept.as_mut() {
-                *at = *at - PENDING_AUTOSUGGESTION_ACCEPT_WINDOW * 4;
-            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+    })
+}
+
+// #1355: the request for that buffer completing with no suggestion discards the accept, so a
+// later ghost for the same buffer is only shown.
+#[test]
+fn test_pending_accept_discarded_when_request_completes_empty() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            assert!(view.pending_autosuggestion_accept.is_some());
+            view.discard_pending_autosuggestion_accept();
             view.set_autosuggestion(
                 "atus",
                 AutosuggestionLocation::EndOfBuffer,

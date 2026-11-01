@@ -30,7 +30,6 @@ use crate::view_components::FeaturePopup;
 use base64::{engine::general_purpose, Engine as _};
 use element::CommandXRayMouseStateHandle;
 use figma_utils::is_figma_png;
-use instant::Instant;
 use itertools::{Either, Itertools};
 use mime_guess::from_path;
 use model::{
@@ -164,9 +163,6 @@ fn blink_full_render() -> bool {
         .get_or_init(|| std::env::var("PHOSPHOR_BLINK_FULL_RENDER").is_ok_and(|value| value == "1"))
 }
 const DEFAULT_TAB_SIZE: usize = 4;
-/// How long an accept keypress (Right/End at the end of the buffer) that found no ghost yet is
-/// remembered, waiting for the ghost for that exact buffer to land (#1186).
-const PENDING_AUTOSUGGESTION_ACCEPT_WINDOW: Duration = Duration::from_millis(50);
 
 pub const ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME: &str = "editor_view:insert_autosuggestion";
 pub const MAX_IMAGES_PER_CONVERSATION: usize = 200;
@@ -1872,9 +1868,12 @@ pub struct EditorView {
     window_id: WindowId,
     autosuggestion_state: Option<Arc<AutosuggestionState>>,
     /// An accept keypress that arrived at the end of the buffer before the ghost for that
-    /// buffer was ready: the buffer text at the time and when. Applied by `set_autosuggestion`
-    /// if the ghost lands for the same buffer within [`PENDING_AUTOSUGGESTION_ACCEPT_WINDOW`].
-    pending_autosuggestion_accept: Option<(String, Instant)>,
+    /// buffer was ready: the buffer text at the time. Applied by `set_autosuggestion` when the
+    /// ghost lands for exactly that buffer with the cursor still at its end, however long that
+    /// takes (#1355: no time window). Discarded when the buffer is edited, or when the request
+    /// for that buffer completes with no suggestion
+    /// ([`Self::discard_pending_autosuggestion_accept`]).
+    pending_autosuggestion_accept: Option<String>,
     /// Set on the input's editor by the terminal view: while active, editing keys are queued
     /// there instead of applied, so keys typed during an ssh connect keep their order (#1292).
     key_hold: Option<Rc<EditorKeyHold>>,
@@ -3745,18 +3744,22 @@ impl EditorView {
         }
         let buffer_text = self.buffer_text(ctx);
         if !buffer_text.is_empty() {
-            self.pending_autosuggestion_accept = Some((buffer_text, Instant::now()));
+            self.pending_autosuggestion_accept = Some(buffer_text);
         }
     }
 
     /// Consumes the pending accept; true if it is still valid for the current buffer.
     fn take_matching_pending_autosuggestion_accept(&mut self, ctx: &AppContext) -> bool {
-        let Some((buffer_text, at)) = self.pending_autosuggestion_accept.take() else {
+        let Some(buffer_text) = self.pending_autosuggestion_accept.take() else {
             return false;
         };
-        at.elapsed() <= PENDING_AUTOSUGGESTION_ACCEPT_WINDOW
-            && self.single_cursor_at_buffer_end(true, ctx)
-            && self.buffer_text(ctx) == buffer_text
+        self.single_cursor_at_buffer_end(true, ctx) && self.buffer_text(ctx) == buffer_text
+    }
+
+    /// Drops a remembered accept keypress: the request for the ghost completed with no
+    /// suggestion for the buffer (#1355), so the accept must not fire on a later ghost.
+    pub fn discard_pending_autosuggestion_accept(&mut self) {
+        self.pending_autosuggestion_accept = None;
     }
 
     /// Clears any existing autosuggestions (intelligent or not) that weren't for the current input_type.
@@ -7915,6 +7918,8 @@ impl EditorView {
     ) {
         match event {
             EditorModelEvent::Edited { edit_origin } => {
+                // An edit invalidates a remembered accept (it was for the old buffer).
+                self.pending_autosuggestion_accept = None;
                 // Update the autosuggestion state after an edit.
                 self.update_autosuggestion_state(ctx);
                 self.vim_maybe_enforce_cursor_line_cap(ctx);
