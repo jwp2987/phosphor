@@ -161,3 +161,19 @@ fn test_full_layout_flag_parse() {
     assert!(full_layout_flag_enabled(Some("On")));
     assert!(full_layout_flag_enabled(Some("yes")));
 }
+
+#[test]
+fn test_rows_cannot_wrap_measured_uses_the_real_ascii_advance() {
+    // 100 ASCII chars of a 13 px monospace font (~0.6 em) fit in 1300 px, but the 1 em worst
+    // case proved nothing for 101+ (#1333: a 99-char row in a ~1000 px window kept the whole 1 MB
+    // buffer fully laid out on every frame).
+    assert!(!rows_cannot_wrap(120, true, true, 13., 1000.));
+    let fits =
+        |ascii, tab_free, ems| rows_cannot_wrap_measured(120, ascii, tab_free, 13., 1000., ems);
+    assert!(fits(true, true, Some(0.65)));
+    // The measurement can only tighten the bound, never loosen it past 1 em or for non-ASCII.
+    assert!(!fits(true, true, Some(5.0)));
+    assert!(!fits(false, true, Some(0.65)));
+    assert!(!fits(true, false, Some(0.65)));
+    assert!(!fits(true, true, Some(f32::NAN)));
+}
