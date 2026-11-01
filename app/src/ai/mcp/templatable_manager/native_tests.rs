@@ -573,3 +573,18 @@ fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
     );
     assert_eq!(main_thread, std::thread::current().id());
 }
+
+#[test]
+fn abandoning_the_env_read_future_sets_the_cancel_flag() {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guard = super::CancelFlagOnDrop(flag.clone());
+    assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+    drop(guard);
+    assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn env_read_without_connection_returns_input_unchanged() {
+    let read = futures_lite::future::block_on(super::read_legacy_env_vars_in_background(None, Vec::new()));
+    assert!(read.is_empty());
+}
