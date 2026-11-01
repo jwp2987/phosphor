@@ -49,16 +49,23 @@ static _Atomic uint64_t warpLastKeyNs = 0;
 // Frames this soon after a key press count as typing for `warpDisplaySyncOffWhileTyping`.
 static const uint64_t warpTypingWindowNs = 150000000ull;
 
-// Experiment, default off: while the user is typing, present without waiting for vsync
-// (`CAMetalLayer.displaySyncEnabled = NO`), so the frame carrying a keystroke is not held to the
-// next refresh; idle output keeps vsync. Tearing on a frame that also scrolls is the trade being
-// measured. PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING=1 enables it.
+// After Return only this long counts as typing: enough for the frame carrying the Return itself.
+static const uint64_t warpReturnWindowNs = 25000000ull;
+
+// While the user is typing, present without waiting for vsync (`CAMetalLayer.displaySyncEnabled =
+// NO`), so the frame carrying a keystroke is not held to the next refresh; idle output and
+// command output and scrolling after Return keep vsync (Return's own frame, ~25 ms window, does not), so only small in-place text
+// edits are ever presented unsynced. Measured on an M1 Pro ProMotion display (#1298/#1160): key ->
+// first on-screen change 45.5 ms median with vsync, 30.6 ms without (Terminal.app: 38.1 ms), because
+// the panel idles at a low refresh rate and a synced present waits for its next tick (and the
+// following frame then blocks the main thread in nextDrawable for 8-27 ms). On by default;
+// PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING=0 restores vsync always.
 static BOOL warpDisplaySyncOffWhileTyping(void) {
     static dispatch_once_t once;
-    static BOOL enabled = NO;
+    static BOOL enabled = YES;
     dispatch_once(&once, ^{
       const char *value = getenv("PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING");
-      enabled = value != NULL && strcmp(value, "0") != 0;
+      enabled = value == NULL || strcmp(value, "0") != 0;
     });
     return enabled;
 }
@@ -265,7 +272,12 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 
 - (BOOL)keyDownImpl:(NSEvent *)event {
     uint64_t keyNowNs = warpNowNs();
-    atomic_store(&warpLastKeyNs, keyNowNs);
+    // Return (36) / keypad Enter (76) starts command output that scrolls: its own frame (drawn a
+    // few ms later) may skip vsync, but the window is shortened to warpReturnWindowNs so the output
+    // frames that follow are vsynced. Back-dating the stamp shortens the window.
+    BOOL isReturn = [event keyCode] == 36 || [event keyCode] == 76;
+    atomic_store(&warpLastKeyNs, isReturn ? keyNowNs - (warpTypingWindowNs - warpReturnWindowNs)
+                                          : keyNowNs);
     uint64_t pendingKeyNs = atomic_load(&warpPendingKeyNs);
     if (pendingKeyNs == 0 || keyNowNs - pendingKeyNs > 500000000ull) {
         atomic_store(&warpPendingKeyNs, keyNowNs);
