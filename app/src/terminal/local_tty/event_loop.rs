@@ -137,6 +137,10 @@ pub struct State {
     /// yet. Nothing more can be read or written, so the loop must wait for the exit event
     /// instead of retrying the dead fd (#953).
     hung_up: bool,
+    /// When the hang-up was seen, so the exit check backs off and the wait is logged (#1375).
+    hung_up_since: Option<Instant>,
+    /// Whether the "child still has not exited" warning was logged for this hang-up.
+    hung_up_warned: bool,
     /// When the last user input (not a query reply) finished reaching the pty and no output has
     /// been read since. Times the keystroke round trip for the input-order log (#1092).
     user_write_finished_at: Option<Instant>,
@@ -155,7 +159,15 @@ const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
 const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
 /// While the pty has hung up, how often to check whether the child has exited, in case its
 /// `SIGCHLD` was consumed before the hang-up was seen.
+///
+/// The exit normally arrives as an event (`SIGCHLD` / the pty's exit notification); this check is
+/// only a give-up safety net for the case where that signal was consumed before the hang-up was
+/// seen, an OS-level race with no event of its own. It backs off to [`HUNG_UP_POLL_SLOW`] and
+/// logs once at [`HUNG_UP_WARN_AFTER`], so a child that never exits is visible instead of being
+/// polled forever in silence.
 const HUNG_UP_POLL: Duration = Duration::from_millis(100);
+const HUNG_UP_POLL_SLOW: Duration = Duration::from_secs(1);
+const HUNG_UP_WARN_AFTER: Duration = Duration::from_secs(5);
 const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// Most gated replies kept. A program that queries in a loop without reading gets its oldest
 /// replies dropped; nobody can read them from a cooked tty anyway.
@@ -192,6 +204,8 @@ impl Default for State {
             gated_count: 0,
             withheld_since: None,
             hung_up: false,
+            hung_up_since: None,
+            hung_up_warned: false,
             user_write_finished_at: None,
             last_user_write_at: None,
             user_input_received_at: None,
@@ -267,9 +281,44 @@ impl State {
             (sync, gate) => sync.or(gate),
         };
         if self.hung_up {
-            Some(timeout.map_or(HUNG_UP_POLL, |t| t.min(HUNG_UP_POLL)))
+            let poll = self.hung_up_poll();
+            Some(timeout.map_or(poll, |t| t.min(poll)))
         } else {
             timeout
+        }
+    }
+
+    /// How often to look for the child's exit while the pty is hung up: promptly at first, then
+    /// slowly once the exit is clearly not coming straight away.
+    fn hung_up_poll(&self) -> Duration {
+        match self.hung_up_since {
+            Some(since) if since.elapsed() >= HUNG_UP_WARN_AFTER => HUNG_UP_POLL_SLOW,
+            _ => HUNG_UP_POLL,
+        }
+    }
+
+    /// Records the hang-up (once).
+    fn note_hung_up(&mut self) {
+        if !self.hung_up {
+            log::info!("pty hung up (EIO on the master); waiting for the child's exit");
+        }
+        self.hung_up = true;
+        self.hung_up_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Logs once when the child has still not exited long after the hang-up.
+    fn warn_if_hung_up_too_long(&mut self) {
+        if !self.hung_up_warned
+            && self
+                .hung_up_since
+                .is_some_and(|since| since.elapsed() >= HUNG_UP_WARN_AFTER)
+        {
+            self.hung_up_warned = true;
+            log::warn!(
+                "pty has been hung up for {:?} and the child has not exited; still checking every {:?}",
+                HUNG_UP_WARN_AFTER,
+                HUNG_UP_POLL_SLOW
+            );
         }
     }
 
@@ -894,7 +943,7 @@ where
                     if err.raw_os_error() == Some(libc::EIO) {
                         *can_read = false;
                         *can_write = false;
-                        state.hung_up = true;
+                        state.note_hung_up();
                         // Nothing queued can reach a dead pty, and a withheld reply would
                         // keep the gate poll timer armed.
                         state.discard_pending_writes();
@@ -996,7 +1045,7 @@ where
                     let woke_for_gate = gate_poll
                         .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync))
                         || (state.hung_up
-                            && sync_state_timeout.is_none_or(|sync| HUNG_UP_POLL < sync));
+                            && sync_state_timeout.is_none_or(|sync| state.hung_up_poll() < sync));
                     if events.is_empty() && !woke_for_gate {
                         // Same reasoning as the `parse_bytes` call above: route any
                         // response sequences through `write_list` instead of writing
@@ -1104,6 +1153,7 @@ where
                     }
                     // After a hang-up the exit event may already have been consumed; ask the
                     // child directly rather than waiting on a signal that will not come.
+                    state.warn_if_hung_up_too_long();
                     if state.hung_up && self.pty.has_exited() {
                         self.terminal.lock().exit(ExitReason::ShellProcessExited);
                         child_exited = true;
