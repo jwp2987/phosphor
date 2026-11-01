@@ -17544,6 +17544,7 @@ fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
             assert!(view.ssh_typeahead_holding);
             // The remote shell's first prompt: the gate is released and the editor has focus.
             view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
             release_ssh_gate_for_test(view);
             // Keys typed now reach the editor itself, not the view.
             editor_text(view, "N_agent_1", ctx);
@@ -17584,6 +17585,7 @@ fn ssh_editor_backspace_in_the_gap_edits_the_held_text() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo abX", ctx);
             view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
             release_ssh_gate_for_test(view);
             editor_key(view, EditorAction::Backspace, ctx);
             editor_text(view, "c", ctx);
@@ -18117,6 +18119,7 @@ fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
             let gate = view.ssh_connect_gate.as_mut().unwrap();
             gate.saw_pending = true;
             gate.bootstrap_done_at = Some(Instant::now());
+            first_precmd_processed_for_test(view, ctx);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(view.ssh_connect_gate.is_none());
             assert!(view.ssh_remote_prompt_seen);
@@ -18565,6 +18568,26 @@ fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContex
         sessions
             .register_session_for_test(SessionInfo::new_for_test().with_id(SessionId::from(9001)));
     });
+}
+
+/// What the remote shell's first Precmd leaves behind (#1332): its session is registered with the
+/// history model (the Bootstrapped hook) and the active block carries the session id (the Precmd).
+/// Until then the session refuses a command (`HistoryNotAppendable`) and held ssh keys wait.
+fn first_precmd_processed_for_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let session_id = SessionId::from(9001);
+    let session = view
+        .sessions
+        .as_ref(ctx)
+        .get(session_id)
+        .expect("session registered by register_local_session_for_ssh_test");
+    History::handle(ctx).update(ctx, |history, ctx| {
+        history.init_session_with(session, async { Vec::new() }, ctx);
+    });
+    view.model
+        .lock()
+        .block_list_mut()
+        .active_block_for_test()
+        .set_session_id(session_id);
 }
 
 /// #976: while an ssh command runs with no remote session pending and a prompt (here the
