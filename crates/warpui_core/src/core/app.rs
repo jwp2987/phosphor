@@ -125,7 +125,6 @@ static FROZEN_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog
     warp_util::slow_log::DEFAULT_WINDOW,
 );
 
-#[derive(Clone)]
 /// Count of key events dispatched so far (every keystroke that reached `dispatch_keystroke`).
 /// A pure ordering clock: code that must only act on a key delivered AFTER some other event
 /// (e.g. a card being painted) records [`key_dispatch_seq`] at that event and compares the
@@ -142,6 +141,7 @@ pub fn bump_key_dispatch_seq() -> u64 {
     KEY_DISPATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
 }
 
+#[derive(Clone)]
 pub struct App(Rc<RefCell<AppContext>>);
 
 /// A weak handle to the app, used by the TUI runtime's draw/input loop to reach
