@@ -107,7 +107,10 @@ impl Renderer {
         let mut encoder = device.create_command_encoder(&ENCODER_DESCRIPTOR);
         let (_, error) = with_error_scope(device, || {
             frame.draw(resources, &mut encoder, &surface_texture);
-            queue.submit(Some(encoder.finish()));
+            let submission = queue.submit(Some(encoder.finish()));
+            if gpu_timing_enabled() {
+                log_gpu_completion(device, submission);
+            }
         });
 
         if let Some(callback) = capture_callback {
@@ -137,6 +140,41 @@ impl Renderer {
             }
         }
     }
+}
+
+/// `PHOSPHOR_GPU_TIMING=1`: log, per frame, how long after `submit` the GPU (WARP on a VM) finished
+/// the work, from a helper thread that waits on that submission. Diagnostic for key-to-paint
+/// latency (#1279): a software rasteriser that finishes after the compositor's cut-off costs a
+/// whole extra refresh. Off by default; the wait never happens on the UI thread.
+fn gpu_timing_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PHOSPHOR_GPU_TIMING").is_ok_and(|v| v == "1"))
+}
+
+fn log_gpu_completion(device: &wgpu::Device, submission: wgpu::SubmissionIndex) {
+    let device = device.clone();
+    let submitted = std::time::Instant::now();
+    let submitted_epoch_ms = epoch_ms();
+    let _ = std::thread::Builder::new()
+        .name("gpu-timing".into())
+        .spawn(move || {
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            });
+            log::debug!(
+                target: "warpui::gpu_done",
+                "gpu_done submit_t={submitted_epoch_ms:.3} gpu_ms={:.1} t={:.3}",
+                submitted.elapsed().as_secs_f64() * 1000.0,
+                epoch_ms()
+            );
+        });
+}
+
+fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
 }
 
 /// Errors that can occur while rendering a scene.
