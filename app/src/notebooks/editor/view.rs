@@ -807,6 +807,66 @@ pub fn init(app: &mut AppContext) {
     ])
 }
 
+impl EditorViewAction {
+    /// Whether the action edits the buffer or moves/extends the cursor, so its effect depends on
+    /// where an in-flight paste lands and it must apply after it (#1380).
+    fn waits_behind_paste(&self) -> bool {
+        use EditorViewAction::*;
+        matches!(
+            self,
+            UserTyped(_)
+                | VimUserTyped(_)
+                | Enter
+                | ShiftEnter
+                | Delete
+                | Backspace
+                | SelectUp
+                | SelectDown
+                | SelectLeft
+                | SelectRight
+                | SelectBackwardsByWord
+                | SelectForwardsByWord
+                | SelectToLineStart
+                | SelectToLineEnd
+                | SelectToParagraphStart
+                | SelectToParagraphEnd
+                | SelectAll
+                | DeleteLineLeft
+                | DeleteLineRight
+                | DeleteWordLeft
+                | DeleteWordRight
+                | CutLineLeft
+                | CutLineRight
+                | CutWordLeft
+                | CutWordRight
+                | MoveUp
+                | MoveDown
+                | MoveLeft
+                | MoveRight
+                | MoveBackwardsByWord
+                | MoveForwardsByWord
+                | MoveToLineStart
+                | MoveToLineEnd
+                | MoveToParagraphStart
+                | MoveToParagraphEnd
+                | Bold
+                | Italic
+                | Underline
+                | InlineCode
+                | StrikeThrough
+                | Paste
+                | MiddleClickPaste
+                | Cut
+                | Undo
+                | Redo
+                | Indent
+                | Unindent
+                | Tab
+                | ShiftTab
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditorViewAction {
     UserTyped(UserInput<String>),
@@ -1164,6 +1224,10 @@ pub struct RichTextEditorView {
 
     /// When true, the block insertion menu (slash menu) is disabled.
     disable_block_insertion_menu: bool,
+
+    /// Holds the keys typed while a paste is being read off the UI thread, so they apply after
+    /// the pasted text in typing order (#1380).
+    paste_gate: crate::terminal::paste_sequencer::PasteSequencer<EditorViewAction>,
 }
 
 #[derive(Default)]
@@ -1272,6 +1336,7 @@ impl RichTextEditorView {
             can_execute_shell_commands: config.can_execute_shell_commands.unwrap_or(true),
             disable_scrolling: config.disable_scrolling,
             disable_block_insertion_menu: config.disable_block_insertion_menu,
+            paste_gate: Default::default(),
         }
     }
 
@@ -2261,45 +2326,80 @@ impl RichTextEditorView {
 
     /// Paste from the clipboard.
     pub fn paste(&mut self, ctx: &mut ViewContext<Self>) {
-        // Off the UI thread (#1380); the HTML flavor is needed, so the full reader.
-        crate::util::clipboard::read_clipboard_for_view(
-            self,
-            ctx,
-            warpui::clipboard::ReadKind::Full,
-            |view, read, ctx| match read {
-                warpui::clipboard::BackgroundTextRead::Content(content) => {
-                    view.paste_content(content, ctx)
-                }
-                failed => {
-                    if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
-                        crate::util::clipboard::show_read_failure_toast(message, ctx);
-                    }
-                }
-            },
-        );
+        self.start_paste(warpui::clipboard::ReadKind::Full, false, ctx);
     }
 
     fn middle_click_paste(&mut self, ctx: &mut ViewContext<Self>) {
-        // Off the UI thread (#1380); `None` kind: middle-click paste is disabled.
+        // `None` kind: middle-click paste is disabled.
         let kind = SelectionSettings::handle(ctx)
             .update(ctx, |selection, _| selection.middle_click_read_kind());
-        let Some(kind) = kind else {
+        if let Some(kind) = kind {
+            self.start_paste(kind, true, ctx);
+        }
+    }
+
+    /// Reads the clipboard off the UI thread (#1380) and holds every order-sensitive key typed
+    /// meanwhile; [`Self::finish_paste`] inserts the text and then replays them, in order. A paste
+    /// asked for while another is being read queues behind it as a held action, so none is lost.
+    fn start_paste(
+        &mut self,
+        kind: warpui::clipboard::ReadKind,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.paste_gate.has_pending() {
+            let action = if middle_click {
+                EditorViewAction::MiddleClickPaste
+            } else {
+                EditorViewAction::Paste
+            };
+            self.paste_gate.hold(action);
+            return;
+        }
+        let id = self.paste_gate.begin();
+        match warpui::clipboard::read_in_background(ctx.clipboard(), kind) {
+            warpui::clipboard::StartedRead::Ready(read) => {
+                self.finish_paste(id, read, middle_click, ctx)
+            }
+            warpui::clipboard::StartedRead::Pending(pending) => {
+                ctx.spawn(pending, move |view, read, ctx| {
+                    view.finish_paste(id, read, middle_click, ctx)
+                });
+            }
+        }
+    }
+
+    fn finish_paste(
+        &mut self,
+        id: u64,
+        read: warpui::clipboard::BackgroundTextRead,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(held) = self.paste_gate.complete(id) else {
             return;
         };
-        crate::util::clipboard::read_clipboard_for_view(self, ctx, kind, |view, read, ctx| {
-            match read {
-                // An empty selection pastes nothing, as the synchronous read answered `None`.
-                warpui::clipboard::BackgroundTextRead::Content(content) if content.is_empty() => {}
-                warpui::clipboard::BackgroundTextRead::Content(content) => {
-                    view.paste_content(content, ctx)
-                }
-                failed => {
-                    if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
-                        crate::util::clipboard::show_read_failure_toast(message, ctx);
-                    }
+        match read {
+            // An empty selection pastes nothing, as the synchronous read answered `None`.
+            warpui::clipboard::BackgroundTextRead::Content(content)
+                if middle_click && content.is_empty() => {}
+            warpui::clipboard::BackgroundTextRead::Content(content) => {
+                let announced = content.plain_text.clone();
+                self.paste_content(content, ctx);
+                // Announced once the insert has landed (#1380).
+                crate::util::clipboard::announce_pasted_text(&announced, ctx);
+            }
+            failed => {
+                if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                    crate::util::clipboard::show_read_failure_toast(message, ctx);
                 }
             }
-        });
+        }
+        // The keys typed during the read, in order. A held paste starts the next read and the
+        // keys after it are held again behind that one.
+        for action in held {
+            self.handle_action(&action, ctx);
+        }
     }
 
     fn paste_content(&mut self, content: ClipboardContent, ctx: &mut ViewContext<Self>) {
@@ -3052,6 +3152,15 @@ impl TypedActionView for RichTextEditorView {
     fn handle_action(&mut self, action: &EditorViewAction, ctx: &mut ViewContext<Self>) {
         use EditorViewAction::*;
 
+        // While a paste is read off the UI thread, keys that depend on the cursor or buffer wait
+        // behind it and apply right after the pasted text, in typing order (#1380).
+        if self.paste_gate.has_pending()
+            && action.waits_behind_paste()
+            && self.paste_gate.hold(action.clone())
+        {
+            return;
+        }
+
         match action {
             UserTyped(content) => {
                 if self.can_edit(ctx) {
@@ -3385,11 +3494,9 @@ impl TypedActionView for RichTextEditorView {
                     WarpA11yRole::UserAction,
                 ))
             }
+            // Announced after the insert lands, with the pasted text (`finish_paste`).
             EditorViewAction::Paste | EditorViewAction::MiddleClickPaste => {
-                ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-                    "Pasting from the clipboard".to_string(),
-                    WarpA11yRole::UserAction,
-                ))
+                ActionAccessibilityContent::Empty
             }
             EditorViewAction::Enter
             | EditorViewAction::ShiftEnter

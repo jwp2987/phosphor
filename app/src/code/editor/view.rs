@@ -300,6 +300,9 @@ pub struct CodeEditorView {
     /// The offset where find references card is anchored (if showing).
     find_references_anchor_offset: Option<CharOffset>,
     window_id: WindowId,
+    /// Holds the keys typed while a paste is read off the UI thread, so they apply after the
+    /// pasted text in typing order (#1380).
+    paste_gate: crate::terminal::paste_sequencer::PasteSequencer<CodeEditorViewAction>,
 }
 
 impl CodeEditorView {
@@ -437,6 +440,7 @@ impl CodeEditorView {
             show_find_references_provider: render_options.show_find_references_provider,
             find_references_anchor_offset: None,
             window_id: ctx.window_id(),
+            paste_gate: Default::default(),
         }
     }
 

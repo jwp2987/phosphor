@@ -94,3 +94,14 @@ pub fn read_clipboard_for_model<M: Entity>(
         }
     }
 }
+
+/// Announces text that a paste has just inserted, for screen readers (#1380). Called after the
+/// insert lands, so no clipboard read is needed at action time.
+pub fn announce_pasted_text<V: View>(text: &str, ctx: &mut ViewContext<V>) {
+    ctx.emit_a11y_content(
+        warpui::accessibility::AccessibilityContent::new_without_help(
+            format!("Pasting: {text}"),
+            warpui::accessibility::WarpA11yRole::UserAction,
+        ),
+    );
+}
