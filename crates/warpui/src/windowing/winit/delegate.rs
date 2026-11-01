@@ -587,16 +587,20 @@ impl platform::Delegate for AppDelegate {
     }
 
     fn open_file_path_in_explorer(&self, path: &Path) {
-        if path.is_dir() {
-            self.open_file_path(path);
-        } else if let Some(parent_path) = path.parent() {
-            if parent_path.is_dir() {
-                self.open_file_path(parent_path);
-            } else {
-                log::info!("Parent directory is not a valid directory, not opening file")
+        #[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
+        {
+            // Stats and the file-manager call run on a background thread (never block the UI).
+            super::reveal::reveal_in_background(path.to_path_buf());
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd", windows)))]
+        {
+            if path.is_dir() {
+                self.open_file_path(path);
+            } else if let Some(parent_path) = path.parent() {
+                if parent_path.is_dir() {
+                    self.open_file_path(parent_path);
+                }
             }
-        } else {
-            log::info!("Neither file nor parent was a valid directory, not opening file");
         }
     }
 
