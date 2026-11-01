@@ -14,7 +14,7 @@ use crate::ai::agent::{
 };
 use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::paths::{
-    host_native_absolute_path_for, join_paths_for, shell_native_absolute_path_for,
+    PathHost, host_native_absolute_path_for, join_paths_for, shell_native_absolute_path_for,
 };
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
@@ -89,7 +89,7 @@ impl FileGlobExecutor {
             return false;
         }
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
-        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
         let absolute_path =
             host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
@@ -132,7 +132,7 @@ impl FileGlobExecutor {
             .current_working_directory()
             .cloned();
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
-        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
         let absolute_path = shell_native_absolute_path_for(
             path.as_str(),
             shell_launch_data.as_ref(),
@@ -277,7 +277,7 @@ async fn run_file_glob(
     absolute_path: String,
     session: Option<Arc<Session>>,
     shell_launch_data: Option<ShellLaunchData>,
-    remote: bool,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     if patterns.is_empty() {
         return Err(anyhow::anyhow!("No patterns provided to file_glob"));
@@ -319,7 +319,7 @@ async fn run_git_ls_files_command(
     session: &Session,
     shell_launch_data: Option<ShellLaunchData>,
     shell_type: ShellType,
-    remote: bool,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     let command = build_git_ls_files_command(
         patterns,
@@ -437,7 +437,7 @@ fn build_git_ls_files_command(
     target_path: &str,
     shell_launch_data: Option<&ShellLaunchData>,
     shell_type: ShellType,
-    remote: bool,
+    remote: PathHost,
 ) -> String {
     let pattern_args = patterns
         .iter()

@@ -148,6 +148,9 @@ pub struct SessionContext {
     /// `~` in an agent-supplied path means THIS on a remote session, never the local user's
     /// home (#1288). Always `None` for a local session.
     remote_home: Option<String>,
+    /// The OS category the remote host's shell reported at bootstrap ("Linux", "MacOS",
+    /// "Windows"), when known. Decides which path rules the file tools use (#1278).
+    remote_os_category: Option<String>,
 }
 
 impl SessionContext {
@@ -192,7 +195,16 @@ impl SessionContext {
         } else {
             None
         };
+        let remote_os_category = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. }))
+        {
+            session_arc
+                .as_ref()
+                .and_then(|s| s.host_info().os_category)
+        } else {
+            None
+        };
         SessionContext {
+            remote_os_category,
             remote_home,
             session_type,
             shell: session.shell_launch_data(app),
@@ -243,8 +255,18 @@ impl SessionContext {
             &expanded,
             &self.shell,
             &self.current_working_directory,
-            self.is_remote(),
+            self.path_host(),
         )
+    }
+
+    /// Which host's path rules this session's file paths follow. `Local` for a local session
+    /// and for a remote whose OS is unknown (the previous behaviour).
+    pub fn path_host(&self) -> crate::ai::paths::PathHost {
+        if self.is_remote() {
+            crate::ai::paths::PathHost::for_remote(self.remote_os_category.as_deref())
+        } else {
+            crate::ai::paths::PathHost::Local
+        }
     }
 
     /// Returns the remote host ID if this is a `WarpifiedRemote` session with
@@ -328,6 +350,7 @@ impl SessionContext {
             is_legacy_ssh: false,
             has_remote_server_client: false,
             remote_home: None,
+            remote_os_category: None,
         }
     }
 
@@ -368,6 +391,7 @@ impl SessionContext {
             is_legacy_ssh: true,
             has_remote_server_client: false,
             remote_home: None,
+            remote_os_category: None,
         }
     }
 
@@ -395,6 +419,7 @@ impl SessionContext {
             is_legacy_ssh: false,
             has_remote_server_client,
             remote_home: None,
+            remote_os_category: None,
         }
     }
 
@@ -404,6 +429,7 @@ impl SessionContext {
     pub fn new_remote_with_home_for_test(remote_home: Option<&str>, cwd: &str) -> Self {
         SessionContext {
             remote_home: remote_home.map(str::to_owned),
+            remote_os_category: None,
             current_working_directory: Some(cwd.to_owned()),
             ..Self::new_warpified_remote_for_test(true)
         }

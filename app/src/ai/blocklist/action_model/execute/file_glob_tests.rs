@@ -45,7 +45,7 @@ fn build_git_ls_files_command_single_quotes_joined_patterns() {
         target_path.to_str().unwrap(),
         None,
         ShellType::Bash,
-        false,
+        crate::ai::paths::PathHost::Local,
     );
 
     let expected = format!(

@@ -2984,6 +2984,22 @@ mod remote_home_1288 {
     use crate::ai::blocklist::SessionContext;
 
     #[test]
+    fn remote_session_path_rules_follow_the_remote_os() {
+        use crate::ai::paths::PathHost;
+        let mut session = SessionContext::new_remote_with_home_for_test(None, "/home/u");
+        // OS not reported yet: previous (local) behaviour.
+        assert_eq!(session.path_host(), PathHost::Local);
+        session.remote_os_category = Some("Windows".to_owned());
+        assert_eq!(session.path_host(), PathHost::RemoteWindows);
+        session.remote_os_category = Some("Linux".to_owned());
+        assert_eq!(session.path_host(), PathHost::RemoteUnix);
+        // A local session never takes remote rules, even with a stale category.
+        let mut local = SessionContext::new_for_test();
+        local.remote_os_category = Some("Windows".to_owned());
+        assert_eq!(local.path_host(), PathHost::Local);
+    }
+
+    #[test]
     fn resolve_path_uses_the_remote_home_not_the_local_one() {
         let session = SessionContext::new_remote_with_home_for_test(
             Some("/home/remoteuser"),

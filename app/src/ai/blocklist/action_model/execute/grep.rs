@@ -19,7 +19,7 @@ use crate::ai::agent::{
 use crate::ai::blocklist::{
     BlocklistAIPermissions, telemetry_banner::should_collect_ai_ugc_telemetry,
 };
-use crate::ai::paths::{host_native_absolute_path_for, shell_native_absolute_path_for};
+use crate::ai::paths::{PathHost, host_native_absolute_path_for, shell_native_absolute_path_for};
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::{sh_script_quote_arg, shell_quote_arg};
 use crate::{
@@ -225,7 +225,7 @@ impl GrepExecutor {
             return false;
         }
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
-        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
         let absolute_path =
             host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
@@ -261,7 +261,7 @@ impl GrepExecutor {
             .current_working_directory()
             .cloned();
         let expanded_path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
-        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
         let absolute_path = shell_native_absolute_path_for(
             &expanded_path,
             shell_launch_data.as_ref(),
@@ -353,6 +353,15 @@ impl GrepExecutor {
 /// - otherwise, if the search is against the local file system, we run `ripgrep` via the library.
 ///   `ripgrep` is a more optimized version of `grep`.
 /// - otherwise, we run vanilla `grep` in the session
+/// The path rules of the host `session` runs on: its reported OS when remote and known.
+fn session_path_host(session: &Session) -> PathHost {
+    if session.is_local() {
+        PathHost::Local
+    } else {
+        PathHost::for_remote(session.host_info().os_category.as_deref())
+    }
+}
+
 async fn run_grep(
     queries: Vec<String>,
     absolute_path: String,
@@ -562,7 +571,7 @@ async fn run_git_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
-            !session.is_local(),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -591,7 +600,7 @@ async fn run_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
-            !session.is_local(),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -662,7 +671,7 @@ async fn run_grep_per_file_fallback(
                 &output,
                 &shell_launch_data,
                 &Some(execute_directory.to_string()),
-                !session.is_local(),
+                session_path_host(session),
             ),
         }),
         Err(_) => Err(original_error),
@@ -754,7 +763,7 @@ fn parse_grep_content_scan_output(
     output: &str,
     shell_launch_data: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
-    remote: bool,
+    remote: PathHost,
 ) -> Vec<GrepFileMatch> {
     let mut segments = output.split('\0');
     // Text before the first marker; empty in well-formed output.
@@ -819,7 +828,7 @@ async fn run_select_string_command(
             output.as_ref(),
             shell_launch_data,
             Some(execute_directory.to_string()),
-            !session.is_local(),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -937,7 +946,7 @@ fn parse_null_delimited_grep_output(
     output: &str,
     shell_launch_data: Option<ShellLaunchData>,
     current_working_directory: Option<String>,
-    remote: bool,
+    remote: PathHost,
 ) -> anyhow::Result<Vec<GrepFileMatch>> {
     let mut matched_files: HashMap<&str, Vec<GrepLineMatch>> = HashMap::new();
     let mut unparseable_record_count = 0usize;

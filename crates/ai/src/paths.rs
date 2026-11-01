@@ -5,27 +5,58 @@ use warp_util::path::{
 };
 use warpui::platform::OperatingSystem;
 
+/// Which host a session's paths belong to. `Local` keeps the local-OS rules (and is also the
+/// answer for a remote whose OS is unknown); a known remote uses its own OS's rules whatever
+/// the local OS is (#1278).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PathHost {
+    #[default]
+    Local,
+    RemoteUnix,
+    RemoteWindows,
+}
+
+impl PathHost {
+    /// From a session's reported OS category (`"Linux"`, `"MacOS"`, `"Windows"`, ...). A remote
+    /// session with no / unrecognised category is `Local`: the previous behaviour.
+    pub fn for_remote(os_category: Option<&str>) -> Self {
+        match os_category.map(str::to_ascii_lowercase).as_deref() {
+            Some("windows") => Self::RemoteWindows,
+            Some("linux" | "macos" | "mac" | "darwin") => Self::RemoteUnix,
+            _ => Self::Local,
+        }
+    }
+
+    fn is_remote(self) -> bool {
+        self != Self::Local
+    }
+}
+
 /// Whether paths for this session use `/` separators and unix rules.
 ///
 /// `remote_unix` is true for a remote (ssh / warpified-remote) session: those hosts are
 /// Linux or macOS, so their paths are unix paths whatever OS the local app runs on (#1278).
 /// Without it, a Windows host driving a Linux remote joined and normalised agent paths with
 /// `\` and drive-letter rules.
-fn use_unix_paths(shell: Option<&ShellLaunchData>, remote_unix: bool) -> bool {
+fn use_unix_paths(shell: Option<&ShellLaunchData>, host: PathHost) -> bool {
     use_unix_paths_on(
         OperatingSystem::get().is_linux() || OperatingSystem::get().is_mac(),
         shell,
-        remote_unix,
+        host,
     )
 }
 
 fn use_unix_paths_on(
     local_os_is_unix: bool,
     shell: Option<&ShellLaunchData>,
-    remote_unix: bool,
+    host: PathHost,
 ) -> bool {
-    remote_unix
-        || local_os_is_unix
+    match host {
+        PathHost::RemoteUnix => return true,
+        PathHost::RemoteWindows => return false,
+        PathHost::Local => {}
+    }
+    local_os_is_unix
         || shell.is_some_and(|shell| {
             matches!(
                 shell,
@@ -35,12 +66,12 @@ fn use_unix_paths_on(
 }
 
 pub fn join_paths(paths: &[&str], shell: Option<&ShellLaunchData>) -> String {
-    join_paths_for(paths, shell, false)
+    join_paths_for(paths, shell, PathHost::Local)
 }
 
 /// [`join_paths`] for a session that may be remote; see [`use_unix_paths`].
-pub fn join_paths_for(paths: &[&str], shell: Option<&ShellLaunchData>, remote: bool) -> String {
-    join_paths_with_style(paths, use_unix_paths(shell, remote))
+pub fn join_paths_for(paths: &[&str], shell: Option<&ShellLaunchData>, host: PathHost) -> String {
+    join_paths_with_style(paths, use_unix_paths(shell, host))
 }
 
 fn join_paths_with_style(paths: &[&str], use_unix_paths: bool) -> String {
@@ -60,16 +91,16 @@ fn shell_native_absolute_path_internal(
     file_path: &str,
     shell: Option<&ShellLaunchData>,
     current_working_directory: &str,
-    remote: bool,
+    host: PathHost,
 ) -> TypedPathBuf {
-    let expanded_path = if remote {
+    let expanded_path = if host.is_remote() {
         // `~` was expanded against the remote home by the caller; the local home is wrong.
         file_path.to_owned()
     } else {
         shellexpand::tilde(file_path).into_owned()
     };
 
-    let use_unix_paths = use_unix_paths(shell, remote);
+    let use_unix_paths = use_unix_paths(shell, host);
     normalize_with_style(&expanded_path, current_working_directory, use_unix_paths)
 }
 
@@ -102,7 +133,7 @@ pub fn shell_native_absolute_path(
     shell: Option<&ShellLaunchData>,
     current_working_directory: Option<&String>,
 ) -> String {
-    shell_native_absolute_path_for(file_path, shell, current_working_directory, false)
+    shell_native_absolute_path_for(file_path, shell, current_working_directory, PathHost::Local)
 }
 
 /// [`shell_native_absolute_path`] for a session that may be remote: a remote session's paths
@@ -111,16 +142,16 @@ pub fn shell_native_absolute_path_for(
     file_path: &str,
     shell: Option<&ShellLaunchData>,
     current_working_directory: Option<&String>,
-    remote: bool,
+    host: PathHost,
 ) -> String {
     let Some(cwd) = current_working_directory else {
-        return if remote {
+        return if host.is_remote() {
             file_path.to_owned()
         } else {
             shellexpand::tilde(file_path).into_owned()
         };
     };
-    shell_native_absolute_path_internal(file_path, shell, cwd, remote)
+    shell_native_absolute_path_internal(file_path, shell, cwd, host)
         .to_string_lossy()
         .into_owned()
 }
@@ -135,7 +166,7 @@ pub fn host_native_absolute_path(
     shell: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
 ) -> String {
-    host_native_absolute_path_for(file_path, shell, current_working_directory, false)
+    host_native_absolute_path_for(file_path, shell, current_working_directory, PathHost::Local)
 }
 
 /// [`host_native_absolute_path`] for a session that may be remote. A remote session's paths are
@@ -145,18 +176,17 @@ pub fn host_native_absolute_path_for(
     file_path: &str,
     shell: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
-    remote: bool,
+    host: PathHost,
 ) -> String {
     let Some(cwd) = current_working_directory.as_ref() else {
-        return if remote {
+        return if host.is_remote() {
             file_path.to_owned()
         } else {
             shellexpand::tilde(file_path).into_owned()
         };
     };
-    let normalized_path =
-        shell_native_absolute_path_internal(file_path, shell.as_ref(), cwd, remote);
-    if remote {
+    let normalized_path = shell_native_absolute_path_internal(file_path, shell.as_ref(), cwd, host);
+    if host.is_remote() {
         return normalized_path.to_string_lossy().into_owned();
     }
 
@@ -225,8 +255,8 @@ pub fn path_needs_home(file_path: &str) -> bool {
 /// The path-joining rules a remote session needs, decided independently of the local OS so
 /// they can be tested on any host.
 #[cfg(test)]
-pub(crate) fn remote_style_for_test(local_os_is_unix: bool, remote: bool) -> bool {
-    use_unix_paths_on(local_os_is_unix, None, remote)
+pub(crate) fn remote_style_for_test(local_os_is_unix: bool, host: PathHost) -> bool {
+    use_unix_paths_on(local_os_is_unix, None, host)
 }
 
 #[cfg(test)]

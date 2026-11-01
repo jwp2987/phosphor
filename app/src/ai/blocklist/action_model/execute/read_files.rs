@@ -82,7 +82,7 @@ impl ReadFilesExecutor {
                             ),
                             &shell,
                             &current_working_directory,
-                            super::is_remote_session(self.active_session.as_ref(ctx), ctx),
+                            super::session_path_host(self.active_session.as_ref(ctx), ctx),
                         ))
                     })
                     .collect(),
@@ -145,6 +145,8 @@ impl ReadFilesExecutor {
             })
             .collect();
 
+        let path_host = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+
         // Cap the batch; files past the cap are reported, not dropped (#1278).
         let (locations, overflow_note) = cap_read_batch(locations, AGENT_READ_FILES_MAX_FILES);
 
@@ -196,7 +198,7 @@ impl ReadFilesExecutor {
                                     &loc.name,
                                     &shell,
                                     &current_working_directory,
-                                    true,
+                                    path_host,
                                 );
                                 remote_server::proto::ReadFileContextFile {
                                     path: absolute_path,
