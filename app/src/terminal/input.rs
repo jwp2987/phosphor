@@ -9398,6 +9398,16 @@ impl Input {
             return false;
         }
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        // `@(` / `@{` in terminal mode is shell syntax (PowerShell arrays and hashtables,
+        // `git log @{u}`), never a context query (#1337).
+        if !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && buffer
+                .get(at_symbol_position + 1..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| matches!(c, '(' | '{'))
+        {
+            return true;
+        }
         let cursor_pos = self
             .editor
             .as_ref(ctx)
@@ -11852,14 +11862,23 @@ impl Input {
             return false;
         }
 
-        // Check if '@' is at beginning of line or after non-alphanumeric
+        // Check if '@' is at beginning of line or after non-alphanumeric. In shell mode `@` is
+        // ordinary syntax (`$x=@(1,2)`, `a,@b`, `user@host`, `@{u}`), so only a word start
+        // (line start or after whitespace) can open the picker there (#1337).
+        let is_shell_input = !self.ai_input_model.as_ref(app).is_ai_input_enabled();
         let is_valid_context = if cursor_position == 1 {
             true // '@' is the first character
         } else {
             buffer_text
                 .chars()
                 .nth(cursor_position.saturating_sub(2))
-                .is_some_and(|c| !c.is_alphanumeric())
+                .is_some_and(|c| {
+                    if is_shell_input {
+                        c.is_whitespace()
+                    } else {
+                        !c.is_alphanumeric()
+                    }
+                })
         };
 
         if !is_valid_context {
@@ -13397,6 +13416,19 @@ impl Input {
             self.inline_prompts_menu_view
                 .update(ctx, |view, ctx| view.accept_selected_item(ctx));
             return;
+        }
+
+        // In terminal mode an @ picker with nothing to select (e.g. `@(1,2,3)` in PowerShell)
+        // must never swallow Enter: close it and submit the line (#1337).
+        if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu()
+            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && !self.editor.update(ctx, |editor, ctx| {
+                editor
+                    .ai_context_menu()
+                    .is_some_and(|menu| menu.as_ref(ctx).has_selectable_item(ctx))
+            })
+        {
+            self.close_ai_context_menu(ctx);
         }
 
         if self.should_insert_newline_on_enter(ctx) {

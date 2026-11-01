@@ -691,6 +691,19 @@ impl AIContextMenu {
         self.refresh_categories_state(ctx);
     }
 
+    /// Whether Enter would select anything right now. False for a menu showing "No results",
+    /// so terminal-mode Enter can close it and submit the line instead (#1337).
+    pub fn has_selectable_item(&self, ctx: &AppContext) -> bool {
+        match &self.state.navigation_state {
+            NavigationState::MainMenu => !self.get_filtered_categories(ctx).is_empty(),
+            NavigationState::Category(_) | NavigationState::AllCategories => self
+                .search_bar_state
+                .as_ref(ctx)
+                .query_result_renderers()
+                .is_some_and(|results| !results.is_empty()),
+        }
+    }
+
     pub fn select_current_item(&mut self, ctx: &mut ViewContext<Self>) {
         match &self.state.navigation_state {
             NavigationState::MainMenu => {

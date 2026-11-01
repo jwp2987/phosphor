@@ -12438,3 +12438,152 @@ fn test_paste_inside_explicit_window_is_classified_and_enter_routes_it() {
         });
     });
 }
+
+/// Types `text` one character at a time as the user would, so every `@` goes through the
+/// open-trigger check.
+fn type_chars(input: &ViewHandle<Input>, app: &mut App, text: &str) {
+    for c in text.chars() {
+        input.update(app, |input, ctx| {
+            input.user_insert(&c.to_string(), ctx);
+        });
+    }
+}
+
+fn lock_shell_mode(input: &ViewHandle<Input>, app: &mut App) {
+    input.update(app, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::Shell,
+                    is_locked: true,
+                },
+                true, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+    });
+}
+
+#[test]
+fn test_at_picker_does_not_open_inside_shell_syntax_in_terminal_mode() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+    let _at_menu_outside_ai = FeatureFlag::AtMenuOutsideOfAIMode.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        lock_shell_mode(&input, &mut app);
+
+        for line in [
+            "echo a@b",
+            "ssh user@host",
+            "git log @{u}",
+            "$x=@(1,2,3)",
+            "a,@b",
+        ] {
+            input.update(&mut app, |input, ctx| input.replace_buffer_content("", ctx));
+            type_chars(&input, &mut app, line);
+            input.read(&app, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), line);
+                assert!(
+                    !input
+                        .suggestions_mode_model()
+                        .as_ref(ctx)
+                        .is_ai_context_menu(),
+                    "picker must not stay open for {line:?}"
+                );
+            });
+        }
+    });
+}
+
+#[test]
+fn test_at_paren_at_line_start_in_terminal_mode_closes_picker_and_enter_submits() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+    let _at_menu_outside_ai = FeatureFlag::AtMenuOutsideOfAIMode.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        lock_shell_mode(&input, &mut app);
+
+        type_chars(&input, &mut app, "@(1,2,3)");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "@(1,2,3)");
+            assert!(
+                !input
+                    .suggestions_mode_model()
+                    .as_ref(ctx)
+                    .is_ai_context_menu()
+            );
+        });
+    });
+}
+
+#[test]
+fn test_open_at_picker_with_nothing_to_select_never_eats_enter_in_terminal_mode() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        lock_shell_mode(&input, &mut app);
+
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("@zzzzqq", ctx);
+            input.suggestions_mode_model().update(ctx, |model, ctx| {
+                model.set_mode(
+                    InputSuggestionsMode::AIContextMenu {
+                        filter_text: "zzzzqq".to_string(),
+                        at_symbol_position: 0,
+                    },
+                    ctx,
+                );
+            });
+            input.input_enter(ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input
+                    .suggestions_mode_model()
+                    .as_ref(ctx)
+                    .is_ai_context_menu()
+            );
+        });
+    });
+}
+
+#[test]
+fn test_at_picker_still_opens_in_agent_mode() {
+    let _ai_context_menu_enabled = FeatureFlag::AIContextMenuEnabled.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        type_chars(&input, &mut app, "ask (@");
+        input.read(&app, |input, ctx| {
+            assert!(
+                input
+                    .suggestions_mode_model()
+                    .as_ref(ctx)
+                    .is_ai_context_menu()
+            );
+        });
+    });
+}
