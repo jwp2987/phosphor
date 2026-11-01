@@ -746,11 +746,13 @@ impl AvailableShells {
                 if !file_exists_and_is_executable(&path) {
                     return None;
                 }
-                Some(if matches!(preference, NewSessionShell::MSYS2(_)) {
-                    AvailableShell::new_msys2(command, path, shell_type)
-                } else {
-                    AvailableShell::new_local_executable(command, path, shell_type)
-                })
+                #[cfg(windows)]
+                if matches!(preference, NewSessionShell::MSYS2(_)) {
+                    return Some(AvailableShell::new_msys2(command, path, shell_type));
+                }
+                Some(AvailableShell::new_local_executable(
+                    command, path, shell_type,
+                ))
             }
             // WSL distributions were captured on the main thread when the model was built.
             NewSessionShell::WSL(distro) => self

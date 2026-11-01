@@ -3214,7 +3214,7 @@ impl BlockList {
             None,
             None,
             move |b| {
-                if b.is_reflow_stale() && b.index() < lazy_window_start {
+                if b.is_reflow_stale() && b.index().0 < lazy_window_start {
                     return;
                 }
                 if active_block_index == b.index() || update_old_blocks {

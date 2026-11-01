@@ -5357,28 +5357,17 @@ impl Input {
                         toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                     });
                 }
-                match result {
-                    Ok(_) => {
-                        let display_path = file_path.display().to_string();
-                        ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
-                            let toast = DismissibleToast::default(format!(
-                                "Conversation exported to {display_path}"
-                            ));
-                            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-                        });
-                    }
-                    Err(e) => {
-                        let user_message = export_error_message(&file_path, &e);
-                        log::error!(
-                            "Failed to write conversation to file {}: {}",
-                            file_path.display(),
-                            e
-                        );
-                        ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
-                            let toast = DismissibleToast::default(user_message);
-                            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-                        });
-                    }
+                Err(e) => {
+                    let user_message = export_error_message(&file_path, &e);
+                    log::error!(
+                        "Failed to write conversation to file {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                    ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                        let toast = DismissibleToast::default(user_message);
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
                 }
             }
         });
