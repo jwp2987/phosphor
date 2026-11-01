@@ -213,3 +213,62 @@ proptest! {
         }
     }
 }
+
+// ---- the key snapshot (#1404) -------------------------------------------------------------
+
+#[test]
+fn a_parse_publishes_the_snapshot_the_key_path_reads_without_the_lock() {
+    let mut model = TerminalModel::mock(None, None);
+    let cell = model.key_model_cell();
+    model.publish_key_facts();
+    let idle = cell.load();
+    assert!(!idle.read_only);
+    assert!(idle.pending_session_id.is_none());
+    assert!(!idle.has_pending_ssh_session && !idle.has_pending_subshell);
+    assert!(!idle.agent_owns_pty, "no agent drives the command");
+    assert!(
+        idle.interactive_latch.is_some(),
+        "the key probe finds the active block's latch"
+    );
+    assert_eq!(
+        idle.active_block_hash,
+        block_id_hash(model.active_block_id()),
+        "the block the view noted is told from the active one by hash"
+    );
+    // A parse republishes: the alt screen is part of the same publication.
+    parse_slice_like_the_event_loop(&mut model, "\x1b[?1049h");
+    assert!(cell.load().interactive_latch.is_some());
+}
+
+#[test]
+fn the_snapshot_cell_returns_what_was_stored() {
+    let cell = KeyModelCell::default();
+    assert_eq!(cell.load().active_block_hash, 0);
+    cell.store(KeyModelSnapshot {
+        read_only: true,
+        active_block_started: true,
+        active_block_hash: 7,
+        ..KeyModelSnapshot::default()
+    });
+    let loaded = cell.load();
+    assert!(loaded.read_only && loaded.active_block_started);
+    assert_eq!(loaded.active_block_hash, 7);
+    assert!(
+        !loaded.is_long_running(),
+        "a read-only session is never long running"
+    );
+}
+
+#[test]
+fn user_input_left_in_the_inbox_is_applied_in_order_with_the_rest() {
+    let mut model = TerminalModel::mock(None, None);
+    let inbox = model.model_inbox();
+    inbox.post(ModelCommand::UserInput("ls".to_owned()));
+    inbox.post(ModelCommand::TypedAhead(b"x".to_vec()));
+    assert!(inbox.has_pending());
+    model.apply_inbox();
+    assert!(
+        !inbox.has_pending(),
+        "applied, in order, before the next parse"
+    );
+}
