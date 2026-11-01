@@ -224,6 +224,11 @@ pub struct TurnCompactionState {
     /// answered it with a tool call (#1079); cleared once a summary commits or the allowance
     /// is restored.
     summary_retried: bool,
+    /// The deferred summary request went out and its stream has not finished yet (#1238).
+    deferred_summary_in_flight: bool,
+    /// A deferred summary that failed already got its allowance back once this turn, so a
+    /// summary that fails because it is itself too large cannot loop compact -> fail -> compact.
+    deferred_summary_restored: bool,
 }
 
 /// What to do when the reply to the post-compaction continue message finishes
@@ -246,6 +251,8 @@ impl TurnCompactionState {
             && !self.continue_pending
             && !self.continue_retried
             && !self.summary_retried
+            && !self.deferred_summary_in_flight
+            && !self.deferred_summary_restored
     }
 
     /// Whether this turn's one auto-compaction allowance is spent.
@@ -263,6 +270,8 @@ impl TurnCompactionState {
     /// A BYOP stream of this conversation finished cleanly: plan per
     /// [`plan_after_stream_finished`] and record what the plan implies.
     pub fn on_stream_finished(&mut self, stream: FinishedStream) -> FinishedStreamPlan {
+        // Whatever finished, a deferred summary is no longer waiting on a reply.
+        self.deferred_summary_in_flight = false;
         let plan = plan_after_stream_finished(stream, self.auto_compacted);
         if plan.restore_turn_allowance {
             self.auto_compacted = false;
@@ -318,6 +327,7 @@ impl TurnCompactionState {
     /// spent.
     pub fn on_deferred_summary_sent(&mut self) {
         self.auto_compacted = true;
+        self.deferred_summary_in_flight = true;
     }
 
     /// The step's results will not be sent as their own follow-up (the user rejected the
@@ -334,15 +344,27 @@ impl TurnCompactionState {
     pub fn on_conversation_stopped(&mut self) {
         self.compact_after_tool_results = false;
         self.continue_pending = false;
+        self.deferred_summary_in_flight = false;
     }
 
     /// A request of this conversation failed for good (no retry or resume is coming): nothing
     /// about it is still on its way, so neither a deferral nor a pending continue reply may be
     /// waited on. The allowance is unchanged: a summary that failed did not compact, and
     /// restoring it could re-run a summary that fails the same way every turn (#1238).
+    ///
+    /// The one exception is a *deferred* summary (the tool results' request carried a summary):
+    /// when that request fails for good nothing was compacted and the tool loop goes on
+    /// uncompacted, so its first over-threshold turn end would give up with "still over the
+    /// window after automatic compaction". Its allowance is restored, once per turn
+    /// (`deferred_summary_restored`), so a summary that fails because it is itself too large
+    /// cannot repeat every step (#1238).
     pub fn on_request_failed(&mut self) {
         self.compact_after_tool_results = false;
         self.continue_pending = false;
+        if std::mem::take(&mut self.deferred_summary_in_flight) && !self.deferred_summary_restored {
+            self.auto_compacted = false;
+            self.deferred_summary_restored = true;
+        }
     }
 
     /// A deferred summary is owed to the next tool results, or the continue message sent after a
