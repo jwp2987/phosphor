@@ -1644,6 +1644,58 @@ fn test_selection_to_parts_defers_big_selections_with_identical_text() {
     })
 }
 
+/// #1377: the sliced selection snapshot takes no snapshot under the first lock, fills block
+/// ranges over several short slices, and renders exactly the inline text.
+#[test]
+fn test_selection_snapshot_yields_across_slices_with_identical_text() {
+    use std::time::Duration;
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let big: String = (0..600).map(|i| format!("line number {i}\n")).collect();
+            let first_block_index = insert_block(&mut block_list, "echo a\n", &big);
+            let second_block_index = insert_block(&mut block_list, "echo b\n", &big);
+            let first_block = block_list.block_at(first_block_index).expect("block");
+            let second_block = block_list.block_at(second_block_index).expect("block");
+            let first_point = BlockListPoint::new(first_block.command_grid_offset(), 0);
+            let second_point = BlockListPoint::new(
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset(),
+                3,
+            );
+            let semantic_selection = SemanticSelection::mock(false, "");
+            block_list.start_selection(first_point, SelectionType::Simple, Side::Left);
+            block_list.update_selection(second_point, Side::Right);
+
+            let inline = block_list
+                .selection_to_string(&semantic_selection, false, ctx)
+                .expect("selection should have text");
+
+            let mut parts = block_list
+                .selection_to_parts_sliced(&semantic_selection, false, ctx, Some(2))
+                .expect("selection should have parts");
+            assert!(parts.has_snapshots());
+            assert!(
+                parts.needs_slicing(),
+                "nothing is snapshotted under the first lock"
+            );
+
+            // A zero budget stops at the first deadline check, so this must take many slices.
+            let mut slices = 0;
+            while !parts
+                .advance(&block_list, Duration::ZERO)
+                .expect("blocks exist")
+            {
+                slices += 1;
+                assert!(slices < 10_000, "must make progress");
+            }
+            assert!(slices > 4, "expected several slices, got {slices}");
+            assert!(!parts.needs_slicing());
+            assert_eq!(parts.render(), inline);
+        })
+    })
+}
+
 /// #1304 follow-up: preview callers (Find-bar prefill, a11y) get the text of a small selection,
 /// but a selection over their row cap is reported as too large without building any text.
 /// `has_renderable_selection` answers "is anything selected" without a string at all.

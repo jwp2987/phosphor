@@ -9,8 +9,8 @@
 //! `PHOSPHOR_RENDER_LOCK_LEGACY=1` restores the previous lock scoping everywhere this change
 //! touched (see [`legacy_lock_scoping`]).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Holds at least this long are logged.

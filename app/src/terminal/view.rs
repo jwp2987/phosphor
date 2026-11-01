@@ -769,6 +769,10 @@ const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
 /// Selections spanning more rows than this are stringified off the UI thread when copied
 /// (#1304); smaller ones stay inline.
 const COPY_SELECTION_DEFER_ROWS: usize = 20_000;
+
+/// Model-lock budget of one selection-snapshot slice (same target as find, #1377).
+#[cfg(not(target_family = "wasm"))]
+const SELECTION_SNAPSHOT_SLICE: Duration = Duration::from_millis(2);
 /// Selections over this many rows are not previewed (Find-bar prefill, screen-reader
 /// announcement): building their text would grow with the selection on the UI thread (#1304).
 const PREVIEW_SELECTION_MAX_ROWS: usize = 500;
@@ -22031,7 +22035,7 @@ impl TerminalView {
             Some(COPY_SELECTION_DEFER_ROWS)
         };
         let semantic_selection = SemanticSelection::as_ref(ctx);
-        let parts = self.model.lock().selection_to_parts(
+        let parts = self.model.lock().selection_to_parts_sliced(
             semantic_selection,
             self.is_inverted_blocklist(ctx),
             defer_over_rows,
@@ -22054,6 +22058,49 @@ impl TerminalView {
         then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
     ) {
         let seq = self.selection_copy_seq;
+        self.advance_selection_snapshot(parts, seq, ctx, then);
+    }
+
+    /// Fills the selection's block snapshots in `SELECTION_SNAPSHOT_SLICE`-budgeted slices, each
+    /// under its own short model lock, yielding to the event loop between slices (#1377); then
+    /// renders the text on a background thread. A newer copy (`seq` moved on) abandons this one.
+    #[cfg(not(target_family = "wasm"))]
+    fn advance_selection_snapshot(
+        &mut self,
+        mut parts: SelectionParts,
+        seq: u64,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        if self.selection_copy_seq != seq {
+            return;
+        }
+        if parts.needs_slicing() {
+            let advanced = {
+                let model = self.model.lock();
+                let _hold =
+                    crate::terminal::model_lock_trace::HoldTimer::start("selection_snapshot");
+                parts.advance(model.block_list(), SELECTION_SNAPSHOT_SLICE)
+            };
+            match advanced {
+                Err(_) => {
+                    self.show_error_toast(
+                        "Copy failed \u{2014} the selected output scrolled out of the history"
+                            .to_string(),
+                        ctx,
+                    );
+                    return;
+                }
+                Ok(false) => {
+                    // Yield: other events (keys, paints, pty reads) run before the next slice.
+                    ctx.spawn(async {}, move |me, _, ctx| {
+                        me.advance_selection_snapshot(parts, seq, ctx, then);
+                    });
+                    return;
+                }
+                Ok(true) => {}
+            }
+        }
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
             .name("selection-render".into())

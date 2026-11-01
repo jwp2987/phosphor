@@ -26,7 +26,9 @@ use crate::{
     },
 };
 
-use crate::terminal::model::grid::text_snapshot::{SelectionPart, SelectionParts};
+use crate::terminal::model::grid::text_snapshot::{
+    PendingBlockRange, SelectionPart, SelectionParts,
+};
 
 use super::{
     BlockHeight, BlockHeightItem, BlockHeightSummary, BlockList, BlockListPoint, RichContentItem,
@@ -982,6 +984,43 @@ impl BlockList {
         app: &AppContext,
         defer_over_rows: Option<usize>,
     ) -> Option<SelectionParts> {
+        self.selection_to_parts_inner(
+            semantic_selection,
+            inverted_blocklist,
+            app,
+            defer_over_rows,
+            false,
+        )
+    }
+
+    /// [`Self::selection_to_parts`] for a copy: a selection over `defer_over_rows` rows takes no
+    /// snapshot here at all. Its blocks become [`SelectionPart::Range`]s that the caller fills
+    /// with `SelectionParts::advance` in time-budgeted slices (#1377), so this call's lock hold
+    /// no longer grows with the selection.
+    pub fn selection_to_parts_sliced(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+    ) -> Option<SelectionParts> {
+        self.selection_to_parts_inner(
+            semantic_selection,
+            inverted_blocklist,
+            app,
+            defer_over_rows,
+            true,
+        )
+    }
+
+    fn selection_to_parts_inner(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+        sliced: bool,
+    ) -> Option<SelectionParts> {
         match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(ExpandedSelectionRange::Regular { start, end, .. }) => {
                 let start_within_grid_point = start.within_grid_point;
@@ -1039,7 +1078,13 @@ impl BlockList {
                                     command_block.end_point()
                                 };
 
-                                selected_texts.push(if defer_blocks {
+                                selected_texts.push(if defer_blocks && sliced {
+                                    SelectionPart::Range(Box::new(PendingBlockRange::new(
+                                        command_block.id().clone(),
+                                        start_point,
+                                        end_point,
+                                    )))
+                                } else if defer_blocks {
                                     SelectionPart::Block(
                                         command_block
                                             .bounds_to_text_snapshot(start_point, end_point),
