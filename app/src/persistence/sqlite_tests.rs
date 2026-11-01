@@ -3599,3 +3599,153 @@ fn write_barrier_is_answered_after_the_events_queued_before_it() {
         .expect("terminate event should send");
     writer.handle.join().expect("writer should terminate");
 }
+
+/// A rollback-journal database whose `COMMIT` is blocked (`SQLITE_BUSY`) for as long as the returned
+/// reader's transaction is open, plus the writer connection (#1297).
+fn blocked_commit_database() -> (
+    tempfile::TempDir,
+    PathBuf,
+    diesel::sqlite::SqliteConnection,
+    diesel::sqlite::SqliteConnection,
+) {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    conn.batch_execute("PRAGMA journal_mode=DELETE;")
+        .expect("rollback-journal mode");
+    let mut reader =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("reader connects");
+    reader
+        .batch_execute("BEGIN; SELECT COUNT(*) FROM sqlite_master;")
+        .expect("reader holds a SHARED lock");
+    (tempdir, database_path, conn, reader)
+}
+
+fn started_command(command: &str) -> crate::persistence::StartedCommandMetadata {
+    crate::persistence::StartedCommandMetadata {
+        command: command.to_owned(),
+        start_ts: None,
+        pwd: None,
+        shell: None,
+        username: None,
+        hostname: None,
+        session_id: None,
+        git_branch: None,
+        cloud_workflow_id: None,
+        workflow_command: None,
+        is_agent_executed: false,
+    }
+}
+
+/// #1297: a non-snapshot event whose `COMMIT` is blocked once is not lost. diesel 2.3.14 rolls a
+/// failed top-level `COMMIT` back, so the writer commits the event's transaction itself, keeps it
+/// open while the lock is held and commits it once, when the lock clears.
+#[test]
+fn event_whose_commit_is_blocked_is_persisted_exactly_once() {
+    use diesel::connection::SimpleConnection as _;
+
+    let (_dir, database_path, mut conn, mut reader) = blocked_commit_database();
+    conn.batch_execute("PRAGMA busy_timeout=50;")
+        .expect("short timeout");
+
+    let outcome = super::handle_model_event(
+        ModelEvent::InsertCommand {
+            metadata: started_command("echo 1297"),
+        },
+        &mut conn,
+    );
+    assert!(
+        matches!(outcome, super::EventOutcome::CommitBlocked),
+        "the blocked COMMIT must be parked, not reported as finished"
+    );
+    assert!(
+        super::in_open_transaction(&mut conn),
+        "the finished transaction is kept open so the write survives"
+    );
+
+    let mut queue = super::RetryQueue::default();
+    queue.commit_pending = true;
+    assert!(!queue.is_empty());
+    assert!(matches!(
+        super::drain_retry_queue(&mut queue, &mut conn, &database_path),
+        super::DrainOutcome::Locked
+    ));
+    assert!(
+        queue.commit_pending,
+        "still locked: the commit stays pending"
+    );
+
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    assert!(matches!(
+        super::drain_retry_queue(&mut queue, &mut conn, &database_path),
+        super::DrainOutcome::Done
+    ));
+    assert!(queue.is_empty());
+    assert!(!super::in_open_transaction(&mut conn));
+    assert_eq!(command_count(&database_path), 1, "persisted exactly once");
+
+    // The writer is back in autocommit and later events commit normally.
+    assert!(matches!(
+        super::handle_model_event(ModelEvent::ClearUserProfiles, &mut conn),
+        super::EventOutcome::Finished(Ok(()))
+    ));
+    assert_eq!(
+        command_count(&database_path),
+        1,
+        "nothing was applied twice"
+    );
+}
+
+fn command_count(database_path: &std::path::Path) -> i64 {
+    use diesel::{Connection as _, RunQueryDsl as _, sql_types::BigInt};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    // A plain connection: the database is in rollback-journal mode here, which `setup_database`
+    // would try to change while the writer's connection is open.
+    let mut conn = diesel::sqlite::SqliteConnection::establish(database_path.to_str().unwrap())
+        .expect("count connection");
+    diesel::sql_query("SELECT COUNT(*) AS n FROM commands")
+        .get_result::<Count>(&mut conn)
+        .expect("count")
+        .n
+}
+
+/// #1297: through the writer thread, the same blocked-`COMMIT` event is committed by the retry
+/// path once the lock is gone, before a later event is handled.
+#[test]
+fn writer_commits_an_event_whose_commit_was_blocked() {
+    use diesel::connection::SimpleConnection as _;
+
+    let (_dir, database_path, conn, mut reader) = blocked_commit_database();
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    writer
+        .sender
+        .send(ModelEvent::InsertCommand {
+            metadata: started_command("echo 1297"),
+        })
+        .expect("event should send");
+    // Let the writer exhaust its COMMIT attempts (3 x the 1s busy timeout) and park the commit,
+    // then free the lock.
+    std::thread::sleep(std::time::Duration::from_millis(3800));
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+
+    let (barrier, written) = crate::persistence::WriteBarrier::new();
+    writer
+        .sender
+        .send(ModelEvent::WriteBarrier(barrier))
+        .expect("barrier should send");
+    futures::executor::block_on(written).expect("the writer answers the barrier");
+    assert_eq!(command_count(&database_path), 1, "persisted exactly once");
+
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+}
