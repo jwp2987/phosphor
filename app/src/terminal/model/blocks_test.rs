@@ -1263,6 +1263,88 @@ fn test_lazy_reflow_defers_far_blocks_and_flushes_before_draw() {
 }
 
 #[test]
+fn test_lazy_reflow_driver_finishes_and_matches_eager_heights() {
+    let mut lazy = block_list_with_finished_blocks(60);
+    lazy.lazy_reflow_forced = true;
+    let mut eager = block_list_with_finished_blocks(60);
+    let new_cols = lazy.size().columns() + 7;
+    resize_columns(&mut lazy, new_cols);
+    resize_columns(&mut eager, new_cols);
+    assert!(lazy.has_stale_reflow());
+    assert!(lazy.stale_reflow_pending());
+    assert!(!eager.has_stale_reflow());
+
+    // The driver reflows newest first and always makes progress, even with a zero budget.
+    let newest_stale = lazy
+        .blocks()
+        .iter()
+        .rev()
+        .find(|b| b.is_reflow_stale())
+        .unwrap()
+        .index();
+    assert_eq!(
+        lazy.reflow_stale_blocks_within(std::time::Duration::ZERO),
+        1
+    );
+    assert!(!lazy.blocks()[newest_stale.0].is_reflow_stale());
+    let mut rounds = 0;
+    while lazy.reflow_stale_blocks_within(std::time::Duration::from_millis(4)) > 0 {
+        rounds += 1;
+        assert!(rounds < 1000, "driver must terminate");
+    }
+    assert!(!lazy.has_stale_reflow());
+    assert!(!lazy.stale_reflow_pending());
+    // Nothing left: further calls are no-ops.
+    assert_eq!(
+        lazy.reflow_stale_blocks_within(std::time::Duration::from_millis(4)),
+        0
+    );
+
+    // Total scroll height and every block height agree with an eager reflow.
+    assert_eq!(
+        lazy.block_heights().summary().height,
+        eager.block_heights().summary().height
+    );
+    for (l, e) in lazy.blocks().iter().zip(eager.blocks()) {
+        assert_eq!(
+            l.height(lazy.transcript_scope()),
+            e.height(eager.transcript_scope())
+        );
+    }
+    assert_block_indices_consistent(&lazy);
+}
+
+#[test]
+fn test_lazy_reflow_flush_all_clears_every_stale_block() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let new_cols = block_list.size().columns() + 5;
+    resize_columns(&mut block_list, new_cols);
+    assert!(block_list.has_stale_reflow());
+    assert!(block_list.flush_all_stale_reflow() > 0);
+    assert!(!block_list.has_stale_reflow());
+    assert!(
+        block_list
+            .blocks()
+            .iter()
+            .all(|b| !b.is_reflow_stale() && b.size().columns() == new_cols)
+    );
+}
+
+#[test]
+fn test_lazy_reflow_range_flush_leaves_other_blocks_stale() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let new_cols = block_list.size().columns() + 5;
+    resize_columns(&mut block_list, new_cols);
+    let n = block_list.reflow_stale_blocks_in_range(2.into(), 4.into());
+    assert!(n > 0 && n <= 3);
+    assert!(block_list.has_stale_reflow());
+    assert!(block_list.blocks()[0].is_reflow_stale());
+    assert!(!block_list.blocks()[3].is_reflow_stale());
+}
+
+#[test]
 fn test_eviction_never_removes_the_active_block() {
     let mut block_list = block_list_with_finished_blocks(4);
     let active_id = block_list.active_block().id().clone();

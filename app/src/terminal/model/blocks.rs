@@ -310,6 +310,10 @@ pub struct BlockList {
     #[cfg(test)]
     lazy_reflow_forced: bool,
 
+    /// Set when a column change flagged blocks stale; cleared once a scan finds none left. Lets
+    /// the per-frame check in layout stay O(1) when nothing is stale.
+    stale_reflow_pending: bool,
+
     /// The gap height to set after a clear or ctrl-l.
     /// The view needs to tell the model this because the gap height varies based
     /// on the input mode, which is a view concept, not a model concept.
@@ -485,12 +489,13 @@ fn lazy_restore_min_bytes_from_env() -> Option<usize> {
         .then_some(LAZY_RESTORE_MIN_BYTES)
 }
 
-/// Lazy reflow of far-away finished blocks on a column change (#1303) is opt-in
-/// (`PHOSPHOR_LAZY_REFLOW=1`) until the view calls [`BlockList::reflow_stale_blocks_in_range`]
-/// for the blocks it is about to draw; without that call a stale block would be drawn at its old
-/// wrap width.
+/// Lazy reflow of far-away finished blocks on a column change (#1303) is on by default;
+/// `PHOSPHOR_LAZY_REFLOW=0` is the kill switch (every block reflows under the lock, as before).
+/// Safe because `BlockListElement::layout` reflows stale blocks in and around the viewport
+/// before measuring or drawing, user-facing jumps flush everything, and the view's frame driver
+/// drains the rest in small chunks ([`BlockList::reflow_stale_blocks_within`]).
 fn lazy_reflow_enabled() -> bool {
-    std::env::var("PHOSPHOR_LAZY_REFLOW").is_ok_and(|value| value.trim() == "1")
+    std::env::var("PHOSPHOR_LAZY_REFLOW").map_or(true, |value| value.trim() != "0")
 }
 
 /// Screens' worth of lines, counted back from the newest block, that reflow immediately.
@@ -953,6 +958,7 @@ impl BlockList {
             retained_lines_prefix: None,
             #[cfg(test)]
             lazy_reflow_forced: false,
+            stale_reflow_pending: false,
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
@@ -3162,10 +3168,12 @@ impl BlockList {
         // `reflow_stale_blocks_in_range` / `reflow_stale_blocks` reflow them.
         #[cfg(test)]
         let forced = self.lazy_reflow_forced;
+        // Unit tests opt in per list (`lazy_reflow_forced`); the env default must not change them.
+        #[cfg(test)]
+        let lazy = forced;
         #[cfg(not(test))]
-        let forced = false;
-        let columns_changed =
-            update_old_blocks && grid_dimensions_changed && (forced || lazy_reflow_enabled());
+        let lazy = lazy_reflow_enabled();
+        let columns_changed = update_old_blocks && grid_dimensions_changed && lazy;
         let lazy_window_start = if columns_changed {
             self.lazy_reflow_window_start(size.rows())
         } else {
@@ -3175,6 +3183,7 @@ impl BlockList {
             for block in self.blocks.iter_mut().take(lazy_window_start) {
                 if block.finished() && block.index() != active_block_index {
                     block.set_reflow_stale(true);
+                    self.stale_reflow_pending = true;
                 }
             }
         }
@@ -3235,18 +3244,43 @@ impl BlockList {
         0
     }
 
-    /// Whether any block is still waiting for its deferred reflow.
+    /// Whether any block is still waiting for its deferred reflow. O(1) when nothing is pending.
     pub fn has_stale_reflow(&self) -> bool {
-        self.blocks.iter().any(|b| b.is_reflow_stale())
+        self.stale_reflow_pending && self.blocks.iter().any(|b| b.is_reflow_stale())
+    }
+
+    /// Cheap per-frame check: a column change flagged blocks and no scan has yet found the
+    /// list clean. May be true with nothing stale (eviction); the reflow entry points reset it.
+    pub fn stale_reflow_pending(&self) -> bool {
+        self.stale_reflow_pending
     }
 
     /// Reflows stale blocks with index in `first..=last` (what the view is about to draw or
     /// measure), refreshing their heights. Returns how many were reflowed.
     pub fn reflow_stale_blocks_in_range(&mut self, first: BlockIndex, last: BlockIndex) -> usize {
+        if !self.stale_reflow_pending || last < first {
+            return 0;
+        }
+        let end = (last.0 + 1).min(self.blocks.len());
+        let start = first.0.min(end);
+        let indices: Vec<BlockIndex> = self.blocks[start..end]
+            .iter()
+            .filter(|b| b.is_reflow_stale())
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    /// Reflows every stale block now. For user-facing jumps and searches that address blocks by
+    /// position or content and must not see heights or wraps change under them afterwards.
+    pub fn flush_all_stale_reflow(&mut self) -> usize {
+        if !self.stale_reflow_pending {
+            return 0;
+        }
         let indices: Vec<BlockIndex> = self
             .blocks
             .iter()
-            .filter(|b| b.is_reflow_stale() && b.index() >= first && b.index() <= last)
+            .filter(|b| b.is_reflow_stale())
             .map(|b| b.index())
             .collect();
         self.reflow_blocks_now(indices)
@@ -3254,6 +3288,9 @@ impl BlockList {
 
     /// Background-chunk entry point: reflows up to `max_blocks` stale blocks, newest first.
     pub fn reflow_stale_blocks(&mut self, max_blocks: usize) -> usize {
+        if !self.stale_reflow_pending {
+            return 0;
+        }
         let indices: Vec<BlockIndex> = self
             .blocks
             .iter()
@@ -3265,16 +3302,44 @@ impl BlockList {
         self.reflow_blocks_now(indices)
     }
 
+    /// Frame-driver entry point: reflows stale blocks newest first until `budget` has elapsed
+    /// (always at least one if any is stale). Returns how many were reflowed; 0 means done.
+    pub fn reflow_stale_blocks_within(&mut self, budget: std::time::Duration) -> usize {
+        let started = instant::Instant::now();
+        let mut total = 0;
+        loop {
+            let n = self.reflow_stale_blocks(1);
+            total += n;
+            if n == 0 || started.elapsed() >= budget {
+                return total;
+            }
+        }
+    }
+
     fn reflow_blocks_now(&mut self, indices: Vec<BlockIndex>) -> usize {
         let size = self.size;
         let count = indices.len();
+        let mut height_changed = false;
         for index in indices {
+            let before = self
+                .blocks
+                .get(index.0)
+                .map(|b| b.height(&self.transcript_scope));
             if let Some(block) = self.blocks.get_mut(index.0) {
                 block.set_reflow_stale(false);
                 block.resize(size);
             }
+            if let (Some(before), Some(block)) = (before, self.blocks.get(index.0)) {
+                height_changed |= block.height(&self.transcript_scope) != before;
+            }
             self.refresh_block_height(index);
         }
+        if height_changed {
+            // Reflow moves every later row, and a selection is addressed by absolute row.
+            self.retained_lines_prefix = None;
+            self.clear_selection();
+        }
+        self.stale_reflow_pending = self.blocks.iter().any(|b| b.is_reflow_stale());
         count
     }
 

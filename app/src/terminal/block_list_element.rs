@@ -105,6 +105,10 @@ use crate::terminal::model::escape_sequences::{
     maybe_kitty_keyboard_escape_sequence, KeystrokeWithDetails, ToEscapeSequence,
 };
 
+/// Lines above and below the viewport whose stale (deferred-reflow) blocks layout reflows
+/// before measuring (#1303).
+const STALE_REFLOW_LAYOUT_MARGIN_LINES: f64 = 60.;
+
 /// The number of pixels at the bottom of padding where selection scrolling is performed.
 const BOTTOM_VERTICAL_MARGIN: f32 = 10.0;
 
@@ -3651,6 +3655,26 @@ impl Element for BlockListElement {
                     self.inline_menu_positioner.clone(),
                 )
             };
+        }
+
+        // Deferred reflow (#1303): a block flagged stale after a column change still has its old
+        // wrap width and height. Reflow the visible range plus a margin before anything below
+        // measures or draws, so a stale block is never shown. Heights can move when blocks
+        // reflow, so repeat once to catch blocks that slid into range. O(1) when nothing is
+        // stale.
+        if model.block_list().stale_reflow_pending() {
+            for _ in 0..2 {
+                let range = create_viewport!(model.block_list())
+                    .block_range_with_margin(Lines::new(STALE_REFLOW_LAYOUT_MARGIN_LINES));
+                let Some((first, last)) = range else { break };
+                if model
+                    .block_list_mut()
+                    .reflow_stale_blocks_in_range(first, last)
+                    == 0
+                {
+                    break;
+                }
+            }
         }
 
         // Manually construct the viewport with the max size constraint because
