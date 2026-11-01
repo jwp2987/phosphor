@@ -154,6 +154,62 @@ pub(super) mod load_pool {
         }
     }
 
+    /// Loads in flight, by key. A request for a key that is already being loaded joins that load
+    /// instead of starting a second read and restore (#1370).
+    pub(in super::super) struct InFlight<K, V> {
+        map: Arc<Mutex<std::collections::HashMap<K, Loading<V>>>>,
+    }
+
+    pub(in super::super) type Loading<V> =
+        futures::future::Shared<futures::future::BoxFuture<'static, V>>;
+
+    impl<K, V> InFlight<K, V>
+    where
+        K: std::hash::Hash + Eq + Clone + Send + 'static,
+        V: Clone + Send + 'static,
+    {
+        pub(in super::super) fn new() -> Self {
+            Self {
+                map: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            }
+        }
+
+        /// The future of the load for `key`: the one already in flight, or a new one started by
+        /// `run`. `run` receives a `finish` callback it must call exactly once, from wherever the
+        /// load executes, with the loaded value; it retires the entry and resolves every joiner.
+        pub(in super::super) fn join_or_start(
+            &self,
+            key: K,
+            run: impl FnOnce(Box<dyn FnOnce(V) + Send>) -> Result<(), String>,
+        ) -> Result<Loading<V>, String> {
+            use futures::FutureExt as _;
+            let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = map.get(&key) {
+                return Ok(existing.clone());
+            }
+            let (tx, rx) = futures::channel::oneshot::channel::<V>();
+            let shared = rx
+                .map(|r| r.expect("a load's finish callback is always called"))
+                .boxed()
+                .shared();
+            map.insert(key.clone(), shared.clone());
+            let registry = self.map.clone();
+            let finish_key = key.clone();
+            let finish = Box::new(move |value: V| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&finish_key);
+                let _ = tx.send(value);
+            });
+            if let Err(e) = run(finish) {
+                map.remove(&key);
+                return Err(e);
+            }
+            Ok(shared)
+        }
+    }
+
     pub(super) fn start(threads: usize) -> Result<Sender<Job>, String> {
         let (tx, rx) = channel::<Job>();
         let rx = Arc::new(Mutex::new(rx));
@@ -232,18 +288,24 @@ impl BlocklistAIHistoryModel {
             #[cfg(feature = "local_fs")]
             {
                 let conn = self.db_connection.clone();
-                let (tx, rx) = futures::channel::oneshot::channel();
-                if let Err(e) = load_pool::submit(Box::new(move || {
-                    let _ = tx.send(read_conversation_from_db(conn, &conversation_id));
-                })) {
-                    log::warn!("Failed to start a conversation load worker: {e}");
-                    return box_future(futures::future::ready(None));
-                }
-                return box_future(rx.map(|r| {
-                    r.ok()
-                        .flatten()
-                        .map(|c| LoadedConversationData::Oz(Box::new(c)))
-                }));
+                static IN_FLIGHT: std::sync::OnceLock<
+                    load_pool::InFlight<AIConversationId, Option<AIConversation>>,
+                > = std::sync::OnceLock::new();
+                let in_flight = IN_FLIGHT.get_or_init(load_pool::InFlight::new);
+                let loading = in_flight.join_or_start(conversation_id, move |finish| {
+                    load_pool::submit(Box::new(move || {
+                        finish(read_conversation_from_db(conn, &conversation_id))
+                    }))
+                });
+                return match loading {
+                    Ok(loading) => box_future(
+                        loading.map(|c| c.map(|c| LoadedConversationData::Oz(Box::new(c)))),
+                    ),
+                    Err(e) => {
+                        log::warn!("Failed to start a conversation load worker: {e}");
+                        box_future(futures::future::ready(None))
+                    }
+                };
             }
             #[cfg(not(feature = "local_fs"))]
             {

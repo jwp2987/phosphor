@@ -39,3 +39,42 @@ fn many_concurrent_loads_use_at_most_the_cap_threads() {
     assert!(threads.lock().unwrap().len() <= MAX_LOAD_THREADS);
     assert!(peak.load(Ordering::SeqCst) <= MAX_LOAD_THREADS);
 }
+
+#[test]
+fn a_second_request_joins_the_load_in_flight() {
+    // #1370 F6: a double open must not read and restore twice.
+    let in_flight = InFlight::<u32, u32>::new();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let first = in_flight
+        .join_or_start(7, {
+            let starts = starts.clone();
+            move |finish| {
+                starts.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    gate_rx.recv().unwrap();
+                    finish(42);
+                });
+                Ok(())
+            }
+        })
+        .unwrap();
+    let second = in_flight
+        .join_or_start(7, |_| panic!("a load for this key is already in flight"))
+        .unwrap();
+    gate_tx.send(()).unwrap();
+    assert_eq!(futures::executor::block_on(first), 42);
+    assert_eq!(futures::executor::block_on(second), 42);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+    // Once finished, a later request loads afresh.
+    let again = in_flight
+        .join_or_start(7, |finish| {
+            starts.fetch_add(1, Ordering::SeqCst);
+            finish(43);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(futures::executor::block_on(again), 43);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+}
