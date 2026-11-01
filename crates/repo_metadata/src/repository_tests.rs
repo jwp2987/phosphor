@@ -487,3 +487,28 @@ fn unchanged_tracked_remote_ref_does_not_notify_subscribers() {
         },
     );
 }
+
+/// #1371: continuous changes keep the quiet-period debounce from ever firing; the max wait forces
+/// a flush. On the old code there was no age term, so a busy repo was never delivered.
+#[test]
+fn buffering_flushes_at_max_wait_even_without_a_quiet_period() {
+    let max_wait = Duration::from_secs(60);
+    // Busy repo, oldest update still young: keep waiting.
+    assert!(!super::buffer_should_flush(
+        false,
+        Duration::from_secs(59),
+        max_wait
+    ));
+    // Busy repo, oldest update at the cap: flush anyway.
+    assert!(super::buffer_should_flush(false, max_wait, max_wait));
+    // Quiet repo flushes immediately regardless of age.
+    assert!(super::buffer_should_flush(true, Duration::ZERO, max_wait));
+}
+
+#[test]
+fn buffering_default_max_wait_is_a_multiple_of_the_debounce() {
+    let s = super::BufferingRepositorySubscriber::new((), Duration::from_secs(10));
+    assert_eq!(s.max_wait, Duration::from_secs(60));
+    let s = s.with_max_wait(Duration::from_secs(5));
+    assert_eq!(s.max_wait, Duration::from_secs(5));
+}
