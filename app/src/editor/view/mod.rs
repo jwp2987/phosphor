@@ -2627,38 +2627,6 @@ impl VimHandler for EditorView {
         });
     }
 
-    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
-    /// action with its content (#1405). The editor's own registers answer at once; one that
-    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
-    /// held behind that read (the editor's paste hold) and applied right after the action, in
-    /// typed order.
-    fn read_register_then(
-        &mut self,
-        register_name: char,
-        ctx: &mut ViewContext<Self>,
-        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
-    ) {
-        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
-            registers.request_register_read(register_name, ctx)
-        });
-        match read {
-            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
-            crate::vim_registers::RegisterRead::Pending(pending) => {
-                let id = self.paste_hold.begin();
-                ctx.spawn(pending, move |me, content, ctx| {
-                    // Cancelled by an interrupt: the action is dropped.
-                    let Some(held) = me.paste_hold.complete(id) else {
-                        return;
-                    };
-                    done(me, content, ctx);
-                    for key in held {
-                        me.apply_held_paste_key(key, ctx);
-                    }
-                });
-            }
-        }
-    }
-
     fn paste(
         &mut self,
         count: u32,
@@ -2670,109 +2638,6 @@ impl VimHandler for EditorView {
         self.read_register_then(register_name, ctx, move |me, content, ctx| {
             me.paste_register_content(count, &direction, content, ctx)
         });
-    }
-
-    fn paste_register_content(
-        &mut self,
-        count: u32,
-        direction: &Direction,
-        content: Option<RegisterContent>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(RegisterContent { text, motion_type }) = content else {
-            return;
-        };
-        match motion_type {
-            MotionType::Charwise => {
-                self.edit(
-                    ctx,
-                    Edits::new()
-                        .with_update_buffer(
-                            PlainTextEditorViewAction::Paste,
-                            EditOrigin::UserInitiated,
-                            |editor_model, ctx| {
-                                for _ in 0..count {
-                                    editor_model.insert(&text, None, ctx);
-                                }
-                            },
-                        )
-                        .with_change_selections(|editor_model, ctx| {
-                            if *direction == Direction::Forward {
-                                editor_model.move_cursors_by_offset(
-                                    1,
-                                    &Direction::Forward,
-                                    /* keep_selection */ false,
-                                    /* stop_at_line_boundary */ false,
-                                    ctx,
-                                );
-                            }
-                        })
-                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                            editor_model.move_cursors_by_offset(
-                                1,
-                                &Direction::Backward,
-                                /* keep_selection */ false,
-                                /* stop_at_line_boundary */ false,
-                                ctx,
-                            );
-                        }),
-                );
-            }
-            MotionType::Linewise => {
-                self.edit(
-                    ctx,
-                    Edits::new()
-                        .with_update_buffer(
-                            PlainTextEditorViewAction::Paste,
-                            EditOrigin::UserInitiated,
-                            |editor_model, ctx| {
-                                let text_to_insert = match direction {
-                                    Direction::Backward => text.clone(),
-                                    Direction::Forward => {
-                                        "\n".to_owned()
-                                            + if text.ends_with('\n') {
-                                                &text[..text.len() - 1]
-                                            } else {
-                                                &text
-                                            }
-                                    }
-                                };
-                                for _ in 0..count {
-                                    editor_model.insert(&text_to_insert, None, ctx);
-                                }
-                            },
-                        )
-                        .with_change_selections(|editor_model, ctx| match direction {
-                            Direction::Backward => {
-                                editor_model.cursor_line_start(/* keep_selection */ false, ctx)
-                            }
-                            Direction::Forward => {
-                                editor_model.cursor_line_end(/* keep_selection */ false, ctx)
-                            }
-                        })
-                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                            match direction {
-                                Direction::Backward => {
-                                    for _ in 0..(text.len() * (count as usize)) {
-                                        editor_model.move_cursors_by_offset(
-                                            1,
-                                            &Direction::Backward,
-                                            /* keep_selection */ false,
-                                            /* stop_at_line_boundary */ false,
-                                            ctx,
-                                        );
-                                    }
-                                }
-                                Direction::Forward => {
-                                    editor_model.cursor_line_start_non_whitespace(
-                                        /* keep_selection */ false, ctx,
-                                    );
-                                }
-                            };
-                        }),
-                );
-            }
-        }
     }
 
     /// Join the current line with the following one(s).
@@ -2936,52 +2801,6 @@ impl VimHandler for EditorView {
         });
     }
 
-    fn visual_paste_register_content(
-        &mut self,
-        motion_type: MotionType,
-        write_register_name: char,
-        content: Option<RegisterContent>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(RegisterContent {
-            text,
-            motion_type: yanked_motion_type,
-        }) = content
-        else {
-            return;
-        };
-        self.edit(
-            ctx,
-            Edits::new()
-                .with_update_buffer(
-                    PlainTextEditorViewAction::Paste,
-                    EditOrigin::UserInitiated,
-                    |editor_model, ctx| {
-                        editor_model.insert(&text, None, ctx);
-                    },
-                )
-                .with_change_selections(
-                    |editor_model: &mut EditorModel, ctx: &mut ModelContext<EditorModel>| {
-                        let include_newline = motion_type == MotionType::Linewise
-                            && yanked_motion_type == MotionType::Linewise;
-                        editor_model.vim_visual_selection_range(motion_type, include_newline, ctx);
-                    },
-                )
-                .with_before_buffer_edit(|editor_model, ctx| {
-                    editor_model.copy_selection_to_vim_register(
-                        write_register_name,
-                        motion_type,
-                        ctx,
-                    );
-                })
-                .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                    if motion_type == MotionType::Linewise {
-                        editor_model.cursor_line_start(false, ctx);
-                    }
-                }),
-        );
-    }
-
     fn visual_text_object(&mut self, text_object: &VimTextObject, ctx: &mut ViewContext<Self>) {
         self.change_selections(ctx, |editor_model, ctx| {
             let buffer = editor_model.buffer(ctx);
@@ -3070,6 +2889,187 @@ impl VimHandler for EditorView {
 }
 
 impl EditorView {
+    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
+    /// action with its content (#1405). The editor's own registers answer at once; one that
+    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
+    /// held behind that read (the editor's paste hold) and applied right after the action, in
+    /// typed order.
+    fn read_register_then(
+        &mut self,
+        register_name: char,
+        ctx: &mut ViewContext<Self>,
+        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
+    ) {
+        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
+            registers.request_register_read(register_name, ctx)
+        });
+        match read {
+            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
+            crate::vim_registers::RegisterRead::Pending(pending) => {
+                let id = self.paste_hold.begin();
+                ctx.spawn(pending, move |me, content, ctx| {
+                    // Cancelled by an interrupt: the action is dropped.
+                    let Some(held) = me.paste_hold.complete(id) else {
+                        return;
+                    };
+                    done(me, content, ctx);
+                    for key in held {
+                        me.apply_held_paste_key(key, ctx);
+                    }
+                });
+            }
+        }
+    }
+
+    fn paste_register_content(
+        &mut self,
+        count: u32,
+        direction: &Direction,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent { text, motion_type }) = content else {
+            return;
+        };
+        match motion_type {
+            MotionType::Charwise => {
+                self.edit(
+                    ctx,
+                    Edits::new()
+                        .with_update_buffer(
+                            PlainTextEditorViewAction::Paste,
+                            EditOrigin::UserInitiated,
+                            |editor_model, ctx| {
+                                for _ in 0..count {
+                                    editor_model.insert(&text, None, ctx);
+                                }
+                            },
+                        )
+                        .with_change_selections(|editor_model, ctx| {
+                            if *direction == Direction::Forward {
+                                editor_model.move_cursors_by_offset(
+                                    1,
+                                    &Direction::Forward,
+                                    /* keep_selection */ false,
+                                    /* stop_at_line_boundary */ false,
+                                    ctx,
+                                );
+                            }
+                        })
+                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                            editor_model.move_cursors_by_offset(
+                                1,
+                                &Direction::Backward,
+                                /* keep_selection */ false,
+                                /* stop_at_line_boundary */ false,
+                                ctx,
+                            );
+                        }),
+                );
+            }
+            MotionType::Linewise => {
+                self.edit(
+                    ctx,
+                    Edits::new()
+                        .with_update_buffer(
+                            PlainTextEditorViewAction::Paste,
+                            EditOrigin::UserInitiated,
+                            |editor_model, ctx| {
+                                let text_to_insert = match direction {
+                                    Direction::Backward => text.clone(),
+                                    Direction::Forward => {
+                                        "\n".to_owned()
+                                            + if text.ends_with('\n') {
+                                                &text[..text.len() - 1]
+                                            } else {
+                                                &text
+                                            }
+                                    }
+                                };
+                                for _ in 0..count {
+                                    editor_model.insert(&text_to_insert, None, ctx);
+                                }
+                            },
+                        )
+                        .with_change_selections(|editor_model, ctx| match direction {
+                            Direction::Backward => {
+                                editor_model.cursor_line_start(/* keep_selection */ false, ctx)
+                            }
+                            Direction::Forward => {
+                                editor_model.cursor_line_end(/* keep_selection */ false, ctx)
+                            }
+                        })
+                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                            match direction {
+                                Direction::Backward => {
+                                    for _ in 0..(text.len() * (count as usize)) {
+                                        editor_model.move_cursors_by_offset(
+                                            1,
+                                            &Direction::Backward,
+                                            /* keep_selection */ false,
+                                            /* stop_at_line_boundary */ false,
+                                            ctx,
+                                        );
+                                    }
+                                }
+                                Direction::Forward => {
+                                    editor_model.cursor_line_start_non_whitespace(
+                                        /* keep_selection */ false, ctx,
+                                    );
+                                }
+                            };
+                        }),
+                );
+            }
+        }
+    }
+
+    fn visual_paste_register_content(
+        &mut self,
+        motion_type: MotionType,
+        write_register_name: char,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent {
+            text,
+            motion_type: yanked_motion_type,
+        }) = content
+        else {
+            return;
+        };
+        self.edit(
+            ctx,
+            Edits::new()
+                .with_update_buffer(
+                    PlainTextEditorViewAction::Paste,
+                    EditOrigin::UserInitiated,
+                    |editor_model, ctx| {
+                        editor_model.insert(&text, None, ctx);
+                    },
+                )
+                .with_change_selections(
+                    |editor_model: &mut EditorModel, ctx: &mut ModelContext<EditorModel>| {
+                        let include_newline = motion_type == MotionType::Linewise
+                            && yanked_motion_type == MotionType::Linewise;
+                        editor_model.vim_visual_selection_range(motion_type, include_newline, ctx);
+                    },
+                )
+                .with_before_buffer_edit(|editor_model, ctx| {
+                    editor_model.copy_selection_to_vim_register(
+                        write_register_name,
+                        motion_type,
+                        ctx,
+                    );
+                })
+                .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                    if motion_type == MotionType::Linewise {
+                        editor_model.cursor_line_start(false, ctx);
+                    }
+                }),
+        );
+    }
+
     /// The hold that queues keys typed while a paste is read off the UI thread (#1300).
     pub fn paste_hold(&self) -> Rc<EditorPasteHold> {
         Rc::clone(&self.paste_hold)
