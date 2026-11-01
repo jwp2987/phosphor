@@ -17451,6 +17451,93 @@ fn ssh_line_typed_across_gate_release_is_held_whole() {
     })
 }
 
+/// #1292 (agent mode): once the remote shell's first prompt hands focus to the editor, keys typed
+/// before the held keys are delivered land in the editor directly. The held keys must still come
+/// out FIRST: the delivery used to insert them after those keys (`Necho ZQCON_agent_1`).
+#[test]
+fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo ZQCON", ctx);
+            assert!(view.ssh_typeahead_holding);
+            // The remote shell's first prompt: the gate is released and the editor has focus.
+            view.ssh_remote_prompt_seen = true;
+            release_ssh_gate_for_test(view);
+            // Keys typed now reach the editor itself, not the hold.
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("N_agent_1", ctx));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "N_agent_1");
+            view.poll_ssh_typeahead(false, ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo ZQCONN_agent_1",
+                "held keys first, then what reached the editor meanwhile"
+            );
+            // Later keys go straight to the editor, behind everything.
+            view.typed_characters_on_terminal("_x", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo ZQCONN_agent_1_x"
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1292 (agent mode): an Enter that reaches the editor while keys are held must not submit the
+/// part of the line the editor has (it went to the agent as a prompt of its own); it is held
+/// behind everything typed before it.
+#[test]
+fn ssh_editor_enter_during_hold_is_held_not_submitted() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.input
+                .update(ctx, |input, ctx| input.system_insert("ERTY", ctx));
+            view.input.update(ctx, |input, ctx| input.input_enter(ctx));
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["ssh host".to_owned()],
+                "only the ssh command itself ran"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(
+                view.ssh_typeahead.take(),
+                vec![
+                    HeldInput::Typed("echo QWERTY".to_owned()),
+                    HeldInput::Key("\r".to_owned())
+                ]
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
 /// #1292: a paste after held typing is held in order with it.
 #[test]
 fn ssh_paste_across_gate_release_is_held_whole() {
