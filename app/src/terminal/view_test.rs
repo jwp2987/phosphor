@@ -20869,6 +20869,49 @@ fn with_ssh_hold_path(
     })
 }
 
+/// #1394: 28 keys held through the terminal route, the 29th arrives through the editor route
+/// (focus already in the editor) before the precmd hand-over: all 29 are delivered once, in
+/// typed order, and the editor's buffer is not wiped by the hand-over.
+fn ssh_key_via_editor_route_before_handover_joins_the_hold(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        let line = "echo zqTR31 >> /tmp/zq-mac.log";
+        let (head, rest) = line.split_at(28);
+        for c in head.chars() {
+            view.typed_characters_on_terminal(&c.to_string(), ctx);
+        }
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 28);
+        // The 29th key: focus has reached the editor, which queues it behind the held ones.
+        editor_text(view, &rest[..1], ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "queued, not applied"
+        );
+        remote_first_prompt_is_next_for_test(view);
+        first_precmd_processed_for_test(view, ctx);
+        view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(view.ssh_editor_key_hold.is_empty());
+        // A key typed after the hand-over follows, once.
+        editor_text(view, &rest[1..], ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_queue() {
+    ssh_key_via_editor_route_before_handover_joins_the_hold(true);
+}
+
+#[test]
+fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_legacy_buffer() {
+    ssh_key_via_editor_route_before_handover_joins_the_hold(false);
+}
+
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);

@@ -735,8 +735,25 @@ fn terminal_takes_unclaimed_held_key(
     hold_active: bool,
     live_input_focus: Option<bool>,
     live_editor_focus: Option<bool>,
+    live_terminal_focus: Option<bool>,
 ) -> bool {
-    hold_active && live_input_focus == Some(true) && live_editor_focus != Some(true)
+    if !hold_active || live_editor_focus == Some(true) {
+        return false;
+    }
+    // #1394: focus can sit on any other view inside this terminal for a moment before the remote
+    // shell's first prompt (the ssh block, a card; its own handler moves it to the input at the
+    // hand-over). A key typed then was claimed by nobody and vanished, one character of the held
+    // line. The ancestor-inclusive terminal focus covers every such view; focus in another pane
+    // or window (`Some(false)`) still keeps its keys. `PHOSPHOR_SSH_RESCUE_WIDE=0` restores the
+    // narrow rule (focus on the input only).
+    let wide = live_terminal_focus == Some(true) && ssh_rescue_wide_enabled();
+    live_input_focus == Some(true) || wide
+}
+
+/// `PHOSPHOR_SSH_RESCUE_WIDE=0` turns the #1394 widening off (kill switch).
+fn ssh_rescue_wide_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PHOSPHOR_SSH_RESCUE_WIDE").map_or(true, |v| v != "0"))
 }
 
 /// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
@@ -1572,15 +1589,18 @@ impl BlockListElement {
         }
         let rescue = self.ssh_key_hold.rescues_unclaimed_keys();
         let input_focus = ctx.live_focus_of(self.input_view_id);
-        let taken = terminal_takes_unclaimed_held_key(rescue, input_focus, editor_focus);
+        let terminal_focus = ctx.live_focus_of(self.terminal_view_id);
+        let taken =
+            terminal_takes_unclaimed_held_key(rescue, input_focus, editor_focus, terminal_focus);
         // Only while a rescue is possible: keeps the log quiet for ordinary typing.
         if rescue {
             warpui::input_order::log_key_hop("kh_element_rescue", || {
                 format!(
-                    "hold_active={} input_focus={} editor_focus={} taken={taken}",
+                    "hold_active={} input_focus={} editor_focus={} terminal_focus={} taken={taken}",
                     self.ssh_key_hold.is_active(),
                     warpui::input_order::describe_opt(input_focus),
-                    warpui::input_order::describe_opt(editor_focus)
+                    warpui::input_order::describe_opt(editor_focus),
+                    warpui::input_order::describe_opt(terminal_focus)
                 )
             });
         }
@@ -1628,10 +1648,11 @@ impl BlockListElement {
         warpui::input_order::log_key_hop("kh_element_typed", || {
             format!(
                 "terminal_focused={terminal_focused} snapshot_terminal_focused={} \
-                 input_focus={} editor_focus={} claimed={}",
+                 input_focus={} editor_focus={} terminal_subtree_focus={} claimed={}",
                 self.is_terminal_focused,
                 warpui::input_order::describe_opt(ctx.live_focus_of(self.input_view_id)),
                 warpui::input_order::describe_opt(ctx.live_focus_of(self.input_editor_view_id)),
+                warpui::input_order::describe_opt(ctx.live_focus_of(self.terminal_view_id)),
                 claimed && !chars.is_empty()
             )
         });
@@ -5687,21 +5708,26 @@ mod tests {
         assert!(super::terminal_takes_unclaimed_held_key(
             true,
             Some(true),
-            Some(false)
+            Some(false),
+            Some(true)
         ));
         // No hold, no change: such a key is dropped as before.
         assert!(!super::terminal_takes_unclaimed_held_key(
             false,
             Some(true),
-            Some(false)
+            Some(false),
+            Some(true)
         ));
         // Focus elsewhere (the find bar, another pane) keeps its keys.
         assert!(!super::terminal_takes_unclaimed_held_key(
             true,
             Some(false),
+            Some(false),
             Some(false)
         ));
-        assert!(!super::terminal_takes_unclaimed_held_key(true, None, None));
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            true, None, None, None
+        ));
     }
 
     /// #1339: with focus in the input's editor the editor takes and queues the key; the terminal
@@ -5712,7 +5738,12 @@ mod tests {
         for editor_focus in [Some(true), Some(false)] {
             let editor_takes = editor_focus.unwrap_or(false);
             let terminal_takes =
-                super::terminal_takes_unclaimed_held_key(true, Some(true), editor_focus);
+                super::terminal_takes_unclaimed_held_key(
+                    true,
+                    Some(true),
+                    editor_focus,
+                    Some(true),
+                );
             assert_ne!(
                 editor_takes, terminal_takes,
                 "editor focus {editor_focus:?}"
@@ -5734,11 +5765,48 @@ mod tests {
         assert!(super::terminal_takes_unclaimed_held_key(
             rescue,
             Some(true),
-            Some(false)
+            Some(false),
+            Some(true)
         ));
         // Editor already focused: it takes the key, the terminal must not (#1339).
         assert!(!super::terminal_takes_unclaimed_held_key(
             rescue,
+            Some(true),
+            Some(true),
+            Some(true)
+        ));
+    }
+
+    /// #1394: focus on some other view inside the terminal (not the input, not the editor) in the
+    /// moments before the remote shell's first prompt: the key used to be claimed by nobody and
+    /// lost from the held line. It is taken now, while the hold is active, and not when focus is
+    /// in another pane or the editor holds it.
+    #[test]
+    fn key_with_focus_on_another_terminal_child_is_held_not_dropped() {
+        // Focus is inside the terminal view, outside the input.
+        assert!(super::terminal_takes_unclaimed_held_key(
+            true,
+            Some(false),
+            Some(false),
+            Some(true)
+        ));
+        // Only while a hold (or its settle) is in effect.
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            false,
+            Some(false),
+            Some(false),
+            Some(true)
+        ));
+        // Another pane keeps its keys; the focused editor takes its own (#1339).
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            true,
+            Some(false),
+            Some(false),
+            Some(false)
+        ));
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            true,
+            Some(true),
             Some(true),
             Some(true)
         ));
