@@ -4233,9 +4233,8 @@ impl EditorView {
     /// Marks this as the editor of a terminal pane: while the pane's key sink is on, the sink
     /// delivers its typed text and composition (`pane_typed` and friends) and the element leaves
     /// those events alone (#1404).
-    pub fn with_keys_from_pane_sink(mut self) -> Self {
-        self.keys_from_pane_sink = true;
-        self
+    pub fn set_keys_from_pane_sink(&mut self, on: bool) {
+        self.keys_from_pane_sink = on;
     }
 
     /// Typed text delivered by the pane's key sink: the same edit pipeline the element's

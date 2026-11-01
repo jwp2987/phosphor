@@ -21009,6 +21009,170 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_le
     ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(false);
 }
 
+/// #1339: with focus in the input's editor and no hold, the pane's key sink gives the key to the
+/// editor and to nothing else: inserted once, not written to the pty.
+#[test]
+fn pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(pane_typed(view, "a", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(pane_typed(view, "b", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// #1397: focus on a view inside the pane that takes no text (a settled card, an AI block, the
+/// input view between two focus moves) does not lose the key: the sink delivers it through the
+/// terminal's routing, which puts it in the input when the pty does not take it.
+#[test]
+fn pane_key_with_focus_on_a_non_text_view_in_the_pane_is_delivered_not_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            // Focus is on the input view itself (not its editor): a gap.
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
+        });
+    });
+}
+
+/// A text field inside the pane (the find bar, the block filter, any other editor) keeps its keys:
+/// the sink leaves the event to the elements and nothing reaches the input or the pty.
+#[test]
+fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.find_bar.id()],
+                leaf_takes_typed_text: true,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::NotMine
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty());
+        });
+    });
+}
+
+/// #1332 / #1394: keys typed during an ssh hold while focus sits somewhere in the pane that is
+/// neither the terminal nor the editor (the focus gap before the remote shell's first prompt) are
+/// all held, in order, none lost.
+fn ssh_keys_in_a_focus_gap_join_the_hold(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        for c in ["e", "c", "h", "o"] {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: c.to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+        }
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 4, "no key lost, none doubled");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_keys_in_a_focus_gap_join_the_hold_on_the_queue() {
+    ssh_keys_in_a_focus_gap_join_the_hold(true);
+}
+
+#[test]
+fn ssh_keys_in_a_focus_gap_join_the_hold_on_the_legacy_buffer() {
+    ssh_keys_in_a_focus_gap_join_the_hold(false);
+}
+
+/// IME: the composition is shown in the editor that will take the commit, the commit is one typed
+/// key, and the composition text never reaches the terminal's model when the editor has focus.
+#[test]
+fn pane_key_ime_composition_goes_to_the_focused_editor_and_the_commit_is_one_key() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let editor_id = view.input.as_ref(ctx).editor().id();
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id(), editor_id],
+                leaf_takes_typed_text: true,
+            };
+            let set = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::SetMarkedText {
+                    marked_text: "かな".to_owned(),
+                    selected_range: 0..2,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&set, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let clear = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::ClearMarkedText,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&clear, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let commit = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "仮名".to_owned(),
+                    ime_commit: true,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&commit, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "仮名");
+        });
+    });
+}
+
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);

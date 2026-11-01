@@ -4448,6 +4448,11 @@ impl TerminalView {
         });
 
         let input_position_id = input.read(ctx, |input, _| input.save_position_id());
+        // #1404: this pane's key sink delivers the input editor's typed text and composition.
+        // Set here, not by the input itself, so an input mounted without a terminal view keeps
+        // its element's handling.
+        let input_editor = input.as_ref(ctx).editor().clone();
+        input_editor.update(ctx, |editor, _| editor.set_keys_from_pane_sink(true));
         // #1353 step 3: the pane has ONE input queue. The input's editor adopts the view's, and
         // a drain the editor side has to stop (an entry only this view can deliver) pokes the
         // queue's waker so this view continues it. Event driven: nothing polls. A key the editor

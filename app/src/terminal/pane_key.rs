@@ -103,12 +103,13 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
                 KeyTarget::Terminal
             }
         }
-        // The editor's control keys are its keybindings; the terminal takes the rest when it has
-        // focus, or when the ssh hold needs it in a focus gap (#1332, #1394).
+        // The editor's control keys are its keybindings, and a terminal that has focus itself
+        // translates its keys into escape sequences (that needs the terminal's modes, which the
+        // element has): both stay with the elements. What nothing in the elements takes is a
+        // control key typed in a focus gap while the ssh hold needs it (#1332, #1394): the sink
+        // delivers it to the hold.
         KeyClass::Control => {
-            if facts.editor_focused {
-                KeyTarget::NotMine
-            } else if facts.terminal_focused || facts.ssh_hold_active {
+            if facts.ssh_hold_active && !facts.editor_focused && !facts.terminal_focused {
                 KeyTarget::Terminal
             } else {
                 KeyTarget::NotMine

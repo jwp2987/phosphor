@@ -3165,8 +3165,6 @@ impl Input {
                             .read()
                             .editor_text_precedes_report()
                     }))
-                    // The pane's key sink delivers this editor's typed text (#1404).
-                    .with_keys_from_pane_sink()
                     .with_next_command_model(next_command_model.clone())
                     .with_context_model(ai_context_model.clone())
             })
