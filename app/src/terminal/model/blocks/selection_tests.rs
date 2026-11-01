@@ -1606,17 +1606,21 @@ fn test_selection_to_parts_defers_big_selections_with_identical_text() {
                 first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset();
             let semantic_selection = SemanticSelection::mock(false, "");
 
-            block_list.start_selection(
-                BlockListPoint::new(first_command_grid_offset, 0),
-                SelectionType::Simple,
-                Side::Left,
-            );
-            block_list.update_selection(
-                BlockListPoint::new(second_output_grid_offset, 3),
-                Side::Right,
-            );
-
             for inverted in [false, true] {
+                // An inverted list shows later blocks first, so the same two blocks are selected
+                // by dragging from the later block's point to the earlier one's (as in
+                // `test_selection_to_string_inverted_blocklist`); the points themselves are the
+                // same absolute rows.
+                let first_point = BlockListPoint::new(first_command_grid_offset, 0);
+                let second_point = BlockListPoint::new(second_output_grid_offset, 3);
+                let (start, start_side, end, end_side) = if inverted {
+                    (second_point, Side::Left, first_point, Side::Right)
+                } else {
+                    (first_point, Side::Left, second_point, Side::Right)
+                };
+                block_list.start_selection(start, SelectionType::Simple, start_side);
+                block_list.update_selection(end, end_side);
+
                 let inline = block_list
                     .selection_to_string(&semantic_selection, inverted, ctx)
                     .expect("selection should have text");
