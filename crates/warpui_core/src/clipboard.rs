@@ -97,7 +97,16 @@ pub enum BackgroundTextRead {
     Content(ClipboardContent),
     /// The clipboard owner never answered (the same condition as `take_read_failure`).
     TimedOut,
+    /// The text and paths together are larger than [`MAX_PASTE_BYTES`] (this many bytes). The
+    /// content was dropped on the reader thread; the paste is refused with a message, never
+    /// truncated (#1382).
+    TooLarge(usize),
 }
+
+/// The most text (plain text, HTML and copied paths together) one paste may carry. A paste is
+/// held in memory while it waits behind other input and again as pty bytes, so a multi-GB
+/// clipboard must not be admitted. Over it, the paste is refused with a message (#1382).
+pub const MAX_PASTE_BYTES: usize = 64 * 1024 * 1024;
 
 /// See [`Clipboard::background_text_reader`].
 pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 'static>;
@@ -170,7 +179,7 @@ fn tracked_reader_with(
             return BackgroundTextRead::TimedOut;
         }
         let started = std::time::Instant::now();
-        let read = inner();
+        let read = cap_paste_size(inner(), MAX_PASTE_BYTES);
         if started.elapsed() >= slow {
             log::warn!(
                 "clipboard read returned after {:?} (budget {:?}); the paste had long given up on it",
@@ -180,6 +189,19 @@ fn tracked_reader_with(
         }
         read
     })
+}
+
+/// Refuses content whose text exceeds `max` bytes, dropping it here on the reader thread so the
+/// oversize buffer is freed before it is queued anywhere.
+pub fn cap_paste_size(read: BackgroundTextRead, max: usize) -> BackgroundTextRead {
+    match read {
+        BackgroundTextRead::Content(content) if content.text_bytes() > max => {
+            let bytes = content.text_bytes();
+            log::warn!("clipboard paste of {bytes} bytes exceeds the {max} byte cap; refused");
+            BackgroundTextRead::TooLarge(bytes)
+        }
+        other => other,
+    }
 }
 
 /// Which system clipboard a background write targets.
@@ -431,6 +453,17 @@ pub struct ImageData {
 }
 
 impl ClipboardContent {
+    /// Bytes of text this content would paste: plain text, HTML and copied paths (images are
+    /// bounded by their own limits).
+    pub fn text_bytes(&self) -> usize {
+        self.plain_text.len()
+            + self.html.as_ref().map_or(0, String::len)
+            + self
+                .paths
+                .as_ref()
+                .map_or(0, |paths| paths.iter().map(String::len).sum())
+    }
+
     pub fn plain_text(text: String) -> Self {
         Self {
             plain_text: text,

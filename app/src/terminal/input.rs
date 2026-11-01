@@ -1968,6 +1968,9 @@ pub struct Input {
     /// input queue (#1353 phase 1), by paste id.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     paste_payloads: std::collections::HashMap<u64, (PasteSource, ClipboardContent)>,
+    /// Queued pastes refused by the size cap (#1382): their own toast was shown, so the generic
+    /// "clipboard did not answer" one is not.
+    paste_refused: std::collections::HashSet<u64>,
     input_suggestions: ViewHandle<InputSuggestions>,
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     completions_menu_resizable_width: ResizableStateHandle,
@@ -3899,6 +3902,7 @@ impl Input {
             tips_completed,
             editor,
             paste_payloads: Default::default(),
+            paste_refused: Default::default(),
             model,
             sessions,
             focus_handle: None,
@@ -11212,6 +11216,9 @@ impl Input {
                     self.system_insert(&text, ctx);
                 }
             },
+            Some(warpui::clipboard::BackgroundTextRead::TooLarge(bytes)) => {
+                self.show_paste_too_large_toast(bytes, ctx);
+            }
             Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => {
                 if ctx.has_singleton_model::<ToastStack>() {
                     let window_id = ctx.window_id();

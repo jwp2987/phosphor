@@ -120,7 +120,9 @@ impl Host for InputQueueHost<'_, '_> {
         }
         match why {
             DiscardReason::PasteFailed | DiscardReason::PasteNotReady => {
-                if self.ctx.has_singleton_model::<ToastStack>() {
+                let refused = matches!(&entry.kind, EntryKind::Paste { paste_id, .. }
+                    if self.input.paste_refused.contains(paste_id));
+                if !refused && self.ctx.has_singleton_model::<ToastStack>() {
                     let window_id = self.ctx.window_id();
                     ToastStack::handle(self.ctx).update(self.ctx, |ts, ctx| {
                         ts.add_ephemeral_toast(
@@ -275,6 +277,13 @@ impl Input {
                 // `Some(empty)` is the "ready" marker; the content waits in `paste_payloads`.
                 Ok(Vec::new())
             }
+            Some(warpui::clipboard::BackgroundTextRead::TooLarge(bytes)) => {
+                // Refused with its own message; the gate still opens so the keys typed behind it
+                // are delivered in order.
+                self.paste_refused.insert(id);
+                self.show_paste_too_large_toast(bytes, ctx);
+                Err(())
+            }
             Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => Err(()),
         };
         {
@@ -286,5 +295,22 @@ impl Input {
             queue.borrow_mut().on_paste_read(&mut host, id, result);
         }
         self.paste_payloads.remove(&id);
+        self.paste_refused.remove(&id);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(super) fn show_paste_too_large_toast(&mut self, bytes: usize, ctx: &mut ViewContext<Self>) {
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                ts.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        crate::terminal::paste_sequencer::paste_too_large_message(bytes),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
     }
 }

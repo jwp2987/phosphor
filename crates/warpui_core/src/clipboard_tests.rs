@@ -264,3 +264,33 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
     }
     assert_eq!(TRACKER.in_flight(), 0);
 }
+
+#[test]
+fn over_cap_paste_is_refused_not_truncated() {
+    let big = ClipboardContent::plain_text("x".repeat(11));
+    match cap_paste_size(BackgroundTextRead::Content(big), 10) {
+        BackgroundTextRead::TooLarge(n) => assert_eq!(n, 11),
+        _ => panic!("expected TooLarge"),
+    }
+    // Exactly at the cap is admitted whole, as are paths and html counted together.
+    match cap_paste_size(
+        BackgroundTextRead::Content(ClipboardContent::plain_text("x".repeat(10))),
+        10,
+    ) {
+        BackgroundTextRead::Content(c) => assert_eq!(c.plain_text.len(), 10),
+        _ => panic!("expected Content"),
+    }
+    let mixed = ClipboardContent {
+        plain_text: "aaaaaa".into(),
+        html: Some("bbbbbb".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        cap_paste_size(BackgroundTextRead::Content(mixed), 10),
+        BackgroundTextRead::TooLarge(12)
+    ));
+    assert!(matches!(
+        cap_paste_size(BackgroundTextRead::TimedOut, 10),
+        BackgroundTextRead::TimedOut
+    ));
+}

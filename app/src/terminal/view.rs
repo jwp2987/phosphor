@@ -77,7 +77,7 @@ use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
 use super::input_queue;
-use super::paste_sequencer::{KeyDisposition, PasteSequencer};
+use super::paste_sequencer::{KeyDisposition, PasteFailure, PasteSequencer};
 use super::CLIAgent;
 use super::cli_agent;
 #[cfg(feature = "local_fs")]
@@ -22438,11 +22438,16 @@ impl TerminalView {
             .name("paste-read".into())
             .spawn(move || {
                 let result = match reader() {
-                    warpui::clipboard::BackgroundTextRead::TimedOut => None,
+                    warpui::clipboard::BackgroundTextRead::TimedOut => {
+                        Err(PasteFailure::NoAnswer)
+                    }
+                    warpui::clipboard::BackgroundTextRead::TooLarge(bytes) => {
+                        Err(PasteFailure::TooLarge(bytes))
+                    }
                     warpui::clipboard::BackgroundTextRead::Content(content) => {
                         let text =
                             clipboard_content_with_escaped_paths(content, shell_dialect, false);
-                        Some(paste_bytes_for_pty(&text, bracketed))
+                        Ok(paste_bytes_for_pty(&text, bracketed))
                     }
                 };
                 let _ = tx.send(result);
@@ -22456,7 +22461,7 @@ impl TerminalView {
             return;
         }
         ctx.spawn(
-            async move { rx.await.ok().flatten() },
+            async move { rx.await.unwrap_or(Err(PasteFailure::NoAnswer)) },
             move |me, bytes, ctx| me.finish_background_paste(id, bytes, ctx),
         );
         // A read that outlives the backstop fails the paste: the keys held behind it are written
@@ -22464,7 +22469,7 @@ impl TerminalView {
         if let Some(backstop) = backstop {
             ctx.spawn(Timer::after(backstop), move |me, _, ctx| {
                 if me.paste_sequencer.is_pending(id) {
-                    me.finish_background_paste(id, None, ctx);
+                    me.finish_background_paste(id, Err(PasteFailure::NoAnswer), ctx);
                 }
             });
         }
@@ -22494,7 +22499,7 @@ impl TerminalView {
     fn finish_background_paste(
         &mut self,
         id: u64,
-        bytes: Option<Vec<u8>>,
+        bytes: Result<Vec<u8>, PasteFailure>,
         ctx: &mut ViewContext<Self>,
     ) {
         // Cancelled (Ctrl-C) or superseded: the paste is dropped, nothing is written.
@@ -22502,10 +22507,16 @@ impl TerminalView {
             return;
         };
         match bytes {
-            Some(bytes) => {
+            Ok(bytes) => {
                 self.write_user_bytes_to_pty(bytes, ctx);
             }
-            None => self.show_error_toast(
+            Err(PasteFailure::TooLarge(bytes)) => {
+                self.show_error_toast(
+                    super::paste_sequencer::paste_too_large_message(bytes),
+                    ctx,
+                )
+            }
+            Err(PasteFailure::NoAnswer) => self.show_error_toast(
                 "Paste failed \u{2014} the clipboard did not answer; your typing was kept"
                     .to_string(),
                 ctx,

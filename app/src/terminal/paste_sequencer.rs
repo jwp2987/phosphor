@@ -7,6 +7,25 @@
 //! cancels the pending paste instead: nothing of it is sent, what was typed before the abort is
 //! released, and the abort goes out last.
 
+/// The message for a paste refused by the size cap (#1382). The paste is never truncated; the
+/// keys typed behind it are still delivered.
+pub(crate) fn paste_too_large_message(bytes: usize) -> String {
+    format!(
+        "Paste too large \u{2014} the clipboard holds {} MB (limit {} MB); nothing was pasted and your typing was kept",
+        bytes / (1024 * 1024),
+        warpui::clipboard::MAX_PASTE_BYTES / (1024 * 1024)
+    )
+}
+
+/// Why a pty-bound background paste produced no bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteFailure {
+    /// The clipboard owner never answered, or the reader died.
+    NoAnswer,
+    /// Refused by the size cap (this many bytes of text), never truncated (#1382).
+    TooLarge(usize),
+}
+
 /// What the caller does with a key typed while a paste may be pending.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum KeyDisposition {

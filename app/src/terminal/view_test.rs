@@ -14984,6 +14984,8 @@ enum PtyPasteScenario {
     SlowRead,
     /// The clipboard owner never answers (the reader reports a time-out).
     FailedRead,
+    /// The clipboard is over the paste size cap (the reader reports `TooLarge`, #1382).
+    TooLargeRead,
     /// Ctrl-C is typed while the read is pending.
     CtrlC,
     /// The reader parks past the 100 ms backstop, then answers late.
@@ -15010,10 +15012,13 @@ async fn pty_paste_bytes(app: &mut App, queue: bool, scenario: PtyPasteScenario)
     });
     let (release, parked) = std::sync::mpsc::channel::<()>();
     let fails = matches!(scenario, PtyPasteScenario::FailedRead);
+    let too_large = matches!(scenario, PtyPasteScenario::TooLargeRead);
     let reader: BackgroundTextReader = Box::new(move || {
         let _ = parked.recv_timeout(Duration::from_secs(20));
         if fails {
             BackgroundTextRead::TimedOut
+        } else if too_large {
+            BackgroundTextRead::TooLarge(warpui::clipboard::MAX_PASTE_BYTES + 1)
         } else {
             BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
         }
@@ -15077,7 +15082,9 @@ async fn pty_paste_bytes(app: &mut App, queue: bool, scenario: PtyPasteScenario)
                 "the late result is ignored"
             );
         }
-        PtyPasteScenario::SlowRead | PtyPasteScenario::FailedRead => {
+        PtyPasteScenario::SlowRead
+        | PtyPasteScenario::FailedRead
+        | PtyPasteScenario::TooLargeRead => {
             assert_eq!(
                 flat(&pty_writes),
                 b"a".to_vec(),
@@ -15115,6 +15122,19 @@ fn pty_paste_failed_read_keeps_the_typing_in_order() {
     for queue in [true, false] {
         App::test((), move |mut app| async move {
             let written = pty_paste_bytes(&mut app, queue, PtyPasteScenario::FailedRead).await;
+            assert_eq!(written, b"als\r".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// #1382: a clipboard over the paste cap writes nothing (never a truncated paste) and the typing
+/// behind it follows in order, on both paths.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_paste_over_the_size_cap_is_refused_and_the_typing_kept() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            let written = pty_paste_bytes(&mut app, queue, PtyPasteScenario::TooLargeRead).await;
             assert_eq!(written, b"als\r".to_vec(), "queue={queue}");
         });
     }
