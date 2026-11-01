@@ -3075,6 +3075,11 @@ impl EditorView {
         Rc::clone(&self.paste_hold)
     }
 
+    /// The soft-wrap layout state of the last rendered frame (its generation counts layouts).
+    pub fn soft_wrap_state(&self, ctx: &AppContext) -> crate::editor::soft_wrap::SoftWrapState {
+        self.model().as_ref(ctx).display_map(ctx).soft_wrap_state()
+    }
+
     /// Applies a key that was held behind a paste, exactly as if it had just been typed.
     pub fn apply_held_paste_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
         // #1389: the display map follows buffer edits only when effects flush, so a cursor-motion

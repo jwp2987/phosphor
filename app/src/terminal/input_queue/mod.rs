@@ -106,6 +106,15 @@ impl EditorKeyPayload {
             .is_some_and(HeldPasteKey::needs_fresh_display_map)
     }
 
+    /// Delivering this key reads the soft-wrap LAYOUT of the last rendered frame (visual line
+    /// start / end, Up, Down), which only a render after the edits before it brings up to date.
+    pub fn reads_soft_wrap_layout(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(HeldPasteKey::reads_soft_wrap_layout)
+    }
+
     /// The key, once. `None` if it was already delivered.
     pub fn take(&self) -> Option<HeldPasteKey> {
         self.0.borrow_mut().take()

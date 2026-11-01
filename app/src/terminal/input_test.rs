@@ -13609,6 +13609,64 @@ fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
     });
 }
 
+/// #1389: cursor keys typed behind a LARGE paste (100 KB and 1 MB) are applied after the paste's
+/// edit is fully reflected, whatever its size: Left lands before the last pasted character and the
+/// text typed after it goes there, End (a visual-line key) then takes the cursor to the end.
+#[test]
+fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    for size in [100 * 1024usize, 1024 * 1024] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("a", ctx);
+            });
+            let pasted = "p".repeat(size);
+            let content = pasted.clone();
+            let (release, parked) = std::sync::mpsc::channel::<()>();
+            let reader: BackgroundTextReader = Box::new(move || {
+                let _ = parked.recv_timeout(Duration::from_secs(20));
+                BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+            });
+            input.update(&mut app, |input, ctx| {
+                input.start_background_paste(reader, ctx)
+            });
+            editor.update(&mut app, |editor, ctx| {
+                editor.handle_action(&EditorAction::Left, ctx);
+                editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
+                editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
+            });
+            input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
+            release.send(()).unwrap();
+            for _ in 0..4000 {
+                let idle = editor.read(&app, |editor, _| {
+                    let hold = editor.paste_hold();
+                    !hold.has_pending() && hold.queue().peek().is_idle()
+                });
+                if idle {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            let expected = format!("a{}zp!", &pasted[..size - 1]);
+            input.read(&app, |input, ctx| {
+                let text = input.buffer_text(ctx);
+                assert_eq!(text.len(), expected.len(), "size {size}");
+                assert!(
+                    text == expected,
+                    "size {size}: keys landed in the wrong place"
+                );
+            });
+        });
+    }
+}
+
 /// #1353 merge step 4 (X5), #1389 on the pane's shared queue: keys typed while a paste is read are
 /// held, and a cursor key among them waits for the display map behind a queue gate (not in the
 /// editor's replay list). The final buffer is the one the replay list and the legacy sequencer

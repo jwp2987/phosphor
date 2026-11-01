@@ -48,6 +48,26 @@ impl HeldPasteKey {
     }
 }
 
+impl HeldPasteKey {
+    /// Applying this key reads the soft-wrap layout the last rendered frame stored (visual line
+    /// start / end, Up, Down and their selections). That layout describes the buffer as of that
+    /// frame, so after an edit it is stale until a newer frame is laid out; the display map alone
+    /// catching up is not enough (a large paste, #1389).
+    pub fn reads_soft_wrap_layout(&self) -> bool {
+        matches!(
+            self,
+            Self::Action(
+                EditorAction::Up
+                    | EditorAction::Down
+                    | EditorAction::SelectUp
+                    | EditorAction::SelectDown
+                    | EditorAction::MoveToVisualLineStart
+                    | EditorAction::MoveToVisualLineEnd
+            )
+        )
+    }
+}
+
 impl fmt::Debug for HeldPasteKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -76,6 +96,9 @@ pub struct EditorPasteHold {
     display_gate_enabled: Cell<bool>,
     /// The key of the display-map gate that is open, if one is.
     display_gate: Cell<Option<u64>>,
+    /// The layout generation the open display-map gate waits to be passed: its key reads the
+    /// soft-wrap layout, which must be a layout newer than the edits before the key.
+    layout_wait: Cell<Option<u64>>,
     next_display_gate: Cell<u64>,
     /// The step that closes the gate is running: the display map is current for the FIRST key it
     /// delivers (consumed by that key).
@@ -103,6 +126,7 @@ impl Default for EditorPasteHold {
             replaying: Cell::new(false),
             display_gate_enabled: Cell::new(false),
             display_gate: Cell::new(None),
+            layout_wait: Cell::new(None),
             next_display_gate: Cell::new(0),
             map_fresh: Cell::new(false),
             display_step_waker: RefCell::new(None),
@@ -225,6 +249,29 @@ impl EditorPasteHold {
             // Bounded to one: a step already requested is as good as another.
             let _ = waker.try_send(());
         }
+    }
+
+    /// Has the soft-wrap layout `soft` send the display-step waker each time a layout is stored,
+    /// so a replay step that waits for a newer layout runs again the moment one lands.
+    pub fn arm_layout_wake(&self, soft: &crate::editor::soft_wrap::SoftWrapState) {
+        if let Some(waker) = self.display_step_waker.borrow().as_ref() {
+            soft.set_layout_waker(waker.clone());
+        }
+    }
+
+    /// The open gate waits for a layout newer than `generation` (see [`Self::layout_wait`]).
+    pub fn set_layout_wait(&self, generation: Option<u64>) {
+        self.layout_wait.set(generation);
+    }
+
+    /// The layout generation the open gate waits to pass, if its key reads the layout.
+    pub fn layout_wait(&self) -> Option<u64> {
+        self.layout_wait.get()
+    }
+
+    /// Puts a gate back that the replay step could not close yet (it waits for a layout).
+    pub fn restore_display_gate(&self, key: u64) {
+        self.display_gate.set(Some(key));
     }
 
     /// The open display-map gate, once: the replay step takes it to close it.
