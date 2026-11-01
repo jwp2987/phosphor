@@ -5986,14 +5986,7 @@ impl Workspace {
                 crate::util::file::open_file_path_in_external_editor(line_col, path.clone(), ctx);
             }
             FileTarget::CodeEditor(layout) => {
-                // A huge file would be loaded whole into the editor (#1329): refuse it here.
-                if let Some(len) = crate::util::file::size_guard::too_large_for_code_editor(&path) {
-                    let message = crate::util::file::size_guard::too_large_message(&path, len);
-                    self.toast_stack.update(ctx, |view, ctx| {
-                        view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
-                    });
-                    return;
-                }
+                // `open_code` refuses a huge file (#1329) without statting on the UI thread.
                 let open_as_preview = false;
                 self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
             }
@@ -8141,8 +8134,61 @@ impl Workspace {
         );
     }
 
+    /// The one funnel every "open this file in the built-in code editor" path goes through
+    /// (file tree, palette, AI blocks and links, drag-drop, panes, settings). A file past the
+    /// size limit is refused with a toast instead of being loaded whole into the editor's rope
+    /// and layout (#1329); the size check runs off the UI thread, so the open completes a
+    /// moment later. `PHOSPHOR_EDITOR_MAX_FILE_MB=0` skips the check and opens synchronously.
     #[cfg(feature = "local_fs")]
     fn open_code(
+        &mut self,
+        source: CodeSource,
+        layout: EditorLayout,
+        line_col: Option<LineAndColumnArg>,
+        preview: bool,
+        additional_paths: &[PathBuf],
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut local_paths = Vec::new();
+        if let Some(crate::code::buffer_location::BufferLocation::Local(path)) = source.location()
+        {
+            local_paths.push(path);
+        }
+        local_paths.extend(additional_paths.iter().cloned());
+        if local_paths.is_empty() || !crate::util::file::size_guard::enabled() {
+            self.open_code_unchecked(source, layout, line_col, preview, additional_paths, ctx);
+            return;
+        }
+
+        let main_path = source.location().and_then(|location| match location {
+            crate::code::buffer_location::BufferLocation::Local(path) => Some(path),
+            _ => None,
+        });
+        let additional_paths = additional_paths.to_vec();
+        ctx.spawn(
+            async move { crate::util::file::size_guard::oversized_paths(&local_paths) },
+            move |me, oversized, ctx| {
+                for (path, len) in &oversized {
+                    let message = crate::util::file::size_guard::too_large_message(path, *len);
+                    me.toast_stack.update(ctx, |view, ctx| {
+                        view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
+                    });
+                }
+                if main_path
+                    .as_ref()
+                    .is_some_and(|main| oversized.iter().any(|(path, _)| path == main))
+                {
+                    return;
+                }
+                let additional_paths =
+                    crate::util::file::size_guard::without_oversized(&additional_paths, &oversized);
+                me.open_code_unchecked(source, layout, line_col, preview, &additional_paths, ctx);
+            },
+        );
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn open_code_unchecked(
         &mut self,
         source: CodeSource,
         layout: EditorLayout,

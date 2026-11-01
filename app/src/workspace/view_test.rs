@@ -520,6 +520,8 @@ fn test_open_file_with_target_event_preserves_requested_line() {
             );
         });
 
+        // The size guard checks the file off the UI thread before the pane opens.
+        app.finish_pending_tasks().await;
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
             let code_panes = pane_group.code_panes(ctx).collect::<Vec<_>>();
@@ -6483,6 +6485,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         };
 
         open_it(&workspace, &mut app);
+        app.finish_pending_tasks().await;
 
         let code_pane_id = workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -6501,6 +6504,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         });
 
         open_it(&workspace, &mut app);
+        app.finish_pending_tasks().await;
 
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -7842,5 +7846,100 @@ fn test_restored_terminal_panes_keep_persisted_cwd_until_their_shell_bootstraps(
                 "after the shell bootstraps, the live (remote) session decides the snapshot"
             );
         });
+    });
+}
+
+/// #1329 follow-up: the size guard sits in `open_code`, so every entry point is covered, not
+/// just `/open-file` and the file-tree target. Drives two others (the pane event AI blocks and
+/// links use, and `open_file_with_target`) with a sparse file past the limit, plus a small file
+/// as the control. On the old code the pane event opened the huge file.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let big_path = temp_dir.path().join("huge.log");
+        std::fs::File::create(&big_path)
+            .and_then(|file| {
+                file.set_len(crate::util::file::size_guard::CODE_EDITOR_MAX_FILE_BYTES + 1)
+            })
+            .expect("failed to create sparse file");
+
+        let code_pane_count = |workspace: &ViewHandle<Workspace>, app: &App| {
+            workspace.read(app, |workspace, ctx| {
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .code_panes(ctx)
+                    .count()
+            })
+        };
+
+        // Entry point 1: the pane event behind AI blocks / links / `/open-file`.
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &crate::pane_group::Event::OpenCodeInWarp {
+                    source: CodeSource::Link {
+                        path: big_path.clone(),
+                        range_start: None,
+                        range_end: None,
+                    },
+                    layout: EditorLayout::SplitPane,
+                    line_col: None,
+                },
+                ctx,
+            );
+        });
+        app.finish_pending_tasks().await;
+        assert_eq!(code_pane_count(&workspace, &app), 0);
+
+        // Entry point 2: `open_file_with_target` (file tree, palette, drag-drop).
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_file_with_target(
+                big_path.clone(),
+                FileTarget::CodeEditor(EditorLayout::SplitPane),
+                None,
+                CodeSource::FileTree {
+                    path: big_path.clone(),
+                },
+                ctx,
+            );
+        });
+        app.finish_pending_tasks().await;
+        assert_eq!(code_pane_count(&workspace, &app), 0);
+
+        // Control: a small file still opens.
+        let small_path = temp_dir.path().join("small.rs");
+        std::fs::write(&small_path, "// small\n").expect("failed to write small file");
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &crate::pane_group::Event::OpenCodeInWarp {
+                    source: CodeSource::Link {
+                        path: small_path.clone(),
+                        range_start: None,
+                        range_end: None,
+                    },
+                    layout: EditorLayout::SplitPane,
+                    line_col: None,
+                },
+                ctx,
+            );
+        });
+        app.finish_pending_tasks().await;
+        assert_eq!(code_pane_count(&workspace, &app), 1);
     });
 }
