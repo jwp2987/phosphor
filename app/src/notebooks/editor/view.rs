@@ -322,7 +322,7 @@ pub fn init(app: &mut AppContext) {
             EditorViewAction::Paste,
             id!("RichTextEditorView") & !id!("IMEOpen"),
         ),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         FixedBinding::custom(
             CustomAction::WindowsPaste,
             EditorViewAction::Paste,

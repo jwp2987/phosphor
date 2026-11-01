@@ -8162,3 +8162,155 @@ fn test_open_conversation_while_its_restore_is_in_flight_is_dropped() {
         });
     });
 }
+
+/// Opens `contents` as a code pane next to the mock workspace's terminal pane and returns the pane
+/// group, the pane id and the pane's code view (#1407 tests).
+#[cfg(feature = "local_fs")]
+async fn open_code_pane_for_memory_test(
+    app: &mut App,
+    workspace: &ViewHandle<Workspace>,
+    contents: &str,
+) -> (
+    ViewHandle<crate::pane_group::PaneGroup>,
+    PaneId,
+    ViewHandle<crate::code::view::CodeView>,
+    tempfile::TempDir,
+) {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let code_path = temp_dir.path().join("big.rs");
+    std::fs::write(&code_path, contents).expect("failed to write code file");
+
+    workspace.update(app, |workspace, ctx| {
+        let pane_group = workspace.active_tab_pane_group().clone();
+        workspace.handle_file_tree_event(
+            pane_group,
+            &crate::pane_group::Event::OpenFileWithTarget {
+                path: code_path.clone(),
+                target: FileTarget::CodeEditor(EditorLayout::SplitPane),
+                line_col: None,
+            },
+            ctx,
+        );
+    });
+    wait_for_code_panes(workspace, app, 1).await;
+    let pane_group = workspace.read(app, |workspace, _| {
+        workspace.active_tab_pane_group().clone()
+    });
+    let (pane_id, code_view) = pane_group.read(app, |panes, ctx| {
+        panes
+            .code_panes(ctx)
+            .next()
+            .expect("the code pane should exist")
+    });
+    (pane_group, pane_id, code_view, temp_dir)
+}
+
+/// #1407: closing a code pane must leave nothing holding the editor: the editor model and the
+/// shared buffer are dropped once the close has settled (the closed pane sits hidden in the
+/// undo-close stack, but its tabs hold no editors). Fails if any owner (undo stack, subscription,
+/// cache) keeps the closed editor alive.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_closing_a_code_pane_drops_its_editor_and_buffer() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let contents: String = (1..=200).map(|line| format!("// line {line}\n")).collect();
+        let (pane_group, pane_id, code_view, _dir) =
+            open_code_pane_for_memory_test(&mut app, &workspace, &contents).await;
+
+        let handles = code_view.read(&app, |view, ctx| view.editor_handles_for_test(ctx));
+        assert_eq!(handles.len(), 1);
+        app.read(|ctx| {
+            assert!(handles[0].0.upgrade(ctx).is_some());
+            assert!(handles[0].1.upgrade(ctx).is_some());
+        });
+
+        pane_group.update(&mut app, |panes, ctx| panes.close_pane(pane_id, ctx));
+        assert!(pane_group.read(&app, |panes, _| panes.is_pane_hidden_for_close(pane_id)));
+
+        // The drop happens when the close's effects flush; the buffer registry sweeps on the next
+        // idle turn. Wait for the sweep (an event), not a fixed time.
+        for _ in 0..1000 {
+            let dropped = app.read(|ctx| {
+                handles[0].0.upgrade(ctx).is_none()
+                    && handles[0].1.upgrade(ctx).is_none()
+                    && GlobalBufferModel::as_ref(ctx).buffer_count() == 0
+            });
+            if dropped {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        app.read(|ctx| {
+            assert!(
+                handles[0].0.upgrade(ctx).is_none(),
+                "the closed pane's editor model is still alive"
+            );
+            assert!(
+                handles[0].1.upgrade(ctx).is_none(),
+                "the closed pane's buffer is still alive"
+            );
+            assert_eq!(
+                GlobalBufferModel::as_ref(ctx).buffer_count(),
+                0,
+                "GlobalBufferModel still registers the closed file"
+            );
+        });
+    });
+}
+
+/// #1407: even when something still holds the editor model (the leak this issue is about), closing
+/// the pane drops the heavy state (layout, syntax trees) at once and the zombie model no longer
+/// follows its shared buffer.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_closing_a_code_pane_releases_a_retained_editors_heavy_state() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let contents: String = (1..=200).map(|line| format!("// line {line}\n")).collect();
+        let (pane_group, pane_id, code_view, _dir) =
+            open_code_pane_for_memory_test(&mut app, &workspace, &contents).await;
+
+        // A stray owner: a strong handle to the editor model that outlives the pane.
+        let retained = code_view.read(&app, |view, ctx| {
+            view.retained_editor_model_for_test(ctx)
+                .expect("the code view has one tab")
+        });
+        app.read(|ctx| assert!(!retained.as_ref(ctx).is_released()));
+
+        pane_group.update(&mut app, |panes, ctx| panes.close_pane(pane_id, ctx));
+
+        app.read(|ctx| {
+            let model = retained.as_ref(ctx);
+            assert!(
+                model.is_released(),
+                "closing must release the retained editor"
+            );
+            assert_eq!(
+                model.syntax_tree_count(ctx),
+                0,
+                "syntax trees must be dropped on close"
+            );
+        });
+    });
+}

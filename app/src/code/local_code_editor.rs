@@ -115,6 +115,9 @@ use warp_core::ui::icons::Icon;
 use crate::debounce::debounce;
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
 
+/// Buffers at least this many characters long are "large": closing one trims the heap (#1407).
+const LARGE_BUFFER_CHARS: usize = 1_000_000;
+
 const DROP_SHADOW_COLOR: ColorU = ColorU {
     r: 0,
     g: 0,
@@ -644,6 +647,21 @@ impl LocalCodeEditorView {
 
     pub fn set_default_directory(&mut self, directory: Option<PathBuf>) {
         self.default_directory = directory;
+    }
+
+    /// Whether the buffer is big enough (over [`LARGE_BUFFER_CHARS`]) that releasing the editor
+    /// frees a lot of heap, so the allocator should be asked to give it back to the OS.
+    pub fn is_large_buffer(&self, ctx: &AppContext) -> bool {
+        let editor = self.editor.as_ref(ctx);
+        let buffer = editor.model.as_ref(ctx).buffer().as_ref(ctx);
+        buffer.len().as_usize() >= LARGE_BUFFER_CHARS
+    }
+
+    /// Closes this editor for good: drops its laid-out paragraphs and syntax data immediately and
+    /// stops it reacting to its shared buffer (#1407). The caller removes the view afterwards.
+    pub fn release_memory(&mut self, ctx: &mut ViewContext<Self>) {
+        self.editor
+            .update(ctx, |editor, ctx| editor.release_memory(ctx));
     }
 
     pub fn reset_with_state(&mut self, state: InitialBufferState, ctx: &mut ViewContext<Self>) {

@@ -2763,6 +2763,10 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             // Ctrl+Shift+Q, menu Quit, SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop
             // exit) converges on this hook. See `run_will_terminate_steps` for why the
             // steps run in this order.
+            // A give-up for a step that never finishes (#1410). Every quit path, not only the
+            // signal ones that already have a 5 s watchdog, can now end the process.
+            #[cfg(not(target_family = "wasm"))]
+            warpui::platform::shutdown_progress::arm_quit_give_up();
             run_will_terminate_steps(&mut AppWillTerminate { ctx, servers: None });
         })),
         on_should_close_window: Some(Box::new(move |window_id, ctx| {

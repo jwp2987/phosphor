@@ -257,7 +257,9 @@ pub fn init(app: &mut AppContext) {
             CodeEditorViewAction::Paste,
             text_entry.clone(),
         ),
-        #[cfg(windows)]
+        // Linux also needs the plain `ctrl-v` binding: `CustomAction::Paste` is `ctrl-shift-v`
+        // there (#1409).
+        #[cfg(any(windows, target_os = "linux"))]
         FixedBinding::custom(
             CustomAction::WindowsPaste,
             CodeEditorViewAction::Paste,

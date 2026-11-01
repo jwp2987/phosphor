@@ -80,6 +80,31 @@ pub(crate) fn tune_glibc_malloc() {
     }
 }
 
+/// Hands freed heap pages back to the OS (`malloc_trim`) after a large release, e.g. closing an
+/// editor that held hundreds of MB (#1407). glibc only returns memory from the top of a heap on
+/// `free`, so a big transient structure leaves RSS high even though it is free; this walks every
+/// arena and releases the free pages in the middle too. Runs on a worker (it takes each arena's
+/// lock while it walks); callers use it only after a large release, never per allocation.
+#[cfg(all(
+    target_os = "linux",
+    target_env = "gnu",
+    not(feature = "jemalloc"),
+    not(feature = "dhat_heap_profiling")
+))]
+pub(crate) fn trim_free_memory() {
+    // SAFETY: `malloc_trim` is thread-safe and only releases memory glibc already considers free.
+    let _ = unsafe { libc::malloc_trim(0) };
+}
+
+/// No-op off glibc: jemalloc and the other platforms' allocators return memory on their own.
+#[cfg(not(all(
+    target_os = "linux",
+    target_env = "gnu",
+    not(feature = "jemalloc"),
+    not(feature = "dhat_heap_profiling")
+)))]
+pub(crate) fn trim_free_memory() {}
+
 /// Whether the user configured a malloc knob, either through its legacy environment variable or
 /// as `tunable` in the colon-separated `name=value` list of `GLIBC_TUNABLES`.
 #[cfg(all(

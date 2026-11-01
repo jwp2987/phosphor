@@ -2673,6 +2673,21 @@ impl RenderState {
         ctx.notify();
     }
 
+    /// Drops the laid-out content (every paragraph's glyphs and carets, ~100x the file size for a
+    /// large file), the decorations, selections and queued layout work, leaving the empty initial
+    /// document. For an editor that is being closed (#1407): the memory goes now, even if
+    /// something still references this model.
+    pub fn release_layout(&mut self) {
+        *self.content.get_mut() =
+            SumTree::from_item(Self::final_trailing_newline_cursor(&self.styles));
+        self.has_final_trailing_newline.set(true);
+        self.decorations = Default::default();
+        *self.selections.get_mut() = Default::default();
+        self.pending_edits.lock().clear();
+        *self.pending_selection_change.lock() = None;
+        self.hydration = Default::default();
+    }
+
     /// The current render-time decorations, sorted by end offset.
     pub fn decorations(&self) -> &RenderDecoration {
         &self.decorations

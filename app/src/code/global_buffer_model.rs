@@ -452,6 +452,37 @@ impl GlobalBufferModel {
         }
     }
 
+    /// Runs [`Self::remove_deallocated_buffers`] once the app is next idle. The editors a caller
+    /// just dropped are only freed when the effects of the current update flush, which is after
+    /// the caller returns, so a scan made inline still sees their buffers alive and leaves their
+    /// file watcher and LSP document registered (#1407). Event-driven: the future completes on
+    /// the next executor turn; there is no timer. A singleton, so the scan runs even when the
+    /// caller's own view has been dropped by then. With `trim`, the freed heap is then handed
+    /// back to the OS on a worker (the caller released a large editor).
+    pub fn sweep_deallocated_buffers_when_idle(
+        &mut self,
+        trim: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.spawn(async {}, move |me, _, ctx| {
+            me.remove_deallocated_buffers(ctx);
+            #[cfg(not(target_family = "wasm"))]
+            if trim {
+                ctx.background_executor()
+                    .spawn(async { crate::alloc::trim_free_memory() })
+                    .detach();
+            }
+            #[cfg(target_family = "wasm")]
+            let _ = trim;
+        });
+    }
+
+    /// How many buffers are registered (for tests).
+    #[cfg(test)]
+    pub(crate) fn buffer_count(&self) -> usize {
+        self.buffers.len()
+    }
+
     pub fn buffer_loaded(&self, file_id: FileId) -> bool {
         self.buffers
             .get(&file_id)

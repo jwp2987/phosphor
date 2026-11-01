@@ -1612,6 +1612,13 @@ impl CodeEditorView {
         })
     }
 
+    /// Drops the editor's laid-out paragraphs, syntax trees and highlight data now (#1407); see
+    /// [`CodeEditorModel::release_memory`]. For a closed editor only.
+    pub fn release_memory(&self, ctx: &mut ViewContext<Self>) {
+        self.model
+            .update(ctx, |model, ctx| model.release_memory(ctx));
+    }
+
     /// Reset editor content using InitialBufferState.
     /// This is the preferred method for resetting editor content as it consolidates all parameters.
     pub fn reset(&self, state: InitialBufferState, ctx: &mut ViewContext<Self>) {

@@ -119,3 +119,23 @@ fn test_failed_paste_read_keeps_the_keys_in_the_code_editor() {
         assert_eq!(text.as_str(), "ab");
     });
 }
+
+/// #1409: on Linux the code editor's `Paste` custom action is `ctrl-shift-v`, so plain `ctrl-v`
+/// needs the compensating `WindowsPaste` binding in the `CodeEditorView` context.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn test_ctrl_v_pastes_in_the_code_editor() {
+    use crate::util::bindings::CustomAction;
+    use warpui::keymap::Context;
+
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let mut context = Context::default();
+        context.set.insert("CodeEditorView");
+        let bound = app.read(|ctx| {
+            ctx.binding_for_custom_action(CustomAction::WindowsPaste.into(), vec![context])
+                .is_some()
+        });
+        assert!(bound, "ctrl-v must be bound in CodeEditorView");
+    });
+}

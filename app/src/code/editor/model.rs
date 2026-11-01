@@ -329,6 +329,9 @@ pub struct CodeEditorModel {
     lazy_layout_initialized: bool,
     /// Whether syntax parsing should be bootstrapped from the latest full buffer content.
     pending_syntax_tree_bootstrap: bool,
+    /// Set by [`Self::release_memory`]: the editor is closed, so edits to a shared buffer made
+    /// elsewhere must not be laid out or parsed here again (#1407).
+    released: bool,
 }
 
 impl CodeEditorModel {
@@ -416,6 +419,7 @@ impl CodeEditorModel {
             lazy_layout_enabled: lazy_layout,
             lazy_layout_initialized: false,
             pending_syntax_tree_bootstrap: false,
+            released: false,
         }
     }
 
@@ -497,6 +501,7 @@ impl CodeEditorModel {
             lazy_layout_enabled: false,
             lazy_layout_initialized: true,
             pending_syntax_tree_bootstrap: false,
+            released: false,
         }
     }
 
@@ -1691,6 +1696,9 @@ impl CodeEditorModel {
     }
 
     fn handle_content_model_event(&mut self, event: &BufferEvent, ctx: &mut ModelContext<Self>) {
+        if self.released {
+            return;
+        }
         match event {
             BufferEvent::ContentChanged {
                 delta,
@@ -2050,6 +2058,32 @@ impl CodeEditorModel {
     pub fn cut(&mut self, ctx: &mut ModelContext<Self>) {
         self.copy(ctx);
         self.backspace(ctx);
+    }
+
+    /// Drops this editor's own heavy state: the laid-out paragraphs, syntax trees, highlight
+    /// cache and decorations (hundreds of MB for a 7 MB file). The shared buffer is left alone
+    /// (another pane may show it). Called when the editor is closed so the memory goes now, not
+    /// only once every handle to this model happens to be dropped (#1407). The editor is not
+    /// usable for display afterwards.
+    pub fn release_memory(&mut self, ctx: &mut ModelContext<Self>) {
+        self.released = true;
+        self.delay_rendering = None;
+        self.pending_syntax_tree_bootstrap = false;
+        self.syntax_tree
+            .update(ctx, |syntax_tree, _| syntax_tree.release());
+        self.render_state
+            .update(ctx, |render_state, _| render_state.release_layout());
+    }
+
+    /// Number of syntax trees held (for tests).
+    #[cfg(test)]
+    pub(crate) fn syntax_tree_count(&self, ctx: &AppContext) -> usize {
+        self.syntax_tree.as_ref(ctx).tree_count()
+    }
+
+    /// Whether [`Self::release_memory`] ran.
+    pub fn is_released(&self) -> bool {
+        self.released
     }
 
     pub fn reset_content(&mut self, state: InitialBufferState, ctx: &mut ModelContext<Self>) {

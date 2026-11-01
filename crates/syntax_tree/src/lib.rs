@@ -138,6 +138,25 @@ impl SyntaxTreeState {
         });
     }
 
+    /// Drops every parsed tree, the highlight cache and the language queries, and aborts any parse
+    /// in flight. For an editor that is being closed: a 7 MB file holds hundreds of MB of
+    /// tree-sitter nodes and highlight ranges, and a closed editor must not keep them even if
+    /// something still references the model (#1407). The state stays valid (just empty) if the
+    /// model is queried afterwards.
+    pub fn release(&mut self) {
+        if let Some(handle) = self.parsing_handle.take() {
+            handle.abort();
+        }
+        *self.syntax_tree.lock() = HashMap::new();
+        *self.highlight_cache.borrow_mut() = None;
+        self.language_queries = None;
+    }
+
+    /// Number of syntax trees currently held (for tests and memory diagnostics).
+    pub fn tree_count(&self) -> usize {
+        self.syntax_tree.lock().len()
+    }
+
     pub fn has_supported_highlighting(&self) -> bool {
         self.language_queries.is_some()
     }
