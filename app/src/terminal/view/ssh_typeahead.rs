@@ -114,6 +114,17 @@ impl SshTypeahead {
         SshTypeaheadPush::Held
     }
 
+    /// Gives up the whole buffer as if it had grown past its bound (the editor's own queue did).
+    pub(super) fn overflow(&mut self) -> SshTypeaheadPush {
+        if self.overflowed {
+            return SshTypeaheadPush::Ignored;
+        }
+        self.items.clear();
+        self.bytes = 0;
+        self.overflowed = true;
+        SshTypeaheadPush::Overflowed
+    }
+
     /// Nothing is held (an overflowed buffer holds nothing).
     pub(super) fn is_empty(&self) -> bool {
         self.items.is_empty()

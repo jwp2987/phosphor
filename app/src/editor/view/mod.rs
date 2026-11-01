@@ -1,5 +1,6 @@
 mod element;
 mod figma_utils;
+mod key_hold;
 mod model;
 mod movement;
 mod snapshot;
@@ -11,6 +12,7 @@ mod voice;
 /// you should carefully consider if it leaks the internal details of the editor.
 pub use {
     element::{EditorDecoratorElements, EditorElement, TextColors},
+    key_hold::{EditorKeyHold, HeldEditorKey, TakenKeys},
     model::{
         Chars, CrdtOperation, DisplayPoint, EditOrigin, EditorSnapshot, InteractionState,
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
@@ -1856,6 +1858,9 @@ pub struct EditorView {
     /// buffer was ready: the buffer text at the time and when. Applied by `set_autosuggestion`
     /// if the ghost lands for the same buffer within [`PENDING_AUTOSUGGESTION_ACCEPT_WINDOW`].
     pending_autosuggestion_accept: Option<(String, Instant)>,
+    /// Set on the input's editor by the terminal view: while active, editing keys are queued
+    /// there instead of applied, so keys typed during an ssh connect keep their order (#1292).
+    key_hold: Option<Rc<EditorKeyHold>>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
 
     /// The height of the editor at the last render.
@@ -2997,6 +3002,35 @@ impl VimHandler for EditorView {
 }
 
 impl EditorView {
+    /// Installs the hold the terminal view uses to keep the keys typed during an ssh connect in
+    /// order (#1292).
+    pub fn set_key_hold(&mut self, hold: Rc<EditorKeyHold>) {
+        self.key_hold = Some(hold);
+    }
+
+    /// Queues `action` on the key hold instead of applying it, if the hold is active and the
+    /// action is an editing key it can replay. Everything else (Ctrl-C, Escape, Tab, ...) acts
+    /// normally.
+    fn hold_key_for_terminal(&self, action: &EditorAction) -> bool {
+        let Some(hold) = self.key_hold.as_ref().filter(|hold| hold.is_active()) else {
+            return false;
+        };
+        let key = match action {
+            EditorAction::UserInsert(text) => HeldEditorKey::Text(text.as_ref().to_owned()),
+            EditorAction::Enter => HeldEditorKey::Control("\r"),
+            EditorAction::Backspace => HeldEditorKey::Control("\u{7f}"),
+            EditorAction::DeleteAllLeft => HeldEditorKey::Control("\u{15}"),
+            EditorAction::DeleteWordLeft => HeldEditorKey::Control("\u{17}"),
+            EditorAction::Up => HeldEditorKey::Sequence("\u{1b}[A"),
+            EditorAction::Down => HeldEditorKey::Sequence("\u{1b}[B"),
+            EditorAction::Right => HeldEditorKey::Sequence("\u{1b}[C"),
+            EditorAction::Left => HeldEditorKey::Sequence("\u{1b}[D"),
+            _ => return false,
+        };
+        hold.push(key);
+        true
+    }
+
     fn snapshot(&self, ctx: &AppContext) -> ViewSnapshot {
         let font_cache = ctx.font_cache();
         let appearance = Appearance::as_ref(ctx);
@@ -3289,6 +3323,7 @@ impl EditorView {
             cursor_display_override,
             autosuggestion_state: None,
             pending_autosuggestion_accept: None,
+            key_hold: None,
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
                 editor_height_before_shrink: 0.,
@@ -8663,6 +8698,9 @@ impl TypedActionView for EditorView {
 
     fn handle_action(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) {
         use EditorAction::*;
+        if self.hold_key_for_terminal(action) {
+            return;
+        }
         match action {
             Scroll(position) => self.scroll(*position, ctx),
             Select(action) => self.select(action, ctx),
