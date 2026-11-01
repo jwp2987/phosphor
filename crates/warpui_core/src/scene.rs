@@ -14,6 +14,34 @@ use rstar::{primitives::Rectangle, RTree};
 use std::sync::Arc;
 use vec1::{vec1, Vec1};
 
+/// See [`Scene::stats`]. Areas are device pixels, summed over primitives (overdraw counts).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneStats {
+    pub layers: usize,
+    pub clipped_layers: usize,
+    pub rects: usize,
+    /// Rects that draw nothing and are skipped by the renderer.
+    pub skipped_rects: usize,
+    pub rounded_rects: usize,
+    pub gradient_rects: usize,
+    pub bordered_rects: usize,
+    /// Drawn rects of at least [`LARGE_RECT_AREA_PX`] device pixels.
+    pub large_rects: usize,
+    pub shadows: usize,
+    pub glyphs: usize,
+    pub images: usize,
+    pub icons: usize,
+    pub rect_area_px: f64,
+    pub rounded_rect_area_px: f64,
+    pub gradient_area_px: f64,
+    /// Area of the shadow quads: the shader runs a 4-tap erf blur per pixel of these.
+    pub shadow_area_px: f64,
+    pub image_area_px: f64,
+}
+
+/// A rect of at least this many device pixels counts as "large" in [`SceneStats`].
+const LARGE_RECT_AREA_PX: f64 = 250_000.;
+
 #[derive(Clone)]
 pub struct Scene {
     scale_factor: f32,
@@ -845,6 +873,146 @@ impl Scene {
     #[cfg(test)]
     pub fn layer_count(&self) -> usize {
         self.layers.len() + self.overlay_layers.len()
+    }
+
+    /// Per-kind primitive counts and covered device-pixel areas of the scene, for the
+    /// `warpui::scene_stats` debug log (#1279). Walks the layers once; only called when that log
+    /// target is enabled.
+    pub fn stats(&self) -> SceneStats {
+        let sf = self.scale_factor;
+        let area = |bounds: RectF, clip: Option<RectF>| -> f64 {
+            let b = match clip {
+                Some(c) => bounds.intersection(c),
+                None => Some(bounds),
+            };
+            b.map_or(0., |b| (b.width() * sf) as f64 * (b.height() * sf) as f64)
+        };
+        let mut stats = SceneStats::default();
+        for layer in self.layers() {
+            stats.layers += 1;
+            if layer.clip_bounds.is_some() {
+                stats.clipped_layers += 1;
+            }
+            let clip = layer.clip_bounds;
+            for rect in &layer.rects {
+                if let Some(shadow) = rect.drop_shadow {
+                    stats.shadows += 1;
+                    let pad = shadow.spread_radius;
+                    let b = RectF::new(
+                        rect.bounds.origin() + shadow.offset - vec2f(pad, pad),
+                        rect.bounds.size() + vec2f(2. * pad, 2. * pad),
+                    );
+                    stats.shadow_area_px += area(b, clip);
+                }
+                if rect.draws_nothing() {
+                    stats.skipped_rects += 1;
+                    continue;
+                }
+                stats.rects += 1;
+                let a = area(rect.bounds, clip);
+                stats.rect_area_px += a;
+                if !rect.corner_radius.is_square() {
+                    stats.rounded_rects += 1;
+                    stats.rounded_rect_area_px += a;
+                }
+                if matches!(rect.background, Fill::Gradient { .. }) {
+                    stats.gradient_rects += 1;
+                    stats.gradient_area_px += a;
+                }
+                if rect.border.top_width() != 0.
+                    || rect.border.right_width() != 0.
+                    || rect.border.bottom_width() != 0.
+                    || rect.border.left_width() != 0.
+                {
+                    stats.bordered_rects += 1;
+                }
+                if a >= LARGE_RECT_AREA_PX {
+                    stats.large_rects += 1;
+                }
+            }
+            stats.glyphs += layer.glyphs.len();
+            stats.images += layer.images.len();
+            stats.icons += layer.icons.len();
+            for i in &layer.images {
+                stats.image_area_px += area(i.bounds, clip);
+            }
+            for i in &layer.icons {
+                stats.image_area_px += area(i.bounds, clip);
+            }
+        }
+        stats
+    }
+
+    /// A hash of everything the renderer would draw (rects, shadows, glyphs, images, icons, layer
+    /// clips). Two frames with the same fingerprint put the same pixels on screen, so logging it
+    /// beside [`Scene::stats`] shows which frames repainted identical content (#1279, a second
+    /// frame after every key). Debug-log use only.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let f = |h: &mut std::collections::hash_map::DefaultHasher, v: f32| v.to_bits().hash(h);
+        let rect = |h: &mut std::collections::hash_map::DefaultHasher, r: RectF| {
+            f(h, r.origin_x());
+            f(h, r.origin_y());
+            f(h, r.width());
+            f(h, r.height());
+        };
+        let fill = |h: &mut std::collections::hash_map::DefaultHasher, fill: &Fill| {
+            for c in [fill.start_color(), fill.end_color()] {
+                (c.r, c.g, c.b, c.a).hash(h);
+            }
+            f(h, fill.start().x());
+            f(h, fill.start().y());
+            f(h, fill.end().x());
+            f(h, fill.end().y());
+        };
+        self.scale_factor.to_bits().hash(&mut h);
+        for layer in self.layers() {
+            layer.clip_bounds.is_some().hash(&mut h);
+            if let Some(c) = layer.clip_bounds {
+                rect(&mut h, c);
+            }
+            for r in &layer.rects {
+                rect(&mut h, r.bounds);
+                fill(&mut h, &r.background);
+                fill(&mut h, &r.border.color);
+                for w in [
+                    r.border.top_width(),
+                    r.border.right_width(),
+                    r.border.bottom_width(),
+                    r.border.left_width(),
+                ] {
+                    f(&mut h, w);
+                }
+                format!("{:?}", r.corner_radius).hash(&mut h);
+                if let Some(d) = r.drop_shadow {
+                    (d.color.r, d.color.g, d.color.b, d.color.a).hash(&mut h);
+                    f(&mut h, d.offset.x());
+                    f(&mut h, d.offset.y());
+                    f(&mut h, d.blur_radius);
+                    f(&mut h, d.spread_radius);
+                }
+            }
+            for g in &layer.glyphs {
+                g.glyph_key.glyph_id.hash(&mut h);
+                f(&mut h, g.position.x());
+                f(&mut h, g.position.y());
+                (g.color.r, g.color.g, g.color.b, g.color.a).hash(&mut h);
+                format!("{:?}", g.fade).hash(&mut h);
+            }
+            for i in &layer.images {
+                rect(&mut h, i.bounds);
+                Arc::as_ptr(&i.asset).hash(&mut h);
+                f(&mut h, i.opacity);
+            }
+            for i in &layer.icons {
+                rect(&mut h, i.bounds);
+                Arc::as_ptr(&i.asset).hash(&mut h);
+                f(&mut h, i.opacity);
+                (i.color.r, i.color.g, i.color.b, i.color.a).hash(&mut h);
+            }
+        }
+        h.finish()
     }
 
     pub fn scale_factor(&self) -> f32 {

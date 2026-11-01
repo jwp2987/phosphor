@@ -502,6 +502,13 @@ impl Input {
             return;
         }
 
+        // #1279: this restyle is the async notify behind a second frame after a key.
+        log::debug!(
+            target: "warpui::notify_cause",
+            "input: decorations changed (syntax={}, error_underline={})",
+            desired.syntax.len(),
+            desired.error_underline.len()
+        );
         // Clear all decorations before applying the updated ones. The comparison above already
         // read the buffer's styles, so skip the guard's second scan.
         self.clear_decorations_unchecked(ctx);

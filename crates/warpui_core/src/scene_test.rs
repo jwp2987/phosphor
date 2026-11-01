@@ -300,3 +300,60 @@ fn zero_radii_are_square_and_anything_else_is_not() {
     assert!(!CornerRadius::with_bottom_right(Radius::Pixels(0.5)).is_square());
     assert!(!CornerRadius::with_all(Radius::Percentage(0.)).is_square());
 }
+
+#[test]
+fn stats_count_primitives_and_areas_in_device_pixels() {
+    let mut scene = Scene::new(2., rendering::Config::default());
+    // 10x10 logical solid square rect: drawn, 400 device px.
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+        .with_background(ColorU::new(1, 2, 3, 255));
+    // Fully transparent: skipped, not counted as drawn.
+    scene.draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(500., 500.)));
+    // Large rounded rect with a shadow.
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(300., 300.)))
+        .with_background(ColorU::new(1, 2, 3, 255))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+        .with_drop_shadow(DropShadow::new_with_standard_offset_and_spread(
+            ColorU::black(),
+        ));
+    scene.start_layer(ClipBounds::BoundedBy(RectF::new(
+        vec2f(0., 0.),
+        vec2f(10., 10.),
+    )));
+    scene
+        .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(100., 100.)))
+        .with_background(ColorU::new(1, 2, 3, 255));
+
+    let stats = scene.stats();
+    assert_eq!(stats.layers, 2);
+    assert_eq!(stats.clipped_layers, 1);
+    assert_eq!(stats.rects, 3);
+    assert_eq!(stats.skipped_rects, 1);
+    assert_eq!(stats.rounded_rects, 1);
+    assert_eq!(stats.shadows, 1);
+    assert_eq!(stats.large_rects, 1);
+    // 400 + 360000 + (clipped to 10x10 logical) 400
+    assert_eq!(stats.rect_area_px, 400. + 360_000. + 400.);
+    assert_eq!(stats.shadow_area_px, 360. * 360. * 4.);
+}
+
+#[test]
+fn fingerprint_is_equal_for_identical_scenes_and_differs_on_content() {
+    let build = |color: ColorU| {
+        let mut scene = Scene::new(1., rendering::Config::default());
+        scene
+            .draw_rect_without_hit_recording(RectF::new(vec2f(0., 0.), vec2f(10., 10.)))
+            .with_background(color);
+        scene
+    };
+    assert_eq!(
+        build(ColorU::new(1, 2, 3, 255)).fingerprint(),
+        build(ColorU::new(1, 2, 3, 255)).fingerprint()
+    );
+    assert_ne!(
+        build(ColorU::new(1, 2, 3, 255)).fingerprint(),
+        build(ColorU::new(1, 2, 4, 255)).fingerprint()
+    );
+}
