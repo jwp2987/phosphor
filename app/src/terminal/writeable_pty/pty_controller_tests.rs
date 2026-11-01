@@ -607,6 +607,151 @@ fn container_subshell_bootstrap_is_written_in_bounded_chunks() {
     });
 }
 
+/// Builds a controller on a recording sender, as the container-bootstrap tests do.
+#[cfg(feature = "local_fs")]
+fn paced_write_controller(
+    app: &mut App,
+    model: Arc<FairMutex<TerminalModel>>,
+    sender: &TestEventLoopSender,
+) -> (ModelHandle<PtyController<TestEventLoopSender>>, impl Sized) {
+    let (model_events_tx, model_events_rx) = async_channel::unbounded();
+    let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+    let line_editor_status =
+        app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+    let sender = sender.clone();
+    let controller = app.add_model(|ctx| {
+        PtyController::new(
+            sender,
+            model_events,
+            line_editor_status,
+            sessions,
+            executor_command_rx,
+            model,
+            ctx,
+        )
+    });
+    (controller, model_events_tx)
+}
+
+/// A ^C in the middle of a paced (container) bootstrap write stops it: the chunks after it, and
+/// the closing CR that submits the script, are never written. Before, every chunk was its own
+/// free-standing timer, so all of them were typed into the live shell after the interrupt.
+#[cfg(feature = "local_fs")]
+#[test]
+fn ctrl_c_mid_bootstrap_writes_no_further_chunks() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        // Three chunks (2 x 4KB + a remainder).
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            assert_eq!(controller.paced_writes_remaining(), 2, "first chunk is out");
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            assert_eq!(controller.paced_writes_remaining(), 0);
+        });
+        // Wait well past the pacing gaps: nothing else may be written.
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let inputs: Vec<&Message> = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Input(_)))
+            .collect();
+        assert_eq!(inputs.len(), 2, "first chunk and the ^C only: {messages:?}");
+        assert!(
+            !messages.iter().any(|m| matches!(
+                m,
+                Message::Input(bytes) if bytes.ends_with(&[escape_sequences::C0::CR])
+            )),
+            "the closing CR must never be typed after the interrupt"
+        );
+    });
+}
+
+/// Shutting the pty down (tab close) drops the rest of a paced bootstrap write too.
+#[cfg(feature = "local_fs")]
+#[test]
+fn shutdown_mid_bootstrap_writes_no_further_chunks() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            controller.shutdown_pty(ctx);
+        });
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let inputs = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Input(_)))
+            .count();
+        assert_eq!(
+            inputs, 1,
+            "only the chunk written before the close: {messages:?}"
+        );
+    });
+}
+
+/// Chunks go out in order, one per pacing step, and a second bootstrap replaces the first's
+/// leftovers instead of interleaving with them.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_newer_paced_write_replaces_the_unwritten_chunks_of_the_older_one() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        let first: Vec<u8> = vec![b'a'; 2 * 4096 + 10];
+        let second: Vec<u8> = vec![b'b'; 10];
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                first.into(),
+            );
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                second.into(),
+            );
+        });
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let written: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Input(bytes) => Some(bytes.to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let a_count = written.iter().filter(|b| **b == b'a').count();
+        assert_eq!(
+            a_count, 4096,
+            "only the first chunk of the superseded write: {a_count}"
+        );
+        assert_eq!(written.iter().filter(|b| **b == b'b').count(), 10);
+    });
+}
+
 /// The chunking decision is `is_container_subshell`, not "the bootstrap is
 /// large": a non-container session with a bootstrap over the 4KB chunk size
 /// must still go out as a single write, so this only depends on the container
