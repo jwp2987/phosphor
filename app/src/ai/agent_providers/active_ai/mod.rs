@@ -23,8 +23,8 @@ use minijinja::context;
 use serde::Serialize;
 
 use super::oneshot::{
-    byop_oneshot_completion, resolve_active_ai_oneshot, resolve_next_command_oneshot,
-    OneshotConfig, OneshotOptions,
+    OneshotConfig, OneshotOptions, WhileKeysLoading, byop_oneshot_completion,
+    resolve_active_ai_oneshot, resolve_active_ai_oneshot_with, resolve_next_command_oneshot,
 };
 use crate::ai::predict::generate_am_query_suggestions::GenerateAMQuerySuggestionsResponse;
 
@@ -124,7 +124,7 @@ pub mod prompt_suggestions {
         terminal_view_id: Option<EntityId>,
         input: Input,
     ) -> Option<RenderedRequest> {
-        let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
+        let cfg = resolve_active_ai_oneshot_with(app, terminal_view_id, WhileKeysLoading::Skip)?;
         let language = (*LanguageSettings::as_ref(app).language).prompt_language_name();
         let overrides = active_prompt_overrides(app, terminal_view_id);
         let system = render_with_override(
@@ -188,7 +188,7 @@ pub mod nld_predict {
         terminal_view_id: Option<EntityId>,
         input: Input,
     ) -> Option<RenderedRequest> {
-        let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
+        let cfg = resolve_active_ai_oneshot_with(app, terminal_view_id, WhileKeysLoading::Skip)?;
         let overrides = active_prompt_overrides(app, terminal_view_id);
         let system = render_with_override(
             "nld_predict_system.j2",
