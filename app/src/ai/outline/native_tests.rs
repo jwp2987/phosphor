@@ -73,3 +73,19 @@ fn failed_outline_retries_only_after_the_backoff() {
     // Unknown failure time retries.
     assert!(retry_backoff_elapsed(None, backoff));
 }
+
+/// #1276: every status mutation changes the version that symbol caches key on.
+#[test]
+fn outline_mutations_bump_the_version() {
+    App::test((), |mut app| async move {
+        setup(&mut app);
+        let v0 = app.read(|ctx| RepoOutlines::as_ref(ctx).version());
+        app.update(|ctx| {
+            RepoOutlines::handle(ctx).update(ctx, |me, _| me.bump_version());
+        });
+        let v1 = app.read(|ctx| RepoOutlines::as_ref(ctx).version());
+        assert_ne!(v0, v1);
+        // Unchanged model: the version is stable between reads.
+        assert_eq!(v1, app.read(|ctx| RepoOutlines::as_ref(ctx).version()));
+    })
+}

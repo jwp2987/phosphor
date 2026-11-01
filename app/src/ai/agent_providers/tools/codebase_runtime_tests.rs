@@ -225,3 +225,35 @@ fn codebase_unavailable_reason_names_remote_and_unknown_cwd() {
             .contains("working directory is not known")
     );
 }
+
+/// #1276: the symbol list is rebuilt only when the outline version changes.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn symbol_cache_rebuilds_only_on_version_or_repo_change() {
+    use std::cell::Cell;
+    use std::path::Path;
+
+    let cache = SymbolCache::new();
+    let builds = Cell::new(0);
+    let build = |name: &'static str| {
+        let builds = &builds;
+        move || {
+            builds.set(builds.get() + 1);
+            vec![sym(name, None, "a.rs", 1)]
+        }
+    };
+    let repo = Path::new("/repo");
+
+    let first = cache.get_or_build(repo, 1, build("old"));
+    let again = cache.get_or_build(repo, 1, build("unused"));
+    assert_eq!(builds.get(), 1, "no mutation: served from cache");
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+
+    let after = cache.get_or_build(repo, 2, build("new"));
+    assert_eq!(builds.get(), 2, "version bump: rebuilt");
+    assert_eq!(after[0].name, "new");
+
+    let other = cache.get_or_build(Path::new("/other"), 2, build("other"));
+    assert_eq!(builds.get(), 3, "different repo: rebuilt");
+    assert_eq!(other[0].name, "other");
+}
