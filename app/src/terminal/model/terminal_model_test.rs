@@ -2819,6 +2819,7 @@ fn ssh_login_failed_auth_reprompt_is_not_login_done() {
             .as_ref()
             .unwrap()
             .notification_state
+            .clone()
     };
     assert_ne!(state(&model), SshLoginNotificationState::Completed);
 
@@ -2840,6 +2841,7 @@ fn ssh_login_reprompt_withdraws_pending_recheck() {
             .as_ref()
             .unwrap()
             .notification_state
+            .clone()
     };
     assert_eq!(
         state(&model),
