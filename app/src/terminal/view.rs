@@ -11575,7 +11575,7 @@ impl TerminalView {
     /// on and the queue is not in the middle of delivering (a write made then cannot take a new
     /// entry and uses the legacy buffers).
     fn subshell_queue_owns_holds(&self) -> bool {
-        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_borrow().is_ok()
+        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_peek().is_some()
     }
 
     /// Opens the subshell gates for a setup that has just been announced (#1353 phase 2).
@@ -22668,7 +22668,7 @@ impl TerminalView {
         // #1353 phase 1: the paste is an entry of the pane's input queue. A queue that is
         // mid-drain cannot take a new gate; that is not reachable from a user paste, but fall
         // back to the legacy sequencer rather than panic on a borrow.
-        if self.paste_queue.enabled && self.paste_queue.queue.try_borrow_mut().is_ok() {
+        if self.paste_queue.enabled && self.paste_queue.queue.try_lock().is_some() {
             self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
             return;
         }

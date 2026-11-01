@@ -21344,7 +21344,7 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
             conpty_prompt_hold_setup(view, true);
             // Another gate (a paste being read) holds the keys first; the hold starts when a key
             // is delivered from the queue, which is borrowed then.
-            let queue = Rc::clone(&view.paste_queue.queue);
+            let queue = view.paste_queue.queue.clone();
             let mut host = paste_queue::PtyQueueHost::new(view, ctx);
             queue.borrow_mut().open_gate(
                 &mut host,
@@ -21357,7 +21357,7 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
             view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
             assert!(pty_writes.borrow().is_empty());
-            let queue = Rc::clone(&view.paste_queue.queue);
+            let queue = view.paste_queue.queue.clone();
             let mut host = paste_queue::PtyQueueHost::new(view, ctx);
             queue.borrow_mut().on_gate_event(
                 &mut host,

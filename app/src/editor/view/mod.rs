@@ -3147,11 +3147,11 @@ impl EditorView {
         if !self.paste_hold.queue_is_busy() {
             return false;
         }
-        let queue = Rc::clone(self.paste_hold.queue());
+        let queue = self.paste_hold.queue();
         if matches!(action, EditorAction::CtrlC) {
             let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
             queue
-                .borrow_mut()
+                .lock()
                 .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
             self.flush_held_replay_now(ctx);
             return false;
@@ -3169,7 +3169,7 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let held = queue.borrow();
+            let held = queue.peek();
             if held.has_gate_kind(GateKind::EnterVerdict)
                 && !held.has_gate_kind(GateKind::PasteReading)
             {
@@ -3180,7 +3180,7 @@ impl EditorView {
                     _ => return false,
                 };
                 let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-                queue.borrow_mut().offer(&mut host, kind);
+                queue.lock().offer(&mut host, kind);
                 return true;
             }
         }
@@ -3189,7 +3189,7 @@ impl EditorView {
         };
         let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
         queue
-            .borrow_mut()
+            .lock()
             .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
         true
     }

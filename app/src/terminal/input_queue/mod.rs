@@ -36,6 +36,7 @@
 mod destination;
 mod gates;
 pub mod kill_switch;
+mod pane;
 pub mod trace;
 
 #[cfg(test)]
@@ -51,6 +52,7 @@ use crate::editor::HeldPasteKey;
 
 pub use destination::{DestFacts, Destination, DropReason, destination_for, pin_still_valid};
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
+pub use pane::{PaneQueue, PasteOwner, QueueGuard, is_editor_paste_id};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -11,7 +11,6 @@
 //! the key pipeline that holds, and a paste typed behind a paste starts its own read from the
 //! editor event (it queues behind the first one's gate), so nothing here re-enters the queue.
 
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::{SingletonEntity as _, ViewContext};
@@ -173,12 +172,12 @@ impl Host for InputQueueHost<'_, '_> {
 impl Input {
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
-        let queue = Rc::clone(self.editor.as_ref(ctx).paste_hold().queue());
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
         #[cfg(not(target_family = "wasm"))]
         {
-            let is_paste_gate = queue.try_borrow().is_ok_and(|queue| {
+            let is_paste_gate = queue.try_peek().is_some_and(|queue| {
                 queue.gates().iter().any(|gate| {
                     gate.token == token
                         && gate.kind == crate::terminal::input_queue::GateKind::PasteReading
@@ -193,7 +192,7 @@ impl Input {
             ctx,
             held_behind: 0,
         };
-        queue.borrow_mut().give_up(&mut host, token);
+        queue.lock().give_up(&mut host, token);
     }
 
     /// Starts an editor-bound clipboard read on the queue.
@@ -220,14 +219,14 @@ impl Input {
         ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
             me.finish_queued_read(id, read, source, ctx)
         });
-        let queue = Rc::clone(hold.queue());
+        let queue = hold.queue();
         {
             let mut host = InputQueueHost {
                 input: self,
                 ctx,
                 held_behind: 0,
             };
-            queue.borrow_mut().offer_gated(
+            queue.lock().offer_gated(
                 &mut host,
                 EntryKind::Paste {
                     paste_id: id,
@@ -284,13 +283,13 @@ impl Input {
         source: PasteSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        let queue = Rc::clone(self.editor.as_ref(ctx).paste_hold().queue());
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
         // The paste itself is one of the queued entries; the rest are the keys behind it.
         let held_behind = if queue
-            .borrow()
+            .peek()
             .has_gate(crate::terminal::input_queue::GateKind::PasteReading, id)
         {
-            queue.borrow().queued_summary().0.saturating_sub(1)
+            queue.peek().queued_summary().0.saturating_sub(1)
         } else {
             0
         };
@@ -315,7 +314,7 @@ impl Input {
                 ctx,
                 held_behind,
             };
-            queue.borrow_mut().on_paste_read(&mut host, id, result);
+            queue.lock().on_paste_read(&mut host, id, result);
         }
         self.paste_payloads.remove(&id);
         self.paste_refused.remove(&id);

@@ -3,10 +3,10 @@
 //!
 //! A terminal-bound paste reads the clipboard off the UI thread (#1255). Everything typed while it
 //! reads must reach the pty AFTER the paste, in typed order. That used to be a `PasteSequencer`
-//! that every key was offered to; now the paste is an entry of the pane's [`InputQueue`] held by a
+//! that every key was offered to; now the paste is an entry of the pane's `InputQueue` held by a
 //! `PasteReading` gate, and the keys typed behind it are entries queued behind that gate. The gate
-//! is opened by the reader's result ([`InputQueue::on_paste_read`]) or closed by ^C / ^D
-//! ([`InputQueue::offer`] of a `Signal`: the paste is cancelled, what was typed before the abort is
+//! is opened by the reader's result (`InputQueue::on_paste_read`) or closed by ^C / ^D
+//! (`InputQueue::offer` of a `Signal`: the paste is cancelled, what was typed before the abort is
 //! delivered, the abort goes last). The one timer is the give-up cap for a reader that never
 //! answers (`PHOSPHOR_PASTE_BACKSTOP_MS`), armed once through [`Host::arm_give_up`], token-guarded
 //! and logged when it fires.
@@ -37,9 +37,7 @@
 //! tree and are also the fallback for a write made while the queue is delivering.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::{SingletonEntity as _, ViewContext};
@@ -49,7 +47,7 @@ use super::{Event, TerminalView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry, InputQueue, SignalKind, trace,
+    GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -57,12 +55,11 @@ use crate::terminal::paste_sequencer::PasteFailure;
 /// What the pane's paste ordering needs: the queue, the paste bytes waiting for their turn, and
 /// the id counter.
 pub(super) struct PasteQueueState {
-    pub(super) queue: Rc<RefCell<InputQueue>>,
+    pub(super) queue: PaneQueue,
     /// Prepared pty bytes of pastes that were read and wait to be delivered, by paste id.
     pub(super) payloads: HashMap<u64, Vec<u8>>,
     /// Queued pastes refused by the size cap (#1382): already told, so no generic failure toast.
     pub(super) refused: std::collections::HashSet<u64>,
-    next_id: u64,
     /// `PHOSPHOR_INPUT_QUEUE_PASTE`; false keeps the legacy `PasteSequencer` path.
     pub(super) enabled: bool,
     /// `PHOSPHOR_INPUT_QUEUE_SUBSHELL` (#1353 phase 2); false keeps the legacy
@@ -134,10 +131,9 @@ pub(super) fn handoff_queue_enabled_by_default() -> bool {
 impl PasteQueueState {
     pub(super) fn new() -> Self {
         Self {
-            queue: Rc::new(RefCell::new(InputQueue::new())),
+            queue: PaneQueue::new(),
             payloads: HashMap::new(),
             refused: Default::default(),
-            next_id: 0,
             enabled: kill_switch::is_enabled(Area::Paste),
             subshell_enabled: kill_switch::is_enabled(Area::Subshell),
             pending_aborts: Vec::new(),
@@ -161,9 +157,9 @@ impl PasteQueueState {
         self.cli_submit_enabled = on;
     }
 
+    /// The next paste id of this pane (one counter, shared with the editor's pastes).
     fn next_paste_id(&mut self) -> u64 {
-        self.next_id += 1;
-        self.next_id
+        self.queue.next_paste_id(PasteOwner::Pty)
     }
 }
 
@@ -335,8 +331,8 @@ impl TerminalView {
             // Mid-drain (borrowed) means the paste that was pending has just been delivered.
             self.paste_queue
                 .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate_kind(GateKind::PasteReading))
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate_kind(GateKind::PasteReading))
         } else {
             self.paste_sequencer.has_pending()
         }
@@ -356,7 +352,7 @@ impl TerminalView {
         if self
             .paste_queue
             .queue
-            .try_borrow()
+            .try_peek()
             .map_or(true, |queue| queue.is_idle())
         {
             return None;
@@ -373,7 +369,7 @@ impl TerminalView {
             if self
                 .paste_queue
                 .queue
-                .try_borrow()
+                .try_peek()
                 .map_or(true, |queue| queue.is_idle())
             {
                 return None;
@@ -386,8 +382,8 @@ impl TerminalView {
                     && self
                         .paste_queue
                         .queue
-                        .try_borrow()
-                        .is_ok_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
+                        .try_peek()
+                        .is_some_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
                 {
                     self.subshell_bootstrap_announced = None;
                 }
@@ -398,7 +394,7 @@ impl TerminalView {
                 // A key typed for the shell's line behind a prompt hold: the ConPTY mid-line
                 // guard learns of it here, without the model lock.
                 if let Some(stamp) = &self.paste_queue.line_stamp
-                    && self.paste_queue.queue.try_borrow().is_ok_and(|queue| {
+                    && self.paste_queue.queue.try_peek().is_some_and(|queue| {
                         queue.has_gate_kind(GateKind::LineEditorActive)
                             || queue.has_gate_kind(GateKind::PromptSeen)
                     })
@@ -411,9 +407,9 @@ impl TerminalView {
                 }
             }
         };
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.borrow_mut().offer(&mut host, kind);
+        queue.lock().offer(&mut host, kind);
         Some(host.written)
     }
 
@@ -431,8 +427,8 @@ impl TerminalView {
         }
         self.paste_queue.next_cli_submit_key += 1;
         let key = self.paste_queue.next_cli_submit_key;
-        let queue = Rc::clone(&self.paste_queue.queue);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut queue) = queue.try_lock() else {
             log::warn!("input queue: CLI-agent submit gate not opened, the queue was busy");
             return;
         };
@@ -449,8 +445,8 @@ impl TerminalView {
         let Some(key) = self.paste_queue.cli_submit_gate.take() else {
             return;
         };
-        let queue = Rc::clone(&self.paste_queue.queue);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut queue) = queue.try_lock() else {
             log::warn!(
                 "input queue: CLI-agent submit gate could not be closed, the queue was busy"
             );
@@ -479,10 +475,9 @@ impl TerminalView {
 
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     pub(super) fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let kind = queue
-            .try_borrow()
-            .ok()
+            .try_peek()
             .and_then(|queue| {
                 queue
                     .gates()
@@ -496,8 +491,7 @@ impl TerminalView {
             // hand-off stops holding for this session. The queue's own give-up would deliver them
             // through the stages again; the hold has its own release instead.
             let key = queue
-                .try_borrow()
-                .ok()
+                .try_peek()
                 .and_then(|queue| {
                     queue
                         .gates()
@@ -515,8 +509,7 @@ impl TerminalView {
             // hold already ended) and the queue's own give-up must not deliver them through the
             // stages a second time.
             let key = queue
-                .try_borrow()
-                .ok()
+                .try_peek()
                 .and_then(|queue| {
                     queue
                         .gates()
@@ -542,7 +535,7 @@ impl TerminalView {
         }
         {
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.borrow_mut().give_up(&mut host, token);
+            queue.lock().give_up(&mut host, token);
         }
         if kind == Some(GateKind::SubshellBootstrapWrite) {
             self.send_pending_subshell_aborts(ctx);
@@ -553,15 +546,15 @@ impl TerminalView {
     /// (the names are the ones the old buffers logged, so an old and a new trace compare).
     fn held_trace_name(&self) -> &'static str {
         use crate::terminal::input_queue::trace::legacy;
-        match self.paste_queue.queue.try_borrow() {
-            Ok(queue) if queue.has_gate_kind(GateKind::PasteReading) => legacy::PASTE_PTY,
-            Ok(queue) if queue.has_gate_kind(GateKind::CliSubmit) => legacy::PASTE_PTY,
-            Ok(queue) if queue.has_gate_kind(GateKind::SubshellBootstrapWrite) => {
+        match self.paste_queue.queue.try_peek() {
+            Some(queue) if queue.has_gate_kind(GateKind::PasteReading) => legacy::PASTE_PTY,
+            Some(queue) if queue.has_gate_kind(GateKind::CliSubmit) => legacy::PASTE_PTY,
+            Some(queue) if queue.has_gate_kind(GateKind::SubshellBootstrapWrite) => {
                 legacy::SUBSHELL_BOOTSTRAP
             }
-            Ok(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
-            Ok(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
-            Ok(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
+            Some(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
+            Some(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
+            Some(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
         }
     }
@@ -573,7 +566,7 @@ impl TerminalView {
         self.paste_queue.enabled
             && self.paste_queue.handoff_enabled
             && (self.paste_queue.requeueable_delivery
-                || self.paste_queue.queue.try_borrow_mut().is_ok())
+                || self.paste_queue.queue.try_lock().is_some())
     }
 
     /// The hand-off just held `bytes` for the prompt and told us it keeps no copy (#1353 phase 5):
@@ -619,9 +612,9 @@ impl TerminalView {
             self.paste_queue.requeue_request = Some(RequeueRequest { spec, bytes });
             return;
         }
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.borrow_mut().offer_gated(
+        queue.lock().offer_gated(
             &mut host,
             EntryKind::PtyBytes {
                 bytes,
@@ -645,8 +638,8 @@ impl TerminalView {
             || !self
                 .paste_queue
                 .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
         {
             return bytes;
         }
@@ -659,9 +652,9 @@ impl TerminalView {
         let Some(hold_id) = hold_id else {
             return bytes;
         };
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let Some(mut guard) = queue.try_lock() else {
                 return bytes;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -677,8 +670,8 @@ impl TerminalView {
     fn young_hold_gate_open(&self) -> bool {
         self.paste_queue
             .queue
-            .try_borrow()
-            .is_ok_and(|queue| queue.has_gate_kind(GateKind::PromptSeen))
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::PromptSeen))
     }
 
     /// A signal or EOF is about to be written while the queue holds a young Enter's keys (#933,
@@ -705,9 +698,9 @@ impl TerminalView {
         let Some((hold_id, before_eof)) = ended else {
             return bytes;
         };
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: nothing else can end the hold, so record it for the next attempt.
                 self.model
                     .lock()
@@ -768,9 +761,9 @@ impl TerminalView {
         end: YoungHoldEnd,
         ctx: &mut ViewContext<Self>,
     ) {
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: keep the end for the next attempt (the gate's give-up finds it too).
                 self.model
                     .lock()
@@ -839,8 +832,8 @@ impl TerminalView {
         if !self
             .paste_queue
             .queue
-            .try_borrow()
-            .is_ok_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
         {
             return;
         }
@@ -870,17 +863,17 @@ impl TerminalView {
     fn young_hold_gate_has_key(&self, hold_id: u64) -> bool {
         self.paste_queue
             .queue
-            .try_borrow()
-            .is_ok_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
     }
 
     /// Takes the keys out of young hold `hold_id`'s gate and writes them to the pty as typeahead,
     /// in typed order (one write, or one per key event on ConPTY), routed and counted by the
     /// hand-off. `routed` is whether the hand-off already ended the hold.
     fn release_young_hold_keys(&mut self, hold_id: u64, routed: bool, ctx: &mut ViewContext<Self>) {
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let Some(mut guard) = queue.try_lock() else {
                 log::warn!("input queue: young hold {hold_id} not released, the queue was busy");
                 return;
             };
@@ -953,9 +946,9 @@ impl TerminalView {
         how: PromptHoldEnd,
         ctx: &mut ViewContext<Self>,
     ) {
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let Some(mut guard) = queue.try_lock() else {
                 // Mid-drain: the gate's own give-up cap releases the keys.
                 log::warn!("input queue: prompt hold {hold_id} not released, the queue was busy");
                 return;
@@ -1001,8 +994,8 @@ impl TerminalView {
     pub(super) fn subshell_setup_gate_open(&self) -> bool {
         self.paste_queue
             .queue
-            .try_borrow()
-            .is_ok_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
     }
 
     /// Before a user key is written (#1353 phase 2): opens, from the SAME facts the legacy hold
@@ -1016,8 +1009,8 @@ impl TerminalView {
     ) -> SubshellPrep {
         // A queue that is mid-drain: this write is part of delivering an entry.
         let (setup_gate, bootstrap_gate, only_subshell_gates) =
-            match self.paste_queue.queue.try_borrow() {
-                Ok(queue) => (
+            match self.paste_queue.queue.try_peek() {
+                Some(queue) => (
                     queue.has_gate_kind(GateKind::SubshellSetup),
                     queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
                     queue.gates().iter().all(|gate| {
@@ -1027,7 +1020,7 @@ impl TerminalView {
                         )
                     }),
                 ),
-                Err(_) => return SubshellPrep::Normal,
+                None => return SubshellPrep::Normal,
             };
         let in_flight = self
             .subshell_bootstrap_in_flight
@@ -1078,7 +1071,7 @@ impl TerminalView {
             && !awaits_answer
             && powershell_off
             && super::subshell_setup_should_hold_typed_bytes(age, abort);
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         if setup_governs && !setup_gate {
             // Cap = what is left of the old hold limit; the legacy timer is the same net.
             let left = age
@@ -1087,7 +1080,7 @@ impl TerminalView {
                 })
                 .max(Duration::from_millis(100));
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.borrow_mut().open_gate(
+            queue.lock().open_gate(
                 &mut host,
                 GateSpec::new(GateKind::SubshellSetup, 0).with_cap(Some(left)),
             );
@@ -1098,7 +1091,7 @@ impl TerminalView {
             // N lines x 2 s: the marker give-up falls back to timed pacing long before this.
             let cap = Duration::from_secs(2) * (lines as u32 + 1);
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.borrow_mut().open_gate(
+            queue.lock().open_gate(
                 &mut host,
                 GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(Some(cap)),
             );
@@ -1113,8 +1106,8 @@ impl TerminalView {
 
     /// Closes the setup gate (its event: the setup is over) and delivers what it held, in order.
     pub(super) fn close_subshell_setup_gate(&mut self, ctx: &mut ViewContext<Self>) {
-        let queue = Rc::clone(&self.paste_queue.queue);
-        let Ok(mut guard) = queue.try_borrow_mut() else {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
             return;
         };
         if !guard.has_gate_kind(GateKind::SubshellSetup) {
@@ -1130,8 +1123,8 @@ impl TerminalView {
     /// first, then the gate closes and what was typed is delivered, in order.
     pub(super) fn settle_subshell_bootstrap_gate(&mut self, ctx: &mut ViewContext<Self>) {
         self.send_pending_subshell_aborts(ctx);
-        let queue = Rc::clone(&self.paste_queue.queue);
-        let Ok(mut guard) = queue.try_borrow_mut() else {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
             return;
         };
         if !guard.has_gate_kind(GateKind::SubshellBootstrapWrite) {
@@ -1154,8 +1147,8 @@ impl TerminalView {
             if self.subshell_setup_gate_open() {
                 self.subshell_bootstrap_announced = None;
             }
-            let queue = Rc::clone(&self.paste_queue.queue);
-            let Ok(mut guard) = queue.try_borrow_mut() else {
+            let queue = self.paste_queue.queue.clone();
+            let Some(mut guard) = queue.try_lock() else {
                 continue;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1228,10 +1221,10 @@ impl TerminalView {
         if self.paste_queue.subshell_enabled {
             self.prepare_subshell_gates(&[], ctx);
         }
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         {
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.borrow_mut().offer_gated(
+            queue.lock().offer_gated(
                 &mut host,
                 EntryKind::Paste {
                     paste_id: id,
@@ -1248,7 +1241,7 @@ impl TerminalView {
                 if me
                     .paste_queue
                     .queue
-                    .borrow()
+                    .peek()
                     .has_gate(GateKind::PasteReading, id)
                 {
                     if !ctx.has_singleton_model::<crate::workspace::ToastStack>() {
@@ -1275,9 +1268,9 @@ impl TerminalView {
         bytes: Result<Vec<u8>, PasteFailure>,
         ctx: &mut ViewContext<Self>,
     ) {
-        let queue = Rc::clone(&self.paste_queue.queue);
-        if queue.borrow().has_gate(GateKind::PasteReading, id) {
-            let (entries, held_bytes) = queue.borrow().queued_summary();
+        let queue = self.paste_queue.queue.clone();
+        if queue.peek().has_gate(GateKind::PasteReading, id) {
+            let (entries, held_bytes) = queue.peek().queued_summary();
             // The paste itself is one of the queued entries.
             trace::release(
                 trace::legacy::PASTE_PTY,
@@ -1307,13 +1300,13 @@ impl TerminalView {
         };
         {
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.borrow_mut().on_paste_read(&mut host, id, result);
+            queue.lock().on_paste_read(&mut host, id, result);
         }
         // A result that arrived after its paste was cancelled or given up has no entry to claim it.
         // A paste that is still queued (its own gate is closed but another gate, such as the
         // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
         // them here lost the paste.
-        let still_queued = queue.borrow().entries().any(
+        let still_queued = queue.peek().entries().any(
             |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
         );
         if !still_queued {

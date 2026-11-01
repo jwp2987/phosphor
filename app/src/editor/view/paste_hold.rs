@@ -19,7 +19,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::ViewContext;
@@ -28,7 +27,7 @@ use super::{EditorAction, EditorView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateToken, Host, InputEntry, InputQueue,
+    GateToken, Host, InputEntry, PaneQueue, PasteOwner,
 };
 use crate::terminal::paste_sequencer::PasteSequencer;
 
@@ -53,10 +52,11 @@ impl fmt::Debug for HeldPasteKey {
 #[derive(Debug)]
 pub struct EditorPasteHold {
     sequencer: RefCell<PasteSequencer<HeldPasteKey>>,
-    queue: Rc<RefCell<InputQueue>>,
+    /// The pane's queue handle. A plain editor keeps its own; the terminal input swaps in the
+    /// terminal view's so the pane has ONE ([`Self::adopt_queue`]).
+    pane_queue: RefCell<PaneQueue>,
     /// Paste ordering runs on `queue` (`PHOSPHOR_INPUT_QUEUE_PASTE`, default on).
     queue_enabled: Cell<bool>,
-    next_paste_id: Cell<u64>,
     /// Replayed keys that wait for the display map to catch up with the edits before them (#1389).
     replay: RefCell<VecDeque<HeldPasteKey>>,
     /// A `ReplayHeldKeys` step is already queued as an effect.
@@ -69,9 +69,8 @@ impl Default for EditorPasteHold {
     fn default() -> Self {
         Self {
             sequencer: RefCell::default(),
-            queue: Rc::default(),
+            pane_queue: RefCell::new(PaneQueue::new()),
             queue_enabled: Cell::new(kill_switch::is_enabled(Area::Paste)),
-            next_paste_id: Cell::new(0),
             replay: RefCell::default(),
             replay_scheduled: Cell::new(false),
             replaying: Cell::new(false),
@@ -130,20 +129,24 @@ impl EditorPasteHold {
         self.queue_enabled.set(on);
     }
 
-    pub fn queue(&self) -> &Rc<RefCell<InputQueue>> {
-        &self.queue
+    /// The pane's queue (a cheap handle; clones share the queue).
+    pub fn queue(&self) -> PaneQueue {
+        self.pane_queue.borrow().clone()
     }
 
+    /// The id of the next editor-bound queued paste. The counter belongs to the pane's queue, so
+    /// it is shared with the terminal view's pastes once the queue is.
     pub fn next_queue_paste_id(&self) -> u64 {
-        let id = self.next_paste_id.get() + 1;
-        self.next_paste_id.set(id);
-        id
+        self.pane_queue.borrow().next_paste_id(PasteOwner::Editor)
     }
 
     /// The queue holds input right now (a paste is being read). False while it is mid-drain: a
     /// key applied by a delivery is part of that delivery and must not be held again.
     pub fn queue_is_busy(&self) -> bool {
-        self.queue.try_borrow().is_ok_and(|queue| !queue.is_idle())
+        self.pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|queue| !queue.is_idle())
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already
@@ -155,9 +158,10 @@ impl EditorPasteHold {
     pub fn has_pending(&self) -> bool {
         if self.queue_enabled.get() {
             return self
-                .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate_kind(GateKind::PasteReading));
+                .pane_queue
+                .borrow()
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate_kind(GateKind::PasteReading));
         }
         self.sequencer.borrow().has_pending()
     }
@@ -172,9 +176,10 @@ impl EditorPasteHold {
     pub fn is_pending(&self, id: u64) -> bool {
         if self.queue_enabled.get() {
             return self
-                .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate(GateKind::PasteReading, id));
+                .pane_queue
+                .borrow()
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate(GateKind::PasteReading, id));
         }
         self.sequencer.borrow().is_pending(id)
     }

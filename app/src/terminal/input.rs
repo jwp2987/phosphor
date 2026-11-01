@@ -11137,7 +11137,7 @@ impl Input {
         // #1353 phase 1: the paste is an entry of the editor's input queue. A queue that is
         // mid-drain cannot take a new gate (not reachable from a user paste); fall back to the
         // sequencer rather than panic on a borrow.
-        if hold.uses_queue() && hold.queue().try_borrow_mut().is_ok() {
+        if hold.uses_queue() && hold.queue().try_lock().is_some() {
             self.start_queued_read(reader, backstop, source, ctx);
             return;
         }
