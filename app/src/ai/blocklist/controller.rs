@@ -24,7 +24,7 @@ use super::{
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
         BlocklistAIContextModel, PendingAttachment, ReadAttachment, attachments_need_disk_read,
-        block_context_from_terminal_model, context_and_files_from_read, read_attachments,
+        block_context_from_terminal_model, context_and_files_from_read, read_attachments, read_attachments_cancellable,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
@@ -1003,6 +1003,20 @@ struct PendingQuerySend {
     /// The live-staged attachments were taken (and cleared from staging) at submit time, so
     /// this send owns them; see `send_query` (#1370 F4).
     staged_taken: bool,
+    /// Set when this entry is dropped (give-up, discard, pane close), so the worker thread still
+    /// reading its attachments stops between files instead of finishing a read nobody awaits
+    /// (#1382).
+    _cancel_read: CancelOnDrop,
+}
+
+/// Sets its flag when dropped; the cancel half of the `decorations_cancel` pattern.
+#[derive(Default)]
+struct CancelOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 enum InputQueryType {
@@ -1928,14 +1942,18 @@ impl BlocklistAIController {
                 send,
                 read: Some(read_attachments(prompt_attachments)),
                 staged_taken,
+                _cancel_read: CancelOnDrop::default(),
             });
             return;
         }
+        let cancel_read = CancelOnDrop::default();
+        let cancel_flag = cancel_read.0.clone();
         self.pending_query_sends.push_back(PendingQuerySend {
             seq,
             send,
             read: None,
             staged_taken,
+            _cancel_read: cancel_read,
         });
         let file_names: Vec<String> = prompt_attachments
             .iter()
@@ -1955,7 +1973,7 @@ impl BlocklistAIController {
         let spawned = std::thread::Builder::new()
             .name("attachment-read".into())
             .spawn(move || {
-                let _ = tx.send(read_attachments(prompt_attachments));
+                let _ = tx.send(read_attachments_cancellable(prompt_attachments, &cancel_flag));
             });
         let spawn_ok = match spawned {
             Ok(_) => true,
@@ -2051,6 +2069,7 @@ impl BlocklistAIController {
             },
             read: None,
             staged_taken: false,
+            _cancel_read: CancelOnDrop::default(),
         });
         seq
     }

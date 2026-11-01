@@ -1030,3 +1030,27 @@ fn read_attachments_preserves_order_and_reports_unreadable_files() {
     assert_eq!(failed, ["missing.txt"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn cancelled_attachment_read_skips_remaining_files() {
+    use super::read_attachments_cancellable;
+    let dir = std::env::temp_dir().join(format!("phosphor-read-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.txt");
+    std::fs::write(&good, "hello").unwrap();
+    let attachment = || {
+        PendingAttachment::File(PendingFile {
+            file_name: "good.txt".to_owned(),
+            file_path: good.clone(),
+            mime_type: "text/plain".to_owned(),
+        })
+    };
+    let live = std::sync::atomic::AtomicBool::new(false);
+    let read = read_attachments_cancellable(vec![attachment()], &live);
+    assert!(read[0].file_context.is_some());
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let read = read_attachments_cancellable(vec![attachment(), attachment()], &cancelled);
+    assert_eq!(read.len(), 2);
+    assert!(read.iter().all(|r| r.file_context.is_none()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
