@@ -146,6 +146,10 @@ use warpui_extras::secure_storage::SecureStorage;
 fn make_manager(keys: ApiKeys) -> ApiKeyManager {
     ApiKeyManager {
         keys,
+        pending: PendingKeyEdits::default(),
+        loading: false,
+        load_epoch: 0,
+        loaded: true,
         aws_credentials_state: AwsCredentialsState::Missing,
         aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy::default(),
     }

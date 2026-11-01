@@ -406,7 +406,8 @@ fn big_results(count: usize) -> std::sync::Arc<SuggestionResults> {
     std::sync::Arc::new(SuggestionResults {
         replacement_span: Span::default(),
         suggestions: (0..count)
-            .map(|i| prefix_matched_suggestion(&format!("f{i:05}")))
+            // Spread over the "f0", "f1" and "f2" prefixes so each query below has matches.
+            .map(|i| prefix_matched_suggestion(&format!("f{}{i:05}", i % 3)))
             .collect(),
         match_strategy: MatchStrategy::CaseSensitive,
     })

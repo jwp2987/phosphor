@@ -12120,12 +12120,37 @@ fn test_enter_during_a_pending_paste_submits_the_full_line() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        // A session, so a submitted command is actually executed (and the event observable).
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
         let editor = input.read(&app, |input, _| input.editor().clone());
+        // Shell input, locked: the Enter must not wait on (or be routed by) a verdict.
         input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert("echo ", ctx);
+        });
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let executed_in_handler = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if let super::Event::ExecuteCommand(event) = event {
+                    executed_in_handler.borrow_mut().push(event.command.clone());
+                }
+            });
         });
 
         let (release, parked) = std::sync::mpsc::channel::<()>();
@@ -12143,6 +12168,7 @@ fn test_enter_during_a_pending_paste_submits_the_full_line() {
         input.read(&app, |input, ctx| {
             assert_eq!(input.buffer_text(ctx), "echo ")
         });
+        assert!(executed.borrow().is_empty());
 
         release.send(()).unwrap();
         for _ in 0..1000 {
@@ -12152,8 +12178,8 @@ fn test_enter_during_a_pending_paste_submits_the_full_line() {
             }
             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
         }
-        // Submitted after the paste landed: the whole line went, so the editor is empty again.
-        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
+        // Submitted after the paste landed: the whole line went, not the "echo " fragment.
+        assert_eq!(executed.borrow().as_slice(), ["echo pasted".to_owned()]);
     });
 }
 

@@ -216,7 +216,10 @@ mod read_file_failures {
     #[test]
     fn files_after_the_batch_byte_budget_get_an_explicit_failure() {
         let dir = TempDir::new().expect("create tempdir");
-        let a = write_file(&dir, "a.txt", b"0123456789\n");
+        // Exactly the budget, plus the trailing newline the reader counts. A first line longer
+        // than the budget would be cut to nothing without spending any of it, leaving the
+        // allowance intact for the second file.
+        let a = write_file(&dir, "a.txt", b"01234\n");
         let b = write_file(&dir, "b.txt", b"second\n");
 
         // Budget of 5 bytes: the first file spends it, the second must be reported.

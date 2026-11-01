@@ -235,7 +235,19 @@ fn is_text_like_by_filename(file_name: &str) -> bool {
 /// actually consumes BinaryContent and upgrades it to `ContentPart::Binary`.
 fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
     let full_path = file.file_path.to_string_lossy().into_owned();
-    let metadata_size = std::fs::metadata(&file.file_path).ok().map(|m| m.len());
+    let metadata_size = match std::fs::metadata(&file.file_path) {
+        Ok(m) => Some(m.len()),
+        // Gone since it was attached: report it as unreadable rather than handing the model an
+        // empty placeholder for a file that does not exist.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::warn!(
+                "Attached file {} no longer exists; not adding it to the context",
+                file.file_path.display()
+            );
+            return None;
+        }
+        Err(_) => None,
+    };
 
     // 1) text-like: try UTF-8
     if is_text_like(file) {

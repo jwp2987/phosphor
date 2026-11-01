@@ -370,7 +370,16 @@ mod background {
         }
     }
 
-    fn install(store: &SharedStore) {
+    fn install(app: &mut App, store: &SharedStore) {
+        // The model keeps a handle on the app's own singleton to fall back on when no worker
+        // exists; it is looked up eagerly even when the worker is used. Sharing the store means
+        // an inline run would still show up in `ops` on the calling thread.
+        let fallback = store.clone();
+        app.update(move |ctx| {
+            ctx.add_singleton_model(move |_| -> secure_storage::Model {
+                Box::new(Handle(fallback))
+            });
+        });
         let store = store.clone();
         secure_storage::background::set_factory_for_test(Some(Arc::new(move || {
             Box::new(Handle(store.clone())) as secure_storage::Model
@@ -395,7 +404,7 @@ mod background {
                 SECURE_STORAGE_KEY.to_owned(),
                 r#"{"p":"sk-stored"}"#.to_owned(),
             );
-            install(&store);
+            install(&mut app, &store);
 
             let started = std::time::Instant::now();
             let secrets = app.add_singleton_model(AgentProviderSecrets::new);
@@ -423,16 +432,18 @@ mod background {
                 SECURE_STORAGE_KEY.to_owned(),
                 r#"{"old":"sk-old"}"#.to_owned(),
             );
-            install(&store);
+            install(&mut app, &store);
             let secrets = app.add_singleton_model(AgentProviderSecrets::new);
             secrets.update(&mut app, |s, ctx| s.set("new", "sk-new".to_owned(), ctx));
             // Not persisted yet: that would have overwritten "old" with a partial map.
-            assert!(store
-                .ops
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(op, _)| *op != "write"));
+            assert!(
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(op, _)| *op != "write")
+            );
 
             wait_until(|| {
                 store
@@ -458,7 +469,7 @@ mod background {
     fn writes_land_in_the_order_they_were_made() {
         App::test((), |mut app| async move {
             let store = SharedStore::default();
-            install(&store);
+            install(&mut app, &store);
             let secrets = app.add_singleton_model(AgentProviderSecrets::new);
             wait_until(|| secrets.read(&app, |s, _| s.is_loaded())).await;
             secrets.update(&mut app, |s, ctx| {
