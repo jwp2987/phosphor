@@ -966,6 +966,9 @@ pub struct Workspace {
     tab_group_rename_editor: ViewHandle<EditorView>,
     vertical_tabs_search_input: ViewHandle<EditorView>,
     tips_completed: ModelHandle<TipsCompleted>,
+    /// Conversations whose restore (DB read + pane build) is in flight. A second open of the same
+    /// conversation meanwhile is dropped -- the first one is already going to show it (#1370 F6).
+    conversation_opens_in_flight: HashSet<AIConversationId>,
     user_default_shell_unsupported_banner_model_handle: ModelHandle<BannerState>,
     auth_state: Arc<AuthState>,
     server_time: Option<Arc<ServerTime>>,
@@ -3462,6 +3465,7 @@ impl Workspace {
             tab_group_rename_editor: Self::tab_group_rename_editor(ctx),
             vertical_tabs_search_input: Self::vertical_tabs_search_input(ctx),
             tips_completed,
+            conversation_opens_in_flight: HashSet::new(),
             user_default_shell_unsupported_banner_model_handle,
             auth_state: AuthStateProvider::as_ref(ctx).get().clone(),
             server_time,
@@ -13461,6 +13465,20 @@ impl Workspace {
         mut restore_layout: Option<RestoreConversationLayout>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #1370 F6: a restore of this conversation is already running; it will show the
+        // conversation, so a second open must not restore it again.
+        if self.conversation_opens_in_flight.contains(&conversation_id) {
+            log::debug!("Ignoring open of {conversation_id}: its restore is already in flight");
+            return;
+        }
+        // #1370 F6: opened without pane navigation data, but the conversation is already shown
+        // in a pane of this window -- focus that pane instead of restoring a second copy.
+        if pane_view_locator.is_none() {
+            if let Some(locator) = self.locator_of_pane_showing_conversation(conversation_id, ctx) {
+                self.focus_pane(locator, ctx);
+                return;
+            }
+        }
         // If we have all required navigation data, try to navigate to the existing pane
         if let (Some(pane_view_locator), Some(window_id), Some(terminal_view_id)) =
             (pane_view_locator, window_id, terminal_view_id)
@@ -13562,6 +13580,25 @@ impl Workspace {
         }
     }
 
+    /// The pane in this window that currently shows `conversation_id` as a live conversation, if
+    /// any. Panes hidden for close (still in the undo stack) do not count.
+    fn locator_of_pane_showing_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<PaneViewLocator> {
+        let terminal_view_id = BlocklistAIHistoryModel::as_ref(ctx)
+            .terminal_view_id_for_conversation(&conversation_id)?;
+        self.tabs.iter().find_map(|tab| {
+            let pane_group = tab.pane_group.as_ref(ctx);
+            let pane_id = pane_group.find_pane_id_for_terminal_view(terminal_view_id, ctx)?;
+            (!pane_group.is_pane_hidden_for_close(pane_id)).then(|| PaneViewLocator {
+                pane_group_id: tab.pane_group.id(),
+                pane_id,
+            })
+        })
+    }
+
     /// Restores a conversation into the active terminal pane.
     /// Shows a full-screen loading state while fetching, then restores the conversation into the existing terminal.
     /// Falls back to new tab if we cannot restore into the active pane (has a long-running command or is invalid).
@@ -13634,9 +13671,13 @@ impl Workspace {
         let future = history_model
             .as_ref(ctx)
             .load_conversation_data(conversation_id);
+        self.conversation_opens_in_flight.insert(conversation_id);
         let terminal_view_for_closure = terminal_view.clone();
         let window_id = ctx.window_id();
-        ctx.spawn(future, move |_workspace, conversation, ctx| {
+        ctx.spawn(future, move |workspace, conversation, ctx| {
+            workspace
+                .conversation_opens_in_flight
+                .remove(&conversation_id);
             let Some(conversation) = conversation else {
                 log::warn!("Failed to load conversation {conversation_id}");
                 // Unset the loading status
@@ -13699,7 +13740,11 @@ impl Workspace {
         let future = history_model
             .as_ref(ctx)
             .load_conversation_data(conversation_id);
-        ctx.spawn(future, move |_workspace, conversation, ctx| {
+        self.conversation_opens_in_flight.insert(conversation_id);
+        ctx.spawn(future, move |workspace, conversation, ctx| {
+            workspace
+                .conversation_opens_in_flight
+                .remove(&conversation_id);
             let Some(conversation) = conversation else {
                 log::warn!("Failed to load conversation {conversation_id}");
                 WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
@@ -13837,8 +13882,12 @@ impl Workspace {
         let future = history_model
             .as_ref(ctx)
             .load_conversation_data(conversation_id);
+        self.conversation_opens_in_flight.insert(conversation_id);
 
         ctx.spawn(future, move |workspace, conversation, ctx| {
+            workspace
+                .conversation_opens_in_flight
+                .remove(&conversation_id);
             let Some(conversation) = conversation else {
                 log::warn!("Failed to load conversation {conversation_id}");
                 WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {

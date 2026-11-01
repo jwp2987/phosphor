@@ -177,8 +177,13 @@ impl TerminalView {
             }
         } else {
             let conversation_id_copy = conversation_id;
+            if !self.conversation_restores_in_flight.insert(conversation_id) {
+                log::debug!("Restore of {conversation_id} already in flight; not restoring again");
+                return;
+            }
             let future = history_model.load_conversation_data(conversation_id_copy);
             ctx.spawn(future, move |me, conversation, ctx| {
+                me.conversation_restores_in_flight.remove(&conversation_id);
                 let Some(conversation) = conversation else {
                     me.show_error_toast(
                         format!("Failed to load conversation with id: {conversation_id}"),

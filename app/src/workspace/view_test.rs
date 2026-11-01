@@ -8089,3 +8089,70 @@ fn database_notice_pending_before_activation_shows_on_activation() {
         );
     });
 }
+
+/// #1370 F6: opening a conversation that is already shown in a pane of this window, without
+/// pane navigation data, focuses that pane; it does not restore a second copy into a new tab.
+#[test]
+fn test_open_conversation_already_live_in_a_pane_does_not_restore_again() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let terminal_view_id = workspace
+                .active_session_view(ctx)
+                .expect("a session view")
+                .as_ref(ctx)
+                .view_id();
+            let conversation = crate::ai::agent::conversation::AIConversation::new(false);
+            let conversation_id = conversation.id();
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            });
+            let tabs_before = workspace.tab_count();
+
+            workspace.restore_or_navigate_to_conversation(
+                conversation_id,
+                None,
+                None,
+                None,
+                Some(RestoreConversationLayout::NewTab),
+                ctx,
+            );
+
+            assert_eq!(workspace.tab_count(), tabs_before, "no second restore tab");
+            assert!(workspace.conversation_opens_in_flight.is_empty());
+        });
+    });
+}
+
+/// #1370 F6: a second open while the first restore of the same conversation is still loading is
+/// dropped; the first restore will show it.
+#[test]
+fn test_open_conversation_while_its_restore_is_in_flight_is_dropped() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let conversation_id = crate::ai::agent::conversation::AIConversationId::new();
+            workspace
+                .conversation_opens_in_flight
+                .insert(conversation_id);
+            let tabs_before = workspace.tab_count();
+
+            workspace.restore_or_navigate_to_conversation(
+                conversation_id,
+                None,
+                None,
+                None,
+                Some(RestoreConversationLayout::NewTab),
+                ctx,
+            );
+
+            assert_eq!(workspace.tab_count(), tabs_before);
+        });
+    });
+}

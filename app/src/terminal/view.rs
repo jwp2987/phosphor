@@ -2798,6 +2798,9 @@ enum PowerShellSetupHold {
 }
 
 pub struct TerminalView {
+    /// Conversations this view is restoring (read in flight); a second request to enter agent
+    /// view for the same one waits for that restore instead of restoring again (#1370 F6).
+    conversation_restores_in_flight: std::collections::HashSet<AIConversationId>,
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
     /// Bumped by every selection copy; a huge selection rendered off-thread only writes the
     /// clipboard if no newer copy started meanwhile (#1304).
@@ -4972,6 +4975,7 @@ impl TerminalView {
             use_agent_footer: use_agent_button_bar,
             use_agent_footer_suppressed: false,
             agent_view_controller,
+            conversation_restores_in_flight: Default::default(),
             agent_view_back_button,
             is_using_conversation_for_pane_header_title: false,
             ambient_agent_view_model,
