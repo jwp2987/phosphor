@@ -37,7 +37,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     $oscEnd = "$([char]0x07)"
 
     # Writes a hex-encoded JSON message to the PTY.
-    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table) {
+    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table, [string]$trailer = '') {
         $json = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $table -Compress
         # Sends a message to the controlling terminal as an OSC control sequence.
         # TODO(CORE-2718): Determine if we need to hex encode the payload.
@@ -45,7 +45,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         $encodedMessage = Warp-Encode-HexString $json
-        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
+        # $trailer (the reset-grid OSC after Preexec and CommandFinished) goes out in the same
+        # write: every console write on ConPTY takes the console lock and can wait for a render
+        # frame, and these two sit on the Enter -> command start and command end -> prompt paths
+        # (#1280). The bytes on the wire are unchanged.
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd$trailer"
     }
 
     # This script block contains commands and constants that are needed in background threads.
@@ -300,8 +304,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 command = $command
             }
         }
-        Warp-Send-JsonMessage $preexecMsg
-        Warp-Send-ResetGridOSC
+        Warp-Send-JsonMessage $preexecMsg $oscResetGrid
 
         # If this preexec is called for user command, kill ongoing generator command jobs and clean
         # up the bookkeeping temp files used to bookkeep.
@@ -620,7 +623,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
         # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
-        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        # (Probed with the session-state API: a cmdlet call costs ~0.3 ms on Windows PowerShell 5.1,
+        # and nothing is left behind unless the agent wrapper ran, #1280.)
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ok') -or $null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ec')) {
+            Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        }
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 
@@ -636,7 +643,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         # Phosphor: the agent wrapper saved the user's $LASTEXITCODE and reset it; the code is
         # computed, so put the user's value back.
-        if (Microsoft.PowerShell.Management\Test-Path variable:global:__phosphor_ap_lecset) {
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_lecset')) {
             if ($global:__phosphor_ap_lecset) {
                 $global:LASTEXITCODE = $global:__phosphor_ap_lec
             } else {
@@ -661,8 +668,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 next_block_id = "precmd-${global:_warpSessionId}-$blockId"
             }
         }
-        Warp-Send-JsonMessage $commandFinishedMsg
-        Warp-Send-ResetGridOSC
+        Warp-Send-JsonMessage $commandFinishedMsg $oscResetGrid
 
         # Warp-Configure-PSReadLine-IfChanged runs in Warp-Idle-Maintenance (#1279).
 
@@ -703,13 +709,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # prompts, and we don't want to invoke 'git' before we've sourced the
             # user's rcfiles and have a fully-populated PATH.
             if ($global:WARP_BOOTSTRAPPED -eq 1) {
-                if (Microsoft.PowerShell.Management\Test-Path env:VIRTUAL_ENV) {
+                # Read the environment directly: Test-Path env:X is a provider call per variable.
+                if ($null -ne $env:VIRTUAL_ENV) {
                     $virtualEnv = $env:VIRTUAL_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:CONDA_DEFAULT_ENV) {
+                if ($null -ne $env:CONDA_DEFAULT_ENV) {
                     $condaEnv = $env:CONDA_DEFAULT_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:KUBECONFIG) {
+                if ($null -ne $env:KUBECONFIG) {
                     $kubeConfig = $env:KUBECONFIG
                 }
 
