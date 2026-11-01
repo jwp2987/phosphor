@@ -817,8 +817,10 @@ mod control_master_fallback {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use super::super::command_executor::testing::{TestCommandExecutor, TestRemoteServerKindExecutor};
     use super::super::command_executor::RemoteCommandExecutor;
+    use super::super::command_executor::testing::{
+        TestCommandExecutor, TestRemoteServerKindExecutor,
+    };
     use super::super::{Session, SessionInfo};
 
     fn is_control_master_executor(session: &Session) -> bool {
@@ -851,13 +853,15 @@ mod control_master_fallback {
         let session = Session::new(info, Arc::new(TestCommandExecutor::default()));
         assert!(!session.fall_back_to_control_master_executor());
         assert!(!is_control_master_executor(&session));
-        assert!(session
-            .command_executor
-            .read()
-            .as_ref()
-            .as_any()
-            .downcast_ref::<TestCommandExecutor>()
-            .is_some());
+        assert!(
+            session
+                .command_executor
+                .read()
+                .as_ref()
+                .as_any()
+                .downcast_ref::<TestCommandExecutor>()
+                .is_some()
+        );
     }
 
     #[test]
