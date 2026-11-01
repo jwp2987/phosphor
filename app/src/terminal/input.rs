@@ -10898,9 +10898,130 @@ impl Input {
 
     /// Process paste event by checking clipboard for images and handling appropriately.
     fn process_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
+        // Where the platform can read the clipboard off the UI thread it does (#1300): a clipboard
+        // owner that ignores the html/image probes would otherwise freeze the window for seconds.
+        // Keys typed meanwhile are held by the editor and applied behind the pasted text.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(reader) = ctx.clipboard().background_full_reader() {
+            self.start_background_paste(reader, ctx);
+            return;
+        }
         // Read from app clipboard
         let content = ctx.clipboard().read();
+        self.process_paste_content(content, ctx);
+    }
 
+    /// Reads the clipboard on a worker thread; [`Self::finish_background_paste`] inserts it.
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let hold = self.editor.as_ref(ctx).paste_hold();
+        let id = hold.begin();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("paste-read".into())
+            .spawn(move || {
+                let _ = tx.send(reader());
+            });
+        if spawned.is_err() {
+            self.finish_background_paste(id, None, ctx);
+            return;
+        }
+        ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
+            me.finish_background_paste(id, read, ctx)
+        });
+        // Say what is happening when the read takes noticeable time.
+        ctx.spawn(
+            Timer::after(Duration::from_millis(750)),
+            move |me, _, ctx| {
+                if me.editor.as_ref(ctx).paste_hold().is_pending(id)
+                    && ctx.has_singleton_model::<ToastStack>()
+                {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                        ts.add_ephemeral_toast(
+                            DismissibleToast::success(
+                                "Pasting from the clipboard\u{2026} (Ctrl-C cancels)".to_string(),
+                            ),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+            },
+        );
+    }
+
+    /// The paste `id` was read (`None`: the reader thread died): paste it where the cursor still
+    /// is, then apply the keys typed meanwhile, in order. A cancelled or superseded paste does
+    /// nothing.
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_background_paste(
+        &mut self,
+        id: u64,
+        read: Option<warpui::clipboard::BackgroundTextRead>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(held) = self.editor.as_ref(ctx).paste_hold().complete(id) else {
+            return;
+        };
+        match read {
+            Some(warpui::clipboard::BackgroundTextRead::Content(content)) => {
+                self.process_paste_content(content, ctx);
+            }
+            Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => {
+                if ctx.has_singleton_model::<ToastStack>() {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |ts, ctx| {
+                        ts.add_ephemeral_toast(
+                            DismissibleToast::error(
+                                "Paste failed \u{2014} clipboard read timed out".to_string(),
+                            ),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+            }
+        }
+        self.replay_held_paste_keys(held, ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// Applies keys that were held behind a paste, in typing order. A held paste starts its own
+    /// read; the keys after it wait behind that one.
+    fn replay_held_paste_keys(
+        &mut self,
+        held: Vec<crate::editor::HeldPasteKey>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let hold = self.editor.as_ref(ctx).paste_hold();
+        let mut keys = held.into_iter();
+        while let Some(key) = keys.next() {
+            if matches!(
+                key,
+                crate::editor::HeldPasteKey::Action(EditorAction::Paste)
+            ) {
+                // The editor would only emit the event, to be handled after this loop's keys.
+                self.process_paste_event(ctx);
+                if hold.has_pending() {
+                    for rest in keys {
+                        hold.hold(rest);
+                    }
+                    return;
+                }
+                continue;
+            }
+            self.editor
+                .update(ctx, |editor, ctx| editor.apply_held_paste_key(key, ctx));
+        }
+    }
+
+    /// Inserts (or attaches) what the clipboard held.
+    fn process_paste_content(&mut self, content: ClipboardContent, ctx: &mut ViewContext<Self>) {
         // If AI is disabled, attachment isn't possible
         if !AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
             self.insert_clipboard_text_content(ctx, content);

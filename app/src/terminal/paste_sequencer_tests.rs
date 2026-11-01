@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn keys_typed_during_a_paste_are_released_behind_it_in_order() {
-    let mut seq = PasteSequencer::default();
+    let mut seq = PasteSequencer::<Vec<u8>>::default();
     assert_eq!(seq.on_key(b"a", false), KeyDisposition::PassThrough);
     let id = seq.begin();
     assert_eq!(seq.on_key(b"x", false), KeyDisposition::Held);
@@ -18,7 +18,7 @@ fn keys_typed_during_a_paste_are_released_behind_it_in_order() {
 
 #[test]
 fn abort_key_cancels_the_pending_paste_and_releases_earlier_keys() {
-    let mut seq = PasteSequencer::default();
+    let mut seq = PasteSequencer::<Vec<u8>>::default();
     let id = seq.begin();
     assert_eq!(seq.on_key(b"x", false), KeyDisposition::Held);
     assert_eq!(
@@ -32,7 +32,7 @@ fn abort_key_cancels_the_pending_paste_and_releases_earlier_keys() {
 
 #[test]
 fn a_superseded_paste_keeps_the_held_keys() {
-    let mut seq = PasteSequencer::default();
+    let mut seq = PasteSequencer::<Vec<u8>>::default();
     let first = seq.begin();
     seq.on_key(b"1", false);
     let second = seq.begin();
@@ -42,4 +42,20 @@ fn a_superseded_paste_keeps_the_held_keys() {
         seq.complete(second),
         Some(vec![b"1".to_vec(), b"2".to_vec()])
     );
+}
+
+// #1300: the input editor holds typed keys (not pty bytes) behind its paste with the same ordering.
+#[test]
+fn generic_keys_are_held_in_order_and_cancel_returns_them() {
+    let mut seq = PasteSequencer::<&str>::default();
+    assert!(!seq.hold("dropped?"));
+    let id = seq.begin();
+    assert!(seq.hold("a"));
+    assert!(seq.hold("\r"));
+    assert_eq!(seq.complete(id), Some(vec!["a", "\r"]));
+
+    let id = seq.begin();
+    assert!(seq.hold("b"));
+    assert_eq!(seq.cancel(), vec!["b"]);
+    assert_eq!(seq.complete(id), None);
 }

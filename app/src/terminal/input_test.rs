@@ -36,7 +36,7 @@ use repo_metadata::RepoMetadataModel;
 use watcher::HomeDirectoryWatcher;
 
 use crate::cloud_object::update_manager::UpdateManager;
-use crate::editor::{EditorAction, TextStyleOperation};
+use crate::editor::{EditorAction, HeldPasteKey, TextStyleOperation};
 use crate::input_suggestions::{HistoryOrder, Item};
 use crate::network::NetworkStatus;
 use crate::notebooks::{NotebookObject, NotebookObjectModel};
@@ -12056,5 +12056,103 @@ fn test_history_ghost_is_requested_again_when_the_verdict_flips_to_shell() {
         input.read(&app, |input, _| {
             assert!(input.autosuggestions_abort_handle.is_some());
         });
+    });
+}
+
+/// #1300: a paste whose clipboard read is slow does not block the UI thread; keys typed meanwhile
+/// (including Enter) apply after the pasted text, at the cursor the paste was asked for.
+#[test]
+fn test_slow_clipboard_read_does_not_block_and_keys_follow_the_paste() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ab", ctx);
+        });
+
+        // A reader that stays parked until released: a synchronous read would hang here (the
+        // timeout turns that hang into a failure).
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        });
+        let started = std::time::Instant::now();
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "starting a paste must not wait for the clipboard"
+        );
+
+        // Typed while the read is pending: held, not applied.
+        editor.update(&mut app, |editor, ctx| {
+            editor.apply_held_paste_key(HeldPasteKey::Text("xy".to_string()), ctx);
+            editor.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Backspace), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "ab"));
+
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        // Pasted at the cursor, then "xy" and the Backspace in typing order.
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "abPASTEx")
+        });
+    });
+}
+
+/// #1300: an Enter typed while the read is pending submits the whole line, pasted text included.
+#[test]
+fn test_enter_during_a_pending_paste_submits_the_full_line() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo ", ctx);
+        });
+
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("pasted".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        editor.update(&mut app, |editor, ctx| {
+            editor.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Enter), ctx);
+        });
+        // The Enter did not run on the fragment.
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo ")
+        });
+
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        // Submitted after the paste landed: the whole line went, so the editor is empty again.
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), ""));
     });
 }
