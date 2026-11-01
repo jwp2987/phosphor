@@ -2095,8 +2095,12 @@ fn initialize_app(
         // column, the ask-user-question speedbump setting) supersede items 1/3/4 of #256, not
         // its item 2, and all three are closed. Nothing superseded this read; it was simply
         // unported.
-        ctx.add_singleton_model(move |_| {
+        let history_model = ctx.add_singleton_model(move |_| {
             BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations)
+        });
+        // #1363: orchestration children are read off the UI thread and inserted as they land.
+        history_model.update(ctx, |model, ctx| {
+            model.hydrate_pending_orchestration_children(ctx)
         });
     }
     // Seed the orchestration pin set from persisted conversation data. Each

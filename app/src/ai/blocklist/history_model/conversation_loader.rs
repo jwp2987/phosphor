@@ -287,16 +287,7 @@ impl BlocklistAIHistoryModel {
             // this future through `ctx.spawn`, so the result is applied on the main thread.
             #[cfg(feature = "local_fs")]
             {
-                let conn = self.db_connection.clone();
-                static IN_FLIGHT: std::sync::OnceLock<
-                    load_pool::InFlight<AIConversationId, Option<AIConversation>>,
-                > = std::sync::OnceLock::new();
-                let in_flight = IN_FLIGHT.get_or_init(load_pool::InFlight::new);
-                let loading = in_flight.join_or_start(conversation_id, move |finish| {
-                    load_pool::submit(Box::new(move || {
-                        finish(read_conversation_from_db(conn, &conversation_id))
-                    }))
-                });
+                let loading = self.start_db_load(conversation_id);
                 return match loading {
                     Ok(loading) => box_future(
                         loading.map(|c| c.map(|c| LoadedConversationData::Oz(Box::new(c)))),
@@ -317,6 +308,80 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// Starts (or joins) the off-thread read of one conversation on the load pool. Never blocks
+    /// the caller; the future resolves when the pool thread has read and converted it.
+    #[cfg(feature = "local_fs")]
+    pub(super) fn start_db_load(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> Result<load_pool::Loading<Option<AIConversation>>, String> {
+        let conn = self.db_connection.clone();
+        static IN_FLIGHT: std::sync::OnceLock<
+            load_pool::InFlight<AIConversationId, Option<AIConversation>>,
+        > = std::sync::OnceLock::new();
+        let in_flight = IN_FLIGHT.get_or_init(load_pool::InFlight::new);
+        in_flight.join_or_start(conversation_id, move |finish| {
+            load_pool::submit(Box::new(move || {
+                finish(read_conversation_from_db(conn, &conversation_id))
+            }))
+        })
+    }
+
+    /// #1363: hydrates the orchestration children whose rows carried no tasks at startup. The
+    /// reads run on the conversation load pool (never on the UI thread); each child is inserted
+    /// when it lands. A child that was removed meanwhile (its parent closed), or that was already
+    /// restored by a pane, is left alone.
+    pub fn hydrate_pending_orchestration_children(&mut self, ctx: &mut warpui::ModelContext<Self>) {
+        let pending = std::mem::take(&mut self.pending_child_hydrations);
+        for conversation_id in pending {
+            if self.conversations_by_id.contains_key(&conversation_id) {
+                continue;
+            }
+            #[cfg(feature = "local_fs")]
+            {
+                let loading = match self.start_db_load(conversation_id) {
+                    Ok(loading) => loading,
+                    Err(e) => {
+                        log::warn!("Failed to start an orchestration child load: {e}");
+                        continue;
+                    }
+                };
+                ctx.spawn(loading, move |model, loaded, _| {
+                    model.finish_orchestration_child_hydration(conversation_id, loaded);
+                });
+            }
+            #[cfg(not(feature = "local_fs"))]
+            let _ = (conversation_id, &ctx);
+        }
+    }
+
+    /// Applies a landed child load. Never overwrites a conversation a pane restored in the
+    /// meantime, and drops the result if the child was removed from the parent index (parent or
+    /// child closed before the read finished).
+    pub(super) fn finish_orchestration_child_hydration(
+        &mut self,
+        conversation_id: AIConversationId,
+        loaded: Option<AIConversation>,
+    ) {
+        let still_a_child = self
+            .children_by_parent
+            .values()
+            .any(|ids| ids.contains(&conversation_id));
+        if !still_a_child || self.conversations_by_id.contains_key(&conversation_id) {
+            return;
+        }
+        match loaded {
+            Some(conversation) => {
+                self.conversations_by_id
+                    .insert(conversation_id, conversation);
+            }
+            None => log::warn!(
+                "Failed to eagerly hydrate orchestration child {conversation_id}; \
+                 pill bar / name resolution will fall back to lazy materialization",
+            ),
+        }
+    }
+
     /// Loads a conversation by its server token.
     ///
     /// BYOP has no cloud server and no server conversation tokens, so there is
@@ -328,30 +393,6 @@ impl BlocklistAIHistoryModel {
         _server_token: &ServerConversationToken,
     ) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>> {
         box_future(futures::future::ready(None))
-    }
-
-    /// Loads a conversation from local DB and returns it.
-    /// This is a private helper method. Use `get_load_conversation_data_future` instead.
-    ///
-    /// Note: This does NOT insert the conversation into memory. Callers are responsible
-    /// for inserting the loaded conversation if needed.
-    pub(super) fn load_conversation_from_db(
-        &self,
-        conversation_id: &AIConversationId,
-    ) -> Option<AIConversation> {
-        // First check if the conversation is in memory
-        if let Some(conversation) = self.conversations_by_id.get(conversation_id) {
-            return Some(conversation.clone());
-        }
-
-        // If not in memory, try to load from the database
-        #[cfg(feature = "local_fs")]
-        {
-            return read_conversation_from_db(self.db_connection.clone(), conversation_id);
-        }
-
-        #[cfg(not(feature = "local_fs"))]
-        None
     }
 
     /// Initializes historical conversations from restored agent conversations.
@@ -484,8 +525,11 @@ impl BlocklistAIHistoryModel {
                     // historical conversations still load lazily. A
                     // subsequent `restore_conversations` call replaces this
                     // entry idempotently.
+                    // #1363: a row without tasks is read off the UI thread afterwards
+                    // (`hydrate_pending_orchestration_children`), never here.
                     let child_conversation = if agent_conv.tasks.is_empty() {
-                        self.load_conversation_from_db(&conversation_id)
+                        self.pending_child_hydrations.push(conversation_id);
+                        return None;
                     } else {
                         convert_persisted_conversation_to_ai_conversation_with_metadata(
                             agent_conv.clone(),

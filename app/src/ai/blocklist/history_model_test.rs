@@ -6019,3 +6019,61 @@ fn load_conversation_data_resolves_through_worker_thread() {
         super::conversation_loader::read_conversation_from_db(None, &conversation_id).is_none()
     );
 }
+
+/// #1363: startup with orchestration children whose rows carry no tasks does no DB read on the
+/// constructing (UI) thread: they are queued for off-thread hydration and are not in memory yet.
+/// When a load lands the child appears; a child whose parent was closed meanwhile, or that a pane
+/// already restored, is left alone.
+#[test]
+fn test_orchestration_children_without_tasks_hydrate_asynchronously() {
+    let parent_id = AIConversationId::new();
+    let child_ids: Vec<_> = (0..3).map(|_| AIConversationId::new()).collect();
+    let now = Utc::now().naive_utc();
+    let mut conversations = vec![persisted_agent_conversation_with_data(
+        parent_id,
+        empty_agent_conversation_data_for_test(),
+        now - chrono::Duration::seconds(10),
+        Some("Parent query"),
+    )];
+    for child_id in &child_ids {
+        let mut row = persisted_agent_conversation_with_data(
+            *child_id,
+            AgentConversationData {
+                parent_conversation_id: Some(parent_id.to_string()),
+                ..empty_agent_conversation_data_for_test()
+            },
+            now,
+            None,
+        );
+        row.conversation.summary = Some(
+            serde_json::to_string(&AgentConversationSummary {
+                initial_query: String::new(),
+                title: String::new(),
+                initial_working_directory: None,
+                is_restorable: true,
+                is_unlisted_auto_code_diff: false,
+            })
+            .unwrap(),
+        );
+        conversations.push(row);
+    }
+
+    let mut model = BlocklistAIHistoryModel::new(vec![], vec![], &conversations);
+    for child_id in &child_ids {
+        assert!(
+            model.conversation(child_id).is_none(),
+            "no synchronous read: the child is not in memory right after construction"
+        );
+    }
+    assert_eq!(model.child_conversation_ids_of(&parent_id).len(), 3);
+    assert_eq!(model.pending_child_hydrations.len(), 3);
+
+    // First child lands: appears.
+    model.finish_orchestration_child_hydration(child_ids[0], Some(AIConversation::new(false)));
+    assert!(model.conversation(&child_ids[0]).is_some());
+
+    // Parent closed before the second child lands: nothing is inserted.
+    model.children_by_parent.remove(&parent_id);
+    model.finish_orchestration_child_hydration(child_ids[1], Some(AIConversation::new(false)));
+    assert!(model.conversation(&child_ids[1]).is_none());
+}
