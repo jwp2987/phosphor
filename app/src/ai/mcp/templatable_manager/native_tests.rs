@@ -585,6 +585,7 @@ fn abandoning_the_env_read_future_sets_the_cancel_flag() {
 
 #[test]
 fn env_read_without_connection_returns_input_unchanged() {
-    let read = futures_lite::future::block_on(super::read_legacy_env_vars_in_background(None, Vec::new()));
+    let read =
+        futures_lite::future::block_on(super::read_legacy_env_vars_in_background(None, Vec::new()));
     assert!(read.is_empty());
 }
