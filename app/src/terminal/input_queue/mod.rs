@@ -24,7 +24,7 @@
 //! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`), the subshell setup /
 //! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
 //! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
-//! the `EnterVerdict` and `PasteReading` gates; see `input/enter_queue.rs`), and the ssh connect
+//! the `EnterVerdict`, `TabCompletion` and `CliSubmit` gates; see `input/enter_queue.rs`), and the ssh connect
 //! typeahead (phase 4, `kill_switch::Area::Ssh`, `view/ssh_queue.rs`), and the typeahead hand-off's
 //! ConPTY prompt hold (phase 5, `kill_switch::Area::Handoff`, `LineEditorActive` gate, entries put
 //! back with [`DeliverOutcome::Requeue`]; see `view/paste_queue.rs`). The other gate kinds and

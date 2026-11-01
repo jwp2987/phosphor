@@ -15,8 +15,15 @@ use super::EntryId;
 pub enum GateKind {
     /// A pty- or editor-bound paste is being read off-thread (Q4, Q4b).
     PasteReading,
-    /// An Enter waits for the autodetect verdict or an in-flight Tab completion (Q1).
+    /// An Enter waits for the autodetect verdict (Q1).
     EnterVerdict,
+    /// An Enter waits for the Tab completion in flight (Q1). Its own kind since phase 5b; it used
+    /// to share `EnterVerdict` with an id as the only difference.
+    TabCompletion,
+    /// A paced CLI-agent submit writes its pieces (phase 3): keys typed meanwhile wait behind the
+    /// whole submit. Its own kind since phase 5b; it used to borrow `PasteReading` with a key
+    /// above every paste id.
+    CliSubmit,
     /// The hand-off asked the shell for its line (`ESC i`) and waits for the report (Q3a).
     HandoffReport,
     /// An Enter just ran as a shell command and the hand-off route is still settling (Q2).
@@ -58,9 +65,11 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 11] = [
+    pub const ALL: [GateKind; 13] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
+        GateKind::TabCompletion,
+        GateKind::CliSubmit,
         GateKind::HandoffReport,
         GateKind::PtyRouteSettling,
         GateKind::PromptSeen,
@@ -76,6 +85,8 @@ impl GateKind {
         match self {
             GateKind::PasteReading => "paste_reading",
             GateKind::EnterVerdict => "enter_verdict",
+            GateKind::TabCompletion => "tab_completion",
+            GateKind::CliSubmit => "cli_submit",
             GateKind::HandoffReport => "handoff_report",
             GateKind::PtyRouteSettling => "pty_route_settling",
             GateKind::PromptSeen => "prompt_seen",
@@ -93,6 +104,8 @@ impl GateKind {
         match self {
             GateKind::PasteReading => "begin_paste",
             GateKind::EnterVerdict => "enter_without_settled_verdict",
+            GateKind::TabCompletion => "enter_during_tab_completion",
+            GateKind::CliSubmit => "cli_submit_started",
             GateKind::HandoffReport => "handoff_report_requested",
             GateKind::PtyRouteSettling => "enter_ran_as_shell_command",
             GateKind::PromptSeen => "young_enter",
@@ -110,7 +123,9 @@ impl GateKind {
     pub fn closing_event(self) -> &'static str {
         match self {
             GateKind::PasteReading => "paste_read_result",
-            GateKind::EnterVerdict => "verdict_ready_or_tab_completion_done",
+            GateKind::EnterVerdict => "verdict_ready_or_give_up_submit",
+            GateKind::TabCompletion => "tab_completion_done_or_give_up_submit",
+            GateKind::CliSubmit => "cli_submit_written",
             GateKind::HandoffReport => "report_received",
             GateKind::PtyRouteSettling => "handoff_engaged_or_pty_owned",
             GateKind::PromptSeen => "precmd_parsed_or_command_running",
@@ -127,8 +142,12 @@ impl GateKind {
     /// forget to decide.
     pub fn signal_plan(self) -> SignalPlan {
         match self {
-            GateKind::PasteReading => SignalPlan::CancelPasteThenFlush,
-            GateKind::EnterVerdict | GateKind::SshConnect => SignalPlan::DiscardThenSignal,
+            // A submit holds no paste entry, so the plan only flushes what was typed before the
+            // signal, as it did when the submit's gate was a `PasteReading` one.
+            GateKind::PasteReading | GateKind::CliSubmit => SignalPlan::CancelPasteThenFlush,
+            GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::SshConnect => {
+                SignalPlan::DiscardThenSignal
+            }
             GateKind::HandoffReport
             | GateKind::PtyRouteSettling
             | GateKind::PromptSeen
@@ -146,7 +165,9 @@ impl GateKind {
     pub fn default_cap(self) -> Option<Duration> {
         match self {
             GateKind::PasteReading => Some(Duration::from_secs(3)),
-            GateKind::EnterVerdict => Some(Duration::from_millis(250)),
+            GateKind::EnterVerdict | GateKind::TabCompletion => Some(Duration::from_millis(250)),
+            // The opener supplies the net (a submit is a few hundred ms to a few seconds).
+            GateKind::CliSubmit => Some(Duration::from_secs(20)),
             GateKind::HandoffReport => Some(Duration::from_secs(3)),
             GateKind::PtyRouteSettling => Some(Duration::from_millis(300)),
             GateKind::PromptSeen => Some(Duration::from_millis(600)),

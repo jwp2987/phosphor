@@ -109,10 +109,6 @@ pub(super) enum PromptHoldEnd {
     GaveUp,
 }
 
-/// CLI-agent submit gates share the `PasteReading` kind (a submit is a paste with a paced tail);
-/// their keys live above this so they can never collide with a paste id.
-const CLI_SUBMIT_GATE_KEY_BASE: u64 = 1 << 62;
-
 /// A paced CLI-agent submit is a few hundred ms to a few seconds (a Copilot bracketed paste waits
 /// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
 /// far beyond any of them. Logged when it fires.
@@ -435,7 +431,7 @@ impl TerminalView {
             return;
         }
         self.paste_queue.next_cli_submit_key += 1;
-        let key = CLI_SUBMIT_GATE_KEY_BASE + self.paste_queue.next_cli_submit_key;
+        let key = self.paste_queue.next_cli_submit_key;
         let queue = Rc::clone(&self.paste_queue.queue);
         let Ok(mut queue) = queue.try_borrow_mut() else {
             log::warn!("input queue: CLI-agent submit gate not opened, the queue was busy");
@@ -444,7 +440,7 @@ impl TerminalView {
         let mut host = PtyQueueHost::new(self, ctx);
         queue.open_gate(
             &mut host,
-            GateSpec::new(GateKind::PasteReading, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
+            GateSpec::new(GateKind::CliSubmit, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
         );
         self.paste_queue.cli_submit_gate = Some(key);
     }
@@ -462,7 +458,7 @@ impl TerminalView {
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.on_gate_event(&mut host, GateKind::PasteReading, key);
+        queue.on_gate_event(&mut host, GateKind::CliSubmit, key);
     }
 
     /// Writes a piece of a CLI-agent submit. While the submit holds the queue its own writes go
@@ -560,6 +556,7 @@ impl TerminalView {
         use crate::terminal::input_queue::trace::legacy;
         match self.paste_queue.queue.try_borrow() {
             Ok(queue) if queue.has_gate_kind(GateKind::PasteReading) => legacy::PASTE_PTY,
+            Ok(queue) if queue.has_gate_kind(GateKind::CliSubmit) => legacy::PASTE_PTY,
             Ok(queue) if queue.has_gate_kind(GateKind::SubshellBootstrapWrite) => {
                 legacy::SUBSHELL_BOOTSTRAP
             }
