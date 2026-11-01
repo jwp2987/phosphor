@@ -2934,6 +2934,8 @@ pub struct TerminalView {
     /// stretches where the gate itself would let keys through (a banner printed before the
     /// remote shell is up), so the held keys are never overtaken by later ones.
     ssh_typeahead_holding: bool,
+    /// Signalled on terminal output while a waited agent command exists (#1365).
+    fullscreen_output_signal: Option<async_channel::Sender<()>>,
     /// Shared with the input's editor: while `ssh_typeahead_holding` it queues every editing key
     /// that reaches it here instead of applying it, so keys typed after focus moved to the editor
     /// but before the held keys are delivered keep their order (#1292).
@@ -4740,6 +4742,7 @@ impl TerminalView {
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
             ssh_typeahead_holding: false,
+            fullscreen_output_signal: None,
             ssh_editor_key_hold,
             ssh_typeahead: SshTypeahead::default(),
             ssh_paste_to_hold: false,
@@ -12753,6 +12756,11 @@ impl TerminalView {
         let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
         if executor.as_ref(ctx).has_output_watchers() {
             executor.update(ctx, |executor, _| executor.note_output());
+        }
+        if let Some(tx) = &self.fullscreen_output_signal {
+            if executor.as_ref(ctx).has_any_awaiting_completion() {
+                let _ = tx.try_send(());
+            }
         }
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
@@ -32126,6 +32134,10 @@ impl PtyIntentEvent for Event {
 /// while the Unix password-prompt hooks carry the notification/SSH-upload logic
 /// that the manager's attribute poller drives.
 impl TerminalSurface for TerminalView {
+    fn set_output_signal(&mut self, tx: async_channel::Sender<()>) {
+        self.fullscreen_output_signal = Some(tx);
+    }
+
     #[cfg(feature = "local_tty")]
     fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         TerminalView::on_shell_determined(self, ctx);
@@ -32254,8 +32266,8 @@ impl TerminalSurface for TerminalView {
         };
         // Same gate as `pending_interactive_prompt`: only a tool call blocked until the command
         // completes can be stuck on a full-screen program with nobody to quit it, and the
-        // executor (which needs no terminal-model lock) is asked first because this runs once
-        // a second for every polled block.
+        // executor (which needs no terminal-model lock) is asked first because this runs on
+        // output for every polled block.
         let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
         let executor = executor.as_ref(ctx);
         if !executor.has_any_awaiting_completion() {

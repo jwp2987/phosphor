@@ -48,6 +48,12 @@ impl TerminalAttributesPoller {
         foreground_process_names(self.fd)
     }
 
+    /// The pty's current termios, read now (a cheap ioctl, no timer). Used by event-driven
+    /// checks that need the raw/cooked state at the moment output arrived.
+    pub fn current_attributes(&self) -> Option<Termios> {
+        fetch_termial_attributes(self.fd).ok()
+    }
+
     fn poll_terminal_attributes(&mut self, poll_epoch: usize, ctx: &mut ModelContext<Self>) {
         if poll_epoch != self.poll_epoch {
             return;

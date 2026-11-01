@@ -160,12 +160,17 @@ where
 
     /// A fingerprint of the screen while the active block is an agent command whose tool call
     /// is blocked waiting for completion AND is on the alternate screen or in raw mode
-    /// (`is_raw_mode`: termios has ICANON off), `None` otherwise. Consulted once a second;
+    /// (`is_raw_mode`: termios has ICANON off), `None` otherwise. Consulted when output arrives;
     /// the manager feeds it to a `FullscreenStallDetector` (#855).
     #[cfg(unix)]
     fn fullscreen_stall_fingerprint(&self, _is_raw_mode: bool, _ctx: &AppContext) -> Option<u64> {
         None
     }
+
+    /// Gives the surface a channel to signal on terminal output while a waited agent command
+    /// may be stalled on a full-screen program, so the manager judges the screen on output
+    /// events instead of a polling tick (#1365).
+    fn set_output_signal(&mut self, _tx: async_channel::Sender<()>) {}
 
     /// The waited agent command is stalled on a pager Phosphor identified by process name:
     /// send it `q` and remember to tell the model.

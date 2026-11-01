@@ -1055,6 +1055,26 @@ impl FullscreenStallDetector {
         *self = Self::default();
     }
 
+    /// When the detector next has something to decide if the screen stays unchanged: the
+    /// instant to arm ONE quiet timer for, or `None` when no stall-eligible screen is tracked
+    /// or nothing is left to decide (everything already fired). Derived from the tracked
+    /// screen's first-seen timestamp, so repeated calls for an unchanged screen return the
+    /// same instant (#1365).
+    pub fn next_wake(&self, now: instant::Instant) -> Option<instant::Instant> {
+        let (_, since) = self.tracker.current?;
+        if self.handed {
+            return None;
+        }
+        let at = if self.pager_closed {
+            since + STALL_PAGER_UNRESPONSIVE_AFTER
+        } else if now < since + STALL_CLOSE_PAGER_AFTER {
+            since + STALL_CLOSE_PAGER_AFTER
+        } else {
+            since + STALL_HAND_TO_USER_AFTER
+        };
+        (at > now).then_some(at)
+    }
+
     /// `fingerprint` is `Some` only while a stall-eligible screen exists (raw mode or alt
     /// screen, on a command an agent tool call is blocked on). `is_pager` is asked only once
     /// the screen has been quiet long enough to act, and answers `None` when the foreground
