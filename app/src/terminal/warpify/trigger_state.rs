@@ -178,7 +178,7 @@ pub struct WarpifyState {
     /// Stores the metadata needed to render any separators above the first block of a subshell.
     subshell_separator_state: SubshellSeparatorState,
     /// A unique-enough ID that is used to validate that a timeout is still valid.
-    timeout_id: u8,
+    timeout_id: u64,
 }
 
 impl WarpifyState {
@@ -409,14 +409,14 @@ impl WarpifyState {
             .and_then(|state| state.block_id.clone())
     }
 
-    pub fn timeout_id(&self) -> u8 {
+    pub fn timeout_id(&self) -> u64 {
         self.timeout_id
     }
 
     /// Generates a new timeout ID. This is used to validate that a timeout is still valid.
     /// Call this to get a new timeout ID before starting a new timeout, or to invalidate
     /// an existing timeout.
-    pub fn replace_timeout_id(&mut self) -> u8 {
+    pub fn replace_timeout_id(&mut self) -> u64 {
         self.timeout_id = self.timeout_id.wrapping_add(1);
         self.timeout_id
     }
@@ -529,5 +529,27 @@ pub(crate) fn ssh_output_is_payload_only(output: &str, payloads: &[String]) -> b
             .filter(|len| rest.is_char_boundary(*len))
             .any(|len| KILL_MESSAGES.is_match(&rest[len..]) || len == rest.len())
             || (consumed_payload && KILL_MESSAGES.is_match(rest));
+    }
+}
+
+#[cfg(test)]
+mod timeout_id_tests {
+    use super::WarpifyState;
+
+    /// A timer started 256 bumps ago must not match the current id (the old `u8` epoch wrapped
+    /// back onto it).
+    #[test]
+    fn stale_timeout_id_never_matches_after_256_bumps() {
+        let mut state = WarpifyState::default();
+        let stale = state.replace_timeout_id();
+        for _ in 0..256 {
+            state.replace_timeout_id();
+        }
+        assert_ne!(stale, state.timeout_id());
+        // And at every distance, not just the old wrap length.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            assert!(seen.insert(state.replace_timeout_id()), "ids never repeat");
+        }
     }
 }

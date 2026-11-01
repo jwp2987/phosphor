@@ -1077,18 +1077,22 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     <S as Entity>::Event: PtyIntentEvent,
 {
     let poller_weak_handle = terminal_attributes_poller.downgrade();
-    let poller_weak_handle_for_termios = poller_weak_handle.clone();
     let surface_weak_handle = surface.downgrade();
-    let surface_weak_handle_for_termios = surface_weak_handle.clone();
 
-    // Tracks the index of the started block across the model-event <-> poller interactions.
-    let block_index: Rc<RefCell<Option<BlockIndex>>> = Rc::new(RefCell::new(None));
-    let block_index_for_termios = block_index.clone();
-
-    // Turns termios polls into prompt detections, debounced and once per episode; reset per
-    // block.
-    let prompt_detector: Rc<RefCell<PromptDetector>> = Rc::default();
-    let prompt_detector_for_termios = prompt_detector.clone();
+    // Turns termios observations into prompt detections, once per episode; reset per block.
+    // Judged when the terminal produces output and when the one quiet timer it arms fires; the
+    // 1 Hz termios poller below is only the fallback for the one thing with no event (see
+    // `PromptWatch`). Tracks the started block's index across the model-event <-> poller
+    // interactions too.
+    let prompt_watch = Rc::new(PromptWatch {
+        detector: RefCell::default(),
+        active: std::cell::Cell::new(false),
+        block_index: RefCell::new(None),
+        epoch: std::cell::Cell::new(0),
+        armed_for: std::cell::Cell::new(None),
+        surface: surface.downgrade(),
+        poller: terminal_attributes_poller.downgrade(),
+    });
 
     // Notices a waited agent command stalled on a pager or other full-screen program (#855).
     // Judged when the terminal produces output, plus one quiet timer while a stall-eligible
@@ -1104,9 +1108,14 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     let (output_tx, output_rx) = async_channel::bounded::<()>(1);
     surface.update(ctx, |surface, _| surface.set_output_signal(output_tx));
     let watch_for_output = fullscreen_watch.clone();
+    let prompt_watch_for_output = prompt_watch.clone();
+    let prompt_watch_for_termios = prompt_watch.clone();
     let _ = ctx.spawn_stream_local(
         output_rx,
-        move |_, _, ctx| watch_for_output.observe(ctx),
+        move |_, _, ctx| {
+            watch_for_output.observe(ctx);
+            prompt_watch_for_output.on_output(ctx);
+        },
         |_, _| {},
     );
 
@@ -1129,16 +1138,15 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                         surface.should_start_password_prompt_polling(command, ctx)
                     })
                 });
-                prompt_detector.borrow_mut().reset();
+                prompt_watch.restart(should_poll);
                 fullscreen_watch.restart(should_poll);
                 if should_poll {
-                    *block_index.borrow_mut() =
+                    *prompt_watch.block_index.borrow_mut() =
                         Some(model.lock().block_list().active_block_index());
                     poller.update(ctx, |poller, ctx| {
                         poller.start_polling(ctx);
                     });
                 } else {
-                    *block_index.borrow_mut() = None;
                     // An agent command keeps the poller running after a detection, so make
                     // sure it cannot outlive its block into one that was not meant to be polled.
                     poller.update(ctx, |poller, _ctx| {
@@ -1148,6 +1156,7 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
             }
             TerminalModelEvent::AfterBlockCompleted(completed) => {
                 fullscreen_watch.restart(false);
+                prompt_watch.restart(false);
                 if let Some(surface) = surface_weak_handle.upgrade(ctx) {
                     let should_stop = surface.read(ctx, |surface, _ctx| {
                         surface.should_stop_password_prompt_polling(completed)
@@ -1173,52 +1182,156 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     // host key, then for the password), and `PromptDetector` only fires once per episode.
     ctx.subscribe_to_model(terminal_attributes_poller, move |_manager, event, ctx| {
         let TerminalAttributesPollerEvent::TermiosQueryFinished { termios } = event;
-
-        let Some(surface) = surface_weak_handle_for_termios.upgrade(ctx) else {
-            return;
-        };
-
         // A PTY likely has a password prompt if ECHO is disabled but ICANON is still enabled.
         // Apps like neovim disable both in raw mode, so requiring ICANON avoids false
         // positives. A `[y/N]` confirmation or a `read -p` prompt leaves termios cooked with
         // echo on -- exactly what an ordinary running command looks like -- so for that shape
         // the surface is asked what is printed before the cursor instead.
-        let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
-        let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
+        prompt_watch_for_termios.judge(
+            termios.local_flags.contains(LocalFlags::ECHO),
+            termios.local_flags.contains(LocalFlags::ICANON),
+            ctx,
+        );
+    });
+}
 
-        let detection =
-            prompt_detector_for_termios
-                .borrow_mut()
-                .observe(is_echo_on, is_canonical, || {
-                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
-                });
-        let Some(detection) = detection else {
+/// Password / interactive-prompt detection for a polled block (#1383).
+///
+/// `on_output` runs when the terminal produced output and when the quiet timer armed from
+/// [`PromptDetector::next_wake`] fires, reading the termios on demand (one cheap ioctl per
+/// output burst). How long a prompt has "looked like a prompt" is a named duration
+/// (`INTERACTIVE_PROMPT_QUIET_*`), logged when it fires -- not a count of 1 s polls.
+///
+/// The 1 Hz `TerminalAttributesPoller` remains, as the fallback for the one signal with no
+/// event: a program flipping ECHO off (a silent `read -s`) without printing anything. The OS
+/// raises nothing when termios changes, so only sampling can see it. Every other path is
+/// output-driven and does not depend on the poll tick.
+#[cfg(unix)]
+struct PromptWatch<S: TerminalSurface> {
+    detector: RefCell<PromptDetector>,
+    /// Whether the active block is one the poller was started for and is still wanted.
+    active: std::cell::Cell<bool>,
+    /// The started block's index, handed to the password-prompt notification.
+    block_index: RefCell<Option<BlockIndex>>,
+    /// Bumped to invalidate a pending quiet timer.
+    epoch: std::cell::Cell<u64>,
+    /// The instant the pending quiet timer is armed for.
+    armed_for: std::cell::Cell<Option<instant::Instant>>,
+    surface: warpui::WeakViewHandle<S>,
+    poller: warpui::WeakModelHandle<TerminalAttributesPoller>,
+}
+
+#[cfg(unix)]
+impl<S: TerminalSurface> PromptWatch<S>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
+    /// New block (or block end): forget everything observed and any pending timer.
+    fn restart(&self, active: bool) {
+        self.detector.borrow_mut().reset();
+        self.active.set(active);
+        *self.block_index.borrow_mut() = None;
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.armed_for.set(None);
+    }
+
+    /// Output arrived (or the quiet timer fired): judge the termios as it is now.
+    fn on_output(self: &Rc<Self>, ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>) {
+        if !self.active.get() {
+            return;
+        }
+        let Some(poller) = self.poller.upgrade(ctx) else {
             return;
         };
+        let Some(termios) = poller.as_ref(ctx).current_attributes() else {
+            return;
+        };
+        self.judge(
+            termios.local_flags.contains(LocalFlags::ECHO),
+            termios.local_flags.contains(LocalFlags::ICANON),
+            ctx,
+        );
+    }
 
-        match detection {
-            PromptDetection::Password => {
-                let block_index = block_index_for_termios.borrow_mut().take();
-                surface.update(ctx, |surface, ctx| {
-                    surface.on_possible_password_prompt(block_index, ctx);
+    /// Feeds one termios observation to the detector and acts on a detection. For the user's
+    /// own commands, stops after the first detection to preserve the one-notification-per-
+    /// command behavior. For agent commands it keeps watching: the command can stop on a
+    /// second prompt after the user answers the first and hands control back (an agent-run
+    /// `ssh` asking about the host key, then for the password), and `PromptDetector` only
+    /// fires once per episode.
+    fn judge(
+        self: &Rc<Self>,
+        is_echo_on: bool,
+        is_canonical: bool,
+        ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>,
+    ) {
+        if !self.active.get() {
+            return;
+        }
+        let Some(surface) = self.surface.upgrade(ctx) else {
+            return;
+        };
+        let now = instant::Instant::now();
+        let detection =
+            self.detector
+                .borrow_mut()
+                .observe(now, is_echo_on, is_canonical, || {
+                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
                 });
+        if let Some(detection) = detection {
+            match detection {
+                PromptDetection::Password => {
+                    let block_index = self.block_index.borrow_mut().take();
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_possible_password_prompt(block_index, ctx);
+                    });
+                }
+                PromptDetection::Interactive => {
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_stalled_interactive_prompt(ctx);
+                    });
+                }
             }
-            PromptDetection::Interactive => {
-                surface.update(ctx, |surface, ctx| {
-                    surface.on_stalled_interactive_prompt(ctx);
-                });
+            let keeps_polling =
+                surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
+            if !keeps_polling {
+                self.active.set(false);
+                self.epoch.set(self.epoch.get().wrapping_add(1));
+                self.armed_for.set(None);
+                if let Some(poller) = self.poller.upgrade(ctx) {
+                    poller.update(ctx, |poller, _ctx| {
+                        poller.stop_polling();
+                    });
+                }
+                return;
             }
         }
 
-        let keeps_polling = surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
-        if !keeps_polling {
-            if let Some(poller) = poller_weak_handle_for_termios.upgrade(ctx) {
-                poller.update(ctx, |poller, _ctx| {
-                    poller.stop_polling();
-                });
-            }
+        // Arm the one quiet timer for when the pending candidate will have been quiet long
+        // enough, unless one is already armed for this exact instant. Further output that
+        // changes the prompt moves the deadline; the stale timer is invalidated by the epoch.
+        let wake = self.detector.borrow().next_wake();
+        if wake == self.armed_for.get() {
+            return;
         }
-    });
+        self.armed_for.set(wake);
+        let epoch = self.epoch.get().wrapping_add(1);
+        self.epoch.set(epoch);
+        if let Some(at) = wake {
+            let me = self.clone();
+            let _ = ctx.spawn(
+                async move {
+                    warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                },
+                move |_, _, ctx| {
+                    if me.epoch.get() == epoch {
+                        me.armed_for.set(None);
+                        me.on_output(ctx);
+                    }
+                },
+            );
+        }
+    }
 }
 
 /// Event-driven stall detection for a waited agent command on a full-screen program (#855,
