@@ -406,3 +406,98 @@ fn test_decoration_set_normalizes_touching_and_empty_ranges() {
     let b = DecorationSet::new(vec![(range(0, 5), GREEN)], vec![]);
     assert_eq!(a, b);
 }
+
+/// #1298: clearing decorations from a buffer that carries none must not touch the editor. Every
+/// style edit makes the editor relayout, reset its cursor blink and request a frame even when it
+/// changes nothing, and an AI-mode buffer was cleared on every keystroke, so each key drew a
+/// second frame ~10 ms later that looked exactly like the first.
+#[test]
+fn test_clearing_an_undecorated_buffer_does_not_update_styles() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let editor = input.read(&app, |input, _| input.editor.clone());
+        let updates = |app: &App| editor.read(app, |editor, _| editor.styles_updated_count());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("how do i list files", ctx);
+        });
+
+        // Nothing to clear: no style edit.
+        let before = updates(&app);
+        input.update(&mut app, |input, ctx| {
+            assert!(!input.buffer_has_decorations(ctx));
+            input.clear_decorations(ctx);
+        });
+        assert_eq!(
+            updates(&app),
+            before,
+            "clearing a buffer without decorations must not report a style update"
+        );
+
+        // With a decoration present, the clear still runs and removes it.
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_buffer_styles(
+                vec![string_offset::CharOffset::from(0)..string_offset::CharOffset::from(3)],
+                crate::editor::TextStyleOperation::default().set_syntax_color(GREEN),
+                ctx,
+            )
+        });
+        let decorated = updates(&app);
+        assert_eq!(decorated, before + 1);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.buffer_has_decorations(ctx));
+            input.clear_decorations(ctx);
+            assert!(!input.buffer_has_decorations(ctx));
+        });
+        assert_eq!(updates(&app), decorated + 1);
+    });
+}
+
+/// #1298: in AI mode the background job clears decorations before anything else; for an
+/// undecorated prompt that must be free (no style update, so no second frame per key).
+#[test]
+fn test_ai_mode_background_job_does_not_restyle_an_undecorated_prompt() {
+    use crate::ai::blocklist::{InputConfig, InputType};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let editor = input.read(&app, |input, _| input.editor.clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("how do i list files", ctx);
+        });
+
+        let before = editor.read(&app, |editor, _| editor.styles_updated_count());
+        input.update(&mut app, |input, ctx| {
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+        let after = editor.read(&app, |editor, _| editor.styles_updated_count());
+        assert_eq!(
+            after, before,
+            "an AI-mode keystroke job must not restyle a buffer that has no decorations"
+        );
+    });
+}
