@@ -555,9 +555,7 @@ use super::block_list_viewport::FindMatchScrollLocation;
 use super::event::SshLoginStatus;
 use super::find::FindOptions;
 use super::model::ansi::{SystemDetails, WarpificationUnavailableReason};
-use super::model::block::{
-    BlockSection, BlocklistEnvVarMetadata, LONG_RUNNING_COMMAND_DURATION_MS,
-};
+use super::model::block::{BlockSection, BlocklistEnvVarMetadata};
 use super::model::blocks::RichContentItem;
 use super::model::completions::ShellCompletion;
 use super::model::rich_content::RichContentType;
@@ -3039,6 +3037,11 @@ pub struct TerminalView {
     /// Whether we've already emitted a chrome refresh for the active block after it crossed the
     /// long-running threshold. Reset when the active command starts and finishes.
     did_notify_long_running: bool,
+    /// Block whose CLI-agent detection waits for it to become interactive (#1373).
+    pending_cli_agent_detection: Option<BlockId>,
+    /// Agent-requested command's block whose input lock to the agent waits for it to become
+    /// interactive (#1373).
+    pending_agent_input_lock: Option<BlockId>,
 
     /// This field is an "&&" combination of two other pieces of state:
     ///   1. Whether this View (or one of its children) is the focused View.
@@ -4826,6 +4829,8 @@ impl TerminalView {
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
+            pending_cli_agent_detection: None,
+            pending_agent_input_lock: None,
             is_focused_and_active: true,
             current_prompt,
             model_event_sender,
@@ -8446,25 +8451,19 @@ impl TerminalView {
                     });
                 }
 
-                // If the command turns out to be long-running, lock the input in agent mode.
-                ctx.spawn(
-                    // Command execution is triggered by a subscriber to the event above, so
-                    // give some buffer to actually determine if its long running.
-                    Timer::after(Duration::from_millis(LONG_RUNNING_COMMAND_DURATION_MS * 2)),
-                    move |me, _, ctx| {
-                        if me
-                            .model
-                            .lock()
-                            .block_list()
-                            .block_with_id(&block_id)
-                            .is_some_and(|block| block.is_active_and_long_running())
-                        {
-                            me.input.update(ctx, |input, ctx| {
-                                input.set_input_mode_agent(false, ctx);
-                            });
-                        }
-                    },
-                );
+                // If the command turns out to be long-running, lock the input in agent mode. Done
+                // when the block reports it became interactive (`CommandBecameInteractive`), not
+                // after an elapsed-time guess (#1373, INP-18).
+                self.pending_agent_input_lock = Some(block_id.clone());
+                if self
+                    .model
+                    .lock()
+                    .block_list()
+                    .block_with_id(&block_id)
+                    .is_some_and(|block| block.is_active_and_long_running())
+                {
+                    self.lock_input_for_interactive_agent_command(ctx);
+                }
 
                 if let Some(metadata) = workflow_telem_metadata {
                     send_telemetry_from_ctx!(TelemetryEvent::WorkflowExecuted(metadata), ctx);
@@ -10238,6 +10237,83 @@ impl TerminalView {
             // get a deadlock.  This model locking is a bit of a mess.
             drop(model);
             self.write_user_bytes_to_pty(&[escape_sequences::C0::EOT][..], ctx);
+        }
+    }
+
+    /// The agent's command became interactive: lock the input to the agent (#1373).
+    fn lock_input_for_interactive_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pending_agent_input_lock.take().is_some() {
+            self.input.update(ctx, |input, ctx| {
+                input.set_input_mode_agent(false, ctx);
+            });
+        }
+    }
+
+    /// Runs the CLI-agent detection deferred from `AfterBlockStarted` for the block that just became
+    /// interactive (#1373). Takes the pending marker so it runs once per block.
+    fn run_pending_cli_agent_detection(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pending_cli_agent_detection.take().is_none() {
+            return;
+        }
+        // Detect CLI agent and create session before
+        // showing the footer, so the session drives
+        // the footer rather than the other way around.
+        let detection = {
+            let model = self.model.lock();
+            self.detect_cli_agent_from_model(&model, ctx)
+        };
+        let view_id = self.view_id;
+        CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions_model, ctx| match detection {
+            Some((agent, ref custom_command_prefix))
+                if !sessions_model
+                    .session(view_id)
+                    .is_some_and(|s| s.agent == agent) =>
+            {
+                let remote_host = self.active_session_remote_host(ctx);
+                sessions_model.set_session(
+                    view_id,
+                    CLIAgentSession {
+                        agent,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: agent.supports_cli_agent_footer()
+                            && *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start,
+                        listener: None,
+                        plugin_version: None,
+                        remote_host,
+                        draft_text: None,
+                        custom_command_prefix: custom_command_prefix.clone(),
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            }
+            _ => {}
+        });
+
+        // Agents that use OSC 9 notifications don't send a
+        // structured SessionStart event, so the listener is
+        // proactively created at command detection time.
+        if let Some((agent @ (CLIAgent::Codex | CLIAgent::DeepSeek), _)) = detection {
+            self.register_cli_agent_listener_without_session_start_event(agent, ctx);
+        }
+
+        self.refresh_use_agent_footer(ctx);
+        self.maybe_auto_open_cli_agent_rich_input(ctx);
+        self.input.update(ctx, |input, ctx| {
+            input
+                .universal_developer_input_button_bar()
+                .update(ctx, |bar, ctx| {
+                    bar.update_segmented_control_disabled_state(ctx);
+                })
+        });
+        // Update agent view back button state when command becomes long-running
+        if FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(ctx).is_fullscreen()
+        {
+            self.update_agent_view_back_button_state(ctx);
+            self.update_agent_view_pane_header(ctx);
         }
     }
 
@@ -15751,6 +15827,15 @@ impl TerminalView {
             ModelEvent::BlockCompleted(block_completed_event) => {
                 record_trace_event!("command_execution:block_completed");
                 end_trace_after_next!("window:redraw:end");
+                // The block ended without becoming interactive: nothing left to wait for (#1373).
+                if self.pending_cli_agent_detection.as_ref()
+                    == Some(&block_completed_event.block_id)
+                {
+                    self.pending_cli_agent_detection = None;
+                }
+                if self.pending_agent_input_lock.as_ref() == Some(&block_completed_event.block_id) {
+                    self.pending_agent_input_lock = None;
+                }
                 let block_completed_event_clone = block_completed_event.clone();
                 self.input.update(ctx, |input, ctx| {
                     input.handle_block_completed_event(block_completed_event_clone, ctx);
@@ -16115,85 +16200,13 @@ impl TerminalView {
                             self.warpify_state.clear_pending_ssh_host();
                             self.recompute_window_footer_bar_color(ctx);
 
-                            ctx.spawn(
-                                Timer::after(Duration::from_millis(
-                                    LONG_RUNNING_COMMAND_DURATION_MS,
-                                )),
-                                move |me, _, ctx| {
-                                    // Detect CLI agent and create session before
-                                    // showing the footer, so the session drives
-                                    // the footer rather than the other way around.
-                                    let detection = {
-                                        let model = me.model.lock();
-                                        me.detect_cli_agent_from_model(&model, ctx)
-                                    };
-                                    let view_id = me.view_id;
-                                    CLIAgentSessionsModel::handle(ctx).update(
-                                        ctx,
-                                        |sessions_model, ctx| match detection {
-                                            Some((agent, ref custom_command_prefix))
-                                                if !sessions_model
-                                                    .session(view_id)
-                                                    .is_some_and(|s| s.agent == agent) =>
-                                            {
-                                                let remote_host =
-                                                    me.active_session_remote_host(ctx);
-                                                sessions_model.set_session(
-                                                    view_id,
-                                                    CLIAgentSession {
-                                                        agent,
-                                                        status: CLIAgentSessionStatus::InProgress,
-                                                        session_context:
-                                                            CLIAgentSessionContext::default(),
-                                                        input_state: CLIAgentInputState::Closed,
-                                                        should_auto_toggle_input: agent
-                                                            .supports_cli_agent_footer()
-                                                            && *AISettings::as_ref(ctx)
-                                                                .auto_open_rich_input_on_cli_agent_start,
-                                                        listener: None,
-                                                        plugin_version: None,
-                                                        remote_host,
-                                                        draft_text: None,
-                                                        custom_command_prefix: custom_command_prefix.clone(),
-                                                        received_rich_notification: false,
-                                                    },
-                                                    ctx,
-                                                );
-                                            }
-                                            _ => {}
-                                        },
-                                    );
-
-                                    // Agents that use OSC 9 notifications don't send a
-                                    // structured SessionStart event, so the listener is
-                                    // proactively created at command detection time.
-                                    if let Some((agent @ (CLIAgent::Codex | CLIAgent::DeepSeek), _)) =
-                                        detection
-                                    {
-                                        me.register_cli_agent_listener_without_session_start_event(
-                                            agent, ctx,
-                                        );
-                                    }
-
-                                    me.refresh_use_agent_footer(ctx);
-                                    me.maybe_auto_open_cli_agent_rich_input(ctx);
-                                    me.input.update(ctx, |input, ctx| {
-                                        input.universal_developer_input_button_bar().update(
-                                            ctx,
-                                            |bar, ctx| {
-                                                bar.update_segmented_control_disabled_state(ctx);
-                                            },
-                                        )
-                                    });
-                                    // Update agent view back button state when command becomes long-running
-                                    if FeatureFlag::AgentView.is_enabled()
-                                        && me.agent_view_controller.as_ref(ctx).is_fullscreen()
-                                    {
-                                        me.update_agent_view_back_button_state(ctx);
-                                        me.update_agent_view_pane_header(ctx);
-                                    }
-                                },
-                            );
+                            // #1373: detect the CLI agent when the command becomes interactive (a
+                            // program owns the terminal), not after an elapsed-time guess.
+                            let started_block_id = self.model.lock().active_block_id().clone();
+                            self.pending_cli_agent_detection = Some(started_block_id);
+                            if self.is_long_running() {
+                                self.run_pending_cli_agent_detection(ctx);
+                            }
                         }
                     }
 
@@ -16803,6 +16816,17 @@ impl TerminalView {
                 if !block_working_directory_updated_event.is_for_in_band_command {
                     self.refresh_warp_prompt(ctx);
                 }
+            }
+            ModelEvent::CommandBecameInteractive { block_id } => {
+                // A program took over the terminal (#1373): the event the "long running"
+                // consumers used to wait 50 ms for.
+                if self.pending_agent_input_lock.as_ref() == Some(block_id) {
+                    self.lock_input_for_interactive_agent_command(ctx);
+                }
+                if self.pending_cli_agent_detection.as_ref() == Some(block_id) {
+                    self.run_pending_cli_agent_detection(ctx);
+                }
+                ctx.notify();
             }
             ModelEvent::TerminalModeSwapped(mode) => {
                 #[cfg(feature = "local_tty")]

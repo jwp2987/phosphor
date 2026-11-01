@@ -3480,3 +3480,54 @@ fn test_clear_marked_text_is_noop_without_marked_text() {
     assert!(terminal.clear_marked_text());
     assert!(!terminal.has_marked_text());
 }
+
+/// #1373: a fast command that enters the alt screen is interactive at once; it is not judged by
+/// how long ago it started.
+#[test]
+fn fast_command_entering_alt_screen_is_long_running() {
+    let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+    terminal.block_list_mut().active_block_mut().start();
+    terminal.simulate_cmd("vim");
+    assert!(
+        !terminal
+            .block_list()
+            .active_block()
+            .interactive_latch()
+            .is_latched()
+    );
+
+    terminal.enter_alt_screen(true);
+
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .is_active_and_long_running()
+    );
+}
+
+/// #1373: output from a command whose tty is raw (a TUI, a password read) latches it through the
+/// installed probe; a slow command whose tty is cooked and owned by the shell does not.
+#[test]
+fn output_with_raw_tty_latches_and_cooked_shell_does_not() {
+    use crate::terminal::model::block::interactive_latch::TerminalOwner;
+    for (owner, expect) in [(TerminalOwner::Input, true), (TerminalOwner::Shell, false)] {
+        let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+        terminal.set_interactive_probe(std::sync::Arc::new(move || owner));
+        terminal.block_list_mut().active_block_mut().start();
+        terminal.simulate_cmd("tool");
+        terminal.process_bytes("some output");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        terminal.process_bytes("more output");
+        // The latch, not the predicate: a mock model's blocks are pre-bootstrap, where the
+        // elapsed-time fallback (no hooks, no probe) still applies.
+        assert_eq!(
+            terminal
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .is_latched(),
+            expect
+        );
+    }
+}

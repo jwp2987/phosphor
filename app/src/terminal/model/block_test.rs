@@ -2,6 +2,7 @@ use crate::terminal::model::block::TranscriptScope;
 use std::{collections::HashMap, pin::pin, time::Duration};
 
 use super::*;
+use crate::terminal::model::block::interactive_latch::{LatchReason, TerminalOwner};
 use crate::{
     terminal::model::{
         ansi::{Attr, Handler},
@@ -326,8 +327,11 @@ pub fn test_long_running_block_bottom_padding() {
         assert!(block.padding_bottom() > LONG_RUNNING_BOTTOM_PADDING_LINES.into_lines());
 
         // After the long running duration, the block should switch
-        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
-        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+        // A program owns the terminal when the presentation debounce elapses (#1373).
+        block
+            .interactive_latch()
+            .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+        block.interactive_latch().on_settled();
 
         assert!(block.is_active_and_long_running());
         assert!(block.padding_bottom() == LONG_RUNNING_BOTTOM_PADDING_LINES.into_lines());
@@ -374,8 +378,10 @@ pub fn test_long_running_block_top_padding() {
         assert!(padding_before > LONG_RUNNING_TOP_PADDING_LINES.into_lines());
         let middle_before = block.padding_middle();
 
-        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
-        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+        block
+            .interactive_latch()
+            .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+        block.interactive_latch().on_settled();
 
         // Once long-running, the top collapses so the program gets the rows the pty
         // already told it that it had.
@@ -2593,4 +2599,95 @@ fn fullscreen_detector_ignores_screens_that_keep_changing_or_are_ineligible() {
         assert_eq!(detector.observe(Some(s), at, || Some(true)), None);
         assert_eq!(detector.observe(None, at, || Some(true)), None);
     }
+}
+
+// #1373: "interactive / long running" is decided by latched events, never by elapsed time.
+
+fn executing_block() -> Block {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(Default::default());
+    block.start();
+    for c in "command".chars() {
+        block.input(c);
+    }
+    block.preexec(Default::default());
+    block
+}
+
+/// A command can sit for any amount of time before `preexec` is processed (a loaded main thread,
+/// a slow shell): that alone must never flip it to interactive. Old code compared the command
+/// start time to 50 ms.
+#[test]
+fn late_preexec_does_not_flip_block_to_long_running() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(Default::default());
+    block.start();
+    for c in "command".chars() {
+        block.input(c);
+    }
+    // Far longer than the old 50 ms threshold between start and preexec.
+    std::thread::sleep(Duration::from_millis(80));
+    assert!(!block.is_active_and_long_running());
+    block.preexec(Default::default());
+    assert!(!block.is_active_and_long_running());
+}
+
+/// A slow command that never leaves the shell and never reads input is not interactive, however
+/// long it has run (the probe says the shell still owns the terminal).
+#[test]
+fn slow_non_interactive_command_is_not_long_running() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Shell)));
+    std::thread::sleep(Duration::from_millis(80));
+    block.interactive_latch().on_output();
+    block.interactive_latch().on_settled();
+    assert!(!block.is_active_and_long_running());
+}
+
+/// A command that finished before the debounce task ran must not latch, even if the probe would
+/// still answer "program".
+#[test]
+fn finished_command_does_not_latch_on_late_settle() {
+    let mut block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+    block.finish(0);
+    block.interactive_latch().on_settled();
+    assert!(!block.interactive_latch().is_latched());
+    assert!(!block.is_active_and_long_running());
+}
+
+/// A fast program that takes over the terminal (alt screen / raw mode) is interactive at once,
+/// without waiting for any duration.
+#[test]
+fn fast_command_entering_alt_screen_or_raw_mode_is_long_running() {
+    let block = executing_block();
+    assert!(!block.is_active_and_long_running());
+    assert!(block.interactive_latch().latch(LatchReason::AltScreen));
+    assert!(block.is_active_and_long_running());
+    // Latched once.
+    assert!(!block.interactive_latch().latch(LatchReason::AltScreen));
+
+    let raw = executing_block();
+    raw.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Input)));
+    raw.interactive_latch().on_output();
+    assert!(raw.is_active_and_long_running());
+}
+
+/// A plain foreground program (`ls`) printing within the debounce must not flash the long-running
+/// presentation; once the debounce elapsed, output with a program in the foreground latches.
+#[test]
+fn foreground_program_latches_only_after_debounce() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+    block.interactive_latch().on_output();
+    assert!(!block.is_active_and_long_running());
+    block.interactive_latch().on_settled();
+    assert!(block.is_active_and_long_running());
 }

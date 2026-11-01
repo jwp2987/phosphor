@@ -1037,6 +1037,10 @@ fn on_shell_determined<S: TerminalSurface>(
                 super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
             })),
         );
+        // #1373: who owns the terminal decides "interactive / long running", not elapsed time.
+        model.lock().set_interactive_probe(Arc::new(move || {
+            super::terminal_attributes::terminal_owner(fd, pid as i32)
+        }));
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)

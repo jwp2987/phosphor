@@ -1082,8 +1082,7 @@ impl ShellCommandExecutor {
         }
         // The RequestedCommand path uses action id as the selector and cleans up
         // unconditionally. It can't rely on the `is_active_and_long_running()` guard:
-        // within the ~50ms window after a command is spawned
-        // (LONG_RUNNING_COMMAND_DURATION_MS) the guard is false, which would leave
+        // until the command becomes interactive (a latched pty event, #1373) the guard is false, which would leave
         // senders lingering and cause the detached future to hang around until the
         // command truly finishes (especially impactful for wait_until_completion=true,
         // i.e. ActionResultDelay::UntilCompletion).
