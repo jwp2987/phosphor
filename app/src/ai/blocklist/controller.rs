@@ -1973,7 +1973,10 @@ impl BlocklistAIController {
         let spawned = std::thread::Builder::new()
             .name("attachment-read".into())
             .spawn(move || {
-                let _ = tx.send(read_attachments_cancellable(prompt_attachments, &cancel_flag));
+                let _ = tx.send(read_attachments_cancellable(
+                    prompt_attachments,
+                    &cancel_flag,
+                ));
             });
         let spawn_ok = match spawned {
             Ok(_) => true,

@@ -12004,7 +12004,11 @@ impl Workspace {
     /// Closes all tabs that have code panes with the specified file path open.
     /// This is used when a file is renamed or deleted in the file tree
     #[cfg(feature = "local_fs")]
-    fn close_tabs_with_file_path(&mut self, old_path: &Path, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn close_tabs_with_file_path(
+        &mut self,
+        old_path: &Path,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Find all code panes across all tabs that have this file open
         for tab_data in &self.tabs {
             // Check if this tab has any code panes with the old file path open
