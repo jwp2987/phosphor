@@ -3124,4 +3124,56 @@ mod parked_query_sends {
             });
         });
     }
+
+    #[test]
+    fn hung_read_does_not_block_a_later_submit() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let hung = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hung",
+                );
+                let later = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "later",
+                );
+                // The later submit's own read is done, but it waits behind the hung one.
+                controller.land_attachment_read_for_test(later, ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 2);
+                // The give-up fails only the hung submit and releases the later one.
+                controller.give_up_attachment_read_for_test(hung, ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+            });
+        });
+    }
+
+    /// A submit deferred on its read takes its attachments out of live staging, so a second
+    /// submit during the read cannot copy them again (#1370 F4).
+    #[test]
+    fn deferred_submit_takes_its_attachments_out_of_staging() {
+        use crate::ai::blocklist::PendingAttachment;
+        App::test((), |mut app| async move {
+            let (terminal, _conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let file =
+                    PendingAttachment::File(crate::ai::blocklist::context_model::PendingFile {
+                        file_name: "a.txt".to_owned(),
+                        file_path: std::path::PathBuf::from("/nonexistent/a.txt"),
+                        mime_type: "text/plain".to_owned(),
+                    });
+                controller.stage_attachments_for_test(vec![file], ctx);
+                controller.send_user_query_for_test("first", ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 1);
+                assert!(
+                    controller.staged_attachment_count_for_test(ctx) == 0,
+                    "the deferred submit owns its attachments; a second submit must not copy them"
+                );
+            });
+        });
+    }
 }

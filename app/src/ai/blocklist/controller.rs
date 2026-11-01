@@ -986,10 +986,23 @@ struct UserQuerySend {
 }
 
 /// A submit waiting for its attachment read, in submit order.
+/// How long one attachment read may take before its submit is failed (#1370 F4).
+/// `PHOSPHOR_ATTACHMENT_READ_GIVE_UP_MS` overrides.
+fn attachment_read_give_up() -> std::time::Duration {
+    let ms = std::env::var("PHOSPHOR_ATTACHMENT_READ_GIVE_UP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30_000);
+    std::time::Duration::from_millis(ms)
+}
+
 struct PendingQuerySend {
     seq: u64,
     send: UserQuerySend,
     read: Option<Vec<ReadAttachment>>,
+    /// The live-staged attachments were taken (and cleared from staging) at submit time, so
+    /// this send owns them; see `send_query` (#1370 F4).
+    staged_taken: bool,
 }
 
 enum InputQueryType {
@@ -1852,6 +1865,11 @@ impl BlocklistAIController {
 
         let additional_attachments = input_query.additional_attachments;
         let queued_query_id = input_query.queued_query_id;
+        let direct_staged = queued_query_id.is_none()
+            && matches!(
+                input_query.input_query,
+                InputQueryType::UserSubmittedQueryFromInput { .. }
+            );
 
         // Resolve the attachment set for this submission. A fired queued row reads the
         // attachments captured when it was queued (it may no longer match whatever is
@@ -1892,6 +1910,16 @@ impl BlocklistAIController {
             self.finish_user_query_send(send, read_attachments(prompt_attachments), ctx);
             return;
         }
+        // This send is deferred past this call. The attachments it copied from live staging are
+        // taken out of staging now, so a second submit during the read cannot copy them again
+        // (a duplicate), and anything staged afterwards is the next message's own (#1370 F4);
+        // `drain_ready_query_sends` keeps that newer staging across this send's reset.
+        let staged_taken = direct_staged && !prompt_attachments.is_empty();
+        if staged_taken {
+            self.context_model.update(ctx, |context_model, ctx| {
+                context_model.clear_pending_attachments(ctx);
+            });
+        }
         let seq = self.next_query_send_seq;
         self.next_query_send_seq += 1;
         if !needs_read {
@@ -1899,6 +1927,7 @@ impl BlocklistAIController {
                 seq,
                 send,
                 read: Some(read_attachments(prompt_attachments)),
+                staged_taken,
             });
             return;
         }
@@ -1906,7 +1935,21 @@ impl BlocklistAIController {
             seq,
             send,
             read: None,
+            staged_taken,
         });
+        let file_names: Vec<String> = prompt_attachments
+            .iter()
+            .filter(|a| matches!(a, PendingAttachment::File(_)))
+            .map(|a| a.file_name().to_owned())
+            .collect();
+        // Give-up safety net (#1370 F4): a read that never returns (hung mount) must not block
+        // every later submit. The signal is the read landing; this only covers it never coming.
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(attachment_read_give_up()).await;
+            },
+            move |me, _, ctx| me.give_up_attachment_read(seq, file_names, ctx),
+        );
         let (tx, rx) = futures::channel::oneshot::channel();
         let fallback = prompt_attachments.clone();
         let spawned = std::thread::Builder::new()
@@ -1948,6 +1991,36 @@ impl BlocklistAIController {
         self.drain_ready_query_sends(ctx);
     }
 
+    /// The give-up timer fired. If the read for `seq` is still outstanding, that submit fails
+    /// with a visible error and later submits are released; a read landing afterwards finds no
+    /// entry and is dropped.
+    fn give_up_attachment_read(
+        &mut self,
+        seq: u64,
+        file_names: Vec<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(index) = self
+            .pending_query_sends
+            .iter()
+            .position(|e| e.seq == seq && e.read.is_none())
+        else {
+            return;
+        };
+        log::warn!(
+            "Attachment read for submit {seq} did not finish in {:?}; failing that submit",
+            attachment_read_give_up()
+        );
+        self.pending_query_sends.remove(index);
+        let names = if file_names.is_empty() {
+            vec!["attachment".to_owned()]
+        } else {
+            file_names
+        };
+        self.notify_attachment_read_failures(&names, ctx);
+        self.drain_ready_query_sends(ctx);
+    }
+
     /// Test seam: parks a user-query submit as if its attachment read were in flight; returns
     /// its `seq`.
     #[cfg(test)]
@@ -1977,8 +2050,54 @@ impl BlocklistAIController {
                 is_queued_prompt: false,
             },
             read: None,
+            staged_taken: false,
         });
         seq
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_attachments_for_test(
+        &mut self,
+        attachments: Vec<PendingAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.context_model.update(ctx, |context_model, ctx| {
+            context_model.append_pending_attachments(attachments, ctx);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn staged_attachment_count_for_test(&self, ctx: &ModelContext<Self>) -> usize {
+        self.context_model.as_ref(ctx).pending_attachments().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn send_user_query_for_test(&mut self, query: &str, ctx: &mut ModelContext<Self>) {
+        self.send_query(
+            InputQuery {
+                which_task: WhichTask::NewConversation,
+                input_query: InputQueryType::UserSubmittedQueryFromInput {
+                    query: query.to_owned(),
+                    static_query_type: None,
+                    running_command: None,
+                },
+                additional_attachments: HashMap::new(),
+                queued_query_id: None,
+            },
+            EntrypointType::UserInitiated,
+            None,
+            false,
+            ctx,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn give_up_attachment_read_for_test(
+        &mut self,
+        seq: u64,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.give_up_attachment_read(seq, vec![], ctx);
     }
 
     #[cfg(test)]
@@ -2041,12 +2160,28 @@ impl BlocklistAIController {
             let Some(PendingQuerySend {
                 send,
                 read: Some(read),
+                staged_taken,
                 ..
             }) = self.pending_query_sends.pop_front()
             else {
                 break;
             };
+            // Whatever is staged now was staged after this submit (its own was taken); the
+            // send's context reset must not wipe it (#1370 F4).
+            let newer = if staged_taken {
+                self.context_model
+                    .as_ref(ctx)
+                    .pending_attachments()
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
             self.finish_user_query_send(send, read, ctx);
+            if !newer.is_empty() {
+                self.context_model.update(ctx, |context_model, ctx| {
+                    context_model.append_pending_attachments(newer, ctx);
+                });
+            }
         }
     }
 
