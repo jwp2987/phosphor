@@ -1860,6 +1860,40 @@ mod typeahead_handoff {
             .collect()
     }
 
+    /// #1384 P4: the hand-off's accounting is the same on the legacy route and on the write
+    /// queue's. One write per chunk (a paste-sized chunk is a `PasteInput` on the queue and a
+    /// `CommandInput` without), and each retires exactly one in-flight count.
+    #[test]
+    fn handoff_user_write_accounting_is_the_same_with_and_without_the_write_queue() {
+        for queue in [false, true] {
+            App::test((), |mut app| async move {
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let harness = harness(&mut app);
+                harness.controller.update(&mut app, |controller, _| {
+                    controller.force_write_queue(queue)
+                });
+                let paste: &'static [u8] =
+                    Box::leak(vec![b'x'; PASTE_WRITE_MIN_BYTES].into_boxed_slice());
+                user_types(&mut app, &harness, paste);
+                user_types(&mut app, &harness, b"k");
+                let messages = harness.sender.messages.lock();
+                assert_eq!(messages.len(), 2, "queue={queue}: {messages:?}");
+                match (&messages[0], queue) {
+                    (Message::PasteInput(bytes), true) | (Message::CommandInput(bytes), false) => {
+                        assert_eq!(&bytes[..], paste)
+                    }
+                    (other, _) => panic!("queue={queue}: unexpected {other:?}"),
+                }
+                assert!(matches!(&messages[1], Message::Input(bytes) if &bytes[..] == b"k"));
+                assert_eq!(
+                    harness.model.lock().typeahead_handoff().writes_in_flight(),
+                    0,
+                    "queue={queue}: each counted write retires one in-flight count"
+                );
+            });
+        }
+    }
+
     #[test]
     fn request_waits_for_queued_lines_and_holds_queued_writes_meanwhile() {
         App::test((), |mut app| async move {
@@ -3125,4 +3159,37 @@ fn line_clear_payload_without_the_queue_uses_the_timer_chain() {
             first
         });
     });
+}
+
+/// #1384 P4: on a pty with the write queue, agent input is its own class on the wire, a paste is
+/// its own class, and a cancelled agent command aborts the agent's jobs only. Without the queue
+/// (ConPTY, `PHOSPHOR_PTY_WRITE_QUEUE=0`) everything travels as before and nothing is aborted.
+#[test]
+fn agent_and_paste_writes_are_split_on_the_wire_only_with_the_write_queue() {
+    for queue in [true, false] {
+        App::test((), |mut app| async move {
+            let sender = TestEventLoopSender::default();
+            let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+            controller.update(&mut app, |controller, ctx| {
+                controller.force_write_queue(queue);
+                controller.write_paste_bytes(&b"paste"[..], ctx);
+                controller.write_agent_bytes(&b"agent"[..], &AIAgentPtyWriteMode::Raw, ctx);
+                controller.write_bytes(&b"k"[..], ctx);
+                controller.cancel_agent_writes(ctx);
+            });
+            let messages = sender.messages.lock();
+            if queue {
+                assert_eq!(messages.len(), 4, "{messages:?}");
+                assert!(matches!(&messages[0], Message::PasteInput(b) if &b[..] == b"paste"));
+                assert!(matches!(&messages[1], Message::AgentInput(b) if &b[..] == b"agent"));
+                assert!(matches!(&messages[2], Message::Input(b) if &b[..] == b"k"));
+                assert!(matches!(&messages[3], Message::Abort(AbortScope::Agent)));
+            } else {
+                assert_eq!(messages.len(), 3, "{messages:?}");
+                assert!(matches!(&messages[0], Message::CommandInput(b) if &b[..] == b"paste"));
+                assert!(matches!(&messages[1], Message::Input(b) if &b[..] == b"agent"));
+                assert!(matches!(&messages[2], Message::Input(b) if &b[..] == b"k"));
+            }
+        });
+    }
 }

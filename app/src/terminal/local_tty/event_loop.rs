@@ -532,14 +532,44 @@ impl State {
 
     /// Queues the submitted buffer of a user command, which a ^C may cancel while unwritten.
     fn queue_command_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::UserCommand);
+    }
+
+    /// Queues a paste (#1384 P4): cancelled by a ^C like a command, and by `AbortScope::Paste`.
+    fn queue_paste_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::Paste);
+    }
+
+    /// Queues an agent's input (#1384 P4): kept by a ^C, removed by `AbortScope::Agent`.
+    fn queue_agent_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::Agent);
+    }
+
+    fn queue_classed(&mut self, bytes: Cow<'static, [u8]>, class: JobClass) {
         let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
             id,
             bytes,
             produced_while_executing: None,
-            class: JobClass::UserCommand,
+            class,
             setup: None,
         });
+    }
+
+    /// Removes the unwritten jobs of `class`, and cuts the write in progress if it is one. A
+    /// write cut inside a bracketed paste is followed by the paste close, so the shell does not
+    /// swallow what comes next as pasted text.
+    fn abort_class(&mut self, class: JobClass) {
+        self.write_list.retain(|entry| entry.class != class);
+        if self.writing.as_ref().is_some_and(|w| w.class == class) {
+            let cut_paste = self
+                .writing
+                .take()
+                .is_some_and(|w| w.cut_inside_bracketed_paste());
+            if cut_paste {
+                self.push_paste_close();
+            }
+        }
     }
 
     /// Queues a reply to a terminal query. `executing_block` is the id of the active
@@ -652,6 +682,12 @@ impl State {
     fn abort(&mut self, scope: AbortScope) {
         if scope.covers(JobClass::UserCommand) {
             self.discard_queued_input();
+        } else {
+            for class in [JobClass::Paste, JobClass::Agent] {
+                if scope.covers(class) {
+                    self.abort_class(class);
+                }
+            }
         }
         if !scope.covers(JobClass::SetupChunked) {
             return;
@@ -961,6 +997,21 @@ where
                         state.abort(AbortScope::Setup);
                     }
                     state.queue_input(input)
+                }
+                Message::AgentInput(input) => {
+                    self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
+                    // An agent may write a ^C into its command: a signal byte preempts a setup
+                    // job exactly as a typed one does.
+                    if is_signal_byte(&input) {
+                        state.abort(AbortScope::Setup);
+                    }
+                    state.queue_agent_input(input)
+                }
+                Message::PasteInput(input) => {
+                    self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
+                    state.queue_paste_input(input)
                 }
                 Message::SetupChunked { chunks, pacing } => {
                     // The ledger sees the bytes now, as it saw each chunk as its own `Input`.

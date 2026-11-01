@@ -67,14 +67,15 @@ const MAC_TTY_INPUT_QUEUE_PACING: Duration = Duration::from_millis(10);
 /// Chunk size of the line-clear payload: under the macOS tty input queue (1024 B).
 const MAC_TTY_INPUT_QUEUE_CHUNK: usize = 1000;
 
-/// Whether the writer-owned job queue (#1384) is used for the paced bootstrap writes.
+/// Whether the writer-owned job queue (#1384) is used: paced bootstrap writes, and the paste and
+/// agent write classes (P4).
 /// `PHOSPHOR_PTY_WRITE_QUEUE=0` turns it off and the timer-chained writes of before are used.
 pub(crate) fn write_queue_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         let off = std::env::var("PHOSPHOR_PTY_WRITE_QUEUE").is_ok_and(|v| v.trim() == "0");
         if off {
-            log::info!("PHOSPHOR_PTY_WRITE_QUEUE=0: bootstrap writes are paced by UI timers");
+            log::info!("PHOSPHOR_PTY_WRITE_QUEUE=0: bootstrap writes are paced by UI timers; paste and agent writes are not classed");
         }
         !off
     })
@@ -1317,6 +1318,15 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
+    /// The agent's command was cancelled: drops the agent input the writer has not yet written
+    /// (#1384 P4), and nothing else -- typed keys, pastes, commands and replies stay queued.
+    /// A no-op without the write queue (the agent input travels as ordinary input there).
+    pub fn cancel_agent_writes(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.write_queue {
+            self.send_message_to_event_loop(Message::Abort(AbortScope::Agent), ctx);
+        }
+    }
+
     /// Test-only: use the writer-owned job queue for paced writes, as the local unix pty does.
     #[cfg(test)]
     pub fn force_write_queue(&mut self, enabled: bool) {
@@ -2054,6 +2064,7 @@ impl<T: EventLoopSender> PtyController<T> {
         // sets the pace; nothing is dropped or split). It is tagged cancellable so a ^C stops
         // what is still unwritten instead of queueing behind all of it (#1255).
         let is_paste = matches!(&write, PtyWrite::PasteBytes { .. });
+        let is_agent_input = matches!(&write, PtyWrite::AgentInput { .. });
 
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
@@ -2158,14 +2169,19 @@ impl<T: EventLoopSender> PtyController<T> {
         if is_interrupt {
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
-        self.send_message_to_event_loop(
-            if is_user_command || is_paste {
-                Message::CommandInput(bytes_to_write)
-            } else {
-                Message::Input(bytes_to_write)
-            },
-            ctx,
-        );
+        // On a pty with the write queue, a paste and an agent write are their own job classes
+        // (#1384 P4), so the writer can abort them by scope; without it (ConPTY, the kill
+        // switch) they travel as before.
+        let message = if self.write_queue && is_paste {
+            Message::PasteInput(bytes_to_write)
+        } else if self.write_queue && is_agent_input {
+            Message::AgentInput(bytes_to_write)
+        } else if is_user_command || is_paste {
+            Message::CommandInput(bytes_to_write)
+        } else {
+            Message::Input(bytes_to_write)
+        };
+        self.send_message_to_event_loop(message, ctx);
         true
     }
 

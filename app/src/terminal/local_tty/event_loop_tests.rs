@@ -1675,3 +1675,173 @@ fn a_key_during_the_line_clear_job_waits_behind_all_of_it() {
     h.pass_with(&mut state, &mut can_write);
     assert_eq!(h.take_written(), b"ABCk");
 }
+
+// ---- #1384 P4: paste and agent writes are their own job classes ----
+
+/// `Abort(Agent)` removes only the agent's unwritten input, and the agent write in flight is cut
+/// where it stands; typed keys, pastes, commands and replies keep their order. A ^C's discard
+/// (`Discardable`) never takes agent input.
+#[test]
+fn agent_abort_cuts_only_agent_jobs() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"key1"));
+    state.queue_agent_input(Cow::Borrowed(b"agent1"));
+    state.queue_paste_input(Cow::Owned(b"paste".to_vec()));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.queue_agent_input(Cow::Borrowed(b"agent2"));
+    state.queue_response(b"\x1b[?62c".to_vec(), None);
+    state.queue_input(Cow::Borrowed(b"key2"));
+
+    // key1 is written; the agent's first write is in progress and half written.
+    state.ensure_next();
+    assert_eq!(state.take_current().unwrap().remaining_bytes(), b"key1");
+    state.goto_next();
+    let mut current = state.take_current().expect("agent1 is being written");
+    assert_eq!(current.class, JobClass::Agent);
+    current.advance(3);
+    state.set_current(Some(current));
+
+    state.abort(AbortScope::Agent);
+
+    assert_eq!(
+        drain(&mut state),
+        vec![
+            b"paste".to_vec(),
+            b"cmd\r".to_vec(),
+            b"\x1b[?62c".to_vec(),
+            b"key2".to_vec()
+        ]
+    );
+}
+
+/// A ^C's discard drops the paste and the command but leaves the agent's input queued, as it did
+/// when agent input travelled as ordinary input.
+#[test]
+fn discard_keeps_agent_jobs_and_takes_pastes() {
+    let mut state = State::default();
+    state.queue_agent_input(Cow::Borrowed(b"agent"));
+    state.queue_paste_input(Cow::Owned(b"paste".to_vec()));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.abort(AbortScope::Discardable);
+    assert_eq!(drain(&mut state), vec![b"agent".to_vec()]);
+}
+
+/// `Abort(Paste)` takes pastes only, not commands.
+#[test]
+fn paste_abort_takes_only_pastes() {
+    let mut state = State::default();
+    state.queue_paste_input(Cow::Owned(b"paste".to_vec()));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.queue_input(Cow::Borrowed(b"k"));
+    state.abort(AbortScope::Paste);
+    assert_eq!(drain(&mut state), vec![b"cmd\r".to_vec(), b"k".to_vec()]);
+}
+
+/// A paste cut inside its bracketed paste is closed with ESC[201~ before anything queued behind
+/// it, whichever scope cut it.
+#[test]
+fn a_cut_paste_is_closed_with_the_bracketed_paste_end() {
+    for scope in [AbortScope::Paste, AbortScope::Discardable] {
+        let mut state = State::default();
+        state.queue_paste_input(Cow::Owned(big_paste(2500)));
+        state.queue_input(Cow::Borrowed(b"k"));
+        state.ensure_next();
+        let mut current = state.take_current().unwrap();
+        assert_eq!(current.class, JobClass::Paste);
+        current.advance(4096);
+        state.set_current(Some(current));
+        state.abort(scope);
+        assert_eq!(
+            drain(&mut state),
+            vec![BRACKETED_PASTE_END.to_vec(), b"k".to_vec()],
+            "{scope:?}"
+        );
+    }
+    // Agent input that opens a bracketed paste (the agent's paste mode) is closed the same way.
+    let mut state = State::default();
+    state.queue_agent_input(Cow::Owned(big_paste(2500)));
+    state.ensure_next();
+    let mut current = state.take_current().unwrap();
+    current.advance(4096);
+    state.set_current(Some(current));
+    state.abort(AbortScope::Agent);
+    assert_eq!(drain(&mut state), vec![BRACKETED_PASTE_END.to_vec()]);
+}
+
+/// End to end over the channel with a tty that takes 4 KiB and then answers `WouldBlock`: a key
+/// sent while a paste (then an agent write) is half written lands after the whole of each, never
+/// inside, and the bytes arrive in submission order.
+#[test]
+fn user_keys_never_land_inside_a_paste_or_an_agent_write() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (mut pty, _) = FakePty::new(None);
+    let budget = Arc::new(Mutex::new(4096usize));
+    pty.writer.2 = Some(budget.clone());
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    let mut state = State::default();
+    let paste = big_paste(1500);
+    let agent = big_paste(1400);
+    tx.send(Message::PasteInput(Cow::Owned(paste.clone())))
+        .unwrap();
+    tx.send(Message::AgentInput(Cow::Owned(agent.clone())))
+        .unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert!(!can_write, "the tty is full");
+    assert_eq!(written.lock().unwrap().len(), 4096);
+
+    tx.send(Message::Input(Cow::Borrowed(b"k"))).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    *budget.lock().unwrap() = usize::MAX;
+    can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+
+    let mut expected = paste;
+    expected.extend_from_slice(&agent);
+    expected.push(b'k');
+    assert_eq!(*written.lock().unwrap(), expected);
+}
+
+/// `Message::Abort(Agent)` through the loop: the agent input still waiting behind a half-written
+/// paste is dropped; the paste and the key finish.
+#[test]
+fn agent_abort_message_through_the_loop() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (mut pty, _) = FakePty::new(None);
+    let budget = Arc::new(Mutex::new(4096usize));
+    pty.writer.2 = Some(budget.clone());
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    let mut state = State::default();
+    let paste = big_paste(1500);
+    tx.send(Message::PasteInput(Cow::Owned(paste.clone())))
+        .unwrap();
+    tx.send(Message::AgentInput(Cow::Borrowed(b"agent")))
+        .unwrap();
+    tx.send(Message::Input(Cow::Borrowed(b"k"))).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    tx.send(Message::Abort(AbortScope::Agent)).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    *budget.lock().unwrap() = usize::MAX;
+    can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    let mut expected = paste;
+    expected.push(b'k');
+    assert_eq!(*written.lock().unwrap(), expected);
+}
