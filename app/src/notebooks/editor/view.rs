@@ -2991,6 +2991,11 @@ impl View for RichTextEditorView {
         "RichTextEditorView"
     }
 
+    fn takes_typed_text(&self) -> bool {
+        // A terminal pane's key sink leaves the keys typed here to this editor (#1404).
+        true
+    }
+
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let editable = self.is_editable(app);
         let focused = self.is_focused(app);

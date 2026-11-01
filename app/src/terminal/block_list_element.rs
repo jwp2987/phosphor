@@ -719,102 +719,6 @@ pub(crate) fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<b
     live_focus.unwrap_or(snapshot_focused)
 }
 
-/// #1332: whether the terminal view takes a key that nothing else took, because it is holding the
-/// keys typed during an ssh connect. Between the ssh block ending and the remote shell's first
-/// prompt focus moves to the input while the editor is not yet accepting keys; a key typed in
-/// that gap was dropped by both, so the held line lost a character. While the hold is active
-/// and the focus is on the input (or inside it), the terminal view takes it and holds it, in
-/// order, with the rest.
-///
-/// #1339: "unclaimed" is decided here, not assumed from the dispatch order. The editor and this
-/// element both see the same event, and focus inside the editor is also focus "inside the input":
-/// without the editor check an editor that took (and queued) the key was joined by the terminal
-/// holding it too, and every key typed in that window reached the remote shell twice. The editor
-/// takes the key whenever it holds focus, so the terminal takes it only when it does not.
-fn terminal_takes_unclaimed_held_key(
-    hold_active: bool,
-    live_input_focus: Option<bool>,
-    live_editor_focus: Option<bool>,
-    live_terminal_focus: Option<bool>,
-) -> bool {
-    if !hold_active || live_editor_focus == Some(true) {
-        return false;
-    }
-    // #1394: focus can sit on any other view inside this terminal for a moment before the remote
-    // shell's first prompt (the ssh block, a card; its own handler moves it to the input at the
-    // hand-over). A key typed then was claimed by nobody and vanished, one character of the held
-    // line. The ancestor-inclusive terminal focus covers every such view; focus in another pane
-    // or window (`Some(false)`) still keeps its keys. `PHOSPHOR_SSH_RESCUE_WIDE=0` restores the
-    // narrow rule (focus on the input only).
-    let wide = live_terminal_focus == Some(true) && ssh_rescue_wide_enabled();
-    live_input_focus == Some(true) || wide
-}
-
-/// #1400: whether the terminal takes a printable key for the active ssh hold: focus is inside
-/// this terminal (the input, the editor in it, or any view the terminal owns). The editor's focus
-/// does NOT keep the key from the terminal: the hold is one ordered queue, offered here.
-pub(crate) fn terminal_takes_typed_during_hold(
-    live_input_focus: Option<bool>,
-    live_terminal_focus: Option<bool>,
-) -> bool {
-    live_input_focus == Some(true)
-        || (live_terminal_focus == Some(true) && ssh_rescue_wide_enabled())
-}
-
-/// #1397: what to do with a printable key that no claim rule of a terminal element took.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum UnclaimedKey {
-    /// Focus is inside this terminal on a view that takes no text itself: hand the key to the
-    /// terminal view's normal routing, so it is delivered instead of vanishing.
-    Rescue,
-    /// Not ours (another pane, the focused editor, the find bar): do not consume it.
-    Propagate,
-}
-
-pub(crate) fn unclaimed_key_route(
-    live_terminal_focus: Option<bool>,
-    live_editor_focus: Option<bool>,
-    focus_in_own_text_view: bool,
-) -> UnclaimedKey {
-    if live_terminal_focus == Some(true)
-        && live_editor_focus != Some(true)
-        && !focus_in_own_text_view
-    {
-        UnclaimedKey::Rescue
-    } else {
-        UnclaimedKey::Propagate
-    }
-}
-
-/// Logs (WARN, at most once every 5 s, never the key's text) that a key was unclaimed, so a
-/// silent drop cannot hide. `rescued` says it was delivered anyway. Rate limiting a log line is
-/// not behaviour driven by time.
-pub(crate) fn warn_unclaimed_key(site: &'static str, rescued: bool, focus: Option<bool>) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static LAST_WARN_MS: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64);
-    let last = LAST_WARN_MS.load(Ordering::Relaxed);
-    if now.saturating_sub(last) < 5_000
-        || LAST_WARN_MS
-            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-    {
-        return;
-    }
-    log::warn!(
-        "key unclaimed in {site}: rescued={rescued} terminal_subtree_focus={}",
-        warpui::input_order::describe_opt(focus)
-    );
-}
-
-/// `PHOSPHOR_SSH_RESCUE_WIDE=0` turns the #1394 widening off (kill switch).
-fn ssh_rescue_wide_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("PHOSPHOR_SSH_RESCUE_WIDE").map_or(true, |v| v != "0"))
-}
-
 /// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
 /// `block_menu_items_start_origin` in `paint`), so the PS1 run time never sits under it.
 const PS1_DURATION_RIGHT_RESERVED_PX: f32 = 144.;
@@ -857,14 +761,6 @@ pub struct BlockListElement {
     settled_ai_focus_view_id: Option<EntityId>,
     /// See `TerminalViewRenderContext::ssh_choice_card_view_id` (#1087).
     ssh_choice_card_view_id: Option<EntityId>,
-    /// See `TerminalViewRenderContext::input_view_id` (#1332).
-    input_view_id: EntityId,
-    /// See `TerminalViewRenderContext::input_editor_view_id` (#1339).
-    input_editor_view_id: EntityId,
-    /// See `TerminalViewRenderContext::own_text_view_ids` (#1397).
-    own_text_view_ids: Vec<EntityId>,
-    /// See `TerminalViewRenderContext::pane_queue` (#1332).
-    pane_queue: crate::terminal::input_queue::PaneQueue,
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
@@ -1236,10 +1132,6 @@ impl BlockListElement {
             approval_card_view_id: terminal_view_render_context.approval_card_view_id,
             settled_ai_focus_view_id: terminal_view_render_context.settled_ai_focus_view_id,
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
-            input_view_id: terminal_view_render_context.input_view_id,
-            input_editor_view_id: terminal_view_render_context.input_editor_view_id,
-            own_text_view_ids: terminal_view_render_context.own_text_view_ids,
-            pane_queue: terminal_view_render_context.pane_queue,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
@@ -1641,56 +1533,19 @@ impl BlockListElement {
         )
     }
 
-    /// See [`terminal_takes_unclaimed_held_key`] (#1332). Only reached for a key the input's
-    /// editor, which sits above this element, did not take.
-    fn takes_unclaimed_held_key(&self, ctx: &EventContext) -> bool {
-        let editor_focus = ctx.live_focus_of(self.input_editor_view_id);
-        let rescue = self.pane_queue.ssh_hold_active();
-        let input_focus = ctx.live_focus_of(self.input_view_id);
-        let terminal_focus = ctx.live_focus_of(self.terminal_view_id);
-        let taken =
-            terminal_takes_unclaimed_held_key(rescue, input_focus, editor_focus, terminal_focus);
-        // Only while a rescue is possible: keeps the log quiet for ordinary typing.
-        if rescue {
-            warpui::input_order::log_key_hop("kh_element_rescue", || {
-                format!(
-                    "hold_active={} input_focus={} editor_focus={} terminal_focus={} taken={taken}",
-                    self.pane_queue.ssh_hold_active(),
-                    warpui::input_order::describe_opt(input_focus),
-                    warpui::input_order::describe_opt(editor_focus),
-                    warpui::input_order::describe_opt(terminal_focus)
-                )
-            });
-        }
-        taken
+    /// Whether the pane key sink is on and was offered this event: it is, whenever the window has
+    /// a focused view (the terminal view is a sink and is in the focus chain of everything in it).
+    fn sink_has_seen_keys(&self, ctx: &EventContext) -> bool {
+        crate::terminal::pane_key::sink_owns_keys()
+            && ctx.live_focus_of(self.terminal_view_id).is_some()
     }
 
-    /// #1400: the terminal takes a PRINTABLE key for the ssh hold, whether or not the editor
-    /// holds focus. While the hold is active every key typed in this terminal joins the one
-    /// ordered hold, offered here the moment it arrives. The editor also sees this event (a flex
-    /// broadcasts it to all its children) and may or may not be reached by it: leaving the key to
-    /// "the editor takes it" lost 15 of 29 keys in the window between the remote's first Precmd
-    /// and the hand-over. `claim_typed` makes the editor's copy a no-op, in either order (#1339).
-    /// After the hold ended, only the settling rule of [`Self::takes_unclaimed_held_key`] applies.
-    fn takes_typed_for_ssh_hold(&self, chars: &str, ctx: &EventContext) -> bool {
-        if !self.pane_queue.ssh_hold_active() {
-            return false;
-        }
-        let taken = terminal_takes_typed_during_hold(
-            ctx.live_focus_of(self.input_view_id),
-            ctx.live_focus_of(self.terminal_view_id),
-        );
-        warpui::input_order::log_key_hop("kh_element_hold_take", || {
-            format!(
-                "taken={taken} editor_focus={}",
-                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_editor_view_id))
-            )
-        });
-        taken && !chars.is_empty()
-    }
-
+    /// Control characters typed while the terminal itself has focus. With the pane key sink on
+    /// (#1404) the sink has already seen this key: it takes the control keys of a focus gap during
+    /// an ssh hold, and anything it does not take is this element's, which owns the translation of
+    /// a key into the terminal's escape sequences.
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        if (self.terminal_focused_now(ctx) || self.takes_unclaimed_held_key(ctx))
+        if self.terminal_focused_now(ctx)
             && !chars.is_empty()
             && chars.chars().all(|c| c.is_control())
         {
@@ -1703,77 +1558,34 @@ impl BlockListElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        // #1028: with focus on a pending approval card, printable keys are meant for the agent
-        // input (the card has no use for them), not the void.
+        // #1404: the pane's key sink has delivered (or declined) this text before any element saw
+        // it. The element no longer decides whether it "claims" a key. The one exception is a
+        // window with no focused view at all: no sink can be found from nothing, so the snapshot
+        // of the last frame decides, as it always did.
+        if self.sink_has_seen_keys(ctx) {
+            return false;
+        }
+        // The sink is off (`PHOSPHOR_PANE_KEY=0`), only shadowing, or there is no focus chain: the
+        // terminal takes the text when it has focus, or a card it hands the keys on for does
+        // (#1028, #1087, #1095).
         let on_approval_card = self
             .approval_card_view_id
             .is_some_and(|card| ctx.live_focus_is_exactly(card) == Some(true));
-        // #1087: likewise the SSH-extension choice card (focus is on it or its inner buttons);
-        // the terminal view turns the keys into the card's "choose an option first" hint.
         let on_ssh_choice_card = self
             .ssh_choice_card_view_id
             .is_some_and(|card| ctx.live_focus_of(card) == Some(true));
-        // #1095: focus left on an AI block or a settled (finished, running, queued) action card
-        // is focus nowhere for printable keys; the terminal view routes them as if it held
-        // focus, instead of the element dropping them.
         let on_settled_ai_target = self
             .settled_ai_focus_view_id
             .is_some_and(|view| ctx.live_focus_is_exactly(view) == Some(true));
-        let terminal_focused = self.terminal_focused_now(ctx);
-        let claimed = terminal_focused
+        let claimed = self.terminal_focused_now(ctx)
             || on_approval_card
             || on_ssh_choice_card
-            || on_settled_ai_target
-            || self.takes_typed_for_ssh_hold(chars, ctx)
-            || self.takes_unclaimed_held_key(ctx);
-        // #1345: whether the terminal element dispatched this key to the terminal view, and the
-        // focus facts behind it. A key that no element claims (the editor included) vanishes here.
-        warpui::input_order::log_key_hop("kh_element_typed", || {
-            format!(
-                "terminal_focused={terminal_focused} snapshot_terminal_focused={} \
-                 input_focus={} editor_focus={} terminal_subtree_focus={} claimed={}",
-                self.is_terminal_focused,
-                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_view_id)),
-                warpui::input_order::describe_opt(ctx.live_focus_of(self.input_editor_view_id)),
-                warpui::input_order::describe_opt(ctx.live_focus_of(self.terminal_view_id)),
-                claimed && !chars.is_empty()
-            )
-        });
-        if chars.is_empty() {
+            || on_settled_ai_target;
+        if chars.is_empty() || !claimed {
             return false;
         }
-        if claimed {
-            // #1400: with the ssh hold active this element offers the key; the editor's copy of
-            // the same event (an action, run after this pass) sees the mark and drops itself.
-            if self.pane_queue.ssh_hold_active() {
-                self.pane_queue
-                    .mark_typed_offered(warpui::input_order::typed_dispatch_seq(), chars);
-            }
-            ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
-            return true;
-        }
-        // #1397: nobody claimed it. Never consume it silently: deliver it when focus is inside
-        // this terminal on a view that takes no text itself, else let it propagate.
-        let terminal_focus = ctx.live_focus_of(self.terminal_view_id);
-        let in_own_text_view = self
-            .own_text_view_ids
-            .iter()
-            .any(|id| ctx.live_focus_of(*id) == Some(true));
-        let editor_focus = ctx.live_focus_of(self.input_editor_view_id);
-        match unclaimed_key_route(terminal_focus, editor_focus, in_own_text_view) {
-            UnclaimedKey::Rescue => {
-                warn_unclaimed_key("block_list typed_characters", true, terminal_focus);
-                ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
-                true
-            }
-            UnclaimedKey::Propagate => {
-                // Nothing focused at all would drop it everywhere; log that case.
-                if terminal_focus.is_none() {
-                    warn_unclaimed_key("block_list typed_characters", false, terminal_focus);
-                }
-                false
-            }
-        }
+        ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+        true
     }
 
     fn set_marked_text(
@@ -1782,19 +1594,19 @@ impl BlockListElement {
         selected_range: &Range<usize>,
         ctx: &mut EventContext,
     ) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::SetMarkedText {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
             });
             return true;
         }
-        // #1397: not delivered, so not consumed.
+        // Not delivered, so not consumed.
         false
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::ClearMarkedText);
             return true;
         }
@@ -5816,136 +5628,6 @@ mod tests {
         assert!(!super::terminal_accepts_keys(true, Some(false)));
         assert!(super::terminal_accepts_keys(true, None));
         assert!(!super::terminal_accepts_keys(false, None));
-    }
-
-    /// #1332: a key typed in the focus gap between the ssh block ending and the remote shell's
-    /// first prompt reached neither the editor nor the terminal and was lost from the held line.
-    #[test]
-    fn terminal_takes_a_held_ssh_key_the_editor_left_unclaimed() {
-        assert!(super::terminal_takes_unclaimed_held_key(
-            true,
-            Some(true),
-            Some(false),
-            Some(true)
-        ));
-        // No hold, no change: such a key is dropped as before.
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            false,
-            Some(true),
-            Some(false),
-            Some(true)
-        ));
-        // Focus elsewhere (the find bar, another pane) keeps its keys.
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            true,
-            Some(false),
-            Some(false),
-            Some(false)
-        ));
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            true, None, None, None
-        ));
-    }
-
-    /// #1400: while the ssh hold is active the terminal element offers every printable key typed
-    /// in this terminal, the editor's focus included (the editor was not reached in the window
-    /// between the remote's first Precmd and the hand-over, and 15 of 29 keys vanished).
-    #[test]
-    fn terminal_takes_a_typed_key_for_the_active_hold_even_with_the_editor_focused() {
-        // Input focused (the editor inside it holds focus): taken.
-        assert!(super::terminal_takes_typed_during_hold(
-            Some(true),
-            Some(true)
-        ));
-        // Focus in another pane or window keeps its keys.
-        assert!(!super::terminal_takes_typed_during_hold(
-            Some(false),
-            Some(false)
-        ));
-        assert!(!super::terminal_takes_typed_during_hold(None, None));
-    }
-
-    /// #1339: with focus in the input's editor the editor takes and queues the key; the terminal
-    /// taking it too held every key typed in that window twice (`/ttmmpp//zzq-mac.log`).
-    #[test]
-    fn terminal_leaves_a_held_ssh_key_to_the_focused_editor() {
-        // The same key offered to both: exactly one of them takes it.
-        for editor_focus in [Some(true), Some(false)] {
-            let editor_takes = editor_focus.unwrap_or(false);
-            let terminal_takes = super::terminal_takes_unclaimed_held_key(
-                true,
-                Some(true),
-                editor_focus,
-                Some(true),
-            );
-            assert_ne!(
-                editor_takes, terminal_takes,
-                "editor focus {editor_focus:?}"
-            );
-        }
-    }
-
-    /// #1345: the hold ended (keys delivered) while focus was still settling into the editor. There
-    /// is no settle flag any more: the hand-over moves focus in the same step, and a key in the
-    /// window before the editor holds focus is rescued by the generic rule (#1397): the terminal
-    /// takes it exactly when the editor does not.
-    #[test]
-    fn key_between_hold_off_and_editor_focus_is_not_dropped() {
-        use super::{UnclaimedKey::*, unclaimed_key_route as route};
-        // Input focused (so the terminal subtree is), editor not yet: nobody else takes it, the
-        // terminal must.
-        assert_eq!(route(Some(true), Some(false), false), Rescue);
-        assert_eq!(route(Some(true), None, false), Rescue);
-        // Editor already focused: it takes the key, the terminal must not (#1339).
-        assert_eq!(route(Some(true), Some(true), false), Propagate);
-    }
-
-    /// #1394: focus on some other view inside the terminal (not the input, not the editor) in the
-    /// moments before the remote shell's first prompt: the key used to be claimed by nobody and
-    /// lost from the held line. It is taken now, while the hold is active, and not when focus is
-    /// in another pane or the editor holds it.
-    #[test]
-    fn unclaimed_key_is_rescued_or_propagated_never_swallowed() {
-        use super::{unclaimed_key_route as route, UnclaimedKey::*};
-        // Focus on a terminal child that takes no text: delivered.
-        assert_eq!(route(Some(true), Some(false), false), Rescue);
-        // The focused editor, the find bar / filter editor: theirs, not consumed here.
-        assert_eq!(route(Some(true), Some(true), false), Propagate);
-        assert_eq!(route(Some(true), Some(false), true), Propagate);
-        // Another pane or window, or nothing focused: not consumed.
-        assert_eq!(route(Some(false), Some(false), false), Propagate);
-        assert_eq!(route(None, None, false), Propagate);
-    }
-
-    #[test]
-    fn key_with_focus_on_another_terminal_child_is_held_not_dropped() {
-        // Focus is inside the terminal view, outside the input.
-        assert!(super::terminal_takes_unclaimed_held_key(
-            true,
-            Some(false),
-            Some(false),
-            Some(true)
-        ));
-        // Only while a hold (or its settle) is in effect.
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            false,
-            Some(false),
-            Some(false),
-            Some(true)
-        ));
-        // Another pane keeps its keys; the focused editor takes its own (#1339).
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            true,
-            Some(false),
-            Some(false),
-            Some(false)
-        ));
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            true,
-            Some(true),
-            Some(true),
-            Some(true)
-        ));
     }
 
     #[test]

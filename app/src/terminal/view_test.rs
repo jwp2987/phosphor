@@ -20957,10 +20957,41 @@ fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_legacy_buffer(
     ssh_key_via_editor_route_before_handover_joins_the_hold(false);
 }
 
-/// #1400: 14 keys held, then 15 more typed while focus is already in the editor: each is seen by
-/// the terminal element (which offers it to the hold) AND the editor (its action copy of the same
-/// event, which must drop itself), and a few reach only the editor. Hand-over: all 29, once, in
-/// typed order, nothing left in the editor's side queue.
+/// A typed key as the pane's key sink receives it, with focus on the terminal view or inside the
+/// input's editor (#1404).
+fn pane_typed(
+    view: &mut TerminalView,
+    chars: &str,
+    focus_in_editor: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let editor_id = view.input.as_ref(ctx).editor().id();
+    let focus_chain = if focus_in_editor {
+        vec![view.view_id, view.input.id(), editor_id]
+    } else {
+        vec![view.view_id]
+    };
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::Typed {
+            chars: chars.to_string(),
+            ime_commit: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: focus_in_editor,
+        },
+        ctx,
+    )
+}
+
+/// #1400 (and #1339): 14 keys held, then 15 more typed while focus moves between the terminal and
+/// the editor. The pane's key sink receives each key exactly once, whichever view has focus, and
+/// the ssh hold takes it. Hand-over: all 29, once, in typed order, nothing left in the editor's
+/// side queue.
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);
@@ -20972,16 +21003,9 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bo
         assert!(view.ssh_typeahead_holding);
         remote_first_prompt_is_next_for_test(view);
         for (i, c) in chars[14..].iter().enumerate() {
-            if i % 5 == 4 {
-                // Only the editor is reached by this one.
-                editor_text(view, c, ctx);
-            } else {
-                // The element offers it, then the editor's copy of the same event.
-                let seq = warpui::input_order::bump_typed_dispatch_seq();
-                view.paste_queue.queue.mark_typed_offered(seq, c);
-                view.typed_characters_on_terminal(c, ctx);
-                editor_text(view, c, ctx);
-            }
+            // Every fifth key is typed with focus already in the editor.
+            let outcome = pane_typed(view, c, i % 5 == 4, ctx);
+            assert_eq!(outcome, PaneKeyOutcome::Consumed, "key {i} is the pane's");
         }
         assert_eq!(
             view.input.as_ref(ctx).buffer_text(ctx),
@@ -21001,6 +21025,214 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bo
 #[test]
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_queue() {
     ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(true);
+}
+
+/// #1339: with focus in the input's editor and no hold, the pane's key sink gives the key to the
+/// editor and to nothing else: inserted once, not written to the pty.
+#[test]
+fn pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(pane_typed(view, "a", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(pane_typed(view, "b", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// #1397: focus on a view inside the pane that takes no text (a settled card, an AI block, the
+/// input view between two focus moves) does not lose the key: the sink delivers it through the
+/// terminal's routing, which puts it in the input when the pty does not take it.
+#[test]
+fn pane_key_with_focus_on_a_non_text_view_in_the_pane_is_delivered_not_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            // Focus is on the input view itself (not its editor): a gap.
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
+        });
+    });
+}
+
+/// A text field inside the pane (the find bar, the block filter, any other editor) keeps its keys:
+/// the sink leaves the event to the elements and nothing reaches the input or the pty.
+#[test]
+fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.find_bar.id()],
+                leaf_takes_typed_text: true,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::NotMine
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty());
+        });
+    });
+}
+
+/// #1332 / #1394: keys typed during an ssh hold while focus sits somewhere in the pane that is
+/// neither the terminal nor the editor (the focus gap before the remote shell's first prompt) are
+/// all held, in order, none lost.
+fn ssh_keys_in_a_focus_gap_join_the_hold(queue: bool) {
+    with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        for c in ["e", "c", "h", "o"] {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: c.to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+        }
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 4, "no key lost, none doubled");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_keys_in_a_focus_gap_join_the_hold_on_the_queue() {
+    ssh_keys_in_a_focus_gap_join_the_hold(true);
+}
+
+#[test]
+fn ssh_keys_in_a_focus_gap_join_the_hold_on_the_legacy_buffer() {
+    ssh_keys_in_a_focus_gap_join_the_hold(false);
+}
+
+/// IME: the composition is shown in the editor that will take the commit, the commit is one typed
+/// key, and the composition text never reaches the terminal's model when the editor has focus.
+#[test]
+fn pane_key_ime_composition_goes_to_the_focused_editor_and_the_commit_is_one_key() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let editor_id = view.input.as_ref(ctx).editor().id();
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id(), editor_id],
+                leaf_takes_typed_text: true,
+            };
+            let set = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::SetMarkedText {
+                    marked_text: "かな".to_owned(),
+                    selected_range: 0..2,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&set, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let clear = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::ClearMarkedText,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&clear, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let commit = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "仮名".to_owned(),
+                    ime_commit: true,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&commit, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "仮名");
+        });
+    });
+}
+
+/// #1404 / #1403: while the pty reader is inside the model's lock (parsing), the reads a user key
+/// makes -- the routing rows, the ssh and subshell bookkeeping, the agent-owned-pty rule, the
+/// interactive latch -- return from the published snapshot instead of waiting. A read that took the
+/// blocking lock would deadlock this test (one thread holds the lock), so a watchdog turns that
+/// into a failure instead of a hang.
+#[test]
+fn key_path_reads_do_not_wait_for_the_pty_reader() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watchdog_done = done.clone();
+            let watchdog = std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                eprintln!("a key-path read waited for the model's lock");
+                std::process::abort();
+            });
+            let parser_inside = view.model.lock();
+            let _scope = KeyPathScope::enter(&view.key_path_depth);
+            let _ = view.read_key_facts();
+            let _ = view.model_facts();
+            let _ = view.should_write_typed_chars_to_pty(ctx);
+            let _ = view.agent_owns_command_pty();
+            view.reprobe_interactive_latch_on_key();
+            let _ = view.is_long_running();
+            let _ = view.subshell_bootstrap_pending();
+            let _ = view.forwards_keys_during_subshell_bootstrap(false);
+            let _ = view.holds_keys_for_powershell_subshell_setup();
+            let _ = view.ssh_bootstrap_interrupt_route();
+            let _ = view.typeahead_handoff_routes_keys_to_pty();
+            drop(parser_inside);
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            watchdog.join().unwrap();
+        });
+    });
 }
 
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {

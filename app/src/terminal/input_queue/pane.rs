@@ -11,10 +11,9 @@
 //!   in production code,
 //! * an explicit `draining` flag: true while a [`QueueGuard`] is alive. Anything that asks "is the
 //!   queue busy delivering?" reads it, instead of inferring it from a failed borrow,
-//! * the identity guard of the keys the terminal element and the focused editor can both see
-//!   (one typed-characters event, offered exactly once, #1339/#1400) and the "ssh hold is active"
-//!   fact the element reads to decide whether to claim a key, so neither needs a side channel to
-//!   the editor,
+//! * the "ssh hold is active" fact the pane's key sink reads to route a key (#1404). There is no
+//!   identity guard for a key two routes could both offer (#1339/#1400): the sink receives each
+//!   key once,
 //! * the ONE counter of paste ids, so an editor paste and a pty paste of one pane can never share
 //!   an id (`has_gate(PasteReading, id)` would alias). The high bit tags the owner; see
 //!   [`PasteOwner`].
@@ -53,11 +52,8 @@ struct Inner {
     draining: Cell<bool>,
     next_paste_id: Cell<u64>,
     /// The view is holding the keys typed during an ssh connect (set by the view, read by the
-    /// terminal element).
+    /// pane's key sink).
     ssh_hold_active: Cell<bool>,
-    /// The typed-characters event (`warpui::input_order::typed_dispatch_seq`) and text one route
-    /// already offered; the other route's copy of the same event must not offer it again.
-    typed_claim: RefCell<Option<(u64, String)>>,
 }
 
 /// A cheap, clonable handle on the pane's queue (clones share the queue).
@@ -80,7 +76,6 @@ impl PaneQueue {
                 draining: Cell::new(false),
                 next_paste_id: Cell::new(0),
                 ssh_hold_active: Cell::new(false),
-                typed_claim: RefCell::new(None),
             }),
         }
     }
@@ -92,39 +87,12 @@ impl PaneQueue {
 
     /// The view holds (or stops holding) the keys typed during an ssh connect.
     pub fn set_ssh_hold_active(&self, active: bool) {
-        let was_active = self.inner.ssh_hold_active.replace(active);
-        // Only the start of a hold forgets a stale mark: the view re-asserts `active` on every
-        // held key, and that must not erase the mark the element just left for the editor's copy
-        // of the same event (every key typed during the hold was then delivered twice, #1400).
-        if active && !was_active {
-            *self.inner.typed_claim.borrow_mut() = None;
-        }
+        self.inner.ssh_hold_active.set(active);
     }
 
     /// The view is holding the keys typed during an ssh connect.
     pub fn ssh_hold_active(&self) -> bool {
         self.inner.ssh_hold_active.get()
-    }
-
-    /// The terminal element offered typed-characters event `seq` (text `text`) to the pane. The
-    /// same event is also dispatched to the focused editor as an action after the element pass;
-    /// [`Self::take_typed_offered`] makes that copy a no-op (offered exactly once, #1339/#1400).
-    pub fn mark_typed_offered(&self, seq: u64, text: &str) {
-        *self.inner.typed_claim.borrow_mut() = Some((seq, text.to_owned()));
-    }
-
-    /// Whether this event was already offered by the terminal element (then the editor drops its
-    /// copy). Consumes the mark.
-    pub fn take_typed_offered(&self, seq: u64, text: &str) -> bool {
-        let mut claimed = self.inner.typed_claim.borrow_mut();
-        if claimed
-            .as_ref()
-            .is_some_and(|(s, t)| *s == seq && t == text)
-        {
-            *claimed = None;
-            return true;
-        }
-        false
     }
 
     /// An operation holds the queue right now (so a delivery that asks is part of it).

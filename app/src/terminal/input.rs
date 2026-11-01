@@ -2968,7 +2968,9 @@ impl Input {
             // Clones used in render_decorator_elements closure below.
             let prompt_render_helper_clone = prompt_render_helper.clone();
             let model_clone = model.clone();
-            let model_for_autopair_veto = model.clone();
+            // The hand-off is reached through its own handle: the veto runs for every typed
+            // character, and the model's lock is held by the pty reader while it parses (#1403).
+            let handoff_for_autopair_veto = model.lock().pane_handoff();
             // Clone used in keymap_context_modifier closure below.
             let terminal_model_for_keymap_context = model.clone();
             let has_prompt_suggestion_banner_for_keymap = has_prompt_suggestion_banner.clone();
@@ -3155,13 +3157,12 @@ impl Input {
                 EditorView::new(options, ctx)
                     // Auto-pairing is off while the typeahead hand-off is not editor-owned (#949):
                     // text typed now is prefixed by the shell's report, so the editor cannot know
-                    // its quote/bracket context. A blocking lock, like the rest of this file: a
-                    // `try_lock` that vetoed on contention would drop auto-pairing at random
-                    // whenever the pty thread holds the model during output.
+                    // its quote/bracket context. Read from the hand-off's own leaf lock, never the
+                    // model's: a key must not wait for the parser, and a `try_lock` that vetoed on
+                    // contention would drop auto-pairing at random whenever output is parsed.
                     .with_autocomplete_symbols_veto(Box::new(move || {
-                        model_for_autopair_veto
-                            .lock()
-                            .typeahead_handoff()
+                        handoff_for_autopair_veto
+                            .read()
                             .editor_text_precedes_report()
                     }))
                     .with_next_command_model(next_command_model.clone())

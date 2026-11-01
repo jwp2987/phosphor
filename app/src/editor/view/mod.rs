@@ -1861,6 +1861,9 @@ pub struct EditorView {
     autocomplete_symbols_setting: bool,
     /// When it returns true, typed symbols are inserted literally even if auto-pairing is on.
     autocomplete_symbols_veto: Option<Box<dyn Fn() -> bool>>,
+    /// This is the terminal input's editor, whose typed text and IME composition arrive from the
+    /// pane's key sink (#1404) while the sink is on, not from its element.
+    keys_from_pane_sink: bool,
     /// A cached copy of cursor_display_type from Settings (to avoid performing
     /// a settings read on every typed character).
     /// If `None`, we do not wish to respect the user's cursor display preference.
@@ -3305,17 +3308,9 @@ impl EditorView {
     ) -> bool {
         use crate::terminal::input_queue::{EntryKind, HELD_KEY, HELD_SEQ, HELD_TYPED, Origin};
         let (class, text) = match action {
-            EditorAction::UserInsert(text) => {
-                // #1400: the terminal element sees the same typed-characters event and may have
-                // offered it already (it runs first, and it also takes it when this editor is not
-                // reached at all). Offered exactly once: this copy is dropped.
-                if queue
-                    .take_typed_offered(warpui::input_order::typed_dispatch_seq(), text.as_ref())
-                {
-                    return true;
-                }
-                (HELD_TYPED, String::clone(text))
-            }
+            // The pane's key sink delivers each typed key once (#1404): there is no second copy of
+            // the event to drop.
+            EditorAction::UserInsert(text) => (HELD_TYPED, String::clone(text)),
             EditorAction::Enter => (HELD_KEY, "\r".to_owned()),
             EditorAction::Backspace => (HELD_KEY, "\u{7f}".to_owned()),
             EditorAction::DeleteAllLeft => (HELD_KEY, "\u{15}".to_owned()),
@@ -3342,6 +3337,7 @@ impl EditorView {
         ViewSnapshot {
             view_id: self.view_id,
             is_focused: self.is_focused(),
+            keys_from_pane_sink: self.keys_from_pane_sink,
             editor_model: self.editor_model.clone(),
 
             can_select: self.can_select(ctx),
@@ -3627,6 +3623,7 @@ impl EditorView {
             autocomplete_symbols_allowed: options.autocomplete_symbols,
             autocomplete_symbols_setting: *editor_settings_handle.as_ref(ctx).autocomplete_symbols,
             autocomplete_symbols_veto: None,
+            keys_from_pane_sink: false,
             cursor_display_override,
             autosuggestion_state: None,
             pending_autosuggestion_accept: None,
@@ -4231,6 +4228,45 @@ impl EditorView {
     pub fn with_autocomplete_symbols_veto(mut self, veto: Box<dyn Fn() -> bool>) -> Self {
         self.autocomplete_symbols_veto = Some(veto);
         self
+    }
+
+    /// Marks this as the editor of a terminal pane: while the pane's key sink is on, the sink
+    /// delivers its typed text and composition (`pane_typed` and friends) and the element leaves
+    /// those events alone (#1404).
+    pub fn set_keys_from_pane_sink(&mut self, on: bool) {
+        self.keys_from_pane_sink = on;
+    }
+
+    /// Typed text delivered by the pane's key sink: the same edit pipeline the element's
+    /// typed-characters event ran, held keys and vim mode included (#1404).
+    pub fn pane_typed(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        let action = if self.vim_mode(ctx).is_some() {
+            EditorAction::VimUserInsert(UserInput::new(text))
+        } else {
+            EditorAction::UserInsert(UserInput::new(text))
+        };
+        self.handle_action(&action, ctx);
+    }
+
+    /// IME composition text delivered by the pane's key sink (#1404).
+    pub fn pane_set_marked_text(
+        &mut self,
+        marked_text: &str,
+        selected_range: &Range<usize>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.handle_action(
+            &EditorAction::SetMarkedText {
+                marked_text: UserInput::new(marked_text),
+                selected_range: selected_range.clone(),
+            },
+            ctx,
+        );
+    }
+
+    /// The end of an IME composition, delivered by the pane's key sink (#1404).
+    pub fn pane_clear_marked_text(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_action(&EditorAction::ClearMarkedText, ctx);
     }
 
     pub fn set_autocomplete_symbols_allowed(&mut self, enable: bool) {
@@ -9361,6 +9397,10 @@ impl TypedActionView for EditorView {
 impl View for EditorView {
     fn ui_name() -> &'static str {
         "EditorView"
+    }
+
+    fn takes_typed_text(&self) -> bool {
+        true
     }
 
     fn render(&self, ctx: &AppContext) -> Box<dyn Element> {

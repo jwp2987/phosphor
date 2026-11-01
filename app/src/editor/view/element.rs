@@ -232,6 +232,17 @@ fn accepts_typed_characters(snapshot_focused: bool, live_focus: Option<bool>) ->
 }
 
 impl EditorElement {
+    /// Whether the pane's key sink, not this element, delivers the typed text and composition of
+    /// this editor (#1404).
+    ///
+    /// A window with no focused view at all has no sink to find, so the element decides as it
+    /// always did.
+    fn keys_from_pane_sink(&self, ctx: &EventContext) -> bool {
+        self.view_snapshot.keys_from_pane_sink
+            && crate::terminal::pane_key::sink_owns_keys()
+            && ctx.live_focus_of(self.view_snapshot.view_id).is_some()
+    }
+
     /// Creates a new editor element.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -633,6 +644,10 @@ impl EditorElement {
     }
 
     fn typed_characters(&self, chars: &str, ctx: &mut EventContext) -> bool {
+        // #1404: the pane's key sink delivers this editor's text, exactly once.
+        if self.keys_from_pane_sink(ctx) {
+            return false;
+        }
         // The snapshot is from the last render; characters typed right after focus moved here
         // (before the next frame) would otherwise be dropped (#901). When the live focus chain
         // is known it decides alone, so a stale snapshot on the editor focus just left cannot
@@ -665,7 +680,7 @@ impl EditorElement {
         selected_range: &Range<usize>,
         ctx: &mut EventContext,
     ) -> bool {
-        if self.view_snapshot.is_focused {
+        if self.view_snapshot.is_focused && !self.keys_from_pane_sink(ctx) {
             ctx.dispatch_typed_action(EditorAction::SetMarkedText {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
@@ -676,7 +691,7 @@ impl EditorElement {
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
-        if self.view_snapshot.is_focused {
+        if self.view_snapshot.is_focused && !self.keys_from_pane_sink(ctx) {
             ctx.dispatch_typed_action(EditorAction::ClearMarkedText);
             return true;
         }

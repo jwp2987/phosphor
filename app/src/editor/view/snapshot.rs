@@ -72,6 +72,9 @@ const EDITOR_HEIGHT_SHRINK_DELAY: Duration = Duration::from_millis(25);
 pub struct ViewSnapshot {
     pub view_id: EntityId,
     pub is_focused: bool,
+    /// The pane's key sink delivers this editor's typed text and composition (#1404): the element
+    /// must not also act on the same events.
+    pub keys_from_pane_sink: bool,
     pub editor_model: ModelHandle<EditorModel>,
 
     pub can_select: bool,

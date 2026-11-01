@@ -2335,6 +2335,11 @@ impl View for CodeEditorView {
         "CodeEditorView"
     }
 
+    fn takes_typed_text(&self) -> bool {
+        // A terminal pane's key sink leaves the keys typed here to this editor (#1404).
+        true
+    }
+
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
