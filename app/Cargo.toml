@@ -437,6 +437,10 @@ windows-registry = { workspace = true }
 windows-result = { workspace = true }
 winreg.workspace = true
 
+[lints.rust]
+# Model-checker builds (RUSTFLAGS="--cfg shuttle" / "--cfg loom"); see warpui_core::sync_shim.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(loom)'] }
+
 [dev-dependencies]
 ai = { workspace = true, features = ["test-util"] }
 async-process.workspace = true

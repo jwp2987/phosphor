@@ -31,6 +31,7 @@ pub mod rendering;
 #[cfg(feature = "tui")]
 pub mod runtime;
 pub mod scene;
+pub mod sync_shim;
 #[cfg(test)]
 mod test;
 pub mod text;
