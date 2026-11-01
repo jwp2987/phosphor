@@ -12412,6 +12412,7 @@ impl TerminalView {
                             id,
                             handoff.young_hold_wait(Instant::now()),
                             handoff.young_hold_queued(),
+                            handoff.queued_line_bytes_stamp(),
                         )
                     });
                     hold_start.prompt = handoff.take_prompt_hold_started().map(|id| {
@@ -12436,7 +12437,7 @@ impl TerminalView {
         if handoff_route == UserBytesRoute::Held {
             input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
-            if let Some((hold_id, hold_wait, in_queue)) = hold_start.young {
+            if let Some((hold_id, hold_wait, in_queue, stamp)) = hold_start.young {
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
@@ -12444,6 +12445,7 @@ impl TerminalView {
                     // #1353 phase 5b: the Enter and the keys behind it are entries of the input
                     // queue behind a `PromptSeen` gate; the prompt's precmd, the report, a command
                     // or a signal end the hold (events), and the gate's cap is only the give-up.
+                    self.paste_queue.line_stamp.get_or_insert(stamp);
                     self.hold_young_keys_in_queue(
                         hold_id,
                         hold_wait,
@@ -36487,9 +36489,15 @@ fn subshell_bootstrap_key_forwarded(
 /// What a user key that the hand-off held started, read under the key path's one model lock.
 #[derive(Default)]
 struct HandoffHoldStart {
-    /// A young Enter was held: the hold's id, how long the view waits for the prompt and whether
-    /// its keys are in the input queue (else in the hand-off's buffer).
-    young: Option<(u64, Duration, bool)>,
+    /// A young Enter was held: the hold's id, how long the view waits for the prompt, whether
+    /// its keys are in the input queue (else in the hand-off's buffer) and the mid-line stamp to
+    /// share.
+    young: Option<(
+        u64,
+        Duration,
+        bool,
+        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
+    )>,
     /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap, whether the keys
     /// are in the input queue (else in the hand-off's buffer) and the mid-line stamp to share.
     prompt: Option<(

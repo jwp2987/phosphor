@@ -398,11 +398,10 @@ impl TerminalView {
                 // A key typed for the shell's line behind a prompt hold: the ConPTY mid-line
                 // guard learns of it here, without the model lock.
                 if let Some(stamp) = &self.paste_queue.line_stamp
-                    && self
-                        .paste_queue
-                        .queue
-                        .try_borrow()
-                        .is_ok_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+                    && self.paste_queue.queue.try_borrow().is_ok_and(|queue| {
+                        queue.has_gate_kind(GateKind::LineEditorActive)
+                            || queue.has_gate_kind(GateKind::PromptSeen)
+                    })
                 {
                     stamp.note_now();
                 }
