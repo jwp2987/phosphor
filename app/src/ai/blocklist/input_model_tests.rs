@@ -1542,17 +1542,22 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
             );
             assert_eq!(enter(&mut app, command, false), InputType::AI, "{command}");
         }
-        // `sudo` is judged on what it wraps, like env/time/timeout (#1291).
+        // `sudo` is a one-off shell keyword: outside an agent conversation the routing procedure
+        // (#1234) runs a line headed by it as a command whatever the session knows, so the
+        // inherited AI does not stand for it. #1291 judges it on what it wraps only INSIDE a
+        // conversation (this fixture has no agent view; `routing_corpus` covers that surface).
         for command in ["sudo grep this the file"] {
-            assert_eq!(
-                enter(&mut app, command, true),
-                InputType::Shell,
-                "{command}"
-            );
-            assert_eq!(enter(&mut app, command, false), InputType::AI, "{command}");
+            for known in [true, false] {
+                assert_eq!(
+                    enter(&mut app, command, known),
+                    InputType::Shell,
+                    "{command} (known: {known})"
+                );
+            }
         }
-        // Prose addressed to the agent never runs as root, even when the session knows `sudo`.
-        for prose in ["sudo rm the old logs for me", "sudo please fix my wifi"] {
+        // Request shape (#834/#965) still sends a sentence to the agent here, so prose addressed
+        // to it does not run as root even in the plain terminal.
+        for prose in ["sudo rm the old logs for me"] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
         }
         // Nothing wrapped: a privilege shell or credential refresh is a command.
