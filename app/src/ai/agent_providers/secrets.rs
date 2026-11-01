@@ -6,6 +6,7 @@
 //! Design modeled after `crates/ai/src/api_keys.rs::ApiKeyManager`.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot;
 
@@ -18,6 +19,56 @@ const SECURE_STORAGE_KEY: &str = "AgentProviderSecrets";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentProviderSecretsEvent {
     KeysUpdated,
+}
+
+/// A cloneable, read-only view of the keyring read that is (or was) in flight, for callers that
+/// only hold an `&AppContext` and so cannot register a waiter (the one-shot requests, #1368).
+/// [`Self::keys`] resolves when that read settles: `Some(keys)` on success, `None` if the keyring
+/// could not be read. Event-driven: the read's completion closes the channel awaited here.
+#[derive(Clone)]
+pub struct LoadSignal {
+    outcome: Arc<Mutex<Option<Option<HashMap<String, String>>>>>,
+    settled: async_channel::Receiver<()>,
+}
+
+impl std::fmt::Debug for LoadSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoadSignal")
+    }
+}
+
+impl LoadSignal {
+    pub async fn keys(&self) -> Option<HashMap<String, String>> {
+        // Nothing is ever sent; the channel closing is the event.
+        let _ = self.settled.recv().await;
+        self.outcome.lock().ok()?.clone().flatten()
+    }
+}
+
+/// The producer side of one [`LoadSignal`].
+struct LoadAttempt {
+    outcome: Arc<Mutex<Option<Option<HashMap<String, String>>>>>,
+    /// Dropped (closing the channel) when the read settles.
+    tx: Option<async_channel::Sender<()>>,
+    rx: async_channel::Receiver<()>,
+}
+
+impl LoadAttempt {
+    fn new() -> Self {
+        let (tx, rx) = async_channel::bounded(1);
+        Self {
+            outcome: Arc::new(Mutex::new(None)),
+            tx: Some(tx),
+            rx,
+        }
+    }
+
+    fn settle(&mut self, keys: Option<HashMap<String, String>>) {
+        if let Ok(mut outcome) = self.outcome.lock() {
+            *outcome = Some(keys);
+        }
+        self.tx = None;
+    }
 }
 
 /// Singleton: manages the user's custom provider API keys.
@@ -43,6 +94,8 @@ pub struct AgentProviderSecrets {
     load_failed: bool,
     /// Requests parked until the first read settles (see [`Self::wait_for_load`]).
     waiters: Vec<oneshot::Sender<Option<HashMap<String, String>>>>,
+    /// The current first-read attempt, for [`Self::load_signal`].
+    attempt: Option<LoadAttempt>,
 }
 
 impl AgentProviderSecrets {
@@ -56,6 +109,7 @@ impl AgentProviderSecrets {
             loaded: false,
             load_failed: false,
             waiters: Vec::new(),
+            attempt: None,
         };
         me.start_load(ctx);
         me
@@ -93,6 +147,19 @@ impl AgentProviderSecrets {
         // Still in flight, or finished synchronously and failed (`finish_load` has then already
         // resolved `rx` with `None`).
         Some(rx)
+    }
+
+    /// A view of the first keyring read for callers that cannot register a waiter. `None`
+    /// once the keys are loaded. If the last read failed, the signal is already settled with
+    /// `None` (the next [`Self::wait_for_load`] starts a fresh read).
+    pub fn load_signal(&self) -> Option<LoadSignal> {
+        if self.loaded {
+            return None;
+        }
+        self.attempt.as_ref().map(|a| LoadSignal {
+            outcome: a.outcome.clone(),
+            settled: a.rx.clone(),
+        })
     }
 
     /// Reads the API key for the given provider; returns `None` if not configured (or not yet
@@ -163,6 +230,9 @@ impl AgentProviderSecrets {
     fn start_load(&mut self, ctx: &mut ModelContext<Self>) {
         self.load_epoch += 1;
         self.loading = true;
+        if !self.loaded && self.attempt.as_ref().is_none_or(|a| a.tx.is_none()) {
+            self.attempt = Some(LoadAttempt::new());
+        }
         let epoch = self.load_epoch;
         match secure_storage::background::run_or_inline(
             |storage| Self::read_from(storage),
@@ -206,6 +276,9 @@ impl AgentProviderSecrets {
                 // Keep whatever was loaded before (a reload) and keep edits parked; waiting
                 // requests fail with a clear error instead of sending an empty key.
                 self.load_failed = true;
+                if let Some(attempt) = self.attempt.as_mut() {
+                    attempt.settle(None);
+                }
                 for waiter in std::mem::take(&mut self.waiters) {
                     let _ = waiter.send(None);
                 }
@@ -215,6 +288,7 @@ impl AgentProviderSecrets {
         self.keys = keys;
         self.loaded = true;
         self.load_failed = false;
+
         let pending = std::mem::take(&mut self.pending);
         let had_pending = !pending.is_empty();
         for (id, value) in pending {
@@ -222,6 +296,9 @@ impl AgentProviderSecrets {
         }
         for waiter in std::mem::take(&mut self.waiters) {
             let _ = waiter.send(Some(self.keys.clone()));
+        }
+        if let Some(attempt) = self.attempt.as_mut() {
+            attempt.settle(Some(self.keys.clone()));
         }
         if emit {
             ctx.emit(AgentProviderSecretsEvent::KeysUpdated);

@@ -8680,6 +8680,8 @@ pub(crate) async fn generate_title_via_byop(
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
         extra_headers: tg.extra_headers.clone(),
+        // The key was re-read when the title request was taken (see `take_pending_title_generation`).
+        pending_key: None,
     };
     // Static template with only the `{{ language }}` placeholder substituted (no
     // minijinja — not worth a template engine for a single variable). A profile
