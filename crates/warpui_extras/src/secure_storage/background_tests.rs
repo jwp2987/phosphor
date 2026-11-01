@@ -124,8 +124,8 @@ fn a_stuck_call_is_given_up_on_and_later_calls_use_a_fresh_worker() {
     let stuck = run(|s| s.read_value("hang")).unwrap();
     // Queued behind the stuck call: it would never run on the old worker.
     let behind = run(|s| s.read_value("behind")).unwrap();
-    assert_eq!(futures_lite_block_on(stuck.wait()), None);
-    assert_eq!(futures_lite_block_on(behind.wait()), None);
+    assert!(futures_lite_block_on(stuck.wait()).is_none());
+    assert!(futures_lite_block_on(behind.wait()).is_none());
 
     // A later call is served by a fresh worker instead of hanging forever.
     let later = run(|s| s.read_value("later")).unwrap();

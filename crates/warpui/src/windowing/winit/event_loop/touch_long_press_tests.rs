@@ -91,7 +91,8 @@ fn a_timer_from_an_earlier_touch_does_not_fire_on_the_next_one() {
     convert_touch_started(touch(TouchPhase::Started, 50., 50.), &mut ws, 1.);
     assert_ne!(ws.touch_generation, old_generation);
     assert!(convert_touch_long_press(&mut ws, old_generation).is_none());
-    assert!(convert_touch_long_press(&mut ws, ws.touch_generation).is_some());
+    let current_generation = ws.touch_generation;
+    assert!(convert_touch_long_press(&mut ws, current_generation).is_some());
 }
 
 #[test]

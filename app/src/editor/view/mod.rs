@@ -3170,7 +3170,8 @@ impl EditorView {
         {
             use crate::terminal::input_queue::GateKind;
             let held = queue.borrow();
-            if held.has_gate_kind(GateKind::EnterVerdict)
+            if (held.has_gate_kind(GateKind::EnterVerdict)
+                || held.has_gate_kind(GateKind::TabCompletion))
                 && !held.has_gate_kind(GateKind::PasteReading)
             {
                 drop(held);
