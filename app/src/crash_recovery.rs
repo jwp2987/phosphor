@@ -418,15 +418,190 @@ fn wait_for_parent_crash(args: &warp_cli::AppArgs) {
         .map(|pid| Pid::from_raw(pid as i32))
         .unwrap_or_else(|| panic!("--parent-pid must be set if {RECOVERY_MECHANISM_ARG} is set"));
 
-    // Wait until our parent process ID doesn't match our expected
-    // parent process ID, performing the check once per second.
+    // Block until the parent exits.  "Our parent process ID no longer matches the expected one"
+    // is the same fact (we are reparented when it dies), re-checked after the event source is
+    // registered so a parent that died before registration is never waited on.
     log::debug!("Waiting for parent with pid {parent_pid} to crash...");
-    loop {
-        if Pid::parent() != parent_pid {
-            log::info!("Parent has crashed; continuing execution.");
-            break;
+    let parent_is_alive = || Pid::parent() == parent_pid;
+    if !unix_wait::wait_for_pid_exit(parent_pid.as_raw(), parent_is_alive) {
+        // No process-exit event source on this platform or setup failed: poll.  This is the
+        // only remaining timer in this path, and runs only in the short-lived recovery process.
+        log::debug!("No process-exit event source available; polling for parent death.");
+        while parent_is_alive() {
+            std::thread::sleep(instant::Duration::from_secs(1));
         }
-        std::thread::sleep(instant::Duration::from_secs(1));
+    }
+    log::info!("Parent has crashed; continuing execution.");
+}
+
+/// Blocking process-exit notification for Unix: a pidfd on Linux, `kqueue` `EVFILT_PROC` on
+/// macOS/BSD.  Windows uses `WaitForSingleObject` on the parent handle instead.
+#[cfg(unix)]
+mod unix_wait {
+    /// Blocks until process `pid` exits, using an OS exit event.
+    ///
+    /// `still_alive` is evaluated after the event source is registered (closing the race with a
+    /// process that exited, and a pid that was reused, before registration); if it returns
+    /// `false` the wait ends immediately.  Returns `false` only if no event source could be set
+    /// up, in which case the caller must fall back to polling.
+    pub(super) fn wait_for_pid_exit(pid: i32, still_alive: impl Fn() -> bool) -> bool {
+        imp::wait_for_pid_exit(pid, still_alive)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    mod imp {
+        pub(super) fn wait_for_pid_exit(pid: i32, still_alive: impl Fn() -> bool) -> bool {
+            // SAFETY: plain syscall with integer arguments.
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
+            if fd < 0 {
+                // ESRCH: already gone, which is the event we were waiting for.  Anything else
+                // (ENOSYS on kernels before 5.3, EPERM in a sandbox): no event source.
+                return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            }
+            let fd = fd as libc::c_int;
+            let mut result = true;
+            if still_alive() {
+                loop {
+                    let mut pfd = libc::pollfd {
+                        fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: `pfd` is a valid pollfd and nfds is 1.
+                    let r = unsafe { libc::poll(&mut pfd, 1, -1) };
+                    if r >= 0 {
+                        break;
+                    }
+                    if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+            // SAFETY: `fd` is the pidfd opened above and is not used afterwards.
+            unsafe { libc::close(fd) };
+            result
+        }
+    }
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    mod imp {
+        pub(super) fn wait_for_pid_exit(pid: i32, still_alive: impl Fn() -> bool) -> bool {
+            // SAFETY: kqueue takes no arguments.
+            let kq = unsafe { libc::kqueue() };
+            if kq < 0 {
+                return false;
+            }
+            // SAFETY: an all-zero kevent is a valid value.
+            let mut change: libc::kevent = unsafe { std::mem::zeroed() };
+            change.ident = pid as libc::uintptr_t;
+            change.filter = libc::EVFILT_PROC;
+            change.flags = libc::EV_ADD | libc::EV_ONESHOT;
+            change.fflags = libc::NOTE_EXIT;
+
+            // Register first (no wait), so the liveness re-check below cannot miss an exit.
+            // SAFETY: `change` is valid for one change; no event list is requested.
+            let registered = unsafe {
+                libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null())
+            };
+            let mut result = true;
+            if registered < 0 {
+                // ESRCH: the process is already gone, which is the event we wanted.
+                result = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            } else if still_alive() {
+                loop {
+                    // SAFETY: an all-zero kevent is a valid output buffer.
+                    let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                    // SAFETY: one output slot, no timeout (block).
+                    let r = unsafe {
+                        libc::kevent(kq, std::ptr::null(), 0, &mut event, 1, std::ptr::null())
+                    };
+                    if r > 0 {
+                        break;
+                    }
+                    if r < 0
+                        && std::io::Error::last_os_error().kind()
+                            != std::io::ErrorKind::Interrupted
+                    {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+            // SAFETY: `kq` was opened above and is not used afterwards.
+            unsafe { libc::close(kq) };
+            result
+        }
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    )))]
+    mod imp {
+        pub(super) fn wait_for_pid_exit(_pid: i32, _still_alive: impl Fn() -> bool) -> bool {
+            false
+        }
+    }
+
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    mod tests {
+        use super::wait_for_pid_exit;
+        use std::process::{Command, Stdio};
+
+        /// The wait is driven by the process's exit event: when it returns, the process has
+        /// exited (no sleep loop, no timing assumption).
+        #[test]
+        fn returns_when_the_process_exits() {
+            let mut child = Command::new("sh")
+                .args(["-c", "read _"])
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn sh");
+            let pid = child.id() as i32;
+            // Closing stdin makes `read` return and the shell exit.
+            drop(child.stdin.take());
+            assert!(wait_for_pid_exit(pid, || true));
+            assert!(child.try_wait().expect("try_wait").is_some());
+        }
+
+        /// A process that is already gone (or a reused pid, reported by `still_alive`) must
+        /// not block forever.
+        #[test]
+        fn returns_immediately_when_liveness_check_fails() {
+            let mut child = Command::new("sh")
+                .args(["-c", "read _"])
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn sh");
+            let pid = child.id() as i32;
+            // The child is still blocked in `read`; only the liveness check ends the wait.
+            assert!(wait_for_pid_exit(pid, || false));
+            drop(child.stdin.take());
+            child.wait().expect("wait");
+        }
+
+        #[test]
+        fn already_exited_process_is_reported_as_exited() {
+            let mut child = Command::new("true").spawn().expect("spawn true");
+            let pid = child.id() as i32;
+            child.wait().expect("wait");
+            // Reaped: the pid no longer exists, so registration reports ESRCH.
+            assert!(wait_for_pid_exit(pid, || true));
+        }
     }
 }
 
