@@ -110,15 +110,8 @@ impl AgentViewZeroStateBlock {
                     }
                 }
 
-                match event {
-                    BlocklistAIHistoryEvent::StartedNewConversation { .. }
-                    | BlocklistAIHistoryEvent::AppendedExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
-                    | BlocklistAIHistoryEvent::RestoredConversations { .. }
-                    | BlocklistAIHistoryEvent::RemoveConversation { .. }
-                    | BlocklistAIHistoryEvent::DeletedConversation { .. } => ctx.notify(),
-                    _ => {}
+                if history_event_rerenders_zero_state(event) {
+                    ctx.notify();
                 }
             },
         );
@@ -290,6 +283,22 @@ impl AgentViewZeroStateBlock {
             .take(MAX_RECENT_CONVERSATION_COUNT)
             .collect()
     }
+}
+
+/// Whether a history event can change what the zero state renders. A streamed delta
+/// (`UpdatedStreamingExchange`) never does: the view draws only its cached recent conversations
+/// and session location, and hides on `AppendedExchange`. Re-rendering for every delta of a
+/// background conversation kept the window at ~30 fps (#1336).
+fn history_event_rerenders_zero_state(event: &BlocklistAIHistoryEvent) -> bool {
+    matches!(
+        event,
+        BlocklistAIHistoryEvent::StartedNewConversation { .. }
+            | BlocklistAIHistoryEvent::AppendedExchange { .. }
+            | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
+            | BlocklistAIHistoryEvent::RestoredConversations { .. }
+            | BlocklistAIHistoryEvent::RemoveConversation { .. }
+            | BlocklistAIHistoryEvent::DeletedConversation { .. }
+    )
 }
 
 fn format_session_location(session: &Session, working_directory: Option<&str>) -> Option<String> {

@@ -99,6 +99,9 @@ struct StateHandles {
     misroute_recovery: MouseStateHandle,
 }
 
+/// How often a hidden status bar re-renders while its conversation streams.
+const HIDDEN_STATUS_RENDER_INTERVAL: Duration = Duration::from_millis(250);
+
 pub struct BlocklistAIStatusBar {
     active_exchange_model: Option<Box<dyn AIBlockModel<View = BlocklistAIStatusBar>>>,
     action_model: ModelHandle<BlocklistAIActionModel>,
@@ -120,6 +123,8 @@ pub struct BlocklistAIStatusBar {
 
     // Whether the summarization cancellation confirmation dialog is open.
     is_summarization_cancel_dialog_open: bool,
+    /// A hidden-tab re-render is already scheduled; see [`Self::notify_streaming_update`].
+    hidden_render_pending: bool,
     summarization_cancel_dialog: ViewHandle<SummarizationCancelDialog>,
 
     /// Handle for the periodic timer that updates the summarization timer UI.
@@ -188,7 +193,7 @@ impl BlocklistAIStatusBar {
                     if model.exchange_id(ctx) == Some(*exchange_id) {
                         me.on_updated_active_exchange_output(ctx);
                     } else if model.conversation_id(ctx) == Some(*conversation_id) {
-                        ctx.notify();
+                        me.notify_streaming_update(ctx);
                     }
                 }
                 return;
@@ -420,6 +425,7 @@ impl BlocklistAIStatusBar {
             summarization_cancel_dialog,
             latest_response_stream_id: None,
             is_summarization_cancel_dialog_open: false,
+            hidden_render_pending: false,
             summarization_timer_handle: None,
             summarization_start_time: None,
             last_read_refresh_handle: None,
@@ -548,7 +554,26 @@ impl BlocklistAIStatusBar {
             AIBlockOutputStatus::Pending | AIBlockOutputStatus::Failed { .. } => (),
         }
 
-        ctx.notify();
+        self.notify_streaming_update(ctx);
+    }
+
+    /// Re-renders for a streamed delta. A status bar whose tab is hidden is re-rendered at most
+    /// once per [`HIDDEN_STATUS_RENDER_INTERVAL`] rather than once per delta: nothing shows it
+    /// until its tab does, and a hidden view's notify still costs a main-thread render and a
+    /// frame (#1336, as #1282 for the output block).
+    fn notify_streaming_update(&mut self, ctx: &mut ViewContext<Self>) {
+        if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+            ctx.notify();
+            return;
+        }
+        if self.hidden_render_pending {
+            return;
+        }
+        self.hidden_render_pending = true;
+        ctx.spawn(Timer::after(HIDDEN_STATUS_RENDER_INTERVAL), |me, _, ctx| {
+            me.hidden_render_pending = false;
+            ctx.notify();
+        });
     }
 
     /// Closes the summarization cancel dialog.
