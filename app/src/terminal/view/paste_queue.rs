@@ -1175,8 +1175,7 @@ impl TerminalView {
         if let Some(lines) = in_flight
             && !bootstrap_gate
         {
-            // N lines x 2 s: the marker give-up falls back to timed pacing long before this.
-            let cap = Duration::from_secs(2) * (lines as u32 + 1);
+            let cap = super::subshell_bootstrap_gate_cap(lines);
             let mut host = PtyQueueHost::new(self, ctx);
             queue.lock().open_gate(
                 &mut host,

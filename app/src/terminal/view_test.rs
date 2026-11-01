@@ -21704,3 +21704,17 @@ fn a_key_after_a_young_hold_ended_is_not_swallowed() {
         }
     }
 }
+
+/// #1399: the bootstrap-write gate holds typed keys until the last setup line is written. Each
+/// marked line may wait the whole marker give-up before the timed fallback writes the rest, so the
+/// gate's net must outlast that; the old 2 s per line released keys into the middle of the
+/// fallback's writes (the script interleaved with the typed bytes).
+#[test]
+fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
+    for lines in 1..40usize {
+        assert!(
+            subshell_bootstrap_gate_cap(lines) > SUBSHELL_SETUP_MARKER_GIVE_UP * lines as u32,
+            "{lines} lines"
+        );
+    }
+}
