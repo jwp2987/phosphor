@@ -109,8 +109,10 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                 });
             }
             PtyIntent::DiscardPendingCommandWrites => {
-                controller.update(ctx, |controller, _| {
+                controller.update(ctx, |controller, ctx| {
                     controller.discard_pending_command_writes();
+                    // The agent's command was cancelled: its unwritten input goes too (#1384 P4).
+                    controller.cancel_agent_writes(ctx);
                 });
             }
             PtyIntent::DiscardHeldTypeaheadCommand => {

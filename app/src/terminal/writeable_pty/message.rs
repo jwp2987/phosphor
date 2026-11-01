@@ -12,6 +12,17 @@ pub enum Message {
     /// `DiscardQueuedInput` may drop while it is unwritten (#1046).
     CommandInput(Cow<'static, [u8]>),
 
+    /// A paste (#1384 P4): like `CommandInput` (a ^C drops what is unwritten) but its own class,
+    /// so `Abort(AbortScope::Paste)` can name it. Sent only when the loop runs the write queue.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    PasteInput(Cow<'static, [u8]>),
+
+    /// An agent's input to a running command (#1384 P4): ordered like `Input`, one whole write,
+    /// and removable by `Abort(AbortScope::Agent)` alone. Sent only when the loop runs the write
+    /// queue.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    AgentInput(Cow<'static, [u8]>),
+
     /// Drops submitted user commands (`CommandInput`) that are queued for the PTY but not yet
     /// written, including the unwritten remainder of one in progress (#1046). Sent just before a
     /// ^C so the interrupt is not stuck behind a big multi-line paste. Everything else queued

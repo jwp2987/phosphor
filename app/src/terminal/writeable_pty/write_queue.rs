@@ -30,16 +30,16 @@ pub enum JobClass {
     UserKey,
     /// The submitted buffer of a user command; a ^C drops it while unwritten (#1046).
     UserCommand,
-    /// A paste, streamed a tty-buffer at a time; a ^C drops what is unwritten (#1255). Today a
-    /// paste travels as `Message::CommandInput` and so is classed `UserCommand`; the two are
-    /// handled identically.
-    #[allow(dead_code)]
+    /// A paste, streamed a tty-buffer at a time; a ^C drops what is unwritten (#1255). On a pty
+    /// with the write queue it travels as `Message::PasteInput`, apart from `UserCommand`, so an
+    /// abort can name it; a ^C drops it exactly as it drops a command (`is_discardable`).
     Paste,
     /// A reply to a terminal query. Never dropped by an abort; may interleave at chunk boundaries
     /// of a [`JobClass::SetupChunked`] job.
     Reply,
-    /// An agent's input. Not distinguishable on the wire yet; ordered like `UserKey`.
-    #[allow(dead_code)]
+    /// An agent's input to a running command (`Message::AgentInput`). Ordered like `UserKey`, one
+    /// whole write that no key lands inside, and never dropped by a ^C (as before); only
+    /// [`AbortScope::Agent`] (the agent's command was cancelled) removes it while unwritten.
     Agent,
     /// A bootstrap script written in paced chunks. One unit: nothing but a reply lands inside it.
     SetupChunked,
@@ -66,6 +66,11 @@ impl JobClass {
 pub enum AbortScope {
     /// Submitted user commands and pastes (what `DiscardQueuedInput` always did).
     Discardable,
+    /// Pastes only (not commands).
+    Paste,
+    /// The agent's unwritten input only: the agent's command was cancelled. Typed keys, pastes,
+    /// commands and replies stay queued.
+    Agent,
     /// Every `SetupChunked` job, queued or in flight: a newer bootstrap, the shell exiting, the
     /// pty shutting down.
     Setup,
@@ -75,6 +80,8 @@ impl AbortScope {
     pub fn covers(self, class: JobClass) -> bool {
         match self {
             AbortScope::Discardable => class.is_discardable(),
+            AbortScope::Paste => class == JobClass::Paste,
+            AbortScope::Agent => class == JobClass::Agent,
             AbortScope::Setup => class == JobClass::SetupChunked,
         }
     }
