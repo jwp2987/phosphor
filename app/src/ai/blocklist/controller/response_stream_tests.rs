@@ -469,7 +469,8 @@ mod key_wait {
             "prov",
             &mut api_key,
         ));
-        assert!(futures::poll!(wait.as_mut()).is_pending());
+        let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(std::future::Future::poll(wait.as_mut(), &mut cx).is_pending());
 
         load_tx
             .send(Some(HashMap::from([(

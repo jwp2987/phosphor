@@ -1329,7 +1329,10 @@ where
 /// arms fires; the timer exists only while a stall-eligible screen is tracked and is armed once
 /// per unchanged screen. The termios is read on demand (a cheap ioctl); nothing here ticks.
 #[cfg(unix)]
-struct FullscreenWatch<S: TerminalSurface> {
+struct FullscreenWatch<S: TerminalSurface>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
     detector: RefCell<FullscreenStallDetector>,
     /// Whether the active block is one the poller was started for.
     active: std::cell::Cell<bool>,
@@ -1342,7 +1345,10 @@ struct FullscreenWatch<S: TerminalSurface> {
 }
 
 #[cfg(unix)]
-impl<S: TerminalSurface> FullscreenWatch<S> {
+impl<S: TerminalSurface> FullscreenWatch<S>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
     /// New block (or block end): forget the screen and any pending timer.
     fn restart(&self, active: bool) {
         self.detector.borrow_mut().reset();

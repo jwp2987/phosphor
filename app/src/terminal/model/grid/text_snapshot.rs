@@ -328,6 +328,7 @@ impl SelectionParts {
             out.push(match part {
                 SelectionPart::Text(text) => text,
                 SelectionPart::Block(snapshot) => snapshot.render_cancellable(cancel)?,
+                SelectionPart::Range(range) => range.snapshot.render_cancellable(cancel)?,
             });
         }
         Some(out.join("\n"))
