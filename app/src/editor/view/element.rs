@@ -637,10 +637,17 @@ impl EditorElement {
         // (before the next frame) would otherwise be dropped (#901). When the live focus chain
         // is known it decides alone, so a stale snapshot on the editor focus just left cannot
         // make two editors accept the same characters.
-        if accepts_typed_characters(
-            self.view_snapshot.is_focused,
-            ctx.live_focus_of(self.view_snapshot.view_id),
-        ) {
+        let live_focus = ctx.live_focus_of(self.view_snapshot.view_id);
+        let accepted = accepts_typed_characters(self.view_snapshot.is_focused, live_focus);
+        // #1345: whether this editor's element took the characters, and on what focus evidence.
+        warpui::input_order::log_key_hop("kh_editor_elem_typed", || {
+            format!(
+                "snapshot_focused={} live_focus={} accepted={accepted}",
+                self.view_snapshot.is_focused,
+                warpui::input_order::describe_opt(live_focus)
+            )
+        });
+        if accepted {
             if self.vim_mode.is_some() {
                 ctx.dispatch_typed_action(EditorAction::VimUserInsert(UserInput::new(chars)));
             } else {

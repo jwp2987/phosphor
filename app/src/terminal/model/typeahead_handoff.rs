@@ -969,6 +969,12 @@ impl TypeaheadHandoff {
         self.tracks_view_precmds = true;
     }
 
+    /// Prompts the model has seen whose precmd event the view has not handled yet (0 when no view
+    /// tracks them).
+    pub fn precmds_pending_view(&self) -> u32 {
+        self.precmds_pending_view
+    }
+
     /// The view handled a precmd event, after reinitializing the editor for the finished block
     /// (main thread).
     pub fn on_precmd_viewed(&mut self) {

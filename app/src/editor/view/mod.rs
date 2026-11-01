@@ -3061,6 +3061,34 @@ impl EditorView {
         }
     }
 
+    /// #1345: one `input_order` hop for a typing key reaching the terminal input's editor, with
+    /// flags and counts only: whether the editor believes it is focused, whether the ssh key hold
+    /// is active or still settling, and how long the buffer is BEFORE the key is applied (the next
+    /// key's count shows whether this one stuck).
+    fn trace_key_action(&self, action: &EditorAction, ctx: &AppContext) {
+        let Some(hold) = self.key_hold.as_ref() else {
+            return;
+        };
+        if !warpui::input_order::enabled() {
+            return;
+        }
+        let kind = match action {
+            EditorAction::UserInsert(_) => "insert",
+            EditorAction::Enter => "enter",
+            EditorAction::Backspace => "backspace",
+            _ => return,
+        };
+        warpui::input_order::log_key_hop("kh_editor_action", || {
+            format!(
+                "kind={kind} focused={} hold_active={} settling={} buffer_chars={}",
+                self.is_focused(),
+                hold.is_active(),
+                hold.rescues_unclaimed_keys(std::time::Instant::now()) && !hold.is_active(),
+                self.buffer_text(ctx).chars().count()
+            )
+        });
+    }
+
     /// Queues `action` on the key hold instead of applying it, if the hold is active and the
     /// action is an editing key it can replay. Everything else (Ctrl-C, Escape, Tab, ...) acts
     /// normally.
@@ -8825,7 +8853,11 @@ impl TypedActionView for EditorView {
 
     fn handle_action(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) {
         use EditorAction::*;
+        self.trace_key_action(action, ctx);
         if self.hold_key_for_terminal(action) {
+            warpui::input_order::log_key_hop("kh_editor_held", || {
+                "queued_for_terminal=true".to_owned()
+            });
             return;
         }
         if self.hold_key_for_paste(action, ctx) {
@@ -9133,6 +9165,12 @@ impl View for EditorView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        if self.key_hold.is_some() {
+            // #1345: the terminal input's editor gaining focus.
+            warpui::input_order::log_key_hop("kh_focus_editor", || {
+                format!("self_focused={}", focus_ctx.is_self_focused())
+            });
+        }
         if focus_ctx.is_self_focused() {
             self.focused = true;
             self.blinks_since_activity = 0;

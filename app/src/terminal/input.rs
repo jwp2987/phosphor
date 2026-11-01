@@ -17121,6 +17121,10 @@ impl View for Input {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        // #1345: the input taking focus (and passing it to the editor) at the remote prompt.
+        warpui::input_order::log_key_hop("kh_focus_input", || {
+            format!("self_focused={}", focus_ctx.is_self_focused())
+        });
         if focus_ctx.is_self_focused() {
             if self.is_voltron_open {
                 ctx.focus(&self.voltron_view);

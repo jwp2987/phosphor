@@ -516,6 +516,7 @@ use crate::terminal::view::inline_banner::{
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
     HeldInput, SshTypeahead, SshTypeaheadPush, burst_continues, delivery_waits_for_first_precmd,
+    delivery_waits_for_view_precmd, ssh_view_precmd_wait_disabled,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::{
@@ -10538,6 +10539,9 @@ impl TerminalView {
                     self.ssh_typeahead_discard_burst = false;
                     self.ssh_typeahead_last_key_at = None;
                 }
+                warpui::input_order::log_key_hop("kh_hold_exit", || {
+                    "branch=discarded_burst_tail".to_owned()
+                });
                 return true;
             }
             self.ssh_typeahead_discard_burst = false;
@@ -10546,6 +10550,16 @@ impl TerminalView {
             "key_gate_holds"
         } else {
             "key_gate_open"
+        });
+        // #1345: the facts this key was decided on.
+        warpui::input_order::log_key_hop("kh_hold_entry", || {
+            format!(
+                "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
+                 control_sequence={control_sequence} editor_queue_empty={}",
+                self.ssh_typeahead_holding,
+                self.ssh_typeahead.len_bytes(),
+                self.ssh_editor_key_hold.is_empty()
+            )
         });
         if dialog_up {
             if control_sequence {
@@ -10565,6 +10579,7 @@ impl TerminalView {
         }
         if !gate_drops && !self.ssh_typeahead_holding {
             self.ssh_setup_drop_notified = false;
+            warpui::input_order::log_key_hop("kh_hold_exit", || "branch=gate_open_live".to_owned());
             return false;
         }
         // #1292: hold the key. Once anything is held every later key is held too, even where the
@@ -10588,6 +10603,9 @@ impl TerminalView {
             None => self.ssh_paste_to_hold = true,
         }
         self.arm_ssh_typeahead_poll(ctx);
+        warpui::input_order::log_key_hop("kh_hold_exit", || {
+            format!("branch=held held_bytes={}", self.ssh_typeahead.len_bytes())
+        });
         true
     }
 
@@ -10664,6 +10682,9 @@ impl TerminalView {
     }
 
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
+        if self.ssh_typeahead_holding != holding {
+            warpui::input_order::log_key_hop("kh_holding_set", || format!("holding={holding}"));
+        }
         self.ssh_typeahead_holding = holding;
         self.ssh_editor_key_hold.set_active(holding);
     }
@@ -10760,9 +10781,18 @@ impl TerminalView {
         const RECHECK: Duration = Duration::from_millis(10);
         // Only keys headed for the remote shell can be refused; the fallback shows text only.
         let held = !self.ssh_typeahead.is_empty() || !self.ssh_editor_key_hold.is_empty();
-        let awaiting = self.ssh_remote_prompt_seen
+        let first_precmd_pending = self.ssh_remote_prompt_seen
             && held
             && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
+        // #1345: the view has not yet handled the prompt's precmd event, whose handling
+        // reinitializes the input editor (#934). Text and keys the editor takes before that can
+        // be erased by it, so the hand-off waits for it (briefly) like it waits for the first
+        // Precmd. `PHOSPHOR_NO_SSH_VIEW_PRECMD_WAIT=1` restores the old, immediate delivery.
+        let view_precmd_pending = self.ssh_remote_prompt_seen
+            && held
+            && !ssh_view_precmd_wait_disabled()
+            && self.view_precmds_pending() > 0;
+        let awaiting = first_precmd_pending || view_precmd_pending;
         let now = Instant::now();
         let waited = if awaiting {
             now.saturating_duration_since(*self.ssh_typeahead_precmd_wait_since.get_or_insert(now))
@@ -10770,9 +10800,18 @@ impl TerminalView {
             self.ssh_typeahead_precmd_wait_since = None;
             Duration::ZERO
         };
-        if !delivery_waits_for_first_precmd(awaiting, waited) {
+        if !(delivery_waits_for_first_precmd(first_precmd_pending, waited)
+            || delivery_waits_for_view_precmd(view_precmd_pending, waited))
+        {
             return false;
         }
+        warpui::input_order::log_key_hop("kh_delivery_deferred", || {
+            format!(
+                "first_precmd_pending={first_precmd_pending} \
+                 view_precmd_pending={view_precmd_pending} waited_ms={}",
+                waited.as_millis()
+            )
+        });
         if !self.ssh_typeahead_precmd_wait_armed {
             self.ssh_typeahead_precmd_wait_armed = true;
             ctx.spawn(Timer::after(RECHECK), move |me, _, ctx| {
@@ -10815,6 +10854,16 @@ impl TerminalView {
     /// shown in the input editor as text, never run, so nothing executes on the wrong host.
     fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
         warpui::profiling::zone!("typeahead_handoff");
+        warpui::input_order::log_key_hop("kh_finish_begin", || {
+            format!(
+                "remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
+                 view_precmds_pending={}",
+                self.ssh_remote_prompt_seen,
+                self.ssh_typeahead.len_bytes(),
+                self.ssh_editor_key_hold.is_empty(),
+                self.view_precmds_pending()
+            )
+        });
         self.set_ssh_typeahead_holding(false);
         // #1345: focus may still be settling into the editor; a key typed meanwhile is taken by
         // the terminal view for a moment instead of falling between the editor and the live path.
@@ -10825,6 +10874,7 @@ impl TerminalView {
         self.drain_editor_keys_into_ssh_hold(ctx);
         if self.ssh_typeahead.is_empty() {
             self.ssh_typeahead.clear();
+            warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
             return;
         }
         if self.ssh_remote_prompt_seen {
@@ -10839,6 +10889,12 @@ impl TerminalView {
                     HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
                 }
             }
+            warpui::input_order::log_key_hop("kh_finish_end", || {
+                format!(
+                    "delivered=remote buffer_chars={}",
+                    self.input.as_ref(ctx).buffer_text(ctx).chars().count()
+                )
+            });
             return;
         }
         let text = self.ssh_typeahead.unexecuted_text();
@@ -11271,6 +11327,16 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1345: the terminal view received typed characters (a live key or the held ones being
+        // delivered); `chars` is a count, never the text.
+        warpui::input_order::log_key_hop("kh_terminal_typed_entry", || {
+            format!(
+                "chars={} ssh_holding={} gate_armed={}",
+                characters.chars().count(),
+                self.ssh_typeahead_holding,
+                self.ssh_connect_gate.is_some()
+            )
+        });
         // #1087: while the SSH-extension choice card holds focus the input editor is hidden and
         // the card only takes arrows/Enter, so printable keys went nowhere, silently. They now
         // show the card's "choose an option first" hint. They are not buffered for the session:
@@ -11336,6 +11402,12 @@ impl TerminalView {
                 self.report_possible_typeahead(characters);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
             };
+        warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
+            format!(
+                "written_to_pty={written_to_pty} approval_card={typed_on_approval_card} \
+                 agent_owns_typing={agent_owns_typing}"
+            )
+        });
         if written_to_pty && typed_on_settled_ai_target {
             self.focus_terminal(ctx);
         }
@@ -11379,6 +11451,12 @@ impl TerminalView {
             }
             self.input
                 .update(ctx, |input, ctx| input.system_insert(characters, ctx));
+            warpui::input_order::log_key_hop("kh_terminal_inserted", || {
+                format!(
+                    "buffer_chars={}",
+                    self.input.as_ref(ctx).buffer_text(ctx).chars().count()
+                )
+            });
             if self.focus_reclaim_active() {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
@@ -12549,6 +12627,11 @@ impl TerminalView {
     }
 
     /// Records that the editor just took input over from the pty (`FeatureFlag::TypeaheadHandoff`).
+    /// Prompts the model has applied whose precmd event this view has not handled yet (#1345).
+    fn view_precmds_pending(&self) -> u32 {
+        self.model.lock().typeahead_handoff().precmds_pending_view()
+    }
+
     fn note_editor_took_over(&mut self) {
         self.model
             .lock()
@@ -34176,6 +34259,14 @@ impl View for TerminalView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        // #1345: focus moving around the terminal while an ssh hand-off settles.
+        warpui::input_order::log_key_hop("kh_focus_terminal_view", || {
+            format!(
+                "self_focused={} ssh_holding={}",
+                focus_ctx.is_self_focused(),
+                self.ssh_typeahead_holding
+            )
+        });
         if focus_ctx.is_self_focused() {
             self.maybe_report_focus_in(ctx);
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
