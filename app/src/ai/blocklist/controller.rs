@@ -5,6 +5,7 @@
 //! Agent Mode UI.
 pub mod input_context;
 mod pending_response_streams;
+mod project_rules_wait;
 pub mod response_stream;
 pub(super) mod shared_session;
 mod slash_command;

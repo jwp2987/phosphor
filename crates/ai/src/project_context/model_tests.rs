@@ -1322,6 +1322,71 @@ fn prewarm_fast_path_fills_the_cache_asynchronously() {
     });
 }
 
+/// #1364: a request built before the prewarm lands does not scan on the calling thread: the
+/// lookup leaves the project rules out, and the send's wait resolves with them (global rules
+/// layered) once the background scan lands.
+#[cfg(feature = "local_fs")]
+#[test]
+fn request_before_prewarm_waits_for_the_scan_instead_of_scanning() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "late rules").unwrap();
+
+        let model = app.add_model(|_| ProjectContextModel::default());
+        // The request is built with no cache and no scan landed: no rules, and no scan done.
+        model.read(&app, |model, _| {
+            assert!(model.find_rules_with_fast_path(&cwd).is_none());
+            assert!(
+                model.fast_path_cache.borrow().is_empty(),
+                "no synchronous scan filled the cache"
+            );
+        });
+
+        // The send registers for the scan; nothing is resolved yet.
+        let wait = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        let mut receiver = match wait {
+            RulesWait::Pending(receiver) => receiver,
+            RulesWait::Ready(_) => panic!("the scan cannot have landed yet"),
+        };
+        assert!(receiver.try_recv().unwrap().is_none());
+        model.read(&app, |model, _| {
+            assert!(model.fast_path_cache.borrow().is_empty());
+        });
+
+        app.finish_pending_tasks().await;
+
+        let rules = receiver
+            .await
+            .expect("the waiter is resolved when the scan lands")
+            .expect("rules were found");
+        assert_eq!(rules.active_rules.len(), 1);
+        assert_eq!(rules.active_rules[0].content, "late rules");
+        // A later request finds them cached.
+        let again = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        assert!(matches!(again, RulesWait::Ready(Some(_))));
+    });
+}
+
+/// #1364: a scan that finds nothing still resolves the waiters (no hang); global-only result.
+#[cfg(feature = "local_fs")]
+#[test]
+fn request_wait_resolves_when_the_directory_has_no_rules() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let model = app.add_model(|_| ProjectContextModel::default());
+        let wait = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        let receiver = match wait {
+            RulesWait::Pending(receiver) => receiver,
+            RulesWait::Ready(_) => panic!("the scan cannot have landed yet"),
+        };
+        app.finish_pending_tasks().await;
+        let resolved = receiver.await.expect("resolved, not dropped");
+        assert!(resolved.is_none());
+    });
+}
+
 /// #1364: the fast-path scan is complete, not truncated by a wall-clock budget: every level up
 /// to `MAX_WALK_DEPTH` is visited regardless of how long the stats take.
 #[cfg(feature = "local_fs")]
