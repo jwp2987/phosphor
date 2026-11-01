@@ -1,0 +1,18 @@
+# realapp/mac: scripts run ON the Mac test box (via ssh) driving a scratch Phosphor.app with cliclick/osascript/htype2 and ScreenCaptureKit keylat.
+# Platform: macOS arm64. Prereqs: config vars exported on the Mac; cliclick, caffeinate; the htype2 typing tool (see ../../keylat and README); Screen Recording + Accessibility granted to sshd.
+# Safety: guard() checks frontmost app/PID before every key burst; never Ctrl-D, Cmd-Q/W/Tab/Space, Globe, Ctrl-Cmd chords; back up and restore dev.phosphor.* plists with sha256; never run CI on the Mac during a measurement.
+# Restores: kill only the exact app PID the harness recorded; kill the caffeinate PID it started.
+import json,re,sys,statistics as st
+def pct(a,p): a=sorted(a); return a[min(len(a)-1,int(round((len(a)-1)*p)))]
+for fn in sys.argv[1:]:
+    F=[];L=[];per={}
+    for l in open(fn):
+        r=json.loads(l); m=re.search(r'post0=([\d.]+)',r['resp']); p0=float(m.group(1))
+        ch=re.findall(r'ch=([\d.:,]+)',r['resp'])
+        if not ch: continue
+        c=[float(x.split(':')[0])-p0 for x in ch[0].split(',') if float(x.split(':')[0])>=p0]
+        if not c: continue
+        F.append(c[0]); L.append(c[-1]); per.setdefault(r['cmd'],[]).append(c[-1])
+    f=lambda a:"n=%d med=%.0f p95=%.0f max=%.0f"%(len(a),st.median(a),pct(a,.95),max(a))
+    print(fn.split('/')[-1],"| first",f(F),"| last",f(L))
+    for k,v in per.items(): print("   ",k,f(v))
