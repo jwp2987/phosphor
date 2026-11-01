@@ -539,6 +539,15 @@ pub(crate) fn plan_finished_batch(
     }
 }
 
+/// Whether a ^C was written to the pty of `block_id`'s command (false for a block that is gone).
+fn block_interrupted_by_ctrl_c(terminal_model: &TerminalModel, block_id: &BlockId) -> bool {
+    terminal_model
+        .block_list()
+        .block_index_for_id(block_id)
+        .and_then(|index| terminal_model.block_list().block_at(index))
+        .is_some_and(|block| block.was_interrupted_by_ctrl_c())
+}
+
 /// The block whose command `result` reports as finished, for the tools that read or drive a
 /// running command. A `RequestCommandOutput` completion is the command's own action and is not
 /// one: its block is reported by the request that carries it.
@@ -807,8 +816,10 @@ pub struct BlocklistAIController {
     /// fires once; the model's reply may then end on the stale "still running" snapshot with
     /// nothing left to report the result. The completion is held here and re-decided at every
     /// clean stream end ([`Self::retry_deferred_monitored_completion`]) until it is sent or
-    /// dropped. One per conversation: a later completion replaces an earlier one.
-    deferred_monitored_completions: HashMap<AIConversationId, BlockId>,
+    /// dropped. Every command that finishes while one is held joins the list, so a second
+    /// completion does not erase the first; they go out together in one report (#1264). A
+    /// conversation with no held completion has no entry.
+    deferred_monitored_completions: HashMap<AIConversationId, Vec<BlockId>>,
     /// Conversations whose running request is the follow-up that reports a monitored command's
     /// completion (#1264). With the held completions above, this is what
     /// [`Self::completion_report_outstanding`] answers, so the view never fires a queued prompt
@@ -849,6 +860,9 @@ pub(crate) struct MonitoredCompletionFacts {
     pub has_unsent_actions: bool,
     /// This block already produced a follow-up.
     pub already_followed_up: bool,
+    /// A ^C was written to the command's pty: the user (or the model, who then reads the
+    /// result itself) interrupted it, so its exit is not news that restarts a turn (#1264).
+    pub interrupted_by_ctrl_c: bool,
     /// An automatic resume (after an error, or for a synthetic tool result) is scheduled, or a
     /// request the readiness pass stashed is waiting to be resent: a request is coming, and
     /// sending one now would abort it.
@@ -879,7 +893,7 @@ impl MonitoredCompletionFacts {
     /// with fresh facts, so a command that finishes while the model is mid-reply is reported
     /// once the reply (or the tool loop, or the compaction) is over instead of never.
     pub(crate) fn decision(&self) -> MonitoredCompletionDecision {
-        if self.already_followed_up || self.suspended_for_close {
+        if self.already_followed_up || self.suspended_for_close || self.interrupted_by_ctrl_c {
             return MonitoredCompletionDecision::Drop;
         }
         if self.stream_in_flight
@@ -1070,12 +1084,15 @@ impl BlocklistAIController {
             // The model read the finished command itself (`read_shell_command_output` or a
             // write/transfer that returned `CommandFinished`): the completion held for it has
             // been reported through that result, so it is not reported again at the turn end.
-            if let Some(held_block_id) = me.deferred_monitored_completions.get(conversation_id)
-                && finished_action_results.iter().any(|result| {
-                    finished_command_block_id(&result.result) == Some(held_block_id)
-                })
-            {
-                me.deferred_monitored_completions.remove(conversation_id);
+            if let Some(held) = me.deferred_monitored_completions.get_mut(conversation_id) {
+                held.retain(|held_block_id| {
+                    !finished_action_results.iter().any(|result| {
+                        finished_command_block_id(&result.result) == Some(held_block_id)
+                    })
+                });
+                if held.is_empty() {
+                    me.deferred_monitored_completions.remove(conversation_id);
+                }
             }
             let is_passive_code_diff = is_entirely_passive_code_diff
                 && finished_action_results.last().is_some_and(|result| {
@@ -1315,7 +1332,14 @@ impl BlocklistAIController {
             self.monitored_completion_facts(conversation_id, block_id, retained_results_block, ctx);
         match facts.decision() {
             MonitoredCompletionDecision::Drop => {
-                self.clear_deferred_monitored_completion(conversation_id, block_id);
+                if facts.already_followed_up || facts.interrupted_by_ctrl_c {
+                    // Specific to this block; the others held for the conversation stand.
+                    self.clear_deferred_monitored_completion(conversation_id, block_id);
+                } else {
+                    // The pane is closed or the turn ended in a way that nothing held for it
+                    // can change.
+                    self.deferred_monitored_completions.remove(&conversation_id);
+                }
                 return false;
             }
             MonitoredCompletionDecision::Defer => {
@@ -1324,43 +1348,99 @@ impl BlocklistAIController {
                      reporting it at the turn end block={block_id:?} \
                      conversation={conversation_id:?} facts={facts:?}"
                 );
-                self.deferred_monitored_completions
-                    .insert(conversation_id, block_id.clone());
+                let held = self
+                    .deferred_monitored_completions
+                    .entry(conversation_id)
+                    .or_default();
+                if !held.contains(block_id) {
+                    held.push(block_id.clone());
+                }
                 return false;
             }
             MonitoredCompletionDecision::Send => {}
         }
-        self.clear_deferred_monitored_completion(conversation_id, block_id);
-        let block_context = {
+        // This block and any other completion held for the conversation go out in one report.
+        let mut blocks = vec![block_id.clone()];
+        for held in self
+            .deferred_monitored_completions
+            .remove(&conversation_id)
+            .unwrap_or_default()
+        {
+            if !blocks.contains(&held) && !self.monitored_completion_follow_ups.contains(&held) {
+                blocks.push(held);
+            }
+        }
+        let block_contexts: Vec<(BlockId, AIAgentContext)> = {
             let terminal_model = self.terminal_model.lock();
-            block_context_from_terminal_model(&terminal_model, block_id, false)
+            blocks
+                .into_iter()
+                .filter_map(|id| {
+                    // A held block the user interrupted with ^C is not reported (#1264).
+                    if block_interrupted_by_ctrl_c(&terminal_model, &id) {
+                        return None;
+                    }
+                    let context = block_context_from_terminal_model(&terminal_model, &id, false)?;
+                    Some((id, AIAgentContext::Block(Box::new(context))))
+                })
+                .collect()
         };
-        let Some(block_context) = block_context else {
+        if block_contexts.is_empty() {
             // The block is gone (evicted) and nothing is sent: a queued prompt that waited for
             // this report (`completion_report_outstanding`) has no turn end left to drain it.
             if QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
                 ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id });
             }
             return false;
-        };
-        self.monitored_completion_follow_ups
-            .insert(block_id.clone());
-        self.monitored_completion_resumes_in_flight
-            .insert(conversation_id);
+        }
+        let reported: Vec<BlockId> = block_contexts.iter().map(|(id, _)| id.clone()).collect();
+        let contexts: Vec<AIAgentContext> = block_contexts
+            .into_iter()
+            .map(|(_, context)| context)
+            .collect();
         log::info!(
             "[byop] monitored command finished after the turn ended; following up \
-             block={block_id:?} conversation={conversation_id:?}"
+             block={block_id:?} reported={reported:?} conversation={conversation_id:?}"
         );
         // Before the resume's own `SentRequest`, so the view's record is in place when the
         // `FinishedSubagent` queued behind this call is delivered (events are delivered in the
         // order they were emitted).
         ctx.emit(BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id });
-        self.resume_conversation(
+        // Marked before the send: the request's own events can reach this controller during it.
+        self.monitored_completion_resumes_in_flight
+            .insert(conversation_id);
+        let sent = self.resume_conversation_with_recovery_budget_checked(
             conversation_id,
+            RecoveryBudget::fresh(),
             /*is_auto_resume_after_error*/ false,
-            vec![AIAgentContext::Block(Box::new(block_context))],
+            contexts,
             ctx,
         );
+        match sent {
+            // A request the readiness pass stashed goes out once pending results land.
+            Ok(()) => {}
+            Err(e) if e.downcast_ref::<PendingByopToolResultsError>().is_some() => {}
+            Err(e) => {
+                // Nothing went out: the report is not in flight, so a queued prompt must not
+                // wait for it, and the blocks may be reported again by a later signal.
+                if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                    log::debug!("{e}");
+                } else {
+                    log::error!(
+                        "[byop] the monitored-command completion report could not be sent \
+                         for conversation {conversation_id:?}: {e:#}"
+                    );
+                }
+                self.monitored_completion_resumes_in_flight
+                    .remove(&conversation_id);
+                if QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
+                    ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id });
+                }
+                return false;
+            }
+        }
+        for id in reported {
+            self.monitored_completion_follow_ups.insert(id);
+        }
         true
     }
 
@@ -1396,7 +1476,13 @@ impl BlocklistAIController {
                 )
             },
             already_followed_up: self.monitored_completion_follow_ups.contains(block_id),
-            resume_scheduled: self.pending_auto_resume_handles.contains_key(&conversation_id)
+            interrupted_by_ctrl_c: block_interrupted_by_ctrl_c(
+                &self.terminal_model.lock(),
+                block_id,
+            ),
+            resume_scheduled: self
+                .pending_auto_resume_handles
+                .contains_key(&conversation_id)
                 || self.pending_byop_requests.contains_key(&conversation_id),
         }
     }
@@ -1414,6 +1500,7 @@ impl BlocklistAIController {
         if let Some(block_id) = self
             .deferred_monitored_completions
             .get(&conversation_id)
+            .and_then(|held| held.first())
             .cloned()
         {
             self.follow_up_on_monitored_command_completed_with(
@@ -1431,8 +1518,14 @@ impl BlocklistAIController {
         conversation_id: AIConversationId,
         block_id: &BlockId,
     ) {
-        if self.deferred_monitored_completions.get(&conversation_id) == Some(block_id) {
-            self.deferred_monitored_completions.remove(&conversation_id);
+        if let Some(held) = self
+            .deferred_monitored_completions
+            .get_mut(&conversation_id)
+        {
+            held.retain(|held_block_id| held_block_id != block_id);
+            if held.is_empty() {
+                self.deferred_monitored_completions.remove(&conversation_id);
+            }
         }
     }
 
@@ -1444,6 +1537,18 @@ impl BlocklistAIController {
     ) -> bool {
         self.deferred_monitored_completions
             .contains_key(&conversation_id)
+    }
+
+    /// The blocks whose completion is held for `conversation_id`, in arrival order.
+    #[cfg(test)]
+    pub(crate) fn deferred_monitored_blocks_for_test(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> Vec<BlockId> {
+        self.deferred_monitored_completions
+            .get(&conversation_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn is_suspended_for_close(&self) -> bool {
@@ -2724,11 +2829,32 @@ impl BlocklistAIController {
         additional_context: Vec<AIAgentContext>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let _ = self.resume_conversation_with_recovery_budget_checked(
+            conversation_id,
+            recovery,
+            is_auto_resume_after_error,
+            additional_context,
+            ctx,
+        );
+    }
+
+    /// [`Self::resume_conversation_with_recovery_budget`] reporting whether the request was
+    /// accepted, for the callers whose bookkeeping depends on it.
+    fn resume_conversation_with_recovery_budget_checked(
+        &mut self,
+        conversation_id: AIConversationId,
+        recovery: RecoveryBudget,
+        is_auto_resume_after_error: bool,
+        additional_context: Vec<AIAgentContext>,
+        ctx: &mut ModelContext<Self>,
+    ) -> anyhow::Result<()> {
         let Some(conversation) =
             BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
         else {
             log::error!("Tried to resume non-existent conversation: {conversation_id:?}");
-            return;
+            return Err(anyhow::anyhow!(
+                "tried to resume non-existent conversation {conversation_id:?}"
+            ));
         };
         let task_id = {
             let terminal_model = self.terminal_model.lock();
@@ -2767,7 +2893,7 @@ impl BlocklistAIController {
         } else {
             None
         };
-        let _ = self.send_request_input(
+        self.send_request_input(
             RequestInput::for_task(
                 inputs,
                 task_id,
@@ -2782,7 +2908,8 @@ impl BlocklistAIController {
             recovery,
             /*is_queued_prompt*/ false,
             ctx,
-        );
+        )
+        .map(|_| ())
     }
 
     /// Schedules an auto-resume-after-error for the conversation, after the recovery

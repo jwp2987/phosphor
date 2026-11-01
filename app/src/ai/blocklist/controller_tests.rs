@@ -2614,6 +2614,78 @@ mod monitored_completion {
         });
     }
 
+    /// #1264: a user ^C inside a monitored command is not news that restarts a turn.
+    #[test]
+    fn a_command_the_user_interrupted_with_ctrl_c_sends_nothing() {
+        let facts = MonitoredCompletionFacts {
+            interrupted_by_ctrl_c: true,
+            ..idle_after_text_reply()
+        };
+        assert!(!facts.should_follow_up());
+        assert_eq!(facts.decision(), MonitoredCompletionDecision::Drop);
+    }
+
+    /// #1264: a second command finishing while one is held does not erase the first. Fails on
+    /// the old code, where the second insert replaced the first block id.
+    #[test]
+    fn a_second_completion_does_not_replace_the_held_one() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let first = crate::terminal::model::block::BlockId::new();
+                let second = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &first,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &second,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &second,
+                        ctx,
+                    );
+                    assert_eq!(
+                        controller.deferred_monitored_blocks_for_test(conversation_id),
+                        vec![first, second],
+                        "both are held, in order, once each"
+                    );
+                });
+            });
+        });
+    }
+
     /// #1264: finished results a step kept back (no request follows them) do not hold a
     /// completion; actions still pending or running always do, and finished results do while a
     /// request to send them is coming.
