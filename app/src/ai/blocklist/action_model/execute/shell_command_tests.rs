@@ -29,7 +29,7 @@ fn a_one_line_write_to_an_interactive_shell_clears_the_pending_line() {
             pty_write_for_target_command(Some(command), &input, AIAgentPtyWriteMode::Raw);
         assert_eq!(mode, AIAgentPtyWriteMode::Line, "{command}");
         assert_eq!(
-            mode.decorate_bytes(bytes.to_vec(), false),
+            mode.decorate_bytes(bytes.to_vec(), true),
             b"\x01\x0becho unmanaged-ok\r",
             "{command}"
         );

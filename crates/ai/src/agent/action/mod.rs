@@ -716,14 +716,20 @@ impl AIAgentPtyWriteMode {
                     .or_else(|| bytes.strip_suffix(b"\r"))
                     .unwrap_or(&bytes);
                 let mut v = Vec::with_capacity(bytes.len() + 3);
-                // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
-                v.push(escape_sequences::C0::SOH);
-                // ^K (VT) kills to the end of the line. Without it the input lands in front of
-                // whatever is already in the editor's buffer, and Enter submits both: in an
-                // unmanaged `bash --norc` the user's own prompt text, typed into the shell before
-                // the agent took over, ran as `echo agent-in-norc-okrun the shell command: ...`
-                // (#979).
-                v.push(escape_sequences::C0::VT);
+                // Only a program with bracketed paste enabled is a readline-style line editor
+                // (bash, zsh, fish, PSReadLine, prompt-toolkit). Anything else (an `apt [Y/n]`
+                // prompt, a password prompt, a bare REPL) would receive the control bytes as
+                // literal 0x01 / 0x0b (#1278), so it gets the plain text.
+                if is_bracketed_paste_enabled {
+                    // ^A (SOH) is "beginning of line" for readline/prompt-toolkit style editors.
+                    v.push(escape_sequences::C0::SOH);
+                    // ^K (VT) kills to the end of the line. Without it the input lands in front
+                    // of whatever is already in the editor's buffer, and Enter submits both: in
+                    // an unmanaged `bash --norc` the user's own prompt text, typed into the shell
+                    // before the agent took over, ran as `echo agent-in-norc-okrun the shell
+                    // command: ...` (#979).
+                    v.push(escape_sequences::C0::VT);
+                }
                 v.extend_from_slice(bytes);
                 // Submit with CR, which is what the Enter key sends on every platform. A
                 // cooked-mode tty maps it to LF (ICRNL), but raw-mode line editors do not:
@@ -977,15 +983,24 @@ mod pty_write_mode_tests {
     /// agent's command sat unsubmitted at the prompt and the turn waited on it forever.
     #[test]
     fn line_mode_submits_with_carriage_return() {
-        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), false);
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"'hi'".to_vec(), true);
         assert_eq!(bytes, [&[C0::SOH, C0::VT][..], b"'hi'", &[C0::CR]].concat());
+    }
+
+    /// #1278: without bracketed paste the program is not a line editor, so the input is sent as
+    /// plain text plus Enter, with no ^A / ^K.
+    #[test]
+    fn line_mode_without_bracketed_paste_sends_plain_text() {
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"y\n".to_vec(), false);
+        assert_eq!(bytes, [&b"y"[..], &[C0::CR]].concat());
+        assert!(!bytes.contains(&C0::SOH) && !bytes.contains(&C0::VT));
     }
 
     /// #979: text already in the line editor (the user's prompt, typed into an unmanaged shell)
     /// is cleared before the input, so exactly the approved command is what Enter submits.
     #[test]
     fn line_mode_clears_the_rest_of_the_line_after_moving_to_its_start() {
-        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"echo ok ".to_vec(), false);
+        let bytes = AIAgentPtyWriteMode::Line.decorate_bytes(b"echo ok ".to_vec(), true);
         assert_eq!(&bytes[..2], &[C0::SOH, C0::VT]);
         assert_eq!(bytes.last(), Some(&C0::CR));
     }
@@ -1003,7 +1018,7 @@ mod pty_write_mode_tests {
             assert_eq!(mode, AIAgentPtyWriteMode::Line);
             assert_eq!(line, b"echo unmanaged-ok");
             assert_eq!(
-                mode.decorate_bytes(line, false),
+                mode.decorate_bytes(line, true),
                 [&[C0::SOH, C0::VT][..], b"echo unmanaged-ok", &[C0::CR]].concat()
             );
         }
@@ -1014,7 +1029,7 @@ mod pty_write_mode_tests {
     fn line_mode_with_a_trailing_newline_sends_a_single_enter() {
         for input in [&b"echo ok\n"[..], b"echo ok\r", b"echo ok\r\n", b"echo ok"] {
             assert_eq!(
-                AIAgentPtyWriteMode::Line.decorate_bytes(input.to_vec(), false),
+                AIAgentPtyWriteMode::Line.decorate_bytes(input.to_vec(), true),
                 [&[C0::SOH, C0::VT][..], b"echo ok", &[C0::CR]].concat(),
                 "{input:?}"
             );
