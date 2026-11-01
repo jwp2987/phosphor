@@ -945,6 +945,7 @@ impl Window {
 
         let capture_callback = self.capture_callback.borrow_mut().take();
         let window = &inner.window;
+        crate::rendering::glyph_cache::begin_window_render();
         renderer.render(
             scene.as_ref(),
             resources,

@@ -9,7 +9,6 @@ use pathfinder_geometry::{
     vector::{Vector2F, Vector2I},
 };
 use rustc_hash::FxHashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const ATLAS_SIZE: usize = 1024;
@@ -24,14 +23,24 @@ const DEFAULT_RASTER_BUDGET: Duration = Duration::from_millis(8);
 /// needs it, as before.
 const RASTER_BUDGET_ENV: &str = "PHOSPHOR_GLYPH_RASTER_BUDGET_MS";
 
-/// Set when a frame left glyphs unrasterised; the window layer takes it after drawing and asks
-/// for another frame (see [`take_deferred_redraw`]).
-static DEFERRED_REDRAW: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Set when the render in progress left glyphs unrasterised; the window layer takes it after
+    /// drawing and asks for another frame (see [`take_deferred_redraw`]). Rendering is
+    /// single-threaded per frame, so the flag is scoped to ONE window's render call: it is
+    /// cleared by [`begin_window_render`] before the draw and taken right after it, so an early
+    /// return (a failed draw) cannot leave it set for whichever window renders next (#1379).
+    static DEFERRED_REDRAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Whether the last frame deferred glyph rasterisation, clearing the flag. The caller requests
-/// another frame (keeping the scene) when this is true.
+/// Starts one window's render: forgets any deferral flag a previous render left behind.
+pub(crate) fn begin_window_render() {
+    DEFERRED_REDRAW.with(|flag| flag.set(false));
+}
+
+/// Whether the render since [`begin_window_render`] deferred glyph rasterisation, clearing the
+/// flag. The caller requests another frame (keeping the scene) when this is true.
 pub(crate) fn take_deferred_redraw() -> bool {
-    DEFERRED_REDRAW.swap(false, Ordering::Relaxed)
+    DEFERRED_REDRAW.with(|flag| flag.replace(false))
 }
 
 fn raster_budget_from_env() -> Option<Duration> {
@@ -185,7 +194,7 @@ impl<Texture> GlyphCache<Texture> {
                     // Not cached, so the next frame retries it; the caller is told to draw
                     // again and the glyph is simply absent from this frame.
                     self.deferred = true;
-                    DEFERRED_REDRAW.store(true, Ordering::Relaxed);
+                    DEFERRED_REDRAW.with(|flag| flag.set(true));
                     return Ok(None);
                 }
                 let started = Instant::now();

@@ -148,3 +148,28 @@ fn no_budget_rasterises_everything_in_one_frame() {
     );
     assert!(!h.cache.has_deferred());
 }
+
+/// A deferral left by a render that never reached `take_deferred_redraw` (a failed draw) must not
+/// make the NEXT window's render ask for a redraw (#1379).
+#[test]
+fn deferred_redraw_flag_is_scoped_to_one_window_render() {
+    let mut h = Harness::new();
+    h.cache.raster_budget = Some(Duration::ZERO);
+    let subpixel = SubpixelAlignment::new(Vector2F::zero());
+
+    // Window A renders, defers, and bails out before taking the flag.
+    begin_window_render();
+    h.cache.begin_frame();
+    let _ = (1..=3).filter(|id| h.get(*id, subpixel).is_some()).count();
+    assert!(h.cache.has_deferred());
+
+    // Window B renders with everything cached: it must not inherit A's flag.
+    begin_window_render();
+    assert!(!take_deferred_redraw());
+
+    // A render that does defer is still reported once, then cleared.
+    h.cache.begin_frame();
+    let _ = (1..=3).filter(|id| h.get(*id, subpixel).is_some()).count();
+    assert!(take_deferred_redraw());
+    assert!(!take_deferred_redraw());
+}
