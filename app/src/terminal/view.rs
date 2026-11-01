@@ -752,6 +752,32 @@ mod focus_reclaim_tests {
     }
 }
 
+#[cfg(test)]
+mod alt_screen_settle_tests {
+    use super::*;
+
+    #[test]
+    fn settle_check_runs_on_the_frame_signal_not_the_cap() {
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        tx.try_send(()).unwrap();
+        let start = std::time::Instant::now();
+        assert!(futures::executor::block_on(wait_frame_or_give_up(
+            rx,
+            Duration::from_secs(30)
+        )));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn settle_check_gives_up_only_at_the_cap_when_no_frame_is_drawn() {
+        let (_tx, rx) = async_channel::bounded::<()>(1);
+        assert!(!futures::executor::block_on(wait_frame_or_give_up(
+            rx,
+            Duration::from_millis(20)
+        )));
+    }
+}
+
 /// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
 const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 
@@ -761,7 +787,19 @@ const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 #[cfg(feature = "local_tty")]
 const ALT_SCREEN_RESEND_GIVE_UP: Duration = Duration::from_millis(500);
 
-const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
+/// Give-up cap for the alt-screen paint-settle re-check (#1388). The re-check is driven by the
+/// frame-drawn callback of the paint-only frame; this only bounds the wait if that callback never
+/// fires (window occluded / frame dropped) and is logged when it does.
+const ALT_SCREEN_SETTLE_GIVE_UP: Duration = Duration::from_millis(500);
+
+/// Resolves `true` when `frame_rx` signals (the frame was drawn), `false` after `cap`.
+async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Duration) -> bool {
+    futures_lite::future::or(async move { frame_rx.recv().await.is_ok() }, async move {
+        Timer::after(cap).await;
+        false
+    })
+    .await
+}
 
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
 /// the conversation is cancelled, the command handed to the user and the agent view left
@@ -13538,7 +13576,18 @@ impl TerminalView {
             return;
         }
         self.alt_screen_settle_check_pending = true;
-        ctx.spawn(Timer::after(ALT_SCREEN_SETTLE_DELAY), |me, _, ctx| {
+        // #1388: the check runs once the paint-only frame requested above has been drawn (the
+        // frame that samples the program's background color), not after a guessed delay.
+        let (frame_tx, frame_rx) = async_channel::bounded::<()>(1);
+        ctx.on_next_frame_drawn(move || {
+            let _ = frame_tx.try_send(());
+        });
+        ctx.spawn(wait_frame_or_give_up(frame_rx, ALT_SCREEN_SETTLE_GIVE_UP), |me, drawn, ctx| {
+            if !drawn {
+                log::warn!(
+                    "alt-screen settle check: frame-drawn callback did not fire within {ALT_SCREEN_SETTLE_GIVE_UP:?}, re-checking anyway"
+                );
+            }
             me.alt_screen_settle_check_pending = false;
             let stale = {
                 let model = me.model.lock();
