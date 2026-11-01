@@ -3016,7 +3016,7 @@ impl EditorView {
             return false;
         };
         let key = match action {
-            EditorAction::UserInsert(text) => HeldEditorKey::Text(text.as_ref().to_owned()),
+            EditorAction::UserInsert(text) => HeldEditorKey::Text(String::clone(text)),
             EditorAction::Enter => HeldEditorKey::Control("\r"),
             EditorAction::Backspace => HeldEditorKey::Control("\u{7f}"),
             EditorAction::DeleteAllLeft => HeldEditorKey::Control("\u{15}"),

@@ -3623,22 +3623,6 @@ fn blocked_commit_database() -> (
     (tempdir, database_path, conn, reader)
 }
 
-fn started_command(command: &str) -> crate::persistence::StartedCommandMetadata {
-    crate::persistence::StartedCommandMetadata {
-        command: command.to_owned(),
-        start_ts: None,
-        pwd: None,
-        shell: None,
-        username: None,
-        hostname: None,
-        session_id: None,
-        git_branch: None,
-        cloud_workflow_id: None,
-        workflow_command: None,
-        is_agent_executed: false,
-    }
-}
-
 /// #1297: a non-snapshot event whose `COMMIT` is blocked once is not lost. diesel 2.3.14 rolls a
 /// failed top-level `COMMIT` back, so the writer commits the event's transaction itself, keeps it
 /// open while the lock is held and commits it once, when the lock clears.
