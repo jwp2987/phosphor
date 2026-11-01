@@ -5,7 +5,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -67,6 +67,12 @@ mod text_block;
 mod unordered_list;
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+/// Number of blink toggles (10 s at the 500 ms interval) after the last cursor activity, after
+/// which the cursor stops blinking and stays solid, like terminal emulators do. Without a cap a
+/// focused-but-idle editor (a notebook left open) wakes and repaints every 500 ms forever.
+/// Activity ([`DisplayState::reset_cursor_blink_timer`]) restarts blinking. Mirrors the plain
+/// editor's `MAX_IDLE_CURSOR_BLINKS`.
+const MAX_IDLE_CURSOR_BLINKS: u32 = 20;
 const DRAG_POSITION_CLAMP_BUFFER: f32 = 40.;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -144,6 +150,8 @@ pub struct DisplayState {
     next_blink_update: Mutex<Option<Instant>>,
     /// Whether or not the blinking cursor is currently visible.
     blink_cursor_visible: AtomicBool,
+    /// Blink toggles since the last cursor activity; blinking stops at [`MAX_IDLE_CURSOR_BLINKS`].
+    blinks_since_activity: AtomicU32,
 }
 
 pub type DisplayStateHandle = Arc<DisplayState>;
@@ -153,6 +161,31 @@ impl DisplayState {
     pub fn reset_cursor_blink_timer(&self) {
         *self.next_blink_update.lock() = Some(Instant::now() + CURSOR_BLINK_INTERVAL);
         self.blink_cursor_visible.store(true, Ordering::Relaxed);
+        self.blinks_since_activity.store(0, Ordering::Relaxed);
+    }
+
+    /// Advances the blink state at `now`. Returns how long until the next blink repaint is
+    /// needed, or `None` once the cursor has been idle for [`MAX_IDLE_CURSOR_BLINKS`] toggles: it
+    /// is then left solid and nothing is scheduled, so an idle focused editor has no wakeups.
+    fn tick_blink(&self, now: Instant) -> Option<Duration> {
+        let mut timer_guard = self.next_blink_update.lock();
+        let update_deadline = timer_guard.unwrap_or(now);
+
+        let next_update = if now >= update_deadline {
+            if self.blinks_since_activity.load(Ordering::Relaxed) >= MAX_IDLE_CURSOR_BLINKS {
+                self.blink_cursor_visible.store(true, Ordering::Relaxed);
+                return None;
+            }
+            self.blinks_since_activity.fetch_add(1, Ordering::Relaxed);
+            // Every update interval, toggle the blink flag.
+            self.blink_cursor_visible.fetch_xor(true, Ordering::Relaxed);
+            now + CURSOR_BLINK_INTERVAL
+        } else {
+            update_deadline
+        };
+
+        *timer_guard = Some(next_update);
+        Some(next_update - now)
     }
 }
 
@@ -932,29 +965,16 @@ impl<V: EditorView> RichTextElement<V> {
             return;
         }
 
-        let now = Instant::now();
-        let mut timer_guard = self.display_state.next_blink_update.lock();
-        let update_deadline = timer_guard.unwrap_or(now);
-
-        let next_update = if now >= update_deadline {
-            // Every update interval, toggle the blink flag.
-            self.display_state
-                .blink_cursor_visible
-                .fetch_xor(true, Ordering::Relaxed);
-
-            now + CURSOR_BLINK_INTERVAL
-        } else {
-            update_deadline
+        let Some(delay) = self.display_state.tick_blink(Instant::now()) else {
+            return;
         };
-
-        *timer_guard = Some(next_update);
         // Paint-only: toggling `blink_cursor_visible` doesn't change this element's
         // size, position, or content — `blinking_cursors_visible()` is read fresh
         // from `paint()` (see `paint.rs`), so a full layout of the window isn't
         // needed to reflect the new value, only another paint. This is what lets an
         // idle focused editor's blink skip re-running layout on the whole window.
         // See issue #703.
-        ctx.repaint_after_paint_only(next_update - now);
+        ctx.repaint_after_paint_only(delay);
     }
 
     /// Whether or not blinking cursors are visible
@@ -1298,3 +1318,7 @@ impl fmt::Debug for Box<dyn RenderableBlock> {
             .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "blink_tests.rs"]
+mod blink_tests;
