@@ -7,6 +7,28 @@ use super::{
 
 pub mod alt_screen_element;
 
+/// Whether file-path detection runs while the alt screen has SGR mouse reporting on (#1347).
+/// Fullscreen TUIs such as Claude Code enable SGR mouse, and used to be treated as editors
+/// (no file hover scan). `PHOSPHOR_ALT_FILE_LINKS=0` restores that.
+pub fn file_links_with_mouse_reporting() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PHOSPHOR_ALT_FILE_LINKS").map_or(true, |v| v != "0"))
+}
+
+/// True when the alt-screen hover must NOT scan for file paths.
+pub fn skip_file_link_scan(sgr_mouse: bool, file_links_enabled: bool) -> bool {
+    sgr_mouse && !file_links_enabled
+}
+
+/// Cmd (macOS) / Ctrl (elsewhere) held: the same modifier that opens a link on click.
+pub fn link_menu_modifier_held(modifiers: &warpui::event::ModifiersState) -> bool {
+    super::links::should_directly_open_link(modifiers)
+}
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
+
 /// Determines if mouse event is intercepted based on SGR_MOUSE mode and mouse reporting setting.
 pub fn should_intercept_mouse(model: &TerminalModel, shift: bool, ctx: &AppContext) -> bool {
     // Always intercept mouse for a shared session reader since their mouse events

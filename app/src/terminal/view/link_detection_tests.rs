@@ -236,3 +236,104 @@ fn new_hover_cancels_previous_file_link_scan() {
     ));
     assert!(aborted.is_err());
 }
+
+fn alt_candidate(token: &str, line: Option<(usize, Option<usize>)>) -> WithinModel<PossiblePath> {
+    WithinModel::AltScreen(PossiblePath {
+        path: CleanPathResult {
+            path: token.to_string(),
+            line_and_column_num: line.map(|(line_num, column_num)| {
+                warp_util::path::LineAndColumnArg {
+                    line_num,
+                    column_num,
+                }
+            }),
+        },
+        range: Point { row: 3, col: 2 }..=Point {
+            row: 3,
+            col: 2 + token.chars().count() - 1,
+        },
+    })
+}
+
+// #1347: paths printed by a full-screen TUI (alt-screen candidates) resolve against the session
+// cwd, keep their :line:col, and produce alt-screen links.
+#[test]
+fn alt_screen_relative_path_resolves_against_cwd_with_line_and_column() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("src/main.rs", Some((12, Some(4))))),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .expect("relative alt-screen path should be detected");
+
+    let GridHighlightedLink::File(file_link) = link else {
+        panic!("expected a file link");
+    };
+    assert!(matches!(file_link, WithinModel::AltScreen(_)));
+    let file_link = file_link.get_inner();
+    assert!(file_link.absolute_path.ends_with("src/main.rs"));
+    assert!(file_link.absolute_path.is_absolute());
+    let line = file_link.line_and_column_num.expect("line and column kept");
+    assert_eq!((line.line_num, line.column_num), (12, Some(4)));
+}
+
+#[test]
+fn alt_screen_absolute_path_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        "/",
+        iter::once(alt_candidate(file.to_str().unwrap(), None)),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    );
+    assert!(matches!(link, Some(GridHighlightedLink::File(_))));
+}
+
+#[test]
+fn path_menu_has_open_reveal_and_copy_locally() {
+    use crate::terminal::view::TerminalAction;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("a.txt", None)),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .unwrap();
+
+    let items = super::alt_screen_link_menu_items(&link, None, false);
+    let actions: Vec<_> = items
+        .iter()
+        .filter_map(|item| item.fields()?.on_select_action().cloned())
+        .collect();
+    assert_eq!(actions.len(), 3);
+    assert!(matches!(actions[0], TerminalAction::OpenGridLink(_)));
+    assert!(matches!(actions[1], TerminalAction::ShowInFileExplorer(_)));
+    assert!(matches!(actions[2], TerminalAction::ContextMenu(_)));
+
+    // Remote session: a local reveal would show the wrong machine, so only Open + Copy.
+    let remote = super::alt_screen_link_menu_items(&link, None, true);
+    let remote_actions: Vec<_> = remote
+        .iter()
+        .filter_map(|item| item.fields()?.on_select_action().cloned())
+        .collect();
+    assert_eq!(remote_actions.len(), 2);
+    assert!(
+        !remote_actions
+            .iter()
+            .any(|a| matches!(a, TerminalAction::ShowInFileExplorer(_)))
+    );
+}

@@ -787,7 +787,7 @@ impl super::TerminalView {
     /// Always returns `false` when `local_tty` is disabled / on wasm / the
     /// `SshRemoteServer` feature flag is off — i.e. local behavior stays completely
     /// unchanged.
-    fn session_is_remote(
+    pub(super) fn session_is_remote(
         &self,
         session_id: Option<crate::terminal::model::session::SessionId>,
         ctx: &warpui::AppContext,
@@ -1211,6 +1211,73 @@ impl super::TerminalView {
             ctx.set_cursor_shape(Cursor::PointingHand);
             ctx.notify();
         }
+    }
+}
+
+/// Right-click menu entries for the path / URL under the pointer in the alt screen (#1347):
+/// Open, Show in Finder / containing folder, Copy path (Copy URL for links). Pure so it can be
+/// unit-tested; the reveal entry is omitted for remote sessions, where the path names a file on
+/// another machine and revealing it locally would show the wrong filesystem.
+pub(super) fn alt_screen_link_menu_items(
+    link: &GridHighlightedLink,
+    url_content: Option<String>,
+    session_is_remote: bool,
+) -> Vec<crate::menu::MenuItem<super::TerminalAction>> {
+    use crate::menu::MenuItemFields;
+
+    use super::{ContextMenuAction, TerminalAction};
+
+    let copy = |label: String, content: String| {
+        MenuItemFields::new(label)
+            .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyUrl {
+                url_content: content,
+            }))
+            .into_item()
+    };
+    match link {
+        #[cfg(feature = "local_fs")]
+        GridHighlightedLink::File(file_link) => {
+            let Some(path) = file_link.get_inner().absolute_path() else {
+                return Vec::new();
+            };
+            let mut items = vec![
+                MenuItemFields::new(crate::t!("common-open"))
+                    .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                    .into_item(),
+            ];
+            if !session_is_remote {
+                let label = if cfg!(target_os = "macos") {
+                    crate::t!("menu-block-show-in-finder")
+                } else {
+                    crate::t!("menu-block-show-containing-folder")
+                };
+                items.push(
+                    MenuItemFields::new(label)
+                        .with_on_select_action(TerminalAction::ShowInFileExplorer(path.clone()))
+                        .into_item(),
+                );
+            }
+            items.push(copy(
+                crate::t!("menu-block-copy-path"),
+                path.to_string_lossy().into_owned(),
+            ));
+            items
+        }
+        GridHighlightedLink::Url(_) => {
+            let mut items = vec![
+                MenuItemFields::new(crate::t!("common-open-link"))
+                    .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                    .into_item(),
+            ];
+            items.extend(url_content.map(|url| copy(crate::t!("menu-block-copy-url"), url)));
+            items
+        }
+        GridHighlightedLink::Hyperlink { uri, .. } => vec![
+            MenuItemFields::new(crate::t!("common-open-link"))
+                .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                .into_item(),
+            copy(crate::t!("menu-block-copy-url"), uri.clone()),
+        ],
     }
 }
 

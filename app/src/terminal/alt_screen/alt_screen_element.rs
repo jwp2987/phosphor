@@ -323,6 +323,12 @@ impl AltScreenElement {
                     position: local_position,
                 });
             }
+        } else if super::link_menu_modifier_held(mouse_state.modifiers()) {
+            // Cmd/Ctrl + right-click over a mouse-reporting TUI opens the path/link menu (#1347)
+            // instead of being forwarded to the app, like Cmd/Ctrl + click opens a link.
+            ctx.dispatch_typed_action(TerminalAction::AltScreenContextMenu {
+                position: local_position,
+            });
         } else {
             ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
         }
@@ -342,10 +348,16 @@ impl AltScreenElement {
 
         let point = self.coord_to_point(local_position);
 
-        // If SGR_MOUSE is set -- we consider user to be in an editor like vim or nano.
-        let from_editor = match self.model.lock().is_term_mode_set(TermMode::SGR_MOUSE) {
-            true => TerminalEditor::Yes,
-            false => TerminalEditor::No,
+        // If SGR_MOUSE is set -- we consider user to be in an editor like vim or nano, and (before
+        // #1347) skipped file-path detection. TUIs such as Claude Code also enable SGR mouse, so
+        // detection now runs there too; the click still needs Cmd/Ctrl, as for URLs.
+        let from_editor = if super::skip_file_link_scan(
+            self.model.lock().is_term_mode_set(TermMode::SGR_MOUSE),
+            super::file_links_with_mouse_reporting(),
+        ) {
+            TerminalEditor::Yes
+        } else {
+            TerminalEditor::No
         };
 
         let grid_point = WithinModel::AltScreen(Point {
