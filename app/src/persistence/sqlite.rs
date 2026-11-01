@@ -2926,10 +2926,16 @@ fn handle_model_event_unsettled(
             update_object_metadata(connection, id, metadata).context("error updating metadata")
         }
         ModelEvent::InsertCommand { metadata } => {
-            insert_command(connection, metadata).context("error inserting command")
+            let result = insert_command(connection, metadata).context("error inserting command");
+            // After the commit, so a reader that missed the row sees the epoch move.
+            super::commands::note_commands_written();
+            result
         }
         ModelEvent::UpdateFinishedCommand { metadata } => {
-            update_finished_command(connection, metadata).context("error updating finished command")
+            let result = update_finished_command(connection, metadata)
+                .context("error updating finished command");
+            super::commands::note_commands_written();
+            result
         }
         ModelEvent::UpsertUserProfiles { profiles } => {
             upsert_user_profiles(connection, profiles).context("error updating user profiles")

@@ -1153,17 +1153,14 @@ impl DeferredHistoryScan {
     }
 }
 
-/// How long [`SimilarHistoryContextCache`] trusts a result. The cached query depends only on
-/// the last completed block, but the database is written by a separate thread (a block's
-/// finished-state update can land just after its first keystroke), so a result is not kept
-/// indefinitely.
-#[cfg(feature = "local_fs")]
-const SIMILAR_HISTORY_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(5);
-
 /// Remembers the result of [`NextCommandModel::get_similar_history_context`] for the last
 /// completed block. That query costs one SQLite lookup plus one more per match, and its answer
 /// depends only on the block that just finished, yet the autosuggestion path ran it again on
 /// every keystroke (#1140).
+///
+/// The database is written by a separate thread (a block's finished-state update can land just
+/// after its first keystroke), so an entry is valid only while the writer's commit epoch is the
+/// one read before the query: the write event invalidates it, not a time window (#1371).
 #[cfg(feature = "local_fs")]
 #[derive(Default)]
 pub struct SimilarHistoryContextCache {
@@ -1176,7 +1173,7 @@ struct SimilarHistoryContextCacheEntry {
     pwd: Option<String>,
     exit_code: ExitCode,
     shell_host: Option<ShellHost>,
-    computed_at: std::time::Instant,
+    commands_epoch: u64,
     contexts: Arc<Vec<HistoryContext>>,
 }
 
@@ -1193,7 +1190,7 @@ impl SimilarHistoryContextCache {
         compute: impl FnOnce() -> Vec<HistoryContext>,
     ) -> Arc<Vec<HistoryContext>> {
         self.get_or_compute_at(
-            std::time::Instant::now(),
+            crate::persistence::commands::commands_write_epoch,
             command,
             pwd,
             exit_code,
@@ -1204,20 +1201,22 @@ impl SimilarHistoryContextCache {
 
     fn get_or_compute_at(
         &self,
-        now: std::time::Instant,
+        epoch: impl Fn() -> u64,
         command: &str,
         pwd: &Option<String>,
         exit_code: ExitCode,
         shell_host: Option<&ShellHost>,
         compute: impl FnOnce() -> Vec<HistoryContext>,
     ) -> Arc<Vec<HistoryContext>> {
+        // Read before querying: a write that commits during the query leaves the stored epoch
+        // behind, so the next lookup recomputes instead of trusting a result without that row.
+        let commands_epoch = epoch();
         if let Some(entry) = self.entry.lock().as_ref() {
             if entry.command == command
                 && entry.pwd == *pwd
                 && entry.exit_code == exit_code
                 && entry.shell_host.as_ref() == shell_host
-                && now.saturating_duration_since(entry.computed_at)
-                    < SIMILAR_HISTORY_CONTEXT_CACHE_TTL
+                && entry.commands_epoch == commands_epoch
             {
                 return entry.contexts.clone();
             }
@@ -1228,7 +1227,7 @@ impl SimilarHistoryContextCache {
             pwd: pwd.clone(),
             exit_code,
             shell_host: shell_host.cloned(),
-            computed_at: now,
+            commands_epoch,
             contexts: contexts.clone(),
         });
         contexts

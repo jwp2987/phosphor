@@ -4,6 +4,20 @@ use warp_core::command::ExitCode;
 
 use crate::terminal::ShellHost;
 
+/// Bumped by the writer thread each time it has committed a change to the `commands` table
+/// (a started or finished command). Readers that cache a query over that table record it before
+/// querying and treat the result as stale once it moves: the write event itself, not a time
+/// window, says when a cached answer may be missing a row.
+static COMMANDS_WRITE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn commands_write_epoch() -> u64 {
+    COMMANDS_WRITE_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn note_commands_written() {
+    COMMANDS_WRITE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Returns the command that was run right after `command`
 /// in the same session, if any.
 pub fn get_next_command(
