@@ -1335,6 +1335,21 @@ pub async fn read_local_file_context(
                         if let Some(remaining) = &mut batch_bytes_remaining {
                             *remaining = remaining.saturating_sub(bytes_read);
                         }
+                        // A first line longer than the allowance is cut to an empty segment
+                        // that spends nothing; handing that on would tell the model the file
+                        // is empty (#1326), so report it as not read instead.
+                        let (segments, cut_lines) = split_off_size_cut_segments(segments);
+                        if !cut_lines.is_empty() {
+                            result.failed_files.push(ReadFilesFailedFile {
+                                path: path_str.clone(),
+                                message: format!(
+                                    "Not read: size limit. Line {} is longer than the {} \
+                                     bytes allowed for this read, so no content was returned (the file is NOT empty). Request it with a \
+                                     narrower line range or in a separate read_files call.",
+                                    cut_lines[0], effective_max
+                                ),
+                            });
+                        }
                         result
                             .file_contexts
                             .extend(segments.into_iter().map(|seg| FileContext {
@@ -1406,6 +1421,27 @@ pub async fn read_local_file_context(
 
         Ok(result)
     }
+}
+
+/// Separates segments that the byte budget cut down to nothing from real ones.
+///
+/// A truncated segment with no buffered line comes back as empty content with an empty
+/// `start..start` line range (an untruncated empty file has no range, and a range past EOF
+/// keeps its requested non-empty span). Returns the remaining segments and the start line of
+/// each cut one.
+#[cfg(feature = "local_fs")]
+fn split_off_size_cut_segments(
+    segments: Vec<warp_files::TextFileSegment>,
+) -> (Vec<warp_files::TextFileSegment>, Vec<usize>) {
+    let mut kept = Vec::with_capacity(segments.len());
+    let mut cut = Vec::new();
+    for seg in segments {
+        match &seg.line_range {
+            Some(r) if seg.content.is_empty() && r.start == r.end => cut.push(r.start),
+            _ => kept.push(seg),
+        }
+    }
+    (kept, cut)
 }
 
 /// Returns `true` if the file at `path` should be read via the binary code
