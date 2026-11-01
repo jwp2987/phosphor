@@ -30,8 +30,6 @@
 //! `PHOSPHOR_INPUT_QUEUE_ENTER=0` keeps the legacy path (`VerdictWait::queued`,
 //! `after_enter_replay`), which stays in the tree.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::{AppContext, ViewContext};
@@ -39,7 +37,7 @@ use warpui::{AppContext, ViewContext};
 use super::paste_queue::InputQueueHost;
 use super::{AfterEnterInput, Event, Input};
 use crate::terminal::input_queue::kill_switch::{self, Area};
-use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, InputQueue};
+use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, PaneQueue};
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
 /// it open, far beyond every real hold (the hold backstops are 250 / 500 ms, the route-settle
@@ -72,9 +70,8 @@ pub(super) fn enabled_by_default() -> bool {
 }
 
 impl Input {
-    fn enter_queue_handle(&self, ctx: &AppContext) -> Rc<RefCell<InputQueue>> {
-        let hold = self.editor.as_ref(ctx).paste_hold();
-        Rc::clone(hold.queue())
+    fn enter_queue_handle(&self, ctx: &AppContext) -> PaneQueue {
+        self.editor.as_ref(ctx).paste_hold().queue()
     }
 
     /// Whether the Enter ordering runs on the queue for this input: its own switch, and the
@@ -93,8 +90,8 @@ impl Input {
     pub(crate) fn enter_queue_holds_keys(&self, ctx: &AppContext) -> bool {
         self.enter_gate.is_some_and(|gate| {
             self.enter_queue_handle(ctx)
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate(gate.kind, gate.key))
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate(gate.kind, gate.key))
         })
     }
 
@@ -152,7 +149,7 @@ impl Input {
             return;
         }
         let queue = self.enter_queue_handle(ctx);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let Some(mut queue) = queue.try_lock() else {
             log::warn!("input queue: Enter gate not opened, the queue was busy; legacy path used");
             return;
         };
@@ -181,7 +178,7 @@ impl Input {
             return false;
         }
         let queue = self.enter_queue_handle(ctx);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let Some(mut queue) = queue.try_lock() else {
             return false;
         };
         let kind = match input {
@@ -210,7 +207,7 @@ impl Input {
             return 0;
         };
         self.enter_queue_handle(ctx)
-            .try_borrow()
+            .try_peek()
             .map_or(0, |queue| queue.held_behind_gate(gate.kind, gate.key))
     }
 
@@ -222,7 +219,7 @@ impl Input {
             return String::new();
         };
         let queue = self.enter_queue_handle(ctx);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let Some(mut queue) = queue.try_lock() else {
             log::warn!("input queue: voided Enter gate could not be closed, the queue was busy");
             return String::new();
         };
@@ -263,7 +260,7 @@ impl Input {
             return;
         };
         let queue = self.enter_queue_handle(ctx);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let Some(mut queue) = queue.try_lock() else {
             log::warn!("input queue: Enter gate could not be released, the queue was busy");
             return;
         };
@@ -292,7 +289,7 @@ impl Input {
             return;
         }
         let queue = self.enter_queue_handle(ctx);
-        let Ok(mut queue) = queue.try_borrow_mut() else {
+        let Some(mut queue) = queue.try_lock() else {
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
@@ -313,7 +310,7 @@ impl Input {
         self.open_enter_gate(1, GateKind::EnterVerdict, ctx);
         let queue = self.enter_queue_handle(ctx);
         {
-            let mut queue = queue.borrow_mut();
+            let mut queue = queue.lock();
             let mut host = InputQueueHost::new(self, ctx);
             queue.offer(&mut host, EntryKind::Text("x".to_string()));
         }

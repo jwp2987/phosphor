@@ -21,6 +21,12 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
+//! One queue per pane (merge steps 1-4, `kill_switch::Area::Shared`): the terminal view's
+//! [`PaneQueue`] is adopted by the input editor, so editor keys and pty keys are ordered by one
+//! instance. A [`Host`] says which entries it can deliver ([`Host::handles`]); a drain driven from
+//! the editor side stops at a pty entry and the view continues it (`pending_foreign`). The
+//! editor's wait for a fresh display map (#1389) is the [`GateKind::EditorDisplayMap`] gate.
+//!
 //! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`), the subshell setup /
 //! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
 //! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
@@ -36,8 +42,11 @@
 mod destination;
 mod gates;
 pub mod kill_switch;
+mod pane;
 pub mod trace;
 
+#[cfg(test)]
+mod split_tests;
 #[cfg(test)]
 mod tests;
 
@@ -49,8 +58,12 @@ use std::time::{Duration, Instant};
 
 use crate::editor::HeldPasteKey;
 
-pub use destination::{DestFacts, Destination, DropReason, destination_for, pin_still_valid};
+pub use destination::{
+    DestFacts, Destination, DropReason, destination_for, intrinsic_destination, is_pty_entry,
+    pin_still_valid,
+};
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
+pub use pane::{PaneQueue, PasteOwner, QueueGuard, is_editor_paste_id};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,6 +96,16 @@ pub struct EditorKeyPayload(Rc<RefCell<Option<HeldPasteKey>>>);
 impl EditorKeyPayload {
     pub fn new(key: HeldPasteKey) -> Self {
         Self(Rc::new(RefCell::new(Some(key))))
+    }
+
+    /// Delivering this key reads the editor's display map (cursor motion, deletion by display
+    /// position), so it must wait until the map has caught up with the edits before it (#1389).
+    /// False once the key was delivered.
+    pub fn needs_fresh_display_map(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(HeldPasteKey::needs_fresh_display_map)
     }
 
     /// The key, once. `None` if it was already delivered.
@@ -256,6 +279,10 @@ pub enum DiscardReason {
 #[derive(Debug, Default)]
 pub struct FollowUps {
     items: Vec<Follow>,
+    /// The delivery is part of a signal's flush (^C met a gate and released what it held). The
+    /// queue sets it; hosts that would otherwise wait (the editor's display-map gate) apply at
+    /// once, because the signal must see everything typed before it.
+    flushing: bool,
 }
 
 #[derive(Debug)]
@@ -266,6 +293,11 @@ enum Follow {
 }
 
 impl FollowUps {
+    /// Whether this delivery is part of a signal's flush.
+    pub fn flushing(&self) -> bool {
+        self.flushing
+    }
+
     /// Queue another entry behind everything already queued (a replayed key).
     pub fn offer(&mut self, kind: EntryKind) {
         self.items.push(Follow::Offer(kind));
@@ -304,6 +336,16 @@ pub trait Host {
     /// the only way the queue touches time. The host must not re-arm it.
     fn arm_give_up(&mut self, token: GateToken, kind: GateKind, after: Duration);
 
+    /// Whether this host can deliver `entry` to `dest`. A queue shared by the editor and the
+    /// terminal view (#1353 step 3) is drained by whichever of them is running; an entry its
+    /// driving host cannot deliver is NOT delivered: the drain stops with the entry still at the
+    /// head (no gate, nothing behind it overtakes) and asks, through the queue's waker, for the
+    /// drain to be continued by a host that can ([`InputQueue::pending_foreign`]). Drops and
+    /// signals are always handled. Hosts of a queue with one destination keep the default.
+    fn handles(&self, _entry: &InputEntry, _dest: Destination) -> bool {
+        true
+    }
+
     /// Whether a signal meeting `gate` must wait like any entry (an interrupt must not land in
     /// the middle of the remote bootstrap, #1001).
     fn signal_must_wait(&self, _gate: GateKind) -> bool {
@@ -332,6 +374,15 @@ pub struct InputQueue {
     /// Destination of the line being typed.
     line_pin: Option<Destination>,
     give_ups: u64,
+    /// The last drain stopped at an entry its host does not handle (see [`Host::handles`]); the
+    /// entry is still at the head. Cleared by the next drain.
+    foreign_stop: bool,
+    /// A signal is being applied (its gates resolved, what they held delivered): deliveries made
+    /// meanwhile are a flush ([`FollowUps::flushing`]).
+    in_signal: bool,
+    /// Poked (once, idempotent: a bounded channel of one) when a drain stops at a foreign entry,
+    /// so the host that CAN deliver it continues the drain. The view listens; nothing polls.
+    foreign_waker: Option<async_channel::Sender<()>>,
 }
 
 impl Default for InputQueue {
@@ -350,6 +401,9 @@ impl InputQueue {
             gates: Vec::new(),
             line_pin: None,
             give_ups: 0,
+            foreign_stop: false,
+            in_signal: false,
+            foreign_waker: None,
         }
     }
 
@@ -374,6 +428,17 @@ impl InputQueue {
     /// Nothing queued and no gate open: the fast path applies.
     pub fn is_idle(&self) -> bool {
         self.entries.is_empty() && self.gates.is_empty()
+    }
+
+    /// The last drain stopped at an entry its host does not handle and nobody has continued it
+    /// yet. While this is true the head is deliverable but waiting for the other host.
+    pub fn pending_foreign(&self) -> bool {
+        self.foreign_stop
+    }
+
+    /// Where to poke when a drain stops at a foreign entry (the terminal view's receiver).
+    pub fn set_foreign_waker(&mut self, waker: Option<async_channel::Sender<()>>) {
+        self.foreign_waker = waker;
     }
 
     /// The id the next arrival will get.
@@ -417,6 +482,31 @@ impl InputQueue {
             .map(|gate| gate.barrier)
             .filter(|other| *other > barrier)
             .min()
+    }
+
+    /// Keys typed into the input editor wait behind some open gate (see
+    /// [`GateKind::holds_editor_keys`]).
+    pub fn holds_editor_keys(&self) -> bool {
+        self.gates.iter().any(Gate::holds_editor_keys)
+    }
+
+    /// Keys typed for the pty wait behind some open gate (see [`GateKind::holds_pty_keys`]).
+    pub fn holds_pty_keys(&self) -> bool {
+        self.gates.iter().any(Gate::holds_pty_keys)
+    }
+
+    /// A paste read for the input editor is pending.
+    pub fn has_editor_paste_reading(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::PasteReading && is_editor_paste_id(gate.key))
+    }
+
+    /// A paste read for the pty is pending.
+    pub fn has_pty_paste_reading(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::PasteReading && !is_editor_paste_id(gate.key))
     }
 
     /// Whether any gate of `kind` is open.
@@ -742,8 +832,26 @@ impl InputQueue {
     /// delivered. Triggered by an arrival, a gate-closing event, a give-up, a focus change or a
     /// signal; never polled.
     fn drain<H: Host>(&mut self, host: &mut H) {
+        self.foreign_stop = false;
         while let Some(head) = self.entries.front() {
             if self.is_blocked(head.id) {
+                break;
+            }
+            if !self.head_is_handled(host, head) {
+                // The entry stays where it is: everything behind it waits for it (FIFO), and the
+                // host that can deliver it is asked to continue.
+                self.foreign_stop = true;
+                if host.log_enabled() {
+                    host.log(&format!(
+                        "drain_foreign_stop id={:?} kind={}",
+                        head.id,
+                        head.kind.tag()
+                    ));
+                }
+                if let Some(waker) = &self.foreign_waker {
+                    // Bounded to one: a wake already pending is as good as another.
+                    let _ = waker.try_send(());
+                }
                 break;
             }
             let Some(entry) = self.entries.pop_front() else {
@@ -753,15 +861,26 @@ impl InputQueue {
         }
     }
 
-    /// Decide the destination NOW and hand the entry to the host.
-    fn deliver_entry<H: Host>(&mut self, host: &mut H, entry: &InputEntry) {
-        if let EntryKind::Paste { payload: None, .. } = &entry.kind {
-            host.discarded(entry, DiscardReason::PasteNotReady);
-            return;
+    /// Whether the driving host can deliver the (unblocked) head. An unready paste is discarded by
+    /// whoever drains it, and a drop needs no destination.
+    fn head_is_handled<H: Host>(&self, host: &H, head: &InputEntry) -> bool {
+        if matches!(head.kind, EntryKind::Paste { payload: None, .. }) {
+            return true;
+        }
+        let dest = self.route(host, head);
+        matches!(dest, Destination::Drop(_)) || host.handles(head, dest)
+    }
+
+    /// The destination of `entry` from the facts of this moment, honouring the line-run pin.
+    fn route<H: Host>(&self, host: &H, entry: &InputEntry) -> Destination {
+        // Pty bytes and editor keys know where they go; the pin is for text whose form the
+        // destination decides (a shared pane queue carries both kinds).
+        if let Some(dest) = intrinsic_destination(&entry.kind) {
+            return dest;
         }
         let facts = host.facts();
         let computed = destination_for(&entry.kind, &facts);
-        let dest = match (computed, self.line_pin) {
+        match (computed, self.line_pin) {
             (Destination::Drop(_), _) => computed,
             (_, Some(pin)) if entry.kind.is_line_content() || entry.kind == EntryKind::Enter => {
                 if pin_still_valid(pin, &facts) {
@@ -771,7 +890,16 @@ impl InputQueue {
                 }
             }
             _ => computed,
-        };
+        }
+    }
+
+    /// Decide the destination NOW and hand the entry to the host.
+    fn deliver_entry<H: Host>(&mut self, host: &mut H, entry: &InputEntry) {
+        if let EntryKind::Paste { payload: None, .. } = &entry.kind {
+            host.discarded(entry, DiscardReason::PasteNotReady);
+            return;
+        }
+        let dest = self.route(host, entry);
         if host.log_enabled() {
             host.log(&format!(
                 "deliver id={:?} kind={} len={} dest={dest:?} epoch={}",
@@ -794,7 +922,10 @@ impl InputQueue {
             (kind, dest) if kind.is_line_content() => self.line_pin = Some(dest),
             _ => {}
         }
-        let mut follow = FollowUps::default();
+        let mut follow = FollowUps {
+            flushing: self.in_signal,
+            ..FollowUps::default()
+        };
         let outcome = host.deliver(entry, dest, &mut follow);
         match outcome {
             DeliverOutcome::Delivered => {}
@@ -841,6 +972,12 @@ impl InputQueue {
     /// signal always resolves the gates it passes (so the queue cannot stay wedged behind one),
     /// except `SignalThenKeepGate`, which leaves its gate for its own event.
     fn handle_signal<H: Host>(&mut self, host: &mut H, entry: InputEntry) {
+        self.in_signal = true;
+        self.apply_signal(host, entry);
+        self.in_signal = false;
+    }
+
+    fn apply_signal<H: Host>(&mut self, host: &mut H, entry: InputEntry) {
         while let Some(gate) = self.earliest_gate() {
             if host.signal_must_wait(gate.kind) {
                 // Waits like any entry, behind the gate.

@@ -5272,7 +5272,7 @@ fn start_queued_paste(view: &mut EditorView, ctx: &mut ViewContext<EditorView>) 
     let hold = view.paste_hold();
     assert!(hold.uses_queue(), "the queue is the default path");
     let id = hold.next_queue_paste_id();
-    let queue = std::rc::Rc::clone(hold.queue());
+    let queue = hold.queue();
     let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
     queue.borrow_mut().offer_gated(
         &mut host,
@@ -5292,7 +5292,7 @@ fn finish_queued_paste(
     id: u64,
     result: Result<Vec<u8>, ()>,
 ) {
-    let queue = std::rc::Rc::clone(view.paste_hold().queue());
+    let queue = view.paste_hold().queue();
     let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
     queue.borrow_mut().on_paste_read(&mut host, id, result);
 }

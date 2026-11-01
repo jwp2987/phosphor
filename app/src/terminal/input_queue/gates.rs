@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use super::EntryId;
+use super::{EntryId, is_editor_paste_id};
 
 /// What a gate waits for. Each variant names the legacy buffer it will replace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,6 +45,11 @@ pub enum GateKind {
     SshConnect,
     /// The editor took focus from the pty and has not been focused yet.
     EditorFocusPending,
+    /// A held editor key that reads the display map (cursor motion, deletion by display position)
+    /// is waiting for the map to catch up with the edits applied before it in the same update
+    /// (#1389). Replaces the editor's separate replay list on the shared queue: every key behind
+    /// the waiting one stays behind it.
+    EditorDisplayMap,
 }
 
 /// What a signal (^C, ^D, ^Z, ^\) does to the entries held behind the gate it meets (design 2.5).
@@ -65,7 +70,7 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 13] = [
+    pub const ALL: [GateKind; 14] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
@@ -79,6 +84,7 @@ impl GateKind {
         GateKind::SubshellBootstrapWrite,
         GateKind::SshConnect,
         GateKind::EditorFocusPending,
+        GateKind::EditorDisplayMap,
     ];
 
     pub fn name(self) -> &'static str {
@@ -96,6 +102,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "subshell_bootstrap_write",
             GateKind::SshConnect => "ssh_connect",
             GateKind::EditorFocusPending => "editor_focus_pending",
+            GateKind::EditorDisplayMap => "editor_display_map",
         }
     }
 
@@ -115,6 +122,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "bootstrap_write_started",
             GateKind::SshConnect => "ssh_connect_started",
             GateKind::EditorFocusPending => "editor_took_over",
+            GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
         }
     }
 
@@ -135,6 +143,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "last_bootstrap_line_written",
             GateKind::SshConnect => "gate_released_and_first_remote_precmd",
             GateKind::EditorFocusPending => "editor_focused_or_pointer_down",
+            GateKind::EditorDisplayMap => "replay_step_dispatched",
         }
     }
 
@@ -152,11 +161,62 @@ impl GateKind {
             | GateKind::PtyRouteSettling
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
-            | GateKind::EditorFocusPending => SignalPlan::FlushThenSignal,
+            | GateKind::EditorFocusPending
+            | GateKind::EditorDisplayMap => SignalPlan::FlushThenSignal,
             GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite => {
                 SignalPlan::SignalThenRelease
             }
             GateKind::PowershellSetup => SignalPlan::SignalThenKeepGate,
+        }
+    }
+
+    /// Whether keys typed into the INPUT EDITOR wait behind a gate of this kind (the table of the
+    /// merge, design a4). On the pane's shared queue the editor must not start holding keys behind
+    /// gates that only the pty cares about, so this is parity with the two-instance behaviour: an
+    /// editor key is held only by the gates that lived on the editor's own queue (a paste being
+    /// read for the editor, an Enter waiting for its verdict or a Tab completion) plus the
+    /// hand-off report. `PasteReading` holds editor keys only for an EDITOR-owned paste
+    /// ([`Gate::holds_editor_keys`] looks at the id). Flipping a row to true later is the
+    /// deliberate step that retires `EditorKeyHold`.
+    pub fn holds_editor_keys(self) -> bool {
+        match self {
+            GateKind::PasteReading
+            | GateKind::EnterVerdict
+            | GateKind::TabCompletion
+            | GateKind::HandoffReport
+            | GateKind::EditorDisplayMap => true,
+            GateKind::CliSubmit
+            | GateKind::PtyRouteSettling
+            | GateKind::PromptSeen
+            | GateKind::LineEditorActive
+            | GateKind::SubshellSetup
+            | GateKind::PowershellSetup
+            | GateKind::SubshellBootstrapWrite
+            | GateKind::SshConnect
+            | GateKind::EditorFocusPending => false,
+        }
+    }
+
+    /// Whether keys typed for the PTY wait behind a gate of this kind: every gate that lived on
+    /// the terminal view's own queue, and none of the editor's (an Enter waiting for its verdict
+    /// never held pty keys). `PasteReading` holds pty keys only for a PTY-owned paste
+    /// ([`Gate::holds_pty_keys`] looks at the id).
+    pub fn holds_pty_keys(self) -> bool {
+        match self {
+            GateKind::EnterVerdict
+            | GateKind::TabCompletion
+            | GateKind::EditorFocusPending
+            | GateKind::EditorDisplayMap => false,
+            GateKind::PasteReading
+            | GateKind::CliSubmit
+            | GateKind::HandoffReport
+            | GateKind::PtyRouteSettling
+            | GateKind::PromptSeen
+            | GateKind::LineEditorActive
+            | GateKind::SubshellSetup
+            | GateKind::PowershellSetup
+            | GateKind::SubshellBootstrapWrite
+            | GateKind::SshConnect => true,
         }
     }
 
@@ -177,6 +237,9 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => None,
             GateKind::SshConnect => Some(Duration::from_secs(5)),
             GateKind::EditorFocusPending => Some(Duration::from_secs(1)),
+            // The deferred replay step runs as soon as this update's effects have flushed; this
+            // only guards a step that never runs (logged when it fires).
+            GateKind::EditorDisplayMap => Some(Duration::from_secs(1)),
         }
     }
 }
@@ -220,4 +283,20 @@ pub struct Gate {
     /// Entries with `id >= barrier` wait. Arrival order is the only position there is.
     pub barrier: EntryId,
     pub cap: Option<Duration>,
+}
+
+impl Gate {
+    /// Keys typed into the input editor wait behind this gate ([`GateKind::holds_editor_keys`]; a
+    /// paste gate only when the paste is the editor's).
+    pub fn holds_editor_keys(&self) -> bool {
+        self.kind.holds_editor_keys()
+            && (self.kind != GateKind::PasteReading || is_editor_paste_id(self.key))
+    }
+
+    /// Keys typed for the pty wait behind this gate ([`GateKind::holds_pty_keys`]; a paste gate
+    /// only when the paste is the pty's).
+    pub fn holds_pty_keys(&self) -> bool {
+        self.kind.holds_pty_keys()
+            && (self.kind != GateKind::PasteReading || !is_editor_paste_id(self.key))
+    }
 }

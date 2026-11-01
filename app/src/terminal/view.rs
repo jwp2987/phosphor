@@ -4461,6 +4461,23 @@ impl TerminalView {
         input.update(ctx, |input, ctx| {
             input.set_editor_key_hold(ssh_editor_key_hold.clone(), ctx)
         });
+        // #1353 step 3: the pane has ONE input queue. The input's editor adopts the view's, and
+        // a drain the editor side has to stop (an entry only this view can deliver) pokes the
+        // queue's waker so this view continues it. Event driven: nothing polls.
+        let paste_queue = paste_queue::PasteQueueState::new();
+        if paste_queue.shared {
+            let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
+            if let Some(mut queue) = paste_queue.queue.try_lock() {
+                queue.set_foreign_waker(Some(drain_tx));
+            }
+            let shared_queue = paste_queue.queue.clone();
+            input.update(ctx, |input, ctx| input.adopt_pane_queue(shared_queue, ctx));
+            let _ = ctx.spawn_stream_local(
+                drain_rx,
+                |me, _, ctx| me.on_pane_queue_needs_drain(ctx),
+                |_, _| {}, /* on_done */
+            );
+        }
         ctx.subscribe_to_view(&input, move |me, _, event, ctx| {
             me.handle_input_event(event, ctx);
         });
@@ -5009,7 +5026,7 @@ impl TerminalView {
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
             paste_sequencer: PasteSequencer::default(),
-            paste_queue: paste_queue::PasteQueueState::new(),
+            paste_queue,
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
             powershell_setup_hold: PowerShellSetupHold::Off,
@@ -11575,7 +11592,7 @@ impl TerminalView {
     /// on and the queue is not in the middle of delivering (a write made then cannot take a new
     /// entry and uses the legacy buffers).
     fn subshell_queue_owns_holds(&self) -> bool {
-        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_borrow().is_ok()
+        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_peek().is_some()
     }
 
     /// Opens the subshell gates for a setup that has just been announced (#1353 phase 2).
@@ -22668,7 +22685,7 @@ impl TerminalView {
         // #1353 phase 1: the paste is an entry of the pane's input queue. A queue that is
         // mid-drain cannot take a new gate; that is not reachable from a user paste, but fall
         // back to the legacy sequencer rather than panic on a borrow.
-        if self.paste_queue.enabled && self.paste_queue.queue.try_borrow_mut().is_ok() {
+        if self.paste_queue.enabled && self.paste_queue.queue.try_lock().is_some() {
             self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
             return;
         }
@@ -37038,3 +37055,7 @@ mod tests;
 #[cfg(test)]
 #[path = "view/queued_prompts_tests.rs"]
 mod queued_prompts_tests;
+
+#[cfg(test)]
+#[path = "view/shared_queue_tests.rs"]
+mod shared_queue_tests;

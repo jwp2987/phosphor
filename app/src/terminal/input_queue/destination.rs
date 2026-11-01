@@ -5,7 +5,7 @@
 //! box, focus). Phase 0 does not call it from the view; later phases replace the inline checks
 //! with one call to this function.
 
-use super::EntryKind;
+use super::{EntryKind, is_editor_paste_id};
 
 /// Why an entry was dropped instead of delivered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +59,11 @@ pub fn destination_for(kind: &EntryKind, facts: &DestFacts) -> Destination {
         EntryKind::EditorKey(_) => return Destination::Editor,
         // The host routes held input itself at delivery (phase 4).
         EntryKind::Held { .. } => return Destination::Pty,
+        // A paste read for the input editor (its id says so) goes to the editor whichever host
+        // drains the shared pane queue.
+        EntryKind::Paste { paste_id, .. } if is_editor_paste_id(*paste_id) => {
+            return Destination::Editor;
+        }
         _ => {}
     }
     if let Some(reason) = facts.drop_reason {
@@ -99,5 +104,31 @@ pub fn pin_still_valid(dest: Destination, facts: &DestFacts) -> bool {
         Destination::Pty => facts.pty_open && !facts.agent_owns_pty,
         Destination::AgentInput => true,
         Destination::Drop(_) => false,
+    }
+}
+
+/// Entries only the terminal view can deliver (they carry pty bytes, or a paste read for the pty).
+/// On a queue shared by the editor and the view, a drain driven from the editor side stops at the
+/// first of these ([`super::Host::handles`]) and the view continues it. Everything else (editor
+/// keys, editor pastes, text typed behind an Enter, signals) can be delivered from either side.
+pub fn is_pty_entry(kind: &EntryKind) -> bool {
+    match kind {
+        EntryKind::PtyBytes { .. } | EntryKind::Held { .. } | EntryKind::Raw(_) => true,
+        EntryKind::Paste { paste_id, .. } => !is_editor_paste_id(*paste_id),
+        _ => false,
+    }
+}
+
+/// The destination an entry has by its nature, whatever the line-run pin says: pty bytes go to
+/// the pty and editor keys to the editor even when the line they follow went the other way (a
+/// shared queue carries both).
+pub fn intrinsic_destination(kind: &EntryKind) -> Option<Destination> {
+    match kind {
+        EntryKind::PtyBytes { .. } | EntryKind::Held { .. } => Some(Destination::Pty),
+        EntryKind::EditorKey(_) => Some(Destination::Editor),
+        EntryKind::Paste { paste_id, .. } if is_editor_paste_id(*paste_id) => {
+            Some(Destination::Editor)
+        }
+        _ => None,
     }
 }

@@ -19,7 +19,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::ViewContext;
@@ -28,7 +27,7 @@ use super::{EditorAction, EditorView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateToken, Host, InputEntry, InputQueue,
+    GateToken, Host, InputEntry, PaneQueue, PasteOwner, is_pty_entry,
 };
 use crate::terminal::paste_sequencer::PasteSequencer;
 
@@ -38,6 +37,15 @@ pub enum HeldPasteKey {
     Text(String),
     /// An editing or cursor key, replayed through the editor's normal action handler.
     Action(EditorAction),
+}
+
+impl HeldPasteKey {
+    /// Applying this key reads the display map (cursor motion, deletion by display position), so
+    /// it must wait until the edits applied before it have reached the map (#1389). Typed text and
+    /// the Enter family read the buffer, not the map.
+    pub fn needs_fresh_display_map(&self) -> bool {
+        needs_fresh_display_map(self)
+    }
 }
 
 impl fmt::Debug for HeldPasteKey {
@@ -53,28 +61,54 @@ impl fmt::Debug for HeldPasteKey {
 #[derive(Debug)]
 pub struct EditorPasteHold {
     sequencer: RefCell<PasteSequencer<HeldPasteKey>>,
-    queue: Rc<RefCell<InputQueue>>,
+    /// The pane's queue handle. A plain editor keeps its own; the terminal input swaps in the
+    /// terminal view's so the pane has ONE ([`Self::adopt_queue`]).
+    pane_queue: RefCell<PaneQueue>,
     /// Paste ordering runs on `queue` (`PHOSPHOR_INPUT_QUEUE_PASTE`, default on).
     queue_enabled: Cell<bool>,
-    next_paste_id: Cell<u64>,
     /// Replayed keys that wait for the display map to catch up with the edits before them (#1389).
     replay: RefCell<VecDeque<HeldPasteKey>>,
     /// A `ReplayHeldKeys` step is already queued as an effect.
     replay_scheduled: Cell<bool>,
     /// A replayed key is being applied right now (it must not be queued again).
     replaying: Cell<bool>,
+    /// #1353 merge step 4: on the pane's shared queue a key that needs a fresh display map waits
+    /// behind an `EditorDisplayMap` gate instead of going to `replay`. Off (the default) keeps
+    /// the replay list, the behaviour of two instances and of the sequencer path.
+    display_gate_enabled: Cell<bool>,
+    /// The key of the display-map gate that is open, if one is.
+    display_gate: Cell<Option<u64>>,
+    next_display_gate: Cell<u64>,
+    /// The step that closes the gate is running: the display map is current for the FIRST key it
+    /// delivers (consumed by that key).
+    map_fresh: Cell<bool>,
+    /// Pokes the owner of the replay step (the terminal input) after this update's effects flush.
+    display_step_waker: RefCell<Option<async_channel::Sender<()>>>,
+}
+
+/// What delivering a held editor key does about the display map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayMapStep {
+    /// Apply the key now.
+    Apply,
+    /// Put the key back under this gate; a replay step closes it once the map is current.
+    Wait(crate::terminal::input_queue::GateSpec),
 }
 
 impl Default for EditorPasteHold {
     fn default() -> Self {
         Self {
             sequencer: RefCell::default(),
-            queue: Rc::default(),
+            pane_queue: RefCell::new(PaneQueue::new()),
             queue_enabled: Cell::new(kill_switch::is_enabled(Area::Paste)),
-            next_paste_id: Cell::new(0),
             replay: RefCell::default(),
             replay_scheduled: Cell::new(false),
             replaying: Cell::new(false),
+            display_gate_enabled: Cell::new(false),
+            display_gate: Cell::new(None),
+            next_display_gate: Cell::new(0),
+            map_fresh: Cell::new(false),
+            display_step_waker: RefCell::new(None),
         }
     }
 }
@@ -130,20 +164,107 @@ impl EditorPasteHold {
         self.queue_enabled.set(on);
     }
 
-    pub fn queue(&self) -> &Rc<RefCell<InputQueue>> {
-        &self.queue
+    /// The pane's queue (a cheap handle; clones share the queue).
+    pub fn queue(&self) -> PaneQueue {
+        self.pane_queue.borrow().clone()
     }
 
+    /// The id of the next editor-bound queued paste. The counter belongs to the pane's queue, so
+    /// it is shared with the terminal view's pastes once the queue is.
     pub fn next_queue_paste_id(&self) -> u64 {
-        let id = self.next_paste_id.get() + 1;
-        self.next_paste_id.set(id);
-        id
+        self.pane_queue.borrow().next_paste_id(PasteOwner::Editor)
     }
 
-    /// The queue holds input right now (a paste is being read). False while it is mid-drain: a
-    /// key applied by a delivery is part of that delivery and must not be held again.
+    /// Replaces this editor's private queue with the pane's shared one (#1353 step 3): the terminal
+    /// view's queue, so editor keys, pty keys and the gates between them are ordered by ONE
+    /// queue. Refused (false) unless the private queue is idle and not mid-drain; nothing held is
+    /// ever moved or dropped.
+    pub fn adopt_queue(&self, queue: PaneQueue) -> bool {
+        let idle = self
+            .pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|current| current.is_idle());
+        if !idle {
+            log::warn!("input queue: the editor's queue was busy; it keeps its own");
+            return false;
+        }
+        *self.pane_queue.borrow_mut() = queue;
+        true
+    }
+
+    /// Turns the display-map gate on (the queue is shared with the terminal view and `waker`
+    /// reaches the input that runs the replay step). Only with the queue path on: the sequencer
+    /// path keeps the replay list.
+    pub fn enable_display_gate(&self, waker: async_channel::Sender<()>) {
+        if !self.queue_enabled.get() {
+            return;
+        }
+        *self.display_step_waker.borrow_mut() = Some(waker);
+        self.display_gate_enabled.set(true);
+    }
+
+    /// Held editor keys wait for the display map behind a queue gate, not in the replay list.
+    pub fn display_gate_enabled(&self) -> bool {
+        self.display_gate_enabled.get()
+    }
+
+    /// What delivering `payload` does about the display map. A key that reads the map waits behind
+    /// a gate unless the replay step that follows the gate's creation is delivering it
+    /// ([`Self::set_map_fresh`]) or a signal is flushing the queue (the signal must see everything
+    /// typed before it, as `flush_held_replay_now` did). Any applied key may leave the map stale
+    /// for the next one.
+    pub fn display_map_step(
+        &self,
+        payload: &crate::terminal::input_queue::EditorKeyPayload,
+        flushing: bool,
+    ) -> DisplayMapStep {
+        if !self.display_gate_enabled.get() {
+            return DisplayMapStep::Apply;
+        }
+        if payload.needs_fresh_display_map() && !flushing && !self.map_fresh.get() {
+            let key = self.next_display_gate.get() + 1;
+            self.next_display_gate.set(key);
+            self.display_gate.set(Some(key));
+            return DisplayMapStep::Wait(crate::terminal::input_queue::GateSpec::new(
+                GateKind::EditorDisplayMap,
+                key,
+            ));
+        }
+        self.map_fresh.set(false);
+        DisplayMapStep::Apply
+    }
+
+    /// Asks the owner of the replay step to run it once this update's effects have flushed (the
+    /// display map follows buffer edits only then). A closed channel means the input is gone and
+    /// nothing is left to replay into.
+    pub fn request_display_step(&self) {
+        if let Some(waker) = self.display_step_waker.borrow().as_ref() {
+            // Bounded to one: a step already requested is as good as another.
+            let _ = waker.try_send(());
+        }
+    }
+
+    /// The open display-map gate, once: the replay step takes it to close it.
+    pub fn take_display_gate(&self) -> Option<u64> {
+        self.display_gate.take()
+    }
+
+    /// The replay step marks the display map current for the first key it delivers.
+    pub fn set_map_fresh(&self, fresh: bool) {
+        self.map_fresh.set(fresh);
+    }
+
+    /// The queue holds input that keys typed into the editor must wait behind: a paste being read
+    /// for the editor, an Enter waiting for its verdict (see [`GateKind::holds_editor_keys`]; on a
+    /// queue shared with the terminal view, gates that only hold pty keys do not count). False
+    /// while the queue is mid-drain: a key applied by a delivery is part of that delivery and must
+    /// not be held again.
     pub fn queue_is_busy(&self) -> bool {
-        self.queue.try_borrow().is_ok_and(|queue| !queue.is_idle())
+        self.pane_queue
+            .borrow()
+            .try_peek()
+            .is_some_and(|queue| queue.holds_editor_keys())
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already
@@ -155,9 +276,10 @@ impl EditorPasteHold {
     pub fn has_pending(&self) -> bool {
         if self.queue_enabled.get() {
             return self
-                .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate_kind(GateKind::PasteReading));
+                .pane_queue
+                .borrow()
+                .try_peek()
+                .is_some_and(|queue| queue.has_editor_paste_reading());
         }
         self.sequencer.borrow().has_pending()
     }
@@ -172,9 +294,10 @@ impl EditorPasteHold {
     pub fn is_pending(&self, id: u64) -> bool {
         if self.queue_enabled.get() {
             return self
-                .queue
-                .try_borrow()
-                .is_ok_and(|queue| queue.has_gate(GateKind::PasteReading, id));
+                .pane_queue
+                .borrow()
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate(GateKind::PasteReading, id));
         }
         self.sequencer.borrow().is_pending(id)
     }
@@ -213,6 +336,12 @@ impl Host for EditorQueueHost<'_, '_> {
         }
     }
 
+    /// The editor reaches no pty: on a queue shared with the terminal view, a drain driven from
+    /// here stops at the first pty entry and the view continues it (#1353 step 3).
+    fn handles(&self, entry: &InputEntry, _dest: Destination) -> bool {
+        !is_pty_entry(&entry.kind)
+    }
+
     fn deliver(
         &mut self,
         entry: &InputEntry,
@@ -221,8 +350,10 @@ impl Host for EditorQueueHost<'_, '_> {
     ) -> DeliverOutcome {
         match &entry.kind {
             EntryKind::EditorKey(payload) => {
+                // Reached when a signal flushes the queue (the display map is not waited for) or
+                // on a queue the display gate is off for.
                 if let Some(key) = payload.take() {
-                    self.editor.apply_held_paste_key(key, self.ctx);
+                    self.editor.apply_queued_key(key, self.ctx);
                 }
             }
             // The ^C itself acts through the editor's normal handler once the held keys are in.

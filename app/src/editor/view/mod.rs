@@ -14,12 +14,12 @@ mod voice;
 pub use {
     element::{EditorDecoratorElements, EditorElement, TextColors},
     key_hold::{EditorKeyHold, HeldEditorKey, TakenKeys},
-    paste_hold::{EditorPasteHold, HeldPasteKey},
     model::{
         Chars, CrdtOperation, DisplayPoint, EditOrigin, EditorSnapshot, InteractionState,
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
         SelectAction, TextRun, TextStyleOperation,
     },
+    paste_hold::{DisplayMapStep, EditorPasteHold, HeldPasteKey},
 };
 
 use self::model::{LocalSelections, Selection, UpdateBufferOption};
@@ -3050,6 +3050,18 @@ impl EditorView {
         self.apply_held_paste_key_now(key, ctx);
     }
 
+    /// Applies a key the input queue delivers. On the pane's shared queue the display-map wait is
+    /// the queue's own `EditorDisplayMap` gate (the delivering host asked `display_map_step` and
+    /// only calls this when the key may apply), so there is no replay list to join; elsewhere it is
+    /// [`Self::apply_held_paste_key`] with its replay list.
+    pub fn apply_queued_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.display_gate_enabled() {
+            self.apply_held_paste_key_now(key, ctx);
+        } else {
+            self.apply_held_paste_key(key, ctx);
+        }
+    }
+
     fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
         if self.paste_hold.replay_mark_scheduled() {
             ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
@@ -3147,11 +3159,11 @@ impl EditorView {
         if !self.paste_hold.queue_is_busy() {
             return false;
         }
-        let queue = Rc::clone(self.paste_hold.queue());
+        let queue = self.paste_hold.queue();
         if matches!(action, EditorAction::CtrlC) {
             let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
             queue
-                .borrow_mut()
+                .lock()
                 .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
             self.flush_held_replay_now(ctx);
             return false;
@@ -3169,9 +3181,8 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let held = queue.borrow();
-            if held.has_gate_kind(GateKind::EnterVerdict)
-                && !held.has_gate_kind(GateKind::PasteReading)
+            let held = queue.peek();
+            if held.has_gate_kind(GateKind::EnterVerdict) && !held.has_editor_paste_reading()
             {
                 drop(held);
                 let kind = match action {
@@ -3180,7 +3191,7 @@ impl EditorView {
                     _ => return false,
                 };
                 let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-                queue.borrow_mut().offer(&mut host, kind);
+                queue.lock().offer(&mut host, kind);
                 return true;
             }
         }
@@ -3189,7 +3200,7 @@ impl EditorView {
         };
         let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
         queue
-            .borrow_mut()
+            .lock()
             .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
         true
     }

@@ -2,7 +2,7 @@
 //!
 //! Between the Enter on an `ssh ...` command and the remote shell's first prompt, keys typed into
 //! the pane are not written anywhere (#983, #1292). They used to sit in `SshTypeahead`; now they
-//! are `Held` entries of the pane's [`InputQueue`] (the instance paste and the subshell holds
+//! are `Held` entries of the pane's `InputQueue` (the instance paste and the subshell holds
 //! already use) behind an `SshConnect` gate. The queue only orders; WHERE a key goes is decided
 //! when it is delivered, by the same routing a key typed at that moment would take (editor after
 //! the hand-over, pty for a prompt that wants an answer).
@@ -23,8 +23,6 @@
 //! The 64 KiB bound still drops the WHOLE run and ignores the rest of that connect.
 //! `PHOSPHOR_INPUT_QUEUE_SSH=0` keeps the legacy `SshTypeahead` buffer, which stays in the tree
 //! and is also where a key held while the queue is mid-delivery lands.
-
-use std::rc::Rc;
 
 use warpui::ViewContext;
 
@@ -65,7 +63,7 @@ impl TerminalView {
     /// Held keys live on the queue right now: the switch is on and the queue is not in the
     /// middle of delivering (a key held then cannot take a new entry and uses the legacy buffer).
     fn ssh_queue_usable(&self) -> bool {
-        self.ssh_iq.enabled && self.paste_queue.queue.try_borrow().is_ok()
+        self.ssh_iq.enabled && self.paste_queue.queue.try_peek().is_some()
     }
 
     /// Nothing is held (an overflowed run holds nothing).
@@ -94,12 +92,12 @@ impl TerminalView {
         if self.ssh_held_bytes() + len > SSH_TYPEAHEAD_MAX_BYTES {
             return self.ssh_hold_overflow();
         }
-        let queue = Rc::clone(&self.paste_queue.queue);
+        let queue = self.paste_queue.queue.clone();
         if self.ssh_iq.gate.is_none() {
             self.ssh_iq.next_conn += 1;
             let key = self.ssh_iq.next_conn;
             let mut host = PtyQueueHost::new(self, ctx);
-            let token = queue.borrow_mut().open_gate(
+            let token = queue.lock().open_gate(
                 &mut host,
                 GateSpec::new(GateKind::SshConnect, key).with_cap(None),
             );
@@ -111,7 +109,7 @@ impl TerminalView {
         trace::hold(trace::legacy::SSH, len);
         let mut host = PtyQueueHost::new(self, ctx);
         queue
-            .borrow_mut()
+            .lock()
             .offer(&mut host, EntryKind::Held { class, text });
         SshTypeaheadPush::Held
     }
@@ -134,8 +132,8 @@ impl TerminalView {
         let Some((_, key)) = self.ssh_iq.gate.take() else {
             return Vec::new();
         };
-        match self.paste_queue.queue.try_borrow_mut() {
-            Ok(mut queue) => {
+        match self.paste_queue.queue.try_lock() {
+            Some(mut queue) => {
                 let removed = queue.drop_gate(GateKind::SshConnect, key);
                 if !removed.is_empty() {
                     warpui::input_order::log_key_hop("kh_iq_discard", || {
@@ -150,7 +148,7 @@ impl TerminalView {
                     })
                     .collect()
             }
-            Err(_) => {
+            None => {
                 log::warn!("ssh hold: input queue busy while dropping the ssh gate");
                 Vec::new()
             }
@@ -214,8 +212,8 @@ impl TerminalView {
         );
         self.ssh_iq.items = 0;
         self.ssh_iq.bytes = 0;
-        let queue = Rc::clone(&self.paste_queue.queue);
-        let Ok(mut guard) = queue.try_borrow_mut() else {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
             log::error!("ssh hold: input queue busy at the hand-over; held keys stay queued");
             return;
         };
@@ -242,12 +240,15 @@ impl TerminalView {
     /// not held behind them (the held keys were taken before they got there; anything else is
     /// passive traffic the legacy hold never held either).
     pub(super) fn only_ssh_gates_open(&self) -> bool {
-        self.paste_queue.queue.try_borrow().is_ok_and(|queue| {
-            !queue.gates().is_empty()
-                && queue
-                    .gates()
-                    .iter()
-                    .all(|gate| gate.kind == GateKind::SshConnect)
+        // Gates that only hold editor keys (an Enter waiting for its verdict) are not the pty's:
+        // they never held a pty key, so they do not count either way.
+        self.paste_queue.queue.try_peek().is_some_and(|queue| {
+            let mut pty_gates = queue
+                .gates()
+                .iter()
+                .filter(|gate| gate.holds_pty_keys())
+                .peekable();
+            pty_gates.peek().is_some() && pty_gates.all(|gate| gate.kind == GateKind::SshConnect)
         })
     }
 }

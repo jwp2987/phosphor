@@ -11,16 +11,16 @@
 //! the key pipeline that holds, and a paste typed behind a paste starts its own read from the
 //! editor event (it queues behind the first one's gate), so nothing here re-enters the queue.
 
-use std::rc::Rc;
 use std::time::Duration;
 
 use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
 use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
+use crate::editor::DisplayMapStep;
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry,
+    GateSpec, GateToken, Host, InputEntry, PaneQueue, is_pty_entry,
 };
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
@@ -56,11 +56,17 @@ impl Host for InputQueueHost<'_, '_> {
         }
     }
 
+    /// The input reaches no pty: on a queue shared with the terminal view, a drain driven from
+    /// here stops at the first pty entry and the view continues it (#1353 step 3).
+    fn handles(&self, entry: &InputEntry, _dest: Destination) -> bool {
+        !is_pty_entry(&entry.kind)
+    }
+
     fn deliver(
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
-        _follow: &mut FollowUps,
+        follow: &mut FollowUps,
     ) -> DeliverOutcome {
         match &entry.kind {
             EntryKind::Paste {
@@ -98,10 +104,26 @@ impl Host for InputQueueHost<'_, '_> {
                 }
             }
             EntryKind::EditorKey(payload) => {
+                // #1353 merge step 4: a key that reads the display map waits for it behind a
+                // queue gate of its own (shared queue); the replay step closes it.
+                let step = self
+                    .input
+                    .editor
+                    .as_ref(self.ctx)
+                    .paste_hold()
+                    .display_map_step(payload, follow.flushing());
+                if let DisplayMapStep::Wait(spec) = step {
+                    self.input
+                        .editor
+                        .as_ref(self.ctx)
+                        .paste_hold()
+                        .request_display_step();
+                    return DeliverOutcome::Requeue(spec);
+                }
                 if let Some(key) = payload.take() {
-                    self.input.editor.update(self.ctx, |editor, ctx| {
-                        editor.apply_held_paste_key(key, ctx)
-                    });
+                    self.input
+                        .editor
+                        .update(self.ctx, |editor, ctx| editor.apply_queued_key(key, ctx));
                 }
             }
             // Typed behind an Enter that waited (#1353 phase 3). The terminal view routes them
@@ -171,14 +193,85 @@ impl Host for InputQueueHost<'_, '_> {
 }
 
 impl Input {
+    /// Makes the terminal view's queue this input's queue (#1353 step 3): the editor adopts it, so
+    /// the pane has ONE queue. False when the editor's own queue is busy (it then keeps it).
+    pub(crate) fn adopt_pane_queue(
+        &mut self,
+        queue: PaneQueue,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let adopted = self
+            .editor
+            .update(ctx, |editor, _| editor.paste_hold().adopt_queue(queue));
+        if adopted {
+            // #1353 merge step 4: held keys that read the display map wait behind a gate of the
+            // shared queue; this input runs the replay step that closes it, once the effects of
+            // the edits before the key have flushed (a stream item is delivered after them).
+            let (tx, rx) = async_channel::bounded::<()>(1);
+            self.editor.as_ref(ctx).paste_hold().enable_display_gate(tx);
+            let _ = ctx.spawn_stream_local(
+                rx,
+                |me, _, ctx| me.on_display_map_step(ctx),
+                |_, _| {}, /* on_done */
+            );
+        }
+        adopted
+    }
+
+    /// The replay step of the editor's display-map gate (#1353 merge step 4, #1389): the effects of
+    /// the edits applied before the waiting key have flushed, so the display map is current for
+    /// it. Closes the gate; the queue's drain applies the key and what is behind it, up to the next
+    /// key that needs a fresher map (which opens a new gate and requests another step).
+    fn on_display_map_step(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = self.editor.as_ref(ctx).paste_hold();
+        // None: a ^C already flushed the gate; the late step finds nothing to do.
+        let Some(key) = hold.take_display_gate() else {
+            return;
+        };
+        let queue = hold.queue();
+        let Some(mut guard) = queue.try_lock() else {
+            log::warn!("input queue: display-map replay step found the queue busy");
+            return;
+        };
+        hold.set_map_fresh(true);
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::EditorDisplayMap, key);
+        hold.set_map_fresh(false);
+    }
+
+    /// An entry of the pane's shared queue that the editor side delivers, handed over by the
+    /// terminal view's drain (#1353 step 3): the view reaches both destinations, so when its drain
+    /// meets an editor key, an editor paste or text typed behind an Enter it delivers it through
+    /// this input's own host, exactly as an editor-driven drain would have.
+    pub(crate) fn deliver_pane_queue_entry(
+        &mut self,
+        entry: &InputEntry,
+        follow: &mut FollowUps,
+        ctx: &mut ViewContext<Self>,
+    ) -> DeliverOutcome {
+        let mut host = InputQueueHost::new(self, ctx);
+        host.deliver(entry, Destination::Editor, follow)
+    }
+
+    /// The editor-side form of [`Host::discarded`] for an entry the view's drain removed.
+    pub(crate) fn discard_pane_queue_entry(
+        &mut self,
+        entry: &InputEntry,
+        why: DiscardReason,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut host = InputQueueHost::new(self, ctx);
+        host.discarded(entry, why);
+    }
+
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
-        let queue = Rc::clone(self.editor.as_ref(ctx).paste_hold().queue());
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
         #[cfg(not(target_family = "wasm"))]
         {
-            let is_paste_gate = queue.try_borrow().is_ok_and(|queue| {
+            let is_paste_gate = queue.try_peek().is_some_and(|queue| {
                 queue.gates().iter().any(|gate| {
                     gate.token == token
                         && gate.kind == crate::terminal::input_queue::GateKind::PasteReading
@@ -193,7 +286,7 @@ impl Input {
             ctx,
             held_behind: 0,
         };
-        queue.borrow_mut().give_up(&mut host, token);
+        queue.lock().give_up(&mut host, token);
     }
 
     /// Starts an editor-bound clipboard read on the queue.
@@ -220,14 +313,14 @@ impl Input {
         ctx.spawn(async move { rx.await.ok() }, move |me, read, ctx| {
             me.finish_queued_read(id, read, source, ctx)
         });
-        let queue = Rc::clone(hold.queue());
+        let queue = hold.queue();
         {
             let mut host = InputQueueHost {
                 input: self,
                 ctx,
                 held_behind: 0,
             };
-            queue.borrow_mut().offer_gated(
+            queue.lock().offer_gated(
                 &mut host,
                 EntryKind::Paste {
                     paste_id: id,
@@ -284,13 +377,13 @@ impl Input {
         source: PasteSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        let queue = Rc::clone(self.editor.as_ref(ctx).paste_hold().queue());
+        let queue = self.editor.as_ref(ctx).paste_hold().queue();
         // The paste itself is one of the queued entries; the rest are the keys behind it.
         let held_behind = if queue
-            .borrow()
+            .peek()
             .has_gate(crate::terminal::input_queue::GateKind::PasteReading, id)
         {
-            queue.borrow().queued_summary().0.saturating_sub(1)
+            queue.peek().queued_summary().0.saturating_sub(1)
         } else {
             0
         };
@@ -315,7 +408,7 @@ impl Input {
                 ctx,
                 held_behind,
             };
-            queue.borrow_mut().on_paste_read(&mut host, id, result);
+            queue.lock().on_paste_read(&mut host, id, result);
         }
         self.paste_payloads.remove(&id);
         self.paste_refused.remove(&id);

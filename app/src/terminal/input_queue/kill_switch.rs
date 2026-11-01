@@ -4,7 +4,7 @@
 //! in the tree until the last phase. `PHOSPHOR_INPUT_QUEUE=legacy` (or `0`/`off`) turns every area
 //! off, and a comma list (`PHOSPHOR_INPUT_QUEUE=paste,ssh`) turns on only the listed areas. The
 //! per-area variable wins over the global one. The default is ON: an area ships on the new path
-//! once its tests pass. `Area::Paste` (phase 1), `Area::Subshell` (phase 2), `Area::Enter` (phase 3), `Area::Ssh` (phase 4) and `Area::Handoff` (phase 5: the ConPTY prompt hold's keys) are read.
+//! once its tests pass. `Area::Paste` (phase 1), `Area::Subshell` (phase 2), `Area::Enter` (phase 3), `Area::Ssh` (phase 4) and `Area::Handoff` (phase 5: the ConPTY prompt hold's keys) and `Area::Shared` (merge step 3: one queue per pane) are read.
 
 use std::sync::OnceLock;
 
@@ -21,15 +21,19 @@ pub enum Area {
     Ssh,
     /// Phase 5: hand-off holds (Q3a/b/c).
     Handoff,
+    /// Step 3 of the merge (#1353): the editor and the terminal view of one pane share ONE queue
+    /// instance. Off keeps the two instances (the behaviour before the merge).
+    Shared,
 }
 
 impl Area {
-    pub const ALL: [Area; 5] = [
+    pub const ALL: [Area; 6] = [
         Area::Paste,
         Area::Subshell,
         Area::Enter,
         Area::Ssh,
         Area::Handoff,
+        Area::Shared,
     ];
 
     pub fn name(self) -> &'static str {
@@ -39,6 +43,7 @@ impl Area {
             Area::Enter => "enter",
             Area::Ssh => "ssh",
             Area::Handoff => "handoff",
+            Area::Shared => "shared",
         }
     }
 
@@ -49,6 +54,7 @@ impl Area {
             Area::Enter => "PHOSPHOR_INPUT_QUEUE_ENTER",
             Area::Ssh => "PHOSPHOR_INPUT_QUEUE_SSH",
             Area::Handoff => "PHOSPHOR_INPUT_QUEUE_HANDOFF",
+            Area::Shared => "PHOSPHOR_INPUT_QUEUE_SHARED",
         }
     }
 
@@ -93,7 +99,7 @@ pub fn parse_enabled(global: Option<&str>, per_area: Option<&str>, area: Area) -
 
 /// Whether `area` runs on the new queue. Read once per process.
 pub fn is_enabled(area: Area) -> bool {
-    static CACHE: [OnceLock<bool>; 5] = [const { OnceLock::new() }; 5];
+    static CACHE: [OnceLock<bool>; 6] = [const { OnceLock::new() }; 6];
     *CACHE[area.index()].get_or_init(|| {
         parse_enabled(
             std::env::var("PHOSPHOR_INPUT_QUEUE").ok().as_deref(),
