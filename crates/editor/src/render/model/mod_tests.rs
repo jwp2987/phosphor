@@ -13,8 +13,8 @@ use warpui::{
 
 use super::{
     BlockItem, BlockLocation, COMMAND_SPACING, CellLayout, DEFAULT_BLOCK_SPACINGS,
-    HiddenBlockConfig, ImageBlockConfig, LaidOutTable, ParagraphBlock, RenderState,
-    TableBlockConfig, TableStyle,
+    HiddenBlockConfig, ImageBlockConfig, LaidOutTable, LineSource, OffsetMap, Paragraph,
+    ParagraphBlock, RenderState, TableBlockConfig, TableStyle,
     debug::Describe,
     table_offset_map,
     test_utils::{layout_paragraph, layout_paragraphs},
@@ -2136,4 +2136,105 @@ mod char_cell_scroll {
         state.clamp_scroll_offset(CharOffset::from(6), 1, &[]);
         assert_eq!(state.scroll_offset(), 0);
     }
+}
+
+/// #1340 P2: dehydrating a paragraph keeps every cached metric, and hydrating the same frame
+/// restores identical metrics and an identical frame, for varied inputs.
+#[test]
+fn test_paragraph_dehydrate_hydrate_round_trip() {
+    let long_line = "x".repeat(5_000);
+    let inputs = [
+        "",
+        "plain text",
+        "\tleading tab\tand\tinner tabs",
+        "日本語のテキスト 中文 한국어",
+        "emoji 👩‍👩‍👧‍👦 🇺🇸 ✌🏽 end",
+        long_line.as_str(),
+    ];
+    for text in inputs {
+        let mut paragraph = layout_paragraph(
+            &format!("{text}\n"),
+            &TEST_STYLES,
+            &BufferBlockStyle::PlainText,
+            f32::MAX,
+        );
+        let before = paragraph.metrics();
+        let line_count = paragraph.frame().expect("hydrated").lines().len();
+        let caret_counts: Vec<usize> = paragraph
+            .frame()
+            .expect("hydrated")
+            .lines()
+            .iter()
+            .map(|line| line.caret_positions.len())
+            .collect();
+        assert!(before.width_exact, "measured metrics are exact");
+
+        let source = LineSource::new(text, TEST_STYLES.base_text, TEXT_SPACING, &[]);
+        assert_eq!(source.text(), text);
+        let frame = paragraph.dehydrate(source).expect("was hydrated");
+        assert!(!paragraph.is_hydrated());
+        assert!(paragraph.frame().is_none());
+        assert!(paragraph.line_source().is_some());
+        // Metric reads still answer while dehydrated.
+        assert_eq!(paragraph.metrics(), before);
+        assert_eq!(paragraph.height(), before.height);
+        assert_eq!(paragraph.width(), before.width);
+        assert_eq!(paragraph.lines(), LineCount(line_count));
+        assert_eq!(paragraph.is_empty(), before.is_empty);
+        assert_eq!(paragraph.first_line_height(), before.first_line_height);
+
+        let height_changed = paragraph.hydrate(frame);
+        assert!(!height_changed, "same frame, same height: {text:?}");
+        assert!(paragraph.is_hydrated());
+        assert_eq!(paragraph.metrics(), before, "{text:?}");
+        let hydrated = paragraph.frame().expect("hydrated again");
+        assert_eq!(hydrated.lines().len(), line_count);
+        assert_eq!(
+            hydrated
+                .lines()
+                .iter()
+                .map(|line| line.caret_positions.len())
+                .collect::<Vec<_>>(),
+            caret_counts
+        );
+    }
+}
+
+/// A frame whose long row was elided in the middle (the `MAX_LAYOUT_LINE_CHARS` path) caches
+/// the same metrics through a dehydrate / hydrate cycle, and a taller frame reports the change.
+#[test]
+fn test_paragraph_hydrate_reports_height_change() {
+    let frame = Arc::new(
+        TextFrame::mock_with_positions(&"a".repeat(14), 10.).with_elided_middle(10, 14, 1_000),
+    );
+    let mut paragraph = Paragraph::hydrated(
+        frame.clone(),
+        OffsetMap::direct(1_001),
+        1_001.into(),
+        vec![],
+        TEXT_SPACING,
+        None,
+    );
+    let before = paragraph.metrics();
+    assert_eq!(before.lines, 1);
+    assert!(!before.is_empty);
+    paragraph.dehydrate(LineSource::new(
+        "",
+        TEST_STYLES.base_text,
+        TEXT_SPACING,
+        &[],
+    ));
+    assert_eq!(paragraph.metrics(), before);
+    assert!(!paragraph.hydrate(frame));
+
+    // Hydrating a two-line frame changes the height and says so.
+    let taller = Arc::new(TextFrame::mock("ab\ncd"));
+    paragraph.dehydrate(LineSource::new(
+        "",
+        TEST_STYLES.base_text,
+        TEXT_SPACING,
+        &[],
+    ));
+    assert!(paragraph.hydrate(taller));
+    assert_eq!(paragraph.metrics().lines, 2);
 }

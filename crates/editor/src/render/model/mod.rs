@@ -38,7 +38,7 @@ use warpui::{
     },
     platform::LineStyle,
     text_layout::CaretPosition,
-    text_layout::{Line, TextFrame},
+    text_layout::{Line, StyleAndFont, TextFrame},
     text_selection_utils::{
         NewlineTickParams, calculate_tick_width, create_newline_tick_rect,
         selection_crosses_newline_offset_based,
@@ -1049,7 +1049,7 @@ impl ParagraphBlock {
     pub fn height(&self) -> Pixels {
         self.paragraphs
             .iter()
-            .map(|paragraph| paragraph.height.as_f32())
+            .map(|paragraph| paragraph.metrics.height.as_f32())
             .sum::<f32>()
             .into_pixels()
     }
@@ -1059,7 +1059,7 @@ impl ParagraphBlock {
         let width = self
             .paragraphs
             .iter()
-            .map(|paragraph| paragraph.frame.max_width())
+            .map(|paragraph| paragraph.metrics.width.as_f32())
             .reduce(f32::max)
             .unwrap_or(0.);
         vec2f(width, self.height().as_f32())
@@ -1084,15 +1084,102 @@ impl ParagraphBlock {
     }
 }
 
+/// Everything needed to lay a paragraph out again from scratch (#1340): the exact inputs of
+/// [`TextLayout::layout_text`]. Cheap to keep (text plus style runs, no glyphs or carets).
+#[derive(Clone, Debug)]
+pub struct LineSource {
+    text: Arc<str>,
+    paragraph_style: ParagraphStyles,
+    spacing: BlockSpacing,
+    style_runs: Arc<[(Range<usize>, StyleAndFont)]>,
+}
+
+impl LineSource {
+    pub fn new(
+        text: &str,
+        paragraph_style: ParagraphStyles,
+        spacing: BlockSpacing,
+        style_runs: &[(Range<usize>, StyleAndFont)],
+    ) -> Self {
+        Self {
+            text: Arc::from(text),
+            paragraph_style,
+            spacing,
+            style_runs: Arc::from(style_runs),
+        }
+    }
+
+    /// Lays this source out. Deterministic: laying out the source a paragraph was built from
+    /// yields the frame it had.
+    pub fn layout(&self, text_layout: &TextLayout) -> Arc<TextFrame> {
+        text_layout.layout_text(
+            &self.text,
+            &self.paragraph_style,
+            &self.spacing,
+            &self.style_runs,
+        )
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// The metrics of a paragraph that the rest of the model reads without needing glyphs. They are
+/// cached on [`Paragraph`] so a dehydrated paragraph still answers them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParagraphMetrics {
+    /// Sum of the line heights of the frame.
+    pub height: Pixels,
+    /// Max line width of the frame.
+    pub width: Pixels,
+    /// Number of (soft-wrapped) lines in the frame.
+    pub lines: usize,
+    /// Whether the frame has no drawn runs.
+    pub is_empty: bool,
+    /// Height of the first line, or the whole height if there are no lines.
+    pub first_line_height: f32,
+    /// `false` when `width` is an estimate that a real layout may change (set by lazy layout);
+    /// always `true` for metrics measured from a frame.
+    pub width_exact: bool,
+}
+
+impl ParagraphMetrics {
+    pub fn from_frame(frame: &TextFrame) -> Self {
+        let height = frame
+            .lines()
+            .iter()
+            .fold(0f32, |acc, line| acc + line_height(line))
+            .into_pixels();
+        let lines = frame.lines();
+        Self {
+            height,
+            width: frame.max_width().into_pixels(),
+            lines: lines.len(),
+            is_empty: lines.is_empty() || lines.iter().all(|line| line.runs.is_empty()),
+            first_line_height: lines.first().map(line_height).unwrap_or(height.as_f32()),
+            width_exact: true,
+        }
+    }
+}
+
+/// Whether a paragraph currently holds its laid-out frame.
+#[derive(Clone)]
+enum ParagraphLayout {
+    /// Glyphs and carets are present.
+    Hydrated(Arc<TextFrame>),
+    /// Only the source is kept; the cached [`ParagraphMetrics`] still answer geometry reads.
+    Dehydrated(LineSource),
+}
+
 #[derive(Clone)]
 pub struct Paragraph {
-    /// Laid-out text content of this paragraph.
-    frame: Arc<TextFrame>,
+    /// Laid-out text content of this paragraph, or the source to lay it out again.
+    layout: ParagraphLayout,
     /// Mapping between [`TextFrame`] characters and content characters.
     offsets: OffsetMap,
-    /// Cached height of this paragraph's text frame.
-    height: Pixels,
-    width: Pixels,
+    /// Cached metrics of the text frame; valid in both layout states.
+    metrics: ParagraphMetrics,
     /// Content length of this paragraph, in `char`s.
     content_length: CharOffset,
     detected_url: Vec<ParsedUrl>,
@@ -1101,6 +1188,49 @@ pub struct Paragraph {
 }
 
 impl Paragraph {
+    /// Builds a hydrated paragraph from an existing frame.
+    pub fn hydrated(
+        frame: Arc<TextFrame>,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        let metrics = ParagraphMetrics::from_frame(&frame);
+        Self {
+            layout: ParagraphLayout::Hydrated(frame),
+            offsets,
+            metrics,
+            content_length,
+            detected_url: active_url,
+            spacing,
+            minimum_height,
+        }
+    }
+
+    /// Builds a dehydrated paragraph: no frame, `metrics` supplied by the caller.
+    pub fn dehydrated(
+        source: LineSource,
+        metrics: ParagraphMetrics,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        Self {
+            layout: ParagraphLayout::Dehydrated(source),
+            offsets,
+            metrics,
+            content_length,
+            detected_url: active_url,
+            spacing,
+            minimum_height,
+        }
+    }
+
+    /// Alias of [`Self::hydrated`], kept for the many existing call sites.
     pub fn new(
         frame: Arc<TextFrame>,
         offsets: OffsetMap,
@@ -1109,58 +1239,89 @@ impl Paragraph {
         spacing: BlockSpacing,
         minimum_height: Option<Pixels>,
     ) -> Self {
-        let height = frame
-            .lines()
-            .iter()
-            .fold(0f32, |acc, line| acc + line_height(line))
-            .into_pixels();
-
-        let width = frame.max_width().into_pixels();
-        Self {
+        Self::hydrated(
             frame,
             offsets,
-            height,
-            width,
             content_length,
-            detected_url: active_url,
+            active_url,
             spacing,
             minimum_height,
+        )
+    }
+
+    /// Drops the frame, keeping `source` and the cached metrics. Returns the previous frame.
+    pub fn dehydrate(&mut self, source: LineSource) -> Option<Arc<TextFrame>> {
+        match std::mem::replace(&mut self.layout, ParagraphLayout::Dehydrated(source)) {
+            ParagraphLayout::Hydrated(frame) => Some(frame),
+            ParagraphLayout::Dehydrated(_) => None,
         }
     }
 
+    /// Installs a laid-out frame and refreshes the cached metrics from it (the frame is the
+    /// source of truth). Returns whether the height changed, which callers must treat as a layout
+    /// invalidation (scroll extents depend on it).
+    pub fn hydrate(&mut self, frame: Arc<TextFrame>) -> bool {
+        let metrics = ParagraphMetrics::from_frame(&frame);
+        let height_changed = metrics.height != self.metrics.height;
+        self.metrics = metrics;
+        self.layout = ParagraphLayout::Hydrated(frame);
+        height_changed
+    }
+
+    pub fn is_hydrated(&self) -> bool {
+        matches!(self.layout, ParagraphLayout::Hydrated(_))
+    }
+
+    /// The source to lay this paragraph out again, if it is dehydrated.
+    pub fn line_source(&self) -> Option<&LineSource> {
+        match &self.layout {
+            ParagraphLayout::Hydrated(_) => None,
+            ParagraphLayout::Dehydrated(source) => Some(source),
+        }
+    }
+
+    pub fn metrics(&self) -> ParagraphMetrics {
+        self.metrics
+    }
+
     pub fn first_line_height(&self) -> f32 {
-        self.frame
-            .lines()
-            .first()
-            .map(line_height)
-            .unwrap_or(self.height.as_f32())
+        self.metrics.first_line_height
     }
 
     pub fn spacing(&self) -> BlockSpacing {
         self.spacing
     }
 
-    pub(super) fn frame(&self) -> &TextFrame {
-        &self.frame
+    /// The laid-out frame, or `None` while dehydrated. Painting and hit-testing callers must
+    /// hydrate first (or skip the paragraph).
+    pub(super) fn frame(&self) -> Option<&TextFrame> {
+        match &self.layout {
+            ParagraphLayout::Hydrated(frame) => Some(frame),
+            ParagraphLayout::Dehydrated(_) => None,
+        }
+    }
+
+    /// The laid-out lines; empty while dehydrated.
+    fn text_lines(&self) -> &[Line] {
+        self.frame().map_or(&[][..], |frame| frame.lines().as_slice())
     }
 
     /// Whether or not this paragraph is effectively empty.
     pub(super) fn is_empty(&self) -> bool {
-        let lines = self.frame.lines();
-        lines.is_empty() || lines.iter().all(|line| line.runs.is_empty())
+        self.metrics.is_empty
     }
 
     /// The height of this paragraph.
     pub fn height(&self) -> Pixels {
-        self.height
+        self.metrics.height
     }
 
     pub fn width(&self) -> Pixels {
-        self.width
+        self.metrics.width
     }
 
     fn lines(&self) -> LineCount {
-        LineCount(self.frame.lines().len())
+        LineCount(self.metrics.lines)
     }
 }
 
@@ -3794,7 +3955,7 @@ impl BlockItem {
     pub fn content_height(&self) -> Pixels {
         match self {
             BlockItem::Paragraph(paragraph) | BlockItem::Header { paragraph, .. } => {
-                let mut height = paragraph.height;
+                let mut height = paragraph.metrics.height;
                 if let Some(minimum_height) = paragraph.minimum_height {
                     height = height.max(minimum_height);
                 }
@@ -4214,7 +4375,7 @@ impl sum_tree::Item for BlockItem {
 impl<'a> Positioned<'a, Paragraph> {
     /// Iterator over the lines of a paragraph, along with positioning information.
     fn lines(&self) -> impl Iterator<Item = Positioned<'a, Line>> + '_ {
-        self.item.frame.lines().iter().scan(
+        self.item.text_lines().iter().scan(
             (
                 self.start_y_offset + self.style.top_offset(),
                 self.start_line,
@@ -4741,7 +4902,7 @@ impl<'a> Positioned<'a, ParagraphBlock> {
                     item: paragraph,
                 });
                 *char_offset_acc += paragraph.content_length;
-                *y_offset_acc += paragraph.height;
+                *y_offset_acc += paragraph.metrics.height;
                 *line_acc += paragraph.lines();
                 positioned
             },
@@ -4787,10 +4948,11 @@ impl<'a> sum_tree::Dimension<'a, LayoutSummary> for LineCount {
 impl fmt::Debug for Paragraph {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Paragraph")
-            .field("lines", &self.frame.lines().len())
+            .field("lines", &self.metrics.lines)
+            .field("hydrated", &self.is_hydrated())
             .field("offsets", &self.offsets)
-            .field("max_width", &self.frame.max_width())
-            .field("height", &self.height)
+            .field("max_width", &self.metrics.width)
+            .field("height", &self.metrics.height)
             .field("content_length", &self.content_length)
             .finish()
     }
