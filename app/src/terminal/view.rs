@@ -11285,8 +11285,15 @@ impl TerminalView {
         }
         // Whatever happens to the text below, an Enter typed in the same burst must not run what
         // the user meant for the remote machine on this one.
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let handed_back_into_editor = !self.is_long_running() && existing.is_empty();
+        let baseline = if handed_back_into_editor {
+            text.clone()
+        } else {
+            existing
+        };
         self.input
-            .update(ctx, |input, _| input.arm_ssh_handover_enter_guard());
+            .update(ctx, |input, _| input.arm_ssh_handover_enter_guard(baseline));
         // Never concatenated with anything: only into an EMPTY editor that is showing.
         if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
             self.show_ssh_typing_toast(

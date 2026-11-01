@@ -102,7 +102,9 @@ impl InteractiveSshCommand {
         };
         // A glued or separate shell operator (`ssh host&`, `ssh host;`, a pipe) is not an
         // interactive session on the pty.
-        if command.contains(['&', ';', '|']) {
+        // Only an UNQUOTED operator counts: `-o ProxyCommand='sleep 3; false'` is one ssh command
+        // and must arm the connect gate (#1395).
+        if has_unquoted_shell_operator(command) {
             return None;
         }
         let tokens = parse_ssh_command_tokens(command)?;
@@ -249,6 +251,25 @@ pub fn parse_interactive_ssh_command(command: &str) -> Option<InteractiveSshComm
     }
 }
 
+/// Whether `command` has a shell control operator (`&`, `;`, `|`) outside single quotes, double
+/// quotes and backslash escapes.
+fn has_unquoted_shell_operator(command: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, '\\') | (Some('"'), '\\') => {
+                chars.next();
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '&' | ';' | '|') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn parse_ssh_command_tokens(command: &str) -> Option<Vec<String>> {
     let Ok(tokens) = shell_words::split(command) else {
         return None;
@@ -306,6 +327,18 @@ pub fn transfer_file_sftp_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_operators_do_not_make_ssh_non_interactive() {
+        for cmd in [
+            "ssh -o ProxyCommand='sleep 3; false' host",
+            "ssh -o 'ProxyCommand=ssh -W %h:%p j | cat' host",
+            "ssh -o \"ProxyCommand=a & b\" host",
+        ] {
+            assert!(parse_interactive_ssh_command(cmd).is_some(), "{cmd}");
+        }
+        assert!(parse_interactive_ssh_command("ssh -o X='a' host; ls").is_none());
+    }
 
     #[test]
     fn ssh_non_interactive_forms_are_not_interactive() {
