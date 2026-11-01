@@ -25,7 +25,9 @@
 //! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
 //! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
 //! the `EnterVerdict` and `PasteReading` gates; see `input/enter_queue.rs`), and the ssh connect
-//! typeahead (phase 4, `kill_switch::Area::Ssh`, `view/ssh_queue.rs`). The other gate kinds and
+//! typeahead (phase 4, `kill_switch::Area::Ssh`, `view/ssh_queue.rs`), and the typeahead hand-off's
+//! ConPTY prompt hold (phase 5, `kill_switch::Area::Handoff`, `LineEditorActive` gate, entries put
+//! back with [`DeliverOutcome::Requeue`]; see `view/paste_queue.rs`). The other gate kinds and
 //! the trace hops of the buffers that have not moved yet are exercised by the tests only.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
@@ -229,6 +231,11 @@ pub enum DeliverOutcome {
     Delivered,
     /// The delivery (an Enter that now waits for a verdict or report) closes the queue behind it.
     OpensGate(GateSpec),
+    /// The delivery did NOT happen: a later stage (the typeahead hand-off, #1353 phase 5) took
+    /// the entry's bytes into a hold of its own. The entry goes back to the front of the queue,
+    /// held by the new gate together with everything behind it, and is taken out again by the
+    /// gate's event ([`InputQueue::close_gate_taking`]).
+    Requeue(GateSpec),
 }
 
 /// Why an entry was removed without being delivered.
@@ -789,9 +796,17 @@ impl InputQueue {
         }
         let mut follow = FollowUps::default();
         let outcome = host.deliver(entry, dest, &mut follow);
-        if let DeliverOutcome::OpensGate(spec) = outcome {
-            // Behind the delivered entry: whatever already queued after it waits too.
-            self.push_gate(host, spec, EntryId(entry.id.0 + 1));
+        match outcome {
+            DeliverOutcome::Delivered => {}
+            DeliverOutcome::OpensGate(spec) => {
+                // Behind the delivered entry: whatever already queued after it waits too.
+                self.push_gate(host, spec, EntryId(entry.id.0 + 1));
+            }
+            DeliverOutcome::Requeue(spec) => {
+                // Not delivered: back to the front, held by the new gate along with the rest.
+                self.entries.push_front(entry.clone());
+                self.push_gate(host, spec, entry.id);
+            }
         }
         self.apply_follow_ups(host, entry.id, follow);
     }

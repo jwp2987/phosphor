@@ -225,6 +225,12 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     surface.on_typeahead_handoff_changed(ctx)
                 });
             }
+            PtyControllerEvent::PromptHoldReleased { hold_id } => {
+                let hold_id = *hold_id;
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_prompt_hold_released(hold_id, ctx)
+                });
+            }
         }
     });
 }

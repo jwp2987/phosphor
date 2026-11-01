@@ -182,3 +182,24 @@ mod tests {
         assert!(t.finish() >= Duration::from_millis(3));
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Number of times the user-key path took the terminal model lock (tests only; the counter
+    /// does not exist in release builds). The key path takes it once per key (#1353 phase 5); a
+    /// test that types several keys behind a hold or an idle pty asserts the delta.
+    static KEY_PATH_LOCKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Records one model lock taken by the user-key path. No-op outside tests.
+#[inline(always)]
+pub fn note_key_path_lock() {
+    #[cfg(test)]
+    KEY_PATH_LOCKS.with(|count| count.set(count.get() + 1));
+}
+
+/// The count so far on this thread (tests; per thread so parallel tests cannot disturb it).
+#[cfg(test)]
+pub fn key_path_lock_count() -> u64 {
+    KEY_PATH_LOCKS.with(std::cell::Cell::get)
+}

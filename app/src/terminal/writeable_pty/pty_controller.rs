@@ -295,21 +295,33 @@ impl<T: EventLoopSender> PtyController<T> {
                 // #1349: the line editor's ready signal releases the keys held since the
                 // prompt's precmd (ConPTY), in typed order, ahead of any request. This is the
                 // only thing that releases them besides a command start, a ^C or the give-up cap.
+                // #1353 phase 5: with the hold in the view's input queue the keys are not here; the
+                // view releases that gate (writing them, accounted, in typed order) and asks for the
+                // decision again. The hand-off decides no request while the hold is live.
+                let mut released_queued_hold = false;
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    let held_chunks = me
-                        .terminal_model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .release_prompt_hold_on_signal();
+                    let (held_chunks, queued_hold) = {
+                        let mut model = me.terminal_model.lock();
+                        let handoff = model.typeahead_handoff_mut();
+                        handoff.release_prompt_hold_on_signal_any()
+                    };
                     for chunk in held_chunks {
                         me.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
+                    }
+                    if let Some(hold_id) = queued_hold {
+                        released_queued_hold = true;
+                        ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
                     }
                 }
                 // #1208: readline and zle enable bracketed paste as they start reading a line, so
                 // the shell is at its prompt now, not 50 ms after precmd. Only while the hand-off
                 // can vouch that no typeahead line is queued ahead of a write: readline would
                 // run that line first and the write would land in the program it starts.
+                // With the keys still in the view's queue their Enters are not counted yet, so the
+                // line editor is not announced as reading until the view has released them (it
+                // asks for the decision again then).
                 if FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && !released_queued_hold
                     && !me
                         .terminal_model
                         .lock()
@@ -2141,6 +2153,9 @@ pub enum PtyControllerEvent {
     /// The typeahead hand-off changed who owns the user's keystrokes, so the surface should
     /// re-evaluate focus (and arm a report deadline after a request).
     TypeaheadHandoffChanged,
+    /// The shell's line editor signalled it is ready while the view's input queue held keys for
+    /// the prompt (#1353 phase 5, ConPTY): the view releases that gate (`hold_id` names it).
+    PromptHoldReleased { hold_id: u64 },
 }
 
 impl<T: EventLoopSender> Entity for PtyController<T> {

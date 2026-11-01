@@ -45,7 +45,7 @@ use std::time::Duration;
 use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
-use super::TerminalView;
+use super::{Event, TerminalView};
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
@@ -76,6 +76,33 @@ pub(super) struct PasteQueueState {
     /// The key of the gate the CLI-agent submit in progress holds, if one is.
     cli_submit_gate: Option<u64>,
     next_cli_submit_key: u64,
+    /// #1353 phase 5 (`PHOSPHOR_INPUT_QUEUE_HANDOFF`): the keys of the hand-off's prompt hold
+    /// (ConPTY, #1162) are entries of this queue behind a `LineEditorActive` gate. Tests default
+    /// to off (see `handoff_queue_enabled_by_default`).
+    pub(super) handoff_enabled: bool,
+    /// Set while the queue delivers an entry the hand-off may hold again (a key or a paste): the
+    /// stage then asks the host to put the entry back instead of keeping the bytes itself.
+    requeueable_delivery: bool,
+    /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
+    requeue_request: Option<RequeueRequest>,
+    /// The stamp for keys queued behind a prompt hold (shared with the hand-off).
+    pub(super) line_stamp: Option<crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp>,
+}
+
+/// What the stage tells the host when the hand-off holds the bytes of the entry it delivers.
+pub(super) struct RequeueRequest {
+    spec: GateSpec,
+    /// The bytes the stage was handed (a paste's payload goes back to the payload map).
+    bytes: Vec<u8>,
+}
+
+/// How a queued prompt hold ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PromptHoldEnd {
+    /// The line editor's ready signal.
+    Signal,
+    /// The give-up cap: no signal came.
+    GaveUp,
 }
 
 /// CLI-agent submit gates share the `PasteReading` kind (a submit is a paste with a paced tail);
@@ -94,6 +121,16 @@ fn cli_submit_enabled_by_default() -> bool {
     kill_switch::is_enabled(Area::Enter)
 }
 
+/// Whether the hand-off's prompt hold lives in the queue: the Handoff area's kill switch AND the
+/// Paste area's (the queue is only fed while that one is on). Tests default to the legacy buffer
+/// (`PHOSPHOR_TEST_HANDOFF_QUEUE=1` runs the suite on the queue).
+pub(super) fn handoff_queue_enabled_by_default() -> bool {
+    if cfg!(test) {
+        return std::env::var("PHOSPHOR_TEST_HANDOFF_QUEUE").is_ok_and(|value| value == "1");
+    }
+    kill_switch::is_enabled(Area::Handoff) && kill_switch::is_enabled(Area::Paste)
+}
+
 impl PasteQueueState {
     pub(super) fn new() -> Self {
         Self {
@@ -106,7 +143,16 @@ impl PasteQueueState {
             cli_submit_enabled: cli_submit_enabled_by_default(),
             cli_submit_gate: None,
             next_cli_submit_key: 0,
+            handoff_enabled: handoff_queue_enabled_by_default(),
+            requeueable_delivery: false,
+            requeue_request: None,
+            line_stamp: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_handoff_enabled_for_test(&mut self, on: bool) {
+        self.handoff_enabled = on;
     }
 
     #[cfg(test)]
@@ -185,11 +231,13 @@ impl Host for PtyQueueHost<'_, '_> {
                 payload: Some(_),
             } => match self.view.paste_queue.payloads.remove(paste_id) {
                 Some(bytes) => {
+                    self.view.paste_queue.requeueable_delivery = true;
                     self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
                         Cow::Owned(bytes),
                         true,
                         self.ctx,
                     );
+                    self.view.paste_queue.requeueable_delivery = false;
                 }
                 None => log::warn!("input queue: ready paste {paste_id} had no bytes"),
             },
@@ -197,11 +245,13 @@ impl Host for PtyQueueHost<'_, '_> {
                 bytes,
                 takes_over_agent_control,
             } => {
+                self.view.paste_queue.requeueable_delivery = true;
                 self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
                     Cow::Owned(bytes.clone()),
                     *takes_over_agent_control,
                     self.ctx,
                 );
+                self.view.paste_queue.requeueable_delivery = false;
             }
             EntryKind::Signal(kind) => {
                 self.written = self.view.write_user_bytes_to_pty_after_paste_stage(
@@ -216,6 +266,18 @@ impl Host for PtyQueueHost<'_, '_> {
             other => log::warn!(
                 "input queue: pty paste queue was handed an entry it does not deliver: {other:?}"
             ),
+        }
+        // #1353 phase 5: the hand-off took this entry's bytes into a prompt hold (ConPTY). The
+        // entry goes back to the front of the queue under the hold's gate, to be taken out again
+        // when the line editor signals.
+        if let Some(request) = self.view.paste_queue.requeue_request.take() {
+            if let EntryKind::Paste { paste_id, .. } = &entry.kind {
+                self.view
+                    .paste_queue
+                    .payloads
+                    .insert(*paste_id, request.bytes);
+            }
+            return DeliverOutcome::Requeue(request.spec);
         }
         DeliverOutcome::Delivered
     }
@@ -315,6 +377,17 @@ impl TerminalView {
             }
             None => {
                 trace::hold(self.held_trace_name(), bytes.len());
+                // A key typed for the shell's line behind a prompt hold: the ConPTY mid-line
+                // guard learns of it here, without the model lock.
+                if let Some(stamp) = &self.paste_queue.line_stamp
+                    && self
+                        .paste_queue
+                        .queue
+                        .try_borrow()
+                        .is_ok_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+                {
+                    stamp.note_now();
+                }
                 EntryKind::PtyBytes {
                     bytes: bytes.to_vec(),
                     takes_over_agent_control,
@@ -401,6 +474,24 @@ impl TerminalView {
                     .copied()
             })
             .map(|gate| gate.kind);
+        if kind == Some(GateKind::LineEditorActive) {
+            // The line editor never signalled (#1349): the held keys are written anyway, and the
+            // hand-off stops holding for this session. The queue's own give-up would deliver them
+            // through the stages again; the hold has its own release instead.
+            let key = queue
+                .try_borrow()
+                .ok()
+                .and_then(|queue| {
+                    queue
+                        .gates()
+                        .iter()
+                        .find(|gate| gate.token == token)
+                        .map(|gate| gate.key)
+                })
+                .unwrap_or_default();
+            self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
+            return;
+        }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
             // keys are delivered, so none of them is held a second time.
@@ -426,8 +517,169 @@ impl TerminalView {
                 legacy::SUBSHELL_BOOTSTRAP
             }
             Ok(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
+            Ok(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
         }
+    }
+
+    /// Whether the hand-off's prompt hold may keep its keys in the queue right now: the queue
+    /// path is on, and either the queue is free (a direct write) or the entry being delivered can
+    /// go back to the front (a key or a paste).
+    pub(super) fn handoff_hold_can_queue(&self) -> bool {
+        self.paste_queue.enabled
+            && self.paste_queue.handoff_enabled
+            && (self.paste_queue.requeueable_delivery
+                || self.paste_queue.queue.try_borrow_mut().is_ok())
+    }
+
+    /// The hand-off just held `bytes` for the prompt and told us it keeps no copy (#1353 phase 5):
+    /// they become the first entry of a `LineEditorActive` gate, opened by the line editor's
+    /// signal ([`Self::on_prompt_hold_released`]) with the hold's give-up cap as the only timer.
+    pub(super) fn hold_prompt_keys_in_queue(
+        &mut self,
+        hold_id: u64,
+        give_up: Duration,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let spec = GateSpec::new(GateKind::LineEditorActive, hold_id).with_cap(Some(give_up));
+        if self.paste_queue.requeueable_delivery {
+            // The queue is delivering this very entry: the host puts it back under the gate.
+            self.paste_queue.requeue_request = Some(RequeueRequest { spec, bytes });
+            return;
+        }
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let mut host = PtyQueueHost::new(self, ctx);
+        queue.borrow_mut().offer_gated(
+            &mut host,
+            EntryKind::PtyBytes {
+                bytes,
+                takes_over_agent_control,
+            },
+            spec,
+        );
+    }
+
+    /// A signal or EOF is about to be written while keys are held for the prompt in the queue:
+    /// the held keys come back in front of `bytes`, one write in typed order, so an Enter among
+    /// them runs before a ^C reaches it (#1162), as the hand-off's own buffer did. Anything else
+    /// passes through untouched.
+    pub(super) fn prepend_queued_prompt_hold_to_signal(
+        &mut self,
+        bytes: Cow<'static, [u8]>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Cow<'static, [u8]> {
+        if !self.paste_queue.enabled
+            || !bytes.iter().any(super::is_signal_byte)
+            || !self
+                .paste_queue
+                .queue
+                .try_borrow()
+                .is_ok_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+        {
+            return bytes;
+        }
+        let hold_id = {
+            let mut model = self.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .take_queued_prompt_hold_for_signal(&bytes)
+        };
+        let Some(hold_id) = hold_id else {
+            return bytes;
+        };
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let entries = {
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                return bytes;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
+        };
+        let mut combined = self.bytes_of_taken_entries(entries).concat();
+        trace::release(trace::legacy::HANDOFF, 1, combined.len(), "pty");
+        combined.extend_from_slice(&bytes);
+        Cow::Owned(combined)
+    }
+
+    /// The bytes of entries taken out of a hand-off gate, one chunk per entry, in order.
+    fn bytes_of_taken_entries(&mut self, entries: Vec<InputEntry>) -> Vec<Vec<u8>> {
+        let mut chunks = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match entry.kind {
+                EntryKind::PtyBytes { bytes, .. } => chunks.push(bytes),
+                EntryKind::Paste { paste_id, .. } => {
+                    match self.paste_queue.payloads.remove(&paste_id) {
+                        Some(bytes) => chunks.push(bytes),
+                        None => log::warn!("input queue: held paste {paste_id} had no bytes"),
+                    }
+                }
+                other => log::warn!(
+                    "input queue: a prompt hold held an entry it cannot release: {other:?}"
+                ),
+            }
+        }
+        chunks
+    }
+
+    /// The line editor signalled (the controller's `PromptHoldReleased`): the keys held for the
+    /// prompt go out, in typed order.
+    pub(super) fn on_prompt_hold_released(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
+        self.release_queued_prompt_hold(hold_id, PromptHoldEnd::Signal, ctx);
+    }
+
+    /// Takes the keys out of the prompt hold's gate and writes them as the separate writes they
+    /// were typed in, each counted by the hand-off (so no request is decided ahead of them), then
+    /// ends the hold and asks for the decision again.
+    fn release_queued_prompt_hold(
+        &mut self,
+        hold_id: u64,
+        how: PromptHoldEnd,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let entries = {
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                // Mid-drain: the gate's own give-up cap releases the keys.
+                log::warn!("input queue: prompt hold {hold_id} not released, the queue was busy");
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
+        };
+        let chunks = self.bytes_of_taken_entries(entries);
+        let held_bytes: usize = chunks.iter().map(Vec::len).sum();
+        if how == PromptHoldEnd::GaveUp {
+            // The safety net fired: no signal came. Ids and counts only, never bytes.
+            log::warn!(
+                "typeahead prompt hold {hold_id} gave up with no line-editor signal: releasing {} chunk(s), {held_bytes} byte(s) to the pty",
+                chunks.len()
+            );
+        }
+        let writes = {
+            let mut model = self.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            if how == PromptHoldEnd::GaveUp {
+                handoff.expire_queued_prompt_hold(hold_id);
+            }
+            let mut writes = Vec::with_capacity(chunks.len());
+            for chunk in chunks {
+                if handoff.route_released_chunk(&chunk) {
+                    writes.push(chunk);
+                }
+            }
+            handoff.finish_queued_prompt_hold(hold_id);
+            writes
+        };
+        trace::release(trace::legacy::HANDOFF, writes.len(), held_bytes, "pty");
+        for bytes in writes {
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
+        }
+        // The hand-off decided nothing while the keys were held: decide now.
+        ctx.emit(Event::RetryTypeaheadHandoffRequest);
     }
 
     /// Whether the subshell setup gate is open (keys are held behind a setup that is not over).

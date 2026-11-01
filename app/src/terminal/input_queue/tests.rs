@@ -31,6 +31,9 @@ struct MockHost {
     ssh_signal_waits: bool,
     /// Follow-ups to request when the entry with this id is delivered.
     scripted: HashMap<EntryId, Vec<ScriptedFollow>>,
+    /// The entry with this id is not delivered but taken into a hold of the later stage
+    /// (`DeliverOutcome::Requeue`) the first time it comes up.
+    requeue: HashMap<EntryId, GateSpec>,
 }
 
 enum ScriptedFollow {
@@ -76,6 +79,9 @@ impl Host for MockHost {
             !matches!(dest, Destination::Drop(_)),
             "drops never reach deliver"
         );
+        if let Some(spec) = self.requeue.remove(&entry.id) {
+            return DeliverOutcome::Requeue(spec);
+        }
         self.delivered.push(Delivery {
             id: entry.id,
             tag: entry.kind.tag(),
@@ -1242,4 +1248,83 @@ fn drop_gate_leaves_entries_behind_a_later_gate_waiting() {
         1,
         "b still waits for the subshell gate"
     );
+}
+
+// ---- #1353 phase 5: Requeue ------------------------------------------------------------------
+// Not compiled/run when written.
+
+/// A delivery that the later stage turned into a hold puts the entry back at the front under the
+/// new gate: nothing is delivered, nothing behind it overtakes, and the gate's event takes the
+/// entry out again, in typed order, together with everything typed since.
+#[test]
+fn a_requeued_entry_holds_its_place_and_everything_behind_it() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    h.requeue
+        .insert(EntryId(2), GateSpec::new(GateKind::LineEditorActive, 9));
+    q.offer(&mut h, text("a"));
+    q.offer(&mut h, text("b")); // requeued under the gate
+    q.offer(&mut h, text("c"));
+    q.offer(&mut h, EntryKind::Enter);
+    assert_eq!(
+        h.delivered_ids(),
+        vec![1],
+        "only the entry before the hold went out"
+    );
+    assert!(q.has_gate(GateKind::LineEditorActive, 9));
+    assert_eq!(
+        q.queued_ids().map(|id| id.0).collect::<Vec<_>>(),
+        vec![2, 3, 4],
+        "the held entry is first, the keys behind it in typed order"
+    );
+    assert_eq!(q.held_behind_gate(GateKind::LineEditorActive, 9), 3);
+    // The event takes them out in order; nothing is delivered by the queue itself.
+    let taken = q.close_gate_taking(&mut h, GateKind::LineEditorActive, 9);
+    assert_eq!(
+        taken.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+    assert!(q.is_idle());
+    assert_eq!(h.delivered_ids(), vec![1]);
+    // Later keys flow again.
+    q.offer(&mut h, text("d"));
+    assert_eq!(h.delivered_ids(), vec![1, 5]);
+}
+
+/// The hold's cap is the gate's: armed once with the spec's value, and a given-up gate delivers
+/// what it held through the ordinary stages, in order (the host decides to release it itself
+/// before that; this is the net under it).
+#[test]
+fn a_requeued_gate_arms_its_cap_and_gives_up_in_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let spec =
+        GateSpec::new(GateKind::LineEditorActive, 4).with_cap(Some(Duration::from_millis(1500)));
+    h.requeue.insert(EntryId(1), spec);
+    q.offer(&mut h, text("a"));
+    q.offer(&mut h, text("b"));
+    assert_eq!(h.armed.len(), 1);
+    assert_eq!(h.armed[0].1, GateKind::LineEditorActive);
+    assert_eq!(h.armed[0].2, Duration::from_millis(1500));
+    assert!(h.delivered.is_empty());
+    let token = h.armed[0].0;
+    assert!(q.give_up(&mut h, token));
+    assert_eq!(h.delivered_ids(), vec![1, 2]);
+    assert!(h.warns.len() == 1);
+    assert!(!q.give_up(&mut h, token), "one-shot");
+}
+
+/// A signal meets the hold's gate: held keys are delivered, in order, ahead of the signal
+/// (`FlushThenSignal`), as for every gate of this family.
+#[test]
+fn a_signal_flushes_a_requeued_hold_in_typed_order() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    h.requeue
+        .insert(EntryId(1), GateSpec::new(GateKind::LineEditorActive, 1));
+    q.offer(&mut h, text("a"));
+    q.offer(&mut h, text("b"));
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3]);
+    assert!(q.is_idle());
 }

@@ -20769,3 +20769,274 @@ fn ssh_queue_enter_runs_the_held_line_like_the_legacy_hold() {
         "legacy and queue hand over the same commands"
     );
 }
+
+// ---- #1353 phase 5: the typeahead hand-off's prompt hold on the one input queue ---------------
+//
+// Every scenario runs on both paths: `queue == true` holds the keys as entries behind a
+// `LineEditorActive` gate, `queue == false` is `PHOSPHOR_INPUT_QUEUE_HANDOFF=0` (the hand-off's
+// own buffer). Not compiled/run when written.
+
+/// A ConPTY session whose running command just printed its prompt: the pty owns input, the
+/// precmd arrived and the line editor has not signalled yet, so keys are held for it (#1162).
+fn conpty_prompt_hold_setup(view: &mut TerminalView, queue: bool) {
+    view.paste_queue.set_handoff_enabled_for_test(queue);
+    let mut model = view.model.lock();
+    model.start_command_execution();
+    let handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.age_last_activity_for_test();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.on_precmd();
+}
+
+fn prompt_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::LineEditorActive)
+}
+
+/// What the pty controller does on the line editor's ready signal (`SetBracketedPaste`): keys
+/// the hand-off buffered are written now; keys in the view's queue are released by the view.
+fn line_editor_signal(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let (chunks, queued) = view
+        .model
+        .lock()
+        .typeahead_handoff_mut()
+        .release_prompt_hold_on_signal_any();
+    for bytes in chunks {
+        ctx.emit(Event::WriteHandoffUserBytesToPty {
+            bytes: Cow::Owned(bytes),
+        });
+    }
+    if let Some(hold_id) = queued {
+        view.on_prompt_hold_released(hold_id, ctx);
+    }
+}
+
+/// Keys typed between a prompt and its line editor are held and released, in typed order and as
+/// the separate writes they were typed in, by the editor's own signal -- on either path.
+#[test]
+fn conpty_prompt_hold_releases_on_the_signal_through_the_queue() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view, queue);
+                for key in [&b"l"[..], b"s", b"\r", b"x"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "queue={queue}: nothing is written ahead of the line editor"
+                );
+                assert_eq!(prompt_gate_open(view), queue);
+                if queue {
+                    assert_eq!(view.paste_queue.queue.borrow().queued_len(), 4);
+                }
+                line_editor_signal(view, ctx);
+                assert!(!prompt_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"l".to_vec(), b"s".to_vec(), b"\r".to_vec(), b"x".to_vec()],
+                "queue={queue}: one write per key event, in typed order"
+            );
+            terminal.read(&app, |view, _| {
+                let model = view.model.lock();
+                assert_eq!(model.typeahead_handoff().writes_in_flight(), 4);
+                assert!(!model.typeahead_handoff().prompt_hold_queued());
+            });
+        });
+    }
+}
+
+/// No model lock per key while the hold is open: after the key that started it, the queue takes
+/// every key without locking the terminal model (the pty reader holds that lock while it parses).
+#[test]
+fn keys_behind_a_prompt_hold_take_no_model_lock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view, true);
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            assert!(prompt_gate_open(view));
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            for key in [&b"b"[..], b"c", b"d", b"\r", b"e"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                before,
+                "the five keys behind the hold never touched the model lock"
+            );
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 6);
+        });
+    })
+}
+
+/// One model lock per key on the ordinary path (it was two to five): a key that is not held and
+/// not for the agent locks once.
+#[test]
+fn a_user_key_to_a_running_command_locks_the_model_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+            }
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            for key in [&b"e"[..], b"c", b"h", b"o"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count() - before,
+                4,
+                "one lock per key"
+            );
+        });
+    })
+}
+
+/// Fast typing into a running command, then Enter, reaches the pty in typed order on either path
+/// (the hand-off's counted writes are untouched by the queue).
+#[test]
+fn fast_typing_during_a_running_command_then_enter_is_delivered_in_order() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.paste_queue.set_handoff_enabled_for_test(queue);
+                {
+                    let mut model = view.model.lock();
+                    model.start_command_execution();
+                    let handoff = model.typeahead_handoff_mut();
+                    handoff.on_command_written();
+                    handoff.age_last_activity_for_test();
+                }
+                for key in b"echo hi" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"echo hi\r".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// A ^C typed while keys are held for the prompt goes out behind them, as one write in typed
+/// order (an Enter among them runs before the interrupt reaches it, #1162), on either path.
+#[test]
+fn a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view, queue);
+                view.write_user_bytes_to_pty(b"l".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"s".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                assert!(pty_writes.borrow().is_empty());
+                view.write_user_bytes_to_pty(vec![0x03], ctx);
+                assert!(!prompt_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"ls\r\x03".to_vec()],
+                "queue={queue}: one write, in typed order, the interrupt last"
+            );
+        });
+    }
+}
+
+/// The hold's give-up cap (no line-editor signal ever came): the keys are written anyway, in
+/// order, and the hold is off for the session -- the next prompt is not held for.
+#[test]
+fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view, true);
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            // A second timer for the same gate changes nothing.
+            view.on_paste_queue_give_up(token, ctx);
+            view.model.lock().typeahead_handoff_mut().on_precmd();
+            view.write_user_bytes_to_pty(b"c".to_vec(), ctx);
+        });
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+    })
+}
+
+/// A paste delivered from the queue that the hand-off holds for the prompt is put back under the
+/// hold's gate (not lost, not written ahead of the line editor) and comes out first when it opens.
+#[test]
+fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view, true);
+            // Another gate (a paste being read) holds the keys first; the hold starts when a key
+            // is delivered from the queue, which is borrowed then.
+            let queue = Rc::clone(&view.paste_queue.queue);
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.borrow_mut().open_gate(
+                &mut host,
+                crate::terminal::input_queue::GateSpec::new(
+                    crate::terminal::input_queue::GateKind::PasteReading,
+                    77,
+                )
+                .with_cap(None),
+            );
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            let queue = Rc::clone(&view.paste_queue.queue);
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.borrow_mut().on_gate_event(
+                &mut host,
+                crate::terminal::input_queue::GateKind::PasteReading,
+                77,
+            );
+            assert!(pty_writes.borrow().is_empty(), "held for the prompt now");
+            assert!(prompt_gate_open(view));
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
+            line_editor_signal(view, ctx);
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"a".to_vec(), b"b".to_vec()]);
+    })
+}
