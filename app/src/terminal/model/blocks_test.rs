@@ -1366,6 +1366,63 @@ fn test_lazy_reflow_range_flush_leaves_other_blocks_stale() {
     assert!(!block_list.blocks()[3].is_reflow_stale());
 }
 
+// A selection spanning a lazily reflowed block keeps selecting the same text when that block's
+// height changes: the anchor below it shifts by the height delta instead of the whole selection
+// being cleared (#1370 F7).
+#[test]
+fn test_lazy_reflow_keeps_selection_across_reflowed_block() {
+    use crate::terminal::Side;
+    use warpui::text::SelectionType;
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    block_list.lazy_reflow_forced = true;
+    let base = block_list.size().columns();
+    let long_output = format!("{}\n", "x".repeat(base * 2));
+    for i in 0..60 {
+        insert_block(&mut block_list, &format!("command {i}\n"), &long_output);
+    }
+    // Widening makes every long line fit on one row, so each reflowed block gets shorter.
+    resize_columns(&mut block_list, base * 3);
+    assert!(block_list.blocks()[0].is_reflow_stale());
+    assert!(block_list.blocks()[1].is_reflow_stale());
+    let tail_block = BlockIndex::from(block_list.blocks().len() - 2);
+    assert!(!block_list.blocks()[tail_block.0].is_reflow_stale());
+
+    // Select from the start of stale block 0's output to the middle of a current block, with
+    // stale blocks 1.. in between.
+    let head = BlockListPoint::try_from_within_block_point(
+        &WithinBlock::new(Point { row: 0, col: 0 }, 0.into(), GridType::Output),
+        &block_list,
+    )
+    .unwrap();
+    let tail = BlockListPoint::try_from_within_block_point(
+        &WithinBlock::new(Point { row: 0, col: 3 }, tail_block, GridType::Output),
+        &block_list,
+    )
+    .unwrap();
+    block_list.start_selection(head, SelectionType::Simple, Side::Left);
+    block_list.update_selection(tail, Side::Right);
+    let anchors = |block_list: &BlockList| {
+        let (start, end) = block_list
+            .selection()
+            .expect("selection must survive the reflow")
+            .clone()
+            .clamp_to_grid_points(block_list)
+            .expect("selection must resolve to grid points");
+        (
+            (start.block_index, start.grid, *start.get()),
+            (end.block_index, end.grid, *end.get()),
+        )
+    };
+    let before = anchors(&block_list);
+
+    // Reflow the stale blocks between the anchors (heights change); the head block stays put.
+    let heights_before = block_list.block_heights().summary().height;
+    assert!(block_list.reflow_stale_blocks_in_range(1.into(), 10.into()) > 0);
+    assert!(block_list.block_heights().summary().height != heights_before);
+    assert_eq!(anchors(&block_list), before);
+}
+
 #[test]
 fn test_eviction_never_removes_the_active_block() {
     let mut block_list = block_list_with_finished_blocks(4);

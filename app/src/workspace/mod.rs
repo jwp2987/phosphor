@@ -5,6 +5,8 @@ pub mod bonus_grant_notification_model;
 // warpctrl install button from outside this module.
 #[cfg(target_os = "macos")]
 pub(crate) mod cli_install;
+#[cfg(feature = "local_fs")]
+mod code_open_queue;
 mod close_session_confirmation_dialog;
 pub(crate) mod cross_window_tab_drag;
 pub mod delete_conversation_confirmation_dialog;

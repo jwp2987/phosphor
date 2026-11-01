@@ -929,6 +929,22 @@ enum TabBarSlot {
     },
 }
 
+/// How long `open_code` waits for the file size check before giving up on it (hung mount).
+/// A safety net only: the normal path is driven by the check's result, never by this.
+#[cfg(feature = "local_fs")]
+const CODE_OPEN_STAT_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One queued `open_code` request, applied once its size check finishes.
+#[cfg(feature = "local_fs")]
+struct PendingCodeOpen {
+    source: CodeSource,
+    layout: EditorLayout,
+    line_col: Option<LineAndColumnArg>,
+    preview: bool,
+    additional_paths: Vec<PathBuf>,
+    main_path: Option<PathBuf>,
+}
+
 pub struct Workspace {
     window_id: WindowId,
     pub(crate) tabs: Vec<TabData>,
@@ -1082,6 +1098,9 @@ pub struct Workspace {
     /// When true, this workspace was created to receive a transferred PaneGroup.
     /// The placeholder tab will be replaced when adopt_transferred_pane_group is called.
     pending_pane_group_transfer: bool,
+    /// `open_code` requests whose size check is in flight, applied in request order (#1370 F5).
+    #[cfg(feature = "local_fs")]
+    pending_code_opens: super::code_open_queue::CodeOpenQueue<PendingCodeOpen>,
     /// When true, `on_window_closed` skips detaching panes, so pane groups
     /// transferred to another window aren't torn down when this window closes
     /// via `TerminationMode::ContentTransferred`.
@@ -3543,6 +3562,8 @@ impl Workspace {
             hoa_onboarding_flow: None,
             hoa_vtabs_callout_pinned_position: None,
             pending_pane_group_transfer: false,
+            #[cfg(feature = "local_fs")]
+            pending_code_opens: Default::default(),
             suppress_detach_panes_on_window_close: false,
             is_tab_drag_preview: false,
             new_session_sidecar_menu,
@@ -8168,36 +8189,122 @@ impl Workspace {
             local_paths.push(path);
         }
         local_paths.extend(additional_paths.iter().cloned());
-        if local_paths.is_empty() || !crate::util::file::size_guard::enabled() {
-            self.open_code_unchecked(source, layout, line_col, preview, additional_paths, ctx);
-            return;
-        }
 
+        // The tab the user asked from: the file opens there even if they switch tabs while the
+        // size check runs. Requests are applied in the order they were made (see
+        // `code_open_queue`), so a slow check on A cannot let B open first.
+        let target = self.active_tab_pane_group().id();
         let main_path = source.location().and_then(|location| match location {
             crate::code::buffer_location::BufferLocation::Local(path) => Some(path),
             _ => None,
         });
-        let additional_paths = additional_paths.to_vec();
+        let request = PendingCodeOpen {
+            source,
+            layout,
+            line_col,
+            preview,
+            additional_paths: additional_paths.to_vec(),
+            main_path,
+        };
+
+        if local_paths.is_empty() || !crate::util::file::size_guard::enabled() {
+            self.pending_code_opens.push_checked(target, request);
+            let ready = self.pending_code_opens.drain_ready();
+            self.apply_ready_code_opens(ready, ctx);
+            return;
+        }
+
+        let id = self.pending_code_opens.push_pending(target, request);
         ctx.spawn(
             async move { crate::util::file::size_guard::oversized_paths(&local_paths) },
             move |me, oversized, ctx| {
-                for (path, len) in &oversized {
-                    let message = crate::util::file::size_guard::too_large_message(path, *len);
-                    me.toast_stack.update(ctx, |view, ctx| {
-                        view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
-                    });
-                }
-                if main_path
-                    .as_ref()
-                    .is_some_and(|main| oversized.iter().any(|(path, _)| path == main))
-                {
-                    return;
-                }
-                let additional_paths =
-                    crate::util::file::size_guard::without_oversized(&additional_paths, &oversized);
-                me.open_code_unchecked(source, layout, line_col, preview, &additional_paths, ctx);
+                let ready = me.pending_code_opens.resolve(id, oversized);
+                me.apply_ready_code_opens(ready, ctx);
             },
         );
+        // Give-up safety net for a stat that never returns (hung mount): there is no event to
+        // wait for in that case, because the OS call simply does not come back. Without this
+        // the request, and every open queued behind it, would stall with no feedback.
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(CODE_OPEN_STAT_GIVE_UP).await;
+            },
+            move |me, _, ctx| {
+                let ready = me.pending_code_opens.give_up(id);
+                me.apply_ready_code_opens(ready, ctx);
+            },
+        );
+    }
+
+    /// Opens, in order, the requests whose size check has finished (or been given up on), each in
+    /// the tab it was requested from.
+    #[cfg(feature = "local_fs")]
+    fn apply_ready_code_opens(
+        &mut self,
+        ready: Vec<super::code_open_queue::ReadyCodeOpen<PendingCodeOpen>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use super::code_open_queue::CodeOpenOutcome;
+        for ready in ready {
+            let PendingCodeOpen {
+                source,
+                layout,
+                line_col,
+                preview,
+                additional_paths,
+                main_path,
+            } = ready.payload;
+            let oversized = match ready.outcome {
+                CodeOpenOutcome::Checked(oversized) => oversized,
+                CodeOpenOutcome::GaveUp => {
+                    log::warn!(
+                        "open_code: file size check did not return within {:?}; not opening {:?}",
+                        CODE_OPEN_STAT_GIVE_UP,
+                        main_path
+                    );
+                    let message = format!(
+                        "Could not check the size of {} (the file system is not responding), so it was not opened.",
+                        main_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "the file".to_string())
+                    );
+                    self.toast_stack.update(ctx, |view, ctx| {
+                        view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
+                    });
+                    continue;
+                }
+            };
+            for (path, len) in &oversized {
+                let message = crate::util::file::size_guard::too_large_message(path, *len);
+                self.toast_stack.update(ctx, |view, ctx| {
+                    view.add_ephemeral_toast(DismissibleToast::error(message), ctx);
+                });
+            }
+            if main_path
+                .as_ref()
+                .is_some_and(|main| oversized.iter().any(|(path, _)| path == main))
+            {
+                continue;
+            }
+            let additional_paths =
+                crate::util::file::size_guard::without_oversized(&additional_paths, &oversized);
+
+            // Open in the requested tab. If the user has moved on, bring that tab forward so the
+            // file lands where they asked; if it was closed meanwhile, fall back to the active tab.
+            match self
+                .tabs
+                .iter()
+                .position(|t| t.pane_group.id() == ready.target)
+            {
+                Some(index) if index != self.active_tab_index => {
+                    self.activate_tab_internal(index, ctx);
+                }
+                Some(_) => {}
+                None => log::info!("open_code: requested tab was closed; opening in the active tab"),
+            }
+            self.open_code_unchecked(source, layout, line_col, preview, &additional_paths, ctx);
+        }
     }
 
     #[cfg(feature = "local_fs")]

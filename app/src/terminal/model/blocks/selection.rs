@@ -1241,6 +1241,44 @@ impl BlockList {
         }
     }
 
+    /// Re-addresses the selection after one block's height changed from `old_height` to
+    /// `new_height` (a deferred reflow, #1303). `top` is the block's first row before the change.
+    /// Selections are addressed by absolute row, so an anchor below the block moves by the height
+    /// delta and an anchor above it stays; the selected text is unchanged. An anchor INSIDE the
+    /// block cannot be re-addressed (the wrap changed under it), so the selection is cleared.
+    /// Returns whether the selection survived (also true when there was none).
+    pub(super) fn remap_selection_for_block_height_change(
+        &mut self,
+        top: Lines,
+        old_height: Lines,
+        new_height: Lines,
+    ) -> bool {
+        let Some(mut selection) = self.selection.take() else {
+            return true;
+        };
+        let bottom = top + old_height;
+        let delta = new_height - old_height;
+        let mut inside = false;
+        for anchor in [&mut selection.head, &mut selection.tail] {
+            let row = anchor.point.row;
+            if row >= bottom {
+                anchor.point.row = row + delta;
+            } else if row >= top {
+                inside = true;
+            }
+        }
+        if inside {
+            // Restore then clear so the TextSelectionChanged event fires exactly as before.
+            self.selection = Some(selection);
+            self.clear_selection();
+            return false;
+        }
+        // The double-click override is block-relative and may point into the reflowed block.
+        selection.smart_select_override = None;
+        self.set_selection(selection);
+        true
+    }
+
     /// Update the selection after a grid's content was truncated because it hit the maximum number
     /// of lines in the grid.
     pub(super) fn update_selection_after_grid_truncation(&mut self) {
