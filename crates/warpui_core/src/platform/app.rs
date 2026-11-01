@@ -142,6 +142,9 @@ impl AppCallbackDispatcher {
         if let Some(callback) = &mut self.callbacks.on_will_terminate {
             self.ui_app.update(|ctx| callback(ctx));
         }
+
+        // Last, so a copy made during shutdown is covered too (#1330).
+        self.ui_app.update(|ctx| ctx.clipboard().flush_on_exit());
     }
 
     pub fn should_terminate_app(&mut self) -> ApproveTerminateResult {

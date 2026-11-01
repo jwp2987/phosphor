@@ -29,3 +29,11 @@ Re-pin: diff `src/` against the new upstream release and re-apply the two consta
   hold the UI thread for 10 s.
 - Re-pin: re-apply the thread-local, `first_answer_deadline`, the `timeout_end` line in
   `read_single`, and the re-export in `platform/linux/mod.rs` and `lib.rs`.
+
+`src/platform/linux/x11.rs` (exit handoff, #1330):
+
+- New `hand_over_to_clipboard_manager()` (re-exported like `set_first_answer_deadline`): runs the
+  existing bounded (100 ms) `SAVE_TARGETS` handover on the process-global clipboard without
+  dropping it. Upstream hands over only when the last `Clipboard` handle drops, which an app that
+  keeps handles for its whole life never reaches.
+- Re-pin: re-apply the function and the two re-exports.

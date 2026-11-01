@@ -127,6 +127,20 @@ pub fn set_first_answer_deadline(deadline: Option<Instant>) {
 	FIRST_ANSWER_DEADLINE.with(|d| d.set(deadline));
 }
 
+/// Asks the clipboard manager (ICCCM `SAVE_TARGETS`) to take over the CLIPBOARD data this process
+/// owns, without tearing the clipboard down (PHOSPHOR, #1330). Upstream does this only when the
+/// LAST `Clipboard` handle drops; a long-lived app keeps handles for its whole life and exits
+/// without dropping them, so a copy was lost on quit. Bounded: the handover waits at most 100 ms
+/// for the manager. A no-op when this process owns nothing or no X11 clipboard was ever opened.
+pub fn hand_over_to_clipboard_manager() {
+	let global = CLIPBOARD.lock();
+	if let Some(global) = global.as_ref() {
+		if let Err(e) = global.inner.ask_clipboard_manager_to_request_our_data() {
+			error!("Could not hand the clipboard data over to the clipboard manager: {}", e);
+		}
+	}
+}
+
 /// The deadline for the owner's first answer to a request made at `now`.
 fn first_answer_deadline(now: Instant, cap: Option<Instant>) -> Instant {
 	let deadline = now + LONG_TIMEOUT_DUR;
