@@ -170,6 +170,10 @@ fn lock_retry_interval(attempts: u32) -> std::time::Duration {
 #[derive(Default)]
 struct RetryQueue {
     events: std::collections::VecDeque<ModelEvent>,
+    /// The event that ran last is applied inside a transaction that is still open
+    /// because its `COMMIT` was blocked by a lock (#1297). It is committed before
+    /// anything else runs, so it is neither lost nor applied twice.
+    commit_pending: bool,
 }
 
 impl RetryQueue {
@@ -185,15 +189,16 @@ impl RetryQueue {
     }
 
     fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.events.is_empty() && !self.commit_pending
     }
 
     fn len(&self) -> usize {
-        self.events.len()
+        self.events.len() + usize::from(self.commit_pending)
     }
 
     fn clear(&mut self) {
         self.events.clear();
+        self.commit_pending = false;
     }
 }
 
@@ -216,14 +221,16 @@ fn in_open_transaction(conn: &mut SqliteConnection) -> bool {
 
 /// Leaves `conn` in autocommit mode, returning whether it was not.
 ///
-/// diesel's `transaction()` returns early when `COMMIT` fails (a lock held by
-/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite keeps the
-/// transaction open, and diesel keeps counting depth 1. Every later
-/// `transaction()` is then a `SAVEPOINT` inside it, which is released but
+/// diesel's `transaction()` used to return early when `COMMIT` failed (a lock held by
+/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite kept the
+/// transaction open, and diesel kept counting depth 1. Every later
+/// `transaction()` was then a `SAVEPOINT` inside it, which is released but
 /// never committed: the writer logs success while nothing reaches the file
-/// until the connection closes (#971). The lingering transaction is the intended
-/// write, so it is committed again through diesel (keeping its depth in step);
-/// only if that keeps failing is it rolled back.
+/// until the connection closes (#971). diesel 2.3.14 rolls the failed `COMMIT`
+/// back itself (#1286), but a transaction can still be left open by a raw
+/// `COMMIT` that was blocked. The lingering transaction is the intended
+/// write, so it is committed again ([`commit_open_transaction`], which keeps
+/// diesel's depth in step); only if that keeps failing is it rolled back.
 fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
     use diesel::connection::{AnsiTransactionManager, TransactionManager};
 
@@ -234,14 +241,10 @@ fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
         "The SQLite writer was left inside an open transaction (a COMMIT was blocked by a \
          lock); committing it now"
     );
-    for _ in 0..8 {
-        match AnsiTransactionManager::commit_transaction(conn) {
-            Ok(()) if !in_open_transaction(conn) => return true,
-            Ok(()) => {}
-            // diesel believes nothing is open, SQLite disagrees: nothing to commit through.
-            Err(Error::NotInTransaction) => break,
-            Err(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
-        }
+    match commit_open_transaction(conn) {
+        CommitOutcome::Committed => return true,
+        CommitOutcome::Blocked => log::warn!("Retrying the blocked COMMIT failed: still locked"),
+        CommitOutcome::Failed(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
     }
     for _ in 0..8 {
         if !in_open_transaction(conn) {
@@ -259,6 +262,66 @@ fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
         }
     }
     true
+}
+
+/// `COMMIT` attempts made back to back (each already waits out the connection's busy timeout)
+/// before a blocked commit is handed to the writer's retry timer (#1297).
+const COMMIT_ATTEMPTS: u32 = 3;
+/// Pause before the second `COMMIT` attempt; doubles for the third.
+const COMMIT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+
+enum CommitOutcome {
+    Committed,
+    /// Still blocked by a lock; the transaction is left open, its writes intact.
+    Blocked,
+    /// A real (non-lock) error; the transaction has been rolled back.
+    Failed(Error),
+}
+
+/// Commits the open top-level transaction, retrying while a lock blocks it (#1297).
+///
+/// diesel 2.3.14 rolls back a top-level transaction whose `COMMIT` fails
+/// (`AnsiTransactionManager::commit_transaction`), and the event inside it has
+/// already been consumed, so a lock at `COMMIT` would lose the write. The `COMMIT` is
+/// therefore sent directly: SQLite keeps the transaction open when it is refused with
+/// `SQLITE_BUSY`, and it can be sent again. Runs on the writer thread only.
+fn commit_open_transaction(conn: &mut SqliteConnection) -> CommitOutcome {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    for attempt in 0..COMMIT_ATTEMPTS {
+        match conn.batch_execute("COMMIT;") {
+            Ok(()) => {
+                // diesel still counts the transaction it did not see end; committing
+                // again fails ("no transaction is active") and resets that count.
+                let _ = AnsiTransactionManager::commit_transaction(conn);
+                return CommitOutcome::Committed;
+            }
+            Err(err)
+                if super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+                    && in_open_transaction(conn) =>
+            {
+                if attempt + 1 < COMMIT_ATTEMPTS {
+                    std::thread::sleep(COMMIT_RETRY_PAUSE * (1 << attempt));
+                }
+            }
+            Err(err) => {
+                rollback_open_transaction(conn);
+                return CommitOutcome::Failed(err);
+            }
+        }
+    }
+    CommitOutcome::Blocked
+}
+
+/// Rolls back the open top-level transaction, if there is one.
+fn rollback_open_transaction(conn: &mut SqliteConnection) {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    if AnsiTransactionManager::rollback_transaction(conn).is_err() && in_open_transaction(conn) {
+        if let Err(err) = conn.batch_execute("ROLLBACK;") {
+            log::error!("Could not roll back a failed write: {err}");
+        }
+    }
 }
 
 /// Whether another connection currently blocks writes to the database (waits
@@ -314,6 +377,17 @@ fn drain_retry_queue(
     conn: &mut SqliteConnection,
     database_path: &Path,
 ) -> DrainOutcome {
+    // The write whose COMMIT was blocked goes first (#1297).
+    if queue.commit_pending {
+        match commit_open_transaction(conn) {
+            CommitOutcome::Committed => queue.commit_pending = false,
+            CommitOutcome::Blocked => return DrainOutcome::Locked,
+            CommitOutcome::Failed(err) => {
+                queue.commit_pending = false;
+                report_db_error("Model", err.into(), database_path);
+            }
+        }
+    }
     while !queue.is_empty() {
         if write_lock_blocked(conn) {
             return DrainOutcome::Locked;
@@ -321,9 +395,19 @@ fn drain_retry_queue(
         let Some(event) = queue.events.pop_front() else {
             break;
         };
-        if let Err(err) = handle_model_event(event, conn) {
+        match handle_model_event(event, conn) {
+            EventOutcome::Finished(Ok(())) => {}
             // Not a retryable lock (the probe just succeeded): report and move on.
-            report_db_error("Model", err, database_path);
+            EventOutcome::Finished(Err(err)) => report_db_error("Model", err, database_path),
+            // Lost the lock again after the probe: nothing ran, keep its place.
+            EventOutcome::NotStarted(event) => {
+                queue.events.push_front(event);
+                return DrainOutcome::Locked;
+            }
+            EventOutcome::CommitBlocked => {
+                queue.commit_pending = true;
+                return DrainOutcome::Locked;
+            }
         }
     }
     DrainOutcome::Done
@@ -1107,6 +1191,15 @@ unsafe fn init_logging() { unsafe {
         // valid C string pointer.
         let msg = unsafe { CStr::from_ptr(msg) };
         let err_message = String::from_utf8_lossy(msg.to_bytes());
+        // The writer ends diesel's transaction count with a `COMMIT` SQLite has to refuse
+        // after a raw one succeeded (`commit_open_transaction`, #1297); that is routine.
+        let level = if primary_error_code == sqlite3::SQLITE_ERROR
+            && err_message.contains("no transaction is active")
+        {
+            log::Level::Debug
+        } else {
+            level
+        };
         // The local logging path shouldn't panic, but still guard against
         // unwinding across the FFI boundary.
         // Damage makes every statement fail the same way; log each code once
@@ -2483,7 +2576,32 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                             _ => None,
                                         };
                                         let started = std::time::Instant::now();
-                                        let result = handle_model_event(event, conn);
+                                        let outcome = handle_model_event(event, conn);
+                                        // #1297: the write won the lock probe and then lost
+                                        // it again. Either it never started (the event is
+                                        // handed back) or its COMMIT is blocked and the
+                                        // transaction is held open; both are retried in order.
+                                        let result = match outcome {
+                                            EventOutcome::Finished(result) => result,
+                                            EventOutcome::NotStarted(event) => {
+                                                retry_queue.push(event);
+                                                deferred = true;
+                                                Err(anyhow::anyhow!("database is locked"))
+                                            }
+                                            EventOutcome::CommitBlocked => {
+                                                retry_queue.commit_pending = true;
+                                                deferred = true;
+                                                Err(anyhow::anyhow!(
+                                                    "database is locked (COMMIT is blocked)"
+                                                ))
+                                            }
+                                        };
+                                        if deferred {
+                                            retry_deadline.get_or_insert_with(|| {
+                                                std::time::Instant::now()
+                                                    + lock_retry_interval(snapshot_retries)
+                                            });
+                                        }
                                         if let Some(conversation_id) = conversation_write {
                                             log::debug!(
                                                 "Conversation {conversation_id} write finished \
@@ -2497,10 +2615,10 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 }
                             };
                             // A blocked snapshot is kept in `pending_snapshot` and a
-                            // blocked event in `retry_queue`; both are retried. An
-                            // event that fails on a lock *during* execution (it won
-                            // the probe, then lost a race) is lost, so it is
-                            // reported as a failure at once.
+                            // blocked event (or blocked COMMIT) in `retry_queue`; both
+                            // are retried. An event that fails on a lock *during*
+                            // execution can no longer happen: it is either handed back
+                            // unstarted or its transaction is kept open (#1297).
                             let lock_blocked = deferred
                                 || (is_snapshot
                                     && result.as_ref().err().is_some_and(|err| {
@@ -2594,16 +2712,65 @@ fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
 /// * [`ModelEvent::PauseAndRemoveDatabase`]
 /// * [`ModelEvent::ReconstructAndResume`]
 /// * [`ModelEvent::Terminate`]
-fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> anyhow::Result<()> {
+///
+/// The event runs inside one `BEGIN IMMEDIATE` transaction that is committed by
+/// [`commit_open_transaction`], so a lock cannot cost it its write (#1297): taking the
+/// write lock up front means a refusal happens before the event is consumed (it is
+/// handed back as [`EventOutcome::NotStarted`]), and a `COMMIT` that stays blocked leaves
+/// the finished transaction open ([`EventOutcome::CommitBlocked`]) for the caller to commit
+/// later. A failing event is rolled back as a whole.
+fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> EventOutcome {
+    use diesel::connection::AnsiTransactionManager;
+
     let slow_start = instant::Instant::now();
     let kind = model_event_kind(&event);
-    let result = handle_model_event_unsettled(event, connection);
+    let mut begin = AnsiTransactionManager::begin_transaction_sql(connection, "BEGIN IMMEDIATE;");
+    if begin.is_err() && !matches!(&begin, Err(err) if is_lock_error_of(err)) {
+        // A transaction an earlier write left open is ended first.
+        settle_stray_transaction(connection);
+        begin = AnsiTransactionManager::begin_transaction_sql(connection, "BEGIN IMMEDIATE;");
+    }
+    if let Err(err) = begin {
+        return if is_lock_error_of(&err) {
+            EventOutcome::NotStarted(event)
+        } else {
+            EventOutcome::Finished(Err(
+                anyhow::Error::new(err).context("error starting a write")
+            ))
+        };
+    }
+    let mut result = handle_model_event_unsettled(event, connection);
+    if result.is_ok() {
+        match commit_open_transaction(connection) {
+            CommitOutcome::Committed => {}
+            // Left open on purpose: settling it here would end it.
+            CommitOutcome::Blocked => return EventOutcome::CommitBlocked,
+            CommitOutcome::Failed(err) => {
+                result = Err(anyhow::Error::new(err).context("error committing a write"));
+            }
+        }
+    } else {
+        rollback_open_transaction(connection);
+    }
     // Whatever the outcome, the next write must start from autocommit (#971).
     settle_stray_transaction(connection);
     SLOW_DB_WRITE.finish(slow_start, || {
         format!("event={kind}, ok={}", result.is_ok())
     });
-    result
+    EventOutcome::Finished(result)
+}
+
+fn is_lock_error_of(err: &Error) -> bool {
+    super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+}
+
+enum EventOutcome {
+    /// The event ran to completion (committed, or rolled back on error).
+    Finished(anyhow::Result<()>),
+    /// The write lock was refused before anything ran; the event is handed back.
+    NotStarted(ModelEvent),
+    /// The event ran but its `COMMIT` is blocked; the transaction is still open.
+    CommitBlocked,
 }
 
 /// A database write that holds the single writer this long delays every write behind it (#1146).
