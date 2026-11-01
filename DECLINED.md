@@ -2589,3 +2589,24 @@ enough" for correctness.
 - **tmux `command sleep 1`** (`model/tmux/commands.rs`). Keeps the background window's pane alive
   one second after `cat` ends so tmux does not tear the window down before its output has been
   read; tmux emits no "output consumed" notification to wait on.
+
+## SIGINT to the foreground process group as a Ctrl-C fast path — declined 2026-11-01 (#1408)
+
+Considered: on a ^C, `tcgetpgrp` + `killpg(SIGINT)` straight from the UI thread (as some terminals
+do), ahead of the byte reaching the pty loop. Declined: the kernel line discipline already turns
+the ^C byte into exactly that signal (when `ISIG` is set), so a direct `killpg` saves only the
+pty-loop hop, and it cannot replace the byte (the ^C echo, the input/output flush and a readline
+prompt in raw mode, where the byte is the interrupt, all need it). Sending both delivers two
+SIGINTs, and a program that treats a second one as "force quit" (python, npm, docker compose)
+dies. The latency is cut where it is spent instead: input waiting in the pty loop's channel is now
+written between read-and-parse slices and before the reader blocks on the model lock the UI holds
+(`service_waiting_input`, `local_tty/event_loop.rs`), not after a whole pass.
+
+## Quit give-up (15 s) — a timer kept on purpose (#1410)
+
+`on_will_terminate` arms `warpui::platform::shutdown_progress::arm_quit_give_up`: if a quit that no
+signal started is still running 15 s later, the process logs the step that was running and ends.
+The signal quit paths already had a 5 s watchdog; the dialog/menu/key/last-window quit had no bound,
+so a step that never finishes (persistence writer drain, ControlMaster stop, terminal server
+teardown) left the app alive. Every step still runs to completion in order; the timer only guards
+a step that never ends and is logged when it fires.

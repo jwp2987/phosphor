@@ -166,6 +166,13 @@ pub struct State {
     /// [`State::coalesce_keys_into`]). On for a pty whose writes complete asynchronously (the
     /// Windows ConPTY pipe), where each write must wait for the previous one's completion event.
     coalesce_keys: bool,
+    /// A terminate request (`Shutdown` / `ChildExited`) met while draining the channel in the
+    /// middle of a read pass (#1408). Acted on when the pass returns; the bytes already read are
+    /// still parsed first, so the tail of the output is not lost.
+    terminate_requested: Option<bool>,
+    /// A pty write error met while writing in the middle of a read pass (#1408); reported when
+    /// the pass returns.
+    mid_read_write_error: Option<io::Error>,
 }
 
 /// `PHOSPHOR_PTY_COALESCE=0` turns key-write coalescing off.
@@ -272,6 +279,8 @@ impl Default for State {
             last_user_write_at: None,
             user_input_received_at: None,
             coalesce_keys: false,
+            terminate_requested: None,
+            mid_read_write_error: None,
         }
     }
 }
@@ -1131,17 +1140,32 @@ where
         state: &mut State,
         buf: &mut [u8],
         can_read: &mut bool,
+        can_write: &mut bool,
     ) -> io::Result<()> {
         warpui::profiling::zone!("pty_read");
         let mut bytes_in_buffer = 0;
         let mut bytes_processed = 0;
 
+        // A clone of the handle, so the guard borrows this local and not `self`: the loop below
+        // services waiting input (`&mut self`) while the guard is held (#1408).
+        let model = self.terminal.clone();
         let mut terminal = None;
 
         // We read up to sizeof(buf) to limit the amount of time spent
         // reading from the PTY for a given event. Currently, the buf
         // has size [`MAX_READ`].
         loop {
+            // #1408: a ^C (or any keystroke) that arrived since the last look is written now, not
+            // after this pass. The pass can last a UI frame (the reader waits for the model lock
+            // the UI holds while it paints) plus a parse of up to a full read buffer.
+            self.service_waiting_input(state, can_write);
+            // Nothing read is left unparsed here, so a parked terminate or write error ends the
+            // pass without losing output.
+            if bytes_in_buffer == 0
+                && (state.terminate_requested.is_some() || state.mid_read_write_error.is_some())
+            {
+                break;
+            }
             match self.pty.reader().read(&mut buf[bytes_in_buffer..]) {
                 Ok(0) if bytes_in_buffer == 0 => {
                     // If we get 0 here with an empty buffer (guaranteed if
@@ -1170,7 +1194,7 @@ where
 
             let terminal = match &mut terminal {
                 Some(terminal) => terminal,
-                None => terminal.insert(match self.terminal.try_lock() {
+                None => terminal.insert(match model.try_lock() {
                     // If we've buffered a lot while the terminal was locked elsewhere, block
                     // on it rather than read on: the wait is one hold by the other thread
                     // (fair mutex), and the parse that follows stays small (#1135). The same
@@ -1179,7 +1203,7 @@ where
                     // `read` + `try_lock` for as long as the UI paints, a whole core burnt
                     // while the echo of a keystroke waits for the lock anyway.
                     None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION || !*can_read => {
-                        self.terminal.lock()
+                        model.lock()
                     }
                     // Otherwise, if we failed to acquire the lock, try to read more
                     // data into the buffer.
@@ -1216,6 +1240,10 @@ where
                 if offset < bytes_in_buffer {
                     FairMutexGuard::bump(terminal);
                 }
+                // #1408: between parse slices too, so a keystroke waits for one slice (16 KiB)
+                // at most, not for everything read in this pass (up to 256 KiB). Writing to the
+                // pty never needs the model lock, so doing it with the lock held is fine.
+                self.service_waiting_input(state, can_write);
             }
 
             bytes_processed += bytes_in_buffer;
@@ -1233,7 +1261,10 @@ where
             // pass here instead of after up to MAX_LOCKED_READ more bytes. `service_io` takes
             // the message and writes it before it reads on, so under a flood a Ctrl-C waits for
             // one read-and-parse rather than a whole pass.
-            if self.rx.has_pending() {
+            if self.rx.has_pending()
+                || state.terminate_requested.is_some()
+                || state.mid_read_write_error.is_some()
+            {
                 break;
             }
         }
@@ -1262,6 +1293,29 @@ where
         }
 
         Ok(())
+    }
+
+    /// Takes what is waiting in the channel and writes it, from inside a read pass (#1408). One
+    /// atomic load when nothing waits. A terminate request or a write error is parked in `state`
+    /// for `service_io` to act on when the pass returns: the pass itself must finish parsing the
+    /// bytes it has already read.
+    fn service_waiting_input(&mut self, state: &mut State, can_write: &mut bool) {
+        if !self.rx.has_pending()
+            || state.terminate_requested.is_some()
+            || state.mid_read_write_error.is_some()
+        {
+            return;
+        }
+        if let ChannelResult::TerminateLoop { child_exited } = self.drain_recv_channel(state) {
+            state.terminate_requested = Some(child_exited);
+            return;
+        }
+        self.refresh_reply_gate(state);
+        if state.needs_write() && *can_write {
+            if let Err(err) = self.pty_write(state, can_write) {
+                state.mid_read_write_error = Some(err);
+            }
+        }
     }
 
     #[inline]
@@ -1350,7 +1404,7 @@ where
         self.refresh_reply_gate(state);
         while *can_read || (state.needs_write() && *can_write) {
             if *can_read {
-                if let Err(err) = self.pty_read(state, buf, can_read) {
+                if let Err(err) = self.pty_read(state, buf, can_read, can_write) {
                     // On Linux, a `read` on the master side of a PTY can fail with `EIO` if the
                     // client side hangs up. `io::Error::kind()` cannot be used here: EIO maps
                     // to `ErrorKind::Uncategorized`, which is unstable and deliberately
@@ -1368,6 +1422,14 @@ where
 
                     error!("Error reading from PTY in event loop: {err}");
                     return Err(());
+                }
+
+                if let Some(err) = state.mid_read_write_error.take() {
+                    error!("Error writing to PTY in event loop: {err}");
+                    return Err(());
+                }
+                if let Some(child_exited) = state.terminate_requested.take() {
+                    return Ok(ChannelResult::TerminateLoop { child_exited });
                 }
 
                 // Under a sustained flood the pty never reports `WouldBlock`, so this loop

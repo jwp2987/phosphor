@@ -947,6 +947,67 @@ fn input_queued_during_a_flood_is_written_before_the_flood_ends() {
     assert!(!can_read);
 }
 
+/// #1408: input that is already waiting when a read pass starts is written before the pass reads
+/// anything, not after the first read-and-parse. On the old loop the channel was looked at only
+/// after a whole pass (up to 64 KiB read and parsed), so `reads_at_first_write` is at least 1.
+#[test]
+fn input_waiting_when_a_read_pass_starts_is_written_before_the_first_read() {
+    let (mut event_loop, tx, _, at_first_write, written) = flood_harness(0x4000, 400);
+    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+
+    assert_eq!(&*written.lock().unwrap(), b"\x03");
+    assert_eq!(
+        at_first_write.load(Ordering::SeqCst),
+        0,
+        "the ^C was written only after reads"
+    );
+}
+
+/// #1408: a ^C queued while the reader waits for the terminal model lock the UI holds is written
+/// at once, not after the UI lets go. The "UI" here never lets go until the ^C has reached the
+/// pty, which the old loop could not do: it looked at the channel only after the blocking
+/// `lock()` returned, so the wait below gives up and the assertion fails.
+#[test]
+fn ctrl_c_is_written_while_the_ui_holds_the_model_lock() {
+    let (mut event_loop, tx, _, _, written) = flood_harness(0x4000, 64);
+    let model = event_loop.terminal.clone();
+    let ui_hold = model.lock();
+    tx.send(Message::Input(Cow::Borrowed(b"\x03"))).unwrap();
+
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let reached_pty = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            let (mut can_read, mut can_write) = (true, true);
+            event_loop.service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        });
+        // The give-up is only for the failure case; a passing run sees the byte at once.
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut seen = false;
+        while std::time::Instant::now() < give_up {
+            if written.lock().unwrap().contains(&0x03) {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drop(ui_hold);
+        worker.join().expect("worker").expect("service_io");
+        seen
+    });
+    assert!(
+        reached_pty,
+        "the ^C waited for the UI to release the model lock"
+    );
+}
+
 /// Several inputs queued during a flood are written in the order they were sent.
 #[test]
 fn inputs_during_a_flood_keep_their_order() {
