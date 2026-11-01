@@ -154,6 +154,44 @@ pub(crate) fn terminate_shell_tree(shell_pid: u32) {
     }
 }
 
+/// Ends `child`'s process tree and reaps the shell on a short-lived "PTY child reaper" thread, so
+/// no caller (the pty event loop, the terminal server's single loop, the UI thread) ever sits in
+/// the hang-up grace period or in `wait`. The thread owns the child, so the reaping precondition
+/// of [`terminate_shell_tree`] holds by construction.
+///
+/// The exit itself is waited for with a blocking `waitpid` (woken by the kernel, no polling);
+/// the only polling left is the existence probe of non-child foreground groups inside
+/// [`terminate_shell_tree`], which has no event source (a process group can only be probed, and
+/// those processes are not our children), bounded by [`HANGUP_GRACE`] and now off every loop.
+pub(crate) fn terminate_and_reap(mut child: std::process::Child) {
+    let work = move || {
+        if matches!(child.try_wait(), Ok(None)) {
+            terminate_shell_tree(child.id());
+        }
+        // Direct kill so the shell dies even if the group signals failed.
+        let _ = child.kill();
+        if let Err(err) = child.wait() {
+            log::warn!("Failed to reap pty shell {}: {err}", child.id());
+        }
+    };
+    let work = std::sync::Arc::new(std::sync::Mutex::new(Some(work)));
+    let thread_work = work.clone();
+    let spawned = std::thread::Builder::new()
+        .name("PTY child reaper".into())
+        .spawn(move || {
+            if let Some(work) = thread_work.lock().ok().and_then(|mut w| w.take()) {
+                work();
+            }
+        });
+    if let Err(err) = spawned {
+        // Out of threads: do it here rather than leak a zombie and a live process tree.
+        log::error!("Failed to spawn the child reaper thread ({err}); reaping inline");
+        if let Some(work) = work.lock().ok().and_then(|mut w| w.take()) {
+            work();
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "process_tree_tests.rs"]
 mod tests;

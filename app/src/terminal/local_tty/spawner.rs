@@ -34,18 +34,26 @@ pub trait PtyHandle: Send + Sync {
 /// A handle for a pty that is a direct child of the current process.
 #[cfg(unix)]
 struct DirectPtyHandle {
-    child: Child,
+    /// `None` once [`PtyHandle::kill`] has handed the child to a reaper thread.
+    child: Option<Child>,
+    /// The child's pid, kept after the hand-off so `pid()` never reports 0 (a 0 pid reaching
+    /// `kill`/`killpg` would signal Phosphor's own process group).
+    pid: u32,
 }
 
 #[cfg(unix)]
 impl PtyHandle for DirectPtyHandle {
     fn pid(&self) -> u32 {
-        self.child.id()
+        self.pid
     }
 
     fn has_process_terminated(&mut self) -> Result<bool> {
+        let Some(child) = self.child.as_mut() else {
+            // Handed to the reaper by `kill`.
+            return Ok(true);
+        };
         // If the child has exited, try_wait will return Ok(Some(exit_status)).
-        self.child
+        child
             .try_wait()
             .map(|inner| inner.is_some())
             .map_err(anyhow::Error::from)
@@ -53,16 +61,14 @@ impl PtyHandle for DirectPtyHandle {
 
     fn kill(&mut self) -> Result<()> {
         // Kill the whole tree, not just the shell, so ssh clients and sudo chains do not outlive
-        // the session (#975); see `process_tree`. Skipped once the shell has been reaped, as its
-        // pid may have been recycled. `Child::kill` then hits the shell itself regardless.
-        if matches!(self.child.try_wait(), Ok(None)) {
-            local_tty::process_tree::terminate_shell_tree(self.child.id());
+        // the session (#975), but never on the calling thread (#1376): the pty event loop thread
+        // must not sit in a grace period, and tab closes must not serialise on it. A reaper
+        // thread owns the child from here and does hang-up, kill and `wait` (blocking `waitpid`,
+        // which wakes on the exit itself).
+        if let Some(child) = self.child.take() {
+            local_tty::process_tree::terminate_and_reap(child);
         }
-        self.child.kill()?;
-        match self.child.wait() {
-            Ok(_) => Ok(()),
-            Err(err) => bail!(err),
-        }
+        Ok(())
     }
 }
 
@@ -238,7 +244,14 @@ impl PtySpawner {
                     event_loop_tx,
                 )
             })?;
+        #[cfg(unix)]
+        let child_pid = pty_spawn_info.child.id();
         let direct_pty_handle = Box::new(DirectPtyHandle {
+            #[cfg(unix)]
+            child: Some(pty_spawn_info.child),
+            #[cfg(unix)]
+            pid: child_pid,
+            #[cfg(windows)]
             child: pty_spawn_info.child,
         });
         Ok((pty_spawn_info.result, direct_pty_handle))

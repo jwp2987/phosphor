@@ -155,6 +155,31 @@ const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
 const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
 /// While the pty has hung up, how often to check whether the child has exited, in case its
 /// `SIGCHLD` was consumed before the hang-up was seen.
+/// How many consecutive non-EINTR `poll` failures the reader retries before ending the session.
+const MAX_CONSECUTIVE_POLL_ERRORS: u32 = 3;
+
+/// What the reader does about a failed `poll` (#1376): it used to panic the reader thread, which
+/// took the tab's output down with it.
+#[derive(Debug, PartialEq, Eq)]
+enum PollErrorAction {
+    /// Poll again.
+    Retry,
+    /// Give up on this session cleanly (it is torn down like a disconnect).
+    EndSession,
+}
+
+/// Decides how to react to `err` given how many polls in a row have now failed (EINTR excluded).
+fn poll_error_action(err: &io::Error, consecutive_failures: u32) -> PollErrorAction {
+    if err.kind() == ErrorKind::Interrupted {
+        return PollErrorAction::Retry;
+    }
+    if consecutive_failures > MAX_CONSECUTIVE_POLL_ERRORS {
+        PollErrorAction::EndSession
+    } else {
+        PollErrorAction::Retry
+    }
+}
+
 const HUNG_UP_POLL: Duration = Duration::from_millis(100);
 const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// Most gated replies kept. A program that queries in a loop without reading gets its oldest
@@ -628,7 +653,17 @@ where
     /// Drain the channel.
     /// Returns `false` when a shutdown message was received.
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
+        // Resizes are coalesced keep-last (#1376): a window drag sends one per pixel, and each
+        // would be its own TIOCSWINSZ + SIGWINCH. The last size seen is applied before any later
+        // message that is ordered against it (input) and at the end of the drain, so the final
+        // size is always applied and never reordered relative to writes.
+        let mut pending_resize = None;
         while let Ok(msg) = self.rx.try_recv() {
+            if !matches!(msg, Message::Resize(_)) {
+                if let Some(size) = pending_resize.take() {
+                    self.pty.on_resize(&size);
+                }
+            }
             match msg {
                 Message::Input(input) => {
                     // The single choke point for everything written to the pty.
@@ -647,9 +682,12 @@ where
                     state.queue_command_input(input)
                 }
                 Message::DiscardQueuedInput => state.discard_queued_input(),
-                Message::Resize(size) => self.pty.on_resize(&size),
+                Message::Resize(size) => pending_resize = Some(size),
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
             }
+        }
+        if let Some(size) = pending_resize {
+            self.pty.on_resize(&size);
         }
 
         ChannelResult::Continue
@@ -971,6 +1009,7 @@ where
                 // True if the child exiting caused the event loop to wind down
                 // (e.g. CTRL D or `exit`) rather than the inverse.
                 let mut child_exited = false;
+                let mut poll_failures = 0u32;
 
                 'event_loop: loop {
                     // Clear the events so that we can reliably equate the absence of events
@@ -985,11 +1024,16 @@ where
                     let gate_poll = state.gate_timeout();
                     let poll_timeout = state.poll_timeout(sync_state_timeout);
                     if let Err(err) = self.poll.poll(&mut events, poll_timeout) {
-                        match err.kind() {
-                            ErrorKind::Interrupted => continue,
-                            _ => panic!("EventLoop polling error: {err:?}"),
+                        if err.kind() != ErrorKind::Interrupted {
+                            poll_failures += 1;
+                            log::error!("EventLoop polling error ({poll_failures}): {err:?}");
+                        }
+                        match poll_error_action(&err, poll_failures) {
+                            PollErrorAction::Retry => continue,
+                            PollErrorAction::EndSession => break 'event_loop,
                         }
                     }
+                    poll_failures = 0;
 
                     // If there were no events but `poll` returned, that means we hit the timeout.
                     // (A wake-up for the reply gate alone is not the synchronized-output timeout.)

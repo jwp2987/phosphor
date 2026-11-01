@@ -155,3 +155,26 @@ fn pane_kill_ends_foreground_but_spares_nohup_and_disowned_jobs() {
     assert!(!dead(nohup), "nohup job was killed with the pane");
     assert!(!dead(disowned), "disowned job was killed with the pane");
 }
+
+/// #1376: `terminate_and_reap` returns at once and the reaper still kills and reaps the shell.
+#[test]
+fn terminate_and_reap_returns_at_once_and_reaps_the_shell() {
+    use std::time::{Duration, Instant};
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id() as i32;
+    super::terminate_and_reap(child);
+    // Once reaped the pid no longer exists (ESRCH); a zombie would still answer signal 0.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        // SAFETY: signal 0 only probes existence.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if !alive {
+            break;
+        }
+        assert!(Instant::now() < deadline, "shell was not killed and reaped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

@@ -2563,3 +2563,29 @@ per-directory extra watches, symlink targets) where a second registration of a p
 first. A correct merge needs a reference-counted registry that unions filters per path, and a
 re-check of both consumers' event attribution. Until that is built the cost is one extra inotify
 thread's wakeups, proportional to the raw event rate in watched (non-ignored) directories.
+
+## Timers kept on purpose (no event source) — #1376
+
+Round 18 replaced timing-dependent behaviour with events. These remain because the thing they
+wait for has no signal anyone can listen to; each is a bounded poll or give-up, never a "wait long
+enough" for correctness.
+
+- **Synchronized output, 150 ms** (`SYNC_OUTPUT_MAX_TIMEOUT`, `model/ansi/mod.rs`). The end of a
+  synchronized update is the program's `CSI ? 2026 l`. If the program dies or never sends it, the
+  display would freeze, so the cap is the give-up. Time is the requirement here.
+- **Reply gate poll, 10 ms then 100 ms** (`REPLY_GATE_POLL*`, `local_tty/event_loop.rs`). Replies
+  are withheld while the pty is in canonical mode and released when it leaves it. A termios mode
+  change on the pty generates no wake-up for the other side (no readable event, no signal), so
+  the mode can only be re-read. It runs only while a reply is withheld and backs off.
+- **Hung-up poll, 100 ms** (`HUNG_UP_POLL`, same file). After a pty hang-up the exit event may
+  already have been consumed; the loop asks the child directly rather than wait for a signal that
+  will not come.
+- **Hang-up grace probe, 10 ms steps up to 300 ms** (`process_tree::terminate_shell_tree`).
+  Foreground process groups are not our children, so their exit can only be probed with
+  `killpg(.., 0)`. It runs on a "PTY child reaper" thread (`terminate_and_reap`), never on the
+  pty loop, the terminal server loop or the UI thread. The shell's own exit is waited for with a
+  blocking `waitpid`, which the kernel wakes. SIGHUP (not SIGTERM) is the signal because it is
+  what a closing terminal sends and what shells forward to their jobs (#975).
+- **tmux `command sleep 1`** (`model/tmux/commands.rs`). Keeps the background window's pane alive
+  one second after `cat` ends so tmux does not tear the window down before its output has been
+  read; tmux emits no "output consumed" notification to wait on.

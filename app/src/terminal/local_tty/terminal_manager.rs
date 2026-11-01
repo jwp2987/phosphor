@@ -9,10 +9,7 @@ use anyhow::Context as _;
 use async_broadcast::InactiveReceiver;
 use std::any::Any;
 use std::sync::mpsc::{SendError, SyncSender};
-use std::{
-    collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, thread::JoinHandle,
-    time::Duration,
-};
+use std::{collections::HashMap, ffi::OsString, path::PathBuf, sync::Arc, thread::JoinHandle};
 use warp_core::SessionId;
 
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
@@ -168,37 +165,28 @@ impl<S: 'static> TerminalManagerTrait for TuiTerminalManager<S> {
     }
 }
 
-/// How long closing a tab waits for the PTY reader thread before handing the join to a
-/// background thread.
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// Joins the PTY reader thread, waiting at most `timeout` (`None`: as long as it takes). On
-/// timeout the join continues on a background thread so the reader is still collected.
-fn join_event_loop(join_handle: JoinHandle<()>, timeout: Option<Duration>) {
-    let Some(timeout) = timeout else {
+/// Joins the PTY reader thread. `wait`: block until it has finished (app exit, where nothing may
+/// outlive the process); otherwise the join is handed to a short-lived "PTY reaper" thread and
+/// this returns at once, so closing a tab never blocks the UI thread on the reader's teardown
+/// (which kills and reaps the shell tree). The reaper still collects the reader when it finishes.
+fn join_event_loop(join_handle: JoinHandle<()>, wait: bool) {
+    if wait {
         if let Err(e) = join_handle.join() {
             log::error!("Failed to join event loop handle {e:?}");
         }
         return;
-    };
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    }
     let reaper = std::thread::Builder::new()
         .name("PTY reaper".into())
         .spawn(move || {
             if let Err(e) = join_handle.join() {
                 log::error!("Failed to join event loop handle {e:?}");
             }
-            let _ = done_tx.send(());
         });
-    match reaper {
-        Ok(_) => {
-            if done_rx.recv_timeout(timeout).is_err() {
-                log::info!("PTY reader still busy after {timeout:?}; joining it in the background");
-            }
-        }
-        // The handle went down with the failed closure, which detaches the reader: it still
-        // exits on its own after the `Shutdown` that was sent.
-        Err(e) => log::error!("Failed to spawn the PTY reaper thread: {e:?}"),
+    // On failure the handle went down with the closure, which detaches the reader: it still
+    // exits on its own after the `Shutdown` that was sent.
+    if let Err(e) = reaper {
+        log::error!("Failed to spawn the PTY reaper thread: {e:?}");
     }
 }
 
@@ -628,19 +616,17 @@ impl<S> TerminalManager<S> {
         self.model.clone()
     }
 
-    /// Sends a shutdown message to the PTY event loop and waits for it to
-    /// process that event, but only up to `SHUTDOWN_JOIN_TIMEOUT`.
+    /// Sends a shutdown message to the PTY event loop and returns without waiting for it.
     ///
-    /// This runs on the UI thread when a tab closes. The reader drains its channel between read
-    /// passes, so the wait is normally short, but a reader stuck in a long parse or write must
-    /// not freeze the UI: past the timeout the join moves to a short-lived "PTY reaper" thread,
-    /// which still collects the reader (and so the shell it kills) when it finishes.
+    /// This runs on the UI thread when a tab closes, so it must never block (#1376): the join
+    /// moves to a short-lived "PTY reaper" thread, which still collects the reader (and so the
+    /// shell it kills) when it finishes.
     fn shutdown_event_loop(&mut self) {
-        self.shutdown_event_loop_within(Some(SHUTDOWN_JOIN_TIMEOUT));
+        self.shutdown_event_loop_within(false);
     }
 
-    /// As `shutdown_event_loop`, with `None` waiting for the reader however long it takes.
-    fn shutdown_event_loop_within(&mut self, timeout: Option<Duration>) {
+    /// As `shutdown_event_loop`, with `wait` blocking until the reader has finished.
+    fn shutdown_event_loop_within(&mut self, wait: bool) {
         let shutdown_res = self.event_loop_tx.lock().send(Message::Shutdown);
         // Happens normally if the event loop has already been terminated (so the channel is now gone).
         if let Err(e) = shutdown_res {
@@ -648,7 +634,7 @@ impl<S> TerminalManager<S> {
         }
 
         match self.event_loop_handle.take() { Some(join_handle) => {
-            join_event_loop(join_handle, timeout);
+            join_event_loop(join_handle, wait);
         } _ => {
             log::error!("No event loop handle to join when dropping terminal manager.")
         }}
@@ -1515,7 +1501,7 @@ pub fn shutdown_all_pty_event_loops(ctx: &mut AppContext) {
                 .as_any_mut()
                 .downcast_mut::<TerminalManager<TerminalView>>()
             {
-                manager.shutdown_event_loop_within(None);
+                manager.shutdown_event_loop_within(true);
             }
         })
     })
