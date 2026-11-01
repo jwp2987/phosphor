@@ -485,6 +485,10 @@ warpui_extras = { workspace = true, features = ["test-util"] }
 warp_files = { workspace = true, features = ["test-util"] }
 repo_metadata = { workspace = true, features = ["test-util"] }
 
+# Real-shell tests in a pty (tests/real_shell_markers.rs); skip cleanly without the shell.
+[target.'cfg(unix)'.dev-dependencies]
+expectrl = "0.7.1"
+
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
 

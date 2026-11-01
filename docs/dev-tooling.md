@@ -59,3 +59,15 @@ cargo bench -p warp --features dev-support --bench key_path_bench -- --baseline 
 Budget notes are in each file's header. Owner budget: key-to-paint Phosphor overhead <= 2 ms,
 Enter <= 2 ms, UI work <= 4 ms per event; the pure parts here should each be microseconds. HTML
 reports land in `target/criterion/`.
+
+## expectrl (real-shell tests)
+
+`app/tests/real_shell_markers.rs` loads the real bash bootstrap into an interactive `bash` in a
+pty and asserts the line-editor marker order (Preexec, Precmd, one LineEditorReading with the
+Precmd's seq). It is a Rust port of the bash core of `script/test_line_editor_markers`; the other
+shells and the continuation / builtin-read / markers-off cases stay in the script. Skips with a
+message when `bash` is missing.
+
+```
+cargo test -p warp --test real_shell_markers
+```
