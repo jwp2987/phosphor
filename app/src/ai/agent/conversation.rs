@@ -3829,29 +3829,12 @@ impl AIConversation {
 
         let event = self.updated_conversation_state_event_with_retention(retention);
         // Every event is a full replace of the conversation, so the writer must see them in the
-        // order they were produced. Hand the event to the channel from this thread: spawning it
-        // onto the multi-threaded background executor let two writes made milliseconds apart
-        // (the last streamed message and the stream-finished write) reach the writer swapped,
-        // leaving the older state on disk until the conversation was next saved (#1000). Only a
-        // full channel falls back to a blocking send off the UI thread.
-        match sqlite_sender.try_send(event) {
-            Ok(()) => {}
-            Err(std::sync::mpsc::TrySendError::Full(event)) => {
-                log::warn!("SQLite writer channel is full; sending the conversation write async");
-                ctx.spawn(
-                    async move {
-                        if let Err(e) = sqlite_sender.send(event) {
-                            log::warn!(
-                                "Failed to send updated AI tasks to sqlite writer thread: {e:?}"
-                            );
-                        }
-                    },
-                    |_, _, _| {},
-                );
-            }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                log::warn!("Failed to send updated AI tasks to sqlite writer thread: disconnected");
-            }
+        // order they were produced (#1000, #1367). `send_model_event_nonblocking` keeps that order
+        // even when the channel is full: a full channel parks the event on one ordered delivery
+        // queue (never a spawned send that a later write could overtake), and the UI thread
+        // never blocks.
+        if let Err(e) = crate::persistence::send_model_event_nonblocking(&sqlite_sender, event) {
+            log::warn!("Failed to send updated AI tasks to sqlite writer thread: {e:?}");
         }
     }
 

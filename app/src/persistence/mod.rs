@@ -408,40 +408,74 @@ pub fn try_send_or_defer(
     }
 }
 
-/// Sends `event` with `try_send` and, only if the channel is full, completes the
-/// (blocking) send on a short-lived background thread. Never blocks the caller and
-/// never drops a write; use it for events that are not superseded by a later one.
-/// Events deferred this way can reach the writer after later `try_send`s, so it
-/// is only for events whose relative order does not matter.
+/// Events that found the writer channel full, in the order they were produced, and whether the
+/// single delivery thread is alive. While that thread is alive (or events are queued) EVERY event
+/// sent through [`send_model_event_nonblocking`] goes through this queue, so a later event can
+/// never overtake an earlier deferred one (#1000, #1367).
+static ORDERED_SENDS: std::sync::Mutex<OrderedSends> = std::sync::Mutex::new(OrderedSends {
+    queue: std::collections::VecDeque::new(),
+    thread_running: false,
+});
+
+struct OrderedSends {
+    queue: std::collections::VecDeque<(SyncSender<ModelEvent>, ModelEvent)>,
+    thread_running: bool,
+}
+
+/// Hands `event` to the writer without ever blocking the caller, and in order: events sent
+/// through this function reach the channel in the order they were passed in.
+///
+/// With room in the channel and nothing queued it is a plain `try_send`. Otherwise the event
+/// joins a FIFO queue drained by ONE short-lived delivery thread (not a thread per event) that
+/// blocks on the channel, so nothing is dropped and nothing is reordered. Delivery counts as a
+/// deferred send for [`wait_for_deferred_sends`].
 pub fn send_model_event_nonblocking(
     sender: &SyncSender<ModelEvent>,
     event: ModelEvent,
 ) -> Result<(), std::sync::mpsc::SendError<ModelEvent>> {
-    let Some(event) = try_send_or_defer(sender, event)? else {
-        return Ok(());
+    let mut ordered = ORDERED_SENDS.lock().unwrap_or_else(|e| e.into_inner());
+    let event = if ordered.thread_running || !ordered.queue.is_empty() {
+        event
+    } else {
+        match try_send_or_defer(sender, event)? {
+            None => return Ok(()),
+            Some(event) => event,
+        }
     };
-    log::warn!("SQLite writer channel is full; sending the model event on a background thread");
-    let sender = sender.clone();
-    let pending = Arc::new(std::sync::Mutex::new(Some(event)));
-    let thread_pending = pending.clone();
-    let thread_sender = sender.clone();
+    log::warn!("SQLite writer channel is full; the model event waits for room in order");
+    ordered.queue.push_back((sender.clone(), event));
+    if ordered.thread_running {
+        return Ok(());
+    }
+    ordered.thread_running = true;
     note_deferred_send_started();
     let spawned = std::thread::Builder::new()
         .name("SQLite deferred send".to_owned())
         .spawn(move || {
-            let event = thread_pending.lock().ok().and_then(|mut slot| slot.take());
-            if let Some(event) = event
-                && let Err(err) = thread_sender.send(event)
-            {
-                log::warn!("Deferred SQLite writer send failed: {err:?}");
+            loop {
+                let next = {
+                    let mut ordered = ORDERED_SENDS.lock().unwrap_or_else(|e| e.into_inner());
+                    let next = ordered.queue.pop_front();
+                    if next.is_none() {
+                        ordered.thread_running = false;
+                    }
+                    next
+                };
+                let Some((sender, event)) = next else { break };
+                if let Err(err) = sender.send(event) {
+                    log::warn!("Deferred SQLite writer send failed: {err:?}");
+                }
             }
             note_deferred_send_finished();
         });
     if spawned.is_err() {
+        // No thread to deliver: the queue held only this event (the thread was not running), so
+        // fall back to the blocking send rather than lose the write.
+        ordered.thread_running = false;
+        let next = ordered.queue.pop_front();
+        drop(ordered);
         note_deferred_send_finished();
-        // Could not start a thread: fall back to the blocking send rather than lose the write.
-        let event = pending.lock().ok().and_then(|mut slot| slot.take());
-        if let Some(event) = event {
+        if let Some((sender, event)) = next {
             return sender.send(event);
         }
     }

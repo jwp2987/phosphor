@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
+use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 
 use super::{
@@ -91,5 +91,62 @@ fn a_snapshot_that_finds_the_channel_full_is_delivered_newest_only() {
         receiver.recv_timeout(Duration::from_millis(300)).is_err(),
         "the older snapshot must not follow the newer one"
     );
+    assert!(wait_for_deferred_sends(Duration::from_secs(5)));
+}
+
+fn numbered(n: usize) -> ModelEvent {
+    ModelEvent::IncrementRetryCount(n.to_string())
+}
+
+fn number_of(event: ModelEvent) -> usize {
+    match event {
+        ModelEvent::IncrementRetryCount(n) => n.parse().expect("numbered event"),
+        other => panic!("unexpected event {other:?}"),
+    }
+}
+
+/// #1367: a write that found the channel full must not be overtaken by a later one that finds
+/// room (the conversation writes are full replaces; the older landing last leaves stale state).
+#[test]
+fn a_later_event_never_overtakes_an_earlier_deferred_one() {
+    let (sender, receiver) = sync_channel::<ModelEvent>(1);
+    sender.try_send(numbered(0)).expect("first fits");
+    send_model_event_nonblocking(&sender, numbered(1)).expect("deferred, not failed");
+    // Room appears while event 1 is still waiting for the delivery thread.
+    assert_eq!(
+        number_of(receiver.recv_timeout(Duration::from_secs(5)).unwrap()),
+        0
+    );
+    send_model_event_nonblocking(&sender, numbered(2)).expect("queued behind 1");
+    send_model_event_nonblocking(&sender, numbered(3)).expect("queued behind 2");
+    let mut order = Vec::new();
+    for _ in 0..3 {
+        order.push(number_of(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ));
+    }
+    assert_eq!(order, vec![1, 2, 3]);
+    assert!(wait_for_deferred_sends(Duration::from_secs(5)));
+}
+
+/// #1367: many deferred events share one delivery thread.
+#[test]
+fn deferred_events_do_not_each_get_a_thread() {
+    let (sender, receiver) = sync_channel::<ModelEvent>(1);
+    sender.try_send(numbered(0)).expect("first fits");
+    for n in 1..=20 {
+        send_model_event_nonblocking(&sender, numbered(n)).expect("deferred, not failed");
+    }
+    // One count for the one delivery thread, however many events wait.
+    assert!(
+        outstanding_deferred_sends() <= 2,
+        "one counted send per delivery thread"
+    );
+    for expected in 0..=20 {
+        assert_eq!(
+            number_of(receiver.recv_timeout(Duration::from_secs(5)).unwrap()),
+            expected
+        );
+    }
     assert!(wait_for_deferred_sends(Duration::from_secs(5)));
 }

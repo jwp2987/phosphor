@@ -2445,6 +2445,8 @@ trait WillTerminateSteps {
     fn begin_server_shutdown(&mut self);
     /// Send unsaved notebook changes to the persistence writer.
     fn flush_notebooks(&mut self);
+    /// Take the app snapshot a debounced save still owes, and queue it for the writer (#1363).
+    fn flush_app_snapshot(&mut self);
     /// Drain and stop the SQLite writer thread (an unbounded join).
     fn terminate_persistence_writer(&mut self);
     /// Tear down the terminal server and pty event loops.
@@ -2464,6 +2466,8 @@ trait WillTerminateSteps {
 /// - Server shutdowns start first, so they progress while the persistence writer
 ///   drains (an unbounded join), instead of queueing behind it and eating the
 ///   SIGTERM deadline.
+/// - The pending app snapshot is queued before the writer is terminated, so the drain
+///   writes it.
 /// - The terminal server is torn down after the writer, so the shells' exits are not
 ///   persisted as sessions that ended.
 /// - The bounded wait for the servers comes after the terminal server and app-services
@@ -2474,6 +2478,7 @@ trait WillTerminateSteps {
 fn run_will_terminate_steps(steps: &mut impl WillTerminateSteps) {
     steps.begin_server_shutdown();
     steps.flush_notebooks();
+    steps.flush_app_snapshot();
     steps.terminate_persistence_writer();
     steps.tear_down_terminal_server();
     steps.tear_down_app_services();
@@ -2499,6 +2504,10 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
             // been sent to the writer thread before terminating.
             manager.close_notebooks(ctx);
         });
+    }
+
+    fn flush_app_snapshot(&mut self) {
+        crate::workspace::flush_pending_app_snapshot(self.ctx);
     }
 
     fn terminate_persistence_writer(&mut self) {

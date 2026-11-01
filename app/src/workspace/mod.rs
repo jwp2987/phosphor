@@ -57,7 +57,7 @@ pub use action::{
 };
 pub use active_session::ActiveSession;
 pub use global_actions::{
-    ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
+    flush_pending_app_snapshot, ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
 };
 pub use util::{active_terminal_in_window, PaneViewLocator, TabMovement};
 pub use view::{

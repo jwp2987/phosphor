@@ -102,6 +102,18 @@ impl SaveAppSnapshotDebouncer {
             .abort_handle(),
         );
     }
+
+    /// Cancels the pending trailing save, if any. True when one was pending, i.e. the caller
+    /// owes the snapshot it would have taken.
+    fn take_pending(&mut self) -> bool {
+        match self.pending_save.take() {
+            Some(handle) => {
+                handle.abort();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Entity for SaveAppSnapshotDebouncer {
@@ -109,6 +121,28 @@ impl Entity for SaveAppSnapshotDebouncer {
 }
 
 impl SingletonEntity for SaveAppSnapshotDebouncer {}
+
+/// Takes the app snapshot a pending [`SaveAppSnapshotDebouncer`] save still owes, now, instead
+/// of in up to 250 ms. Quitting calls this (#1363): the process would otherwise exit before the
+/// timer fires and a layout change made just before the quit would be missing from the restored
+/// session. The snapshot goes to the persistence writer's queue, which the terminate sequence
+/// drains afterwards. Does nothing when no save is pending.
+pub fn flush_pending_app_snapshot(ctx: &mut AppContext) {
+    flush_pending_app_snapshot_with(ctx, save_app_snapshot_now);
+}
+
+fn flush_pending_app_snapshot_with(ctx: &mut AppContext, save: fn(&mut AppContext)) {
+    if !ctx.has_singleton_model::<SaveAppSnapshotDebouncer>() {
+        return;
+    }
+    let owed =
+        SaveAppSnapshotDebouncer::handle(ctx).update(ctx, |debouncer, _| debouncer.take_pending());
+    // With no window left (the last one just closed and that is why we are quitting) a
+    // snapshot would be empty and replace the saved session with nothing.
+    if owed && ctx.window_ids().count() > 0 {
+        save(ctx);
+    }
+}
 
 /// DEPRECATED. Global actions are being phased out.
 /// Do not add any more global actions; use typed actions instead.
@@ -291,3 +325,7 @@ fn summarize_ai_conversation(prompt: &Option<String>, ctx: &mut AppContext) {
         },
     );
 }
+
+#[cfg(test)]
+#[path = "global_actions_tests.rs"]
+mod tests;
