@@ -258,7 +258,7 @@ impl Clipboard for LinuxClipboard {
         // arboard's X11 and Wayland backends are process-global, so a fresh handle on another
         // thread reads the same selections (and the same data when we own them).
         let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
-        Some(Box::new(move || {
+        Some(crate::clipboard::tracked_reader(Box::new(move || {
             if let Some(pending) = pending {
                 let mut content = (*pending).clone();
                 content.html = None;
@@ -285,7 +285,7 @@ impl Clipboard for LinuxClipboard {
             } else {
                 BackgroundTextRead::Content(content)
             }
-        }))
+        })))
     }
 
     fn flush_on_exit(&mut self) {
@@ -316,7 +316,7 @@ impl Clipboard for LinuxClipboard {
         // Same process-global backends as `background_text_reader`; this one also probes the HTML
         // and image targets, which a silent owner answers only after the arboard timeout (#1300).
         let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
-        Some(Box::new(move || {
+        Some(crate::clipboard::tracked_reader(Box::new(move || {
             if let Some(pending) = pending {
                 return BackgroundTextRead::Content((*pending).clone());
             }
@@ -338,14 +338,14 @@ impl Clipboard for LinuxClipboard {
             } else {
                 BackgroundTextRead::Content(content)
             }
-        }))
+        })))
     }
 
     fn background_primary_reader(&mut self) -> Option<BackgroundTextReader> {
         // Middle-click paste (#1331): the primary selection's owner can stall a read just as the
         // clipboard's can, and the click used to wait on it on the UI thread with no budget.
         let pending = crate::clipboard::pending_write(ClipboardTarget::Primary);
-        Some(Box::new(move || {
+        Some(crate::clipboard::tracked_reader(Box::new(move || {
             // A copy to PRIMARY still being written is what the user just selected (#1307).
             if let Some(pending) = pending {
                 return BackgroundTextRead::Content((*pending).clone());
@@ -368,7 +368,7 @@ impl Clipboard for LinuxClipboard {
             } else {
                 BackgroundTextRead::Content(content)
             }
-        }))
+        })))
     }
 
     fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {

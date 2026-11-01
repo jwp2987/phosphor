@@ -102,6 +102,86 @@ pub enum BackgroundTextRead {
 /// See [`Clipboard::background_text_reader`].
 pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 'static>;
 
+/// Counts background reader threads that have started and not yet returned.
+pub struct ReaderTracker {
+    in_flight: std::sync::atomic::AtomicUsize,
+}
+
+impl ReaderTracker {
+    pub const fn new() -> Self {
+        Self {
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Default for ReaderTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct InFlightGuard(&'static ReaderTracker);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Most background readers allowed to be blocked at once. A reader stuck in an OS clipboard call
+/// cannot be interrupted, and each paste attempt used to start another thread behind it (#1375).
+pub const MAX_IN_FLIGHT_READERS: usize = 4;
+/// A read that returns later than this is logged as slow.
+const SLOW_READ: std::time::Duration = std::time::Duration::from_secs(5);
+
+static PASTE_READERS: ReaderTracker = ReaderTracker::new();
+
+/// Wraps a platform reader so a wedged one is visible and bounded: the read is logged when it
+/// returns long after it started, and once [`MAX_IN_FLIGHT_READERS`] readers are still blocked a
+/// new one answers `TimedOut` at once instead of starting yet another blocked OS call. (A blocked
+/// OS clipboard call has no cancel; this is the stop for further leaks.)
+#[cfg(not(target_family = "wasm"))]
+pub fn tracked_reader(inner: BackgroundTextReader) -> BackgroundTextReader {
+    tracked_reader_with(&PASTE_READERS, MAX_IN_FLIGHT_READERS, SLOW_READ, inner)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn tracked_reader_with(
+    tracker: &'static ReaderTracker,
+    max: usize,
+    slow: std::time::Duration,
+    inner: BackgroundTextReader,
+) -> BackgroundTextReader {
+    use std::sync::atomic::Ordering;
+    Box::new(move || {
+        let before = tracker.in_flight.fetch_add(1, Ordering::SeqCst);
+        let _guard = InFlightGuard(tracker);
+        if before >= max {
+            log::warn!(
+                "{before} clipboard reader thread(s) are still blocked in the OS; not starting another"
+            );
+            return BackgroundTextRead::TimedOut;
+        }
+        let started = std::time::Instant::now();
+        let read = inner();
+        if started.elapsed() >= slow {
+            log::warn!(
+                "clipboard read returned after {:?} (budget {:?}); the paste had long given up on it",
+                started.elapsed(),
+                slow
+            );
+        }
+        read
+    })
+}
+
 /// Which system clipboard a background write targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipboardTarget {

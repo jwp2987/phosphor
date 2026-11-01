@@ -77,17 +77,21 @@ impl Clipboard for WindowsClipboard {
         // A fresh handle on the worker: the Windows clipboard is process-global and arboard opens
         // it per call, so a read blocked on another process holding it stalls only the worker
         // (#1305).
-        Some(Box::new(|| match WindowsClipboard::new() {
-            Ok(mut clipboard) => BackgroundTextRead::Content(clipboard.read_text_and_paths()),
-            Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
-        }))
+        Some(crate::clipboard::tracked_reader(Box::new(
+            || match WindowsClipboard::new() {
+                Ok(mut clipboard) => BackgroundTextRead::Content(clipboard.read_text_and_paths()),
+                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
+            },
+        )))
     }
 
     fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
-        Some(Box::new(|| match WindowsClipboard::new() {
-            Ok(mut clipboard) => BackgroundTextRead::Content(clipboard.read()),
-            Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
-        }))
+        Some(crate::clipboard::tracked_reader(Box::new(
+            || match WindowsClipboard::new() {
+                Ok(mut clipboard) => BackgroundTextRead::Content(clipboard.read()),
+                Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
+            },
+        )))
     }
 
     fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {

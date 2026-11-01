@@ -216,3 +216,51 @@ fn serial_writer_keeps_one_handle_and_write_order() {
     assert_eq!(*LOG.lock(), vec!["a", "b", "c"]);
     assert_eq!(OPENED.load(Ordering::SeqCst), 1);
 }
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static TRACKER: ReaderTracker = ReaderTracker::new();
+    static RAN: AtomicUsize = AtomicUsize::new(0);
+    let slow = std::time::Duration::from_secs(60);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let release_rx = std::sync::Arc::new(Mutex::new(release_rx));
+    // Two readers wedge (cap 2) until released.
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let rx = release_rx.clone();
+        let reader = tracked_reader_with(
+            &TRACKER,
+            2,
+            slow,
+            Box::new(move || {
+                RAN.fetch_add(1, Ordering::SeqCst);
+                let _ = rx.lock().recv();
+                BackgroundTextRead::Content(ClipboardContent::default())
+            }),
+        );
+        handles.push(std::thread::spawn(reader));
+    }
+    while TRACKER.in_flight() < 2 {
+        std::thread::yield_now();
+    }
+    // A third attempt does not make another blocking call.
+    let third = tracked_reader_with(
+        &TRACKER,
+        2,
+        slow,
+        Box::new(|| {
+            RAN.fetch_add(1, Ordering::SeqCst);
+            BackgroundTextRead::Content(ClipboardContent::default())
+        }),
+    );
+    assert!(matches!(third(), BackgroundTextRead::TimedOut));
+    assert_eq!(RAN.load(Ordering::SeqCst), 2);
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    assert_eq!(TRACKER.in_flight(), 0);
+}
