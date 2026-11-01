@@ -71,3 +71,28 @@ message when `bash` is missing.
 ```
 cargo test -p warp --test real_shell_markers
 ```
+
+## cargo-fuzz
+
+`fuzz/` is a standalone crate (its own `[workspace]`, excluded from the root workspace; the root
+`Cargo.lock` does not cover it). Needs nightly and `cargo install cargo-fuzz`.
+
+| target | feeds |
+|---|---|
+| `ansi_parser` | arbitrary pty output into a `TerminalModel` through `ansi::Processor`, in 1..64-byte reads |
+| `hook_parsers` | payloads inside valid DCS `$d`/`$f`, OSC 9278 `f`/`d`, OSC 7771 and OSC 9277 frames |
+| `input_queue` | `Vec<Op>` (`arbitrary`) through `warp::dev_support::run_ops`: the proptest model's reference model and invariants |
+
+```
+cd fuzz
+cp ../Cargo.lock Cargo.lock        # first time: reuse the app's pinned versions
+cargo +nightly fuzz run ansi_parser -- -max_total_time=120
+cargo +nightly fuzz run hook_parsers -- -max_total_time=120
+cargo +nightly fuzz run input_queue -- -max_total_time=120
+```
+
+Seed corpora are committed in `fuzz/corpus/<target>/`: the `ansi_parser` seeds are the small
+recordings under `app/src/terminal/ref_tests/data/` (first byte = read size), the `hook_parsers`
+seeds are the hook JSON of `ansi/mod_test.rs` in each frame (first byte = frame), `input_queue`
+has a few random byte seeds. A crash lands in `fuzz/artifacts/<target>/`; reproduce with
+`cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>`.
