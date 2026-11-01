@@ -8,6 +8,7 @@ mod bookmarks;
 pub mod init;
 pub mod inline_banner;
 pub mod load_ai_conversation;
+mod fork_restore_persist;
 use crate::ai::block_context::BlockContext;
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::SkillOpenOrigin;
@@ -2934,6 +2935,9 @@ pub struct TerminalView {
     /// stretches where the gate itself would let keys through (a banner printed before the
     /// remote shell is up), so the held keys are never overtaken by later ones.
     ssh_typeahead_holding: bool,
+    /// Which restored blocks of a forked conversation still wait for their deferred restore to
+    /// install before they are persisted (#1363).
+    fork_restore_persist: fork_restore_persist::ForkRestorePersist,
     /// Shared with the input's editor: while `ssh_typeahead_holding` it queues every editing key
     /// that reaches it here instead of applying it, so keys typed after focus moved to the editor
     /// but before the held keys are delivered keep their order (#1292).
@@ -4740,6 +4744,7 @@ impl TerminalView {
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
             ssh_typeahead_holding: false,
+            fork_restore_persist: Default::default(),
             ssh_editor_key_hold,
             ssh_typeahead: SshTypeahead::default(),
             ssh_paste_to_hold: false,
@@ -12751,6 +12756,7 @@ impl TerminalView {
         }
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
+        self.resume_fork_restore_persist(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
             self.find_model.update(ctx, |find_model, ctx| {

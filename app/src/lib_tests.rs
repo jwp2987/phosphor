@@ -151,6 +151,9 @@ impl WillTerminateSteps for RecordedSteps {
     fn flush_notebooks(&mut self) {
         self.0.push("flush_notebooks");
     }
+    fn flush_app_snapshot(&mut self) {
+        self.0.push("flush_app_snapshot");
+    }
     fn terminate_persistence_writer(&mut self) {
         self.0.push("terminate_persistence_writer");
     }
@@ -191,6 +194,7 @@ fn will_terminate_runs_every_step_once_in_order() {
         vec![
             "begin_server_shutdown",
             "flush_notebooks",
+            "flush_app_snapshot",
             "terminate_persistence_writer",
             "tear_down_terminal_server",
             "tear_down_app_services",
@@ -210,6 +214,14 @@ fn will_terminate_starts_server_shutdown_before_the_writer_join() {
     assert!(
         steps.position("begin_server_shutdown") < steps.position("terminate_persistence_writer")
     );
+}
+
+#[test]
+fn will_terminate_queues_the_pending_snapshot_before_the_writer_drains() {
+    // #1363: a snapshot queued after the writer terminated is never written.
+    let mut steps = RecordedSteps::default();
+    run_will_terminate_steps(&mut steps);
+    assert!(steps.position("flush_app_snapshot") < steps.position("terminate_persistence_writer"));
 }
 
 #[test]

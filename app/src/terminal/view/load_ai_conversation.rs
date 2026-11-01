@@ -7,6 +7,7 @@ use warp_core::features::FeatureFlag;
 use warpui::{EntityId, ViewContext};
 
 use super::blocklist_filter::exchanges_for_blocklist;
+use super::fork_restore_persist::FORK_RESTORE_STALL_GIVE_UP;
 use crate::ai::blocklist::agent_view::{
     AgentViewEntryBlockParams, AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage,
 };
@@ -1166,53 +1167,74 @@ impl TerminalView {
             history_model.on_forked_conversation(conversation_id, self.view_id, ctx);
         });
 
-        self.persist_restored_blocks_for_fork(Default::default(), 0, ctx);
+        self.fork_restore_persist.reset();
+        self.persist_restored_blocks_for_fork(ctx);
     }
 
     /// Emits `BlockCompleted` for the restored blocks of a fork. A restored block whose grids
-    /// are still being parsed off-thread (#1254) would serialize blank, so those are retried
-    /// shortly (#1265) and only given up on if the parse never finishes.
-    fn persist_restored_blocks_for_fork(
-        &mut self,
-        mut done: std::collections::HashSet<BlockId>,
-        attempt: u32,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
-        const MAX_ATTEMPTS: u32 = 200;
-        let mut still_pending = false;
-        let blocks = {
+    /// are still being parsed off-thread (#1254) would serialize blank, so it waits for its
+    /// install: `resume_fork_restore_persist` calls this again when a deferred restore lands,
+    /// however long the parse takes (#1363). The only timer is a stall watchdog for a parse
+    /// that never completes; it is logged and the user is told.
+    fn persist_restored_blocks_for_fork(&mut self, ctx: &mut ViewContext<Self>) {
+        let (ready, still_pending) = {
             let model = self.model.lock();
-            model
+            let candidates = model
                 .block_list()
                 .blocks()
                 .iter()
-                .filter(|b| b.is_restored() && !b.is_background() && !done.contains(b.id()))
-                .filter(|b| {
-                    still_pending |= b.is_restore_pending();
-                    !b.is_restore_pending()
-                })
+                .filter(|b| b.is_restored() && !b.is_background())
+                .map(|b| (b.id().clone(), b.is_restore_pending()))
+                .collect::<Vec<_>>();
+            let ready_ids = self.fork_restore_persist.poll(candidates);
+            let ready = ready_ids
+                .iter()
+                .filter_map(|id| model.block_list().block_with_id(id))
                 .map(|b| Arc::new(SerializedBlock::from(b)))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (ready, self.fork_restore_persist.is_waiting())
         };
-        for block in blocks {
-            done.insert(block.id.clone());
+        for block in ready {
             ctx.emit(Event::BlockCompleted {
                 is_local: self.is_block_considered_remote(block.session_id, None, ctx),
                 persisted_content: None,
                 block,
             });
         }
-        if still_pending && attempt < MAX_ATTEMPTS {
+        if still_pending {
+            let generation = self.fork_restore_persist.generation();
             ctx.spawn(
-                warpui::r#async::Timer::after(RETRY_DELAY),
-                move |me, _, ctx| {
-                    me.persist_restored_blocks_for_fork(done, attempt + 1, ctx);
-                },
+                warpui::r#async::Timer::after(FORK_RESTORE_STALL_GIVE_UP),
+                move |me, _, ctx| me.give_up_on_fork_restore(generation, ctx),
             );
-        } else if still_pending {
-            log::warn!("Forked conversation: restored blocks never finished loading; not saved");
         }
+    }
+
+    /// A deferred restore installed: persist the fork blocks it made ready. Called from the
+    /// wakeup that installs them; one bool check when no fork is waiting.
+    pub(super) fn resume_fork_restore_persist(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.fork_restore_persist.is_waiting() {
+            self.persist_restored_blocks_for_fork(ctx);
+        }
+    }
+
+    /// Stall watchdog: nothing installed for `FORK_RESTORE_STALL_GIVE_UP`.
+    fn give_up_on_fork_restore(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if !self.fork_restore_persist.give_up(generation) {
+            return;
+        }
+        log::error!(
+            "Forked conversation: restored blocks never finished loading; they were not saved"
+        );
+        let message = InputMessage::new(vec![MessageItem::text(
+            "some blocks of this forked conversation failed to load and were not saved",
+        )]);
+        self.ephemeral_message_model.update(ctx, |model, ctx| {
+            model.show_ephemeral_message(
+                EphemeralMessage::new(message, DismissalStrategy::UntilExplicitlyDismissed),
+                ctx,
+            );
+        });
     }
 
     /// Show a contextual ephemeral hint when the restored conversation's

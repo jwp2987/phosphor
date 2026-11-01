@@ -131,6 +131,55 @@ pub(super) fn read_conversation_from_db(
     convert_persisted_conversation_to_ai_conversation(persisted)
 }
 
+/// A small fixed pool for conversation loads (#1363). Every load serialises on the one SQLite
+/// connection mutex, so more threads than this only add stacks and context switches; extra loads
+/// queue (in order) instead of each getting a thread.
+#[cfg(feature = "local_fs")]
+pub(super) mod load_pool {
+    use std::sync::mpsc::{Sender, channel};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    /// Worker threads; at most this many conversation loads run at once.
+    pub(in super::super) const MAX_LOAD_THREADS: usize = 2;
+
+    pub(super) type Job = Box<dyn FnOnce() + Send + 'static>;
+
+    static POOL: OnceLock<Result<Sender<Job>, String>> = OnceLock::new();
+
+    pub(super) fn submit(job: Job) -> Result<(), String> {
+        let pool = POOL.get_or_init(|| start(MAX_LOAD_THREADS));
+        match pool {
+            Ok(tx) => tx.send(job).map_err(|e| e.to_string()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    pub(super) fn start(threads: usize) -> Result<Sender<Job>, String> {
+        let (tx, rx) = channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..threads {
+            let rx = rx.clone();
+            std::thread::Builder::new()
+                .name(format!("conversation-load-{i}"))
+                .spawn(move || {
+                    loop {
+                        // The lock is held only while waiting for the next job.
+                        let job = match rx.lock() {
+                            Ok(rx) => rx.recv(),
+                            Err(_) => return,
+                        };
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return,
+                        }
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(tx)
+    }
+}
+
 /// Boxes a future with the right type for the platform.
 /// On WASM, futures must not implement Send.
 fn box_future<F>(f: F) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>>
@@ -184,13 +233,10 @@ impl BlocklistAIHistoryModel {
             {
                 let conn = self.db_connection.clone();
                 let (tx, rx) = futures::channel::oneshot::channel();
-                let spawned = std::thread::Builder::new()
-                    .name("conversation-load".into())
-                    .spawn(move || {
-                        let _ = tx.send(read_conversation_from_db(conn, &conversation_id));
-                    });
-                if let Err(e) = spawned {
-                    log::warn!("Failed to spawn conversation load thread: {e}");
+                if let Err(e) = load_pool::submit(Box::new(move || {
+                    let _ = tx.send(read_conversation_from_db(conn, &conversation_id));
+                })) {
+                    log::warn!("Failed to start a conversation load worker: {e}");
                     return box_future(futures::future::ready(None));
                 }
                 return box_future(rx.map(|r| {
@@ -460,3 +506,7 @@ impl BlocklistAIHistoryModel {
         self.all_conversations_metadata = collected;
     }
 }
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "conversation_loader_tests.rs"]
+mod tests;
