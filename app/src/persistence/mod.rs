@@ -779,7 +779,7 @@ pub enum ModelEvent {
     },
     UpdateMultiAgentConversation {
         conversation_id: String,
-        updated_tasks: Vec<api::Task>,
+        updated_tasks: Vec<Arc<api::Task>>,
         conversation_data: AgentConversationData,
         /// What the write may delete or replace; see [`PersistedTaskRetention`].
         task_retention: PersistedTaskRetention,

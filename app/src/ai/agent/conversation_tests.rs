@@ -1479,3 +1479,26 @@ fn restore_prunes_stale_compactions_only_when_tasks_were_restored() {
         "a compaction whose summary is gone is pruned on restore"
     );
 }
+
+/// A persistence snapshot shares the tasks by reference count instead of deep-cloning every
+/// message on the UI thread at each stream boundary (#1137).
+#[test]
+fn persistence_snapshot_shares_task_sources() {
+    let conversation = restored_conversation_with_queries(&["a", "b", "c"]);
+    let ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. } =
+        conversation.updated_conversation_state_event()
+    else {
+        panic!("expected conversation update event");
+    };
+    let live: Vec<_> = conversation
+        .all_tasks()
+        .filter_map(|task| task.source())
+        .collect();
+    assert_eq!(updated_tasks.len(), live.len());
+    for (snapshot, live) in updated_tasks.iter().zip(&live) {
+        assert!(
+            std::ptr::eq(&**snapshot, *live),
+            "snapshot must alias the live task, not copy it"
+        );
+    }
+}

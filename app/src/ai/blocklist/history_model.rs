@@ -1778,7 +1778,11 @@ impl BlocklistAIHistoryModel {
             &sqlite_sender,
             ModelEvent::UpdateMultiAgentConversation {
                 conversation_id: forked_conversation_id.to_string(),
-                updated_tasks: updated_tasks_with_new_ids.clone(),
+                updated_tasks: updated_tasks_with_new_ids
+                    .iter()
+                    .cloned()
+                    .map(std::sync::Arc::new)
+                    .collect(),
                 conversation_data: conversation_data.clone(),
                 // A fork is written under a fresh id, so there are no existing rows to prune.
                 task_retention: PersistedTaskRetention::DeleteMissing,
@@ -1984,7 +1988,11 @@ impl BlocklistAIHistoryModel {
             &sqlite_sender,
             ModelEvent::UpdateMultiAgentConversation {
                 conversation_id: forked_conversation_id.to_string(),
-                updated_tasks: updated_tasks_with_new_ids.clone(),
+                updated_tasks: updated_tasks_with_new_ids
+                    .iter()
+                    .cloned()
+                    .map(std::sync::Arc::new)
+                    .collect(),
                 conversation_data: conversation_data.clone(),
                 // A fork is written under a fresh id, so there are no existing rows to prune.
                 task_retention: PersistedTaskRetention::DeleteMissing,
