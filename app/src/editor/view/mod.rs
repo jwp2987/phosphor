@@ -4584,6 +4584,17 @@ impl EditorView {
         middle_click: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A paste asked for while another is being read waits behind it (superseding would drop
+        // the first one's text).
+        if self.paste_hold.sequencer_pending() {
+            let action = if middle_click {
+                EditorAction::MiddleClickPaste
+            } else {
+                EditorAction::Paste
+            };
+            self.paste_hold.hold(HeldPasteKey::Action(action));
+            return;
+        }
         let id = self.paste_hold.begin();
         match warpui::clipboard::read_in_background(ctx.clipboard(), kind) {
             warpui::clipboard::StartedRead::Ready(read) => {
@@ -4619,6 +4630,8 @@ impl EditorView {
             warpui::clipboard::BackgroundTextRead::Content(content) => {
                 let text = self.clipboard_text_content(content);
                 self.user_initiated_insert(&text, PlainTextEditorViewAction::Paste, ctx);
+                // Announced once the insert has landed (#1380), not by a read at action time.
+                crate::util::clipboard::announce_pasted_text(&text, ctx);
             }
             failed => {
                 if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
@@ -8958,14 +8971,16 @@ impl TypedActionView for EditorView {
             | EditorAction::MoveBackwardOneSubword
             | EditorAction::Delete
             | EditorAction::Backspace => ActionAccessibilityContent::Empty,
-            EditorAction::Paste => {
+            // A plain editor announces the pasted text once it has landed (`finish_plain_paste`);
+            // no clipboard read here, this runs on the UI thread (#1380). When the owner handles
+            // the paste (the terminal input) only the fact is announced.
+            EditorAction::Paste if self.delegate_paste_handling => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-                    // No clipboard read here: this runs on the UI thread and the read can block
-                    // for seconds on a slow owner (#1380).
                     "Pasting from the clipboard".to_string(),
                     WarpA11yRole::UserAction,
                 ))
             }
+            EditorAction::Paste => ActionAccessibilityContent::Empty,
             _ => ActionAccessibilityContent::from_debug(),
         }
     }

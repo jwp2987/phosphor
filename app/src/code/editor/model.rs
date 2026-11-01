@@ -2137,24 +2137,10 @@ impl CodeEditorModel {
         render_state.styles().base_line_height().as_f32()
     }
 
-    pub fn paste(&mut self, ctx: &mut ModelContext<Self>) {
-        // We only want to read the plain text contents for code editor. The read is off the UI
-        // thread (#1380); a failed or over-cap read pastes nothing.
-        crate::util::clipboard::read_clipboard_for_model(
-            self,
-            ctx,
-            warpui::clipboard::ReadKind::TextAndPaths,
-            |model, read, ctx| match read {
-                warpui::clipboard::BackgroundTextRead::Content(content) => {
-                    model.insert(content.plain_text.as_str(), EditOrigin::UserInitiated, ctx)
-                }
-                failed => {
-                    if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
-                        log::warn!("code editor paste: {message}");
-                    }
-                }
-            },
-        );
+    /// Inserts pasted plain text at the cursor. The clipboard is read by the view, off the UI
+    /// thread, which also orders the keys typed meanwhile (#1380).
+    pub fn paste_text(&mut self, text: &str, ctx: &mut ModelContext<Self>) {
+        self.insert(text, EditOrigin::UserInitiated, ctx);
     }
 
     /// Append text to the end of the buffer regardless of cursor position.
