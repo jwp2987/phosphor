@@ -19,6 +19,7 @@ use crate::{ai::blocklist::agent_view::AgentViewState, terminal::model::blocks::
 use super::{
     block_list_element::{
         GridType, SnackbarHeader, SnackbarHeaderState, SnackbarPoint, VisibleItem,
+        BLOCK_HOVER_BUTTON_HEIGHT, SNACKBAR_HEADER_MAX_RATIO,
     },
     height_in_range_approx, heights_approx_gt, heights_approx_gte, heights_approx_lt,
     heights_approx_lte,
@@ -45,7 +46,27 @@ pub struct ReflowAnchor {
     /// Where the viewport top sat inside the block's output grid, by content (logical line and
     /// wrapped-row offset, see `BlockGrid::row_content_anchor`) plus the sub-row remainder.
     /// `None` when the top is outside the output grid, which then keeps the block-relative offset.
+    /// The row is the first one the user can read, i.e. below the pinned header when there is one.
     output_row: Option<((usize, usize), Lines)>,
+    /// Whether the block's header was pinned over the top of the viewport (#1328).
+    snackbar_pinned: bool,
+}
+
+/// The output row at the top of the readable area: the viewport top, `into_output` lines below
+/// the output grid start, plus the `overlay` the pinned header hides (#1328).
+fn first_readable_output_row(into_output: Lines, overlay: Lines) -> Lines {
+    into_output + overlay
+}
+
+/// Inverse of [`first_readable_output_row`] after the block moved to `block_top` and its output
+/// grid to `output_offset`: the scroll top that keeps `row` at the top of the readable area.
+fn scroll_top_for_readable_row(
+    block_top: Lines,
+    output_offset: Lines,
+    row: Lines,
+    overlay: Lines,
+) -> Lines {
+    block_top + output_offset + row - overlay
 }
 
 /// Wraps a scroll position for the purposes of centralizing update logic.
@@ -112,18 +133,27 @@ impl ScrollState {
         let by_content = anchor.output_row.and_then(|(content, frac)| {
             let block = viewport_after.block_list.block_at(anchor.block_index)?;
             let row = block.output_grid().row_for_content_anchor(content)?;
-            Some(top_after + block.output_grid_offset() + Lines::new(row as f64) + frac)
+            let overlay = viewport_after.snackbar_overlay_lines(block, anchor.snackbar_pinned);
+            Some(scroll_top_for_readable_row(
+                top_after,
+                block.output_grid_offset(),
+                Lines::new(row as f64) + frac,
+                overlay,
+            ))
         });
         let delta = top_after - anchor.top_in_lines;
         let scroll_top = by_content
             .unwrap_or(anchor.scroll_top_in_lines + delta)
             .max(Lines::zero());
-        if scroll_top == anchor.scroll_top_in_lines {
-            return false;
-        }
-        self.position = ScrollPosition::FixedAtPosition {
+        // Compare with the position now, not the one the anchor saw: an earlier compensation in
+        // the same resize may already have moved it (#1328).
+        let next = ScrollPosition::FixedAtPosition {
             scroll_lines: viewport_after.scroll_lines_from_scroll_top(scroll_top),
         };
+        if next == self.position {
+            return false;
+        }
+        self.position = next;
         true
     }
 
@@ -832,8 +862,15 @@ impl<'a> ViewportState<'a> {
         let block_index = self.iter().find_map(|item| item.block_index)?;
         let scroll_top_in_lines = self.scroll_top_in_lines();
         let top_in_lines = self.top_of_block_in_lines(block_index);
+        let snackbar_pinned = self.snackbar_pinned_over(block_index);
         let output_row = self.block_list.block_at(block_index).and_then(|block| {
-            let into_output = scroll_top_in_lines - top_in_lines - block.output_grid_offset();
+            // The pinned header covers the first rows under the viewport top, and it covers
+            // fewer *content lines* once lines wrap, so the row to keep still is the first
+            // readable one, not the one hidden under the header (#1328).
+            let into_output = first_readable_output_row(
+                scroll_top_in_lines - top_in_lines - block.output_grid_offset(),
+                self.snackbar_overlay_lines(block, snackbar_pinned),
+            );
             if into_output < Lines::zero() {
                 return None;
             }
@@ -846,7 +883,34 @@ impl<'a> ViewportState<'a> {
             top_in_lines,
             scroll_top_in_lines,
             output_row,
+            snackbar_pinned,
         })
+    }
+
+    /// Whether the last frame pinned `block_index`'s header over the viewport top.
+    fn snackbar_pinned_over(&self, block_index: BlockIndex) -> bool {
+        self.snackbar_header_state()
+            .header_position
+            .is_some_and(|position| position.block_index == block_index)
+    }
+
+    /// Height in lines of the header pinned over the top of `block`, mirroring what
+    /// `SnackbarHeader::update` computes at paint time from the block's current layout. Zero when
+    /// no header is pinned (`pinned` false) or it would be too tall to show.
+    fn snackbar_overlay_lines(&self, block: &Block, pinned: bool) -> Lines {
+        let cell_height = self.size_info.cell_height_px().as_f32();
+        if !pinned || cell_height <= 0. {
+            return Lines::zero();
+        }
+        let floor =
+            block.padding_top() + Lines::new((BLOCK_HOVER_BUTTON_HEIGHT / cell_height) as f64);
+        let height = block.output_grid_offset().max(floor);
+        if height.as_f64() as f32 * cell_height
+            > SNACKBAR_HEADER_MAX_RATIO * self.size_info.pane_height_px().as_f32()
+        {
+            return Lines::zero();
+        }
+        height
     }
 
     /// Block indices to reflow before drawing: everything within `margin` lines above and
@@ -2240,6 +2304,65 @@ mod eviction_shift_tests {
         assert_eq!(
             state.position(),
             ScrollPosition::FollowsBottomOfMostRecentBlock
+        );
+    }
+}
+
+#[cfg(test)]
+mod reflow_anchor_math_tests {
+    use super::*;
+
+    /// #1328: the header pinned over the viewport top covers a fixed number of rows, which is
+    /// fewer logical lines once lines wrap. Anchoring on the first readable row (not the one
+    /// hidden under the header) keeps the same line under the header at every width.
+    #[test]
+    fn first_readable_row_survives_a_wider_header_and_more_wrapping() {
+        // (rows per logical line, header height in lines)
+        let widths = [(1usize, 3.0f64), (2, 3.0), (2, 3.0), (3, 4.0)];
+        let block_top = Lines::new(100.);
+        let (mut rows_per_line, mut header) = widths[0];
+        let mut output_offset = Lines::new(header);
+        // Readable top at line 2713 of the 1-row-per-line layout.
+        let mut scroll_top = block_top + output_offset + Lines::new(2713. - header);
+        let readable_line = |scroll_top: Lines, rpl: usize, header: f64, offset: Lines| {
+            let into_output = scroll_top - block_top - offset;
+            (first_readable_output_row(into_output, Lines::new(header)).as_f64() / rpl as f64)
+                .floor() as usize
+        };
+        assert_eq!(
+            readable_line(scroll_top, rows_per_line, header, output_offset),
+            2713
+        );
+        for &(next_rpl, next_header) in &widths[1..] {
+            let into_output = scroll_top - block_top - output_offset;
+            let row = first_readable_output_row(into_output, Lines::new(header));
+            let line = (row.as_f64() / rows_per_line as f64).floor();
+            let frac = row.as_f64() - line * rows_per_line as f64;
+            rows_per_line = next_rpl;
+            header = next_header;
+            output_offset = Lines::new(header);
+            scroll_top = scroll_top_for_readable_row(
+                block_top,
+                output_offset,
+                Lines::new(line * rows_per_line as f64 + frac.min(rows_per_line as f64 - 1.)),
+                Lines::new(header),
+            );
+            assert_eq!(
+                readable_line(scroll_top, rows_per_line, header, output_offset),
+                2713,
+                "{rows_per_line} rows per line, header {header}"
+            );
+        }
+    }
+
+    /// Without a pinned header the conversion is the identity, as before.
+    #[test]
+    fn no_header_means_no_overlay_adjustment() {
+        let row = first_readable_output_row(Lines::new(7.25), Lines::zero());
+        assert_eq!(row, Lines::new(7.25));
+        assert_eq!(
+            scroll_top_for_readable_row(Lines::new(10.), Lines::new(2.), row, Lines::zero()),
+            Lines::new(19.25)
         );
     }
 }
