@@ -6,8 +6,8 @@
 //! to be worth a WARN and rate limits that WARN so a slow stretch produces one
 //! summary line per [`WARN_INTERVAL_MS`] rather than one line per frame.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use parking_lot::Mutex;
@@ -18,8 +18,6 @@ pub(super) const SLOW_KEY_TO_PRESENTED_MS: u64 = 50;
 pub(super) const SLOW_DRAWABLE_WAIT_MS: u64 = 8;
 /// Minimum spacing between WARN lines.
 pub(super) const WARN_INTERVAL_MS: u64 = 10_000;
-/// Consecutive deferred (app-borrowed) draws after which we stop re-arming.
-pub(super) const MAX_CONSECUTIVE_REARMS: u32 = 1000;
 
 /// Whether a frame with these timings should count towards the WARN summary.
 pub(super) fn is_slow_frame(key_to_presented_ms: Option<u64>, drawable_wait_ms: u64) -> bool {
@@ -86,37 +84,57 @@ impl SlowFrameLimiter {
     }
 }
 
-/// Whether a draw that was deferred because the app was mutably borrowed should
-/// request another redraw, given how many consecutive deferrals preceded it.
-/// The cap keeps a (buggy) persistently-held borrow from spinning forever.
-pub(super) fn should_rearm_deferred_draw(consecutive_deferrals: u32) -> bool {
-    consecutive_deferrals < MAX_CONSECUTIVE_REARMS
+/// Per-window "draw owed" bookkeeping (#1358).
+///
+/// When `warp_update_layer` finds the app mutably borrowed it cannot draw. The draw is not
+/// forgotten: the window records that one is owed and a single flush is queued on the
+/// foreground executor, which runs from the main queue once the outer borrow has been released
+/// (the same release event `dispatch_window_resized` relies on). There is no per-run-loop-turn
+/// re-arm and no retry cap: the release of the borrow is the signal.
+#[derive(Debug, Default)]
+pub(super) struct DrawOwed {
+    owed: Cell<bool>,
+    flush_queued: Cell<bool>,
+}
+
+impl DrawOwed {
+    pub(super) const fn new() -> Self {
+        Self {
+            owed: Cell::new(false),
+            flush_queued: Cell::new(false),
+        }
+    }
+
+    /// Records a dropped draw. Returns true if the caller must queue a flush (none is queued yet);
+    /// further drops while a flush is queued only keep the flag set.
+    pub(super) fn note_deferred(&self) -> bool {
+        self.owed.set(true);
+        !self.flush_queued.replace(true)
+    }
+
+    /// A draw ran, so nothing is owed any more.
+    pub(super) fn note_draw_ran(&self) {
+        self.owed.set(false);
+    }
+
+    /// Runs when the queued flush executes (borrow released). Returns true if a redraw should be
+    /// requested, i.e. a draw is still owed.
+    pub(super) fn take_for_flush(&self) -> bool {
+        self.flush_queued.set(false);
+        self.owed.replace(false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_owed(&self) -> bool {
+        self.owed.get()
+    }
 }
 
 static LIMITER: Mutex<SlowFrameLimiter> = Mutex::new(SlowFrameLimiter::new());
 
-static CONSECUTIVE_DEFERRALS: AtomicU32 = AtomicU32::new(0);
-
 fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
-}
-
-/// Notes that a draw was deferred (app mutably borrowed). Returns whether the
-/// caller should re-request a redraw.
-pub(super) fn note_deferred_draw() -> bool {
-    let previous = CONSECUTIVE_DEFERRALS.fetch_add(1, Ordering::Relaxed);
-    if previous + 1 == MAX_CONSECUTIVE_REARMS {
-        log::warn!(
-            "Draw deferred {MAX_CONSECUTIVE_REARMS} times in a row because the app stayed mutably borrowed; no longer re-arming"
-        );
-    }
-    should_rearm_deferred_draw(previous)
-}
-
-/// Notes that a draw ran, clearing the deferral streak.
-pub(super) fn note_draw_ran() {
-    CONSECUTIVE_DEFERRALS.store(0, Ordering::Relaxed);
 }
 
 /// Called from `host_view.m`'s presented handler (any thread) once a frame has

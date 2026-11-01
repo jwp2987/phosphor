@@ -485,6 +485,7 @@ pub struct WindowState {
     window_id: WindowId,
     callbacks: WindowCallbacks,
     next_scene: RefCell<Option<Rc<Scene>>>,
+    draw_owed: frame_latency::DrawOwed,
     device: Option<Device>,
     renderer_manager: Option<Rc<RefCell<RendererManager>>>,
     synthetic_drag_counter: Cell<usize>,
@@ -615,6 +616,7 @@ impl Window {
                 window_id,
                 callbacks,
                 next_scene: Default::default(),
+                draw_owed: Default::default(),
                 renderer_manager: Some(renderer_manager),
                 device,
                 synthetic_drag_counter: Cell::new(0),
@@ -1412,17 +1414,28 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             "Tried to update window's backing CAMetalDrawable but app was already mutably borrowed!\nStack trace:\n{:#}",
             std::backtrace::Backtrace::force_capture()
         );
-        // The draw was dropped, not done: ask for another pass on the next runloop turn so the
-        // window does not stay stale until some unrelated event arrives. `setNeedsDisplayAsync`
-        // dispatches asynchronously, so this is at most one retry per turn; the streak is capped
-        // in case the borrow is somehow held persistently.
-        if frame_latency::note_deferred_draw() {
-            // SAFETY: `this` is the WarpHostView invoking its layer delegate.
-            unsafe { get_window_state(this) }.schedule_redraw();
+        // The draw was dropped, not done. Record that one is owed and queue a single flush on
+        // the foreground executor; it runs from the main queue after the outer app borrow is
+        // released and requests the redraw then. No per-turn re-arm.
+        // SAFETY: `this` is the WarpHostView invoking its layer delegate.
+        let window = unsafe { get_window_state(this) };
+        if window.draw_owed.note_deferred() {
+            let weak_window_state = Rc::downgrade(window);
+            window
+                .executor
+                .spawn(async move {
+                    if let Some(window_state) = weak_window_state.upgrade() {
+                        if window_state.draw_owed.take_for_flush() {
+                            window_state.schedule_redraw();
+                        }
+                    }
+                })
+                .detach();
         }
         return;
     }
-    frame_latency::note_draw_ran();
+    // SAFETY: as above.
+    unsafe { get_window_state(this) }.draw_owed.note_draw_ran();
 
     unsafe {
         let window = get_window_state(this);

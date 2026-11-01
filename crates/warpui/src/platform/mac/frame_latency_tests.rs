@@ -50,20 +50,32 @@ fn slow_frames_inside_window_are_folded_into_next_summary() {
 }
 
 #[test]
-fn deferred_draw_rearms_until_cap() {
-    assert!(should_rearm_deferred_draw(0));
-    assert!(should_rearm_deferred_draw(MAX_CONSECUTIVE_REARMS - 1));
-    assert!(!should_rearm_deferred_draw(MAX_CONSECUTIVE_REARMS));
+fn dropped_draw_is_owed_and_queues_exactly_one_flush() {
+    let owed = DrawOwed::new();
+    assert!(owed.note_deferred(), "first drop queues the flush");
+    assert!(owed.is_owed());
+    // Further drops before the borrow is released do not queue more flushes.
+    for _ in 0..5000 {
+        assert!(!owed.note_deferred());
+    }
+    assert!(owed.take_for_flush(), "flush requests the owed redraw once");
+    assert!(!owed.is_owed());
+    assert!(!owed.take_for_flush(), "nothing owed after the flush");
 }
 
 #[test]
-fn deferral_streak_rearms_then_stops_and_resets_after_a_draw() {
-    note_draw_ran();
-    for _ in 0..MAX_CONSECUTIVE_REARMS {
-        assert!(note_deferred_draw());
-    }
-    assert!(!note_deferred_draw());
-    note_draw_ran();
-    assert!(note_deferred_draw());
-    note_draw_ran();
+fn flush_does_nothing_if_a_draw_ran_in_between() {
+    let owed = DrawOwed::new();
+    assert!(owed.note_deferred());
+    owed.note_draw_ran();
+    assert!(!owed.take_for_flush());
+}
+
+#[test]
+fn a_new_drop_after_a_flush_queues_a_new_flush() {
+    let owed = DrawOwed::new();
+    assert!(owed.note_deferred());
+    assert!(owed.take_for_flush());
+    assert!(owed.note_deferred());
+    assert!(owed.take_for_flush());
 }
