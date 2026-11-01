@@ -884,6 +884,37 @@ fn explicit_toggle_covers_the_buffer_it_was_made_for() {
     });
 }
 
+/// #1375 (INP-A2): a claimed explicit write stands for its buffer however long ago it was made,
+/// and ends when different text is requested; no clock decides either.
+#[test]
+fn claimed_explicit_write_is_event_bound_not_time_bound() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let explicit_snapshot = parsed(PREFILTERED_COMMAND).await;
+        let new_text = "cat foo.txt | grep -i errors";
+        let new_snapshot = parsed(new_text).await;
+
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_type(InputType::AI, ctx);
+        });
+        request_detection(&mut app, &input_model, explicit_snapshot);
+        // Pretend the write is far older than the old 250 ms window.
+        input_model.update(&mut app, |model, _| {
+            let explicit = model.explicit_input_type_set.as_mut().unwrap();
+            explicit.at = Instant::now() - std::time::Duration::from_secs(60);
+            assert!(explicit.is_within_window());
+            assert!(model.is_detection_suppressed_by_explicit_set(PREFILTERED_COMMAND));
+        });
+        // Different text is a new question and ends it.
+        request_detection(&mut app, &input_model, new_snapshot);
+        input_model.read(&app, |model, _| {
+            assert!(model.explicit_input_type_set.is_none());
+            assert_eq!(model.input_type(), InputType::Shell);
+        });
+    });
+}
+
 /// #933: text the typeahead hand-off inserts right after a forced-shell submit falls inside the
 /// 250 ms explicit-write window, where the first detection request is swallowed and the buffer
 /// is never classified. Clearing the explicit write for that text makes the request register.

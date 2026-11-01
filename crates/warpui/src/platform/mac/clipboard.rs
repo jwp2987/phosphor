@@ -102,25 +102,25 @@ impl crate::Clipboard for Clipboard {
         // NSPasteboard reads can block on a lazy promise from the owning app; run them on a
         // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
         // reads the same data.
-        Some(Box::new(|| {
+        Some(crate::clipboard::tracked_reader(Box::new(|| {
             objc2::rc::autoreleasepool(|_| match Clipboard::new() {
                 Ok(mut clipboard) => BackgroundTextRead::Content(
                     crate::Clipboard::read_text_and_paths(&mut clipboard),
                 ),
                 Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
             })
-        }))
+        })))
     }
 
     fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
-        Some(Box::new(|| {
+        Some(crate::clipboard::tracked_reader(Box::new(|| {
             objc2::rc::autoreleasepool(|_| match Clipboard::new() {
                 Ok(mut clipboard) => {
                     BackgroundTextRead::Content(crate::Clipboard::read(&mut clipboard))
                 }
                 Err(_) => BackgroundTextRead::Content(ClipboardContent::default()),
             })
-        }))
+        })))
     }
 
     fn read(&mut self) -> ClipboardContent {

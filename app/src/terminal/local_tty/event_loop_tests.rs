@@ -675,6 +675,20 @@ fn a_hung_up_pty_wakes_the_loop_to_look_for_the_exit() {
     );
 }
 
+#[test]
+fn a_long_hung_up_pty_backs_off_and_warns_once() {
+    let mut state = State::default();
+    state.note_hung_up();
+    assert_eq!(state.hung_up_poll(), HUNG_UP_POLL);
+    state.warn_if_hung_up_too_long();
+    assert!(!state.hung_up_warned, "no warning right after the hang-up");
+    state.hung_up_since = Some(Instant::now() - HUNG_UP_WARN_AFTER - Duration::from_millis(1));
+    assert_eq!(state.hung_up_poll(), HUNG_UP_POLL_SLOW);
+    assert_eq!(state.poll_timeout(None), Some(HUNG_UP_POLL_SLOW));
+    state.warn_if_hung_up_too_long();
+    assert!(state.hung_up_warned);
+}
+
 /// Any other read error still stops the loop.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 #[test]
