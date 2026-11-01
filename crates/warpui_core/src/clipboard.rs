@@ -499,13 +499,12 @@ fn legacy_reader<C: Clipboard + ?Sized>(
     }
 }
 
-/// A BOUNDED BLOCKING read on the calling thread, for the few callers that cannot yet wait for an
-/// event (#1405): a vim register read that decides the very keystroke that asked for it, the
-/// paste held during an ssh connect, the CLI-agent paste, the headless TUI, and tests. It is not
-/// a second read implementation: it runs the same reader [`request_read`] would, so the deadline,
-/// the blocked-reader cap and the size cap all apply. Each caller is a gap to close by moving it
-/// to [`request_read`] once the input queue can hold the keys typed behind the read. Never use
-/// it where an event-driven read is possible.
+/// A BOUNDED BLOCKING read on the calling thread, for tests, the integration harness and the
+/// headless TUI only (`script/check_queue_access` fails the build when production code calls it,
+/// #1405). It is not a second read implementation: it runs the same reader [`request_read`]
+/// would, so the deadline, the blocked-reader cap and the size cap all apply. Production code
+/// asks [`request_read`] and acts when the answer lands, holding keys typed meanwhile behind a
+/// gate.
 pub fn read_outcome_blocking(clipboard: &mut dyn Clipboard, kind: ReadKind) -> ReadOutcome {
     let reader = prepared_reader(clipboard, kind, ReadRequestId::next());
     reader()
@@ -1090,10 +1089,22 @@ impl Clipboard for InMemoryClipboard {
             content.html = None;
             content.images = None;
         }
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(gate) = deferred_reads::active() {
+            // The snapshot is taken now, in typed order; the answer waits for the test.
+            return Box::new(move || {
+                gate.wait();
+                ReadOutcome::Content(content)
+            });
+        }
         Box::new(move || ReadOutcome::Content(content))
     }
 
     fn reads_inline(&self) -> bool {
+        #[cfg(any(test, feature = "test-util"))]
+        if deferred_reads::active().is_some() {
+            return false;
+        }
         true
     }
 
@@ -1107,6 +1118,63 @@ impl Clipboard for InMemoryClipboard {
 
     #[cfg(target_family = "wasm")]
     fn save(&mut self, _content: ClipboardContent) {}
+}
+
+/// Test support: makes this thread's in-memory clipboard answer reads like a platform whose owner
+/// is slow (a worker thread, an answer that arrives later), so a test can type keys while a read
+/// is out and then let it land.
+#[cfg(any(test, feature = "test-util"))]
+pub mod deferred_reads {
+    use super::{Condvar, Mutex};
+    use std::sync::Arc;
+
+    type Gate = Arc<(Mutex<bool>, Condvar)>;
+
+    thread_local! {
+        static ACTIVE: std::cell::RefCell<Option<Gate>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) struct ReadGate(Gate);
+
+    impl ReadGate {
+        pub(super) fn wait(&self) {
+            let (open, changed) = &*self.0;
+            let mut open = open.lock();
+            while !*open {
+                changed.wait(&mut open);
+            }
+        }
+    }
+
+    pub(super) fn active() -> Option<ReadGate> {
+        ACTIVE.with(|active| active.borrow().clone().map(ReadGate))
+    }
+
+    /// Reads requested on this thread while this is alive wait for [`Self::release`]. Dropping it
+    /// releases them and restores inline reads.
+    pub struct ReadDeferral(Gate);
+
+    /// Starts deferring this thread's in-memory clipboard reads.
+    pub fn defer() -> ReadDeferral {
+        let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
+        ACTIVE.with(|active| *active.borrow_mut() = Some(gate.clone()));
+        ReadDeferral(gate)
+    }
+
+    impl ReadDeferral {
+        /// Lets every read requested so far answer, and later reads answer inline again.
+        pub fn release(&self) {
+            ACTIVE.with(|active| *active.borrow_mut() = None);
+            *self.0.0.lock() = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    impl Drop for ReadDeferral {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
 }
 
 #[cfg(test)]

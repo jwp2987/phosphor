@@ -21183,6 +21183,70 @@ fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
     });
 }
 
+/// #1405: a middle click made during an ssh connect reads the selection off the UI thread like
+/// any paste. The keys typed while the read is out queue behind it, and when it lands and the
+/// hand-over drains, everything arrives once in typed order. (The old path read the selection on
+/// the UI thread and pushed the text into the hold directly.)
+#[test]
+fn ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let deferral = warpui::clipboard::deferred_reads::defer();
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("a", ctx);
+            assert!(ssh_gate_open(view));
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("P".to_owned()));
+            view.hold_ssh_paste(true, ctx);
+            assert!(
+                view.paste_queue
+                    .queue
+                    .borrow()
+                    .has_gate_kind(crate::terminal::input_queue::GateKind::PasteReading),
+                "the middle click's read is pending, not answered on the UI thread"
+            );
+            view.typed_characters_on_terminal("b", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "all held");
+        });
+        deferral.release();
+        // The read lands through the event loop; wait for its gate to open (condition-driven).
+        let mut landed = false;
+        for _ in 0..10_000 {
+            landed = terminal.read(&app, |view, _| {
+                !view
+                    .paste_queue
+                    .queue
+                    .borrow()
+                    .has_gate_kind(crate::terminal::input_queue::GateKind::PasteReading)
+            });
+            if landed {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(1)).await;
+        }
+        assert!(landed, "the middle-click read never landed");
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "still behind the connect"
+            );
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
+            assert!(ssh_queue_is_idle(view));
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
 /// The held line reaches the remote shell once: at most one `echo hi` runs, and the Enter stays
 /// behind the text it ends.
 #[test]

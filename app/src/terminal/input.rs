@@ -11005,7 +11005,7 @@ impl Input {
     }
 
     /// A middle click on the input: reads the primary selection off the UI thread where the
-    /// platform can (#1331). Elsewhere the read stays synchronous, as before.
+    /// platform can (#1331); an inline platform answers its request at once (#1405).
     fn process_middle_click_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
         #[cfg(not(target_family = "wasm"))]
         {
@@ -11021,10 +11021,34 @@ impl Input {
                 return;
             }
         }
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
+        // No worker reader: the paste is disabled (nothing to read) or the platform reads inline,
+        // so the request is already answered. Never a blocking read (#1405).
+        let request = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+            selection.request_middle_click_read(ctx)
         });
-        if let Some(content) = content {
+        let Some(request) = request else {
+            return;
+        };
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.insert_middle_click_outcome(outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.insert_middle_click_outcome(outcome, ctx)
+                });
+            }
+        }
+    }
+
+    fn insert_middle_click_outcome(
+        &mut self,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let content = outcome.into_content();
+        // An empty selection pastes nothing.
+        if !content.is_empty() {
             self.editor.update(ctx, |editor, ctx| {
                 editor.insert_middle_click_content(content, ctx)
             });
@@ -11041,9 +11065,20 @@ impl Input {
             self.start_background_paste(reader, ctx);
             return;
         }
-        // Read from app clipboard
-        let content = warpui::clipboard::read_full_blocking(ctx.clipboard());
-        self.process_paste_content(content, ctx);
+        // The platform reads inline (or this is wasm): the request is already answered. Never a
+        // blocking read (#1405).
+        let request =
+            warpui::clipboard::request_read(ctx.clipboard(), warpui::clipboard::ReadKind::Full);
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.process_paste_content(outcome.into_content(), ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.process_paste_content(outcome.into_content(), ctx)
+                });
+            }
+        }
     }
 
     /// Reads the clipboard on a worker thread; the paste's queue entry inserts it (`paste_queue`).
