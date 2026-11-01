@@ -98,6 +98,8 @@ pub struct PaintContext<'a> {
     /// skip layout for that wake. See issue #703.
     repaint_needs_layout: bool,
     pending_assets: HashSet<AssetHandle>,
+    /// Background image rasters this frame is waiting on; see [`Self::repaint_after_raster`].
+    pending_rasters: HashSet<crate::image_cache::RasterWait>,
     /// Keep track of all the views that were actually painted in this scene.
     views_painted: EntityIdSet,
 }
@@ -551,17 +553,19 @@ impl Presenter {
             self.after_layout(ctx);
             self.layout_current = true;
         }
-        let (scene, repaint_at, repaint_needs_layout, pending_assets) = self.paint(
-            zoomed_scale_factor,
-            zoomed_window_size,
-            max_texture_dimension_2d,
-            ctx,
-        );
+        let (scene, repaint_at, repaint_needs_layout, pending_assets, pending_rasters) = self
+            .paint(
+                zoomed_scale_factor,
+                zoomed_window_size,
+                max_texture_dimension_2d,
+                ctx,
+            );
         // After paint, collect a delayed repaint if it exists and start the timer.
         if let Some(repaint_at) = repaint_at {
             ctx.manage_delayed_repaint_timers(self.window_id, repaint_at, repaint_needs_layout);
         }
         ctx.manage_pending_assets(self.window_id, pending_assets);
+        ctx.manage_pending_rasters(self.window_id, pending_rasters);
         let scene = Rc::new(scene);
         self.scene = Some(scene.clone());
         // Times the frame that shows pty output read after a keystroke (#1092).
@@ -623,7 +627,13 @@ impl Presenter {
         window_size: Vector2F,
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
-    ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
+    ) -> (
+        Scene,
+        Option<Instant>,
+        bool,
+        HashSet<AssetHandle>,
+        HashSet<crate::image_cache::RasterWait>,
+    ) {
         crate::profiling::zone!("paint");
         // Layers are the same shape frame to frame, so the last scene says how big to make them.
         let mut scene = match self.scene.as_deref() {
@@ -637,6 +647,7 @@ impl Presenter {
         let mut repaint_at = None;
         let mut repaint_needs_layout = false;
         let mut pending_assets = HashSet::new();
+        let mut pending_rasters = HashSet::new();
 
         if let Some(root_view_id) = ctx.root_view_id(self.window_id) {
             let mut paint_ctx = PaintContext {
@@ -652,6 +663,7 @@ impl Presenter {
                 repaint_at: None,
                 repaint_needs_layout: false,
                 pending_assets: HashSet::new(),
+                pending_rasters: HashSet::new(),
                 views_painted: EntityIdSet::default(),
             };
             paint_ctx.paint(root_view_id, Vector2F::zero(), ctx);
@@ -659,6 +671,7 @@ impl Presenter {
             repaint_at = paint_ctx.repaint_at;
             repaint_needs_layout = paint_ctx.repaint_needs_layout;
             pending_assets.extend(paint_ctx.pending_assets);
+            pending_rasters.extend(paint_ctx.pending_rasters);
 
             // If the cursor shape had been changed by a view and that view is no longer being
             // rendered, reset the cursor.
@@ -687,7 +700,13 @@ impl Presenter {
             }
         }
 
-        (scene, repaint_at, repaint_needs_layout, pending_assets)
+        (
+            scene,
+            repaint_at,
+            repaint_needs_layout,
+            pending_assets,
+            pending_rasters,
+        )
     }
 
     pub fn ancestors(&self, mut view_id: EntityId) -> Vec<EntityId> {
@@ -946,6 +965,12 @@ impl PaintContext<'_> {
 
     pub fn repaint_after_load(&mut self, asset: AssetHandle) {
         self.pending_assets.insert(asset);
+    }
+
+    /// Redraws this window (once) when a background image raster finishes, instead of polling
+    /// with a repaint timer. See [`crate::image_cache::DeferredImage::Pending`].
+    pub fn repaint_after_raster(&mut self, wait: crate::image_cache::RasterWait) {
+        self.pending_rasters.insert(wait);
     }
 }
 
