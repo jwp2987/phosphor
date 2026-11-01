@@ -516,8 +516,8 @@ use crate::terminal::view::inline_banner::{
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
-    HeldInput, SshTypeahead, SshTypeaheadPush, burst_continues, delivery_waits_for_first_precmd,
-    delivery_waits_for_view_precmd, ssh_view_precmd_wait_disabled,
+    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeahead, SshTypeaheadPush, burst_continues,
+    delivery_waits_for_first_precmd,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::{
@@ -2947,13 +2947,14 @@ pub struct TerminalView {
     ssh_typeahead_discard_burst: bool,
     /// A held paste whose text the paste handler has still to store.
     ssh_paste_to_hold: bool,
-    /// The poll that delivers or discards held keys is scheduled.
-    ssh_typeahead_poll_armed: bool,
     /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
-    /// the held Enter is not refused as `HistoryNotAppendable` (#1332).
+    /// the held Enter is not refused as `HistoryNotAppendable` (#1332). Only the give-up cap
+    /// reads it: delivery itself is driven by the prompt's events (#1348).
     ssh_typeahead_precmd_wait_since: Option<Instant>,
-    /// The short re-check of that wait is scheduled.
-    ssh_typeahead_precmd_wait_armed: bool,
+    /// The instant the one-shot give-up timer of the held keys is armed for (#1348). Not a poll:
+    /// it guards a signal that never arrives (the gate's own ceilings, a first Precmd that never
+    /// comes), and it is re-armed only from events.
+    ssh_typeahead_deadline_armed: Option<Instant>,
     /// Whether the "interrupt held" notice was shown for the current connect window before
     /// the remote session was announced (#1001).
     ssh_interrupt_held_gate_notified: bool,
@@ -4741,9 +4742,8 @@ impl TerminalView {
             ssh_typeahead_last_key_at: None,
             ssh_typeahead_discard_burst: false,
             ssh_paste_to_hold: false,
-            ssh_typeahead_poll_armed: false,
             ssh_typeahead_precmd_wait_since: None,
-            ssh_typeahead_precmd_wait_armed: false,
+            ssh_typeahead_deadline_armed: None,
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
@@ -10528,6 +10528,11 @@ impl TerminalView {
         // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
         // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
         let gate_armed = self.refresh_ssh_connect_gate();
+        // #1348: the gate released since the last event (a ceiling passed, a failed connect):
+        // hand over what is held before this key is judged, so it lands behind the held ones.
+        if !gate_armed && self.ssh_typeahead_holding {
+            self.deliver_ssh_typeahead_if_ready("key", ctx);
+        }
         let pending_sid = if gate_armed || self.has_pending_ssh_command() {
             self.model.lock().pending_session_id()
         } else {
@@ -10625,7 +10630,7 @@ impl TerminalView {
             // The paste handler stores the text; only it has the clipboard.
             None => self.ssh_paste_to_hold = true,
         }
-        self.arm_ssh_typeahead_poll(ctx);
+        self.schedule_ssh_typeahead_give_up(ctx);
         warpui::input_order::log_key_hop("kh_hold_exit", || {
             format!("branch=held held_bytes={}", self.ssh_typeahead.len_bytes())
         });
@@ -10745,7 +10750,7 @@ impl TerminalView {
             self.note_ssh_typeahead_outcome(&outcome, ctx);
         }
         self.ssh_typeahead_last_key_at = Some(Instant::now());
-        self.arm_ssh_typeahead_poll(ctx);
+        self.schedule_ssh_typeahead_give_up(ctx);
     }
 
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
@@ -10760,89 +10765,102 @@ impl TerminalView {
         self.ssh_typeahead_precmd_wait_since = None;
     }
 
-    /// Schedules the poll that delivers the held keys once the connect is over; the gate also
-    /// releases on timers, not only on events.
-    fn arm_ssh_typeahead_poll(&mut self, ctx: &mut ViewContext<Self>) {
-        const SSH_TYPEAHEAD_POLL: Duration = Duration::from_millis(100);
-        if self.ssh_typeahead_poll_armed {
-            return;
-        }
-        self.ssh_typeahead_poll_armed = true;
-        ctx.spawn(Timer::after(SSH_TYPEAHEAD_POLL), move |me, _, ctx| {
-            me.poll_ssh_typeahead(true, ctx);
-        });
-    }
-
-    /// Delivers or discards the held keys if the connect is over, else keeps waiting.
-    fn poll_ssh_typeahead(&mut self, chain: bool, ctx: &mut ViewContext<Self>) {
-        if chain {
-            self.ssh_typeahead_poll_armed = false;
-        }
+    /// The single place the held keys are handed over (#1348), driven by events: the remote
+    /// shell's first `Precmd` (after the input was reset for the new prompt), the end of a failed
+    /// ssh block, the session being registered, output that shows a prompt, a key arriving after
+    /// the gate released. There is no poll: nothing here asks "is it ready yet" on a clock.
+    ///
+    /// Discards the held keys if output shows a host-key / password prompt; delivers them (or
+    /// returns them to the input as text if the connect ended without a remote shell) once the
+    /// gate has released; else leaves them held. `source` names the signal for the log.
+    /// Returns whether the hand-over ran.
+    fn deliver_ssh_typeahead_if_ready(
+        &mut self,
+        source: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         if !self.ssh_typeahead_holding {
-            return;
+            return false;
         }
         self.refresh_ssh_connect_gate();
         if self.discard_ssh_typeahead_on_prompt(ctx) {
-            return;
+            return false;
         }
-        if self.ssh_connect_gate.is_none() {
-            if self.defer_ssh_delivery_for_first_precmd(ctx) {
-                return;
-            }
-            self.finish_ssh_typeahead(ctx);
-        } else {
-            self.arm_ssh_typeahead_poll(ctx);
+        if self.ssh_connect_gate.is_some() {
+            self.schedule_ssh_typeahead_give_up(ctx);
+            return false;
         }
-    }
-
-    /// #1332: the gate can release at the remote shell's `Bootstrapped` hook, before the Precmd
-    /// of its first prompt has been processed. The session cannot take a command until then
-    /// (`HistoryNotAppendable`), so a held Enter delivered now is refused and its line stays in
-    /// the input. Delivery waits for that Precmd, re-checking every few milliseconds, for at most
-    /// `SSH_TYPEAHEAD_PRECMD_WAIT_CAP`. Returns whether delivery was deferred.
-    fn defer_ssh_delivery_for_first_precmd(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        const RECHECK: Duration = Duration::from_millis(10);
-        // Only keys headed for the remote shell can be refused; the fallback shows text only.
+        // #1332: the session refuses a command until the Precmd of the remote's first prompt has
+        // given it its history; an Enter delivered earlier would be refused. Normally that Precmd
+        // IS the signal this runs on, so the wait is over; if the session registers later, its
+        // event (or the give-up cap) delivers.
         let held = !self.ssh_typeahead.is_empty() || !self.ssh_editor_key_hold.is_empty();
-        let first_precmd_pending = self.ssh_remote_prompt_seen
+        let awaiting_first_precmd = self.ssh_remote_prompt_seen
             && held
             && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
-        // #1345: the view has not yet handled the prompt's precmd event, whose handling
-        // reinitializes the input editor (#934). Text and keys the editor takes before that can
-        // be erased by it, so the hand-off waits for it (briefly) like it waits for the first
-        // Precmd. `PHOSPHOR_NO_SSH_VIEW_PRECMD_WAIT=1` restores the old, immediate delivery.
-        let view_precmd_pending = self.ssh_remote_prompt_seen
-            && held
-            && !ssh_view_precmd_wait_disabled()
-            && self.view_precmds_pending() > 0;
-        let awaiting = first_precmd_pending || view_precmd_pending;
         let now = Instant::now();
-        let waited = if awaiting {
+        let waited = if awaiting_first_precmd {
             now.saturating_duration_since(*self.ssh_typeahead_precmd_wait_since.get_or_insert(now))
         } else {
             self.ssh_typeahead_precmd_wait_since = None;
             Duration::ZERO
         };
-        if !(delivery_waits_for_first_precmd(first_precmd_pending, waited)
-            || delivery_waits_for_view_precmd(view_precmd_pending, waited))
-        {
+        if delivery_waits_for_first_precmd(awaiting_first_precmd, waited) {
+            warpui::input_order::log_key_hop("kh_handover_waits", || {
+                format!(
+                    "source={source} awaiting_first_precmd=true waited_ms={}",
+                    waited.as_millis()
+                )
+            });
+            self.schedule_ssh_typeahead_give_up(ctx);
             return false;
         }
-        warpui::input_order::log_key_hop("kh_delivery_deferred", || {
+        warpui::input_order::log_key_hop("kh_handover", || {
             format!(
-                "first_precmd_pending={first_precmd_pending} \
-                 view_precmd_pending={view_precmd_pending} waited_ms={}",
-                waited.as_millis()
+                "source={source} remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
+                 view_precmds_pending={}",
+                self.ssh_remote_prompt_seen,
+                self.ssh_typeahead.len_bytes(),
+                self.ssh_editor_key_hold.is_empty(),
+                self.view_precmds_pending()
             )
         });
-        if !self.ssh_typeahead_precmd_wait_armed {
-            self.ssh_typeahead_precmd_wait_armed = true;
-            ctx.spawn(Timer::after(RECHECK), move |me, _, ctx| {
-                me.ssh_typeahead_precmd_wait_armed = false;
-                me.poll_ssh_typeahead(false, ctx);
-            });
-        }
+        self.finish_ssh_typeahead(ctx);
         true
+    }
+
+    /// Safety net only (#1348): arms ONE timer for the moment the held keys must be given up on
+    /// because a signal that should have ended the hold never came: the gate's own ceilings (no
+    /// prompt ever arrives, a connect that failed silently), or the first Precmd of a released
+    /// gate. Never a poll: it is armed from events, re-armed only when the deadline moves, and
+    /// firing it runs the same hand-over as any event does.
+    fn schedule_ssh_typeahead_give_up(&mut self, ctx: &mut ViewContext<Self>) {
+        let now = Instant::now();
+        let pending = self.model.lock().pending_session_id().is_some();
+        let deadline = match self.ssh_connect_gate.as_ref() {
+            Some(gate) => gate.give_up_deadline(pending),
+            None => {
+                let since = *self.ssh_typeahead_precmd_wait_since.get_or_insert(now);
+                Some(since + SSH_TYPEAHEAD_PRECMD_WAIT_CAP)
+            }
+        };
+        let Some(deadline) = deadline else {
+            return;
+        };
+        if self
+            .ssh_typeahead_deadline_armed
+            .is_some_and(|armed| armed <= deadline)
+        {
+            return;
+        }
+        self.ssh_typeahead_deadline_armed = Some(deadline);
+        let wait = deadline.saturating_duration_since(now);
+        ctx.spawn(Timer::after(wait), move |me, _, ctx| {
+            if me.ssh_typeahead_deadline_armed == Some(deadline) {
+                me.ssh_typeahead_deadline_armed = None;
+            }
+            me.deliver_ssh_typeahead_if_ready("give_up", ctx);
+        });
     }
 
     /// Delivers one held control key the way the same key typed now would be routed: to the pty
@@ -10888,9 +10906,6 @@ impl TerminalView {
             )
         });
         self.set_ssh_typeahead_holding(false);
-        // #1345: focus may still be settling into the editor; a key typed meanwhile is taken by
-        // the terminal view for a moment instead of falling between the editor and the live path.
-        self.ssh_editor_key_hold.begin_settle(Instant::now());
         self.ssh_typeahead_last_key_at = None;
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
@@ -10901,6 +10916,10 @@ impl TerminalView {
             return;
         }
         if self.ssh_remote_prompt_seen {
+            // #1345: focus may still be settling into the editor; a key typed meanwhile is taken
+            // by the terminal view instead of falling between the editor and the live path, until
+            // the editor holds focus (#1348: no timed window; the hand-over also focuses input).
+            self.ssh_editor_key_hold.begin_settle();
             let held = self.ssh_typeahead.take();
             self.ssh_typeahead.clear();
             self.log_ssh_typeahead_delivery(held.len());
@@ -10911,6 +10930,12 @@ impl TerminalView {
                     HeldInput::Paste(text) => self.deliver_paste_text(&text, ctx),
                     HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
                 }
+            }
+            // (c) of the hand-over (#1348): focus follows in the same step, so the next key is
+            // routed to the editor / live path, never into the gap between them.
+            self.redetermine_terminal_focus(ctx);
+            if self.input.as_ref(ctx).editor().as_ref(ctx).is_focused() {
+                self.ssh_editor_key_hold.end_settle();
             }
             warpui::input_order::log_key_hop("kh_finish_end", || {
                 format!(
@@ -11164,8 +11189,8 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
-            // Deliberately no change to the held keys, whatever ssh did: `poll_ssh_typeahead`
-            // delivers them to the remote shell, or shows them unexecuted if ssh failed (#1292).
+            // Deliberately no change to the held keys, whatever ssh did: the hand-over delivers
+            // them to the remote shell, or shows them unexecuted if ssh failed (#1292).
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -12153,6 +12178,8 @@ impl TerminalView {
             }
             SessionsEvent::SessionBootstrapped(event) => {
                 self.handle_session_bootstrapped(*event, ctx);
+                // #1348: the registration a held Enter was waiting for (#1332).
+                self.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
             }
             // The "default fully-silent" legacy-SSH-fallback case (TODO.md
             // "Remote-session setup degrades silently", item 1): fired at
@@ -12743,6 +12770,11 @@ impl TerminalView {
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
     fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+        // #1348: output is the event that shows a host-key / password prompt (or ends a connect
+        // silently); the held keys are judged on it, not on a timer or the next key.
+        if self.ssh_typeahead_holding {
+            self.deliver_ssh_typeahead_if_ready("output", ctx);
+        }
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
@@ -15332,12 +15364,11 @@ impl TerminalView {
             self.discard_ssh_typeahead_on_prompt(ctx);
             self.refresh_ssh_connect_gate();
         }
-        // #1292: the held keys go out once the connect is over. Deferred a moment so the editor
-        // has handled this same event (the remote shell's first prompt) before they arrive.
-        if self.ssh_typeahead_holding && self.ssh_connect_gate.is_none() {
-            ctx.spawn(Timer::after(Duration::from_millis(1)), move |me, _, ctx| {
-                me.poll_ssh_typeahead(false, ctx);
-            });
+        // #1292 / #1348: the held keys go out once the connect is over, in the handler of the
+        // event that ends it (the `Precmd` arm below, after the input was reset for the prompt),
+        // not on a timer. Here the gate is only re-armed for its give-up deadline.
+        if self.ssh_typeahead_holding && self.ssh_connect_gate.is_some() {
+            self.schedule_ssh_typeahead_give_up(ctx);
         }
         match event {
             ModelEvent::TerminalClear => {
@@ -15568,6 +15599,9 @@ impl TerminalView {
                             &block_completed_event.block_id,
                             exit_code.value(),
                         );
+                        // #1348: a failed ssh ended the connect: the typed text goes back to the
+                        // input now (reinitialized for the finished block above), not at a poll.
+                        self.deliver_ssh_typeahead_if_ready("block_completed", ctx);
                     }
 
                     // #856: an ssh command that ends after a warpification script was typed
@@ -16682,6 +16716,12 @@ impl TerminalView {
                     self.model.lock().typeahead_handoff_mut().on_precmd_viewed();
                     self.commit_typeahead_handoff_at_prompt(ctx);
                 }
+                // #1348: the remote shell's first prompt. The input is reset for it (above and
+                // by the finished block's `BlockCompleted`, handled before this event), so the
+                // hand-over runs HERE, in this handler: held keys in order, hold ended, input
+                // focused, with no event-loop turn between the steps. A key typed from now on is
+                // queued behind all of it by the single-threaded loop.
+                self.deliver_ssh_typeahead_if_ready("precmd", ctx);
                 // #1014: the subshell's first prompt is drawn and the block list is in its normal
                 // state: only now are the keys held through a stalled setup delivered, so the
                 // command they spell starts an ordinary visible block. (Setup still pending:
@@ -35217,6 +35257,25 @@ impl SshConnectGate {
             && self
                 .block_done_at
                 .is_some_and(|at| now.saturating_duration_since(at) >= SSH_CONNECT_POST_BLOCK_GRACE)
+    }
+
+    /// The instant this gate releases on time alone if no event does (#1348), for the one-shot
+    /// give-up timer. `pending` is whether a remote session is announced now. Mirrors the time
+    /// conditions of [`Self::should_release`]; a condition that needs an event has no deadline.
+    fn give_up_deadline(&self, pending: bool) -> Option<Instant> {
+        let ceiling = self.armed_at + SSH_CONNECT_SILENCE_CEILING;
+        let by_state = if self.saw_pending && !pending {
+            Some(
+                self.bootstrap_done_at.unwrap_or_else(Instant::now)
+                    + SSH_CONNECT_FIRST_PROMPT_GRACE,
+            )
+        } else if !pending {
+            self.block_done_at
+                .map(|at| at + SSH_CONNECT_POST_BLOCK_GRACE)
+        } else {
+            None
+        };
+        Some(by_state.map_or(ceiling, |at| at.min(ceiling)))
     }
 
     /// The no-session half: hold keys until something visible was printed, for the whole

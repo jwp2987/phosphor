@@ -131,23 +131,3 @@ fn delivery_waits_for_the_first_precmd_but_only_up_to_the_cap() {
         "a session that can take the command is not waited for"
     );
 }
-
-/// #1345: a key typed at the hand-off could be erased by the reinitialization of the input editor
-/// that the view's handling of the remote prompt's precmd performs. Delivery (and so the end of
-/// the hold) waits for that handling, briefly, and never for good.
-#[test]
-fn delivery_waits_for_the_view_to_handle_the_prompt_but_only_up_to_the_cap() {
-    assert!(delivery_waits_for_view_precmd(true, Duration::ZERO));
-    assert!(delivery_waits_for_view_precmd(
-        true,
-        SSH_TYPEAHEAD_VIEW_PRECMD_WAIT_CAP - Duration::from_millis(1)
-    ));
-    assert!(
-        !delivery_waits_for_view_precmd(true, SSH_TYPEAHEAD_VIEW_PRECMD_WAIT_CAP),
-        "a miscount must not hold keys for good"
-    );
-    assert!(
-        !delivery_waits_for_view_precmd(false, Duration::ZERO),
-        "nothing pending, nothing to wait for"
-    );
-}

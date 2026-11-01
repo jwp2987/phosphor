@@ -3083,7 +3083,7 @@ impl EditorView {
                 "kind={kind} focused={} hold_active={} settling={} buffer_chars={}",
                 self.is_focused(),
                 hold.is_active(),
-                hold.rescues_unclaimed_keys(std::time::Instant::now()) && !hold.is_active(),
+                hold.rescues_unclaimed_keys() && !hold.is_active(),
                 self.buffer_text(ctx).chars().count()
             )
         });

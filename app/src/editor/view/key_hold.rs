@@ -11,21 +11,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
-use std::time::{Duration, Instant};
 
 /// Most bytes queued; past this the queue is dropped (a truncated command line must never run)
 /// and the view treats the whole hold as overflowed.
 const MAX_QUEUED_BYTES: usize = 64 * 1024;
-
-/// How long after the hold ends the terminal view still takes keys that neither the editor nor
-/// the live terminal path claims (#1345). Focus can still be settling into the editor when the
-/// held keys are delivered; a key typed in that gap was dropped by both.
-const SETTLE_WINDOW: Duration = Duration::from_millis(750);
-
-/// Escape hatch: `PHOSPHOR_NO_SSH_SETTLE_RESCUE=1` restores the pre-#1345 behaviour.
-fn settle_rescue_disabled() -> bool {
-    std::env::var_os("PHOSPHOR_NO_SSH_SETTLE_RESCUE").is_some()
-}
 
 /// One key the editor intercepted, in the form the terminal view holds it.
 #[derive(Clone, PartialEq, Eq)]
@@ -70,8 +59,10 @@ pub struct TakenKeys {
 #[derive(Default)]
 pub struct EditorKeyHold {
     active: Cell<bool>,
-    /// Set when the hold ends; keys nobody claims are still taken until then (#1345).
-    settle_until: Cell<Option<Instant>>,
+    /// Set when the hold ends; keys nobody claims are still taken until focus is in the editor
+    /// (#1345). Ended by an event (the editor gaining focus, a new hold, a reset), never a clock
+    /// (#1348).
+    settling: Cell<bool>,
     queue: RefCell<Vec<HeldEditorKey>>,
     bytes: Cell<usize>,
     overflowed: Cell<bool>,
@@ -94,28 +85,27 @@ impl EditorKeyHold {
     pub fn set_active(&self, active: bool) {
         self.active.set(active);
         if active {
-            self.settle_until.set(None);
+            self.settling.set(false);
         }
     }
 
-    /// The hold just ended with its keys delivered (#1345): for a short window the terminal view
-    /// keeps taking a key that nobody else claims, so one typed while focus settles into the
-    /// editor is delivered live, in order, instead of dropped.
-    pub fn begin_settle(&self, now: Instant) {
-        if !settle_rescue_disabled() {
-            self.settle_until.set(Some(now + SETTLE_WINDOW));
-        }
+    /// The hold just ended with its keys delivered (#1345): until focus reaches the editor the
+    /// terminal view keeps taking a key that nobody else claims (it only does so while focus is
+    /// on the input but not the editor), so one typed while focus settles is delivered live, in
+    /// order, instead of dropped.
+    pub fn begin_settle(&self) {
+        self.settling.set(true);
     }
 
     /// Focus reached the editor (or the hold was reset): nothing is left to rescue.
     pub fn end_settle(&self) {
-        self.settle_until.set(None);
+        self.settling.set(false);
     }
 
     /// Whether the terminal view may take a key nobody else claimed: the hold is active, or it
-    /// ended less than the settle window ago.
-    pub fn rescues_unclaimed_keys(&self, now: Instant) -> bool {
-        self.active.get() || self.settle_until.get().is_some_and(|until| now < until)
+    /// ended and focus has not reached the editor since.
+    pub fn rescues_unclaimed_keys(&self) -> bool {
+        self.active.get() || self.settling.get()
     }
 
     /// Queues one key. Adjacent printable runs are merged.
@@ -161,29 +151,28 @@ impl EditorKeyHold {
 mod tests {
     use super::*;
 
-    /// #1345: a key typed after the hold ended but before focus settled was dropped by both.
+    /// #1345 / #1348: a key typed after the hold ended but before focus settled was dropped by
+    /// both. The rescue outlives the hold until an event (focus in the editor) ends it, with no
+    /// clock involved.
     #[test]
-    fn rescue_outlives_the_hold_for_the_settle_window() {
+    fn rescue_outlives_the_hold_until_focus_settles() {
         let hold = EditorKeyHold::default();
-        let t0 = Instant::now();
-        assert!(!hold.rescues_unclaimed_keys(t0));
+        assert!(!hold.rescues_unclaimed_keys());
         hold.set_active(true);
-        assert!(hold.rescues_unclaimed_keys(t0));
+        assert!(hold.rescues_unclaimed_keys());
         hold.set_active(false);
-        hold.begin_settle(t0);
-        assert!(hold.rescues_unclaimed_keys(t0 + Duration::from_millis(100)));
-        assert!(!hold.rescues_unclaimed_keys(t0 + SETTLE_WINDOW));
+        hold.begin_settle();
+        assert!(hold.rescues_unclaimed_keys());
         hold.end_settle();
-        assert!(!hold.rescues_unclaimed_keys(t0));
+        assert!(!hold.rescues_unclaimed_keys());
     }
 
     #[test]
-    fn a_new_hold_cancels_the_settle_window() {
+    fn a_new_hold_cancels_the_settle() {
         let hold = EditorKeyHold::default();
-        let t0 = Instant::now();
-        hold.begin_settle(t0);
+        hold.begin_settle();
         hold.set_active(true);
         hold.set_active(false);
-        assert!(!hold.rescues_unclaimed_keys(t0));
+        assert!(!hold.rescues_unclaimed_keys());
     }
 }
