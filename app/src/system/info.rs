@@ -34,6 +34,17 @@ const REPORT_SAMPLE_COUNT: usize = REPORT_WINDOW_S / REFRESH_INTERVAL_S;
 // integral number of samples.
 static_assertions::const_assert_eq!(REPORT_WINDOW_S % REFRESH_INTERVAL_S, 0);
 
+/// Whether the periodic refresh runs at all.
+///
+/// The 5 s sample has exactly one live consumer: the excessive-memory check, whose only effect
+/// in this fork is the jemalloc heap-profile dump under `heap_usage_tracking`.  Everything else
+/// it feeds is dead: `SystemInfoEvent::Refreshed` / `MemoryUsageHigh` have no subscribers, and
+/// the resource-usage and memory telemetry are compile-only no-ops (telemetry channel removed,
+/// see DECLINED.md).  Without that feature a self-rescheduling timer would wake the process
+/// every 5 s forever for nothing, so it is not started.  There is no OS event for "this
+/// process's footprint crossed 10 GiB", so the poll stays where its consumer exists.
+const REFRESH_POLL_ENABLED: bool = cfg!(feature = "heap_usage_tracking");
+
 pub enum SystemInfoEvent {
     /// There is new system info available for consumers to query.
     Refreshed,
@@ -56,6 +67,9 @@ pub struct SystemInfo {
     resource_usage_reporter: ResourceUsageReporter,
     /// The long OS version.
     long_os_version: Option<String>,
+    /// Whether the self-rescheduling refresh timer was started (see
+    /// [`REFRESH_POLL_ENABLED`]).
+    refresh_scheduled: bool,
 }
 
 impl SystemInfo {
@@ -72,6 +86,7 @@ impl SystemInfo {
             stats: Default::default(),
             resource_usage_reporter: Default::default(),
             long_os_version: sysinfo::System::long_os_version(),
+            refresh_scheduled: false,
         };
 
         // Initialize the underlying system info.  This is necessary in order
@@ -83,9 +98,11 @@ impl SystemInfo {
             Self::refresh_kind(),
         );
 
-        // If we're doing automated heap usage tracking, set up periodic
-        // refreshes of the memory usage data.
-        Self::schedule_refresh(ctx);
+        // Periodic refreshes of the memory usage data, only where something consumes them.
+        if REFRESH_POLL_ENABLED {
+            me.refresh_scheduled = true;
+            Self::schedule_refresh(ctx);
+        }
 
         me
     }
@@ -124,6 +141,12 @@ impl SystemInfo {
             .expect("current process should exist")
             .cpu_usage();
         total_usage / 100.
+    }
+
+    /// Whether the periodic refresh timer is running.
+    #[cfg(test)]
+    pub(super) fn refresh_scheduled(&self) -> bool {
+        self.refresh_scheduled
     }
 
     pub fn long_os_version(&self) -> Option<&str> {
