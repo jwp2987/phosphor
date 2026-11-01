@@ -5685,7 +5685,10 @@ mod tests {
             let editor_takes = editor_focus.unwrap_or(false);
             let terminal_takes =
                 super::terminal_takes_unclaimed_held_key(true, Some(true), editor_focus);
-            assert_ne!(editor_takes, terminal_takes, "editor focus {editor_focus:?}");
+            assert_ne!(
+                editor_takes, terminal_takes,
+                "editor focus {editor_focus:?}"
+            );
         }
     }
 
