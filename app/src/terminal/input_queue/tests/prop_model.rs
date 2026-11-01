@@ -15,8 +15,8 @@
 use proptest::collection::vec;
 use proptest::prelude::{Just, ProptestConfig, Strategy, any, prop_oneof, proptest};
 
-use super::*;
 use super::ops::{Op, run_ops};
+use super::*;
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
