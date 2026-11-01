@@ -2728,6 +2728,38 @@ fn a_failed_deferred_summary_restores_the_allowance_once_per_turn() {
     assert!(!state.auto_compacted(), "a new turn gets its restore back");
 }
 
+/// #1238: a transport error that goes the Resume path resumes without the summary, so it gives the
+/// allowance back too -- once per turn, sharing the budget with `on_request_failed`.
+#[test]
+fn a_resumed_deferred_summary_restores_the_allowance_once_per_turn() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    state.on_request_resumed();
+    assert!(
+        !state.auto_compacted(),
+        "the resume does not re-ask the summary"
+    );
+
+    // The resumed request is not a summary: a further resume/failure changes nothing.
+    state.on_request_resumed();
+    assert!(!state.auto_compacted());
+
+    // Second deferred summary in the same turn: the restore is already used up.
+    state.on_deferred_summary_sent();
+    state.on_request_resumed();
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(state.auto_compacted());
+
+    // A resume with no deferred summary in flight never touches the allowance.
+    let mut other = TurnCompactionState::default();
+    other.on_stream_finished(turn(false, Some(true)));
+    assert!(other.auto_compacted());
+    other.on_request_resumed();
+    assert!(other.auto_compacted());
+}
+
 /// A deferred summary that finished (cleanly) is not restored by a later unrelated failure.
 #[test]
 fn a_finished_deferred_summary_keeps_the_allowance_spent() {

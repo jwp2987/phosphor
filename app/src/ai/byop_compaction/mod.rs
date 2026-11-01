@@ -367,6 +367,18 @@ impl TurnCompactionState {
         }
     }
 
+    /// A request of this conversation failed with a transport error and a plain resume is
+    /// scheduled for it. The resumed request does not carry the summary again, so a deferred
+    /// summary that was in flight never compacts: its allowance is restored exactly as
+    /// [`Self::on_request_failed`] does (once per turn, shared `deferred_summary_restored`), and
+    /// nothing else changes since the resume continues the same turn (#1238).
+    pub fn on_request_resumed(&mut self) {
+        if std::mem::take(&mut self.deferred_summary_in_flight) && !self.deferred_summary_restored {
+            self.auto_compacted = false;
+            self.deferred_summary_restored = true;
+        }
+    }
+
     /// A deferred summary is owed to the next tool results, or the continue message sent after a
     /// summary has not been answered yet: a request about this conversation is still coming.
     pub fn is_mid_compaction(&self) -> bool {
