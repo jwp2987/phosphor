@@ -17,7 +17,7 @@ use std::time::Duration;
 use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
-use super::{Input, PasteSource, clipboard_content_with_escaped_paths};
+use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry,
@@ -30,11 +30,21 @@ const PASTE_FAILED_TOAST: &str =
 
 /// The [`Host`] of the editor's paste queue, for the events that arrive at the input (the
 /// reader's result, the give-up cap).
-struct InputQueueHost<'a, 'b> {
+pub(super) struct InputQueueHost<'a, 'b> {
     input: &'a mut Input,
     ctx: &'a mut ViewContext<'b, Input>,
     /// Entries queued behind the paste that is about to be delivered.
     held_behind: usize,
+}
+
+impl<'a, 'b> InputQueueHost<'a, 'b> {
+    pub(super) fn new(input: &'a mut Input, ctx: &'a mut ViewContext<'b, Input>) -> Self {
+        Self {
+            input,
+            ctx,
+            held_behind: 0,
+        }
+    }
 }
 
 impl Host for InputQueueHost<'_, '_> {
@@ -85,6 +95,18 @@ impl Host for InputQueueHost<'_, '_> {
                     });
                 }
             }
+            // Typed behind an Enter that waited (#1353 phase 3). The terminal view routes them
+            // (editor or pty) once this drain is over: they are events, not calls, so a delivery
+            // can never re-enter the queue that is delivering it.
+            EntryKind::Text(text) => self
+                .ctx
+                .emit(Event::ReplayEnterEntry(AfterEnterInput::Text(text.clone()))),
+            EntryKind::Enter => self
+                .ctx
+                .emit(Event::ReplayEnterEntry(AfterEnterInput::Enter)),
+            // A ^C that met the Enter's gate: the keys behind it were discarded and the ^C acts
+            // through its own path.
+            EntryKind::Signal(_) => {}
             other => log::warn!(
                 "input queue: the input was handed an entry it does not deliver: {other:?}"
             ),
@@ -110,6 +132,8 @@ impl Host for InputQueueHost<'_, '_> {
                 }
             }
             DiscardReason::PasteCancelled => {}
+            // ^C met the Enter's gate: the keys typed behind that Enter are dropped with it.
+            DiscardReason::SignalDiscard(GateKind::EnterVerdict) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
     }

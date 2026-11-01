@@ -69,6 +69,29 @@ pub(super) struct PasteQueueState {
     /// leave a half-run bootstrap); [`TerminalView::settle_subshell_bootstrap_gate`] sends them
     /// first, ahead of everything held, when the bootstrap ends.
     pub(super) pending_aborts: Vec<(Vec<u8>, bool)>,
+    /// #1353 phase 3 (`PHOSPHOR_INPUT_QUEUE_ENTER`): a paced CLI-agent submit holds the queue with
+    /// a gate, so keys typed meanwhile wait behind it. Tests default to off (see
+    /// `cli_submit_enabled_by_default`).
+    cli_submit_enabled: bool,
+    /// The key of the gate the CLI-agent submit in progress holds, if one is.
+    cli_submit_gate: Option<u64>,
+    next_cli_submit_key: u64,
+}
+
+/// CLI-agent submit gates share the `PasteReading` kind (a submit is a paste with a paced tail);
+/// their keys live above this so they can never collide with a paste id.
+const CLI_SUBMIT_GATE_KEY_BASE: u64 = 1 << 62;
+
+/// A paced CLI-agent submit is a few hundred ms to a few seconds (a Copilot bracketed paste waits
+/// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
+/// far beyond any of them. Logged when it fires.
+const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
+
+fn cli_submit_enabled_by_default() -> bool {
+    if cfg!(test) {
+        return std::env::var("PHOSPHOR_TEST_ENTER_QUEUE").is_ok_and(|value| value == "1");
+    }
+    kill_switch::is_enabled(Area::Enter)
 }
 
 impl PasteQueueState {
@@ -80,7 +103,15 @@ impl PasteQueueState {
             enabled: kill_switch::is_enabled(Area::Paste),
             subshell_enabled: kill_switch::is_enabled(Area::Subshell),
             pending_aborts: Vec::new(),
+            cli_submit_enabled: cli_submit_enabled_by_default(),
+            cli_submit_gate: None,
+            next_cli_submit_key: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_cli_submit_enabled_for_test(&mut self, on: bool) {
+        self.cli_submit_enabled = on;
     }
 
     fn next_paste_id(&mut self) -> u64 {
@@ -284,7 +315,67 @@ impl TerminalView {
         Some(host.written)
     }
 
-    /// The give-up cap of gate `token` fired. A no-op if the gate's event already closed it.
+    /// Starts the gate of a paced CLI-agent submit (#1353 phase 3): until
+    /// [`Self::end_cli_submit_gate`], pty keys the user types queue behind the submit instead of
+    /// landing between its writes. One submit at a time; a second begin while one is in progress is
+    /// part of it. A no-op when the queue path or its kill switch is off.
+    pub(super) fn begin_cli_submit_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        use crate::terminal::input_queue::GateSpec;
+        if !self.paste_queue.enabled
+            || !self.paste_queue.cli_submit_enabled
+            || self.paste_queue.cli_submit_gate.is_some()
+        {
+            return;
+        }
+        self.paste_queue.next_cli_submit_key += 1;
+        let key = CLI_SUBMIT_GATE_KEY_BASE + self.paste_queue.next_cli_submit_key;
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let Ok(mut queue) = queue.try_borrow_mut() else {
+            log::warn!("input queue: CLI-agent submit gate not opened, the queue was busy");
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        queue.open_gate(
+            &mut host,
+            GateSpec::new(GateKind::PasteReading, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
+        );
+        self.paste_queue.cli_submit_gate = Some(key);
+    }
+
+    /// The paced submit has written its last piece: the keys typed behind it follow, in order.
+    pub(super) fn end_cli_submit_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(key) = self.paste_queue.cli_submit_gate.take() else {
+            return;
+        };
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let Ok(mut queue) = queue.try_borrow_mut() else {
+            log::warn!(
+                "input queue: CLI-agent submit gate could not be closed, the queue was busy"
+            );
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        queue.on_gate_event(&mut host, GateKind::PasteReading, key);
+    }
+
+    /// Writes a piece of a CLI-agent submit. While the submit holds the queue its own writes go
+    /// straight to the stages after the paste stage (the keys the user typed behind it wait for
+    /// the gate; the submit must not wait behind itself).
+    pub(super) fn write_cli_submit_bytes(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
+        if self.paste_queue.cli_submit_gate.is_some() {
+            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx);
+        } else {
+            self.write_user_bytes_to_pty(bytes, ctx);
+        }
+    }
+
+    /// Whether a paced CLI-agent submit holds the queue, for tests.
+    #[cfg(test)]
+    pub(super) fn cli_submit_gate_open_for_test(&self) -> bool {
+        self.paste_queue.cli_submit_gate.is_some()
+    }
+
+    /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     pub(super) fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = Rc::clone(&self.paste_queue.queue);
         let kind = queue

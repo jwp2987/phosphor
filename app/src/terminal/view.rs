@@ -504,8 +504,8 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungSubmit,
-    forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
+    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_DETECTION_CAP,
+    YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -765,6 +765,11 @@ const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
 /// Enter submitted, before it is routed anyway (#1016).
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
+
+/// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
+/// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
+/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute.
+const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
@@ -10618,6 +10623,20 @@ impl TerminalView {
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
+        // #1353 phase 3: the same on the input queue, while an Enter's gate holds it.
+        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            if is_abort_key(characters.as_bytes()) {
+                self.input
+                    .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
+            } else if characters == "\r" || characters == "\n" {
+                let queued = self.input.update(ctx, |input, ctx| {
+                    input.queue_behind_enter(AfterEnterInput::Enter, ctx)
+                });
+                if queued {
+                    return;
+                }
+            }
+        }
         if self.input.as_ref(ctx).after_enter_replay_open() {
             // #1016: keys after a deferred Enter wait their turn; an interrupt cancels the wait.
             if is_abort_key(characters.as_bytes()) {
@@ -11625,6 +11644,15 @@ impl TerminalView {
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
             return;
         }
+        // #1353 phase 3: behind an Enter whose gate is open on the input queue, in the same order.
+        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            let queued = self.input.update(ctx, |input, ctx| {
+                input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
+            });
+            if queued {
+                return;
+            }
+        }
         // #1016: input typed after a deferred Enter is still waiting to be routed; this follows
         // it, so it queues behind rather than overtaking it.
         if self.input.as_ref(ctx).after_enter_replay_open() {
@@ -11750,6 +11778,11 @@ impl TerminalView {
     /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
     /// the pty takes the typed characters, otherwise it submits the editor.
     fn replay_after_deferred_enter(&mut self, started: Instant, ctx: &mut ViewContext<Self>) {
+        // #1353 phase 3: the keys wait behind the Enter's queue gate; the events below close it.
+        if self.input.as_ref(ctx).enter_queue_awaits_route(ctx) {
+            self.settle_enter_queue(ctx);
+            return;
+        }
         if !self.input.as_ref(ctx).after_enter_replay_open() {
             return;
         }
@@ -11776,18 +11809,57 @@ impl TerminalView {
             .input
             .update(ctx, |input, _| input.take_after_enter_replay());
         for input in &queued {
-            match input {
-                AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
-                AfterEnterInput::Enter => {
-                    if self.replayed_enter_goes_to_pty(ctx) {
-                        self.report_possible_typeahead("\r");
-                        self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
-                    } else {
-                        self.input.update(ctx, |input, ctx| input.input_enter(ctx));
-                    }
+            self.route_after_enter_input(input, ctx);
+        }
+    }
+
+    /// Routes one key that was typed behind an Enter that waited, as if it had just been typed
+    /// (the legacy replay and the input queue's release both end here).
+    fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
+        match input {
+            AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
+            AfterEnterInput::Enter => {
+                if self.replayed_enter_goes_to_pty(ctx) {
+                    self.report_possible_typeahead("\r");
+                    self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                } else {
+                    self.input.update(ctx, |input, ctx| input.input_enter(ctx));
                 }
             }
         }
+    }
+
+    /// #1353 phase 3: the Enter whose gate holds keys has run. They are released (in order, by the
+    /// queue's one drain) once the route it took has settled: for a shell command, once the pty has
+    /// taken it. Event driven: called when the Enter has run, when the typeahead hand-off engages
+    /// (`TypeaheadHandoffChanged`) and when the command's block starts. The only timer is the
+    /// give-up cap for a pty that never takes the command, armed once and logged when it fires.
+    fn settle_enter_queue(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).enter_queue_awaits_route(ctx) {
+            return;
+        }
+        if self.input.as_ref(ctx).enter_queue_awaits_pty() {
+            let pty_ready = self.should_write_typed_chars_to_pty(ctx)
+                || self.is_long_running()
+                || self.typeahead_handoff_routes_keys_to_pty();
+            if !pty_ready {
+                let arm = self
+                    .input
+                    .update(ctx, |input, _| input.take_enter_route_cap_arm());
+                if let Some(key) = arm {
+                    ctx.spawn(
+                        Timer::after(AFTER_ENTER_REPLAY_PTY_WAIT),
+                        move |me, _, ctx| {
+                            me.input
+                                .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
+                        },
+                    );
+                }
+                return;
+            }
+        }
+        self.input
+            .update(ctx, |input, ctx| input.release_enter_gate(ctx));
     }
 
     /// Handles a file-tree drag-and-drop onto the terminal by piping the dropped text
@@ -12610,6 +12682,8 @@ impl TerminalView {
             self.note_editor_took_over();
         }
         self.redetermine_terminal_focus(ctx);
+        // The hand-off engaging is the event the keys typed behind a submitted Enter wait for.
+        self.settle_enter_queue(ctx);
     }
 
     /// The shell reached a prompt: hand input back to the editor if nothing the user typed can be
@@ -12855,6 +12929,24 @@ impl TerminalView {
         started: Instant,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.finish_young_detection_wait(false, started, ctx);
+    }
+
+    /// The body of [`Self::submit_deferred_enter_after_detection`]. `force_give_up` is the backstop
+    /// timer: no verdict arrived at all, so a still-pending verdict is given up on now.
+    ///
+    /// #1353 phase 3 (`PHOSPHOR_INPUT_QUEUE_ENTER`): the give-up is measured on the classifier's
+    /// compute clock (#1351), never on the age of the Enter, so a main thread that was busy cannot
+    /// make a verdict that is already computed lose to the Enter-time rules. The wait is released
+    /// by the verdict's own event ([`Self::release_deferred_enter_if_verdict_settled`]); a pending
+    /// verdict arms give-up timers from events ([`Self::watch_young_detection`]) instead of the
+    /// 2 ms poll the legacy path re-arms.
+    fn finish_young_detection_wait(
+        &mut self,
+        force_give_up: bool,
+        started: Instant,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if self.young_enter_released {
             return;
         }
@@ -12873,19 +12965,39 @@ impl TerminalView {
         self.input.update(ctx, |input, ctx| {
             input.abandon_detection_if_over_parse_cap(ctx)
         });
-        let (can_run, pending) = self.input.read(ctx, |input, ctx| {
+        let on_compute_clock = self.input.as_ref(ctx).enter_queue_enabled();
+        let (can_run, pending, compute) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
                 input.detection_pending_for_buffer(ctx),
+                input.detection_compute(ctx).1,
             )
         });
-        match young_submit_decision(can_run, pending, started.elapsed()) {
+        let waited = if on_compute_clock {
+            compute
+        } else {
+            started.elapsed()
+        };
+        let decision = if force_give_up && can_run && pending {
+            YoungSubmit::SubmitWithoutVerdict
+        } else {
+            young_submit_decision(can_run, pending, waited)
+        };
+        match decision {
             YoungSubmit::Submit => {
                 self.young_enter_released = true;
                 self.run_deferred_enter(true, ctx);
             }
             YoungSubmit::SubmitWithoutVerdict => {
                 self.young_enter_released = true;
+                if force_give_up {
+                    log::warn!(
+                        "young Enter backstop fired after {} ms: no input-type verdict arrived \
+                         (classifier compute {} ms)",
+                        YOUNG_DETECTION_BACKSTOP.as_millis(),
+                        compute.as_millis()
+                    );
+                }
                 crate::terminal::input::log_slow_enter_hold(
                     "young line waited for the input-type verdict and gave up",
                     started.elapsed(),
@@ -12895,6 +13007,7 @@ impl TerminalView {
                 });
                 self.run_deferred_enter(true, ctx);
             }
+            YoungSubmit::Wait if on_compute_clock => self.watch_young_detection(ctx),
             YoungSubmit::Wait => {
                 let rearm = Duration::from_millis(2);
                 let deadline = Instant::now() + rearm;
@@ -12912,6 +13025,76 @@ impl TerminalView {
                 self.keep_deferred_enter_text(ctx);
             }
         }
+    }
+
+    /// Watches the detection a young line's Enter waits for (#1353 phase 3). Nothing polls: the
+    /// wait is released by the verdict notification; when a stage of the classifier starts running
+    /// on its compute clock, that event arms ONE give-up timer for the rest of
+    /// [`YOUNG_DETECTION_CAP`]; and one backstop ([`YOUNG_DETECTION_BACKSTOP`]) covers a verdict
+    /// that never arrives. Both are token-guarded by the wait id and logged when they give up.
+    /// (The clock has one stage-start receiver; if an editor Enter's wait takes it over meanwhile,
+    /// the backstop still ends this wait.)
+    fn watch_young_detection(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self.young_enter_wait_id;
+        let (tx, rx) = async_channel::unbounded::<()>();
+        self.input.read(ctx, |input, ctx| {
+            input.notify_on_detection_stage_start(tx, ctx)
+        });
+        let _ = ctx.spawn_stream_local(
+            rx,
+            move |me, (), ctx| {
+                if me.young_enter_wait_id == id && !me.young_enter_released {
+                    me.arm_young_compute_cap(id, ctx);
+                }
+            },
+            |_, _| {},
+        );
+        // A stage may already be running.
+        self.arm_young_compute_cap(id, ctx);
+        self.arm_young_timer(id, YOUNG_DETECTION_BACKSTOP, true, ctx);
+    }
+
+    /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When none
+    /// is, its start (or the verdict) is an event of its own.
+    fn arm_young_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let (running, spent) = self
+            .input
+            .read(ctx, |input, ctx| input.detection_compute(ctx));
+        if !running {
+            return;
+        }
+        self.arm_young_timer(id, YOUNG_DETECTION_CAP.saturating_sub(spent), false, ctx);
+    }
+
+    fn arm_young_timer(
+        &mut self,
+        id: u64,
+        delay: Duration,
+        backstop: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let deadline = Instant::now() + delay;
+        ctx.spawn(Timer::after(delay), move |me, _, ctx| {
+            log_late_timer_wake("young detection wait", deadline);
+            // #1206: only the wait this timer was armed for, and only while it still waits.
+            if me.young_enter_released || me.young_enter_wait_id != id {
+                return;
+            }
+            if backstop {
+                me.finish_young_detection_wait(true, Instant::now(), ctx);
+                return;
+            }
+            let (_, spent) = me
+                .input
+                .read(ctx, |input, ctx| input.detection_compute(ctx));
+            if spent < YOUNG_DETECTION_CAP {
+                // A stage that finished meanwhile, or a cap not yet reached: the verdict event or
+                // the next stage start decides.
+                me.arm_young_compute_cap(id, ctx);
+            } else {
+                me.finish_young_detection_wait(false, Instant::now(), ctx);
+            }
+        });
     }
 
     /// #1181: the model-notification path of [`Self::submit_deferred_enter_after_detection`]. A
@@ -16207,6 +16390,9 @@ impl TerminalView {
                 if *is_for_in_band_command {
                     return;
                 }
+
+                // The command a submitted Enter ran has started: the pty takes keys now (#1353).
+                self.settle_enter_queue(ctx);
 
                 // Retained-line eviction (#889) runs here, on the main thread, and shifts the
                 // view's index-keyed state in the same step, so no event or render can observe
@@ -28378,6 +28564,9 @@ impl TerminalView {
             }
             InputEvent::ReplayAfterDeferredEnter => {
                 self.replay_after_deferred_enter(Instant::now(), ctx);
+            }
+            InputEvent::ReplayEnterEntry(entry) => {
+                self.route_after_enter_input(entry, ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {

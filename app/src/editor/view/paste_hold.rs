@@ -171,6 +171,15 @@ impl Host for EditorQueueHost<'_, '_> {
             }
             // The ^C itself acts through the editor's normal handler once the held keys are in.
             EntryKind::Signal(_) => {}
+            // Typed behind an Enter that waited (#1353 phase 3): normally the terminal input
+            // releases these (its host routes them). Reaching this host means nothing else can,
+            // so type them into the editor rather than lose them.
+            EntryKind::Text(text) => self
+                .editor
+                .apply_held_paste_key(HeldPasteKey::Text(text.clone()), self.ctx),
+            EntryKind::Enter => self
+                .editor
+                .apply_held_paste_key(HeldPasteKey::Action(EditorAction::Enter), self.ctx),
             other => {
                 log::warn!("input queue: editor was handed an entry it does not deliver: {other:?}")
             }
@@ -181,6 +190,9 @@ impl Host for EditorQueueHost<'_, '_> {
     fn discarded(&mut self, _entry: &InputEntry, why: DiscardReason) {
         match why {
             DiscardReason::PasteCancelled => {}
+            // ^C voided the Enter that waited: what was typed behind it goes with it, as the
+            // buffer did before.
+            DiscardReason::SignalDiscard(GateKind::EnterVerdict) => {}
             other => log::warn!("input queue: editor entry discarded: {other:?}"),
         }
     }

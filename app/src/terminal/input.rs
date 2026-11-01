@@ -3,6 +3,7 @@ pub mod buffer_model;
 mod classic;
 mod cli_agent;
 mod common;
+mod enter_queue;
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -1246,6 +1247,10 @@ pub enum Event {
     /// The Enter has now run; the terminal view routes these, in order, as if typed after it.
     /// The terminal view drains [`Input::take_after_enter_replay`] once the pty route is settled.
     ReplayAfterDeferredEnter,
+    /// One key typed behind an Enter that waited, released by the input queue (#1353 phase 3)
+    /// after that Enter ran and the route it took settled. The terminal view routes it as if it
+    /// had just been typed, in the order the events arrive.
+    ReplayEnterEntry(AfterEnterInput),
 }
 
 /// One piece of input the user typed after an Enter that is waiting for a classification verdict
@@ -2182,6 +2187,12 @@ pub struct Input {
     verdict_wait: Option<VerdictWait>,
     /// The id given to the next [`VerdictWait`] (#1206).
     next_verdict_wait_id: u64,
+    /// #1353 phase 3: the Enter verdict / Tab / after-Enter ordering runs on the editor's input
+    /// queue (`PHOSPHOR_INPUT_QUEUE_ENTER`, default on). Off keeps the legacy `verdict_wait.queued`
+    /// + `after_enter_replay` path, which stays in the tree.
+    enter_queue_enabled: bool,
+    /// The queue gate of the Enter that waits (or whose keys wait for its route), if one is open.
+    enter_gate: Option<enter_queue::EnterGate>,
     /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
     /// coalescing stranded the backstop timers on a late wake).
     deferred_enter_activity: DeferredEnterActivity,
@@ -3971,6 +3982,8 @@ impl Input {
             multiline_submit_confirmed: false,
             verdict_wait: None,
             next_verdict_wait_id: 0,
+            enter_queue_enabled: enter_queue::enabled_by_default(),
+            enter_gate: None,
             deferred_enter_activity: DeferredEnterActivity::default(),
             handoff_enter_mark: None,
             after_enter_replay: Vec::new(),
@@ -14094,15 +14107,17 @@ impl Input {
         // queues behind that Enter (after the text typed before it), and never submits the
         // buffer, which still holds the first line.
         if self.verdict_wait.is_some() && self.reconcile_verdict_wait(ctx) {
-            if let Some(wait) = self.verdict_wait.as_mut() {
-                wait.queued.push(AfterEnterInput::Enter);
-            }
+            // On the input queue (#1353 phase 3) when its gate holds the Enter, else on the wait.
+            self.queue_enter_behind_wait(ctx);
             return true;
         }
         // The deferred Enter has run but its replay has not drained: this Enter follows it.
         // (Not the deferred Enter's own submit: the replay is open ahead of it so nothing typed
         // overtakes the queue, and that submit must run, not queue itself behind the text it was
         // waiting to precede -- which submitted 'trueec' for 'true' + Enter + 'echo ...'.)
+        if !self.running_deferred_enter && self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
+            return true;
+        }
         if self.after_enter_replay_open && !self.running_deferred_enter {
             self.queue_after_enter_replay(AfterEnterInput::Enter);
             return true;
@@ -14114,7 +14129,8 @@ impl Input {
         self.ai_input_model
             .update(ctx, |model, _| model.clear_typeahead_provenance());
         let since = Instant::now();
-        self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
+        let wait_id = self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
+        self.open_enter_gate(wait_id, ctx);
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
         // Released by the verdict landing (the input model's notification); see
@@ -14162,7 +14178,10 @@ impl Input {
     /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
     /// Returns whether the Enter was taken.
     fn hold_enter_for_tab_completion(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if self.running_deferred_enter || self.after_enter_replay_open {
+        if self.running_deferred_enter
+            || self.after_enter_replay_open
+            || self.enter_queue_awaits_route(ctx)
+        {
             return false;
         }
         if self
@@ -14171,9 +14190,7 @@ impl Input {
             .is_some_and(VerdictWait::holds_for_tab_completion)
         {
             if self.reconcile_verdict_wait(ctx) {
-                if let Some(wait) = self.verdict_wait.as_mut() {
-                    wait.queued.push(AfterEnterInput::Enter);
-                }
+                self.queue_enter_behind_wait(ctx);
                 return true;
             }
             return false;
@@ -14204,13 +14221,14 @@ impl Input {
             return false;
         }
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
-        self.start_verdict_wait(
+        let wait_id = self.start_verdict_wait(
             text,
             EnterHold::TabCompletion {
                 since: Instant::now(),
             },
             ctx,
         );
+        self.open_enter_gate(wait_id, ctx);
         self.begin_deferred_enter_activity(ctx);
         // Released by the completion result (`deliver_completion_suggestions_results`).
         self.watch_hold_compute(ctx);
@@ -14574,7 +14592,12 @@ impl Input {
         match keys_typed_behind_waiting_enter(&current, wait) {
             Some(suffix) => {
                 let text = wait.text.clone();
-                if let Some(wait) = self.verdict_wait.as_mut() {
+                // Keys that reached the buffer anyway (an insertion that did not come through the
+                // editor's key handler) go behind the Enter on the queue when its gate holds the
+                // Enter (#1353 phase 3), else on the wait's own list.
+                if !self.queue_behind_enter(AfterEnterInput::Text(suffix.clone()), ctx)
+                    && let Some(wait) = self.verdict_wait.as_mut()
+                {
                     match wait.queued.last_mut() {
                         Some(AfterEnterInput::Text(queued)) => queued.push_str(&suffix),
                         _ => wait.queued.push(AfterEnterInput::Text(suffix)),
@@ -14600,7 +14623,9 @@ impl Input {
                     self.cancel_pending_completions_for_deferred_enter();
                     self.end_deferred_enter_activity();
                 }
-                let rest = wait.map(|wait| wait.queued_text()).unwrap_or_default();
+                let mut rest = wait.map(|wait| wait.queued_text()).unwrap_or_default();
+                // Typed behind the void Enter on the queue: kept in the editor too.
+                rest.push_str(&self.void_enter_gate(ctx));
                 if !rest.is_empty() {
                     self.system_insert(&rest, ctx);
                 }
@@ -14634,6 +14659,14 @@ impl Input {
         if has_queued {
             self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
             ctx.emit(Event::ReplayAfterDeferredEnter);
+        } else if self.enter_gate.is_some() {
+            // #1353 phase 3: what was typed behind this Enter is queued behind its gate. The gate
+            // stays closed until the route the Enter took has settled; with nothing behind it,
+            // it closes now.
+            let awaits_pty = self.last_enter_submitted_shell_command;
+            if self.finish_enter_gate_after_submit(awaits_pty, ctx) {
+                self.emit_replay_after_deferred_enter(ctx);
+            }
         }
     }
 
