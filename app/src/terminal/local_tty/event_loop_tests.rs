@@ -579,10 +579,11 @@ fn the_per_iteration_questions_are_constant_time_with_a_hundred_thousand_gated_e
     let mut state = closed_gate_state();
     for _ in 0..100_000 {
         state.write_list.push_back(QueuedWrite {
+            id: 0,
             bytes: Cow::Borrowed(b"R"),
             produced_while_executing: Some(block("cmd")),
-            is_reply: true,
-            discardable: false,
+            class: JobClass::Reply,
+            setup: None,
         });
     }
     state.gated_count = 100_000;
@@ -736,7 +737,7 @@ fn discard_queued_input_drops_only_the_submitted_command() {
     assert_eq!(first.remaining_bytes(), b"bootstrap script\r");
     state.goto_next();
     let mut current = state.take_current().expect("the paste is being written");
-    assert!(current.discardable);
+    assert!(current.class.is_discardable());
     current.advance(4096);
     state.set_current(Some(current));
 
@@ -802,7 +803,7 @@ fn discard_queued_input_adds_no_paste_close_outside_a_paste() {
 #[test]
 fn discard_queued_input_does_not_double_close_a_finished_paste() {
     let mut state = State::default();
-    let mut writing = Writing::new(Cow::Owned(big_paste(3)), false, true);
+    let mut writing = Writing::new(Cow::Owned(big_paste(3)), JobClass::UserCommand);
     let end_of_paste = writing.source.len() - 1;
     writing.advance(end_of_paste);
     assert!(!writing.cut_inside_bracketed_paste());
@@ -1126,5 +1127,380 @@ fn a_poll_error_is_recoverable_not_a_panic() {
     assert_eq!(
         poll_error_action(&other, MAX_CONSECUTIVE_POLL_ERRORS + 1),
         PollErrorAction::EndSession
+    );
+}
+
+// ---- #1384: the typed write queue ------------------------------------------------------------
+
+/// A gap long enough that no test ever reaches it by waiting: tests move the clock themselves.
+const TEST_GAP: Duration = Duration::from_secs(3600);
+
+fn gap() -> Pacing {
+    Pacing::Gap {
+        dur: TEST_GAP,
+        why: "test",
+    }
+}
+
+/// What one pass of the writer does at `now`: pick the next write if none is in flight, write it
+/// in full, and note it finished (what `pty_write` does around the fd).
+fn write_next(state: &mut State, now: Instant) -> Option<Vec<u8>> {
+    if state.writing.is_none() {
+        state.goto_next_at(now);
+    }
+    let writing = state.take_current()?;
+    let bytes = writing.remaining_bytes().to_vec();
+    state.note_job_chunk_finished(&writing, now);
+    Some(bytes)
+}
+
+fn setup_chunks(chunks: &[&[u8]]) -> Vec<Vec<u8>> {
+    chunks.iter().map(|c| c.to_vec()).collect()
+}
+
+/// Strict FIFO across every class: a setup job is one entry in the same line as keys, commands
+/// and replies, and everything behind it is written after all of it.
+#[test]
+fn the_queue_is_one_fifo_across_classes() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"key1"));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.queue_response(b"\x1b[?62c".to_vec(), None);
+    state.queue_setup(setup_chunks(&[b"S1", b"S2", b"S3"]), Pacing::None);
+    state.queue_input(Cow::Borrowed(b"key2"));
+    state.queue_response(b"\x1b[0n".to_vec(), None);
+
+    assert_eq!(
+        drain(&mut state),
+        vec![
+            b"key1".to_vec(),
+            b"cmd\r".to_vec(),
+            b"\x1b[?62c".to_vec(),
+            b"S1".to_vec(),
+            b"S2".to_vec(),
+            b"S3".to_vec(),
+            b"key2".to_vec(),
+            // A reply behind the job lands after it, like any other write.
+            b"\x1b[0n".to_vec(),
+        ]
+    );
+}
+
+/// A key typed while a setup job is between chunks is written after the WHOLE job, never inside
+/// it, and the writer does not spin on it while the gap runs.
+#[test]
+fn a_key_typed_during_a_setup_job_is_written_after_the_whole_job() {
+    let mut state = State::default();
+    let t0 = Instant::now();
+    state.queue_setup(setup_chunks(&[b"A", b"B", b"C"]), gap());
+    assert_eq!(write_next(&mut state, t0), Some(b"A".to_vec()));
+
+    state.queue_input(Cow::Borrowed(b"k"));
+    // Mid-gap: the key is queued, nothing is due, so there is nothing to write and no busy loop.
+    assert_eq!(write_next(&mut state, t0), None);
+    assert!(!state.needs_write());
+    assert!(state.job_timeout().is_some());
+    assert!(state.poll_timeout(None).is_some());
+
+    let t1 = t0 + TEST_GAP;
+    assert_eq!(write_next(&mut state, t1), Some(b"B".to_vec()));
+    assert_eq!(write_next(&mut state, t1), None);
+    let t2 = t1 + TEST_GAP;
+    assert_eq!(write_next(&mut state, t2), Some(b"C".to_vec()));
+    // The job is over: the key goes straight out, with no further gap.
+    assert_eq!(write_next(&mut state, t2), Some(b"k".to_vec()));
+    assert!(state.active_job.is_none());
+    assert!(state.job_timeout().is_none());
+}
+
+/// A reply interleaves only at a chunk boundary: never inside a chunk being written, and not
+/// when a user key is ahead of it in the line.
+#[test]
+fn replies_interleave_only_at_chunk_boundaries() {
+    let mut state = State::default();
+    let t0 = Instant::now();
+    state.queue_setup(setup_chunks(&[b"AAAA", b"BBBB"]), gap());
+    state.goto_next_at(t0);
+    let mut chunk = state.take_current().unwrap();
+    chunk.advance(2);
+    state.set_current(Some(chunk));
+
+    // A reply arrives while the chunk is half written: the chunk stays the write in flight.
+    state.queue_response(b"R".to_vec(), None);
+    assert_eq!(
+        state.writing.as_ref().unwrap().class,
+        JobClass::SetupChunked
+    );
+    let chunk = state.take_current().unwrap();
+    assert_eq!(chunk.remaining_bytes(), b"AA");
+    state.note_job_chunk_finished(&chunk, t0);
+
+    // At the boundary the reply goes, then the gap holds the next chunk back.
+    assert_eq!(write_next(&mut state, t0), Some(b"R".to_vec()));
+    assert_eq!(write_next(&mut state, t0), None);
+    assert_eq!(
+        write_next(&mut state, t0 + TEST_GAP),
+        Some(b"BBBB".to_vec())
+    );
+
+    // A reply behind a key does not jump the key, and neither goes inside a job.
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B"]), gap());
+    assert_eq!(write_next(&mut state, t0), Some(b"A".to_vec()));
+    state.queue_input(Cow::Borrowed(b"k"));
+    state.queue_response(b"R".to_vec(), None);
+    assert_eq!(write_next(&mut state, t0), None);
+    assert_eq!(write_next(&mut state, t0 + TEST_GAP), Some(b"B".to_vec()));
+    assert_eq!(write_next(&mut state, t0 + TEST_GAP), Some(b"k".to_vec()));
+    assert_eq!(write_next(&mut state, t0 + TEST_GAP), Some(b"R".to_vec()));
+}
+
+/// An abort between chunks cuts the job before its next chunk; queued replies and keys survive.
+#[test]
+fn abort_setup_cuts_the_job_at_a_chunk_boundary_and_keeps_everything_else() {
+    let t0 = Instant::now();
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B", b"C"]), gap());
+    assert_eq!(write_next(&mut state, t0), Some(b"A".to_vec()));
+    state.queue_input(Cow::Borrowed(b"k"));
+    state.queue_response(b"R".to_vec(), None);
+    state.abort(AbortScope::Setup);
+
+    assert!(state.active_job.is_none());
+    assert_eq!(drain(&mut state), vec![b"k".to_vec(), b"R".to_vec()]);
+}
+
+/// A queued (not yet started) setup job is dropped by an abort too.
+#[test]
+fn abort_setup_drops_a_queued_job_and_leaves_user_commands_alone() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"first"));
+    state.queue_setup(setup_chunks(&[b"S"]), Pacing::None);
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.abort(AbortScope::Setup);
+    assert_eq!(
+        drain(&mut state),
+        vec![b"first".to_vec(), b"cmd\r".to_vec()]
+    );
+}
+
+/// Cutting a job inside a bracketed paste closes the paste, once, ahead of what follows.
+#[test]
+fn aborting_a_job_inside_a_bracketed_paste_appends_the_paste_close() {
+    let mut open = BRACKETED_PASTE_START.to_vec();
+    open.extend_from_slice(b"script part 1");
+    let mut close = b"script part 2".to_vec();
+    close.extend_from_slice(BRACKETED_PASTE_END);
+    close.push(b'\r');
+
+    let t0 = Instant::now();
+    let mut state = State::default();
+    state.queue_setup(vec![open.clone(), close.clone()], gap());
+    assert_eq!(write_next(&mut state, t0), Some(open.clone()));
+    state.abort(AbortScope::Setup);
+    state.queue_input(Cow::Borrowed(&[0x03]));
+    assert_eq!(
+        drain(&mut state),
+        vec![BRACKETED_PASTE_END.to_vec(), vec![0x03]]
+    );
+
+    // After the whole job the paste is already closed: an abort then has nothing to close.
+    let mut state = State::default();
+    state.queue_setup(vec![open, close.clone()], gap());
+    assert!(write_next(&mut state, t0).is_some());
+    assert_eq!(write_next(&mut state, t0 + TEST_GAP), Some(close));
+    state.abort(AbortScope::Setup);
+    assert!(drain(&mut state).is_empty());
+}
+
+/// A chunk already partly in the pty is finished (a chunk is never split), then the job ends and
+/// the paste it left open is closed.
+#[test]
+fn aborting_mid_chunk_finishes_the_chunk_then_closes_the_paste() {
+    let mut open = BRACKETED_PASTE_START.to_vec();
+    open.extend_from_slice(b"script part 1");
+    let mut state = State::default();
+    state.queue_setup(vec![open.clone(), b"never written".to_vec()], gap());
+    state.goto_next_at(Instant::now());
+    let mut chunk = state.take_current().unwrap();
+    chunk.advance(3);
+    state.set_current(Some(chunk));
+
+    state.abort(AbortScope::Setup);
+    state.queue_input(Cow::Borrowed(b"k"));
+
+    let rest = state
+        .take_current()
+        .expect("the chunk in flight is finished");
+    assert_eq!(rest.remaining_bytes(), &open[3..]);
+    state.note_job_chunk_finished(&rest, Instant::now());
+    assert!(state.active_job.is_none());
+    assert_eq!(
+        drain(&mut state),
+        vec![BRACKETED_PASTE_END.to_vec(), b"k".to_vec()]
+    );
+}
+
+/// An abort that finds a chunk picked but with no byte written drops it whole.
+#[test]
+fn aborting_before_a_chunk_is_started_drops_it() {
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B"]), Pacing::None);
+    state.goto_next_at(Instant::now());
+    assert!(state.writing.is_some());
+    state.abort(AbortScope::Setup);
+    assert!(state.writing.is_none());
+    assert!(drain(&mut state).is_empty());
+}
+
+/// A newer setup job replaces the unwritten rest of an older one.
+#[test]
+fn a_newer_setup_job_replaces_the_older_one() {
+    let t0 = Instant::now();
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"a1", b"a2", b"a3"]), gap());
+    assert_eq!(write_next(&mut state, t0), Some(b"a1".to_vec()));
+    state.queue_setup(setup_chunks(&[b"b1"]), gap());
+    assert_eq!(write_next(&mut state, t0), Some(b"b1".to_vec()));
+    assert_eq!(write_next(&mut state, t0 + TEST_GAP), None);
+}
+
+/// The gap is the writer's own deadline: the poll timeout follows it, and it is gone with the job.
+#[test]
+fn the_poll_timeout_follows_the_setup_gap() {
+    let mut state = State::default();
+    assert_eq!(state.poll_timeout(None), None);
+    state.queue_setup(
+        setup_chunks(&[b"A", b"B"]),
+        Pacing::Gap {
+            dur: Duration::from_millis(25),
+            why: "test",
+        },
+    );
+    assert_eq!(
+        state.poll_timeout(None),
+        None,
+        "the first chunk is due at once"
+    );
+    assert_eq!(write_next(&mut state, Instant::now()), Some(b"A".to_vec()));
+    let wait = state.poll_timeout(None).expect("waiting for the gap");
+    assert!(wait <= Duration::from_millis(25), "{wait:?}");
+    // The synchronized-output timeout still wins when it is sooner.
+    assert_eq!(
+        state.poll_timeout(Some(Duration::from_millis(1))),
+        Some(Duration::from_millis(1))
+    );
+    state.abort(AbortScope::Setup);
+    assert_eq!(state.poll_timeout(None), None);
+}
+
+/// A dead pty drops the job with the rest of the queue.
+#[test]
+fn discarding_pending_writes_drops_the_setup_job() {
+    let mut state = State::default();
+    state.queue_setup(setup_chunks(&[b"A", b"B"]), gap());
+    assert!(write_next(&mut state, Instant::now()).is_some());
+    state.discard_pending_writes();
+    assert!(state.active_job.is_none());
+    assert!(!state.needs_write());
+}
+
+/// Job ids are monotonic and unique across classes.
+#[test]
+fn job_ids_are_monotonic() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_command_input(Cow::Borrowed(b"b"));
+    state.queue_response(b"c".to_vec(), None);
+    state.queue_setup(setup_chunks(&[b"d"]), Pacing::None);
+    let ids: Vec<JobId> = state.write_list.iter().map(|entry| entry.id).collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+}
+
+/// The loop end to end over the message channel: a setup job is written chunk by chunk, a ^C
+/// byte preempts it (no more chunks, the open paste closed) and itself goes out.
+#[test]
+fn ctrl_c_preempts_a_setup_job_through_the_event_loop() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (pty, _) = FakePty::new(None);
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+
+    let mut open = BRACKETED_PASTE_START.to_vec();
+    open.extend_from_slice(b"part 1");
+    let mut state = State::default();
+    tx.send(Message::SetupChunked {
+        chunks: vec![open.clone(), b"part 2".to_vec(), b"part 3".to_vec()],
+        pacing: gap(),
+    })
+    .unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert_eq!(
+        *written.lock().unwrap(),
+        open,
+        "the first chunk goes at once"
+    );
+
+    // A key and the ^C arrive during the gap. The ^C aborts the job and goes out; the key typed
+    // before it keeps its place ahead of it.
+    tx.send(Message::Input(Cow::Borrowed(b"k"))).unwrap();
+    tx.send(Message::Input(Cow::Borrowed(&[0x03]))).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+
+    let mut expected = open;
+    expected.extend_from_slice(BRACKETED_PASTE_END);
+    expected.extend_from_slice(b"k");
+    expected.push(0x03);
+    assert_eq!(*written.lock().unwrap(), expected);
+    assert!(state.active_job.is_none());
+}
+
+/// `Message::Abort` cuts a job the same way, and `Message::DiscardQueuedInput` still only drops
+/// submitted commands (a setup job survives it).
+#[test]
+fn abort_message_cuts_a_job_and_discard_leaves_it() {
+    let (tx, rx) = mio_channel::channel::<Message>();
+    let (pty, _) = FakePty::new(None);
+    let written = pty.writer.0.clone();
+    let mut event_loop = EventLoop::new(
+        Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        ChannelEventListener::new_for_test(),
+        pty,
+        rx,
+    )
+    .expect("event loop");
+    let mut state = State::default();
+    tx.send(Message::SetupChunked {
+        chunks: setup_chunks(&[b"one", b"two"]),
+        pacing: gap(),
+    })
+    .unwrap();
+    tx.send(Message::DiscardQueuedInput).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    let mut can_write = true;
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert_eq!(*written.lock().unwrap(), b"one");
+    assert!(
+        state.active_job.is_some(),
+        "a discard does not touch a setup job"
+    );
+
+    tx.send(Message::Abort(AbortScope::Setup)).unwrap();
+    event_loop.drain_recv_channel(&mut state);
+    event_loop.pty_write(&mut state, &mut can_write).unwrap();
+    assert!(state.active_job.is_none());
+    assert_eq!(
+        *written.lock().unwrap(),
+        b"one",
+        "no further chunk after the abort"
     );
 }

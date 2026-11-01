@@ -1600,6 +1600,11 @@ impl EventLoopSender for mio_channel::Sender<Message> {
             SendError(_) => EventLoopSendError::Disconnected,
         })
     }
+
+    /// The typed write queue is unix-only for now; the Windows ConPTY path keeps its own writes.
+    fn supports_write_queue(&self) -> bool {
+        cfg!(unix)
+    }
 }
 
 impl TerminalSurfaceInit {

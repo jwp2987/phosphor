@@ -18,6 +18,9 @@ use log::error;
 use mio::{self, Events, Interest};
 use parking_lot::{FairMutex, FairMutexGuard};
 
+use crate::terminal::writeable_pty::write_queue::{
+    AbortScope, JobClass, JobId, Pacing, SetupJob, is_signal_byte,
+};
 use crate::terminal::{
     TerminalModel,
     event_listener::ChannelEventListener,
@@ -108,10 +111,9 @@ pub struct EventLoop<T: local_tty::EventedPty> {
 struct Writing {
     source: Cow<'static, [u8]>,
     written: usize,
-    /// A reply to a terminal query rather than user input.
-    is_reply: bool,
-    /// See `QueuedWrite::discardable`.
-    discardable: bool,
+    /// What this write is; see `QueuedWrite::class`. A `SetupChunked` writing is one chunk of
+    /// `State::active_job`.
+    class: JobClass,
 }
 
 /// All of the mutable state needed to run the event loop.
@@ -122,6 +124,12 @@ pub struct State {
     /// earlier terminal-query reply.
     write_list: VecDeque<QueuedWrite>,
     writing: Option<Writing>,
+    /// The `SetupChunked` job being written (#1384). Strict FIFO: it was taken off the front of
+    /// `write_list`, and until it is finished nothing from the list is started except a reply at
+    /// the head, and only between two of its chunks. A user key behind it waits for all of it.
+    active_job: Option<SetupJob>,
+    /// The id the next submitted job gets (monotonic, in every log line about it).
+    next_job_id: JobId,
     parser: ansi::Processor,
     /// Whether replies generated while a command runs may be written now. They may not while the
     /// pty is in canonical mode: nobody can read a reply there (it has no line terminator), so
@@ -204,18 +212,20 @@ const MAX_GATED_REPLIES: usize = 1024;
 /// dropped, as the shell would otherwise read it back as typed text (#829). User input
 /// and replies produced at the prompt carry `None` and are never dropped.
 struct QueuedWrite {
+    id: JobId,
     bytes: Cow<'static, [u8]>,
     produced_while_executing: Option<BlockId>,
-    /// A reply to a terminal query, as opposed to user input.
-    is_reply: bool,
-    /// The submitted buffer of a user command (#1046); the only thing `DiscardQueuedInput` drops.
-    discardable: bool,
+    /// What this is; decides what may drop it (a submitted user command is the only thing
+    /// `DiscardQueuedInput` drops, #1046) and what may interleave with it.
+    class: JobClass,
+    /// The chunks of a `SetupChunked` job (`bytes` is empty then).
+    setup: Option<SetupJob>,
 }
 
 impl QueuedWrite {
     /// Replies generated while a command runs wait for the pty to leave canonical mode.
     fn is_gated(&self) -> bool {
-        self.is_reply && self.produced_while_executing.is_some()
+        self.class.is_reply() && self.produced_while_executing.is_some()
     }
 }
 
@@ -225,6 +235,8 @@ impl Default for State {
             write_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
+            active_job: None,
+            next_job_id: 1,
             reply_gate_open: true,
             gated_count: 0,
             withheld_since: None,
@@ -248,24 +260,140 @@ impl State {
 
     #[inline]
     fn goto_next(&mut self) {
-        // The first entry that may be written now: a withheld reply is skipped, not waited for,
-        // so user input behind it is never delayed.
-        let open = self.reply_gate_open;
-        let next = if open || self.gated_count == 0 {
-            self.write_list.pop_front()
-        } else if self.write_list.len() == self.gated_count {
-            None
-        } else {
-            self.write_list
-                .iter()
-                .position(|entry| !entry.is_gated())
-                .and_then(|index| self.write_list.remove(index))
-        };
-        if next.as_ref().is_some_and(QueuedWrite::is_gated) {
+        self.goto_next_at(Instant::now());
+    }
+
+    /// Picks what is written next. While a `SetupChunked` job is active it is the only thing
+    /// written, except a reply at the head of the list (a chunk boundary is the one place a reply
+    /// may land without corrupting the job); its next chunk is picked once its gap has passed.
+    fn goto_next_at(&mut self, now: Instant) {
+        loop {
+            match self
+                .active_job
+                .as_ref()
+                .map(|job| (job.is_exhausted(), job.is_due(now)))
+            {
+                Some((true, _)) => {
+                    self.active_job = None;
+                    continue;
+                }
+                Some((false, due)) => {
+                    self.writing = if let Some(reply) = self.take_leading_reply() {
+                        Some(Writing::new(reply.bytes, JobClass::Reply))
+                    } else if due {
+                        self.active_job
+                            .as_mut()
+                            .and_then(SetupJob::take_chunk)
+                            .map(|chunk| Writing::new(chunk, JobClass::SetupChunked))
+                    } else {
+                        None
+                    };
+                    return;
+                }
+                None => {}
+            }
+            // The first entry that may be written now: a withheld reply is skipped, not waited
+            // for, so user input behind it is never delayed.
+            let open = self.reply_gate_open;
+            let next = if open || self.gated_count == 0 {
+                self.write_list.pop_front()
+            } else if self.write_list.len() == self.gated_count {
+                None
+            } else {
+                self.write_list
+                    .iter()
+                    .position(|entry| !entry.is_gated())
+                    .and_then(|index| self.write_list.remove(index))
+            };
+            if next.as_ref().is_some_and(QueuedWrite::is_gated) {
+                self.gated_count -= 1;
+            }
+            match next {
+                Some(QueuedWrite {
+                    id,
+                    setup: Some(job),
+                    ..
+                }) => {
+                    match job.pacing() {
+                        Pacing::Gap { dur, why } => log::info!(
+                            "pty write job {id}: setup, paced {dur:?} between chunks ({why})"
+                        ),
+                        Pacing::None => log::info!("pty write job {id}: setup, unpaced"),
+                    }
+                    self.active_job = Some(job);
+                }
+                Some(entry) => {
+                    self.writing = Some(Writing::new(entry.bytes, entry.class));
+                    return;
+                }
+                None => {
+                    self.writing = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Whether the head of the list is a reply that may be written now.
+    fn has_leading_reply(&self) -> bool {
+        self.write_list.front().is_some_and(|entry| {
+            entry.class.is_reply() && (self.reply_gate_open || !entry.is_gated())
+        })
+    }
+
+    fn take_leading_reply(&mut self) -> Option<QueuedWrite> {
+        if !self.has_leading_reply() {
+            return None;
+        }
+        let entry = self.write_list.pop_front()?;
+        if entry.is_gated() {
             self.gated_count -= 1;
         }
-        self.writing =
-            next.map(|entry| Writing::new(entry.bytes, entry.is_reply, entry.discardable));
+        Some(entry)
+    }
+
+    /// How long until the active job's next chunk is due, if the writer is waiting for that.
+    fn job_timeout(&self) -> Option<Duration> {
+        if self.writing.is_some() {
+            return None;
+        }
+        self.active_job.as_ref()?.wait(Instant::now())
+    }
+
+    /// Called when a write finished: a chunk of the active job starts the gap before the next
+    /// one, and the last chunk (or the last of an aborted job) ends the job.
+    fn note_job_chunk_finished(&mut self, finished: &Writing, at: Instant) {
+        if finished.class != JobClass::SetupChunked {
+            return;
+        }
+        let Some(job) = self.active_job.as_mut() else {
+            return;
+        };
+        job.chunk_written(&finished.source, at);
+        if job.is_exhausted() {
+            let close_paste = job.is_aborted() && job.is_paste_open();
+            self.active_job = None;
+            if close_paste {
+                self.push_paste_close();
+            }
+        }
+    }
+
+    fn push_paste_close(&mut self) {
+        let id = self.alloc_job_id();
+        self.write_list.push_front(QueuedWrite {
+            id,
+            bytes: Cow::Borrowed(BRACKETED_PASTE_END),
+            produced_while_executing: None,
+            class: JobClass::UserKey,
+            setup: None,
+        });
+    }
+
+    fn alloc_job_id(&mut self) -> JobId {
+        let id = self.next_job_id;
+        self.next_job_id = self.next_job_id.wrapping_add(1);
+        id
     }
 
     /// Whether any queued write is a reply that the gate may be withholding.
@@ -301,10 +429,10 @@ impl State {
     /// How long the event loop may sleep, given the synchronized-output timeout and any withheld
     /// reply waiting for the pty to leave canonical mode.
     fn poll_timeout(&self, sync_timeout: Option<Duration>) -> Option<Duration> {
-        let timeout = match (sync_timeout, self.gate_timeout()) {
-            (Some(sync), Some(gate)) => Some(sync.min(gate)),
-            (sync, gate) => sync.or(gate),
-        };
+        let timeout = [sync_timeout, self.gate_timeout(), self.job_timeout()]
+            .into_iter()
+            .flatten()
+            .min();
         if self.hung_up {
             let poll = self.hung_up_poll();
             Some(timeout.map_or(poll, |t| t.min(poll)))
@@ -349,21 +477,43 @@ impl State {
 
     /// Queues user input; never dropped.
     fn queue_input(&mut self, bytes: Cow<'static, [u8]>) {
+        let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
+            id,
             bytes,
             produced_while_executing: None,
-            is_reply: false,
-            discardable: false,
+            class: JobClass::UserKey,
+            setup: None,
+        });
+    }
+
+    /// Queues a bootstrap script as one paced job (#1384). A job still queued or in flight is
+    /// replaced: the newer bootstrap supersedes the older, as `cancel_paced_writes` did.
+    fn queue_setup(&mut self, chunks: Vec<Vec<u8>>, pacing: Pacing) {
+        self.abort(AbortScope::Setup);
+        let id = self.alloc_job_id();
+        let job = SetupJob::new(id, chunks, pacing);
+        if job.is_exhausted() {
+            return;
+        }
+        self.write_list.push_back(QueuedWrite {
+            id,
+            bytes: Cow::Borrowed(&[]),
+            produced_while_executing: None,
+            class: JobClass::SetupChunked,
+            setup: Some(job),
         });
     }
 
     /// Queues the submitted buffer of a user command, which a ^C may cancel while unwritten.
     fn queue_command_input(&mut self, bytes: Cow<'static, [u8]>) {
+        let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
+            id,
             bytes,
             produced_while_executing: None,
-            is_reply: false,
-            discardable: true,
+            class: JobClass::UserCommand,
+            setup: None,
         });
     }
 
@@ -382,10 +532,11 @@ impl State {
             return evicted;
         }
         let entry = QueuedWrite {
+            id: self.alloc_job_id(),
             bytes: Cow::Owned(bytes),
             produced_while_executing: executing_block,
-            is_reply: true,
-            discardable: false,
+            class: JobClass::Reply,
+            setup: None,
         };
         if entry.is_gated() {
             self.gated_count += 1;
@@ -438,6 +589,7 @@ impl State {
     fn discard_pending_writes(&mut self) {
         self.write_list.clear();
         self.writing = None;
+        self.active_job = None;
         self.gated_count = 0;
         self.withheld_since = None;
     }
@@ -450,20 +602,61 @@ impl State {
     /// and not yet started is dropped too. If the write in progress was cut inside a bracketed
     /// paste, the paste is closed so the shell does not swallow what follows as pasted text.
     fn discard_queued_input(&mut self) {
-        self.write_list.retain(|entry| !entry.discardable);
-        if self.writing.as_ref().is_some_and(|w| w.discardable) {
+        self.write_list
+            .retain(|entry| !entry.class.is_discardable());
+        if self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class.is_discardable())
+        {
             let cut_paste = self
                 .writing
                 .take()
                 .is_some_and(|w| w.cut_inside_bracketed_paste());
             if cut_paste {
-                self.write_list.push_front(QueuedWrite {
-                    bytes: Cow::Borrowed(BRACKETED_PASTE_END),
-                    produced_while_executing: None,
-                    is_reply: false,
-                    discardable: false,
-                });
+                self.push_paste_close();
             }
+        }
+    }
+
+    /// Removes the queued and in-flight jobs `scope` covers (#1384), at the next chunk boundary.
+    ///
+    /// A discardable write is cut where it stands (see [`Self::discard_queued_input`]). A setup
+    /// job is cut before its next chunk; a chunk already partly written is finished first (a
+    /// chunk is never split), and a bracketed paste the job left open is closed after it.
+    fn abort(&mut self, scope: AbortScope) {
+        if scope.covers(JobClass::UserCommand) {
+            self.discard_queued_input();
+        }
+        if !scope.covers(JobClass::SetupChunked) {
+            return;
+        }
+        self.write_list
+            .retain(|entry| entry.class != JobClass::SetupChunked);
+        let Some(job) = self.active_job.as_mut() else {
+            return;
+        };
+        log::info!("pty write job {}: aborted", job.id);
+        job.cut();
+        let mid_chunk = self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class == JobClass::SetupChunked && w.written > 0);
+        if mid_chunk {
+            // `note_job_chunk_finished` ends the job and closes the paste.
+            return;
+        }
+        if self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class == JobClass::SetupChunked)
+        {
+            self.writing = None;
+        }
+        let close_paste = job.is_paste_open();
+        self.active_job = None;
+        if close_paste {
+            self.push_paste_close();
         }
     }
 
@@ -474,8 +667,15 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        self.writing.is_some()
-            || (self.reply_gate_open && !self.write_list.is_empty())
+        if self.writing.is_some() {
+            return true;
+        }
+        // Inside a setup job the list is not written from: only a reply at its head may go, and
+        // the job's own next chunk once its gap has passed. Anything else waits for the whole job.
+        if let Some(job) = &self.active_job {
+            return job.is_exhausted() || job.is_due(Instant::now()) || self.has_leading_reply();
+        }
+        (self.reply_gate_open && !self.write_list.is_empty())
             || self.write_list.len() > self.gated_count
     }
 
@@ -572,13 +772,18 @@ fn parse_slice(
 
 impl Writing {
     #[inline]
-    fn new(c: Cow<'static, [u8]>, is_reply: bool, discardable: bool) -> Writing {
+    fn new(c: Cow<'static, [u8]>, class: JobClass) -> Writing {
         Writing {
             source: c,
             written: 0,
-            is_reply,
-            discardable,
+            class,
         }
+    }
+
+    /// A reply to a terminal query rather than user input.
+    #[inline]
+    fn is_reply(&self) -> bool {
+        self.class.is_reply()
     }
 
     /// Whether the bytes written so far opened a bracketed paste that was not closed. Cutting the
@@ -718,8 +923,25 @@ where
                     // The single choke point for everything written to the pty.
                     self.reply_ledger.lock().note_input(&input);
                     state.note_user_input_received(Instant::now());
+                    // A signal byte (^C ^D ^Z ^\) preempts a setup job: it cuts the job at its
+                    // next chunk boundary instead of queueing behind the rest of the script.
+                    if is_signal_byte(&input) {
+                        state.abort(AbortScope::Setup);
+                    }
                     state.queue_input(input)
                 }
+                Message::SetupChunked { chunks, pacing } => {
+                    // The ledger sees the bytes now, as it saw each chunk as its own `Input`.
+                    // Not `note_user_input_received`: the gaps are not a user waiting.
+                    {
+                        let mut ledger = self.reply_ledger.lock();
+                        for chunk in &chunks {
+                            ledger.note_input(chunk);
+                        }
+                    }
+                    state.queue_setup(chunks, pacing)
+                }
+                Message::Abort(scope) => state.abort(scope),
                 Message::Shutdown => {
                     return ChannelResult::TerminateLoop {
                         child_exited: false,
@@ -730,7 +952,7 @@ where
                     state.note_user_input_received(Instant::now());
                     state.queue_command_input(input)
                 }
-                Message::DiscardQueuedInput => state.discard_queued_input(),
+                Message::DiscardQueuedInput => state.abort(AbortScope::Discardable),
                 Message::Resize(size) => pending_resize = Some(size),
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
             }
@@ -919,16 +1141,18 @@ where
                         }
                         current.advance(n);
                         if current.finished() {
-                            if current.is_reply {
+                            if current.is_reply() {
                                 warpui::input_order::log_hop("pty_write_reply", || {
                                     format!("bytes={}", current.source.len())
                                 });
                             }
-                            state.note_write_finished(current.is_reply, Instant::now());
-                            if !current.is_reply {
+                            let finished_at = Instant::now();
+                            state.note_write_finished(current.is_reply(), finished_at);
+                            if !current.is_reply() {
                                 warpui::input_order::log_pty_write(current.source.len());
                             }
-                            state.goto_next();
+                            state.note_job_chunk_finished(&current, finished_at);
+                            state.goto_next_at(finished_at);
                             break 'write_one;
                         }
                     }
@@ -1071,6 +1295,7 @@ where
                     // While replies are withheld, wake often enough to notice the pty leaving
                     // canonical mode.
                     let gate_poll = state.gate_timeout();
+                    let job_poll = state.job_timeout();
                     let poll_timeout = state.poll_timeout(sync_state_timeout);
                     if let Err(err) = self.poll.poll(&mut events, poll_timeout) {
                         if err.kind() != ErrorKind::Interrupted {
@@ -1088,6 +1313,8 @@ where
                     // (A wake-up for the reply gate alone is not the synchronized-output timeout.)
                     let woke_for_gate = gate_poll
                         .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync))
+                        || job_poll
+                            .is_some_and(|job| sync_state_timeout.is_none_or(|sync| job < sync))
                         || (state.hung_up
                             && sync_state_timeout.is_none_or(|sync| state.hung_up_poll() < sync));
                     if events.is_empty() && !woke_for_gate {

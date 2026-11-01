@@ -39,6 +39,35 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 use super::Message;
+use super::write_queue::AbortScope;
+#[cfg(feature = "local_fs")]
+use super::write_queue::Pacing;
+
+/// Gap between the chunks of a bootstrap written into a subshell behind a user-space pty relay
+/// (`sudo -i`, `su`, `script`, `ksu`, ...). #960: such a relay deadlocks when ~120KB is flooded
+/// at it in one burst, and how fast it consumes its input is not observable from here (the echo
+/// it produces is not byte-exact), so this is a time gap by necessity, not a way to decide
+/// whether a chunk is written.
+#[cfg(feature = "local_fs")]
+const RELAY_BOOTSTRAP_PACING: Duration = Duration::from_millis(25);
+/// Gap between the chunks of a bootstrap written into a container subshell (`docker`/`podman
+/// exec -it`): a double-pty proxy that drops data on large writes or bursts (#960 family).
+/// Same reason as [`RELAY_BOOTSTRAP_PACING`]: the proxy's consumption is unobservable.
+#[cfg(feature = "local_fs")]
+const CONTAINER_BOOTSTRAP_PACING: Duration = Duration::from_millis(50);
+
+/// Whether the writer-owned job queue (#1384) is used for the paced bootstrap writes.
+/// `PHOSPHOR_PTY_WRITE_QUEUE=0` turns it off and the timer-chained writes of before are used.
+fn write_queue_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let off = std::env::var("PHOSPHOR_PTY_WRITE_QUEUE").is_ok_and(|v| v.trim() == "0");
+        if off {
+            log::info!("PHOSPHOR_PTY_WRITE_QUEUE=0: bootstrap writes are paced by UI timers");
+        }
+        !off
+    })
+}
 
 /// Byte sequence to emulate the user pressing ENTER, used to execute a command in the shell.
 const COMMAND_ENTER: &[u8] = &[escape_sequences::C0::CR, escape_sequences::C0::LF];
@@ -218,6 +247,12 @@ pub struct PtyController<T: EventLoopSender> {
     /// nothing, so no chunk (nor the submit CR it ends in) is typed into whatever owns the pty
     /// afterwards.
     paced_write_generation: u64,
+    /// Whether paced bootstrap writes go to the event loop as one `SetupChunked` job (#1384)
+    /// instead of timer-chained `Input` messages. Decided once, from the sender (only the local
+    /// unix event loop has the queue) and `PHOSPHOR_PTY_WRITE_QUEUE`.
+    write_queue: bool,
+    /// A `SetupChunked` job was sent and no abort since, so a cancel has something to abort.
+    setup_job_sent: bool,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
     /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
     #[cfg(test)]
@@ -292,7 +327,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Exit { .. } => {
                 // The shell is gone: the rest of a paced bootstrap has nowhere to go.
-                me.cancel_paced_writes();
+                me.cancel_paced_writes(ctx);
                 if me.handoff_held_command_pending {
                     me.drop_held_handoff_command();
                 }
@@ -452,6 +487,7 @@ impl<T: EventLoopSender> PtyController<T> {
             |_, _| (),
         );
 
+        let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
         Self {
             event_loop_tx,
             terminal_model,
@@ -481,6 +517,8 @@ impl<T: EventLoopSender> PtyController<T> {
             handoff_command_written_since_hold: false,
             paced_write_queue: VecDeque::new(),
             paced_write_generation: 0,
+            write_queue,
+            setup_job_sent: false,
             #[cfg(test)]
             shutdown_requested: false,
         }
@@ -1121,9 +1159,25 @@ impl<T: EventLoopSender> PtyController<T> {
         &mut self,
         chunks: Vec<Vec<u8>>,
         gap: Duration,
+        why: &'static str,
         ctx: &mut ModelContext<PtyController<T>>,
     ) {
-        self.cancel_paced_writes();
+        if self.write_queue && self.tmux_control_mode.is_none() {
+            // One job in the event loop's own FIFO (#1384): the loop honours the gap as its poll
+            // deadline, nothing a user types can land inside the script, and an abort replaces
+            // the generation below.
+            self.cancel_paced_writes(ctx);
+            self.setup_job_sent = true;
+            self.send_message_to_event_loop(
+                Message::SetupChunked {
+                    chunks,
+                    pacing: Pacing::Gap { dur: gap, why },
+                },
+                ctx,
+            );
+            return;
+        }
+        self.cancel_paced_writes(ctx);
         let generation = self.paced_write_generation;
         self.paced_write_queue = chunks.into();
         self.write_next_paced_chunk(generation, gap, ctx);
@@ -1154,9 +1208,18 @@ impl<T: EventLoopSender> PtyController<T> {
     }
 
     /// Drops what is left of a paced bootstrap write (see [`Self::start_paced_writes`]).
-    fn cancel_paced_writes(&mut self) {
+    fn cancel_paced_writes(&mut self, ctx: &mut ModelContext<Self>) {
         self.paced_write_generation = self.paced_write_generation.wrapping_add(1);
         self.paced_write_queue.clear();
+        if std::mem::take(&mut self.setup_job_sent) {
+            self.send_message_to_event_loop(Message::Abort(AbortScope::Setup), ctx);
+        }
+    }
+
+    /// Test-only: use the writer-owned job queue for paced writes, as the local unix pty does.
+    #[cfg(test)]
+    pub fn force_write_queue(&mut self, enabled: bool) {
+        self.write_queue = enabled;
     }
 
     /// Test-only: how many chunks of a paced write are still unwritten.
@@ -1236,7 +1299,6 @@ impl<T: EventLoopSender> PtyController<T> {
             // across a chunk boundary. They're only a handful of bytes, so this doesn't change the
             // chunking's purpose of keeping each write small.
             const CONTAINER_BOOTSTRAP_CHUNK_SIZE: usize = 4096;
-            const CONTAINER_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(50);
             let bytes: Vec<u8> = bootstrap.into_owned();
             let mut chunks: Vec<Vec<u8>> = bytes
                 .chunks(CONTAINER_BOOTSTRAP_CHUNK_SIZE)
@@ -1255,7 +1317,12 @@ impl<T: EventLoopSender> PtyController<T> {
                 last.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
                 last.push(escape_sequences::C0::CR);
             }
-            self.start_paced_writes(chunks, CONTAINER_BOOTSTRAP_CHUNK_DELAY, ctx);
+            self.start_paced_writes(
+                chunks,
+                CONTAINER_BOOTSTRAP_PACING,
+                "docker/podman exec -it double-pty proxy drops bursts; its consumption is unobservable (#960)",
+                ctx,
+            );
         } else if pending_session_info.subshell_info.is_some() {
             // #960: a subshell started through a user-space pty relay (`sudo -i`, `sudo su -`,
             // `script`, ...) deadlocks when ~120KB of script is flooded at it in one burst. The
@@ -1273,7 +1340,6 @@ impl<T: EventLoopSender> PtyController<T> {
             // `bootstrap::counted_subshell_bootstrap_chunks`): about 26 paced chunks, 650 ms of
             // pure pacing, become the few chunks before the body plus one write (746 -> 222 ms
             // from `InitShell` to `Bootstrapped` through a blocking pty relay).
-            const SUBSHELL_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(25);
             let chunks = match bootstrap::local_counted_bootstrap(
                 &bootstrap,
                 shell_type,
@@ -1284,7 +1350,12 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
                 None => bootstrap::subshell_bootstrap_chunks(&bootstrap),
             };
-            self.start_paced_writes(chunks, SUBSHELL_BOOTSTRAP_CHUNK_DELAY, ctx);
+            self.start_paced_writes(
+                chunks,
+                RELAY_BOOTSTRAP_PACING,
+                "user-space pty relay deadlocks on a flood; its consumption is unobservable (#960)",
+                ctx,
+            );
         } else {
             // #1172: a bash over ssh that can take a counted raw read gets the body of the
             // bootstrap that way, not typed through its line editor.
@@ -1740,7 +1811,7 @@ impl<T: EventLoopSender> PtyController<T> {
     pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
         // Whatever of a big paste is still waiting to be written must not outlive the interrupt,
         // nor the rest of a paced bootstrap.
-        self.cancel_paced_writes();
+        self.cancel_paced_writes(ctx);
         self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
@@ -1760,7 +1831,7 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             self.shutdown_requested = true;
         }
-        self.cancel_paced_writes();
+        self.cancel_paced_writes(ctx);
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
@@ -1833,7 +1904,7 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
         );
         if is_interrupt {
-            self.cancel_paced_writes();
+            self.cancel_paced_writes(ctx);
         }
 
         // A paste is streamed by the event loop a tty-buffer at a time (the remote program or ssh
@@ -2176,6 +2247,12 @@ pub enum EventLoopSendError {
 
 pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
+
+    /// Whether the event loop behind this sender runs the typed write queue (`SetupChunked` and
+    /// `Abort`, #1384). Only the local unix pty loop does.
+    fn supports_write_queue(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

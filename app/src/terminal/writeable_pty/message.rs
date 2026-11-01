@@ -1,3 +1,4 @@
+use super::write_queue::{AbortScope, Pacing};
 use crate::terminal::SizeInfo;
 use std::borrow::Cow;
 
@@ -16,6 +17,22 @@ pub enum Message {
     /// ^C so the interrupt is not stuck behind a big multi-line paste. Everything else queued
     /// (bootstrap, typeahead, replies, agent writes) is kept.
     DiscardQueuedInput,
+
+    /// A bootstrap script written as ONE job in paced chunks (#1384): nothing a user types lands
+    /// inside it (that waits behind the whole job), a terminal-query reply may interleave only
+    /// between chunks, and `Abort` / a signal byte cancels what is unwritten. The pacing is the
+    /// writer's own poll deadline. Sent only to the local unix event loop.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    SetupChunked {
+        chunks: Vec<Vec<u8>>,
+        pacing: Pacing,
+    },
+
+    /// Removes the queued and in-flight jobs `AbortScope` covers (#1384). A job cut inside a
+    /// bracketed paste is followed by the paste-close so the shell does not swallow what comes
+    /// next as pasted text.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Abort(AbortScope),
 
     /// Indicates that the `EventLoop` should be shut down.
     Shutdown,

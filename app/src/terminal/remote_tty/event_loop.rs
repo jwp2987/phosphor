@@ -152,6 +152,8 @@ impl EventLoop {
                         // TODO(alokedesai): Implement shutdown on the network backed PTY.
                         // Input is forwarded as soon as it arrives; nothing is queued here to discard.
                         EventLoopMessage::DiscardQueuedInput
+                        | EventLoopMessage::Abort(_)
+                        | EventLoopMessage::SetupChunked { .. }
                         | EventLoopMessage::Shutdown
                         | EventLoopMessage::ChildExited => {}
                     }
