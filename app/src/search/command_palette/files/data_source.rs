@@ -3,7 +3,7 @@ use super::search_item::{CreateFileSearchItem, FileSearchItem};
 use crate::code::opened_files::OpenedFilesModel;
 use crate::search::command_palette::mixer::CommandPaletteItemAction;
 use crate::search::data_source::{Query, QueryResult};
-use crate::search::files::model::FileSearchModel;
+use crate::search::files::model::{git_changed_files_async, FileSearchModel};
 use crate::search::files::search_item::FileSearchResult;
 use crate::search::mixer::{AsyncDataSource, BoxFuture, DataSourceRunErrorWrapper};
 use futures_lite::FutureExt;
@@ -88,17 +88,19 @@ impl AsyncDataSource for FileDataSource {
 }
 
 impl FileDataSource {
-    fn contents_with_git_changes(
+    /// Returns the contents plus the repo root to run `git status` in. Git is
+    /// never run here (UI thread); the caller awaits it off-thread (#1312).
+    fn contents_with_git_root(
         &self,
         app: &AppContext,
-    ) -> (Arc<Vec<FileSearchResult>>, HashSet<String>) {
+    ) -> (Arc<Vec<FileSearchResult>>, Option<PathBuf>) {
         match &self.mode {
             FileDataSourceMode::Repo => {
                 let file_search_model = FileSearchModel::as_ref(app);
-                file_search_model.get_repo_contents_with_git_status(app)
+                file_search_model.get_repo_contents_with_git_root(app)
             }
             FileDataSourceMode::CurrentFolder { cached_contents } => {
-                (Arc::new(cached_contents.clone()), HashSet::new())
+                (Arc::new(cached_contents.clone()), None)
             }
         }
     }
@@ -129,54 +131,57 @@ impl FileDataSource {
     > {
         let file_search_model = FileSearchModel::as_ref(app);
 
-        let (contents, git_changed_files) = self.contents_with_git_changes(app);
-
-        let mut results = Vec::new();
+        let (contents, git_root) = self.contents_with_git_root(app);
 
         let opened_files = OpenedFilesModel::as_ref(app);
 
         let repo_root = file_search_model.repo_root(app);
-        let opened_files =
-            repo_root.and_then(|repo_root| opened_files.opened_files_for_repo(&repo_root));
+        let opened_files = repo_root
+            .and_then(|repo_root| opened_files.opened_files_for_repo(&repo_root))
+            .cloned();
 
-        for item in contents.iter() {
-            // Never show directories -- there's no way to open them currently.
-            if item.is_directory {
-                continue;
-            }
+        Box::pin(async move {
+            let git_changed_files = git_changed_files_async(git_root).await;
+            let opened_files = opened_files.as_ref();
+            let mut results = Vec::new();
+            for item in contents.iter() {
+                // Never show directories -- there's no way to open them currently.
+                if item.is_directory {
+                    continue;
+                }
 
-            let mut file_ranking = if git_changed_files.contains(&item.path) {
-                FileRanking::ChangedInGit
-            } else {
-                FileRanking::None
-            };
-
-            if let Some(last_opened_timestamp) =
-                opened_files.and_then(|opened_files| opened_files.get(&PathBuf::from(&item.path)))
-            {
-                file_ranking = FileRanking::OpenedInWarp {
-                    timestamp: *last_opened_timestamp,
+                let mut file_ranking = if git_changed_files.contains(&item.path) {
+                    FileRanking::ChangedInGit
+                } else {
+                    FileRanking::None
                 };
+
+                if let Some(last_opened_timestamp) = opened_files
+                    .and_then(|opened_files| opened_files.get(&PathBuf::from(&item.path)))
+                {
+                    file_ranking = FileRanking::OpenedInWarp {
+                        timestamp: *last_opened_timestamp,
+                    };
+                }
+
+                let match_result = FuzzyMatchResult {
+                    score: 0,
+                    matched_indices: vec![], // No highlighting needed for zero state
+                };
+
+                let search_item = FileSearchItem {
+                    path: PathBuf::from(&item.path),
+                    project_directory: item.project_directory.clone(),
+                    match_result,
+                    line_and_column_arg: None,
+                    is_directory: item.is_directory,
+                };
+                results.push((file_ranking, QueryResult::from(search_item)));
             }
 
-            let match_result = FuzzyMatchResult {
-                score: 0,
-                matched_indices: vec![], // No highlighting needed for zero state
-            };
-
-            let search_item = FileSearchItem {
-                path: PathBuf::from(&item.path),
-                project_directory: item.project_directory.clone(),
-                match_result,
-                line_and_column_arg: None,
-                is_directory: item.is_directory,
-            };
-            results.push((file_ranking, QueryResult::from(search_item)));
-        }
-
-        results.sort_by_key(|(ranking, _)| *ranking);
-
-        Box::pin(async move { Ok(results.into_iter().map(|(_, ranking)| ranking).collect()) })
+            results.sort_by_key(|(ranking, _)| *ranking);
+            Ok(results.into_iter().map(|(_, ranking)| ranking).collect())
+        })
     }
 
     /// Handle non-empty query with fuzzy matching (no git status needed)

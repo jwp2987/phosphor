@@ -944,3 +944,32 @@ fn read_head_branch_sync_reads_branch_detached_and_worktree_head() {
 
     assert_eq!(read(&tmp.path().join("nowhere")), None);
 }
+
+#[test]
+fn parse_branch_list_trims_and_skips_blank() {
+    let got = super::parse_branch_list("main\n  feature/x \n\n");
+    assert_eq!(got.len(), 2);
+    assert!(got.contains("main") && got.contains("feature/x"));
+}
+
+#[test]
+fn stale_branch_refresh_result_is_dropped() {
+    let repo = Path::new("/nonexistent/stale-branch-refresh-test");
+    assert!(super::cached_local_branches(repo).is_none());
+    let old = super::begin_branch_refresh(repo);
+    let new = super::begin_branch_refresh(repo);
+    // The cache read on the UI thread never runs git and is empty until a refresh lands.
+    assert!(super::cached_local_branches(repo).is_none());
+    assert!(!super::finish_branch_refresh(
+        repo,
+        old,
+        ["old".to_string()].into()
+    ));
+    assert!(super::cached_local_branches(repo).is_none());
+    assert!(super::finish_branch_refresh(
+        repo,
+        new,
+        ["new".to_string()].into()
+    ));
+    assert!(super::cached_local_branches(repo).unwrap().contains("new"));
+}
