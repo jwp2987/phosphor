@@ -314,7 +314,9 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       _WARP_PRECMD_PENDING=1
       local warp_escaped_command
       __warp_ej_var warp_escaped_command "$1"
-      warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID}}"
+      # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+      typeset -g __warp_seq=$(( ${__warp_seq:-0} + 1 ))
+      warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$warp_escaped_command\", \"session_id\": $WARP_SESSION_ID, \"seq\": $__warp_seq}}"
       warp_maybe_send_reset_grid_osc
 
       # If this preexec is called for user command, kill ongoing generator command jobs and clean
@@ -414,6 +416,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       # report the same ID. The Precmd carries this completion metadata so the client can classify
       # it and, if the CommandFinished was missed, recover the completion.
       local next_block_id="precmd-$WARP_SESSION_ID-$((block_id++))"
+      typeset -g __warp_seq=$(( ${__warp_seq:-0} + 1 ))
 
       warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": $WARP_SESSION_ID}}"
       warp_maybe_send_reset_grid_osc
@@ -438,6 +441,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         \"conda_env\": \"\",
         \"node_version\": \"\",
         \"session_id\": $WARP_SESSION_ID,
+        \"seq\": $__warp_seq,
         \"is_after_in_band_command\": true
         }}"
         return 0
@@ -634,7 +638,8 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
       \"conda_env\": \"$escaped_conda_env\",
       \"node_version\": \"$escaped_node_version\",
       \"kube_config\": \"$escaped_kube_config\",
-      \"session_id\": $WARP_SESSION_ID
+      \"session_id\": $WARP_SESSION_ID,
+      \"seq\": $__warp_seq
       }}"
       warp_send_json_message "$escaped_json"
   }

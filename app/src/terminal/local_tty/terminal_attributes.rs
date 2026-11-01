@@ -201,6 +201,37 @@ pub fn shell_provably_not_at_prompt(fd: RawFd, shell_pid: i32) -> bool {
             .is_ok_and(|termios| is_canonical_without_echo(termios.local_flags))
 }
 
+/// What the pty says about the shell and its prompt right now (#1353 phase 6), the sample the
+/// typeahead hand-off decides a young Enter on instead of an elapsed-time window.
+///
+/// `NotAtPrompt` is [`shell_provably_not_at_prompt`]. `LineEditorReading`: the shell's own process
+/// group owns the foreground and the tty is raw (non-canonical), which is the state readline, zle,
+/// fish and reedline put it in while they read a line. A shell running a command has restored the
+/// cooked tty and a program in the foreground is not the shell's group, so neither looks like
+/// this; and a line editor that reads has already had its prompt's Precmd written, so that Precmd
+/// is in the pty stream and will be parsed. Anything else, including a failed query and a local
+/// tty in front of an `ssh`, is `Unknown`.
+pub fn shell_prompt_fact(
+    fd: RawFd,
+    shell_pid: i32,
+) -> crate::terminal::model::typeahead_handoff::ShellPromptFact {
+    use crate::terminal::model::typeahead_handoff::ShellPromptFact;
+    if shell_provably_not_at_prompt(fd, shell_pid) {
+        return ShellPromptFact::NotAtPrompt;
+    }
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid > 0
+        && pgid == shell_pid
+        && fetch_termial_attributes(fd)
+            .is_ok_and(|termios| !termios.local_flags.contains(termios::LocalFlags::ICANON))
+    {
+        ShellPromptFact::LineEditorReading
+    } else {
+        ShellPromptFact::Unknown
+    }
+}
+
 pub(crate) fn is_canonical_without_echo(flags: termios::LocalFlags) -> bool {
     flags.contains(termios::LocalFlags::ICANON) && !flags.contains(termios::LocalFlags::ECHO)
 }

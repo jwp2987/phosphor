@@ -114,17 +114,43 @@ pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 
 /// Counts background reader threads that have started and not yet returned.
 pub struct ReaderTracker {
     in_flight: std::sync::atomic::AtomicUsize,
+    /// Bumped by [`ReaderTracker::abandon_pending`]: a reader created before the bump belongs to a
+    /// paste that gave up on it (#1353 phase 6, INP-A4).
+    abandon_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl ReaderTracker {
     pub const fn new() -> Self {
         Self {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
+            abandon_epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     pub fn in_flight(&self) -> usize {
         self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The paste that was waiting on the readers made so far gave up. A reader already blocked in
+    /// the OS cannot be interrupted, but it is logged as abandoned when it returns, so the
+    /// blocked-reader count and the log say what is going on. Returns how many were in flight.
+    pub fn abandon_pending(&self) -> usize {
+        self.abandon_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.in_flight()
+    }
+}
+
+/// Signals the cancel flag of every clipboard read started so far (#1353 phase 6, INP-A4): the
+/// paste backstop gave up, so those reads' results will not be used. See
+/// [`ReaderTracker::abandon_pending`].
+#[cfg(not(target_family = "wasm"))]
+pub fn abandon_pending_reads() {
+    let blocked = PASTE_READERS.abandon_pending();
+    if blocked > 0 {
+        log::warn!(
+            "paste gave up on its clipboard read; {blocked} reader thread(s) are still blocked in the OS and their results will not be used"
+        );
     }
 }
 
@@ -169,6 +195,8 @@ fn tracked_reader_with(
     inner: BackgroundTextReader,
 ) -> BackgroundTextReader {
     use std::sync::atomic::Ordering;
+    // The cancel flag of this read: the epoch the paste that asked for it saw.
+    let epoch = tracker.abandon_epoch.load(Ordering::SeqCst);
     Box::new(move || {
         let before = tracker.in_flight.fetch_add(1, Ordering::SeqCst);
         let _guard = InFlightGuard(tracker);
@@ -180,6 +208,14 @@ fn tracked_reader_with(
         }
         let started = std::time::Instant::now();
         let read = cap_paste_size(inner(), MAX_PASTE_BYTES);
+        if tracker.abandon_epoch.load(Ordering::SeqCst) != epoch {
+            // Only logged: another paste may be waiting on a read that was started before this
+            // abandon, so the result is still handed back and the consumer decides.
+            log::warn!(
+                "clipboard read returned after {:?}; a paste gave up on it while it was blocked",
+                started.elapsed()
+            );
+        }
         if started.elapsed() >= slow {
             log::warn!(
                 "clipboard read returned after {:?} (budget {:?}); the paste had long given up on it",

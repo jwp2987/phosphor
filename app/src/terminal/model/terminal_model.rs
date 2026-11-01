@@ -1246,7 +1246,12 @@ impl TerminalModel {
             pty_bracketed_paste: false,
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
-            typeahead_handoff: TypeaheadHandoff::default(),
+            typeahead_handoff: {
+                // #1353 phase 6: the kill switch for the prompt-sequence decisions.
+                let mut handoff = TypeaheadHandoff::default();
+                handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
+                handoff
+            },
             reply_ledger: SharedReplyLedger::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,
@@ -3070,9 +3075,21 @@ impl TerminalModel {
             .ensure_active_block_executing_for_completion();
         let is_for_in_band_command = self.block_list().active_block().is_in_band_command_block();
         let finished_block_bootstrap_stage = self.block_list().active_block().bootstrap_stage();
+        // #1353 phase 6 (PTY-3): a command that became interactive was reading the keys typed
+        // into it, so the Enters written while it ran were consumed by it. Read here, on the same
+        // thread that parses the Precmd that follows, so a stalled main thread cannot reorder it.
+        let finished_block_was_interactive = !is_for_in_band_command
+            && self
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .is_latched();
         let active_block_completion = self.block_list.complete_active_block_and_advance(data);
 
         if active_block_completion == ActiveBlockCompletion::NewlyFinished {
+            if finished_block_was_interactive && FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.typeahead_handoff.note_interactive_command_finished();
+            }
             if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
                 if let Err(e) = tx.try_send(OrderedTerminalEventType::CommandExecutionFinished {
                     next_block_id: block_id.into(),
@@ -3107,6 +3124,7 @@ impl TerminalModel {
     fn apply_precmd_to_fresh_block(&mut self, data: PromptMetadata) {
         self.ignore_bootstrapping_messages = false;
         let session_id = data.session_id;
+        let prompt_seq = data.seq;
         let mut env_vars = HashMap::new();
         if let Some(kube_config) = data.kube_config.clone() {
             env_vars.insert("KUBECONFIG".to_string(), kube_config);
@@ -3115,6 +3133,7 @@ impl TerminalModel {
         self.block_list.apply_precmd_to_active(data);
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             self.typeahead_handoff.on_precmd();
+            self.typeahead_handoff.on_precmd_seq(session_id, prompt_seq);
             self.typeahead_handoff.note_precmd_pending_view();
         }
 

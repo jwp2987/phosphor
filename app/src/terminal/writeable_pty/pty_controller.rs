@@ -17,7 +17,9 @@ use crate::terminal::model::session::{
     ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
-use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
+use crate::terminal::model::typeahead_handoff::{
+    ActiveDecision, HeldAgentCommand, ShellPromptFact,
+};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
@@ -125,6 +127,13 @@ const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
 /// precmd or preexec arriving, before those lines are taken as consumed by something other than
 /// the shell (a program reading stdin, an empty or continued line) and the counts are reset.
 const TYPEAHEAD_HANDOFF_STALE_COUNT_RESET: Duration = Duration::from_millis(250);
+
+/// #1353 phase 6 (PTY-3): with the prompt-sequence path the stale line counts are reset by events
+/// -- the sampled shell state at decision time (a program owns the terminal), the finished
+/// command having been interactive (see `TypeaheadHandoff::note_interactive_command_finished`),
+/// and the prompt's Precmd -- so this is only the one logged give-up for a continued line (PS2) or
+/// a shell that reports nothing, which no event can tell from "still working through the queue".
+const TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP: Duration = Duration::from_secs(5);
 
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
@@ -676,19 +685,62 @@ impl<T: EventLoopSender> PtyController<T> {
         activity_generation: u64,
         ctx: &mut ModelContext<Self>,
     ) {
+        // #1353 phase 6: ask the pty now, at the moment the counts disagree with the prompt, who
+        // owns the terminal. A program in the foreground (or reading a password) consumed the
+        // lines the counts consider queued, so they are answered; no waiting for a quiet period.
+        let (seq_mode, program_consumed_them) = {
+            let mut model = self.terminal_model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            let seq_mode = handoff.prompt_seq_mode();
+            let program = seq_mode
+                && handoff.counts_diverged()
+                && handoff.sample_prompt_fact() == ShellPromptFact::NotAtPrompt;
+            (seq_mode, program)
+        };
+        if program_consumed_them {
+            let did_reset = self
+                .terminal_model
+                .lock()
+                .typeahead_handoff_mut()
+                .reset_stale_counts(activity_generation);
+            warpui::input_order::log_hop("handoff_stale_counts_reset", || {
+                format!("by=terminal_owner reset={did_reset}")
+            });
+            if did_reset {
+                // The counts agree now, so this decision cannot arm another reset.
+                self.retry_typeahead_handoff_request(ctx);
+                return;
+            }
+        }
+        let wait = if seq_mode {
+            TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP
+        } else {
+            TYPEAHEAD_HANDOFF_STALE_COUNT_RESET
+        };
         ctx.spawn(
             async move {
-                Timer::after(TYPEAHEAD_HANDOFF_STALE_COUNT_RESET).await;
+                Timer::after(wait).await;
             },
             move |me, _, ctx| {
-                let did_reset = me
-                    .terminal_model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .reset_stale_counts(activity_generation);
+                let (did_reset, diverged) = {
+                    let mut model = me.terminal_model.lock();
+                    let handoff = model.typeahead_handoff_mut();
+                    let diverged = handoff.counts_diverged();
+                    (handoff.reset_stale_counts(activity_generation), diverged)
+                };
+                if seq_mode && did_reset && diverged {
+                    // The give-up of the wait fired: nothing said the queued lines were answered
+                    // or consumed. Counts and the wait only, never bytes.
+                    log::warn!(
+                        "typeahead hand-off: no prompt, command start or terminal-owner change \
+                         within {} s for lines the counts consider queued; treating them as consumed",
+                        TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP.as_secs()
+                    );
+                }
                 // Decide again whether or not a request was waiting: after a `DrainAndWait` the
                 // reset is what hands input back to the editor.
-                if did_reset {
+                // (In the prompt-sequence path other events retry a wait that is not about the counts.)
+                if did_reset && (diverged || !seq_mode) {
                     me.retry_typeahead_handoff_request(ctx);
                 }
             },
@@ -1519,6 +1571,15 @@ impl<T: EventLoopSender> PtyController<T> {
             // Explicitly start the block now that the command is executed.
             let outcome = start_command_execution_for_source(&mut model, source);
             if !outcome.is_accepted() {
+                if is_editor_command {
+                    // #1353 phase 6 (INP-10): the editor's command was refused, so it is never
+                    // written, no block starts and the hand-off will not engage for this Enter:
+                    // the keys waiting behind it must not wait for either (the negative event).
+                    // A command that IS written but is not the hand-off's (flag off, a shell that
+                    // cannot report) is followed by its block starting, the positive event.
+                    drop(model);
+                    ctx.emit(PtyControllerEvent::TypeaheadHandoffNotEngaged);
+                }
                 return outcome;
             }
 
@@ -2153,6 +2214,10 @@ pub enum PtyControllerEvent {
     /// The typeahead hand-off changed who owns the user's keystrokes, so the surface should
     /// re-evaluate focus (and arm a report deadline after a request).
     TypeaheadHandoffChanged,
+    /// The editor's command was refused, so it is never written and the hand-off will NOT engage
+    /// for it (#1353 phase 6): the negative event keys waiting for the route to settle are
+    /// released on.
+    TypeaheadHandoffNotEngaged,
     /// The shell's line editor signalled it is ready while the view's input queue held keys for
     /// the prompt (#1353 phase 5, ConPTY): the view releases that gate (`hold_id` names it).
     PromptHoldReleased { hold_id: u64 },

@@ -11,6 +11,27 @@
 //!
 //! This module is pure. `TerminalModel` owns one [`TypeaheadHandoff`] under the model lock; the
 //! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
+//!
+//! # Prompt sequence numbers (#1353 phase 6)
+//!
+//! Every Precmd and Preexec the bootstrap hooks send carries `seq`, a per-shell counter that grows
+//! by one for each hook of either kind. Once a shell has sent one (and `PHOSPHOR_PROMPT_SEQ` is not
+//! `0`) [`TypeaheadHandoff::prompt_seq_mode`] is on and the decisions below are made from ordering
+//! and sampled facts instead of elapsed time; a shell that never sends one (an older remote
+//! bootstrap), the kill switch, or a session about which nothing can be sampled keeps the timing
+//! path, which is left in place:
+//!
+//! | decision | timing path (kept) | prompt-sequence path |
+//! |---|---|---|
+//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip | the line counts say the prompt is back, or the sampled shell state says its line editor is reading ([`ShellPromptFact`]); released by the request/report, give-up [`EVENT_HOLD_GIVE_UP`] |
+//! | line begun at an unnoticed prompt ("young line")? | began within the window | same facts |
+//! | hand-back after Ctrl-C at the prompt | 250 ms settle | prompt cycle shells: the cycle's Precmd; zsh: the report of a request written behind the interrupt; one 2 s logged give-up |
+//! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
+//! | ConPTY request after a key | 120 ms quiet | `writes_in_flight == 0` and no key held in the view's queue (the queue boundary) |
+//!
+//! Still timing, because no signal exists: the young-Enter window and its round-trip learning where
+//! the platform can say nothing about the shell (ssh, ConPTY, macOS without a sample), the PS2
+//! continued line (no Precmd, no Preexec), and every give-up above.
 
 use std::collections::VecDeque;
 use std::mem;
@@ -53,31 +74,103 @@ const RTT_WINDOW: usize = 16;
 /// work, which a request's round trip includes); two more trips absorb jitter.
 const RTT_HOLD_FACTOR: u32 = 3;
 
+/// What the platform can tell, right now, about whether the shell is at a prompt (#1353 phase 6).
+/// A sampled fact, not a guess about elapsed time: each outcome is correct whenever it was
+/// sampled, because a shell returning to the foreground and starting its line editor strictly
+/// precedes the output of its next prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellPromptFact {
+    /// The shell provably cannot be at a prompt: a plain program owns the foreground, or a program
+    /// is reading a password.
+    NotAtPrompt,
+    /// The shell owns the foreground and its tty is raw: its line editor is reading a line, so the
+    /// prompt's Precmd is already in the pty stream and will be parsed (an event).
+    LineEditorReading,
+    /// Nothing is known (no probe, ssh, ConPTY, a cooked tty): the caller keeps its timing path.
+    Unknown,
+}
+
 /// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
 /// `cat` owns the foreground, or a program is reading a password (canonical tty, echo off), in
 /// the top-level shell or a Phosphorized subshell. Unix only; where nothing is installed, or the
 /// answer is unknown (over ssh the local tty says nothing about the remote shell), it is `false`.
 #[derive(Clone, Default)]
-pub struct ForegroundProbe(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
+pub struct ForegroundProbe {
+    plain_program: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    prompt_fact: Option<Arc<dyn Fn() -> ShellPromptFact + Send + Sync>>,
+}
 
 impl ForegroundProbe {
     pub fn new(probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
-        Self(Some(probe))
+        Self {
+            plain_program: Some(probe),
+            prompt_fact: None,
+        }
+    }
+
+    /// Adds the richer sample (#1353 phase 6) that also says the line editor is reading.
+    pub fn with_prompt_fact(
+        mut self,
+        probe: Arc<dyn Fn() -> ShellPromptFact + Send + Sync>,
+    ) -> Self {
+        self.prompt_fact = Some(probe);
+        self
     }
 
     fn foreground_is_plain_program(&self) -> bool {
-        self.0.as_ref().is_some_and(|probe| probe())
+        self.plain_program.as_ref().is_some_and(|probe| probe())
+    }
+
+    /// The sampled [`ShellPromptFact`]; without the richer probe, the plain-program answer alone.
+    fn prompt_fact(&self) -> ShellPromptFact {
+        if let Some(probe) = &self.prompt_fact {
+            probe()
+        } else if self.foreground_is_plain_program() {
+            ShellPromptFact::NotAtPrompt
+        } else {
+            ShellPromptFact::Unknown
+        }
     }
 }
 
 impl std::fmt::Debug for ForegroundProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() {
-            "ForegroundProbe(installed)"
-        } else {
-            "ForegroundProbe(none)"
-        })
+        f.write_str(
+            if self.plain_program.is_some() || self.prompt_fact.is_some() {
+                "ForegroundProbe(installed)"
+            } else {
+                "ForegroundProbe(none)"
+            },
+        )
     }
+}
+
+/// Environment variable that turns the prompt-sequence path off when set to `0` (#1353 phase 6):
+/// the hand-off then decides the young Enter, the Ctrl-C hand-back, stale line counts and the
+/// ConPTY request by the timing rules it used before, exactly.
+pub const PROMPT_SEQ_ENV: &str = "PHOSPHOR_PROMPT_SEQ";
+
+/// Whether the prompt-sequence path is on by default: it is, unless the kill switch says `0`.
+pub fn prompt_seq_env_enabled() -> bool {
+    std::env::var(PROMPT_SEQ_ENV).map_or(true, |value| value.trim() != "0")
+}
+
+/// The give-up for a young Enter held by an event ([`TypeaheadHandoff::young_hold_wait`]): the
+/// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
+/// means the signal is not coming. Logged by the view when it fires.
+pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
+
+/// The shell's last Precmd sequence number the app has parsed (#1353 phase 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptSeq {
+    /// The shell instance (`WARP_SESSION_ID`) the counter belongs to; a different one is a
+    /// different counter, not a regression.
+    pub session: Option<u64>,
+    pub seq: u64,
+    /// Preexec hooks the shell sent between the previous Precmd and this one (the counter also
+    /// counts them); `None` when the previous Precmd was another shell's or is unknown. Zero
+    /// means this prompt followed a line that ran nothing (an empty Enter).
+    pub preexecs_before: Option<u64>,
 }
 
 /// On a ConPTY session (#1162): how long the user must have stopped typing before the hand-off
@@ -444,6 +537,25 @@ pub struct TypeaheadHandoff {
     /// A report deferral was just armed, so the view must start its timer.
     report_deferral_started: bool,
     report_deferral_seq: u64,
+    /// #1353 phase 6: whether the prompt-sequence path may be used at all (the kill switch,
+    /// `PHOSPHOR_PROMPT_SEQ`). It only takes effect once the shell has sent a sequence number.
+    prompt_seq_enabled: bool,
+    /// The last Precmd sequence number parsed, `None` until the shell sends one (an older
+    /// bootstrap never does, and then every decision below keeps its timing path).
+    prompt_seq: Option<PromptSeq>,
+    /// A Ctrl-C reached a shell at its prompt that runs no prompt cycle after it: the hand-back to
+    /// the editor waits for the shell's answer to a request written behind the interrupt, not for
+    /// a timer.
+    interrupt_barrier: bool,
+    /// A Ctrl-C was written and the Precmd of the prompt cycle that follows it will hand input
+    /// back; cleared by that Precmd. If it never comes, the view's logged give-up commits.
+    interrupt_awaiting_cycle: bool,
+    /// The command that just finished was interactive (a program was reading the keys typed into
+    /// it), so every Enter typed meanwhile was consumed by it and no prompt will answer them.
+    interactive_command_finished: bool,
+    /// The held young Enter is released by an event (its prompt's Precmd or the report), the
+    /// wait being only a give-up, not by the measured round-trip window.
+    young_hold_event_driven: bool,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -713,6 +825,14 @@ impl TypeaheadHandoff {
     /// Whether, on a ConPTY session, the user typed into the shell's line so recently that a
     /// request now would land in the middle of the line (#1162).
     fn typing_a_line_on_conpty(&self, now: Instant) -> bool {
+        // #1387: with the prompt-sequence path the request is written at a queue boundary, not
+        // after a guessed pause. Keys of the line that are still on their way are the hand-off's
+        // own writes in flight and the keys the input queue holds; `on_line_editor_active` already
+        // waits for both (`writes_in_flight`, `prompt_hold_queued`), so no key of this line can be
+        // between the request and the pty.
+        if self.prompt_seq_mode() {
+            return false;
+        }
         self.conpty_input
             && (self
                 .last_line_bytes_at
@@ -722,6 +842,81 @@ impl TypeaheadHandoff {
 
     pub fn set_foreground_probe(&mut self, probe: ForegroundProbe) {
         self.foreground_probe = probe;
+    }
+
+    /// Enables (or, with the kill switch, disables) the prompt-sequence path (#1353 phase 6).
+    pub fn set_prompt_seq_enabled(&mut self, enabled: bool) {
+        self.prompt_seq_enabled = enabled;
+    }
+
+    /// Whether decisions use the shell's prompt sequence numbers and the sampled shell state
+    /// instead of elapsed time: the kill switch is not set and this shell has sent a number.
+    pub fn prompt_seq_mode(&self) -> bool {
+        self.prompt_seq_enabled && self.prompt_seq.is_some()
+    }
+
+    /// The last Precmd sequence number parsed.
+    pub fn last_prompt_seq(&self) -> Option<PromptSeq> {
+        self.prompt_seq
+    }
+
+    /// A Precmd carrying the shell's sequence number was parsed (model thread), after
+    /// [`Self::on_precmd`]. A payload without one (an older bootstrap) changes nothing.
+    pub fn on_precmd_seq(&mut self, session: Option<u64>, seq: Option<u64>) {
+        let Some(seq) = seq else {
+            return;
+        };
+        let preexecs_before = match self.prompt_seq {
+            Some(prev) if prev.session == session && seq > prev.seq => Some(seq - prev.seq - 1),
+            Some(_) | None => None,
+        };
+        self.prompt_seq = Some(PromptSeq {
+            session,
+            seq,
+            preexecs_before,
+        });
+    }
+
+    /// The command that just finished was interactive (a program read the keys typed into it)
+    /// (model thread, before the Precmd that follows it).
+    pub fn note_interactive_command_finished(&mut self) {
+        self.interactive_command_finished = true;
+    }
+
+    /// Whether the line counts say lines are queued that no prompt has answered yet.
+    pub fn counts_diverged(&self) -> bool {
+        matches!(
+            self.owner(),
+            Owner::Pty { enters_written, precmds_seen, .. } if enters_written > precmds_seen
+        )
+    }
+
+    /// The sampled state of the shell, for a decision made now (see [`ShellPromptFact`]).
+    pub fn sample_prompt_fact(&self) -> ShellPromptFact {
+        self.foreground_probe.prompt_fact()
+    }
+
+    /// Whether the hand-back after a Ctrl-C waits for the shell's answer to a request rather
+    /// than a timer.
+    pub fn interrupt_barrier_pending(&self) -> bool {
+        self.interrupt_barrier
+    }
+
+    /// Takes the "the report of the request behind a Ctrl-C hands input back" flag; `true` when it
+    /// was still set, i.e. the give-up of that wait fired with no report having come.
+    pub fn take_interrupt_barrier(&mut self) -> bool {
+        mem::take(&mut self.interrupt_barrier)
+    }
+
+    /// Takes the "a Precmd is awaited to hand input back after Ctrl-C" flag: `true` when it was
+    /// still set, i.e. the give-up of that wait fired with no prompt cycle having come.
+    pub fn take_interrupt_awaiting_cycle(&mut self) -> bool {
+        mem::take(&mut self.interrupt_awaiting_cycle)
+    }
+
+    /// Whether a prompt cycle is awaited after Ctrl-C (see [`Self::take_interrupt_awaiting_cycle`]).
+    pub fn interrupt_awaiting_cycle(&self) -> bool {
+        self.interrupt_awaiting_cycle
     }
 
     /// The p90 of the measured request-to-report round trips, `None` before any.
@@ -742,6 +937,9 @@ impl TypeaheadHandoff {
     /// activity. Before any round trip was measured it is that remainder, never less than
     /// [`YOUNG_ENTER_MIN_HOLD`]. A prompt or report arriving first releases the hold at once.
     pub fn young_hold_wait(&self, now: Instant) -> Duration {
+        if self.young_hold_event_driven {
+            return EVENT_HOLD_GIVE_UP;
+        }
         let left = self.last_activity_at.map_or(Duration::ZERO, |at| {
             YOUNG_ENTER_WINDOW.saturating_sub(now.saturating_duration_since(at))
         });
@@ -769,6 +967,12 @@ impl TypeaheadHandoff {
         self.command_written_at = None;
         // A new shell may signal where the last one did not.
         self.prompt_hold_gave_up = false;
+        // ... and may predate the sequence numbers (an older remote bootstrap): it earns the
+        // prompt-sequence path again with its first number.
+        self.prompt_seq = None;
+        self.interrupt_barrier = false;
+        self.interrupt_awaiting_cycle = false;
+        self.interactive_command_finished = false;
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -1076,6 +1280,8 @@ impl TypeaheadHandoff {
     /// the keys held since a deferred Enter, which must be written right after the command.
     pub fn on_command_written(&mut self) -> Vec<u8> {
         self.forget_untracked_line_bytes();
+        self.interrupt_barrier = false;
+        self.interrupt_awaiting_cycle = false;
         // An Enter held behind the request follows the command as typeahead (#933).
         let pending_hold = self.young_hold.take();
         self.young_line = false;
@@ -1162,8 +1368,24 @@ impl TypeaheadHandoff {
             self.awaiting_line_editor_since = Some(now);
         }
         warpui::input_order::log_hop("precmd_seen", String::new);
-        if let HandoffState::PtyOwned { precmds_seen, .. } = &mut self.state {
+        self.interrupt_awaiting_cycle = false;
+        let consumed_by_program = mem::take(&mut self.interactive_command_finished);
+        let seq_mode = self.prompt_seq_mode();
+        if let HandoffState::PtyOwned {
+            precmds_seen,
+            enters_written,
+            ..
+        } = &mut self.state
+        {
             *precmds_seen = precmds_seen.saturating_add(1);
+            // #1353 phase 6 (PTY-3): the command that ended was reading the keys typed into it
+            // (it became interactive), so the Enters written while it ran were consumed by it and
+            // no prompt answers them. Answering them here is the event the 250 ms quiet period
+            // used to stand in for. Decided by the previous command's own flag, so a stalled main
+            // thread cannot change it.
+            if consumed_by_program && seq_mode && *enters_written > *precmds_seen {
+                *precmds_seen = *enters_written;
+            }
         }
     }
 
@@ -1233,6 +1455,8 @@ impl TypeaheadHandoff {
                 enters_written,
                 precmds_seen,
             } if precmds_seen >= enters_written => {
+                self.interrupt_barrier = false;
+                self.interrupt_awaiting_cycle = false;
                 self.state = HandoffState::EditorOwned;
                 true
             }
@@ -1265,6 +1489,14 @@ impl TypeaheadHandoff {
                     };
                 }
                 let no_line_queued = precmds_seen >= enters_written;
+                if no_line_queued && self.interrupt_awaiting_cycle {
+                    // #1353 phase 6: a Ctrl-C was written and the prompt cycle that follows it has
+                    // not been parsed yet. Its Precmd reinitializes the editor, so input is not
+                    // handed over before it: that Precmd (an event) commits, with a logged give-up.
+                    return ActiveDecision::Wait {
+                        activity_generation: self.activity_generation,
+                    };
+                }
                 if no_line_queued && self.precmds_pending_view > 0 {
                     // The editor has yet to be reinitialized for the finished block, which
                     // would erase whatever it took meanwhile. Keys keep going to the pty; the
@@ -1273,7 +1505,7 @@ impl TypeaheadHandoff {
                         activity_generation: self.activity_generation,
                     };
                 }
-                if !wrote_user_bytes {
+                if !wrote_user_bytes && !self.interrupt_barrier {
                     if no_line_queued {
                         self.state = HandoffState::EditorOwned;
                         ActiveDecision::Committed
@@ -1287,6 +1519,7 @@ impl TypeaheadHandoff {
                         // The hold's expiry writes the Enter; nothing can ask the shell for its line.
                         return ActiveDecision::Drain;
                     }
+                    self.interrupt_barrier = false;
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
                 } else if self.typing_a_line_on_conpty(Instant::now()) {
@@ -1296,6 +1529,7 @@ impl TypeaheadHandoff {
                         activity_generation: self.activity_generation,
                     }
                 } else if no_line_queued && at_prompt && self.writes_in_flight == 0 {
+                    self.interrupt_barrier = false;
                     self.state = HandoffState::AwaitingReport;
                     // Its report covers every untracked byte written before it too (#1089).
                     self.on_request_written();
@@ -1382,7 +1616,10 @@ impl TypeaheadHandoff {
             self.last_line_bytes_at = Some(Instant::now());
             return UserBytesRoute::Held;
         }
-        if self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now()) {
+        if let Some(event_driven) =
+            self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now())
+        {
+            self.young_hold_event_driven = event_driven;
             self.young_hold = Some(bytes.to_vec());
             self.young_hold_chunks = vec![bytes.len()];
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
@@ -1404,34 +1641,78 @@ impl TypeaheadHandoff {
     }
 
     /// Whether `bytes` are an Enter the user typed on a line that has content, while the only
-    /// line the shell has not answered is the command that was just written, and that command is
-    /// younger than [`YOUNG_ENTER_WINDOW`] (see there).
+    /// line the shell has not answered is the command that was just written, and the shell may be
+    /// back at its prompt without the app having noticed (see [`YOUNG_ENTER_WINDOW`]). `Some`
+    /// holds it; the value is whether an event decided so (`false`: the timing window did).
+    ///
+    /// #1353 phase 6: once the shell sends prompt sequence numbers the question is answered by
+    /// ordering instead of the window: the line counts say the prompt is back (a Precmd was
+    /// parsed), or the sampled shell state says its line editor is reading (so its Precmd is
+    /// already in the pty stream and will be parsed). Only a shell the platform can say nothing
+    /// about (ssh, ConPTY) still uses the window.
     fn should_hold_young_enter(
         &self,
         bytes: &[u8],
         reaches_shell_line: bool,
         now: Instant,
-    ) -> bool {
-        matches!(
-            self.state,
-            HandoffState::PtyOwned {
-                wrote_user_bytes: true,
-                enters_written,
-                precmds_seen,
-            } if reaches_shell_line
-                // No line queued behind the one just written: the shell is running it, or is
-                // back at its prompt (`precmds_seen` caught up) with the line still waiting for
-                // the request that hands it to the editor.
-                && enters_written <= precmds_seen.saturating_add(1)
-                && matches!(bytes.first(), Some(b'\r' | b'\n'))
-                && (self.young_line
-                    || self.last_activity_at.is_some_and(|at| {
-                        now.saturating_duration_since(at) < YOUNG_ENTER_WINDOW
-                    }))
+    ) -> Option<bool> {
+        let HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written,
+            precmds_seen,
+        } = self.state
+        else {
+            return None;
+        };
+        // No line queued behind the one just written: the shell is running it, or is back at its
+        // prompt (`precmds_seen` caught up) with the line still waiting for the request that
+        // hands it to the editor.
+        if !(reaches_shell_line
+            && enters_written <= precmds_seen.saturating_add(1)
+            && matches!(bytes.first(), Some(b'\r' | b'\n')))
+        {
+            return None;
+        }
+        let in_window = || {
+            self.young_line
+                || self
+                    .last_activity_at
+                    .is_some_and(|at| now.saturating_duration_since(at) < YOUNG_ENTER_WINDOW)
+        };
+        if self.prompt_seq_mode() {
+            return match self.foreground_probe.prompt_fact() {
                 // A plain program in the foreground means the shell is waiting on it, not at a
                 // prompt: the Enter is for that program, not a line the app has yet to notice.
-                && !self.foreground_probe.foreground_is_plain_program()
-        )
+                ShellPromptFact::NotAtPrompt => None,
+                ShellPromptFact::LineEditorReading => Some(true),
+                ShellPromptFact::Unknown if precmds_seen >= enters_written => Some(true),
+                ShellPromptFact::Unknown => in_window().then_some(false),
+            };
+        }
+        (in_window() && !self.foreground_probe.foreground_is_plain_program()).then_some(false)
+    }
+
+    /// Whether the first byte of a line typed now began before the app could know the shell was at
+    /// its prompt (#933): `window` is the legacy answer, from elapsed time since the last activity.
+    /// With the prompt-sequence path the sampled shell state and the line counts decide instead.
+    fn first_byte_is_young(&self, window: bool) -> bool {
+        if !self.prompt_seq_mode() {
+            return window;
+        }
+        let Owner::Pty {
+            enters_written,
+            precmds_seen,
+            ..
+        } = self.owner()
+        else {
+            return window;
+        };
+        match self.foreground_probe.prompt_fact() {
+            ShellPromptFact::NotAtPrompt => false,
+            ShellPromptFact::LineEditorReading => true,
+            ShellPromptFact::Unknown if precmds_seen >= enters_written => true,
+            ShellPromptFact::Unknown => window,
+        }
     }
 
     /// Makes the last command look older than [`YOUNG_ENTER_WINDOW`], for tests that model
@@ -1554,6 +1835,20 @@ impl TypeaheadHandoff {
         bytes: &[u8],
         reaches_shell_line: bool,
     ) -> UserBytesRoute {
+        // Whether this key begins a line typed before the app could know the shell was at its
+        // prompt (#933); sampled before the state is borrowed.
+        let first_byte_young = reaches_shell_line
+            && !matches!(bytes.first(), Some(b'\r' | b'\n'))
+            && matches!(
+                self.state,
+                HandoffState::PtyOwned {
+                    wrote_user_bytes: false,
+                    ..
+                }
+            )
+            && self.first_byte_is_young(self.last_activity_at.is_some_and(|at| {
+                Instant::now().saturating_duration_since(at) < YOUNG_ENTER_WINDOW
+            }));
         match &mut self.state {
             HandoffState::PtyOwned {
                 wrote_user_bytes,
@@ -1562,12 +1857,7 @@ impl TypeaheadHandoff {
             } => {
                 let mut wrote_an_enter = false;
                 if reaches_shell_line {
-                    if !*wrote_user_bytes
-                        && !matches!(bytes.first(), Some(b'\r' | b'\n'))
-                        && self.last_activity_at.is_some_and(|at| {
-                            Instant::now().saturating_duration_since(at) < YOUNG_ENTER_WINDOW
-                        })
-                    {
+                    if first_byte_young {
                         self.young_line = true;
                     }
                     self.last_line_bytes_at = Some(Instant::now());
@@ -1667,6 +1957,7 @@ impl TypeaheadHandoff {
 
     /// The shell reported its line buffer.
     pub fn on_report(&mut self) -> ReportDisposition {
+        self.interrupt_barrier = false;
         // #1089: a report for a request written before untracked bytes does not cover them.
         self.on_report_received();
         match self.owner() {
@@ -1781,7 +2072,21 @@ impl TypeaheadHandoff {
     /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the
     /// shell discards its line, so nothing the user typed survives it.
     pub fn on_interrupt(&mut self) -> InterruptOutcome {
+        self.on_interrupt_for_shell(true)
+    }
+
+    /// As [`Self::on_interrupt`], knowing whether the session's shell runs a prompt cycle (a
+    /// Precmd) after an interrupted line. bash, fish, PowerShell and nu do; zsh usually does not
+    /// (#1353 phase 6).
+    ///
+    /// With the prompt-sequence path the hand-back is event driven instead of waiting a guessed
+    /// time: after a cycle the Precmd hands input back (the view's prompt handling commits); with no
+    /// cycle expected, a request is written behind the interrupt and the shell's report -- read in
+    /// stream order after anything the interrupt made it emit -- hands it back.
+    pub fn on_interrupt_for_shell(&mut self, prompt_cycle_expected: bool) -> InterruptOutcome {
         self.young_hold = None;
+        self.interrupt_barrier = false;
+        self.interrupt_awaiting_cycle = false;
         match self.owner() {
             Owner::Pty {
                 enters_written,
@@ -1789,6 +2094,13 @@ impl TypeaheadHandoff {
                 ..
             } => {
                 let at_prompt = precmds_seen >= enters_written;
+                // #1353 phase 6 (INP-4 / PTY-12): the hand-back after a Ctrl-C at the prompt is
+                // not a guessed wait for a prompt cycle that some shells never run. A request is
+                // written behind the interrupt and the shell's report, read in stream order
+                // after whatever the interrupt made it emit, is the event that hands input back.
+                let seq_mode = self.prompt_seq_mode();
+                self.interrupt_barrier = at_prompt && seq_mode && !prompt_cycle_expected;
+                self.interrupt_awaiting_cycle = seq_mode && !self.interrupt_barrier;
                 self.state = HandoffState::PtyOwned {
                     wrote_user_bytes: false,
                     enters_written: if at_prompt {

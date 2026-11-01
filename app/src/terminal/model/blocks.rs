@@ -4500,6 +4500,7 @@ impl BlockList {
             ps1_is_encoded: None,
             ignore_prompt_markers: None,
             is_after_in_band_command: false,
+            seq: None,
         };
 
         self.create_new_block(

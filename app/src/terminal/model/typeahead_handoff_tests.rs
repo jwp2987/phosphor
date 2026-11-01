@@ -2009,3 +2009,316 @@ fn without_the_queue_the_prompt_hold_keeps_its_buffer() {
     assert_eq!(chunks, vec![b"a".to_vec()]);
     assert_eq!(queued, None);
 }
+
+// ---- #1353 phase 6: prompt sequence numbers replace the timing guesses -------------------------
+
+/// A hand-off whose shell sends prompt sequence numbers (the prompt-sequence path is on), with the
+/// platform answering `fact` about the shell, after the editor's command was written.
+fn seq_after_submit(fact: ShellPromptFact) -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    // The shell's first prompt, before any command.
+    handoff.on_precmd_seq(Some(7), Some(1));
+    handoff
+        .set_foreground_probe(ForegroundProbe::default().with_prompt_fact(Arc::new(move || fact)));
+    assert!(handoff.on_command_written().is_empty());
+    handoff
+}
+
+#[test]
+fn prompt_sequence_numbers_are_tracked_per_shell_and_older_bootstraps_change_nothing() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    assert!(!handoff.prompt_seq_mode(), "no number yet: the timing path");
+    handoff.on_precmd_seq(Some(7), None);
+    assert!(
+        !handoff.prompt_seq_mode(),
+        "a Precmd without a number changes nothing"
+    );
+    handoff.on_precmd_seq(Some(7), Some(1));
+    assert!(handoff.prompt_seq_mode());
+    // Preexec hooks count too: a gap of 2 between Precmds is two Preexecs.
+    handoff.on_precmd_seq(Some(7), Some(4));
+    assert_eq!(
+        handoff.last_prompt_seq(),
+        Some(PromptSeq {
+            session: Some(7),
+            seq: 4,
+            preexecs_before: Some(2)
+        })
+    );
+    // The next prompt followed no Preexec: an empty line was consumed.
+    handoff.on_precmd_seq(Some(7), Some(5));
+    assert_eq!(handoff.last_prompt_seq().unwrap().preexecs_before, Some(0));
+    // Another shell instance has its own counter, a regression is not a gap.
+    handoff.on_precmd_seq(Some(9), Some(2));
+    assert_eq!(handoff.last_prompt_seq().unwrap().preexecs_before, None);
+    // The kill switch keeps the old path whatever the shell sends.
+    handoff.set_prompt_seq_enabled(false);
+    assert!(!handoff.prompt_seq_mode());
+    // A new session (an ssh) may predate the numbers.
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_new_session();
+    assert!(!handoff.prompt_seq_mode());
+}
+
+/// The #933 race with a stalled main thread: the shell finished the command and its Precmd was
+/// parsed (the model thread counts it), but the Enter reaches the hand-off long after, outside any
+/// window. The line counts say the prompt is back, so the Enter is matched to that prompt and held
+/// for the request, however late it is typed.
+#[test]
+fn a_young_enter_is_matched_to_its_prompt_by_sequence_not_by_the_window() {
+    let mut handoff = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut handoff, b"explain");
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    handoff.age_last_activity_for_test();
+    handoff.young_line = false;
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(handoff.has_young_hold());
+    let id = handoff.take_young_hold_started().expect("a hold started");
+    assert_eq!(
+        handoff.young_hold_wait(Instant::now()),
+        EVENT_HOLD_GIVE_UP,
+        "released by the prompt's request and report, the wait is only a give-up"
+    );
+    // The request goes out and the report runs the Enter in the editor.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    assert_eq!(handoff.expire_young_hold(id), None);
+
+    // The old path (kill switch) decides by the window: outside it, the Enter is written.
+    let mut legacy = young_after_submit();
+    type_and_flush(&mut legacy, b"explain");
+    legacy.on_precmd();
+    legacy.age_last_activity_for_test();
+    legacy.young_line = false;
+    assert_eq!(legacy.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_young_enter_is_held_or_written_by_what_the_shell_is_doing_not_by_elapsed_time() {
+    // The command is still counted as running (no Precmd parsed). The line editor reading means
+    // the prompt's Precmd is already in the stream: held for it, outside any window.
+    let mut reading = seq_after_submit(ShellPromptFact::LineEditorReading);
+    type_and_flush(&mut reading, b"explain");
+    reading.age_last_activity_for_test();
+    reading.young_line = false;
+    assert_eq!(reading.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(reading.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+
+    // A program owns the foreground: the Enter is for it, even inside the window.
+    let mut program = seq_after_submit(ShellPromptFact::NotAtPrompt);
+    type_and_flush(&mut program, b"explain");
+    assert_eq!(program.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!program.has_young_hold());
+
+    // Nothing is known (ssh, ConPTY): the window still decides, as before.
+    let mut unknown = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut unknown, b"explain");
+    assert_eq!(unknown.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_ne!(unknown.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+    let mut unknown_late = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut unknown_late, b"explain");
+    unknown_late.age_last_activity_for_test();
+    unknown_late.young_line = false;
+    assert_eq!(
+        unknown_late.on_user_bytes(b"\r"),
+        UserBytesRoute::WriteCounted
+    );
+}
+
+#[test]
+fn a_line_begun_while_the_line_editor_reads_is_young_whatever_the_time() {
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
+    handoff.age_last_activity_for_test();
+    type_and_flush(&mut handoff, b"frob");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertYoung,
+        "typed at a prompt the app had not noticed: its Enter must wait for a classification"
+    );
+
+    // The same line typed on the old path, outside the window, is plain typeahead.
+    let mut legacy = after_submit();
+    type_and_flush(&mut legacy, b"frob");
+    legacy.on_precmd();
+    assert_eq!(
+        legacy.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(legacy.on_report(), ReportDisposition::Insert);
+}
+
+/// ^C at a zsh prompt, where no prompt cycle follows: the hand-back is the report of a request
+/// written behind the interrupt, not a 250 ms guess.
+#[test]
+fn ctrl_c_at_a_zsh_prompt_with_no_cycle_hands_back_on_the_report() {
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert_eq!(
+        handoff.on_interrupt_for_shell(false),
+        InterruptOutcome::AtPrompt
+    );
+    assert!(handoff.interrupt_barrier_pending());
+    // The line editor is reading: the request goes out behind the interrupt.
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(!handoff.interrupt_barrier_pending());
+    assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
+    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // Where the request cannot be written, input is handed back at once.
+    let mut no_report = seq_after_submit(ShellPromptFact::LineEditorReading);
+    no_report.on_precmd();
+    no_report.on_interrupt_for_shell(false);
+    assert_eq!(
+        no_report.on_line_editor_active(true, false),
+        ActiveDecision::Committed
+    );
+    assert_eq!(no_report.state(), &HandoffState::EditorOwned);
+
+    // The old path commits at the line editor's activation without a request.
+    let mut legacy = young_after_submit();
+    legacy.on_precmd();
+    legacy.on_interrupt();
+    assert_eq!(
+        legacy.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+}
+
+/// ^C where the shell runs a prompt cycle (bash, fish, PowerShell, nu): input is handed back by
+/// the cycle's Precmd. A line-editor activation seen before it (the status is stale) must not.
+#[test]
+fn ctrl_c_where_a_prompt_cycle_follows_hands_back_on_its_precmd() {
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_interrupt_for_shell(true),
+        InterruptOutcome::AtPrompt
+    );
+    assert!(!handoff.interrupt_barrier_pending());
+    assert!(handoff.interrupt_awaiting_cycle());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
+    handoff.on_precmd();
+    handoff.on_interrupt_for_shell(true);
+    // The cycle's Precmd arrives: it is the event.
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(!handoff.interrupt_awaiting_cycle());
+    assert!(handoff.try_commit_at_prompt());
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+
+    // The give-up of the wait finds the flag still set only when no cycle came.
+    let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);
+    handoff.on_precmd();
+    handoff.on_interrupt_for_shell(true);
+    assert!(handoff.take_interrupt_awaiting_cycle());
+    assert!(!handoff.take_interrupt_awaiting_cycle());
+}
+
+#[test]
+fn enters_consumed_by_an_interactive_command_are_answered_by_its_prompt_not_a_quiet_period() {
+    let mut handoff = seq_after_submit(ShellPromptFact::Unknown);
+    // `cat` runs; two lines are typed into it.
+    type_and_flush(&mut handoff, b"a\rb\r");
+    assert!(handoff.counts_diverged());
+    handoff.note_interactive_command_finished();
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    assert!(!handoff.counts_diverged(), "the program read both lines");
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    );
+
+    // A command that was not interactive leaves the lines queued for the shell.
+    let mut queued = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut queued, b"a\rb\r");
+    queued.on_precmd();
+    queued.on_precmd_seq(Some(7), Some(3));
+    assert!(queued.counts_diverged());
+    assert!(matches!(
+        queued.on_line_editor_active(true, true),
+        ActiveDecision::DrainAndWait { .. }
+    ));
+
+    // Without the prompt-sequence path the flag changes nothing.
+    let mut legacy = young_after_submit();
+    type_and_flush(&mut legacy, b"a\rb\r");
+    legacy.note_interactive_command_finished();
+    legacy.on_precmd();
+    assert!(legacy.counts_diverged());
+}
+
+#[test]
+fn the_sampled_shell_state_resets_counts_without_a_quiet_period() {
+    let mut handoff = seq_after_submit(ShellPromptFact::NotAtPrompt);
+    type_and_flush(&mut handoff, b"a\r");
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    let ActiveDecision::DrainAndWait {
+        activity_generation,
+    } = handoff.on_line_editor_active(true, true)
+    else {
+        panic!("a queued line must wait");
+    };
+    // A program owns the terminal: the lines the counts consider queued are its.
+    assert!(handoff.counts_diverged());
+    assert_eq!(handoff.sample_prompt_fact(), ShellPromptFact::NotAtPrompt);
+    assert!(handoff.reset_stale_counts(activity_generation));
+    assert!(!handoff.counts_diverged());
+}
+
+/// #1387: the request is not delayed by a guess about the user having stopped typing. It waits for
+/// what the hand-off can see: a write still in flight, a key held in the view's queue.
+#[test]
+fn the_conpty_request_waits_for_the_queue_boundary_not_for_a_quiet_period() {
+    let mut handoff = seq_after_submit(ShellPromptFact::Unknown);
+    handoff.set_conpty_input(true);
+    // A key of the line is routed but not written yet: not a boundary.
+    assert_eq!(handoff.on_user_bytes(b"e"), UserBytesRoute::WriteCounted);
+    handoff.on_precmd();
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    // Written: the boundary. The key was typed just now, and a slow typist's next key is 200 ms
+    // away, so there is nothing to wait for.
+    handoff.on_user_write_flushed();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+
+    // The old path still holds the request back for 120 ms after a key.
+    let mut legacy = young_after_submit();
+    legacy.set_conpty_input(true);
+    type_and_flush(&mut legacy, b"e");
+    legacy.on_precmd();
+    assert!(matches!(
+        legacy.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+}

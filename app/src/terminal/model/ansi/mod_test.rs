@@ -678,6 +678,55 @@ fn parse_dcs_ssh_with_raw_bootstrap() {
     };
 }
 
+/// #1353 phase 6: the shell's per-session hook counter rides on both Precmd variants, and a Precmd
+/// from a bootstrap that predates it parses with none.
+#[test]
+fn parse_dcs_precmd_carries_the_shells_sequence_number() {
+    let with_metadata = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "exit_code": 0, "next_block_id": "b", "session_id": 1, "seq": 42}}"#,
+    );
+    let (_, handler) = parse_bytes(&with_metadata);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => assert_eq!(value.prompt_metadata.seq, Some(42)),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    let prompt_only = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "session_id": 1, "seq": 7}}"#,
+    );
+    let (_, handler) = parse_bytes(&prompt_only);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::PromptOnly(value),
+        } => assert_eq!(value.seq, Some(7)),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    let old_bootstrap = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "exit_code": 0, "next_block_id": "b", "session_id": 1}}"#,
+    );
+    let (_, handler) = parse_bytes(&old_bootstrap);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => assert_eq!(value.prompt_metadata.seq, None),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    // Preexec carries one too; it is accepted and ignored (the distance between two Precmds
+    // already counts the Preexecs between them).
+    let preexec = hex_encoded_dcs_string(
+        r#"{"hook": "Preexec", "value": {"command": "ls", "session_id": 1, "seq": 8}}"#,
+    );
+    let (_, handler) = parse_bytes(&preexec);
+    assert!(matches!(
+        handler.d_proto_hooks.first(),
+        Some(DProtoHook::Preexec { .. })
+    ));
+}
+
 #[test]
 fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
     let bytes = hex_encoded_dcs_string(
@@ -723,6 +772,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     ps1_is_encoded: None,
                     ignore_prompt_markers: None,
                     is_after_in_band_command: false,
+                    seq: None,
                 },
             })
         ),

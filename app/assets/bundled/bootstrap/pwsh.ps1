@@ -300,11 +300,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
             $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
+        # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+        $script:warpSeq = ([int64]$script:warpSeq) + 1
         $preexecMsg = @{
             hook = 'Preexec'
             value = @{
                 session_id = $global:_warpSessionId
                 command = $command
+                seq = $script:warpSeq
             }
         }
         Warp-Send-JsonMessage $preexecMsg $oscResetGrid
@@ -663,6 +666,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $HOST.UI.RawUI.WindowTitle = $newTitle
 
         $blockId = $script:nextBlockId++
+        $script:warpSeq = ([int64]$script:warpSeq) + 1
         $commandFinishedMsg = @{
             hook = 'CommandFinished'
             value = @{
@@ -693,6 +697,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                     virtual_env = ''
                     conda_env = ''
                     session_id = $global:_warpSessionId
+                    seq = $script:warpSeq
                     is_after_in_band_command = $true
                 }
             }
@@ -848,6 +853,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                     conda_env = $condaEnv
                     node_version = $nodeVersion
                     session_id = $global:_warpSessionId
+                    seq = $script:warpSeq
                     kube_config = $kubeConfig
                 }
             }

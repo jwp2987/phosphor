@@ -14751,6 +14751,143 @@ fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
     })
 }
 
+/// #1353 phase 6 (INP-4 / PTY-12): ^C at a zsh prompt, where no prompt cycle follows, no longer
+/// waits 250 ms for one. The controller is asked to decide at once, and the request it writes behind
+/// the interrupt is answered by a report that hands input back.
+#[test]
+fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.set_prompt_seq_enabled(true);
+                handoff.on_precmd_seq(Some(1), Some(1));
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_typeahead_handoff_interrupt_for_shell(false, ctx);
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_barrier_pending()
+            );
+        });
+        assert_eq!(
+            *retries.borrow(),
+            1,
+            "decided at the interrupt, not after a settle period"
+        );
+    })
+}
+
+/// A shell that does run a prompt cycle hands input back on the cycle's Precmd: nothing is asked of
+/// the controller at the interrupt, and the Precmd commits.
+#[test]
+fn typeahead_handoff_ctrl_c_with_a_prompt_cycle_hands_back_on_its_precmd() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.set_prompt_seq_enabled(true);
+                handoff.on_precmd_seq(Some(1), Some(1));
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_typeahead_handoff_interrupt_for_shell(true, ctx);
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_awaiting_cycle()
+            );
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 1
+                }
+            );
+            // The cycle's Precmd.
+            {
+                let mut model = view.model.lock();
+                let handoff = model.typeahead_handoff_mut();
+                handoff.on_precmd();
+                handoff.on_precmd_seq(Some(1), Some(3));
+            }
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+        assert_eq!(*retries.borrow(), 1, "only the Precmd's own retry");
+    })
+}
+
+/// #1353 phase 6 (INP-10): the keys typed behind an Enter that ran a shell command wait for the
+/// pty to take it; when the hand-off says it will not engage, they are released by that event.
+#[test]
+fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let input = terminal.read(&app, |view, _| view.input.clone());
+        input.read(&app, |input, ctx| {
+            input.editor().as_ref(ctx).paste_hold().set_uses_queue(true);
+        });
+        input.update(&mut app, |input, ctx| {
+            input.open_submitted_enter_gate_awaiting_pty_for_test(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.enter_queue_awaits_route(ctx),
+                "keys wait behind the Enter"
+            );
+            assert!(input.enter_queue_awaits_pty());
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_handoff_not_engaged(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.enter_queue_holds_keys(ctx),
+                "released by the negative event, not by the 300 ms give-up"
+            );
+        });
+    })
+}
 /// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
 #[test]
 fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {

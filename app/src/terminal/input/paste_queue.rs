@@ -174,6 +174,20 @@ impl Input {
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = Rc::clone(self.editor.as_ref(ctx).paste_hold().queue());
+        // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
+        // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let is_paste_gate = queue.try_borrow().is_ok_and(|queue| {
+                queue.gates().iter().any(|gate| {
+                    gate.token == token
+                        && gate.kind == crate::terminal::input_queue::GateKind::PasteReading
+                })
+            });
+            if is_paste_gate {
+                warpui::clipboard::abandon_pending_reads();
+            }
+        }
         let mut host = InputQueueHost {
             input: self,
             ctx,

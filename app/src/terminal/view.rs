@@ -12796,6 +12796,22 @@ impl TerminalView {
         self.settle_enter_queue(ctx);
     }
 
+    /// #1353 phase 6 (INP-10): the hand-off decided it will not engage for the Enter that just ran as
+    /// a shell command (the flag is off, the shell cannot report its line, the command was
+    /// refused). Nothing will ever take the command into the pty's ownership, so the keys waiting
+    /// behind it are released now, by this event; the route-settle timer stays only as the logged
+    /// give-up for a pty that says nothing at all.
+    fn handle_typeahead_handoff_not_engaged(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).enter_queue_awaits_route(ctx)
+            || !self.input.as_ref(ctx).enter_queue_awaits_pty()
+        {
+            return;
+        }
+        warpui::input_order::log_hop("enter_route_not_engaged", String::new);
+        self.input
+            .update(ctx, |input, ctx| input.release_enter_gate(ctx));
+    }
+
     /// The shell reached a prompt: hand input back to the editor if nothing the user typed can be
     /// in the shell's line. The finished block's `BlockCompleted`, which reinitializes the editor,
     /// is delivered before this precmd, so nothing typed into the editor from here on is wiped.
@@ -13363,11 +13379,66 @@ impl TerminalView {
 
     /// A Ctrl-C was written while the typeahead hand-off gave the pty input.
     fn handle_typeahead_handoff_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        // Only zsh is known to run no prompt cycle after an interrupted line.
+        let prompt_cycle_expected = self.active_session_shell_type(ctx) != Some(ShellType::Zsh);
+        self.handle_typeahead_handoff_interrupt_for_shell(prompt_cycle_expected, ctx);
+    }
+
+    /// As [`Self::handle_typeahead_handoff_interrupt`], for a shell that does (or does not) run a
+    /// prompt cycle after an interrupted line.
+    fn handle_typeahead_handoff_interrupt_for_shell(
+        &mut self,
+        prompt_cycle_expected: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         /// Long enough for the prompt cycle bash and zsh run after an interrupted line, so the
-        /// editor is not reinitialized under the user after it took over.
+        /// editor is not reinitialized under the user after it took over. Only the path without
+        /// prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`) waits this long.
         const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
-        let outcome = self.model.lock().typeahead_handoff_mut().on_interrupt();
+        /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
+        /// report) that was expected after the interrupt and never came.
+        const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
+        let (outcome, barrier, awaiting_cycle) = {
+            let mut model = self.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            let outcome = handoff.on_interrupt_for_shell(prompt_cycle_expected);
+            (
+                outcome,
+                handoff.interrupt_barrier_pending(),
+                handoff.interrupt_awaiting_cycle(),
+            )
+        };
         if outcome == InterruptOutcome::NotOwned {
+            return;
+        }
+        if barrier || awaiting_cycle {
+            if barrier {
+                // zsh runs no prompt cycle after ^C at the prompt, so no Precmd would come to
+                // hand input back. A request is written behind the interrupt (when the line
+                // editor is reading) and the shell's report, in stream order after anything the
+                // interrupt made it emit, hands input back: the controller decides now.
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
+            // Otherwise the prompt cycle's Precmd hands input back
+            // (`commit_typeahead_handoff_at_prompt`). Either way this is only the logged give-up
+            // for a signal that never comes.
+            ctx.spawn(Timer::after(INTERRUPT_GIVE_UP), |me, _, ctx| {
+                let gave_up = {
+                    let mut model = me.model.lock();
+                    let handoff = model.typeahead_handoff_mut();
+                    let cycle = handoff.take_interrupt_awaiting_cycle();
+                    let barrier = handoff.take_interrupt_barrier();
+                    cycle || barrier
+                };
+                if gave_up {
+                    log::warn!(
+                        "typeahead hand-off: no prompt cycle or report after Ctrl-C within {} s; \
+                         handing input back",
+                        INTERRUPT_GIVE_UP.as_secs()
+                    );
+                    me.commit_typeahead_handoff_at_prompt(ctx);
+                }
+            });
             return;
         }
         // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
@@ -33377,6 +33448,10 @@ impl TerminalSurface for TerminalView {
 
     fn on_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
         self.handle_typeahead_handoff_changed(ctx);
+    }
+
+    fn on_typeahead_handoff_not_engaged(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_typeahead_handoff_not_engaged(ctx);
     }
 
     fn on_prompt_hold_released(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
