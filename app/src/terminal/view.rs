@@ -691,6 +691,69 @@ enum StaleReflowWork {
     All,
 }
 
+/// The post-approval/rejection focus reclaim (#901, #1374). It is bounded by EVENTS, not time: it
+/// ends when the input is visible and focused, the action finishes, ctrl-c, or the user moves focus
+/// themselves. The last is detected by comparing the focused view with the one the reclaim itself
+/// left focus on: any difference is a user click/navigation (or another owner of focus) and the
+/// reclaim must never fight it.
+#[derive(Default)]
+struct FocusReclaim {
+    active: bool,
+    /// The view focus was left on by the reclaim; `None` until it has placed focus once.
+    placed_on: Option<EntityId>,
+}
+
+impl FocusReclaim {
+    fn start(&mut self) {
+        self.active = true;
+        self.placed_on = None;
+    }
+
+    fn end(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_placed(&mut self, focused_now: Option<EntityId>) {
+        self.placed_on = focused_now;
+    }
+
+    /// Whether the reclaim still applies given the currently focused view. Ends it if the user
+    /// (or anything else) moved focus away from where the reclaim left it.
+    fn is_active(&mut self, focused_now: Option<EntityId>) -> bool {
+        if self.active && self.placed_on.is_some() && self.placed_on != focused_now {
+            self.end();
+        }
+        self.active
+    }
+}
+
+#[cfg(test)]
+mod focus_reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_survives_without_a_user_focus_change_and_never_lapses_by_time() {
+        let a = EntityId::new();
+        let mut r = FocusReclaim::default();
+        assert!(!r.is_active(Some(a)));
+        r.start();
+        assert!(r.is_active(Some(a)));
+        r.record_placed(Some(a));
+        // Arbitrarily later, focus is where the reclaim left it: still active.
+        assert!(r.is_active(Some(a)));
+    }
+
+    #[test]
+    fn user_click_elsewhere_ends_the_reclaim() {
+        let (a, b) = (EntityId::new(), EntityId::new());
+        let mut r = FocusReclaim::default();
+        r.start();
+        r.record_placed(Some(a));
+        assert!(!r.is_active(Some(b)), "focus the user put elsewhere stays");
+        assert!(!r.is_active(Some(a)), "and the reclaim does not come back");
+    }
+}
+
 /// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
 const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 
@@ -2968,7 +3031,7 @@ pub struct TerminalView {
     last_focus_ts: Option<NaiveDateTime>,
     /// Set when the user approves or rejects a requested command card, until focus has been
     /// handed back from the AI block (#901).
-    reclaim_focus_until: Option<Instant>,
+    reclaim_focus: FocusReclaim,
     /// Whether focus has already been moved off the card once; after that, an AI block holding
     /// focus means the user put it there, and the reclaim ends.
     reclaim_focus_placed: bool,
@@ -4804,7 +4867,7 @@ impl TerminalView {
             ))]
             remote_dir_listing_cache: indexmap::IndexMap::new(),
             last_focus_ts: None,
-            reclaim_focus_until: None,
+            reclaim_focus: FocusReclaim::default(),
             reclaim_focus_placed: false,
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
@@ -11559,7 +11622,7 @@ impl TerminalView {
                     self.input.as_ref(ctx).buffer_text(ctx).chars().count()
                 )
             });
-            if self.focus_reclaim_active() {
+            if self.focus_reclaim_active(ctx) {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
                 self.place_focus_after_card_resolved(ctx);
@@ -14849,7 +14912,7 @@ impl TerminalView {
     /// approved or rejected card is still being replaced it does, until the input is back
     /// (#901).
     fn redetermine_focus_after_action_event(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.focus_reclaim_active() {
+        if !self.focus_reclaim_active(ctx) {
             return self.redetermine_terminal_focus(ctx);
         }
         // Having already left the card, an AI block holding focus means the user clicked or
@@ -14861,21 +14924,20 @@ impl TerminalView {
         self.place_focus_after_card_resolved(ctx)
     }
 
-    /// Whether a post-approval/rejection focus reclaim is still in effect (it lapses after a
-    /// couple of seconds so it can never linger and fight the user).
-    fn focus_reclaim_active(&mut self) -> bool {
-        match self.reclaim_focus_until {
-            Some(until) if Instant::now() < until => true,
-            Some(_) => {
-                self.end_focus_reclaim();
-                false
-            }
-            None => false,
+    /// Whether a post-approval/rejection focus reclaim is still in effect (it ends on events, never by
+    /// time, and as soon as the user moves focus so it can never fight them, #1374).
+    fn focus_reclaim_active(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let focused = ctx.focused_view_id(ctx.window_id());
+        let was_placed = self.reclaim_focus.placed_on.is_some();
+        let active = self.reclaim_focus.is_active(focused);
+        if !active && was_placed {
+            self.reclaim_focus_placed = false;
         }
+        active
     }
 
     fn end_focus_reclaim(&mut self) {
-        self.reclaim_focus_until = None;
+        self.reclaim_focus.end();
         self.reclaim_focus_placed = false;
     }
 
@@ -14912,6 +14974,8 @@ impl TerminalView {
             self.focus_terminal(ctx);
         }
         self.reclaim_focus_placed = true;
+        self.reclaim_focus
+            .record_placed(ctx.focused_view_id(ctx.window_id()));
         true
     }
 
@@ -26612,7 +26676,7 @@ impl TerminalView {
                 // The card still holds focus and `redetermine_terminal_focus` refuses to take it
                 // from an AI block, so reclaim it explicitly -- now, and again from the action
                 // events below once the command's block has settled and the input is visible.
-                self.reclaim_focus_until = Some(Instant::now() + Duration::from_secs(2));
+                self.reclaim_focus.start();
                 self.reclaim_focus_placed = false;
                 self.place_focus_after_card_resolved(ctx);
             }
