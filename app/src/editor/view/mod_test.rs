@@ -5180,13 +5180,19 @@ fn test_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
             assert_eq!(view.buffer_text(ctx), "a");
 
             let held = hold.complete(id).expect("paste still pending");
+            // Keys are held one by one, in typing order (the sequencer does not coalesce text).
             assert!(matches!(
                 held.as_slice(),
-                [HeldPasteKey::Text(text), HeldPasteKey::Action(EditorAction::Enter)] if text == "xy"
+                [
+                    HeldPasteKey::Text(x),
+                    HeldPasteKey::Text(y),
+                    HeldPasteKey::Action(EditorAction::Enter)
+                ] if x == "x" && y == "y"
             ));
             // The paste lands first, at the cursor that was there when it was asked for.
             view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
-            for key in held.into_iter().take(1) {
+            // Replay the two text keys; the Enter is the terminal input's to submit.
+            for key in held.into_iter().take(2) {
                 view.apply_held_paste_key(key, ctx);
             }
             assert_eq!(view.buffer_text(ctx), "aPASTExy");
@@ -5202,6 +5208,15 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
         let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             EditorView::new_with_base_text("", Default::default(), ctx)
         });
+        let cleared = std::rc::Rc::new(std::cell::Cell::new(None));
+        let cleared_in_handler = cleared.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event: &Event, _| {
+                if let Event::CtrlC { cleared_buffer_len } = event {
+                    cleared_in_handler.set(Some(*cleared_buffer_len));
+                }
+            });
+        });
         view.update(&mut app, |view, ctx| {
             let hold = view.paste_hold();
             let id = hold.begin();
@@ -5209,7 +5224,10 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
             assert_eq!(view.buffer_text(ctx), "");
             view.handle_action(&EditorAction::CtrlC, ctx);
             assert!(!hold.has_pending());
-            assert_eq!(view.buffer_text(ctx), "x");
+            // The held "x" was applied before the Ctrl-C acted, and the Ctrl-C then cleared the
+            // line as it always does: the buffer is empty, but it had held the one typed byte.
+            assert_eq!(view.buffer_text(ctx), "");
+            assert_eq!(cleared.get(), Some(1));
             // The late read of the cancelled paste pastes nothing.
             assert!(hold.complete(id).is_none());
         });
