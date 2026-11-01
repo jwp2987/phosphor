@@ -11451,6 +11451,20 @@ impl TerminalView {
         ))
     }
 
+    /// Whether held subshell keys live on the input queue right now (#1353 phase 2): the switch is
+    /// on and the queue is not in the middle of delivering (a write made then cannot take a new
+    /// entry and uses the legacy buffers).
+    fn subshell_queue_owns_holds(&self) -> bool {
+        self.paste_queue.subshell_enabled && self.paste_queue.queue.try_borrow().is_ok()
+    }
+
+    /// Opens the subshell gates for a setup that has just been announced (#1353 phase 2).
+    fn open_subshell_gates_for_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.paste_queue.subshell_enabled {
+            self.prepare_subshell_gates(&[], ctx);
+        }
+    }
+
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
     /// but has not finished. Input is normally held for that whole window so the user cannot
     /// interleave with the script (#960). Only Ctrl-C / Ctrl-D are exempt, see
@@ -11976,12 +11990,31 @@ impl TerminalView {
         // out behind it, in order; an abort key cancels the paste instead. On the input queue
         // (#1353) the paste is an entry held by a gate and these bytes queue behind it; idle, this
         // is one borrow-flag read with no lock and no allocation.
-        if self.paste_queue.enabled {
-            if let Some(written) = self.offer_to_paste_queue(&bytes, takes_over_agent_control, ctx)
+        if self.paste_queue.enabled || self.paste_queue.subshell_enabled {
+            // #1353 phase 2: a subshell setup or its paced bootstrap holds keys too. Their gates
+            // are opened from the facts the old buffers used and the keys wait on the same queue.
+            let mut abort_as_entry = false;
+            if self.paste_queue.subshell_enabled {
+                match self.prepare_subshell_gates(&bytes, ctx) {
+                    paste_queue::SubshellPrep::Normal => {}
+                    paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
+                    paste_queue::SubshellPrep::Stashed => return true,
+                    paste_queue::SubshellPrep::Bypass => {
+                        return self.write_user_bytes_to_pty_after_paste_stage(
+                            bytes,
+                            takes_over_agent_control,
+                            ctx,
+                        );
+                    }
+                }
+            }
+            if let Some(written) =
+                self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)
             {
                 return written;
             }
-        } else if self.paste_sequencer.has_pending() {
+        }
+        if !self.paste_queue.enabled && self.paste_sequencer.has_pending() {
             match self.paste_sequencer.on_key(&bytes, is_abort_key(&bytes)) {
                 KeyDisposition::Held => {
                     input_queue::trace::hold(input_queue::trace::legacy::PASTE_PTY, bytes.len());
@@ -12018,7 +12051,13 @@ impl TerminalView {
         }
         // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
         // them) and deliver them after its last line.
-        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
+        // On the input queue (#1353 phase 2) the bootstrap gate holds them as entries; this buffer
+        // is the legacy path (kill switch) and the fallback for a write that happens while the
+        // queue is delivering (it cannot take a new entry then).
+        let queue_owns_subshell_holds = self.subshell_queue_owns_holds();
+        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut()
+            && !queue_owns_subshell_holds
+        {
             input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_BOOTSTRAP, bytes.len());
             in_flight.held_user_bytes.push(bytes.into_owned());
             return true;
@@ -12085,10 +12124,12 @@ impl TerminalView {
         // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
         // arrive late at the wrong place. Bytes already held stay held (they were typed for the
         // command line).
-        if subshell_setup_should_hold_typed_bytes(
-            self.subshell_bootstrap_announced_age(),
-            is_abort_key(&bytes),
-        ) && !self.active_output_awaits_an_answer()
+        if !queue_owns_subshell_holds
+            && subshell_setup_should_hold_typed_bytes(
+                self.subshell_bootstrap_announced_age(),
+                is_abort_key(&bytes),
+            )
+            && !self.active_output_awaits_an_answer()
         {
             input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
             self.subshell_setup_held_bytes.push(bytes.into_owned());
@@ -19669,14 +19710,21 @@ impl TerminalView {
                 if subshell_setup_hold_limit_releases(
                     current,
                     announced_at,
-                    !me.subshell_setup_held_bytes.is_empty(),
+                    !me.subshell_setup_held_bytes.is_empty() || me.subshell_setup_gate_open(),
                 ) {
+                    log::warn!(
+                        "subshell setup did not finish within the typed-input hold limit; \
+                         delivering the held keys"
+                    );
                     me.release_subshell_setup_held_bytes(ctx);
                 }
             },
         );
         let rest: Vec<String> = lines.collect();
         if rest.is_empty() {
+            // The setup gate opens now, not at the first key: whatever is queued from here on
+            // waits for the setup's end (#1353 phase 2).
+            self.open_subshell_gates_for_setup(ctx);
             return;
         }
         self.subshell_bootstrap_generation += 1;
@@ -19695,6 +19743,9 @@ impl TerminalView {
             awaiting_marker: 0,
             line_delay,
         });
+        // The gates open with the setup, so a paste read started meanwhile (it queues behind
+        // them) and every key typed from here on wait for the bootstrap's last line.
+        self.open_subshell_gates_for_setup(ctx);
         if marked {
             // The first line is out; the shell's marker for it releases the second.
             self.arm_subshell_marker_give_up(generation, 0, ctx);
@@ -19874,6 +19925,8 @@ impl TerminalView {
 
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
     fn finish_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
+        // (The input queue's bootstrap gate is closed below; this buffer holds only what a write
+        // made while the queue was delivering could not queue, or the legacy path's keys.)
         if let Some(in_flight) = self.subshell_bootstrap_in_flight.take() {
             input_queue::trace::release(
                 input_queue::trace::legacy::SUBSHELL_BOOTSTRAP,
@@ -19882,16 +19935,27 @@ impl TerminalView {
                 "pty",
             );
             for bytes in in_flight.held_user_bytes {
-                self.write_user_bytes_to_pty(bytes, ctx);
+                if self.paste_queue.subshell_enabled {
+                    // Older than anything the gate holds (it could only be taken here while the
+                    // queue was delivering): goes out first, not behind the queue.
+                    self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx);
+                } else {
+                    self.write_user_bytes_to_pty(bytes, ctx);
+                }
             }
         }
+        // The bootstrap's event: its last line is out (or it was abandoned). The aborts typed
+        // meanwhile go first, then what was typed behind it, in order (#1353 phase 2).
+        self.settle_subshell_bootstrap_gate(ctx);
     }
 
     /// Delivers the keystrokes held through a stalled setup (#1014) once no subshell bootstrap is
     /// pending any more. Safe to call at any block completion: it does nothing while the setup
     /// is still pending or when nothing is held, so the keys are delivered exactly once.
     fn release_held_setup_input_if_subshell_ready(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.subshell_setup_held_bytes.is_empty() && !self.subshell_bootstrap_pending() {
+        if (!self.subshell_setup_held_bytes.is_empty() || self.subshell_setup_gate_open())
+            && !self.subshell_bootstrap_pending()
+        {
             self.release_subshell_setup_held_bytes(ctx);
         }
     }
@@ -19912,6 +19976,8 @@ impl TerminalView {
         for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
             self.write_user_bytes_to_pty(bytes, ctx);
         }
+        // Setup is over: the keys held on the input queue follow, in order (#1353 phase 2).
+        self.close_subshell_setup_gate(ctx);
     }
 
     /// Delivers the keys held through a PowerShell subshell setup (#1048), at a prompt: the first

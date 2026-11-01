@@ -1,4 +1,5 @@
-//! Pty-bound paste ordering on the one input queue (#1353, design phase 1).
+//! Pty-bound paste ordering (phase 1) and subshell setup / bootstrap holds (phase 2) on the one
+//! input queue (#1353).
 //!
 //! A terminal-bound paste reads the clipboard off the UI thread (#1255). Everything typed while it
 //! reads must reach the pty AFTER the paste, in typed order. That used to be a `PasteSequencer`
@@ -21,6 +22,19 @@
 //! (the pty is open and takes the bytes); the model lock is never taken here.
 //!
 //! `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores the old `PasteSequencer` path, which stays in the tree.
+//!
+//! Phase 2 puts the two subshell buffers on the SAME queue instance. A `SubshellSetup` gate is
+//! open from the moment a warpify setup is announced until its end (`release_subshell_setup_held_bytes`:
+//! the first prompt after `Bootstrapped`, abandoned, skipped, timed out); a `SubshellBootstrapWrite`
+//! gate is open while the paced bootstrap lines are written, until `finish_subshell_bootstrap`.
+//! Keys typed meanwhile are `PtyBytes` entries behind them, released in typed order by the single
+//! drain, so the #1222 patch (`setup_held_keys_go_before`) is not needed on this path. Whether a
+//! setup governs input is still decided by the old predicates (`prepare_subshell_gates`), and the
+//! gates are also opened lazily by the first key, so a state set up without `write_init_subshell_
+//! bytes_to_pty` behaves the same. Caps (logged when they fire): the old 90 s typed-input hold
+//! limit, and N bootstrap lines x 2 s. PowerShell's line-by-line setup (#1048) stays on its own
+//! state machine. `PHOSPHOR_INPUT_QUEUE_SUBSHELL=0` restores the old buffers, which stay in the
+//! tree and are also the fallback for a write made while the queue is delivering.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -35,7 +49,7 @@ use super::TerminalView;
 use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateToken, Host, InputEntry, InputQueue, SignalKind, trace,
+    GateSpec, GateToken, Host, InputEntry, InputQueue, SignalKind, trace,
 };
 
 /// What the pane's paste ordering needs: the queue, the paste bytes waiting for their turn, and
@@ -47,6 +61,14 @@ pub(super) struct PasteQueueState {
     next_id: u64,
     /// `PHOSPHOR_INPUT_QUEUE_PASTE`; false keeps the legacy `PasteSequencer` path.
     pub(super) enabled: bool,
+    /// `PHOSPHOR_INPUT_QUEUE_SUBSHELL` (#1353 phase 2); false keeps the legacy
+    /// `subshell_bootstrap_in_flight.held_user_bytes` and `subshell_setup_held_bytes` buffers.
+    pub(super) subshell_enabled: bool,
+    /// Ctrl-C / Ctrl-D typed while the paced bootstrap lines are being written. Like the buffer it
+    /// replaces they wait for the last line (an interrupt in the middle of the setup script would
+    /// leave a half-run bootstrap); [`TerminalView::settle_subshell_bootstrap_gate`] sends them
+    /// first, ahead of everything held, when the bootstrap ends.
+    pub(super) pending_aborts: Vec<(Vec<u8>, bool)>,
 }
 
 impl PasteQueueState {
@@ -56,6 +78,8 @@ impl PasteQueueState {
             payloads: HashMap::new(),
             next_id: 0,
             enabled: kill_switch::is_enabled(Area::Paste),
+            subshell_enabled: kill_switch::is_enabled(Area::Subshell),
+            pending_aborts: Vec::new(),
         }
     }
 
@@ -221,6 +245,7 @@ impl TerminalView {
         &mut self,
         bytes: &[u8],
         takes_over_agent_control: bool,
+        abort_as_entry: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Option<bool> {
         if self
@@ -231,10 +256,22 @@ impl TerminalView {
         {
             return None;
         }
-        let kind = match abort_signal(bytes) {
-            Some(signal) => EntryKind::Signal(signal),
+        let kind = match abort_signal(bytes).filter(|_| !abort_as_entry) {
+            Some(signal) => {
+                // Ctrl-C / Ctrl-D skips an announced subshell setup (the held keys follow it).
+                if self.paste_queue.subshell_enabled
+                    && self
+                        .paste_queue
+                        .queue
+                        .try_borrow()
+                        .is_ok_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
+                {
+                    self.subshell_bootstrap_announced = None;
+                }
+                EntryKind::Signal(signal)
+            }
             None => {
-                trace::hold(trace::legacy::PASTE_PTY, bytes.len());
+                trace::hold(self.held_trace_name(), bytes.len());
                 EntryKind::PtyBytes {
                     bytes: bytes.to_vec(),
                     takes_over_agent_control,
@@ -247,12 +284,228 @@ impl TerminalView {
         Some(host.written)
     }
 
-    /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
+    /// The give-up cap of gate `token` fired. A no-op if the gate's event already closed it.
     pub(super) fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = Rc::clone(&self.paste_queue.queue);
-        let mut host = PtyQueueHost::new(self, ctx);
-        queue.borrow_mut().give_up(&mut host, token);
+        let kind = queue
+            .try_borrow()
+            .ok()
+            .and_then(|queue| {
+                queue
+                    .gates()
+                    .iter()
+                    .find(|gate| gate.token == token)
+                    .copied()
+            })
+            .map(|gate| gate.kind);
+        if kind == Some(GateKind::SubshellSetup) {
+            // Setup is treated as over (what the legacy hold-limit timer does), before the held
+            // keys are delivered, so none of them is held a second time.
+            self.subshell_bootstrap_announced = None;
+            self.dismiss_subshell_setup_waiting_toast(ctx);
+        }
+        {
+            let mut host = PtyQueueHost::new(self, ctx);
+            queue.borrow_mut().give_up(&mut host, token);
+        }
+        if kind == Some(GateKind::SubshellBootstrapWrite) {
+            self.send_pending_subshell_aborts(ctx);
+        }
     }
+
+    /// The legacy buffer name of the queue holding user bytes right now, for the `kh_iq_*` trace
+    /// (the names are the ones the old buffers logged, so an old and a new trace compare).
+    fn held_trace_name(&self) -> &'static str {
+        use crate::terminal::input_queue::trace::legacy;
+        match self.paste_queue.queue.try_borrow() {
+            Ok(queue) if queue.has_gate_kind(GateKind::PasteReading) => legacy::PASTE_PTY,
+            Ok(queue) if queue.has_gate_kind(GateKind::SubshellBootstrapWrite) => {
+                legacy::SUBSHELL_BOOTSTRAP
+            }
+            Ok(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
+            _ => legacy::PASTE_PTY,
+        }
+    }
+
+    /// Whether the subshell setup gate is open (keys are held behind a setup that is not over).
+    pub(super) fn subshell_setup_gate_open(&self) -> bool {
+        self.paste_queue
+            .queue
+            .try_borrow()
+            .is_ok_and(|queue| queue.has_gate_kind(GateKind::SubshellSetup))
+    }
+
+    /// Before a user key is written (#1353 phase 2): opens, from the SAME facts the legacy hold
+    /// used, the gates that make the key wait. The legacy decisions stay the authority for "is a
+    /// setup governing input"; what changed is where the held keys live (entries of the one
+    /// queue, in typed order, released by the event that ends the setup).
+    pub(super) fn prepare_subshell_gates(
+        &mut self,
+        bytes: &[u8],
+        ctx: &mut ViewContext<Self>,
+    ) -> SubshellPrep {
+        // A queue that is mid-drain: this write is part of delivering an entry.
+        let (setup_gate, bootstrap_gate, only_subshell_gates) =
+            match self.paste_queue.queue.try_borrow() {
+                Ok(queue) => (
+                    queue.has_gate_kind(GateKind::SubshellSetup),
+                    queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
+                    queue.gates().iter().all(|gate| {
+                        matches!(
+                            gate.kind,
+                            GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
+                        )
+                    }),
+                ),
+                Err(_) => return SubshellPrep::Normal,
+            };
+        let in_flight = self
+            .subshell_bootstrap_in_flight
+            .as_ref()
+            .map(|f| f.remaining_lines);
+        // One model lock for the announcement (as the legacy hold took), none when nothing is
+        // announced and nothing is held. An announcement that lapsed without a release (setup
+        // finished) is the common idle case and exits here.
+        let age = if self.subshell_bootstrap_announced.is_some() {
+            self.subshell_bootstrap_announced_age()
+        } else {
+            None
+        };
+        if !setup_gate && !bootstrap_gate && in_flight.is_none() && age.is_none() {
+            return SubshellPrep::Normal;
+        }
+        let abort = super::is_abort_key(bytes);
+        if abort && in_flight.is_some() {
+            self.chunked_clear_write_generation += 1;
+            self.note_input_for_deferred_subshell_setup(bytes);
+            if setup_gate || !only_subshell_gates {
+                // An abort that also skips the setup goes FIRST once the last line is out, ahead
+                // of what was typed (the old buffer's release order); kept until then.
+                self.paste_queue.pending_aborts.push((bytes.to_vec(), true));
+                return SubshellPrep::Stashed;
+            }
+        }
+        let powershell_off = self.powershell_setup_hold == super::PowerShellSetupHold::Off;
+        // The setup is over (`Bootstrapped`, abandoned, ...) while keys are still held, released
+        // only at the first prompt: they go out first, then this key behind them (#1222, now by
+        // construction rather than by a patch).
+        if setup_gate && !abort && powershell_off && age.is_none() {
+            self.release_subshell_setup_held_bytes(ctx);
+            return self.prepare_subshell_gates(bytes, ctx);
+        }
+        // Not while the shell is asking for something: typing is the answer to it.
+        let awaits_answer = !abort
+            && in_flight.is_none()
+            && !bootstrap_gate
+            && powershell_off
+            && age.is_some()
+            && self.active_output_awaits_an_answer();
+        if awaits_answer && only_subshell_gates {
+            return SubshellPrep::Bypass;
+        }
+        let setup_governs = !abort
+            && !awaits_answer
+            && powershell_off
+            && super::subshell_setup_should_hold_typed_bytes(age, abort);
+        let queue = Rc::clone(&self.paste_queue.queue);
+        if setup_governs && !setup_gate {
+            // Cap = what is left of the old hold limit; the legacy timer is the same net.
+            let left = age
+                .map_or(Duration::from_secs(1), |age| {
+                    super::SUBSHELL_SETUP_TYPED_HOLD_LIMIT.saturating_sub(age)
+                })
+                .max(Duration::from_millis(100));
+            let mut host = PtyQueueHost::new(self, ctx);
+            queue.borrow_mut().open_gate(
+                &mut host,
+                GateSpec::new(GateKind::SubshellSetup, 0).with_cap(Some(left)),
+            );
+        }
+        if let Some(lines) = in_flight
+            && !bootstrap_gate
+        {
+            // N lines x 2 s: the marker give-up falls back to timed pacing long before this.
+            let cap = Duration::from_secs(2) * (lines as u32 + 1);
+            let mut host = PtyQueueHost::new(self, ctx);
+            queue.borrow_mut().open_gate(
+                &mut host,
+                GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(Some(cap)),
+            );
+        }
+        if abort && in_flight.is_some() {
+            // No setup to skip: the abort waits for the last line in typed order, like any key.
+            SubshellPrep::HeldInOrder
+        } else {
+            SubshellPrep::Normal
+        }
+    }
+
+    /// Closes the setup gate (its event: the setup is over) and delivers what it held, in order.
+    pub(super) fn close_subshell_setup_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let Ok(mut guard) = queue.try_borrow_mut() else {
+            return;
+        };
+        if !guard.has_gate_kind(GateKind::SubshellSetup) {
+            return;
+        }
+        let (chunks, bytes) = guard.queued_since_gate(GateKind::SubshellSetup);
+        trace::release(trace::legacy::SUBSHELL_SETUP, chunks, bytes, "pty");
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::SubshellSetup, 0);
+    }
+
+    /// The bootstrap's last line is out (or it was abandoned): the aborts typed meanwhile go
+    /// first, then the gate closes and what was typed is delivered, in order.
+    pub(super) fn settle_subshell_bootstrap_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        self.send_pending_subshell_aborts(ctx);
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let Ok(mut guard) = queue.try_borrow_mut() else {
+            return;
+        };
+        if !guard.has_gate_kind(GateKind::SubshellBootstrapWrite) {
+            return;
+        }
+        let (chunks, bytes) = guard.queued_since_gate(GateKind::SubshellBootstrapWrite);
+        trace::release(trace::legacy::SUBSHELL_BOOTSTRAP, chunks, bytes, "pty");
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::SubshellBootstrapWrite, 0);
+    }
+
+    /// Sends the stashed aborts as signals: they meet the gates still open (setup: the abort goes
+    /// first and releases the held keys behind it; bootstrap: same).
+    fn send_pending_subshell_aborts(&mut self, ctx: &mut ViewContext<Self>) {
+        let aborts = std::mem::take(&mut self.paste_queue.pending_aborts);
+        for (bytes, _takes_over) in aborts {
+            let Some(signal) = abort_signal(&bytes) else {
+                continue;
+            };
+            if self.subshell_setup_gate_open() {
+                self.subshell_bootstrap_announced = None;
+            }
+            let queue = Rc::clone(&self.paste_queue.queue);
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                continue;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.offer(&mut host, EntryKind::Signal(signal));
+        }
+    }
+}
+
+/// What [`TerminalView::prepare_subshell_gates`] decided for a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SubshellPrep {
+    /// Offer it to the queue like any key (which delivers it now if nothing is held).
+    Normal,
+    /// A shell prompt is asking for an answer: the key goes straight to the pty.
+    Bypass,
+    /// An abort typed during the bootstrap lines that also skips the setup; kept until the last
+    /// line, then sent first.
+    Stashed,
+    /// An abort typed during the bootstrap lines with no setup to skip: an ordinary entry, so it
+    /// reaches the pty at its place in what was typed.
+    HeldInOrder,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -267,7 +520,6 @@ impl TerminalView {
         backstop: Option<Duration>,
         ctx: &mut ViewContext<Self>,
     ) {
-        use crate::terminal::input_queue::GateSpec;
         let id = self.paste_queue.next_paste_id();
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
@@ -297,6 +549,11 @@ impl TerminalView {
             async move { rx.await.ok().flatten() },
             move |me, bytes, ctx| me.finish_queued_background_paste(id, bytes, ctx),
         );
+        // A subshell setup in progress holds this paste too: its gates open before the paste
+        // entry exists, so the paste waits behind them like any key.
+        if self.paste_queue.subshell_enabled {
+            self.prepare_subshell_gates(&[], ctx);
+        }
         let queue = Rc::clone(&self.paste_queue.queue);
         {
             let mut host = PtyQueueHost::new(self, ctx);

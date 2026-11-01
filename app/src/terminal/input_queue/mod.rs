@@ -21,7 +21,8 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
-//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`). The other gate kinds and the
+//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`) and the subshell setup /
+//! bootstrap holds (phase 2, `kill_switch::Area::Subshell`). The other gate kinds and the
 //! trace hops of the buffers that have not moved yet are exercised by the tests only.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
@@ -384,6 +385,26 @@ impl InputQueue {
             self.entries.len(),
             self.entries.iter().map(|entry| entry.kind.len()).sum(),
         )
+    }
+
+    /// Entries and content bytes queued at or behind the first gate of `kind` (what that gate's
+    /// release will let go, give or take entries held again by a later gate), for trace lines.
+    pub fn queued_since_gate(&self, kind: GateKind) -> (usize, usize) {
+        let Some(barrier) = self
+            .gates
+            .iter()
+            .filter(|gate| gate.kind == kind)
+            .map(|gate| gate.barrier)
+            .min()
+        else {
+            return (0, 0);
+        };
+        self.entries
+            .iter()
+            .filter(|entry| entry.id >= barrier)
+            .fold((0, 0), |(count, bytes), entry| {
+                (count + 1, bytes + entry.kind.len())
+            })
     }
 
     /// Whether the head entry waits behind a gate. Invariant: a non-empty queue always has a
