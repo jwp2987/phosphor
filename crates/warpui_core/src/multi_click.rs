@@ -40,7 +40,7 @@ fn sanitize(os_ms: Option<u64>) -> Duration {
 #[cfg(windows)]
 fn read_os_interval_ms() -> Option<u64> {
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetDoubleClickTime() -> u32;
     }
     // Safety: takes no arguments and has no preconditions.
