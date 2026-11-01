@@ -715,6 +715,21 @@ fn handle_terminal_view_event(
                     return;
                 }
 
+                // Never close a pane out from under an approval card the user has not answered
+                // (#1290): the tab would vanish with the card. The shell-terminated banner is
+                // already shown; the user closes the pane after resolving the card.
+                if group
+                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    .is_some_and(|terminal_view| {
+                        terminal_view.as_ref(ctx).has_pending_agent_action(ctx)
+                    })
+                {
+                    log::debug!(
+                        "Keeping pane {pane_id:?} open after its shell exited: an agent approval is pending"
+                    );
+                    return;
+                }
+
                 group.close_pane(pane_id, ctx);
             }
             Event::CloseRequested => {

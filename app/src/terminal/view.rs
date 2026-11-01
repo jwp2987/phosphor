@@ -8702,6 +8702,14 @@ impl TerminalView {
         &self.agent_view_controller
     }
 
+    /// Whether an agent action is waiting for the user's approval in this terminal (#1290).
+    pub fn has_pending_agent_action(&self, app: &AppContext) -> bool {
+        self.ai_action_model
+            .as_ref(app)
+            .get_pending_action(app)
+            .is_some()
+    }
+
     pub fn active_conversation_id(&self, app: &AppContext) -> Option<AIConversationId> {
         self.agent_view_controller
             .as_ref(app)
