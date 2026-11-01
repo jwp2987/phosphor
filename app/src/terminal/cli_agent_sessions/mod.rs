@@ -16,7 +16,8 @@ use self::listener::CLIAgentSessionListener;
 use super::CLIAgent;
 use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
 
-/// How long to wait, after observing a synthesized Ctrl-C write to a working
+/// Give-up timer (an interrupted CLI agent emits no event; the agent's `idle_prompt` event
+/// resolves the cancel sooner, see `update_from_event`). How long to wait, after observing a synthesized Ctrl-C write to a working
 /// CLI agent session's PTY, for further plugin activity before concluding the
 /// interrupt silently cancelled the session. See `observe_ctrl_c_write`.
 pub const CTRL_C_CANCEL_WINDOW: Duration = Duration::from_secs(2);
@@ -537,6 +538,12 @@ impl CLIAgentSessionsModel {
         // as a no-op for status, independent of this.
         if !matches!(event.event, CLIAgentEventType::IdlePrompt) {
             self.abort_pending_cancel(terminal_view_id);
+        } else if self.has_armed_ctrl_c_window(terminal_view_id) {
+            // The agent's own event settles it: it reports sitting idle at its prompt after
+            // our Ctrl-C and never sent a `stop`, so the interrupt cancelled the turn. Resolve
+            // now instead of waiting out the give-up timer (#1375, PTY-17).
+            self.abort_pending_cancel(terminal_view_id);
+            self.force_cancel(terminal_view_id, ctx);
         }
         if matches!(event.event, CLIAgentEventType::PromptSubmit) {
             self.ctrl_c_cancel_state
@@ -671,7 +678,19 @@ impl CLIAgentSessionsModel {
         if !owns_current_window {
             return;
         }
+        // Give-up safety net: neither a plugin event nor an idle report arrived. An interrupted
+        // CLI agent emits nothing on cancel, so there is no event to wait for; a later plugin
+        // event still moves the session back out of `Cancelled`.
+        log::warn!(
+            "CLI agent session {terminal_view_id:?}: no plugin event after Ctrl-C, marking Cancelled (give-up timer)"
+        );
         self.force_cancel(terminal_view_id, ctx);
+    }
+
+    fn has_armed_ctrl_c_window(&self, terminal_view_id: EntityId) -> bool {
+        self.ctrl_c_cancel_state
+            .get(&terminal_view_id)
+            .is_some_and(|state| state.armed_token.is_some())
     }
 
     /// Aborts and clears any armed pending-cancel window for this terminal.
