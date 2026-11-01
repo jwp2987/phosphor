@@ -1015,6 +1015,71 @@ pub(crate) const CASES: &[Case] = &[
         .head(Head::Absent)
         .in_conversation()
         .v1_xfail("#1234: a `$variable` head is nothing the old rules know; inherited AI stands"),
+    Case::cmd("@(1,2,3)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("@(1,2,3)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .in_conversation()
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("@{}", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("@{}", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .in_conversation()
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("@{a=1}", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("@{a=1}", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .in_conversation()
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("$x=@(1,2)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("$x=@(1,2)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .in_conversation()
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("$x = @(1,2)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
+    Case::cmd("$x = @(1,2)", "#1344 PowerShell array/hashtable literal")
+        .shell(Shell::PowerShell)
+        .head(Head::Absent)
+        .in_conversation()
+        .v1_xfail(
+            "#1344: a `@` literal is nothing the old rules know; autodetect took it for the agent",
+        ),
     Case::prose(
         "what is the difference between Get-ChildItem and dir",
         "#1234 PowerShell",
