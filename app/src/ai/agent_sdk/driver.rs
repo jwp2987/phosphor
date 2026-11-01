@@ -1117,14 +1117,15 @@ impl AgentDriver {
                         AgentDriverError::InvalidRuntimeState
                     })?;
 
-                // Pause before returning to make sure that all conversation events are transmitted before the session is closed.
-                // TODO: This is a bit of a bandaid fix, and it would be better if we explicitly waited for the session to end before terminating.
-                // The way we could do that is through having the driver wait for all in-flight streams to be finished before terminating
-                // and then call stop_sharing_session when they're done. To know when streams are finished, we would need to modify start_ordered_terminal_events_listener
-                // to send a message when the streams are finished, flushed, and the websocket is disconnected. For now, we'll just sleep for a second, as this seems
-                // to be enough time for the streams to be finished and the events to be flushed.
-                warpui::r#async::Timer::after(Duration::from_secs(1)).await;
-
+                // The pin slept 1 s here so the shared-session event streams (the cloud session
+                // viewer) could flush before the session closed. This fork has no shared session
+                // (`should_share` is always false, `--share` is refused; DECLINED.md "Agent
+                // session sharing"), hence no stream to flush, so the sleep waited on nothing
+                // (#1364). Local state that must outlive the run -- conversation/exchange files
+                // written synchronously by `execute_run`'s history subscription, and the sqlite
+                // writer -- is drained by the will-terminate hook when the app exits (#637).
+                // Do not re-add a timed pause; if a shared session is ever ported, wait on its
+                // "streams flushed and disconnected" signal instead.
                 conversation_status.into_result()
             }
             HarnessKind::ThirdParty(harness) => {
