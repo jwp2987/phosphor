@@ -144,6 +144,26 @@ impl<T> CodeOpenQueue<T> {
     }
 }
 
+/// Where a request opens: the tab it was made from, never a tab switch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TargetTab {
+    /// The requested tab is still the active one.
+    Active(usize),
+    /// The requested tab exists but the user has moved on; open there in the background.
+    Background(usize),
+    /// The requested tab was closed; open in the active tab.
+    Closed,
+}
+
+/// `tab_ids` are the pane group ids of the window's tabs, in order.
+pub fn resolve_target(tab_ids: &[EntityId], active_index: usize, target: EntityId) -> TargetTab {
+    match tab_ids.iter().position(|id| *id == target) {
+        Some(index) if index == active_index => TargetTab::Active(index),
+        Some(index) => TargetTab::Background(index),
+        None => TargetTab::Closed,
+    }
+}
+
 #[cfg(test)]
 #[path = "code_open_queue_tests.rs"]
 mod tests;

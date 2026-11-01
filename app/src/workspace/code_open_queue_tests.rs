@@ -67,3 +67,12 @@ fn give_up_after_the_result_arrived_is_a_no_op() {
     assert_eq!(payloads(&queue.resolve(a, Vec::new())), vec!["A"]);
     assert!(queue.give_up(a).is_empty());
 }
+
+#[test]
+fn target_tab_is_never_switched_to() {
+    let tabs = [tab(10), tab(11), tab(12)];
+    assert_eq!(resolve_target(&tabs, 1, tab(11)), TargetTab::Active(1));
+    // The user moved to tab 2 while the check ran: open in tab 0 in the background.
+    assert_eq!(resolve_target(&tabs, 2, tab(10)), TargetTab::Background(0));
+    assert_eq!(resolve_target(&tabs, 2, tab(99)), TargetTab::Closed);
+}

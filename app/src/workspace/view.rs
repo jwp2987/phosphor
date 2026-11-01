@@ -8290,20 +8290,46 @@ impl Workspace {
             let additional_paths =
                 crate::util::file::size_guard::without_oversized(&additional_paths, &oversized);
 
-            // Open in the requested tab. If the user has moved on, bring that tab forward so the
-            // file lands where they asked; if it was closed meanwhile, fall back to the active tab.
-            match self
-                .tabs
-                .iter()
-                .position(|t| t.pane_group.id() == ready.target)
-            {
-                Some(index) if index != self.active_tab_index => {
-                    self.activate_tab_internal(index, ctx);
+            // Open in the pane group the request was made from, without switching tabs: if the
+            // user has moved on it opens there in the background. If that tab was closed
+            // meanwhile, fall back to the active tab.
+            let tab_ids: Vec<EntityId> = self.tabs.iter().map(|t| t.pane_group.id()).collect();
+            let (group, background_tab) = match super::code_open_queue::resolve_target(
+                &tab_ids,
+                self.active_tab_index,
+                ready.target,
+            ) {
+                super::code_open_queue::TargetTab::Active(index) => {
+                    (self.tabs[index].pane_group.clone(), None)
                 }
-                Some(_) => {}
-                None => log::info!("open_code: requested tab was closed; opening in the active tab"),
+                super::code_open_queue::TargetTab::Background(index) => {
+                    (self.tabs[index].pane_group.clone(), Some(index))
+                }
+                super::code_open_queue::TargetTab::Closed => {
+                    log::info!("open_code: requested tab was closed; opening in the active tab");
+                    (self.active_tab_pane_group().clone(), None)
+                }
+            };
+            if let Some(index) = background_tab {
+                let name = main_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "file".to_string());
+                let message = format!("Opened {name} in tab {}", index + 1);
+                self.toast_stack.update(ctx, |view, ctx| {
+                    view.add_ephemeral_toast(DismissibleToast::default(message), ctx);
+                });
             }
-            self.open_code_unchecked(source, layout, line_col, preview, &additional_paths, ctx);
+            self.open_code_unchecked(
+                source,
+                layout,
+                line_col,
+                preview,
+                &additional_paths,
+                group,
+                ctx,
+            );
         }
     }
 
@@ -8315,6 +8341,7 @@ impl Workspace {
         line_col: Option<LineAndColumnArg>,
         preview: bool,
         additional_paths: &[PathBuf],
+        group: ViewHandle<PaneGroup>,
         ctx: &mut ViewContext<Self>,
     ) {
         send_telemetry_from_ctx!(
@@ -8362,7 +8389,7 @@ impl Workspace {
                 });
                 // Only focus the pane for non-preview opens
                 if !preview {
-                    self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+                    group.update(ctx, |pane_group, ctx| {
                         pane_group.focus_pane(pane_id, true, ctx);
                     });
                 }
@@ -8372,13 +8399,13 @@ impl Workspace {
             // When grouping is off, avoid opening duplicate code panes for the same file in the
             // current pane group. Instead, focus the existing pane and jump.
             if let Some(location) = source.location() {
-                let pane_group_id = self.active_tab_pane_group().id();
+                let pane_group_id = group.id();
                 let existing_locator = CodeManager::handle(ctx).read(ctx, |manager, _| {
                     manager.get_locator_for_location_in_tab(pane_group_id, &location)
                 });
 
                 if let Some(locator) = existing_locator {
-                    self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+                    group.update(ctx, |pane_group, ctx| {
                         pane_group.focus_pane_by_id(locator.pane_id, ctx);
 
                         if let Some(code_view) =
@@ -8431,7 +8458,7 @@ impl Workspace {
                 self.add_tab_from_existing_pane(Box::new(pane), new_idx, group_id, ctx);
             }
             EditorLayout::SplitPane => {
-                self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+                group.update(ctx, |pane_group, ctx| {
                     pane_group.add_pane_with_direction(
                         Direction::Right,
                         pane,
