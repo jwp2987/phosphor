@@ -13325,7 +13325,8 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
         input.update(&mut app, |input, ctx| {
             if let Some(wait) = input.verdict_wait.as_mut() {
                 wait.compute = ComputeClock::with_spent_for_test(
-                    ENTER_VERDICT_BUDGET + std::time::Duration::from_millis(5),
+                    crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET
+                        + std::time::Duration::from_millis(5),
                 );
             }
             input.wait_for_verdict_then_enter(line.to_string(), ctx);

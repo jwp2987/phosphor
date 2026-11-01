@@ -479,7 +479,8 @@ impl TerminalView {
         }
         let abort = super::is_abort_key(bytes);
         if abort && in_flight.is_some() {
-            self.chunked_clear_write_generation += 1;
+            // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
+            ctx.emit(super::Event::CancelPacedSetupWrites);
             self.note_input_for_deferred_subshell_setup(bytes);
             if setup_gate || !only_subshell_gates {
                 // An abort that also skips the setup goes FIRST once the last line is out, ahead
