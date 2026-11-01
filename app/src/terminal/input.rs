@@ -6570,6 +6570,15 @@ impl Input {
         }
     }
 
+    /// Whether the session would refuse a command only because it has not processed the Precmd of
+    /// its first prompt yet: bootstrapped, nothing running, history not appendable (#1332).
+    pub(crate) fn shell_awaiting_first_precmd(&self, ctx: &AppContext) -> bool {
+        matches!(
+            self.can_execute_command(ctx),
+            CanExecuteCommand::No(DenyExecutionReason::HistoryNotAppendable)
+        )
+    }
+
     pub fn execute_pending_command(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.has_pending_command {
             return;

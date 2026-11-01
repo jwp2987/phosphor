@@ -24,6 +24,22 @@ pub(super) const SSH_TYPEAHEAD_MAX_BYTES: usize = 64 * 1024;
 /// prompt needs far longer.
 pub(super) const SSH_TYPEAHEAD_BURST_GAP: Duration = Duration::from_millis(200);
 
+/// The longest the held keys wait, once the remote shell has shown its first prompt, for the app to
+/// process that prompt's Precmd (#1332). Until it does the session cannot take a command (its
+/// history is not appendable), and an Enter delivered earlier is refused, leaving the line in the
+/// input. Past this the keys are delivered anyway: they are never kept back for good.
+pub(super) const SSH_TYPEAHEAD_PRECMD_WAIT_CAP: Duration = Duration::from_secs(5);
+
+/// Whether delivery of the held keys waits (#1332). `awaiting_first_precmd` is that the session
+/// would refuse a command only because the Precmd of the remote shell's first prompt has not been
+/// processed yet; `waited` is how long delivery has already waited for it.
+pub(super) fn delivery_waits_for_first_precmd(
+    awaiting_first_precmd: bool,
+    waited: Duration,
+) -> bool {
+    awaiting_first_precmd && waited < SSH_TYPEAHEAD_PRECMD_WAIT_CAP
+}
+
 /// One held input, as it reached the terminal view.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum HeldInput {

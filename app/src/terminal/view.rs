@@ -515,7 +515,7 @@ use crate::terminal::view::inline_banner::{
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
-    HeldInput, SshTypeahead, SshTypeaheadPush, burst_continues,
+    HeldInput, SshTypeahead, SshTypeaheadPush, burst_continues, delivery_waits_for_first_precmd,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::{
@@ -2355,6 +2355,11 @@ pub struct TerminalViewRenderContext {
     /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
     /// card's "choose an option first" hint instead of dropping them silently (#1087).
     pub ssh_choice_card_view_id: Option<EntityId>,
+    /// The input view and the key hold the terminal view switches on while it holds the keys
+    /// typed during an ssh connect: a key that neither the terminal nor the input's editor takes
+    /// in a focus gap (#1332) is handed to the terminal view, which holds it.
+    pub input_view_id: EntityId,
+    pub ssh_key_hold: Rc<EditorKeyHold>,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -2918,6 +2923,11 @@ pub struct TerminalView {
     ssh_paste_to_hold: bool,
     /// The poll that delivers or discards held keys is scheduled.
     ssh_typeahead_poll_armed: bool,
+    /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
+    /// the held Enter is not refused as `HistoryNotAppendable` (#1332).
+    ssh_typeahead_precmd_wait_since: Option<Instant>,
+    /// The short re-check of that wait is scheduled.
+    ssh_typeahead_precmd_wait_armed: bool,
     /// Whether the "interrupt held" notice was shown for the current connect window before
     /// the remote session was announced (#1001).
     ssh_interrupt_held_gate_notified: bool,
@@ -4706,6 +4716,8 @@ impl TerminalView {
             ssh_typeahead_discard_burst: false,
             ssh_paste_to_hold: false,
             ssh_typeahead_poll_armed: false,
+            ssh_typeahead_precmd_wait_since: None,
+            ssh_typeahead_precmd_wait_armed: false,
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
@@ -10654,6 +10666,15 @@ impl TerminalView {
             return;
         }
         let taken = self.ssh_editor_key_hold.take();
+        // #1332: counts only, to tell a key the editor queued from one nobody took.
+        if warpui::input_order::enabled() {
+            log::debug!(
+                target: warpui::input_order::TARGET,
+                "ssh_drop drained_editor_keys keys={} overflowed={}",
+                taken.keys.len(),
+                taken.overflowed
+            );
+        }
         if taken.overflowed {
             let outcome = self.ssh_typeahead.overflow();
             self.note_ssh_typeahead_outcome(&outcome, ctx);
@@ -10680,6 +10701,7 @@ impl TerminalView {
         self.ssh_typeahead_last_key_at = None;
         self.ssh_typeahead_discard_burst = false;
         self.ssh_paste_to_hold = false;
+        self.ssh_typeahead_precmd_wait_since = None;
     }
 
     /// Schedules the poll that delivers the held keys once the connect is over; the gate also
@@ -10708,10 +10730,45 @@ impl TerminalView {
             return;
         }
         if self.ssh_connect_gate.is_none() {
+            if self.defer_ssh_delivery_for_first_precmd(ctx) {
+                return;
+            }
             self.finish_ssh_typeahead(ctx);
         } else {
             self.arm_ssh_typeahead_poll(ctx);
         }
+    }
+
+    /// #1332: the gate can release at the remote shell's `Bootstrapped` hook, before the Precmd
+    /// of its first prompt has been processed. The session cannot take a command until then
+    /// (`HistoryNotAppendable`), so a held Enter delivered now is refused and its line stays in
+    /// the input. Delivery waits for that Precmd, re-checking every few milliseconds, for at most
+    /// `SSH_TYPEAHEAD_PRECMD_WAIT_CAP`. Returns whether delivery was deferred.
+    fn defer_ssh_delivery_for_first_precmd(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        const RECHECK: Duration = Duration::from_millis(10);
+        // Only keys headed for the remote shell can be refused; the fallback shows text only.
+        let held = !self.ssh_typeahead.is_empty() || !self.ssh_editor_key_hold.is_empty();
+        let awaiting = self.ssh_remote_prompt_seen
+            && held
+            && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
+        let now = Instant::now();
+        let waited = if awaiting {
+            now.saturating_duration_since(*self.ssh_typeahead_precmd_wait_since.get_or_insert(now))
+        } else {
+            self.ssh_typeahead_precmd_wait_since = None;
+            Duration::ZERO
+        };
+        if !delivery_waits_for_first_precmd(awaiting, waited) {
+            return false;
+        }
+        if !self.ssh_typeahead_precmd_wait_armed {
+            self.ssh_typeahead_precmd_wait_armed = true;
+            ctx.spawn(Timer::after(RECHECK), move |me, _, ctx| {
+                me.ssh_typeahead_precmd_wait_armed = false;
+                me.poll_ssh_typeahead(false, ctx);
+            });
+        }
+        true
     }
 
     /// Delivers one held control key the way the same key typed now would be routed: to the pty
@@ -10749,6 +10806,7 @@ impl TerminalView {
         self.set_ssh_typeahead_holding(false);
         self.ssh_typeahead_last_key_at = None;
         self.ssh_paste_to_hold = false;
+        self.ssh_typeahead_precmd_wait_since = None;
         self.drain_editor_keys_into_ssh_hold(ctx);
         if self.ssh_typeahead.is_empty() {
             self.ssh_typeahead.clear();
@@ -28584,6 +28642,8 @@ impl TerminalView {
             ssh_choice_card_view_id: self
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),
+            input_view_id: self.input.id(),
+            ssh_key_hold: self.ssh_editor_key_hold.clone(),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),
