@@ -1067,3 +1067,90 @@ fn test_transfer_view_tree_reconciles_views_known_only_to_target_presenter() {
         });
     });
 }
+
+#[derive(Default)]
+struct FutureTestView {
+    results: Vec<(usize, WindowId)>,
+}
+
+impl Entity for FutureTestView {
+    type Event = ();
+}
+
+impl View for FutureTestView {
+    fn render(&self, _: &AppContext) -> Box<dyn Element> {
+        Empty::new().finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "FutureTestView"
+    }
+}
+
+impl TypedActionView for FutureTestView {
+    type Action = ();
+}
+
+/// A future spawned from a view must deliver its result to that view even when the view was
+/// transferred to another window while the future was in flight (tab drag). Before the fix the
+/// callback was looked up by the window id captured at spawn time and silently dropped.
+#[test]
+fn test_view_future_callback_follows_transferred_view() {
+    App::test((), |mut app| async move {
+        let (source_window_id, _) =
+            app.add_window(WindowStyle::NotStealFocus, |_| FutureTestView::default());
+        let (target_window_id, _) =
+            app.add_window(WindowStyle::NotStealFocus, |_| FutureTestView::default());
+        let view = app.add_view(source_window_id, |_| FutureTestView::default());
+
+        let (tx, rx) = futures::channel::oneshot::channel::<usize>();
+        view.update(&mut app, |_, ctx| {
+            ctx.spawn(async move { rx.await.unwrap() }, |view, item, ctx| {
+                view.results.push((item, ctx.window_id()))
+            });
+        });
+        let pending = app.finish_pending_tasks();
+
+        assert!(app.update(|ctx| ctx.transfer_view_to_window(
+            view.id(),
+            source_window_id,
+            target_window_id
+        )));
+        tx.send(7).unwrap();
+        pending.await;
+
+        view.read(&app, |view, _| {
+            assert_eq!(view.results, vec![(7, target_window_id)]);
+        });
+    });
+}
+
+/// If the view is gone by the time the future completes, the result is dropped without a panic
+/// and without running the callback.
+#[test]
+fn test_view_future_callback_dropped_view_is_safe() {
+    App::test((), |mut app| async move {
+        let (window_id, _) =
+            app.add_window(WindowStyle::NotStealFocus, |_| FutureTestView::default());
+        let view = app.add_view(window_id, |_| FutureTestView::default());
+        let ran = Rc::new(RefCell::new(false));
+
+        let (tx, rx) = futures::channel::oneshot::channel::<usize>();
+        let ran_clone = ran.clone();
+        view.update(&mut app, |_, ctx| {
+            ctx.spawn(async move { rx.await.unwrap() }, move |_, _, _| {
+                *ran_clone.borrow_mut() = true;
+            });
+        });
+        let pending = app.finish_pending_tasks();
+
+        drop(view);
+        // Flush effects so the dropped view is removed from its window.
+        app.update(|_| {});
+        tx.send(1).unwrap();
+        pending.await;
+        app.update(|_| {});
+
+        assert!(!*ran.borrow(), "callback must not run for a dropped view");
+    });
+}
