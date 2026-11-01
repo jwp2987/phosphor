@@ -5196,6 +5196,9 @@ fn test_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
         view.update(&mut app, |view, ctx| {
             view.move_to_buffer_end(ctx);
             let hold = view.paste_hold();
+            // The `PasteSequencer` path that `PHOSPHOR_INPUT_QUEUE_PASTE=0` restores; the queue
+            // path has its own twin of this test below.
+            hold.set_uses_queue(false);
             let id = hold.begin();
 
             view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
@@ -5244,6 +5247,7 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
         });
         view.update(&mut app, |view, ctx| {
             let hold = view.paste_hold();
+            hold.set_uses_queue(false);
             let id = hold.begin();
             view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
             assert_eq!(view.buffer_text(ctx), "");
@@ -5258,6 +5262,168 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
         // Emitted events reach subscribers when the update's effects flush, i.e. after the
         // closure above returns, not inside it.
         assert_eq!(cleared.get(), Some(1));
+    })
+}
+
+/// Starts a paste on the editor's input queue the way the terminal input does, hosting it with the
+/// editor's own host (which never delivers a paste itself).
+fn start_queued_paste(view: &mut EditorView, ctx: &mut ViewContext<EditorView>) -> u64 {
+    use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec};
+    let hold = view.paste_hold();
+    assert!(hold.uses_queue(), "the queue is the default path");
+    let id = hold.next_queue_paste_id();
+    let queue = std::rc::Rc::clone(hold.queue());
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue.borrow_mut().offer_gated(
+        &mut host,
+        EntryKind::Paste {
+            paste_id: id,
+            payload: None,
+        },
+        GateSpec::new(GateKind::PasteReading, id),
+    );
+    id
+}
+
+/// The reader's result for `id`, as the terminal input reports it.
+fn finish_queued_paste(
+    view: &mut EditorView,
+    ctx: &mut ViewContext<EditorView>,
+    id: u64,
+    result: Result<Vec<u8>, ()>,
+) {
+    let queue = std::rc::Rc::clone(view.paste_hold().queue());
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue.borrow_mut().on_paste_read(&mut host, id, result);
+}
+
+// #1353 phase 1: the same ordering as the #1300 test above, on the input queue: keys typed while
+// the paste is read are queued behind its gate and applied, in order, when the read finishes.
+#[test]
+fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            assert!(view.paste_hold().has_pending());
+            assert!(view.paste_hold().is_pending(id));
+
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Left, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+            // Nothing was applied yet.
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            // The paste lands first, at the cursor that was there when it was asked for, then
+            // the queue applies x, y, Left, z in typing order.
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            assert!(!view.paste_hold().has_pending());
+            assert_eq!(view.buffer_text(ctx), "aPASTExzy");
+        });
+    })
+}
+
+// #1353 phase 1: a failed read applies the held keys in order and pastes nothing.
+#[test]
+fn test_queue_failed_read_applies_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            finish_queued_paste(view, ctx, id, Err(()));
+            assert_eq!(view.buffer_text(ctx), "axy");
+            assert!(!view.paste_hold().has_pending());
+        });
+    })
+}
+
+// #1353 phase 1: Ctrl-C cancels the pending paste on the queue; what was typed before it is
+// applied first, the Ctrl-C then clears the line as always, and the late read changes nothing.
+#[test]
+fn test_queue_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        let cleared = std::rc::Rc::new(std::cell::Cell::new(None));
+        let cleared_in_handler = cleared.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event: &Event, _| {
+                if let Event::CtrlC { cleared_buffer_len } = event {
+                    cleared_in_handler.set(Some(*cleared_buffer_len));
+                }
+            });
+        });
+        view.update(&mut app, |view, ctx| {
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "");
+            view.handle_action(&EditorAction::CtrlC, ctx);
+            assert!(!view.paste_hold().has_pending());
+            assert_eq!(view.buffer_text(ctx), "");
+            // The late read of the cancelled paste does nothing.
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            assert_eq!(view.buffer_text(ctx), "");
+            assert!(view.paste_hold().queue().borrow().is_idle());
+        });
+        // The held "x" was applied before the Ctrl-C cleared the line.
+        assert_eq!(cleared.get(), Some(1));
+    })
+}
+
+// #1353 phase 1: a paste typed behind a pending paste queues behind it; neither read loses the
+// other's keys, whichever read finishes first.
+#[test]
+fn test_queue_second_paste_waits_for_the_first() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            let first = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            let second = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            // The second read finishes first: still nothing, the first paste is ahead of it.
+            finish_queued_paste(view, ctx, second, Ok(Vec::new()));
+            assert_eq!(view.buffer_text(ctx), "");
+            assert!(view.paste_hold().has_pending());
+            finish_queued_paste(view, ctx, first, Ok(Vec::new()));
+            assert!(!view.paste_hold().has_pending());
+            // (The editor's host does not insert paste text; the keys keep their order.)
+            assert_eq!(view.buffer_text(ctx), "xy");
+        });
+    })
+}
+
+// #1353 phase 1: the idle fast path. With nothing pending the editor never touches the queue.
+#[test]
+fn test_queue_idle_editor_keys_do_not_touch_the_queue() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            assert!(!view.paste_hold().queue_is_busy());
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "x");
+            assert!(view.paste_hold().queue().borrow().is_idle());
+        });
     })
 }
 

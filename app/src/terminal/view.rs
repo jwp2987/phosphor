@@ -3096,6 +3096,9 @@ pub struct TerminalView {
     subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
     /// Orders keys typed while a large paste is read and prepared off the main thread (#1255).
     paste_sequencer: PasteSequencer,
+    /// The same ordering on the pane's one input queue (#1353 phase 1); used instead of
+    /// `paste_sequencer` unless `PHOSPHOR_INPUT_QUEUE_PASTE=0`.
+    paste_queue: paste_queue::PasteQueueState,
     /// The active block and the time at which this view last typed a subshell bootstrap stage
     /// into it. Unlike the model's pending subshell session (which only exists once the shell
     /// answered with `InitShell`), this exists even when the script never ran, so a stalled
@@ -4845,6 +4848,7 @@ impl TerminalView {
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
             paste_sequencer: PasteSequencer::default(),
+            paste_queue: paste_queue::PasteQueueState::new(),
             subshell_bootstrap_announced: None,
             subshell_setup_held_bytes: Vec::new(),
             powershell_setup_hold: PowerShellSetupHold::Off,
@@ -11820,10 +11824,17 @@ impl TerminalView {
         takes_over_agent_control: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        let mut bytes: Cow<'static, [u8]> = data.into();
+        let bytes: Cow<'static, [u8]> = data.into();
         // A paste is still being read off the main thread (#1255): what is typed meanwhile goes
-        // out behind it, in order; an abort key cancels the paste instead.
-        if self.paste_sequencer.has_pending() {
+        // out behind it, in order; an abort key cancels the paste instead. On the input queue
+        // (#1353) the paste is an entry held by a gate and these bytes queue behind it; idle, this
+        // is one borrow-flag read with no lock and no allocation.
+        if self.paste_queue.enabled {
+            if let Some(written) = self.offer_to_paste_queue(&bytes, takes_over_agent_control, ctx)
+            {
+                return written;
+            }
+        } else if self.paste_sequencer.has_pending() {
             match self.paste_sequencer.on_key(&bytes, is_abort_key(&bytes)) {
                 KeyDisposition::Held => {
                     input_queue::trace::hold(input_queue::trace::legacy::PASTE_PTY, bytes.len());
@@ -11841,6 +11852,18 @@ impl TerminalView {
                 KeyDisposition::PassThrough => {}
             }
         }
+        self.write_user_bytes_to_pty_after_paste_stage(bytes, takes_over_agent_control, ctx)
+    }
+
+    /// Everything `write_user_bytes_to_pty_inner` does once the paste stage has let the bytes
+    /// through. The input queue delivers into THIS function, never the one above, so a delivered
+    /// key is not offered to the paste stage again (#1353).
+    fn write_user_bytes_to_pty_after_paste_stage(
+        &mut self,
+        mut bytes: Cow<'static, [u8]>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         self.note_input_for_deferred_subshell_setup(&bytes);
         if is_abort_key(&bytes) {
             // Ctrl-C / Ctrl-D: the rest of a chunked line-clear write is dropped (#1354).
@@ -21918,6 +21941,13 @@ impl TerminalView {
         backstop: Option<Duration>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // #1353 phase 1: the paste is an entry of the pane's input queue. A queue that is
+        // mid-drain cannot take a new gate; that is not reachable from a user paste, but fall
+        // back to the legacy sequencer rather than panic on a borrow.
+        if self.paste_queue.enabled && self.paste_queue.queue.try_borrow_mut().is_ok() {
+            self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
+            return;
+        }
         let id = self.paste_sequencer.begin();
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
@@ -36124,6 +36154,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
         .collect();
 }
 
+mod paste_queue;
 mod ssh_typeahead;
 
 #[cfg(test)]

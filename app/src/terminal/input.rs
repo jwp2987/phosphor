@@ -9,6 +9,8 @@ pub mod inline_history;
 pub mod inline_menu;
 pub mod message_bar;
 pub mod models;
+#[cfg(not(target_family = "wasm"))]
+mod paste_queue;
 pub mod plans;
 pub mod profiles;
 pub mod prompts;
@@ -1943,6 +1945,10 @@ pub struct Input {
     menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
     tips_completed: ModelHandle<TipsCompleted>,
     editor: ViewHandle<EditorView>,
+    /// Clipboard content read for editor-bound pastes that wait for their turn on the editor's
+    /// input queue (#1353 phase 1), by paste id.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    paste_payloads: std::collections::HashMap<u64, (PasteSource, ClipboardContent)>,
     input_suggestions: ViewHandle<InputSuggestions>,
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     completions_menu_resizable_width: ResizableStateHandle,
@@ -3866,6 +3872,7 @@ impl Input {
             completions_menu_resizable_height: resizable_state_handle(completions_menu_height),
             tips_completed,
             editor,
+            paste_payloads: Default::default(),
             model,
             sessions,
             focus_handle: None,
@@ -11067,6 +11074,13 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         let hold = self.editor.as_ref(ctx).paste_hold();
+        // #1353 phase 1: the paste is an entry of the editor's input queue. A queue that is
+        // mid-drain cannot take a new gate (not reachable from a user paste); fall back to the
+        // sequencer rather than panic on a borrow.
+        if hold.uses_queue() && hold.queue().try_borrow_mut().is_ok() {
+            self.start_queued_read(reader, backstop, source, ctx);
+            return;
+        }
         let id = hold.begin();
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()

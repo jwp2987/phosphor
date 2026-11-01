@@ -1,4 +1,6 @@
-//! One ordered input queue (#1353, design phase 0: the pure core, not wired into the view yet).
+//! One ordered input queue (#1353). Phase 0 is this pure core; phase 1 wires paste ordering onto it
+//! (`view/paste_queue.rs` for the pty, `input/paste_queue.rs` and `editor/view/paste_hold.rs` for
+//! the editor).
 //!
 //! OWNER RULE: correctness never depends on timing. Everything typed or pasted is an
 //! [`InputEntry`] with a monotonic id. An entry is held only by a [`Gate`], and a gate is opened
@@ -19,10 +21,10 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
-//! Phase 0 has no production consumer: the module is exercised by its tests and by the trace hops
-//! in `trace`, which record today's buffers for later comparison.
+//! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`). The other gate kinds and the
+//! trace hops of the buffers that have not moved yet are exercised by the tests only.
 
-// No consumer until phase 1; the whole public surface is intentionally unused for now.
+// Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
 
 mod destination;
@@ -33,9 +35,13 @@ pub mod trace;
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+use crate::editor::HeldPasteKey;
 
 pub use destination::{DestFacts, Destination, DropReason, destination_for, pin_still_valid};
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
@@ -62,6 +68,38 @@ pub enum SignalKind {
     Quit,
 }
 
+/// An editor key (`HeldPasteKey`) travelling through the queue (phase 1). The editor action is
+/// not `Clone`, so the key sits in a shared cell and the one delivery takes it out. Equality is
+/// identity: two payloads are equal only if they are the same key.
+#[derive(Clone)]
+pub struct EditorKeyPayload(Rc<RefCell<Option<HeldPasteKey>>>);
+
+impl EditorKeyPayload {
+    pub fn new(key: HeldPasteKey) -> Self {
+        Self(Rc::new(RefCell::new(Some(key))))
+    }
+
+    /// The key, once. `None` if it was already delivered.
+    pub fn take(&self) -> Option<HeldPasteKey> {
+        self.0.borrow_mut().take()
+    }
+
+    fn len(&self) -> usize {
+        match self.0.borrow().as_ref() {
+            Some(HeldPasteKey::Text(text)) => text.len(),
+            Some(HeldPasteKey::Action(_)) | None => 0,
+        }
+    }
+}
+
+impl PartialEq for EditorKeyPayload {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for EditorKeyPayload {}
+
 /// Destination-agnostic content, as the user produced it.
 #[derive(Clone, PartialEq, Eq)]
 pub enum EntryKind {
@@ -79,6 +117,15 @@ pub enum EntryKind {
     /// Pty-only bytes from passive paths (mouse reports); dropped when the agent controls the
     /// command.
     Raw(Vec<u8>),
+    /// User bytes already encoded for the pty (what `write_user_bytes_to_pty` is handed). Phase 1
+    /// carries the terminal's keys in this form because the later stages (subshell, hand-off,
+    /// ssh) still consume bytes. `takes_over_agent_control` is false for pointer-driven bytes.
+    PtyBytes {
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+    },
+    /// A key for the input editor, held behind a paste (phase 1).
+    EditorKey(EditorKeyPayload),
 }
 
 impl EntryKind {
@@ -91,6 +138,8 @@ impl EntryKind {
             EntryKind::Paste { .. } => "paste",
             EntryKind::Signal(_) => "signal",
             EntryKind::Raw(_) => "raw",
+            EntryKind::PtyBytes { .. } => "pty_bytes",
+            EntryKind::EditorKey(_) => "editor_key",
         }
     }
 
@@ -101,6 +150,8 @@ impl EntryKind {
             EntryKind::Control(s) | EntryKind::Seq(s) => s.len(),
             EntryKind::Paste { payload, .. } => payload.as_ref().map_or(0, Vec::len),
             EntryKind::Raw(bytes) => bytes.len(),
+            EntryKind::PtyBytes { bytes, .. } => bytes.len(),
+            EntryKind::EditorKey(key) => key.len(),
             EntryKind::Enter | EntryKind::Signal(_) => 0,
         }
     }
@@ -117,6 +168,8 @@ impl EntryKind {
                 | EntryKind::Control(_)
                 | EntryKind::Seq(_)
                 | EntryKind::Paste { .. }
+                | EntryKind::PtyBytes { .. }
+                | EntryKind::EditorKey(_)
         )
     }
 }
@@ -310,6 +363,27 @@ impl InputQueue {
     /// Number of caps that fired for a gate that was still open.
     pub fn give_up_count(&self) -> u64 {
         self.give_ups
+    }
+
+    /// Whether a gate of `kind` with `key` is still open (e.g. "is paste 7 still being read").
+    pub fn has_gate(&self, kind: GateKind, key: u64) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == kind && gate.key == key)
+    }
+
+    /// Whether any gate of `kind` is open.
+    pub fn has_gate_kind(&self, kind: GateKind) -> bool {
+        self.gates.iter().any(|gate| gate.kind == kind)
+    }
+
+    /// Entries and content bytes queued, for trace lines (counts only, never content). A paste
+    /// that has not been read yet counts as an entry with no bytes.
+    pub fn queued_summary(&self) -> (usize, usize) {
+        (
+            self.entries.len(),
+            self.entries.iter().map(|entry| entry.kind.len()).sum(),
+        )
     }
 
     /// Whether the head entry waits behind a gate. Invariant: a non-empty queue always has a
@@ -699,3 +773,6 @@ impl InputQueue {
         }
     }
 }
+
+#[cfg(test)]
+mod paste_tests;

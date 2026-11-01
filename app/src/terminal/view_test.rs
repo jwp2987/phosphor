@@ -14967,7 +14967,7 @@ fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
             "keys typed behind a pending paste are held"
         );
         for _ in 0..1000 {
-            if !terminal.read(&app, |view, _| view.paste_sequencer.has_pending()) {
+            if !terminal.read(&app, |view, _| view.paste_pending()) {
                 break;
             }
             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
@@ -14978,6 +14978,195 @@ fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"ls\r".to_vec(), "the late answer is ignored");
+    })
+}
+
+/// What a pty-bound paste scenario does.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Copy, Debug)]
+enum PtyPasteScenario {
+    /// The read answers after the keys were typed.
+    SlowRead,
+    /// The clipboard owner never answers (the reader reports a time-out).
+    FailedRead,
+    /// Ctrl-C is typed while the read is pending.
+    CtrlC,
+    /// The reader parks past the 100 ms backstop, then answers late.
+    BackstopThenLateResult,
+}
+
+/// Runs one pty-paste scenario on the new queue path (`queue == true`) or the legacy
+/// `PasteSequencer` (`queue == false`, the kill switch) and returns every byte that reached the
+/// pty, in order. Both paths must produce the same bytes (#1353 phase 1).
+#[cfg(not(target_family = "wasm"))]
+async fn pty_paste_bytes(app: &mut App, queue: bool, scenario: PtyPasteScenario) -> Vec<u8> {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    initialize_app_for_terminal_view(app);
+    let terminal = add_window_with_terminal(app, None);
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec())
+            }
+            _ => {}
+        });
+    });
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    let fails = matches!(scenario, PtyPasteScenario::FailedRead);
+    let reader: BackgroundTextReader = Box::new(move || {
+        let _ = parked.recv_timeout(Duration::from_secs(20));
+        if fails {
+            BackgroundTextRead::TimedOut
+        } else {
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        }
+    });
+    let backstop = match scenario {
+        PtyPasteScenario::BackstopThenLateResult => Some(Duration::from_millis(100)),
+        _ => None,
+    };
+    terminal.update(app, |view, ctx| {
+        view.paste_queue.enabled = queue;
+        // Typed before the paste: goes straight out.
+        assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+        view.start_background_paste_with_backstop(reader, None, false, backstop, ctx);
+        assert!(view.paste_pending(), "the read is pending (queue={queue})");
+        assert_eq!(
+            !view.paste_queue.queue.borrow().is_idle(),
+            queue,
+            "the queue holds the paste exactly when it is the active path"
+        );
+        let typed: &[&[u8]] = match scenario {
+            PtyPasteScenario::CtrlC => &[b"l", b"\x03"],
+            _ => &[b"l", b"s", b"\r"],
+        };
+        for key in typed {
+            assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
+        }
+    });
+    let flat = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
+        writes.borrow().iter().flatten().copied().collect()
+    };
+    match scenario {
+        PtyPasteScenario::CtrlC => {
+            // The paste is cancelled on the spot: what was typed before the abort, then the abort.
+            assert!(!terminal.read(app, |view, _| view.paste_pending()));
+            assert_eq!(flat(&pty_writes), b"al\x03".to_vec());
+            release.send(()).unwrap();
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            assert_eq!(
+                flat(&pty_writes),
+                b"al\x03".to_vec(),
+                "the cancelled paste is never written, even when the read answers"
+            );
+        }
+        PtyPasteScenario::BackstopThenLateResult => {
+            for _ in 0..1000 {
+                if !terminal.read(app, |view, _| view.paste_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                flat(&pty_writes),
+                b"als\r".to_vec(),
+                "keys released at the backstop"
+            );
+            release.send(()).unwrap();
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            assert_eq!(
+                flat(&pty_writes),
+                b"als\r".to_vec(),
+                "the late result is ignored"
+            );
+        }
+        PtyPasteScenario::SlowRead | PtyPasteScenario::FailedRead => {
+            assert_eq!(
+                flat(&pty_writes),
+                b"a".to_vec(),
+                "keys typed behind the pending paste are held"
+            );
+            release.send(()).unwrap();
+            for _ in 0..1000 {
+                if !terminal.read(app, |view, _| view.paste_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+        }
+    }
+    flat(&pty_writes)
+}
+
+/// #1353 phase 1: a slow clipboard read with keys (and an Enter) typed behind it. The keys wait for
+/// the read, the paste goes out first, then `ls\r`: typed order. Same bytes on the legacy path.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_paste_with_keys_and_enter_behind_a_slow_read_delivers_in_typed_order() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            let written = pty_paste_bytes(&mut app, queue, PtyPasteScenario::SlowRead).await;
+            assert_eq!(written, b"aPASTEls\r".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// #1353 phase 1: a read that fails writes no paste, keeps the typing, in order, on both paths.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_paste_failed_read_keeps_the_typing_in_order() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            let written = pty_paste_bytes(&mut app, queue, PtyPasteScenario::FailedRead).await;
+            assert_eq!(written, b"als\r".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// #1353 phase 1: Ctrl-C during a pending paste cancels it; earlier typing goes first, the abort
+/// last, and the cancelled read never writes on either path.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            let written = pty_paste_bytes(&mut app, queue, PtyPasteScenario::CtrlC).await;
+            assert_eq!(written, b"al\x03".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// #1353 phase 1: the backstop gives up once, releases the keys in order and the reader's late
+/// answer writes nothing, on both paths.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            let written =
+                pty_paste_bytes(&mut app, queue, PtyPasteScenario::BackstopThenLateResult).await;
+            assert_eq!(written, b"als\r".to_vec(), "queue={queue}");
+        });
+    }
+}
+
+/// #1353 phase 1: with nothing pending, keys neither allocate a queue entry nor change the queue:
+/// the idle fast path leaves the queue idle after every write.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pty_keys_with_no_paste_pending_leave_the_queue_idle() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            for key in [b"l".to_vec(), b"s".to_vec(), b"\r".to_vec(), vec![0x03]] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            }
+            assert!(!view.paste_pending());
+        });
     })
 }
 
