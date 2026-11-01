@@ -546,7 +546,7 @@ mod app_exit {
 #[test]
 fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
     use crate::ai::mcp::{MCPServer, ServerSentEvents, TransportType};
-    use crate::server::ids::{ClientId, SyncId};
+    use super::{ClientId, SyncId};
 
     let main_thread = std::thread::current().id();
     let servers: Vec<_> = (0..3)
