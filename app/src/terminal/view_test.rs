@@ -15172,48 +15172,68 @@ fn pty_keys_with_no_paste_pending_leave_the_queue_idle() {
 
 /// #933 x ^C: an Enter held because the command may already have finished does not swallow a
 /// Ctrl-C typed within the window. The ETX is written to the pty, once, and the hold is dropped.
+/// Keys held for an unfinished subshell setup, as (entries, bytes): on the input queue, or in the
+/// legacy buffer (kill switch, or a write made while the queue was delivering).
+fn held_for_subshell_setup(view: &TerminalView) -> (usize, usize) {
+    let (entries, bytes) = view.paste_queue.queue.borrow().queued_summary();
+    (
+        entries + view.subshell_setup_held_bytes.len(),
+        bytes
+            + view
+                .subshell_setup_held_bytes
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>(),
+    )
+}
+
 /// #1014: keys typed while the paced subshell bootstrap is still in flight (an rc file that
 /// sleeps keeps the shell from reading it) are held, then delivered to the pty in the order they
 /// were typed once the bootstrap ends -- never dropped, merged out of order or written early.
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-        let writes = pty_writes.clone();
-        app.update(|ctx| {
-            ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                if let Event::WriteBytesToPty { bytes } = event {
-                    writes.borrow_mut().push(bytes.to_vec());
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
+            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let writes = pty_writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::WriteBytesToPty { bytes } = event {
+                        writes.borrow_mut().push(bytes.to_vec());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_in_flight = Some(SubshellBootstrapInFlight {
+                    generation: 1,
+                    block_id,
+                    remaining_lines: 1,
+                    held_user_bytes: Vec::new(),
+                    pending_lines: VecDeque::new(),
+                    marker_token: None,
+                    awaiting_marker: 0,
+                    line_delay: Duration::from_millis(30),
+                });
+                for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
                 }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "nothing may interleave with the bootstrap lines"
+                );
+                view.finish_subshell_bootstrap(ctx);
             });
-        });
-        terminal.update(&mut app, |view, ctx| {
-            let block_id = view.model.lock().block_list().active_block().id().clone();
-            view.subshell_bootstrap_in_flight = Some(SubshellBootstrapInFlight {
-                generation: 1,
-                block_id,
-                remaining_lines: 1,
-                held_user_bytes: Vec::new(),
-                pending_lines: VecDeque::new(),
-                marker_token: None,
-                awaiting_marker: 0,
-                line_delay: Duration::from_millis(30),
-            });
-            for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
-                assert!(view.write_user_bytes_to_pty(key, ctx));
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "nothing may interleave with the bootstrap lines"
-            );
-            view.finish_subshell_bootstrap(ctx);
-        });
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
-    })
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
+        })
+    }
 }
 
 /// #1014: text typed while an announced subshell setup is unfinished (an rc file that sleeps, no
@@ -15223,57 +15243,62 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-        let writes = pty_writes.clone();
-        app.update(|ctx| {
-            ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                if let Event::WriteBytesToPty { bytes } = event {
-                    writes.borrow_mut().push(bytes.to_vec());
-                }
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
             });
-        });
-        terminal.update(&mut app, |view, ctx| {
-            let block_id = view.model.lock().block_list().active_block().id().clone();
-            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let writes = pty_writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::WriteBytesToPty { bytes } = event {
+                        writes.borrow_mut().push(bytes.to_vec());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(
+                    view.subshell_bootstrap_announced_age().is_some(),
+                    "the announcement applies although the block is the bootstrapped parent command"
+                );
+                for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "nothing typed during the stall may reach the tty ahead of the late bootstrap"
+                );
+                view.release_subshell_setup_held_bytes(ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
             assert!(
-                view.subshell_bootstrap_announced_age().is_some(),
-                "the announcement applies although the block is the bootstrapped parent command"
+                terminal.read(&app, |view, _| held_for_subshell_setup(view) == (0, 0)),
+                "nothing stays held after the release"
             );
-            for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
-                assert!(view.write_user_bytes_to_pty(key, ctx));
-            }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "nothing typed during the stall may reach the tty ahead of the late bootstrap"
-            );
-            view.release_subshell_setup_held_bytes(ctx);
-        });
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
-        assert!(
-            terminal.read(&app, |view, _| view.subshell_setup_held_bytes.is_empty()),
-            "nothing stays held after the release"
-        );
 
-        // Ctrl-C: goes first, then what was held.
-        pty_writes.borrow_mut().clear();
-        terminal.update(&mut app, |view, ctx| {
-            let block_id = view.model.lock().block_list().active_block().id().clone();
-            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
-            assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
-            assert!(pty_writes.borrow().is_empty());
-            view.write_user_bytes_to_pty(vec![0x03], ctx);
-        });
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(
-            written,
-            b"\x03ls".to_vec(),
-            "abort first, then the held text"
-        );
-    })
+            // Ctrl-C: goes first, then what was held.
+            pty_writes.borrow_mut().clear();
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert!(pty_writes.borrow().is_empty());
+                view.write_user_bytes_to_pty(vec![0x03], ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                written,
+                b"\x03ls".to_vec(),
+                "abort first, then the held text"
+            );
+        })
+    }
 }
 
 /// #1014: the typed-input hold must not swallow an answer to a prompt the shell is showing. With
@@ -15281,10 +15306,18 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
 /// is held. Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
-    for (output, expect_written) in [("Password: ", true), ("", false)] {
-        App::test((), |mut app| async move {
+    for (output, expect_written, queue) in [
+        ("Password: ", true, true),
+        ("", false, true),
+        ("Password: ", true, false),
+        ("", false, false),
+    ] {
+        App::test((), move |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
             let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
             let writes = pty_writes.clone();
             app.update(|ctx| {
@@ -15308,7 +15341,7 @@ fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
             } else {
                 assert!(written.is_empty(), "silent shell: typing is held");
                 terminal.read(&app, |view, _| {
-                    assert_eq!(view.subshell_setup_held_bytes, vec![b"secret".to_vec()]);
+                    assert_eq!(held_for_subshell_setup(view), (1, 6), "queue={queue}");
                 });
             }
         })
@@ -15322,64 +15355,308 @@ fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_completes() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
+            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let writes = pty_writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::WriteBytesToPty { bytes } = event {
+                        writes.borrow_mut().push(bytes.to_vec());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                // What the tty echoes of the bootstrap lines: newline-terminated, so not a prompt.
+                view.model
+                    .lock()
+                    .simulate_long_running_block("zsh", " set | command grep x; true\r\n");
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                for key in [b"ls".to_vec(), b"\r".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "echoed bootstrap text is not a prompt: the keys are held"
+                );
+                // The waiting notice is showing (as if the stall ceiling had passed).
+                view.subshell_setup_waiting_toast_id =
+                    Some("subshell-setup-waiting-test".to_string());
+                // The model's `AfterBlockCompleted` comes before the view has reinitialized the
+                // editor for the new block: nothing is released from it (#1014, the Mac case where
+                // the released command's block never showed).
+                view.handle_terminal_event(
+                    &ModelEvent::AfterBlockCompleted(AfterBlockCompletedEvent {
+                        command_finished_to_precmd_delay: None,
+                        block_type: BlockType::BootstrapHidden,
+                        num_secrets_obfuscated: 0,
+                        cloud_workflow_id: None,
+                        cloud_env_var_collection_id: None,
+                    }),
+                    ctx,
+                );
+                assert_eq!(held_for_subshell_setup(view).0, 2, "still held");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "AfterBlockCompleted must not release the held keys"
+            );
+            terminal.update(&mut app, |view, ctx| {
+                // The prompt is drawn and the editor reinitialized: now they are delivered, once.
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(
+                    view.subshell_setup_waiting_toast_id.is_none(),
+                    "the waiting notice goes away once setup is over"
+                );
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");
+        })
+    }
+}
+
+/// What the pty has been sent, flattened, for the #1353 phase 2 subshell tests.
+fn subshell_pty_writes(app: &mut App, terminal: &ViewHandle<TerminalView>) -> Rc<RefCell<Vec<u8>>> {
+    let written: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = written.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } =
+                event
+            {
+                sink.borrow_mut().extend_from_slice(bytes);
+            }
+        });
+    });
+    written
+}
+
+/// Puts `view` in the state of a paced bootstrap that is still writing its lines, with the setup
+/// announced when `announce` (what a real `write_init_subshell_bytes_to_pty` leaves behind).
+fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    if announce {
+        view.subshell_bootstrap_announced = Some((block_id.clone(), Instant::now()));
+    }
+    view.subshell_bootstrap_in_flight = Some(SubshellBootstrapInFlight {
+        generation: 1,
+        block_id,
+        remaining_lines: 1,
+        held_user_bytes: Vec::new(),
+        pending_lines: VecDeque::new(),
+        marker_token: None,
+        awaiting_marker: 0,
+        line_delay: Duration::from_millis(30),
+    });
+}
+
+/// #1353 phase 2: Ctrl-C during the paced bootstrap waits for its last line, in typed order when
+/// there is no setup to skip (`a ^C b`), and goes first, releasing the setup's held keys behind it,
+/// when the setup is announced (`^C a b`). Same bytes on the legacy buffers (the kill switch).
+#[test]
+fn ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line() {
+    for (queue, announce, expected) in [
+        (true, false, b"a\x03b".to_vec()),
+        (false, false, b"a\x03b".to_vec()),
+        (true, true, b"\x03ab".to_vec()),
+        (false, true, b"\x03ab".to_vec()),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
+            let written = subshell_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                start_subshell_bootstrap(view, announce);
+                for key in [b"a".to_vec(), vec![0x03], b"b".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
+                }
+                assert!(
+                    written.borrow().is_empty(),
+                    "nothing, the ^C included, lands among the bootstrap lines (queue={queue})"
+                );
+                view.finish_subshell_bootstrap(ctx);
+            });
+            assert_eq!(
+                *written.borrow(),
+                expected,
+                "queue={queue} announce={announce}"
+            );
+            terminal.read(&app, |view, _| {
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(view.paste_queue.pending_aborts.is_empty());
+            });
+        })
+    }
+}
+
+/// #1353 phase 2: a paste read that is still pending when the bootstrap starts, with keys typed
+/// behind it, reaches the shell after the bootstrap's last line, paste first, then the keys, once.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn paste_during_the_subshell_bootstrap_then_keys_arrive_in_order_after_it() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue;
+                view.paste_queue.enabled = queue;
+            });
+            let written = subshell_pty_writes(&mut app, &terminal);
+            let (release, parked) = std::sync::mpsc::channel::<()>();
+            let reader: BackgroundTextReader = Box::new(move || {
+                let _ = parked.recv_timeout(Duration::from_secs(20));
+                BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+            });
+            terminal.update(&mut app, |view, ctx| {
+                start_subshell_bootstrap(view, false);
+                view.start_background_paste_with_backstop(reader, None, false, None, ctx);
+                for key in [b"l".to_vec(), b"s".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
+                }
+            });
+            release.send(()).unwrap();
+            for _ in 0..1000 {
+                if !terminal.read(&app, |view, _| view.paste_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            assert!(
+                written.borrow().is_empty(),
+                "the finished paste still waits for the bootstrap (queue={queue})"
+            );
+            terminal.update(&mut app, |view, ctx| view.finish_subshell_bootstrap(ctx));
+            assert_eq!(*written.borrow(), b"PASTEls".to_vec(), "queue={queue}");
+        })
+    }
+}
+
+/// #1353 phase 2: a setup that ends (abandoned, timed out, tab content gone) delivers what was
+/// typed, in order, once, and keys typed after it go straight out behind it, on both paths.
+#[test]
+fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
+            let written = subshell_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"s".to_vec(), ctx));
+                assert!(written.borrow().is_empty());
+                assert_eq!(
+                    !view.paste_queue.queue.borrow().is_idle(),
+                    queue,
+                    "the keys are entries of the queue exactly when it is the active path"
+                );
+                // The abandon / time-out path.
+                view.release_subshell_setup_held_bytes(ctx);
+                assert_eq!(*written.borrow(), b"ls".to_vec());
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+            });
+            assert_eq!(*written.borrow(), b"ls\r".to_vec(), "queue={queue}");
+            terminal.read(&app, |view, _| {
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert_eq!(held_for_subshell_setup(view), (0, 0));
+            });
+        })
+    }
+}
+
+/// #1222, now by construction: the setup is over (`Bootstrapped`, the announcement no longer
+/// applies) while keys are still held for the first prompt. A key typed in that gap goes out
+/// BEHIND them, never ahead.
+#[test]
+fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
+    for queue in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, _| {
+                view.paste_queue.subshell_enabled = queue
+            });
+            let written = subshell_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
+                assert!(written.borrow().is_empty());
+                // `Bootstrapped`: the announcement stops governing input.
+                view.subshell_bootstrap_announced = None;
+                assert!(view.write_user_bytes_to_pty(b"c".to_vec(), ctx));
+            });
+            assert_eq!(*written.borrow(), b"ec".to_vec(), "queue={queue}");
+        })
+    }
+}
+
+/// #1353 phase 2: the gates' give-up caps are safety nets that log and then behave like the
+/// event. The setup gate's cap treats setup as over and delivers the held keys; the bootstrap
+/// gate's cap lets the queue go, but keys it drains while the bootstrap is still being written
+/// wait for the last line instead of landing among its lines.
+#[test]
+fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
-        let writes = pty_writes.clone();
-        app.update(|ctx| {
-            ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                if let Event::WriteBytesToPty { bytes } = event {
-                    writes.borrow_mut().push(bytes.to_vec());
-                }
-            });
-        });
+        let written = subshell_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            // What the tty echoes of the bootstrap lines: newline-terminated, so not a prompt.
-            view.model
-                .lock()
-                .simulate_long_running_block("zsh", " set | command grep x; true\r\n");
             let block_id = view.model.lock().block_list().active_block().id().clone();
             view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
-            for key in [b"ls".to_vec(), b"\r".to_vec()] {
-                assert!(view.write_user_bytes_to_pty(key, ctx));
-            }
+            assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
+            let token = view
+                .paste_queue
+                .queue
+                .borrow()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == input_queue::GateKind::SubshellSetup)
+                .map(|gate| gate.token)
+                .expect("the setup gate is open");
+            view.on_paste_queue_give_up(token, ctx);
+            assert_eq!(*written.borrow(), b"l".to_vec());
+            assert!(view.subshell_bootstrap_announced.is_none());
+            // A second, late cap for the same gate does nothing.
+            view.on_paste_queue_give_up(token, ctx);
+            assert_eq!(*written.borrow(), b"l".to_vec());
+
+            written.borrow_mut().clear();
+            start_subshell_bootstrap(view, false);
+            assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
+            let token = view
+                .paste_queue
+                .queue
+                .borrow()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == input_queue::GateKind::SubshellBootstrapWrite)
+                .map(|gate| gate.token)
+                .expect("the bootstrap gate is open");
+            view.on_paste_queue_give_up(token, ctx);
             assert!(
-                pty_writes.borrow().is_empty(),
-                "echoed bootstrap text is not a prompt: the keys are held"
+                written.borrow().is_empty(),
+                "still waits for the bootstrap's last line"
             );
-            // The waiting notice is showing (as if the stall ceiling had passed).
-            view.subshell_setup_waiting_toast_id = Some("subshell-setup-waiting-test".to_string());
-            // The model's `AfterBlockCompleted` comes before the view has reinitialized the
-            // editor for the new block: nothing is released from it (#1014, the Mac case where
-            // the released command's block never showed).
-            view.handle_terminal_event(
-                &ModelEvent::AfterBlockCompleted(AfterBlockCompletedEvent {
-                    command_finished_to_precmd_delay: None,
-                    block_type: BlockType::BootstrapHidden,
-                    num_secrets_obfuscated: 0,
-                    cloud_workflow_id: None,
-                    cloud_env_var_collection_id: None,
-                }),
-                ctx,
-            );
-            assert_eq!(view.subshell_setup_held_bytes.len(), 2, "still held");
+            view.finish_subshell_bootstrap(ctx);
+            assert_eq!(*written.borrow(), b"e".to_vec());
         });
-        assert!(
-            pty_writes.borrow().is_empty(),
-            "AfterBlockCompleted must not release the held keys"
-        );
-        terminal.update(&mut app, |view, ctx| {
-            // The prompt is drawn and the editor reinitialized: now they are delivered, once.
-            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            assert!(
-                view.subshell_setup_waiting_toast_id.is_none(),
-                "the waiting notice goes away once setup is over"
-            );
-        });
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");
     })
 }
 
