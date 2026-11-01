@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# editor_mem_baseline -- repeatable open-a-big-file measurement for the code editor (#1340 P0).
+#
+# Linux/X11 (Xvfb + xdotool), for the build box. Mac: use the same sequence by hand
+# (RSS via `ps -o rss= -p PID`); the report format below is what to fill in.
+#
+# Usage: script/editor_mem_baseline BIN FILE [LABEL]
+#   BIN    phosphor binary (e.g. squashfs-root/opt/phosphor/phosphor-oss)
+#   FILE   absolute path of the 7 MB file (plain .txt and Rust .rs samples live in
+#          /home/winters/tmp-r18/linux-r18ba/big7/{big.txt,big.rs})
+#   Env:   DISP (default :87), PHOSPHOR_EDITOR_EAGER_LAYOUT=1 to measure the eager path.
+#          SEARCH_XY="560 17" -- where to click to focus the top search (as in the r18 runs)
+#          CLOSE_XY="1262 53" -- editor tab close button
+#
+# Reports (one line each, appended to $OUT/results.txt):
+#   rss_base   settled RSS before open
+#   rss_open   settled RSS after open
+#   open_s     seconds from Enter in the search box until RSS is stable (+-2 MB over 1.5 s)
+#   scroll_s   wall seconds for 300 wheel clicks delivered with --delay 0 and then idle
+#              (proxy for scroll frame cost: total / 300 = ms per click incl. paint)
+#   type_ms    wall ms for 40 characters typed at 10 ms/key mid-file minus the 400 ms
+#              nominal key time (proxy for typing latency; per-key = /40)
+#   rss_close  RSS 5 s after closing the tab
+# Per-editor memory breakdown: run with RUST_LOG=phosphor::editor_mem=debug and read
+# $OUT/app.stdout (logged by the render model when the editor lays out).
+set -euo pipefail
+BIN=${1:?bin}; FILE=${2:?file}; LABEL=${3:-run}
+D=${DISP:-:87}; OUT=${OUT:-/tmp/editor_mem_$LABEL}; mkdir -p "$OUT/home"
+export DISPLAY=$D
+SEARCH_XY=${SEARCH_XY:-"560 17"}; CLOSE_XY=${CLOSE_XY:-"1262 53"}
+[ -S /tmp/.X11-unix/X${D#:} ] || { Xvfb $D -screen 0 1600x1000x24 >"$OUT/xvfb.log" 2>&1 & sleep 1; }
+env -u GNOME_KEYRING_CONTROL -u SSH_AUTH_SOCK -u WAYLAND_DISPLAY \
+  HOME="$OUT/home" XDG_RUNTIME_DIR="$OUT" XDG_CONFIG_HOME="$OUT/home/.config" \
+  XDG_STATE_HOME="$OUT/home/.local/state" XDG_DATA_HOME="$OUT/home/.local/share" \
+  RUST_LOG="${RUST_LOG:-phosphor::editor_mem=debug}" \
+  dbus-run-session -- "$BIN" >"$OUT/app.stdout" 2>&1 &
+sleep 2
+PID=$(pgrep -f "$(basename "$BIN")\$" | head -1)
+rss(){ awk '/VmRSS/{print int($2/1024)}' /proc/$PID/status; }
+settle(){ # wait until RSS stable; echo seconds taken
+  local t0=$(date +%s.%N) a b; a=$(rss)
+  while sleep 1.5; do b=$(rss); [ $((b>a?b-a:a-b)) -le 2 ] && break; a=$b; done
+  echo "$(date +%s.%N) $t0" | awk '{printf "%.1f", $1-$2}'; }
+log(){ echo "$LABEL $*" | tee -a "$OUT/results.txt"; }
+settle >/dev/null; log "rss_base=$(rss)MB"
+xdotool mousemove $SEARCH_XY click 1; sleep 1; xdotool type --delay 20 -- "$FILE"; sleep 2
+t0=$(date +%s.%N); xdotool key Return
+sleep 1; settle >/dev/null; t1=$(date +%s.%N)
+log "open_s=$(echo "$t1 $t0" | awk '{printf "%.1f",$1-$2-2.5}') rss_open=$(rss)MB"
+xdotool mousemove 800 500
+s0=$(date +%s.%N); xdotool click --repeat 300 --delay 0 5; sleep 0.5; settle >/dev/null; s1=$(date +%s.%N)
+log "scroll_s=$(echo "$s1 $s0" | awk '{printf "%.2f",$1-$2-2}') (300 clicks) rss=$(rss)MB"
+xdotool click 1; sleep 0.3
+k0=$(date +%s.%N); xdotool type --delay 10 -- "abcdefghijklmnopqrstuvwxyzabcdefghijklmn"; sleep 0.3; settle >/dev/null; k1=$(date +%s.%N)
+log "type_ms=$(echo "$k1 $k0" | awk '{printf "%d",($2*0+$1-$2)*1000-400-300}') (40 keys @10ms, minus nominal) rss=$(rss)MB"
+xdotool mousemove $CLOSE_XY click 1; sleep 5
+log "rss_close=$(rss)MB"
+kill "$PID" 2>/dev/null || true
