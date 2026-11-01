@@ -576,21 +576,13 @@ impl TemplatableMCPServerManager {
     ) {
         if let Some(hash) = FileBasedMCPManager::as_ref(app).get_hash_by_uuid(installation_uuid) {
             self.file_based_server_credentials.insert(hash, credentials);
-            write_to_secure_storage(
-                app,
-                FILE_BASED_MCP_CREDENTIALS_KEY,
-                &self.file_based_server_credentials,
-            );
+            self.persist_credentials(app, FILE_BASED_MCP_CREDENTIALS_KEY);
             return;
         }
 
         if let Some(template_uuid) = self.get_template_uuid(installation_uuid) {
             self.server_credentials.insert(template_uuid, credentials);
-            write_to_secure_storage(
-                app,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-                &self.server_credentials,
-            );
+            self.persist_credentials(app, TEMPLATABLE_MCP_CREDENTIALS_KEY);
         } else {
             log::error!(
                 "Corresponding file or cloud-based server not found for installation UUID {installation_uuid}"
@@ -620,21 +612,13 @@ impl TemplatableMCPServerManager {
         // logout and a server-side revocation of the access token.
         if let Some(hash) = FileBasedMCPManager::as_ref(app).get_hash_by_uuid(installation_uuid) {
             self.file_based_server_credentials.remove(&hash);
-            write_to_secure_storage(
-                app,
-                FILE_BASED_MCP_CREDENTIALS_KEY,
-                &self.file_based_server_credentials,
-            );
+            self.persist_credentials(app, FILE_BASED_MCP_CREDENTIALS_KEY);
             return;
         }
 
         if let Some(template_uuid) = self.get_template_uuid(installation_uuid) {
             self.server_credentials.remove(&template_uuid);
-            write_to_secure_storage(
-                app,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-                &self.server_credentials,
-            );
+            self.persist_credentials(app, TEMPLATABLE_MCP_CREDENTIALS_KEY);
         } else {
             // Ported from the pin's throttle (`d2cb17abb`, #15498): this fires on the
             // spawn-failure/reconnect path (`native.rs`'s `spawn_server_process` error arm),
@@ -654,24 +638,31 @@ impl TemplatableMCPServerManager {
     }
 }
 
-/// Loads credentials from secure storage at the provided key.
+/// Parses the result of reading a credentials blob, logging unexpected failures.
+pub(crate) fn parse_credentials<T: DeserializeOwned + Default>(
+    raw: Result<String, warpui_extras::secure_storage::Error>,
+) -> T {
+    raw.inspect_err(|err| {
+        if !matches!(err, warpui_extras::secure_storage::Error::NotFound) {
+            log::warn!("Failed to read MCP credentials from secure storage: {err:#}");
+        }
+    })
+    .ok()
+    .and_then(|value| serde_json::from_str(&value).ok())
+    .unwrap_or_default()
+}
+
+/// Loads credentials from secure storage at the provided key. Synchronous: used only on rare
+/// paths (legacy conversion); startup reads go through the secure-storage worker (#1309).
 pub(crate) fn load_credentials_from_secure_storage<T: DeserializeOwned + Default>(
     app: &mut warpui::AppContext,
     key: &str,
 ) -> T {
-    app.secure_storage()
-        .read_value(key)
-        .inspect_err(|err| {
-            if !matches!(err, warpui_extras::secure_storage::Error::NotFound) {
-                log::warn!("Failed to read MCP credentials from secure storage: {err:#}");
-            }
-        })
-        .ok()
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_default()
+    parse_credentials(app.secure_storage().read_value(key))
 }
 
-/// Writes credentials to secure storage at the provided key.
+/// Writes credentials to secure storage at the provided key. The write is queued on the
+/// secure-storage worker, in order with every other write, instead of blocking the caller.
 pub(crate) fn write_to_secure_storage<T: Serialize>(
     app: &mut warpui::AppContext,
     key: &str,
@@ -679,15 +670,43 @@ pub(crate) fn write_to_secure_storage<T: Serialize>(
 ) {
     match serde_json::to_string(credentials) {
         Ok(json) => {
-            app.secure_storage()
-                .write_value(key, &json)
-                .inspect_err(|err| {
-                    log::error!("Failed to write MCP credentials to secure storage: {err:#}")
-                })
-                .ok();
+            let key = key.to_owned();
+            let _ = warpui_extras::secure_storage::background::run_or_inline(
+                move |storage| {
+                    storage
+                        .write_value(&key, &json)
+                        .inspect_err(|err| {
+                            log::error!(
+                                "Failed to write MCP credentials to secure storage: {err:#}"
+                            )
+                        })
+                        .ok();
+                },
+                app.secure_storage(),
+            );
         }
         Err(err) => {
             log::error!("Failed to serialize MCP credentials for secure storage: {err:#}");
+        }
+    }
+}
+
+impl TemplatableMCPServerManager {
+    /// Persists one of the two credential maps, unless the startup read is still in flight, in
+    /// which case it is written (merged with what is stored) when that read lands.
+    pub(super) fn persist_credentials(&mut self, app: &mut warpui::AppContext, key: &'static str) {
+        if self.credentials_loading {
+            if key == FILE_BASED_MCP_CREDENTIALS_KEY {
+                self.file_based_credentials_dirty = true;
+            } else {
+                self.templatable_credentials_dirty = true;
+            }
+            return;
+        }
+        if key == FILE_BASED_MCP_CREDENTIALS_KEY {
+            write_to_secure_storage(app, key, &self.file_based_server_credentials);
+        } else {
+            write_to_secure_storage(app, key, &self.server_credentials);
         }
     }
 }

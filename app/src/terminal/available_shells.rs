@@ -426,10 +426,51 @@ impl TryFrom<NewSessionShell> for AvailableShell {
 
 #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
 pub struct AvailableShells {
+    /// Result of the background PATH / `/etc/shells` scan (#1310). Filled once the scan thread
+    /// finishes; read lazily by [`Self::scanned`].
+    #[cfg(feature = "local_tty")]
+    scan: Arc<ShellScan>,
+    /// The scan result, adopted from `scan` the first time it is observed complete.
+    #[cfg(feature = "local_tty")]
+    result: std::sync::OnceLock<ScanResult>,
+    /// Stand-in served if the scan has not finished within the bounded wait.
+    #[cfg(feature = "local_tty")]
+    empty: ScanResult,
+    /// `PATH` the current scan was started with, to detect a change.
+    #[cfg(feature = "local_tty")]
+    scanned_path: std::ffi::OsString,
+    /// WSL distributions (Windows only), captured on the main thread when the scan starts.
+    #[cfg(feature = "local_tty")]
+    wsl_names: Vec<String>,
+}
+
+/// The discovered shells plus the per-name counts used for display disambiguation.
+#[cfg(feature = "local_tty")]
+#[derive(Default)]
+struct ScanResult {
     shells: Vec<AvailableShell>,
     /// A map of shell name to the number of times it appears in the list.
-    #[cfg(feature = "local_tty")]
     shell_counts: HashMap<String, usize>,
+}
+
+/// Hand-off slot between the scan thread and the model.
+#[cfg(feature = "local_tty")]
+#[derive(Default)]
+struct ShellScan {
+    done: std::sync::Mutex<Option<ScanResult>>,
+    cv: std::sync::Condvar,
+}
+
+/// How long a synchronous reader waits for an unfinished scan before serving the empty list.
+/// Bounded so a hung PATH entry (dead NFS mount) can never freeze the UI; the scan itself keeps
+/// running and later reads see its result. `PHOSPHOR_SHELL_SCAN_WAIT_MS` overrides it.
+#[cfg(feature = "local_tty")]
+fn scan_wait() -> std::time::Duration {
+    let ms = std::env::var("PHOSPHOR_SHELL_SCAN_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(300);
+    std::time::Duration::from_millis(ms)
 }
 
 #[cfg(not(feature = "local_tty"))]
@@ -446,11 +487,47 @@ impl AvailableShells {
 #[cfg(feature = "local_tty")]
 impl AvailableShells {
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
+        #[cfg(windows)]
+        let wsl_names: Vec<String> = super::wsl::WslInfo::as_ref(_ctx)
+            .distributions()
+            .map(|distro| distro.name.to_owned())
+            .collect();
+        #[cfg(not(windows))]
+        let wsl_names: Vec<String> = Vec::new();
+        let scanned_path = std::env::var_os("PATH").unwrap_or_default();
+        let scan = Self::start_scan(scanned_path.clone(), wsl_names.clone());
+        Self {
+            scan,
+            result: std::sync::OnceLock::new(),
+            empty: ScanResult::default(),
+            scanned_path,
+            wsl_names,
+        }
+    }
+
+    /// Starts the shell scan on a background thread. The scan is `canonicalize` + `stat` per
+    /// shell per PATH directory; on a slow PATH entry that used to stall launch (#1310).
+    fn start_scan(env_path: std::ffi::OsString, wsl_names: Vec<String>) -> Arc<ShellScan> {
+        let scan = Arc::new(ShellScan::default());
+        let slot = scan.clone();
+        let spawned = std::thread::Builder::new()
+            .name("available-shells-scan".into())
+            .spawn(move || {
+                let result = Self::scan_shells(&env_path, &wsl_names);
+                *slot.done.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+                slot.cv.notify_all();
+            });
+        if let Err(err) = spawned {
+            log::warn!("Failed to start the shell scan thread: {err}");
+        }
+        scan
+    }
+
+    fn scan_shells(env_path: &std::ffi::OsStr, _wsl_names: &[String]) -> ScanResult {
         let fallback_shells_path = cfg!(unix).then_some(Path::new("/etc/shells"));
 
-        let env_path = std::env::var_os("PATH").unwrap_or_default();
         #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut paths_to_search = std::env::split_paths(&env_path).collect::<Vec<PathBuf>>();
+        let mut paths_to_search = std::env::split_paths(env_path).collect::<Vec<PathBuf>>();
 
         // The PATH here is limited since it doesn't include the locations added
         // by the user's login shell. We add the Homebrew installer locations to
@@ -478,29 +555,60 @@ impl AvailableShells {
         let mut shells = Self::load_known_shells(&paths_to_search, fallback_shells_path);
 
         #[cfg(windows)]
-        {
-            let ctx = _ctx;
-            shells.extend(
-                super::wsl::WslInfo::as_ref(ctx)
-                    .distributions()
-                    .map(|distro| AvailableShell::new_wsl(distro.name.to_owned())),
-            );
-        }
+        shells.extend(_wsl_names.iter().cloned().map(AvailableShell::new_wsl));
 
         let shell_counts = shells.iter().fold(HashMap::new(), |mut counts, shell| {
             let count = counts.entry(shell.short_name().to_string()).or_insert(0);
             *count += 1;
             counts
         });
-        Self {
+        ScanResult {
             shells,
             shell_counts,
         }
     }
 
+    /// The scan result. Never blocks longer than [`scan_wait`]: if the background scan has not
+    /// finished, serves an empty list (callers already treat "shell not found" as the system
+    /// default) and a later call picks the result up.
+    fn scanned(&self) -> &ScanResult {
+        if let Some(result) = self.result.get() {
+            return result;
+        }
+        let mut guard = self.scan.done.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let (g, _timeout) = self
+                .scan
+                .cv
+                .wait_timeout_while(guard, scan_wait(), |done| done.is_none())
+                .unwrap_or_else(|e| e.into_inner());
+            guard = g;
+        }
+        match guard.take() {
+            Some(result) => {
+                drop(guard);
+                self.result.get_or_init(|| result)
+            }
+            None => &self.empty,
+        }
+    }
+
+    /// Restarts the scan if the process `PATH` differs from the one the last scan used.
+    /// Returns whether a rescan was started. The next reader waits (bounded) for the new scan.
+    pub fn rescan_if_path_changed(&mut self) -> bool {
+        let current = std::env::var_os("PATH").unwrap_or_default();
+        if current == self.scanned_path {
+            return false;
+        }
+        self.scan = Self::start_scan(current.clone(), self.wsl_names.clone());
+        self.result = std::sync::OnceLock::new();
+        self.scanned_path = current;
+        true
+    }
+
     /// Returns an iterable that iterates over all available shells.
     pub fn get_available_shells(&self) -> impl Iterator<Item = &AvailableShell> {
-        self.shells.iter()
+        self.scanned().shells.iter()
     }
 
     /// Returns the display name for a shell, context aware of the other
@@ -509,6 +617,7 @@ impl AvailableShells {
     /// the full name with the path to the executable.
     pub fn display_name_for_shell<'a>(&self, shell: &'a AvailableShell) -> Cow<'a, str> {
         if self
+            .scanned()
             .shell_counts
             .get::<str>(shell.short_name().as_ref())
             .is_some_and(|count| *count > 1)
@@ -539,7 +648,8 @@ impl AvailableShells {
     /// See [`AvailableShell::get_valid_shell_path_and_type`] for more information on how
     /// we generate these launch configs in the other direction.
     pub fn get_from_shell_launch_data(&self, config: &ShellLaunchData) -> Option<AvailableShell> {
-        self.shells
+        self.scanned()
+            .shells
             .iter()
             .find(|shell| match (shell.state.as_ref(), config) {
                 (Config::Wsl { distro }, ShellLaunchData::WSL { distro: d }) => distro == d,
@@ -592,6 +702,7 @@ impl AvailableShells {
             NewSessionShell::Custom(_) => AvailableShell::try_from(preference).unwrap_or_default(),
             // TODO(DAN): This should be cached in the model. Also handle custom
             preference => self
+                .scanned()
                 .shells
                 .iter()
                 .find(|shell| shell.matches_preference(&preference))
@@ -893,7 +1004,7 @@ impl AvailableShells {
             _ => startup_shell
                 .shell_command()
                 .and_then(|command| {
-                    for shell in self.shells.iter() {
+                    for shell in self.scanned().shells.iter() {
                         if let Config::KnownLocal(LocalConfig {
                             command: shell_command,
                             executable_path,
@@ -915,7 +1026,8 @@ impl AvailableShells {
 
     /// Finds the first shell that matches the given shell type.
     pub fn find_known_shell_by_type(&self, shell: ShellType) -> Option<AvailableShell> {
-        self.shells
+        self.scanned()
+            .shells
             .iter()
             .find(|s| matches!(s.state.as_ref(), Config::KnownLocal(LocalConfig { shell_type, .. }) if shell == *shell_type))
             .cloned()
@@ -935,7 +1047,8 @@ impl AvailableShells {
     /// case-insensitive and users commonly omit the `.exe` suffix, comparison
     /// ignores case and an optional trailing `.exe` on either side.
     pub fn find_by_command_name(&self, name: &str) -> Option<AvailableShell> {
-        self.shells
+        self.scanned()
+            .shells
             .iter()
             .find(|shell| {
                 let command = match shell.state.as_ref() {
