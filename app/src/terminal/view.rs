@@ -4163,6 +4163,14 @@ impl TerminalView {
 
         let _ = ctx.spawn_stream_local(resize_rx, Self::after_terminal_view_layout, |_, _| {});
 
+        // A path probe (link tooltip: file vs folder) landed: re-render now instead of
+        // showing the default until an unrelated repaint. Ends when this view is dropped.
+        let _ = ctx.spawn_stream_local(
+            crate::util::path_probe::subscribe(),
+            |_, _, ctx| ctx.notify(),
+            |_, _| {},
+        );
+
         let menu_positioning_provider = Arc::new(TerminalViewMenuPositioningProvider {
             parent: ctx.handle(),
         });

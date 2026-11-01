@@ -5,6 +5,10 @@
 //! a missing or stale entry returns the last known value (or the caller's default) and
 //! schedules ONE background re-probe. A path that becomes valid is therefore recognised on
 //! the first lookup after the entry's TTL; `invalidate_all` forces that immediately.
+//!
+//! Completion is an event: `subscribe()` yields a `PathProbed` whenever a result differs from
+//! what the last lookup returned. A stat that never returns (dead mount) is abandoned after
+//! `GIVE_UP` (logged) so it cannot hold one of the pool's workers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,18 +68,139 @@ enum Kind {
     IsDir,
 }
 
+/// Sent to subscribers when a probe lands a value different from the one the last lookup
+/// returned, so the requester can re-render instead of waiting for an unrelated repaint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathProbed {
+    pub path: PathBuf,
+    pub value: bool,
+}
+
+/// Safety net, not a poll: a `stat` that has not returned after this long is on a dead
+/// mount (no OS API offers a cancellable stat). The worker is released and the path stays
+/// "unknown" (default / last value) until the stat eventually returns.
+const GIVE_UP: Duration = Duration::from_secs(3);
+/// Cap on stat threads that are alive at once (stuck ones included).
+const MAX_STAT_THREADS: usize = 32;
+static STAT_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct Entry {
     value: Option<bool>,
+    /// What the most recent lookup returned (to notify only on a real change).
+    served: Option<bool>,
     probed_at: Option<Instant>,
     in_flight: bool,
 }
 
-#[derive(Default)]
 pub struct PathProbeCache {
     entries: Mutex<HashMap<(Kind, PathBuf), Entry>>,
+    subscribers: Mutex<Vec<async_channel::Sender<PathProbed>>>,
+    give_up: Duration,
+}
+
+impl Default for PathProbeCache {
+    fn default() -> Self {
+        Self::with_give_up(GIVE_UP)
+    }
 }
 
 impl PathProbeCache {
+    fn with_give_up(give_up: Duration) -> Self {
+        Self {
+            entries: Mutex::default(),
+            subscribers: Mutex::default(),
+            give_up,
+        }
+    }
+
+    /// Receive an event whenever a probe result differs from what lookups last returned.
+    /// Dropping the receiver unsubscribes (pruned on the next send).
+    pub fn subscribe(&self) -> async_channel::Receiver<PathProbed> {
+        let (tx, rx) = async_channel::unbounded();
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
+        rx
+    }
+
+    fn notify(&self, event: PathProbed) {
+        let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        subs.retain(|tx| tx.try_send(event.clone()).is_ok());
+    }
+
+    /// Stores a landed result; notifies if it differs from what was last served.
+    fn finish(&self, kind: Kind, path: &Path, result: bool) {
+        let changed = {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            match entries.get_mut(&(kind, path.to_path_buf())) {
+                Some(entry) => {
+                    entry.value = Some(result);
+                    entry.probed_at = Some(Instant::now());
+                    entry.in_flight = false;
+                    let changed = entry.served != Some(result);
+                    entry.served = Some(result);
+                    changed
+                }
+                None => false,
+            }
+        };
+        if changed {
+            self.notify(PathProbed {
+                path: path.to_path_buf(),
+                value: result,
+            });
+        }
+    }
+
+    fn clear_in_flight(&self, kind: Kind, path: &Path) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = entries.get_mut(&(kind, path.to_path_buf())) {
+            entry.in_flight = false;
+        }
+    }
+
+    /// Runs on a pool worker: stats on a dedicated thread and waits at most `give_up`, so a
+    /// dead mount can never hold a pool slot.
+    fn run_probe(&'static self, kind: Kind, path: PathBuf, probe: fn(&Path) -> bool) {
+        use std::sync::atomic::Ordering;
+        if STAT_THREADS.fetch_add(1, Ordering::SeqCst) >= MAX_STAT_THREADS {
+            STAT_THREADS.fetch_sub(1, Ordering::SeqCst);
+            log::warn!("path_probe: too many stuck stats; {path:?} stays unknown");
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = entries.get_mut(&(kind, path)) {
+                entry.in_flight = false;
+                entry.probed_at = Some(Instant::now());
+            }
+            return;
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let owned = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("stat-probe".into())
+            .spawn(move || {
+                let result = probe(&owned);
+                // A late result (after the worker gave up) still lands and notifies.
+                self.finish(kind, &owned, result);
+                STAT_THREADS.fetch_sub(1, Ordering::SeqCst);
+                let _ = done_tx.send(());
+            });
+        if spawned.is_err() {
+            STAT_THREADS.fetch_sub(1, Ordering::SeqCst);
+            self.clear_in_flight(kind, &path);
+            return;
+        }
+        if done_rx.recv_timeout(self.give_up).is_err() {
+            // in_flight deliberately stays true: no second stuck thread for this path; the
+            // late result (if any) clears it.
+            log::warn!(
+                "path_probe: stat of {path:?} still blocked after {:?}; releasing the worker, \
+                 path stays unknown",
+                self.give_up
+            );
+        }
+    }
+
     fn lookup(
         &'static self,
         kind: Kind,
@@ -90,6 +215,7 @@ impl PathProbeCache {
             }
             let entry = entries.entry((kind, path.to_path_buf())).or_insert(Entry {
                 value: None,
+                served: None,
                 probed_at: None,
                 in_flight: false,
             });
@@ -98,28 +224,19 @@ impl PathProbeCache {
             if spawn {
                 entry.in_flight = true;
             }
-            (entry.value.unwrap_or(default), spawn)
+            let value = entry.value.unwrap_or(default);
+            entry.served = Some(value);
+            (value, spawn)
         };
         if spawn {
             let owned = path.to_path_buf();
             let cache: &'static PathProbeCache = self;
-            let task: Task = Box::new(move || {
-                let result = probe(&owned);
-                let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = entries.get_mut(&(kind, owned)) {
-                    entry.value = Some(result);
-                    entry.probed_at = Some(Instant::now());
-                    entry.in_flight = false;
-                }
-            });
+            let task: Task = Box::new(move || cache.run_probe(kind, owned, probe));
             // Bounded queue + fixed worker pool: hovering many links can never create many
             // threads. If the queue is full the probe is simply dropped and retried by a
             // later lookup.
             if !submit(task) {
-                let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(entry) = entries.get_mut(&(kind, path.to_path_buf())) {
-                    entry.in_flight = false;
-                }
+                self.clear_in_flight(kind, path);
             }
         }
         value
@@ -146,6 +263,11 @@ static GLOBAL: std::sync::OnceLock<PathProbeCache> = std::sync::OnceLock::new();
 
 pub fn global() -> &'static PathProbeCache {
     GLOBAL.get_or_init(PathProbeCache::default)
+}
+
+/// Subscribe to probe-completion events from the global cache.
+pub fn subscribe() -> async_channel::Receiver<PathProbed> {
+    global().subscribe()
 }
 
 /// `path.exists()` without touching the filesystem on the calling thread. Unknown paths
@@ -225,5 +347,71 @@ mod tests {
             })
             .unwrap_or(0);
         assert!(count <= WORKERS, "{count} probe threads");
+    }
+
+    fn blocking_probe(p: &Path) -> bool {
+        if p.ends_with("blocked") {
+            // Simulates a stat on a dead mount: returns only when released.
+            while !RELEASE.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        false
+    }
+    static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    #[test]
+    fn completion_notifies_subscriber_once_with_the_real_value() {
+        let cache: &'static PathProbeCache = Box::leak(Box::default());
+        let rx = cache.subscribe();
+        let p = std::env::temp_dir().join("path-probe-notify-missing-xyz");
+        // Default says it exists; the real answer is false.
+        assert!(cache.lookup(Kind::Exists, &p, true, |p| p.exists()));
+        let ev = rx.recv_blocking().unwrap();
+        assert_eq!(
+            ev,
+            PathProbed {
+                path: p.clone(),
+                value: false
+            }
+        );
+        // A refresh that finds the same value is not a change: no second event.
+        cache.invalidate_all();
+        assert!(!cache.lookup(Kind::Exists, &p, true, |p| p.exists()));
+        wait_for(cache, Kind::Exists, &p, false);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn dropped_subscriber_is_pruned_without_panic() {
+        let cache: &'static PathProbeCache = Box::leak(Box::default());
+        let rx = cache.subscribe();
+        drop(rx);
+        let p = std::env::temp_dir().join("path-probe-notify-dropped-xyz");
+        cache.lookup(Kind::Exists, &p, true, |p| p.exists());
+        wait_for(cache, Kind::Exists, &p, false);
+        assert!(cache.subscribers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_blocked_stat_does_not_stop_other_paths_resolving() {
+        let cache: &'static PathProbeCache = Box::leak(Box::new(PathProbeCache::with_give_up(
+            Duration::from_millis(50),
+        )));
+        let base = std::env::temp_dir().join("path-probe-blocked");
+        // More stuck probes than workers: without the give-up the pool would be exhausted.
+        for i in 0..WORKERS + 2 {
+            cache.lookup(
+                Kind::Exists,
+                &base.join(format!("d{i}")).join("blocked"),
+                true,
+                blocking_probe,
+            );
+        }
+        let ok = base.join("fine");
+        cache.lookup(Kind::Exists, &ok, true, blocking_probe);
+        wait_for(cache, Kind::Exists, &ok, false);
+        RELEASE.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

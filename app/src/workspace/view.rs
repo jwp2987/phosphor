@@ -2970,6 +2970,17 @@ impl Workspace {
             settings_file_error,
         } = global_resource_handles.clone();
 
+        // A path probe landed (e.g. a persisted workspace no longer exists): rebuild the
+        // worktree sidecar if open so the list is corrected without waiting for a repaint.
+        let _ = ctx.spawn_stream_local(
+            crate::util::path_probe::subscribe(),
+            |me, _, ctx| {
+                me.refresh_worktree_sidecar_if_active(ctx);
+                ctx.notify();
+            },
+            |_, _| {},
+        );
+
         // Inserting a (window, ModalSizes) pair to the ResizableData singleton. A restored window
         // reads the sizes from the window snapshot. A new window initializes with all default sizes.
         let resizable_data = ResizableData::handle(ctx);
