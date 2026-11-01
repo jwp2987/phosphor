@@ -316,6 +316,10 @@ fn run_ops(ops: &[Op]) {
     assert_eq!(q.queued_len(), 0, "queue wedged");
     h.enter_opens_gate = false;
     h.facts = open_facts();
+    // A requeue scheduled for an id no entry reached yet would turn the probe into a hold; it is
+    // a scripted later-stage decision, not a queue wedge (shrunk case: `[RequeueNext]` alone).
+    h.requeue.clear();
+    m.requeue.clear();
     let before = h.delivered.len();
     q.offer(&mut h, text("probe"));
     assert_eq!(
