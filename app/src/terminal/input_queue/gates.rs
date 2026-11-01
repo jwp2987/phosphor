@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use super::{EntryId, is_editor_paste_id};
+use super::EntryId;
 
 /// What a gate waits for. Each variant names the legacy buffer it will replace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -170,56 +170,6 @@ impl GateKind {
         }
     }
 
-    /// Whether keys typed into the INPUT EDITOR wait behind a gate of this kind (the table of the
-    /// merge, design a4). On the pane's shared queue the editor must not start holding keys behind
-    /// gates that only the pty cares about, so this is parity with the two-instance behaviour: an
-    /// editor key is held only by the gates that lived on the editor's own queue (a paste being
-    /// read for the editor, an Enter waiting for its verdict or a Tab completion) plus the
-    /// hand-off report. `PasteReading` holds editor keys only for an EDITOR-owned paste
-    /// ([`Gate::holds_editor_keys`] looks at the id). Flipping a row to true later is the
-    /// deliberate step that retires `EditorKeyHold`.
-    pub fn holds_editor_keys(self) -> bool {
-        match self {
-            GateKind::PasteReading
-            | GateKind::EnterVerdict
-            | GateKind::TabCompletion
-            | GateKind::HandoffReport
-            | GateKind::EditorDisplayMap => true,
-            GateKind::CliSubmit
-            | GateKind::PtyRouteSettling
-            | GateKind::PromptSeen
-            | GateKind::LineEditorActive
-            | GateKind::SubshellSetup
-            | GateKind::PowershellSetup
-            | GateKind::SubshellBootstrapWrite
-            | GateKind::SshConnect
-            | GateKind::EditorFocusPending => false,
-        }
-    }
-
-    /// Whether keys typed for the PTY wait behind a gate of this kind: every gate that lived on
-    /// the terminal view's own queue, and none of the editor's (an Enter waiting for its verdict
-    /// never held pty keys). `PasteReading` holds pty keys only for a PTY-owned paste
-    /// ([`Gate::holds_pty_keys`] looks at the id).
-    pub fn holds_pty_keys(self) -> bool {
-        match self {
-            GateKind::EnterVerdict
-            | GateKind::TabCompletion
-            | GateKind::EditorFocusPending
-            | GateKind::EditorDisplayMap => false,
-            GateKind::PasteReading
-            | GateKind::CliSubmit
-            | GateKind::HandoffReport
-            | GateKind::PtyRouteSettling
-            | GateKind::PromptSeen
-            | GateKind::LineEditorActive
-            | GateKind::SubshellSetup
-            | GateKind::PowershellSetup
-            | GateKind::SubshellBootstrapWrite
-            | GateKind::SshConnect => true,
-        }
-    }
-
     /// The give-up cap proposed by the design (existing values kept as caps only). `None` means
     /// the opener must supply one (the bootstrap gate's cap is N lines x 2 s).
     pub fn default_cap(self) -> Option<Duration> {
@@ -283,20 +233,4 @@ pub struct Gate {
     /// Entries with `id >= barrier` wait. Arrival order is the only position there is.
     pub barrier: EntryId,
     pub cap: Option<Duration>,
-}
-
-impl Gate {
-    /// Keys typed into the input editor wait behind this gate ([`GateKind::holds_editor_keys`]; a
-    /// paste gate only when the paste is the editor's).
-    pub fn holds_editor_keys(&self) -> bool {
-        self.kind.holds_editor_keys()
-            && (self.kind != GateKind::PasteReading || is_editor_paste_id(self.key))
-    }
-
-    /// Keys typed for the pty wait behind this gate ([`GateKind::holds_pty_keys`]; a paste gate
-    /// only when the paste is the pty's).
-    pub fn holds_pty_keys(&self) -> bool {
-        self.kind.holds_pty_keys()
-            && (self.kind != GateKind::PasteReading || !is_editor_paste_id(self.key))
-    }
 }

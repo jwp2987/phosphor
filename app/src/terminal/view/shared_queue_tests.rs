@@ -38,11 +38,10 @@ fn flat(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> Vec<u8> {
 }
 
 /// X6, the "exactly one holder" proof: what the LEGACY holders of this pane hold right now (the
-/// subshell buffers, the ssh typeahead, the pty paste sequencer, the editor's replay list). On the
+/// PowerShell setup buffer, the editor's replay list). On the
 /// queue path every one of them must be empty while the queue holds the keys.
 fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
     let setup: usize = view.subshell_setup_held_bytes.iter().map(Vec::len).sum();
-    let ssh = usize::from(!view.ssh_typeahead.is_empty());
     let replay = usize::from(
         view.input
             .as_ref(ctx)
@@ -51,7 +50,7 @@ fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
             .paste_hold()
             .replay_pending(),
     );
-    setup + ssh + replay
+    setup + replay
 }
 
 #[test]
@@ -92,14 +91,14 @@ fn the_editor_and_the_view_share_one_queue() {
     })
 }
 
-/// Parity (the table of `GateKind::holds_editor_keys` / `holds_pty_keys`): an Enter waiting for
-/// its verdict holds keys typed into the editor, never keys typed for the pty. On the shared queue
-/// this is what keeps the merge from changing behaviour: a pty key still goes straight out.
+/// Every gate holds every key: an Enter waiting for its verdict holds keys typed into the editor
+/// AND keys typed for the pty, in arrival order (there is no editor/pty parity table any more).
 #[test]
-fn an_enter_gate_holds_editor_keys_but_not_pty_keys_on_either_wiring() {
+fn an_enter_gate_holds_editor_keys_and_pty_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
         let input = terminal.read(&app, |view, _| view.input.clone());
         input.update(&mut app, |input, ctx| {
             input.open_submitted_enter_gate_awaiting_pty_for_test(ctx)
@@ -112,11 +111,7 @@ fn an_enter_gate_holds_editor_keys_but_not_pty_keys_on_either_wiring() {
                 .as_ref(ctx)
                 .paste_hold()
                 .queue();
-            {
-                let queue = editor_queue.peek();
-                assert!(queue.holds_editor_keys(), "the Enter holds editor keys");
-                assert!(!queue.holds_pty_keys(), "and never held a pty key");
-            }
+            assert!(editor_queue.peek().holds_keys(), "the Enter holds keys");
             assert!(
                 view.input
                     .as_ref(ctx)
@@ -125,10 +120,17 @@ fn an_enter_gate_holds_editor_keys_but_not_pty_keys_on_either_wiring() {
                     .paste_hold()
                     .queue_is_busy()
             );
-            // A pty key typed now is not offered to the queue at all.
-            assert_eq!(view.offer_to_paste_queue(b"z", true, false, ctx), None);
+            // A pty key typed now is offered to the queue and waits behind the Enter.
+            assert_eq!(
+                view.offer_to_paste_queue(b"z", true, false, ctx),
+                Some(true)
+            );
             assert_eq!(legacy_held(view, ctx), 0);
         });
+        assert!(
+            flat(&pty_writes).is_empty(),
+            "the pty key waits behind the Enter"
+        );
     })
 }
 

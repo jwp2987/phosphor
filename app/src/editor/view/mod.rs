@@ -1,6 +1,5 @@
 mod element;
 mod figma_utils;
-mod key_hold;
 mod model;
 mod movement;
 mod paste_hold;
@@ -13,7 +12,6 @@ mod voice;
 /// you should carefully consider if it leaks the internal details of the editor.
 pub use {
     element::{EditorDecoratorElements, EditorElement, TextColors},
-    key_hold::{EditorKeyHold, HeldEditorKey, TakenKeys},
     model::{
         Chars, CrdtOperation, DisplayPoint, EditOrigin, EditorSnapshot, InteractionState,
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
@@ -1878,7 +1876,6 @@ pub struct EditorView {
     pending_autosuggestion_accept: Option<String>,
     /// Set on the input's editor by the terminal view: while active, editing keys are queued
     /// there instead of applied, so keys typed during an ssh connect keep their order (#1292).
-    key_hold: Option<Rc<EditorKeyHold>>,
     /// Keys typed while a paste is being read off the UI thread; replayed behind it (#1300).
     paste_hold: Rc<EditorPasteHold>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
@@ -3022,12 +3019,6 @@ impl VimHandler for EditorView {
 }
 
 impl EditorView {
-    /// Installs the hold the terminal view uses to keep the keys typed during an ssh connect in
-    /// order (#1292).
-    pub fn set_key_hold(&mut self, hold: Rc<EditorKeyHold>) {
-        self.key_hold = Some(hold);
-    }
-
     /// The hold that queues keys typed while a paste is read off the UI thread (#1300).
     pub fn paste_hold(&self) -> Rc<EditorPasteHold> {
         Rc::clone(&self.paste_hold)
@@ -3158,17 +3149,30 @@ impl EditorView {
         }
         let queue = self.paste_hold.queue();
         if matches!(action, EditorAction::CtrlC) {
-            let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-            queue
-                .lock()
-                .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
-            self.flush_held_replay_now(ctx);
+            // The signal rules concern the gates that wait on the editor's own input (a paste it
+            // reads, an Enter waiting for its verdict or report, the display map). Other gates
+            // (an ssh connect, a subshell setup, ...) are ended by their own events and the
+            // terminal's interrupt handling, not by an interrupt typed in the editor.
+            if editor_interrupt_meets_gate(&queue) {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                queue
+                    .lock()
+                    .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
+                self.flush_held_replay_now(ctx);
+            }
             return false;
         }
         // A paste typed behind a paste is not held: it acts at once and queues its own entry
         // behind this one's gate, so arrival order is kept without replaying it later.
         if matches!(action, EditorAction::Paste | EditorAction::MiddleClickPaste) {
             return false;
+        }
+        // An ssh connect holds the pane's keys as content to route at the hand-over (#1292).
+        if queue
+            .peek()
+            .has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+        {
+            return self.offer_ssh_held_key(action, &queue, ctx);
         }
         // #1353 phase 3: an Enter waits for its verdict (or for the route it submitted to to
         // settle). What is typed behind it is held as plain Text / Enter entries, never put into
@@ -3209,10 +3213,8 @@ impl EditorView {
     /// is active or still settling, and how long the buffer is BEFORE the key is applied (the next
     /// key's count shows whether this one stuck).
     fn trace_key_action(&self, action: &EditorAction, ctx: &AppContext) {
-        let Some(hold) = self.key_hold.as_ref() else {
-            return;
-        };
-        if !warpui::input_order::enabled() {
+        // Only the terminal input's editor (the one on the pane's shared queue) is traced.
+        if !self.paste_hold.display_gate_enabled() || !warpui::input_order::enabled() {
             return;
         }
         let kind = match action {
@@ -3223,10 +3225,9 @@ impl EditorView {
         };
         warpui::input_order::log_key_hop("kh_editor_action", || {
             format!(
-                "kind={kind} focused={} hold_active={} settling={} buffer_chars={} buffer={}",
+                "kind={kind} focused={} hold_active={} buffer_chars={} buffer={}",
                 self.is_focused(),
-                hold.is_active(),
-                hold.rescues_unclaimed_keys() && !hold.is_active(),
+                self.paste_hold.queue().ssh_hold_active(),
                 self.buffer_text(ctx).chars().count(),
                 // #1393: the editor's text before this key, so a reordered line is visible in
                 // the log (redacted unless WARP_INPUT_ORDER_LOG_TEXT=1, like every key).
@@ -3235,34 +3236,47 @@ impl EditorView {
         });
     }
 
-    /// Queues `action` on the key hold instead of applying it, if the hold is active and the
-    /// action is an editing key it can replay. Everything else (Ctrl-C, Escape, Tab, ...) acts
-    /// normally.
-    fn hold_key_for_terminal(&self, action: &EditorAction) -> bool {
-        let Some(hold) = self.key_hold.as_ref().filter(|hold| hold.is_active()) else {
-            return false;
-        };
-        let key = match action {
+    /// An ssh connect is in flight (#1292) and its gate holds the pane's keys: the editor key joins
+    /// the ONE ordered hold as an entry of the pane queue (origin: the editor), carrying what was
+    /// typed. Where it goes is decided when the hand-over drains it, with the facts of that moment,
+    /// exactly as for a key typed on the terminal. Editing keys the hold can replay are taken;
+    /// everything else (Ctrl-C, Escape, Tab, ...) acts normally. Returns whether the key was taken.
+    fn offer_ssh_held_key(
+        &mut self,
+        action: &EditorAction,
+        queue: &crate::terminal::input_queue::PaneQueue,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EntryKind, HELD_KEY, HELD_SEQ, HELD_TYPED, Origin};
+        let (class, text) = match action {
             EditorAction::UserInsert(text) => {
                 // #1400: the terminal element sees the same typed-characters event and may have
-                // offered it to the ssh hold already (it runs first, and it also takes it when
-                // this editor is not reached at all). Offered exactly once: this copy is dropped.
-                if hold.take_offered(warpui::input_order::typed_dispatch_seq(), text.as_ref()) {
+                // offered it already (it runs first, and it also takes it when this editor is not
+                // reached at all). Offered exactly once: this copy is dropped.
+                if queue
+                    .take_typed_offered(warpui::input_order::typed_dispatch_seq(), text.as_ref())
+                {
                     return true;
                 }
-                HeldEditorKey::Text(String::clone(text))
+                (HELD_TYPED, String::clone(text))
             }
-            EditorAction::Enter => HeldEditorKey::Control("\r"),
-            EditorAction::Backspace => HeldEditorKey::Control("\u{7f}"),
-            EditorAction::DeleteAllLeft => HeldEditorKey::Control("\u{15}"),
-            EditorAction::DeleteWordLeft => HeldEditorKey::Control("\u{17}"),
-            EditorAction::Up => HeldEditorKey::Sequence("\u{1b}[A"),
-            EditorAction::Down => HeldEditorKey::Sequence("\u{1b}[B"),
-            EditorAction::Right => HeldEditorKey::Sequence("\u{1b}[C"),
-            EditorAction::Left => HeldEditorKey::Sequence("\u{1b}[D"),
+            EditorAction::Enter => (HELD_KEY, "\r".to_owned()),
+            EditorAction::Backspace => (HELD_KEY, "\u{7f}".to_owned()),
+            EditorAction::DeleteAllLeft => (HELD_KEY, "\u{15}".to_owned()),
+            EditorAction::DeleteWordLeft => (HELD_KEY, "\u{17}".to_owned()),
+            EditorAction::Up => (HELD_SEQ, "\u{1b}[A".to_owned()),
+            EditorAction::Down => (HELD_SEQ, "\u{1b}[B".to_owned()),
+            EditorAction::Right => (HELD_SEQ, "\u{1b}[C".to_owned()),
+            EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
             _ => return false,
         };
-        hold.push(key);
+        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+        queue
+            .lock()
+            .offer_with_origin(&mut host, EntryKind::Held { class, text }, Origin::Editor);
+        warpui::input_order::log_key_hop("kh_editor_held", || {
+            "queued_for_terminal=true".to_owned()
+        });
         true
     }
 
@@ -3555,7 +3569,6 @@ impl EditorView {
             cursor_display_override,
             autosuggestion_state: None,
             pending_autosuggestion_accept: None,
-            key_hold: None,
             paste_hold: Rc::default(),
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
@@ -9083,12 +9096,6 @@ impl TypedActionView for EditorView {
     fn handle_action(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) {
         use EditorAction::*;
         self.trace_key_action(action, ctx);
-        if self.hold_key_for_terminal(action) {
-            warpui::input_order::log_key_hop("kh_editor_held", || {
-                "queued_for_terminal=true".to_owned()
-            });
-            return;
-        }
         if self.hold_key_for_paste(action, ctx) {
             return;
         }
@@ -9395,7 +9402,7 @@ impl View for EditorView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
-        if self.key_hold.is_some() {
+        if self.paste_hold.display_gate_enabled() {
             // #1345: the terminal input's editor gaining focus.
             warpui::input_order::log_key_hop("kh_focus_editor", || {
                 format!("self_focused={}", focus_ctx.is_self_focused())
@@ -9454,6 +9461,19 @@ pub fn position_id_for_cursor(editor_view_id: EntityId) -> String {
 /// last cursor position, when there are multiple.
 pub fn position_id_for_first_cursor(editor_view_id: EntityId) -> String {
     format!("editor:first_cursor_{editor_view_id}")
+}
+
+/// Whether an interrupt typed in the editor meets a gate that waits on the editor's own input.
+fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) -> bool {
+    use crate::terminal::input_queue::{GateKind, is_editor_paste_id};
+    queue.peek().gates().iter().any(|gate| match gate.kind {
+        GateKind::PasteReading => is_editor_paste_id(gate.key),
+        GateKind::EnterVerdict
+        | GateKind::TabCompletion
+        | GateKind::HandoffReport
+        | GateKind::EditorDisplayMap => true,
+        _ => false,
+    })
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::kill_switch::{Area, parse_enabled};
 use super::*;
 
 // ---- mock host ------------------------------------------------------------------------------
@@ -611,25 +610,6 @@ fn enter_gate_releases_keys_in_typed_order_on_its_event() {
         !q.on_gate_event(&mut h, GateKind::EnterVerdict, 1),
         "a late duplicate event is a no-op"
     );
-}
-
-#[test]
-fn kill_switch_parsing() {
-    for area in Area::ALL {
-        assert!(parse_enabled(None, None, area), "default on");
-        assert!(!parse_enabled(None, Some("0"), area));
-        assert!(!parse_enabled(Some("legacy"), None, area));
-        assert!(!parse_enabled(Some("0"), None, area));
-        assert!(
-            parse_enabled(Some("legacy"), Some("1"), area),
-            "per-area wins"
-        );
-        assert!(!parse_enabled(Some("all"), Some("off"), area));
-    }
-    assert!(parse_enabled(Some("paste, ssh"), None, Area::Paste));
-    assert!(parse_enabled(Some("paste, ssh"), None, Area::Ssh));
-    assert!(!parse_enabled(Some("paste, ssh"), None, Area::Enter));
-    assert_eq!(Area::Subshell.env_var(), "PHOSPHOR_INPUT_QUEUE_SUBSHELL");
 }
 
 #[test]

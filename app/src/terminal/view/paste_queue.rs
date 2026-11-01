@@ -307,18 +307,18 @@ impl TerminalView {
         abort_as_entry: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Option<bool> {
-        // Nothing holds pty keys: the queue is idle, or (shared with the editor) only editor gates
-        // are open, which never held a pty key.
+        // Nothing holds keys: the queue is idle (or mid-drain: this write is part of delivering an
+        // entry). Every gate holds every key, whichever route typed it.
         if self
             .paste_queue
             .queue
             .try_peek()
-            .map_or(true, |queue| !queue.holds_pty_keys())
+            .map_or(true, |queue| !queue.holds_keys())
         {
             return None;
         }
         // Only the ssh connect hold is open: it holds its own keys (before they get here); what
-        // reaches the writer now was never held by the legacy ssh hold either.
+        // reaches the writer now is a deliberate pass-through or passive traffic.
         if self.only_ssh_gates_open() {
             return None;
         }
@@ -330,7 +330,7 @@ impl TerminalView {
                 .paste_queue
                 .queue
                 .try_peek()
-                .map_or(true, |queue| !queue.holds_pty_keys())
+                .map_or(true, |queue| !queue.holds_keys())
             {
                 return None;
             }
@@ -1013,16 +1013,12 @@ impl TerminalView {
                 Some(queue) => (
                     queue.has_gate_kind(GateKind::SubshellSetup),
                     queue.has_gate_kind(GateKind::SubshellBootstrapWrite),
-                    queue
-                        .gates()
-                        .iter()
-                        .filter(|gate| gate.holds_pty_keys())
-                        .all(|gate| {
-                            matches!(
-                                gate.kind,
-                                GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
-                            )
-                        }),
+                    queue.gates().iter().all(|gate| {
+                        matches!(
+                            gate.kind,
+                            GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
+                        )
+                    }),
                 ),
                 None => return SubshellPrep::Normal,
             };

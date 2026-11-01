@@ -237,16 +237,15 @@ impl EditorPasteHold {
         self.map_fresh.set(fresh);
     }
 
-    /// The queue holds input that keys typed into the editor must wait behind: a paste being read
-    /// for the editor, an Enter waiting for its verdict (see [`GateKind::holds_editor_keys`]; on a
-    /// queue shared with the terminal view, gates that only hold pty keys do not count). False
-    /// while the queue is mid-drain: a key applied by a delivery is part of that delivery and must
-    /// not be held again.
+    /// The queue holds input that keys typed into the editor must wait behind: any open gate (a
+    /// paste being read, an Enter waiting for its verdict, an ssh connect, a subshell setup, ...),
+    /// or entries still queued. Every gate holds every key. False while the queue is mid-drain: a
+    /// key applied by a delivery is part of that delivery and must not be held again.
     pub fn queue_is_busy(&self) -> bool {
         self.pane_queue
             .borrow()
             .try_peek()
-            .is_some_and(|queue| queue.holds_editor_keys())
+            .is_some_and(|queue| queue.holds_keys())
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already

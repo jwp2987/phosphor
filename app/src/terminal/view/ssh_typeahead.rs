@@ -1,5 +1,9 @@
 //! Typeahead held while an ssh connect is in flight (#1292, #983).
 //!
+//! The holder is the pane's input queue (`ssh_queue.rs`); this module keeps the form of one held
+//! input ([`HeldInput`]) and [`SshTypeahead`], now only a value used to merge adjacent printable
+//! runs and to render the held run as text for a connect that never produced a remote shell.
+//!
 //! Between the Enter on an `ssh ...` command and the moment the remote shell is bootstrapped and
 //! showing its first prompt, keys typed into the pane must not reach the pty: they would be
 //! interleaved with the bootstrap script the app injects (the original #983 corruption) or be
@@ -12,6 +16,8 @@
 
 use std::fmt;
 use std::time::Duration;
+
+use crate::terminal::input_queue::{HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_TYPED};
 
 /// Most bytes held for one connect. A connect that hangs must not grow the buffer without limit;
 /// past this the whole buffer is dropped (a truncated command line must never run) and further
@@ -83,19 +89,19 @@ impl HeldInput {
     /// The `(class, text)` an input-queue `Held` entry carries (#1353 phase 4).
     pub(super) fn into_parts(self) -> (u8, String) {
         match self {
-            Self::Typed(s) => (0, s),
-            Self::Key(s) => (1, s),
-            Self::Paste(s) => (2, s),
-            Self::Seq(s) => (3, s),
+            Self::Typed(s) => (HELD_TYPED, s),
+            Self::Key(s) => (HELD_KEY, s),
+            Self::Paste(s) => (HELD_PASTE, s),
+            Self::Seq(s) => (HELD_SEQ, s),
         }
     }
 
     /// Inverse of [`HeldInput::into_parts`].
     pub(super) fn from_parts(class: u8, text: String) -> Self {
         match class {
-            0 => Self::Typed(text),
-            1 => Self::Key(text),
-            2 => Self::Paste(text),
+            HELD_TYPED => Self::Typed(text),
+            HELD_KEY => Self::Key(text),
+            HELD_PASTE => Self::Paste(text),
             _ => Self::Seq(text),
         }
     }
@@ -149,6 +155,7 @@ impl SshTypeahead {
         SshTypeaheadPush::Held
     }
 
+    #[cfg(test)]
     /// Gives up the whole buffer as if it had grown past its bound (the editor's own queue did).
     pub(super) fn overflow(&mut self) -> SshTypeaheadPush {
         if self.overflowed {
@@ -160,11 +167,13 @@ impl SshTypeahead {
         SshTypeaheadPush::Overflowed
     }
 
+    #[cfg(test)]
     /// Nothing is held (an overflowed buffer holds nothing).
     pub(super) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
+    #[cfg(test)]
     /// Bytes held; for logging, never the content.
     pub(super) fn len_bytes(&self) -> usize {
         self.bytes
@@ -175,6 +184,7 @@ impl SshTypeahead {
         self.overflowed
     }
 
+    #[cfg(test)]
     /// Forgets everything, including an overflow.
     pub(super) fn clear(&mut self) {
         *self = Self::default();

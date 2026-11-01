@@ -443,9 +443,7 @@ use crate::banner::{
     DismissalType,
 };
 use crate::debounce::debounce;
-use crate::editor::{
-    AutosuggestionType, CrdtOperation, EditorAction, EditorKeyHold, HeldEditorKey,
-};
+use crate::editor::{AutosuggestionType, CrdtOperation, EditorAction};
 use crate::features::FeatureFlag;
 use crate::pane_group::SplitPaneState;
 use crate::pane_group::{
@@ -517,8 +515,7 @@ use crate::terminal::view::inline_banner::{
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::ssh_typeahead::{
-    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeahead, SshTypeaheadPush,
-    delivery_waits_for_first_precmd,
+    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeaheadPush, delivery_waits_for_first_precmd,
 };
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
 use crate::terminal::{
@@ -2519,7 +2516,9 @@ pub struct TerminalViewRenderContext {
     /// Views inside the terminal that take typed text themselves (the find bar, the block filter
     /// editor): a key typed there is theirs, never rescued by the block list (#1397).
     pub own_text_view_ids: Vec<EntityId>,
-    pub ssh_key_hold: Rc<EditorKeyHold>,
+    /// The pane's one input queue: the element reads whether the ssh hold is active from it and
+    /// marks the typed-characters events it offered (#1332, #1400).
+    pub pane_queue: crate::terminal::input_queue::PaneQueue,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -3124,15 +3123,6 @@ pub struct TerminalView {
     /// Listeners woken on every terminal output wakeup (one coalesced signal each). Used by the
     /// agent driver's harness output monitor (#1381).
     output_listeners: Vec<async_channel::Sender<()>>,
-    /// Shared with the input's editor: while `ssh_typeahead_holding` it queues every editing key
-    /// that reaches it here instead of applying it, so keys typed after focus moved to the editor
-    /// but before the held keys are delivered keep their order (#1292).
-    ssh_editor_key_hold: Rc<EditorKeyHold>,
-    /// The keys held while the ssh connect is in flight (#1292), exactly as typed. With the input
-    /// queue (#1353 phase 4, the default) the held keys are entries behind an `SshConnect` gate
-    /// and this buffer is the legacy path (`PHOSPHOR_INPUT_QUEUE_SSH=0`) plus keys held while the
-    /// queue was mid-delivery.
-    ssh_typeahead: SshTypeahead,
     /// The queue side of the ssh hold: the open gate and what it holds.
     ssh_iq: ssh_queue::SshQueueState,
     /// A held paste whose text the paste handler has still to store.
@@ -4456,29 +4446,11 @@ impl TerminalView {
         });
 
         let input_position_id = input.read(ctx, |input, _| input.save_position_id());
-        let ssh_editor_key_hold = Rc::new(EditorKeyHold::default());
-        input.update(ctx, |input, ctx| {
-            input.set_editor_key_hold(ssh_editor_key_hold.clone(), ctx)
-        });
         // #1353 step 3: the pane has ONE input queue. The input's editor adopts the view's, and
         // a drain the editor side has to stop (an entry only this view can deliver) pokes the
-        // queue's waker so this view continues it. Event driven: nothing polls.
-        // #1400: a key the editor queued for the ssh hold (arrows, Backspace, ...) joins the
-        // ordered hold the moment it arrives, instead of sitting in the editor's side queue until
-        // the next terminal key or the hand-over. Event driven: the editor pokes this channel.
-        {
-            let (wake_tx, wake_rx) = async_channel::bounded::<()>(1);
-            ssh_editor_key_hold.set_waker(wake_tx);
-            let _ = ctx.spawn_stream_local(
-                wake_rx,
-                |me, _, ctx| {
-                    if me.ssh_iq.enabled && me.ssh_typeahead_holding {
-                        me.drain_editor_keys_into_ssh_hold(ctx);
-                    }
-                },
-                |_, _| {}, /* on_done */
-            );
-        }
+        // queue's waker so this view continues it. Event driven: nothing polls. A key the editor
+        // types during an ssh connect (#1400) is offered to that same queue as an entry of its own
+        // origin, so it is ordered with the terminal's by arrival, with no side buffer.
         let paste_queue = paste_queue::PasteQueueState::new();
         {
             let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
@@ -5003,8 +4975,6 @@ impl TerminalView {
             fork_restore_persist: Default::default(),
             fullscreen_output_signal: None,
             output_listeners: Vec::new(),
-            ssh_editor_key_hold,
-            ssh_typeahead: SshTypeahead::default(),
             ssh_iq: ssh_queue::SshQueueState::new(),
             ssh_paste_to_hold: false,
             ssh_typeahead_precmd_wait_since: None,
@@ -10935,10 +10905,9 @@ impl TerminalView {
         warpui::input_order::log_key_hop("kh_hold_entry", || {
             format!(
                 "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
-                 control_sequence={control_sequence} editor_queue_empty={}",
+                 control_sequence={control_sequence}",
                 self.ssh_typeahead_holding,
                 self.ssh_held_bytes(),
-                self.ssh_editor_key_hold.is_empty()
             )
         });
         if dialog_up {
@@ -10965,8 +10934,7 @@ impl TerminalView {
         // #1292: hold the key. Once anything is held every later key is held too, even where the
         // gate alone would let it through (a banner before the remote shell is up), so order is
         // kept; the held keys go to the remote shell once it shows its first prompt.
-        // Keys the editor queued came before this one.
-        self.drain_editor_keys_into_ssh_hold(ctx);
+        // Keys the editor offered came before this one: they are already in the queue.
         self.set_ssh_typeahead_holding(true);
         match characters {
             Some(chars) => {
@@ -11060,50 +11028,13 @@ impl TerminalView {
             warpui::input_order::log_key_hop("kh_holding_set", || format!("holding={holding}"));
         }
         self.ssh_typeahead_holding = holding;
-        self.ssh_editor_key_hold.set_active(holding);
-    }
-
-    /// Moves the keys the input editor queued while the hold was active into the hold, behind
-    /// what is already held (#1292). Once the remote shell's first prompt hands focus to the
-    /// editor, keys no longer pass through `hold_input_during_ssh_connect`; the editor queues them
-    /// instead of applying them, so they replay in the order typed, behind every earlier key.
-    fn drain_editor_keys_into_ssh_hold(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.ssh_editor_key_hold.is_empty() {
-            return;
-        }
-        let taken = self.ssh_editor_key_hold.take();
-        // #1332: counts only, to tell a key the editor queued from one nobody took.
-        if warpui::input_order::enabled() {
-            log::debug!(
-                target: warpui::input_order::TARGET,
-                "ssh_drop drained_editor_keys keys={} overflowed={}",
-                taken.keys.len(),
-                taken.overflowed
-            );
-        }
-        if taken.overflowed {
-            let outcome = self.ssh_hold_overflow();
-            self.note_ssh_typeahead_outcome(&outcome, ctx);
-            return;
-        }
-        for key in taken.keys {
-            let input = match key {
-                HeldEditorKey::Text(text) => HeldInput::Typed(text),
-                HeldEditorKey::Control(key) => HeldInput::Key(key.to_owned()),
-                HeldEditorKey::Sequence(seq) => HeldInput::Seq(seq.to_owned()),
-            };
-            let outcome = self.ssh_hold_push(input, ctx);
-            self.note_ssh_typeahead_outcome(&outcome, ctx);
-        }
-        self.schedule_ssh_typeahead_give_up(ctx);
+        self.paste_queue.queue.set_ssh_hold_active(holding);
     }
 
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
     fn reset_ssh_typeahead(&mut self) {
         self.ssh_hold_clear();
-        self.ssh_editor_key_hold.clear();
         self.set_ssh_typeahead_holding(false);
-        self.ssh_editor_key_hold.end_settle();
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
     }
@@ -11137,7 +11068,7 @@ impl TerminalView {
         // given it its history; an Enter delivered earlier would be refused. Normally that Precmd
         // IS the signal this runs on, so the wait is over; if the session registers later, its
         // event (or the give-up cap) delivers.
-        let held = !self.ssh_held_is_empty() || !self.ssh_editor_key_hold.is_empty();
+        let held = !self.ssh_held_is_empty();
         let awaiting_first_precmd = self.ssh_remote_prompt_seen
             && held
             && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
@@ -11160,11 +11091,9 @@ impl TerminalView {
         }
         warpui::input_order::log_key_hop("kh_handover", || {
             format!(
-                "source={source} remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
-                 view_precmds_pending={}",
+                "source={source} remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
                 self.ssh_remote_prompt_seen,
                 self.ssh_held_bytes(),
-                self.ssh_editor_key_hold.is_empty(),
                 self.view_precmds_pending()
             )
         });
@@ -11240,28 +11169,21 @@ impl TerminalView {
         warpui::profiling::zone!("typeahead_handoff");
         warpui::input_order::log_key_hop("kh_finish_begin", || {
             format!(
-                "remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
-                 view_precmds_pending={}",
+                "remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
                 self.ssh_remote_prompt_seen,
                 self.ssh_held_bytes(),
-                self.ssh_editor_key_hold.is_empty(),
                 self.view_precmds_pending()
             )
         });
         self.set_ssh_typeahead_holding(false);
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
-        self.drain_editor_keys_into_ssh_hold(ctx);
         if self.ssh_held_is_empty() {
             self.ssh_hold_clear();
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
             return;
         }
         if self.ssh_remote_prompt_seen {
-            // #1345: focus may still be settling into the editor; a key typed meanwhile is taken
-            // by the terminal view instead of falling between the editor and the live path, until
-            // the editor holds focus (#1348: no timed window; the hand-over also focuses input).
-            self.ssh_editor_key_hold.begin_settle();
             self.log_ssh_typeahead_delivery(self.ssh_held_count());
             // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
             // writes the held inputs in typed order (the legacy buffer does it in a loop).
@@ -11269,9 +11191,6 @@ impl TerminalView {
             // (c) of the hand-over (#1348): focus follows in the same step, so the next key is
             // routed to the editor / live path, never into the gap between them.
             self.redetermine_terminal_focus(ctx);
-            if self.input.as_ref(ctx).editor().as_ref(ctx).is_focused() {
-                self.ssh_editor_key_hold.end_settle();
-            }
             warpui::input_order::log_key_hop("kh_finish_end", || {
                 format!(
                     "delivered=remote buffer_chars={}",
@@ -30244,7 +30163,7 @@ impl TerminalView {
             input_view_id: self.input.id(),
             input_editor_view_id: self.input.as_ref(app).editor().id(),
             own_text_view_ids: vec![self.find_bar.id(), self.block_filter_editor.id()],
-            ssh_key_hold: self.ssh_editor_key_hold.clone(),
+            pane_queue: self.paste_queue.queue.clone(),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),

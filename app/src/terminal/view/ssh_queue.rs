@@ -1,15 +1,17 @@
 //! The ssh connect typeahead hold on the one input queue (#1353 phase 4).
 //!
 //! Between the Enter on an `ssh ...` command and the remote shell's first prompt, keys typed into
-//! the pane are not written anywhere (#983, #1292). They used to sit in `SshTypeahead`; now they
-//! are `Held` entries of the pane's `InputQueue` (the instance paste and the subshell holds
-//! already use) behind an `SshConnect` gate. The queue only orders; WHERE a key goes is decided
-//! when it is delivered, by the same routing a key typed at that moment would take (editor after
-//! the hand-over, pty for a prompt that wants an answer).
+//! the pane are not written anywhere (#983, #1292). They are `Held` entries of the pane's
+//! `InputQueue` behind an `SshConnect` gate, whichever route typed them: the terminal element
+//! offers them through [`TerminalView::ssh_hold_push`], and the input editor offers its own
+//! (origin: the editor) straight to the shared queue while the gate is open
+//! (`EditorView::offer_ssh_held_key`), so arrival order is the only order there is. The queue
+//! only orders; WHERE a key goes is decided when it is delivered, by the same routing a key typed
+//! at that moment would take (editor after the hand-over, pty for a prompt that wants an answer).
 //!
 //! Events, all of them the existing ones (#1348, none of them a timer):
-//! - the gate OPENS with the first key that must be held (the legacy `ssh_typeahead_holding`
-//!   starts there; the stretch between the Enter and that key has nothing to hold);
+//! - the gate OPENS with the first key that must be held (the stretch between the Enter and that
+//!   key has nothing to hold);
 //! - it CLOSES at the single hand-over point (`deliver_ssh_typeahead_if_ready`, driven by the
 //!   remote shell's first Precmd and its siblings): the close IS the delivery, the queue's one
 //!   drain writes the held keys in typed order;
@@ -21,27 +23,20 @@
 //! depends on the connect gate's state, so the queue gate itself carries no cap).
 //!
 //! The 64 KiB bound still drops the WHOLE run and ignores the rest of that connect.
-//! `PHOSPHOR_INPUT_QUEUE_SSH=0` keeps the legacy `SshTypeahead` buffer, which stays in the tree
-//! and is also where a key held while the queue is mid-delivery lands.
 
 use warpui::ViewContext;
 
 use super::TerminalView;
 use super::paste_queue::PtyQueueHost;
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
-use crate::terminal::input_queue::kill_switch::{self, Area};
 use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, GateToken, trace};
 
-/// What the ssh hold keeps next to the queue itself: which gate is open and how much it holds.
+/// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
+/// from the queue (entries of both origins).
 pub(super) struct SshQueueState {
-    /// `PHOSPHOR_INPUT_QUEUE_SSH`; false keeps the legacy buffer.
-    pub(super) enabled: bool,
     /// The open `SshConnect` gate: its token and its key (the connection counter).
     gate: Option<(GateToken, u64)>,
     next_conn: u64,
-    /// Entries and content bytes held behind the gate.
-    items: usize,
-    bytes: usize,
     /// The 64 KiB bound was passed: the run was dropped and the rest of this connect is ignored.
     overflowed: bool,
 }
@@ -49,31 +44,30 @@ pub(super) struct SshQueueState {
 impl SshQueueState {
     pub(super) fn new() -> Self {
         Self {
-            enabled: kill_switch::is_enabled(Area::Ssh),
             gate: None,
             next_conn: 0,
-            items: 0,
-            bytes: 0,
             overflowed: false,
         }
     }
 }
 
 impl TerminalView {
-    /// Held keys live on the queue right now: the switch is on and the queue is not in the
-    /// middle of delivering (a key held then cannot take a new entry and uses the legacy buffer).
-    fn ssh_queue_usable(&self) -> bool {
-        self.ssh_iq.enabled && self.paste_queue.queue.try_peek().is_some()
+    /// Entries and content bytes held behind the connect gate, of every origin (nothing while the
+    /// queue is mid-delivery: what a caller would read is in flux).
+    fn ssh_held_stats(&self) -> (usize, usize) {
+        self.paste_queue.queue.try_peek().map_or((0, 0), |queue| {
+            queue.queued_since_gate(GateKind::SshConnect)
+        })
     }
 
     /// Nothing is held (an overflowed run holds nothing).
     pub(super) fn ssh_held_is_empty(&self) -> bool {
-        self.ssh_iq.items == 0 && self.ssh_typeahead.is_empty()
+        self.ssh_held_stats().0 == 0
     }
 
     /// Bytes held; for logging, never the content.
     pub(super) fn ssh_held_bytes(&self) -> usize {
-        self.ssh_iq.bytes + self.ssh_typeahead.len_bytes()
+        self.ssh_held_stats().1
     }
 
     /// Holds one input behind the connect, in typed order.
@@ -82,8 +76,11 @@ impl TerminalView {
         input: HeldInput,
         ctx: &mut ViewContext<Self>,
     ) -> SshTypeaheadPush {
-        if !self.ssh_queue_usable() {
-            return self.ssh_typeahead.push(input);
+        if self.paste_queue.queue.try_peek().is_none() {
+            // Mid-delivery: a key held then cannot take a new entry. Not reachable from a user
+            // key (the hold is closed before the hand-over drain writes anything).
+            log::warn!("ssh hold: input queue busy, a key was not held");
+            return SshTypeaheadPush::Ignored;
         }
         if self.ssh_iq.overflowed {
             return SshTypeaheadPush::Ignored;
@@ -93,7 +90,14 @@ impl TerminalView {
             return self.ssh_hold_overflow();
         }
         let queue = self.paste_queue.queue.clone();
-        if self.ssh_iq.gate.is_none() {
+        // The gate may have been closed behind the view's back (a signal ends a gate): never offer
+        // a key to a queue with no gate, it would be delivered at once, mid-connect.
+        let gate_alive = self.ssh_iq.gate.is_some_and(|(_, key)| {
+            queue
+                .try_peek()
+                .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
+        });
+        if !gate_alive {
             self.ssh_iq.next_conn += 1;
             let key = self.ssh_iq.next_conn;
             let mut host = PtyQueueHost::new(self, ctx);
@@ -104,8 +108,6 @@ impl TerminalView {
             self.ssh_iq.gate = Some((token, key));
         }
         let (class, text) = input.into_parts();
-        self.ssh_iq.items += 1;
-        self.ssh_iq.bytes += len;
         trace::hold(trace::legacy::SSH, len);
         let mut host = PtyQueueHost::new(self, ctx);
         queue
@@ -120,10 +122,8 @@ impl TerminalView {
             return SshTypeaheadPush::Ignored;
         }
         self.ssh_hold_drop_gate();
-        self.ssh_iq.items = 0;
-        self.ssh_iq.bytes = 0;
         self.ssh_iq.overflowed = true;
-        self.ssh_typeahead.overflow()
+        SshTypeaheadPush::Overflowed
     }
 
     /// Removes the gate and everything behind it without delivering (the entries are `Held`
@@ -157,20 +157,14 @@ impl TerminalView {
 
     /// Forgets every held key and the overflow state.
     pub(super) fn ssh_hold_clear(&mut self) {
-        self.ssh_typeahead.clear();
         self.ssh_hold_drop_gate();
-        self.ssh_iq.items = 0;
-        self.ssh_iq.bytes = 0;
         self.ssh_iq.overflowed = false;
     }
 
     /// Takes everything held, in typed order, without delivering it.
     pub(super) fn ssh_hold_take(&mut self) -> Vec<HeldInput> {
-        let mut held = self.ssh_hold_drop_gate();
-        self.ssh_iq.items = 0;
-        self.ssh_iq.bytes = 0;
-        held.extend(self.ssh_typeahead.take());
-        // Adjacent printable runs are one input, as the legacy buffer kept them.
+        let held = self.ssh_hold_drop_gate();
+        // Adjacent printable runs are one input.
         let mut merged = SshTypeahead::default();
         for input in held {
             merged.push(input);
@@ -190,28 +184,17 @@ impl TerminalView {
 
     /// Number of inputs held (for the log line, never content).
     pub(super) fn ssh_held_count(&self) -> usize {
-        self.ssh_iq.items + usize::from(!self.ssh_typeahead.is_empty())
+        self.ssh_held_stats().0
     }
 
     /// The hand-over: closes the gate, which is the delivery. The queue's one drain writes the
     /// held inputs in typed order, each routed from the facts of its own delivery.
     pub(super) fn ssh_hold_deliver(&mut self, ctx: &mut ViewContext<Self>) {
         let Some((_, key)) = self.ssh_iq.gate.take() else {
-            // Legacy buffer (kill switch, or keys held while the queue was delivering).
-            for input in self.ssh_typeahead.take() {
-                self.deliver_held_input(input, ctx);
-            }
-            self.ssh_typeahead.clear();
             return;
         };
-        trace::release(
-            trace::legacy::SSH,
-            self.ssh_iq.items,
-            self.ssh_iq.bytes,
-            "remote",
-        );
-        self.ssh_iq.items = 0;
-        self.ssh_iq.bytes = 0;
+        let (items, bytes) = self.ssh_held_stats();
+        trace::release(trace::legacy::SSH, items, bytes, "remote");
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
             log::error!("ssh hold: input queue busy at the hand-over; held keys stay queued");
@@ -236,19 +219,17 @@ impl TerminalView {
         self.deliver_held_input(HeldInput::from_parts(class, text.to_owned()), ctx);
     }
 
-    /// Whether the open queue gates are only ssh ones: bytes that reach the pty writer then are
-    /// not held behind them (the held keys were taken before they got there; anything else is
-    /// passive traffic the legacy hold never held either).
+    /// Whether the only open queue gates are ssh ones: bytes that reach the pty writer then are
+    /// not held behind them. The connect's keys are held by the hold itself (as `Held` entries,
+    /// before they get to the writer); what reaches the writer is a deliberate pass-through (an
+    /// answer to a prompt after the hold was reset) or passive traffic.
     pub(super) fn only_ssh_gates_open(&self) -> bool {
-        // Gates that only hold editor keys (an Enter waiting for its verdict) are not the pty's:
-        // they never held a pty key, so they do not count either way.
         self.paste_queue.queue.try_peek().is_some_and(|queue| {
-            let mut pty_gates = queue
-                .gates()
-                .iter()
-                .filter(|gate| gate.holds_pty_keys())
-                .peekable();
-            pty_gates.peek().is_some() && pty_gates.all(|gate| gate.kind == GateKind::SshConnect)
+            !queue.gates().is_empty()
+                && queue
+                    .gates()
+                    .iter()
+                    .all(|gate| gate.kind == GateKind::SshConnect)
         })
     }
 }

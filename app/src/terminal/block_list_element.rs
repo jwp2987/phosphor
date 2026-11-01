@@ -863,8 +863,8 @@ pub struct BlockListElement {
     input_editor_view_id: EntityId,
     /// See `TerminalViewRenderContext::own_text_view_ids` (#1397).
     own_text_view_ids: Vec<EntityId>,
-    /// See `TerminalViewRenderContext::ssh_key_hold` (#1332).
-    ssh_key_hold: Rc<crate::editor::EditorKeyHold>,
+    /// See `TerminalViewRenderContext::pane_queue` (#1332).
+    pane_queue: crate::terminal::input_queue::PaneQueue,
     is_terminal_selecting: bool,
     /// See `TerminalViewRenderContext::rich_content_drag_selecting` (#890).
     rich_content_drag_selecting: Arc<AtomicBool>,
@@ -1239,7 +1239,7 @@ impl BlockListElement {
             input_view_id: terminal_view_render_context.input_view_id,
             input_editor_view_id: terminal_view_render_context.input_editor_view_id,
             own_text_view_ids: terminal_view_render_context.own_text_view_ids,
-            ssh_key_hold: terminal_view_render_context.ssh_key_hold,
+            pane_queue: terminal_view_render_context.pane_queue,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
             subshell_sessions: terminal_view_render_context.spawning_command_for_subshell_sessions,
@@ -1645,11 +1645,7 @@ impl BlockListElement {
     /// editor, which sits above this element, did not take.
     fn takes_unclaimed_held_key(&self, ctx: &EventContext) -> bool {
         let editor_focus = ctx.live_focus_of(self.input_editor_view_id);
-        // #1345: focus is in the editor, which takes every key from here on.
-        if editor_focus == Some(true) {
-            self.ssh_key_hold.end_settle();
-        }
-        let rescue = self.ssh_key_hold.rescues_unclaimed_keys();
+        let rescue = self.pane_queue.ssh_hold_active();
         let input_focus = ctx.live_focus_of(self.input_view_id);
         let terminal_focus = ctx.live_focus_of(self.terminal_view_id);
         let taken =
@@ -1659,7 +1655,7 @@ impl BlockListElement {
             warpui::input_order::log_key_hop("kh_element_rescue", || {
                 format!(
                     "hold_active={} input_focus={} editor_focus={} terminal_focus={} taken={taken}",
-                    self.ssh_key_hold.is_active(),
+                    self.pane_queue.ssh_hold_active(),
                     warpui::input_order::describe_opt(input_focus),
                     warpui::input_order::describe_opt(editor_focus),
                     warpui::input_order::describe_opt(terminal_focus)
@@ -1677,7 +1673,7 @@ impl BlockListElement {
     /// and the hand-over. `claim_typed` makes the editor's copy a no-op, in either order (#1339).
     /// After the hold ended, only the settling rule of [`Self::takes_unclaimed_held_key`] applies.
     fn takes_typed_for_ssh_hold(&self, chars: &str, ctx: &EventContext) -> bool {
-        if !self.ssh_key_hold.is_active() {
+        if !self.pane_queue.ssh_hold_active() {
             return false;
         }
         let taken = terminal_takes_typed_during_hold(
@@ -1749,9 +1745,9 @@ impl BlockListElement {
         if claimed {
             // #1400: with the ssh hold active this element offers the key; the editor's copy of
             // the same event (an action, run after this pass) sees the mark and drops itself.
-            if self.ssh_key_hold.is_active() {
-                self.ssh_key_hold
-                    .mark_offered(warpui::input_order::typed_dispatch_seq(), chars);
+            if self.pane_queue.ssh_hold_active() {
+                self.pane_queue
+                    .mark_typed_offered(warpui::input_order::typed_dispatch_seq(), chars);
             }
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
             return true;
@@ -5889,30 +5885,19 @@ mod tests {
         }
     }
 
-    /// #1345: the hold ended (keys delivered) while focus was still settling into the editor.
-    /// A key in that window is claimed by the terminal exactly when the editor does not take it.
+    /// #1345: the hold ended (keys delivered) while focus was still settling into the editor. There
+    /// is no settle flag any more: the hand-over moves focus in the same step, and a key in the
+    /// window before the editor holds focus is rescued by the generic rule (#1397): the terminal
+    /// takes it exactly when the editor does not.
     #[test]
     fn key_between_hold_off_and_editor_focus_is_not_dropped() {
-        use crate::editor::EditorKeyHold;
-        let hold = EditorKeyHold::default();
-        hold.set_active(true);
-        hold.set_active(false);
-        hold.begin_settle();
-        let rescue = hold.rescues_unclaimed_keys();
-        // Input focused, editor not yet: nobody else takes it, the terminal must.
-        assert!(super::terminal_takes_unclaimed_held_key(
-            rescue,
-            Some(true),
-            Some(false),
-            Some(true)
-        ));
+        use super::{UnclaimedKey::*, unclaimed_key_route as route};
+        // Input focused (so the terminal subtree is), editor not yet: nobody else takes it, the
+        // terminal must.
+        assert_eq!(route(Some(true), Some(false), false), Rescue);
+        assert_eq!(route(Some(true), None, false), Rescue);
         // Editor already focused: it takes the key, the terminal must not (#1339).
-        assert!(!super::terminal_takes_unclaimed_held_key(
-            rescue,
-            Some(true),
-            Some(true),
-            Some(true)
-        ));
+        assert_eq!(route(Some(true), Some(true), false), Propagate);
     }
 
     /// #1394: focus on some other view inside the terminal (not the input, not the editor) in the

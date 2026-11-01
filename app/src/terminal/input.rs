@@ -8323,17 +8323,6 @@ impl Input {
         });
     }
 
-    /// Hands the editor the hold the terminal view uses to keep the keys typed during an ssh
-    /// connect in order (#1292).
-    pub(crate) fn set_editor_key_hold(
-        &mut self,
-        hold: Rc<crate::editor::EditorKeyHold>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.editor
-            .update(ctx, |editor, _| editor.set_key_hold(hold));
-    }
-
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
         self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {

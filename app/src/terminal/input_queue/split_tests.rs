@@ -362,39 +362,41 @@ fn two_destination_drain_keeps_arrival_order_and_never_strands_a_stop() {
     }
 }
 
-// ---- which keys a gate holds (parity table) -----------------------------------------------
+// ---- every gate holds every key ------------------------------------------------------------
 
+/// There is no parity table: whatever gate is open, a key typed now from any route waits.
 #[test]
-fn the_key_holding_table_is_parity_with_the_two_instance_behaviour() {
-    let editor_gates = [
-        GateKind::PasteReading,
-        GateKind::EnterVerdict,
-        GateKind::TabCompletion,
-        GateKind::HandoffReport,
-        GateKind::EditorDisplayMap,
-    ];
-    let not_pty_gates = [
-        GateKind::EnterVerdict,
-        GateKind::TabCompletion,
-        GateKind::EditorFocusPending,
-        GateKind::EditorDisplayMap,
-    ];
+fn every_gate_kind_holds_keys_of_both_origins() {
     for kind in GateKind::ALL {
-        assert_eq!(
-            kind.holds_editor_keys(),
-            editor_gates.contains(&kind),
-            "{kind:?}: editor keys"
+        let mut rig = Rig::new();
+        let mut view = rig.view();
+        assert!(!rig.queue.holds_keys(), "{kind:?}: idle holds nothing");
+        rig.queue.open_gate(&mut view, GateSpec::new(kind, 1));
+        assert!(rig.queue.holds_keys(), "{kind:?}");
+        // One key of each origin, behind the gate: both wait, in arrival order.
+        rig.queue.offer(&mut view, editor_key("e"));
+        let mut host = rig.view();
+        rig.queue.offer(&mut host, pty_key("p"));
+        assert!(
+            rig.delivered().is_empty(),
+            "{kind:?}: nothing overtakes the gate"
         );
+        rig.queue.on_gate_event(&mut view, kind, 1);
         assert_eq!(
-            kind.holds_pty_keys(),
-            !not_pty_gates.contains(&kind),
-            "{kind:?}: pty keys"
+            rig.delivered()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "{kind:?}: delivered in arrival order once the gate's event came"
         );
     }
 }
 
+/// A paste gate holds the keys of both owners (the pty's paste holds editor keys, the editor's
+/// holds pty keys), and a stopped drain (entries queued, no gate) still holds what arrives.
 #[test]
-fn a_paste_gate_holds_only_the_keys_of_its_owner() {
+fn a_paste_gate_holds_the_keys_of_both_owners() {
     let pane = PaneQueue::new();
     let pty_id = pane.next_paste_id(PasteOwner::Pty);
     let editor_id = pane.next_paste_id(PasteOwner::Editor);
@@ -402,24 +404,21 @@ fn a_paste_gate_holds_only_the_keys_of_its_owner() {
     let mut view = rig.view();
     rig.queue
         .open_gate(&mut view, GateSpec::new(GateKind::PasteReading, pty_id));
-    assert!(rig.queue.holds_pty_keys());
-    assert!(
-        !rig.queue.holds_editor_keys(),
-        "a pty paste never held editor keys"
-    );
+    assert!(rig.queue.holds_keys());
     assert!(rig.queue.has_pty_paste_reading());
     assert!(!rig.queue.has_editor_paste_reading());
     rig.queue
         .open_gate(&mut view, GateSpec::new(GateKind::PasteReading, editor_id));
-    assert!(rig.queue.holds_editor_keys());
     assert!(rig.queue.has_editor_paste_reading());
     rig.queue
         .on_gate_event(&mut view, GateKind::PasteReading, pty_id);
     assert!(
-        !rig.queue.holds_pty_keys(),
-        "with the pty paste gone, only the editor's gate is open"
+        rig.queue.holds_keys(),
+        "with the pty paste gone, the editor's gate still holds every key"
     );
-    assert!(rig.queue.holds_editor_keys());
+    rig.queue
+        .on_gate_event(&mut view, GateKind::PasteReading, editor_id);
+    assert!(!rig.queue.holds_keys());
 }
 
 // ---- X4: a signal meets gates of both sides -----------------------------------------------
