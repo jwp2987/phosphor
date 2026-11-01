@@ -306,6 +306,12 @@ pub(crate) enum DirectPlan {
 
 const GIT_ENV: &[(&str, &str)] = &[("GIT_OPTIONAL_LOCKS", "0")];
 
+/// The plain command the session runs for command-correction branch names. It is a single git
+/// program, so it is run directly as well (#1334): on Windows it was the one per-prompt
+/// `powershell.exe -EncodedCommand` that the chip commands' direct path did not cover.
+pub(crate) const GIT_BRANCHES_FOR_CORRECTIONS_COMMAND: &str =
+    "git --no-optional-locks branch --no-color";
+
 /// Recognises the PowerShell chip commands that run at prompts and are only external programs,
 /// so the local executor can start those programs itself instead of a `pwsh -NoProfile` process
 /// (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux and several times that on
@@ -316,6 +322,13 @@ pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> 
         return Some(DirectPlan::Single(DirectInvocation {
             program: "git",
             args: GIT_LINE_CHANGES_ARGS,
+            env: GIT_ENV,
+        }));
+    }
+    if command == GIT_BRANCHES_FOR_CORRECTIONS_COMMAND {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "branch", "--no-color"],
             env: GIT_ENV,
         }));
     }

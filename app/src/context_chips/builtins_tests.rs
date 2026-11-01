@@ -226,6 +226,26 @@ fn direct_powershell_invocation_recognises_the_per_prompt_chip_commands() {
 }
 
 #[test]
+fn direct_powershell_invocation_covers_the_command_correction_branch_list() {
+    use super::{DirectInvocation, DirectPlan};
+
+    // `Session::git_branches_for_command_corrections` runs this text at every prompt; before
+    // #1334 it was not recognised, so Windows started `powershell.exe -EncodedCommand` for it.
+    assert_eq!(
+        super::direct_powershell_invocation("git --no-optional-locks branch --no-color"),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "branch", "--no-color"],
+            env: &[("GIT_OPTIONAL_LOCKS", "0")],
+        }))
+    );
+    assert_eq!(
+        super::GIT_BRANCHES_FOR_CORRECTIONS_COMMAND,
+        "git --no-optional-locks branch --no-color"
+    );
+}
+
+#[test]
 fn the_powershell_diff_stat_chip_text_is_unchanged() {
     use crate::terminal::shell::ShellType;
 

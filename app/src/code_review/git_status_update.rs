@@ -15,7 +15,10 @@ use {
         repository::{RepositorySubscriber, SubscriberId},
         Repository, RepositoryUpdate, RepositoryWatchMode,
     },
-    std::{collections::HashMap, time::Duration},
+    std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    },
     warp_util::local_or_remote_path::LocalOrRemotePath,
     warpui::{r#async::SpawnedFutureHandle, ModelHandle, WeakModelHandle},
 };
@@ -298,6 +301,24 @@ pub struct LocalGitRepoStatusModel {
     /// for it, even when the first load fails); later ones only on change.
     has_emitted_metadata: bool,
     computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
+    /// The main branch the last full detection found, and when. `detect_main_branch` is up to
+    /// six git processes and its answer only moves when refs do, so refreshes inside
+    /// [`MAIN_BRANCH_CACHE_TTL`] reuse it (#1334). A HEAD/ref/remote-ref update clears it.
+    main_branch_cache: Option<(String, Instant)>,
+}
+
+/// How long a detected main branch is reused by metadata refreshes (#1334).
+#[cfg(feature = "local_fs")]
+const MAIN_BRANCH_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// The cached main branch when it is still within [`MAIN_BRANCH_CACHE_TTL`] at `now`.
+#[cfg(feature = "local_fs")]
+pub(super) fn fresh_cached_main_branch(
+    cache: &Option<(String, Instant)>,
+    now: Instant,
+) -> Option<String> {
+    let (name, detected_at) = cache.as_ref()?;
+    (now.saturating_duration_since(*detected_at) < MAIN_BRANCH_CACHE_TTL).then(|| name.clone())
 }
 
 /// Whether a freshly loaded/pushed snapshot warrants a `MetadataChanged`
@@ -334,6 +355,7 @@ impl LocalGitRepoStatusModel {
             metadata: None,
             has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
+            main_branch_cache: None,
         };
 
         // Kick off initial metadata computation.
@@ -371,6 +393,9 @@ impl LocalGitRepoStatusModel {
             ctx.spawn_stream_local(
                 repository_update_rx,
                 move |me, update: RepositoryUpdate, ctx| {
+                    if update.commit_updated || update.remote_ref_updated {
+                        me.main_branch_cache = None;
+                    }
                     if Self::is_head_change(&update) {
                         // A HEAD / branch-ref change must not wait out the 5s
                         // throttle: `git switch a; git switch b` in quick succession
@@ -417,9 +442,15 @@ impl LocalGitRepoStatusModel {
             handle.abort();
         }
         let repo_path_buf = self.repo_path.clone();
+        let cached_main_branch = fresh_cached_main_branch(&self.main_branch_cache, Instant::now());
+        let reused_main_branch = cached_main_branch.is_some();
         self.computing_metadata_abort_handle = Some(ctx.spawn(
-            async move { Self::load_metadata(repo_path_buf).await },
-            |me, result, ctx| {
+            async move { Self::load_metadata(repo_path_buf, cached_main_branch).await },
+            move |me, result, ctx| {
+                if let (false, Ok(metadata)) = (reused_main_branch, &result) {
+                    me.main_branch_cache =
+                        Some((metadata.main_branch_name.clone(), Instant::now()));
+                }
                 me.handle_metadata_result(result, ctx);
             },
         ));
@@ -480,9 +511,15 @@ impl LocalGitRepoStatusModel {
     /// This reuses logic extracted from `LocalDiffStateModel::load_metadata_for_repo`
     /// but only computes the HEAD (uncommitted) stats since that's all the git
     /// chip needs.
-    async fn load_metadata(repo_path: PathBuf) -> anyhow::Result<GitStatusMetadata> {
-        // Detect main branch.
-        let main_branch_name = detect_main_branch(&repo_path).await?;
+    async fn load_metadata(
+        repo_path: PathBuf,
+        cached_main_branch: Option<String>,
+    ) -> anyhow::Result<GitStatusMetadata> {
+        // Detect main branch (or reuse the recent detection).
+        let main_branch_name = match cached_main_branch {
+            Some(name) => name,
+            None => detect_main_branch(&repo_path).await?,
+        };
         // Detect current branch (using the display variant so detached HEAD
         // shows the short SHA instead of the literal "HEAD").
         let current_branch_name = detect_current_branch_display(&repo_path).await?;
