@@ -178,3 +178,19 @@ fn test_resolve_auto_no_vsync_prefers_immediate_then_mailbox_then_fifo() {
     assert_eq!(resolve_auto_no_vsync(&[Fifo]), Fifo);
     assert_eq!(resolve_auto_no_vsync(&[]), Fifo);
 }
+
+#[test]
+fn block_on_bounded_returns_ready_value() {
+    assert_eq!(
+        block_on_bounded(async { 7 }, Duration::from_millis(50)),
+        Some(7)
+    );
+}
+
+#[test]
+fn block_on_bounded_gives_up_on_pending_future() {
+    let start = std::time::Instant::now();
+    let result = block_on_bounded(std::future::pending::<()>(), Duration::from_millis(50));
+    assert!(result.is_none());
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
