@@ -118,6 +118,40 @@ pub enum LinuxClipboardKind {
 	Secondary,
 }
 
+/// Which kinds of content a selection's owner currently offers, from its target list alone: no
+/// data is read or decoded (PHOSPHOR). `image` means `image/png`, the only image format
+/// `Get::image` reads.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardFormats {
+	pub text: bool,
+	pub image: bool,
+	pub html: bool,
+	pub uri_list: bool,
+}
+
+impl ClipboardFormats {
+	/// Classifies X11 target atom names / Wayland mime types.
+	pub fn from_target_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+		let mut formats = Self::default();
+		for name in names {
+			match name {
+				"UTF8_STRING" | "STRING" | "TEXT" => formats.text = true,
+				"image/png" => formats.image = true,
+				"text/html" => formats.html = true,
+				"text/uri-list" => formats.uri_list = true,
+				n if n.starts_with("text/plain") => formats.text = true,
+				_ => {}
+			}
+		}
+		formats
+	}
+
+	/// Whether any of the kinds is offered.
+	pub fn any(&self) -> bool {
+		self.text || self.image || self.html || self.uri_list
+	}
+}
+
 pub(crate) enum Clipboard {
 	X11(x11::Clipboard),
 
@@ -182,6 +216,14 @@ impl<'clipboard> Get<'clipboard> {
 		}
 	}
 
+	pub(crate) fn formats(self) -> Result<ClipboardFormats, Error> {
+		match self.clipboard {
+			Clipboard::X11(clipboard) => clipboard.get_formats(self.selection),
+			#[cfg(feature = "wayland-data-control")]
+			Clipboard::WlDataControl(clipboard) => clipboard.get_formats(self.selection),
+		}
+	}
+
 	pub(crate) fn file_list(self) -> Result<Vec<PathBuf>, Error> {
 		match self.clipboard {
 			Clipboard::X11(clipboard) => clipboard.get_file_list(self.selection),
@@ -198,9 +240,18 @@ pub trait GetExtLinux: private::Sealed {
 	/// If wayland support is enabled and available, attempting to use the Secondary clipboard will
 	/// return an error.
 	fn clipboard(self, selection: LinuxClipboardKind) -> Self;
+
+	/// Lists which kinds of content the selection's owner offers without reading or decoding any
+	/// of it (PHOSPHOR). On X11 this is one bounded `TARGETS` request (see
+	/// [`set_first_answer_deadline`]); on Wayland the offer's mime types are already known.
+	fn formats(self) -> Result<ClipboardFormats, Error>;
 }
 
 impl GetExtLinux for crate::Get<'_> {
+	fn formats(self) -> Result<ClipboardFormats, Error> {
+		self.platform.formats()
+	}
+
 	fn clipboard(mut self, selection: LinuxClipboardKind) -> Self {
 		self.platform.selection = selection;
 		self
@@ -443,6 +494,32 @@ impl ClearExtLinux for crate::Clear<'_> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn formats_from_image_only_targets() {
+		let f = ClipboardFormats::from_target_names(["TARGETS", "image/png", "SAVE_TARGETS"]);
+		assert_eq!(f, ClipboardFormats { image: true, ..Default::default() });
+		assert!(f.any());
+	}
+
+	#[test]
+	fn formats_classify_text_html_and_uri_list() {
+		let f = ClipboardFormats::from_target_names([
+			"UTF8_STRING",
+			"text/plain;charset=utf-8",
+			"text/html",
+			"text/uri-list",
+		]);
+		assert_eq!(f, ClipboardFormats { text: true, image: false, html: true, uri_list: true });
+		assert!(ClipboardFormats::from_target_names(["STRING"]).text);
+		assert!(ClipboardFormats::from_target_names(["text/plain"]).text);
+	}
+
+	#[test]
+	fn formats_of_unrelated_or_empty_targets_are_none() {
+		assert!(!ClipboardFormats::from_target_names([]).any());
+		assert!(!ClipboardFormats::from_target_names(["TARGETS", "image/jpeg"]).any());
+	}
 
 	#[test]
 	fn test_decoding_uri_list() {

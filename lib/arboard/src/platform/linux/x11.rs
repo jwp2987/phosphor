@@ -46,7 +46,8 @@ use x11rb::{
 #[cfg(feature = "image-data")]
 use super::encode_as_png;
 use super::{
-	into_unknown, paths_from_uri_list, paths_to_uri_list, LinuxClipboardKind, WaitConfig,
+	into_unknown, paths_from_uri_list, paths_to_uri_list, ClipboardFormats, LinuxClipboardKind,
+	WaitConfig,
 	KDE_EXCLUSION_HINT, KDE_EXCLUSION_MIME,
 };
 #[cfg(feature = "image-data")]
@@ -449,6 +450,18 @@ impl Inner {
 		selection: LinuxClipboardKind,
 		target_format: Atom,
 	) -> Result<Vec<u8>> {
+		self.read_single_typed(reader, selection, target_format, target_format)
+	}
+
+	/// Like `read_single`, but the owner's reply property has type `reply_type` rather than the
+	/// requested target. Needed for `TARGETS`, which is answered as a list of `ATOM`s (PHOSPHOR).
+	fn read_single_typed(
+		&self,
+		reader: &XContext,
+		selection: LinuxClipboardKind,
+		target_format: Atom,
+		reply_type: Atom,
+	) -> Result<Vec<u8>> {
 		// Delete the property so that we can detect (using property notify)
 		// when the selection owner receives our request.
 		reader
@@ -493,6 +506,7 @@ impl Inner {
 					let result = self.handle_read_selection_notify(
 						reader,
 						target_format,
+						reply_type,
 						&mut using_incr,
 						&mut incr_data,
 						event,
@@ -529,6 +543,25 @@ impl Inner {
 		}
 		log::info!("Time-out hit while reading the clipboard.");
 		Err(Error::ContentNotAvailable)
+	}
+
+	/// The target names the selection owner offers, from one `TARGETS` request: no clipboard data
+	/// is transferred (PHOSPHOR). The wait for the owner's answer honours
+	/// [`set_first_answer_deadline`].
+	fn target_names(&self, selection: LinuxClipboardKind) -> Result<Vec<String>> {
+		if self.is_owner(selection)? {
+			let data = self.selection_of(selection).data.read();
+			let Some(data_list) = &*data else { return Ok(Vec::new()) };
+			return data_list.iter().map(|d| self.atom_name(d.format)).collect();
+		}
+		let reader = XContext::new()?;
+		let bytes =
+			self.read_single_typed(&reader, selection, self.atoms.TARGETS, self.atoms.ATOM)?;
+		bytes
+			.chunks_exact(4)
+			.map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+			.map(|atom| self.atom_name(atom))
+			.collect()
 	}
 
 	fn atom_of(&self, selection: LinuxClipboardKind) -> Atom {
@@ -602,6 +635,7 @@ impl Inner {
 		&self,
 		reader: &XContext,
 		target_format: u32,
+		reply_type: u32,
 		using_incr: &mut bool,
 		incr_data: &mut Vec<u8>,
 		event: SelectionNotifyEvent,
@@ -625,7 +659,7 @@ impl Inner {
 		// request the selection
 		let mut reply = reader
 			.conn
-			.get_property(true, event.requestor, event.property, event.target, 0, u32::MAX / 4)
+			.get_property(true, event.requestor, event.property, reply_type, 0, u32::MAX / 4)
 			.map_err(into_unknown)?
 			.reply()
 			.map_err(into_unknown)?;
@@ -633,7 +667,7 @@ impl Inner {
 		// trace!("Property.type: {:?}", self.atom_name(reply.type_));
 
 		// we found something
-		if reply.type_ == target_format {
+		if reply.type_ == reply_type {
 			Ok(ReadSelNotifyResult::GotData(reply.value))
 		} else if reply.type_ == self.atoms.INCR {
 			// Note that we call the get_property again because we are
@@ -1059,6 +1093,11 @@ impl Clipboard {
 
 	pub(crate) fn clear(&self, selection: LinuxClipboardKind) -> Result<()> {
 		self.inner.clear(selection)
+	}
+
+	pub(crate) fn get_formats(&self, selection: LinuxClipboardKind) -> Result<ClipboardFormats> {
+		let names = self.inner.target_names(selection)?;
+		Ok(ClipboardFormats::from_target_names(names.iter().map(String::as_str)))
 	}
 
 	pub(crate) fn get_text(&self, selection: LinuxClipboardKind) -> Result<String> {

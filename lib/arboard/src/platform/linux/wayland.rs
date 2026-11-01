@@ -6,14 +6,15 @@ use std::{
 
 use wl_clipboard_rs::{
 	copy::{self, Error as CopyError, MimeSource, MimeType, Options, Source},
-	paste::{self, get_contents, Error as PasteError, Seat},
+	paste::{self, get_contents, get_mime_types, Error as PasteError, Seat},
 	utils::is_primary_selection_supported,
 };
 
 #[cfg(feature = "image-data")]
 use super::encode_as_png;
 use super::{
-	into_unknown, paths_from_uri_list, paths_to_uri_list, LinuxClipboardKind, WaitConfig,
+	into_unknown, paths_from_uri_list, paths_to_uri_list, ClipboardFormats, LinuxClipboardKind,
+	WaitConfig,
 	KDE_EXCLUSION_HINT, KDE_EXCLUSION_MIME,
 };
 use crate::common::Error;
@@ -107,6 +108,18 @@ impl Clipboard {
 	pub(crate) fn clear(&mut self, selection: LinuxClipboardKind) -> Result<(), Error> {
 		let selection = selection.try_into()?;
 		copy::clear(selection, copy::Seat::All).map_err(handle_copy_error)
+	}
+
+	/// The mime types the current offer advertises; nothing is read from the owner (PHOSPHOR).
+	pub(crate) fn get_formats(
+		&mut self,
+		selection: LinuxClipboardKind,
+	) -> Result<ClipboardFormats, Error> {
+		match get_mime_types(selection.try_into()?, Seat::Unspecified) {
+			Ok(types) => Ok(ClipboardFormats::from_target_names(types.iter().map(String::as_str))),
+			Err(PasteError::ClipboardEmpty) => Ok(ClipboardFormats::default()),
+			Err(err) => Err(handle_paste_error(err)),
+		}
 	}
 
 	pub(crate) fn get_text(&mut self, selection: LinuxClipboardKind) -> Result<String, Error> {

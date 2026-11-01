@@ -323,3 +323,35 @@ mod bounded_wait_tests {
         assert_eq!(sleeps, 0);
     }
 }
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod targets_query_tests {
+    use super::super::has_content_from_formats;
+
+    /// #1306: an image-only clipboard is "non-empty" from its target list alone, so `has_content`
+    /// answers without reading or decoding the image. Old code had no such path (it decoded).
+    #[test]
+    fn image_only_targets_have_content_without_a_read() {
+        let formats = Ok(arboard::ClipboardFormats::from_target_names([
+            "TARGETS",
+            "image/png",
+        ]));
+        assert_eq!(has_content_from_formats(&formats), Some(true));
+    }
+
+    #[test]
+    fn no_known_targets_means_empty_without_a_read() {
+        let formats = Ok(arboard::ClipboardFormats::from_target_names([
+            "TARGETS",
+            "SAVE_TARGETS",
+        ]));
+        assert_eq!(has_content_from_formats(&formats), Some(false));
+    }
+
+    /// A failed query must not be read as "empty": the caller falls back to reading.
+    #[test]
+    fn failed_query_defers_to_the_read_fallback() {
+        let formats = Err(arboard::Error::ContentNotAvailable);
+        assert_eq!(has_content_from_formats(&formats), None);
+    }
+}

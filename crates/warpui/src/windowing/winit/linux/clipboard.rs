@@ -66,6 +66,21 @@ fn flush_for_exit(
     true
 }
 
+/// Kill switch for the targets-based `has_content` (#1306): `PHOSPHOR_CLIPBOARD_TARGETS_QUERY=0`
+/// restores the read-based probe.
+fn targets_query_enabled() -> bool {
+    std::env::var("PHOSPHOR_CLIPBOARD_TARGETS_QUERY").map_or(true, |v| v != "0")
+}
+
+/// `has_content` from a targets query: `Some` when the query answered (the clipboard is non-empty
+/// iff the owner offers text, an image, HTML or a file list), `None` when it failed and the caller
+/// should fall back to reading.
+fn has_content_from_formats(
+    formats: &Result<arboard::ClipboardFormats, arboard::Error>,
+) -> Option<bool> {
+    formats.as_ref().ok().map(arboard::ClipboardFormats::any)
+}
+
 /// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop.
 struct ProbeBudget;
 
@@ -137,6 +152,21 @@ impl LinuxClipboard {
         result
     }
 
+    /// The pre-#1306 probe: reads, and for an image-only clipboard decodes. Used when the targets
+    /// query is disabled or failed.
+    fn has_content_by_reading(&mut self) -> bool {
+        // Non-empty text is the overwhelmingly common case and answers the question without
+        // the HTML, path and image reads (an image decode can take hundreds of ms).
+        if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
+            return true;
+        }
+        // No plain text: HTML or copied paths still answer without an image decode.
+        if !self.read_without_images().is_empty() {
+            return true;
+        }
+        !self.read().is_empty()
+    }
+
     pub fn new() -> Result<Self, arboard::Error> {
         Ok(Self {
             inner: LinuxClipboardInner::new()?,
@@ -175,18 +205,25 @@ impl Clipboard for LinuxClipboard {
         if crate::clipboard::pending_write(ClipboardTarget::Clipboard).is_some() {
             return true;
         }
-        // Non-empty text is the overwhelmingly common case and answers the question without
-        // the HTML, path and image reads (an image decode can take hundreds of ms).
-        if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
-            return true;
+        // One TARGETS request (X11) or the offer's mime types (Wayland) answers "is anything
+        // there" without reading or decoding any of it, so an image-only clipboard no longer pays
+        // for an image decode (#1306). Bounded like the other probes; a failed query falls back to
+        // the reads.
+        if targets_query_enabled() {
+            let formats = {
+                let _budget = ProbeBudget::start();
+                self.inner.get().formats()
+            };
+            if let Some(answer) = has_content_from_formats(&formats) {
+                return answer;
+            }
+            log::info!("Clipboard targets query failed ({formats:?}); falling back to reads");
         }
-        // No plain text: HTML or copied paths still answer without an image decode. Only an
-        // image-only (or empty) clipboard reaches the full read below; arboard has no decode-free
-        // target query on Linux, so that one case still decodes (#1306).
-        if !self.read_without_images().is_empty() {
-            return true;
-        }
-        !self.read().is_empty()
+        // The fallback reads wait at most the full-read budget for the owner's first answer.
+        arboard::set_first_answer_deadline(Some(Instant::now() + FULL_READ_BUDGET));
+        let answer = self.has_content_by_reading();
+        arboard::set_first_answer_deadline(None);
+        answer
     }
 
     fn read_without_images(&mut self) -> ClipboardContent {

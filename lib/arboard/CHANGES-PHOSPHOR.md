@@ -37,3 +37,16 @@ Re-pin: diff `src/` against the new upstream release and re-apply the two consta
   dropping it. Upstream hands over only when the last `Clipboard` handle drops, which an app that
   keeps handles for its whole life never reaches.
 - Re-pin: re-apply the function and the two re-exports.
+
+`src/platform/linux/{mod,x11,wayland}.rs`, `src/lib.rs` (decode-free availability query, #1306):
+
+- New `GetExtLinux::formats()` returning `ClipboardFormats { text, image, html, uri_list }` (and the
+  `ClipboardFormats` type, re-exported from the crate root). X11 sends one `TARGETS` request (the
+  owner's atom list; no data transfer) under the `set_first_answer_deadline` cap, via the new
+  `read_single_typed` (the reply is of type `ATOM`, not the requested target; `read_single` is now a
+  wrapper) and `Inner::target_names` (when this process owns the selection it lists its own data
+  formats). Wayland lists the offer's mime types with `wl_clipboard_rs::paste::get_mime_types`.
+  `image` means `image/png`, the only format `Get::image` reads.
+- Re-pin: re-apply `read_single_typed`/`reply_type` threading in `handle_read_selection_notify`,
+  `target_names`, `get_formats` in x11.rs and wayland.rs, and `ClipboardFormats` + `Get::formats`
+  in linux/mod.rs.
