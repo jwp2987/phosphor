@@ -917,6 +917,13 @@ fn create_surface_config(
     // cause visual tearing on present, but we're ok with paying that cost to
     // improve responsiveness.
     config.present_mode = PresentMode::AutoNoVsync;
+    // Diagnostic override for latency experiments (jwp2987/phosphor#1279); unset keeps the above.
+    if let Some(mode) = present_mode_override(
+        std::env::var("PHOSPHOR_PRESENT_MODE").ok().as_deref(),
+        &caps.present_modes,
+    ) {
+        config.present_mode = mode;
+    }
 
     // Explicitly request a non-opaque alpha compositing mode, if available.
     // Without this, transparent surfaces don't work on native Wayland.
@@ -940,6 +947,11 @@ fn create_surface_config(
     if let Some(latency) = desired_frame_latency(adapter.get_info().backend) {
         config.desired_maximum_frame_latency = latency;
     }
+    if let Some(latency) =
+        frame_latency_override(std::env::var("PHOSPHOR_FRAME_LATENCY").ok().as_deref())
+    {
+        config.desired_maximum_frame_latency = latency;
+    }
 
     Some(config)
 }
@@ -956,6 +968,27 @@ fn resolve_auto_no_vsync(supported: &[PresentMode]) -> PresentMode {
     .into_iter()
     .find(|mode| supported.contains(mode))
     .unwrap_or(PresentMode::Fifo)
+}
+
+/// `PHOSPHOR_PRESENT_MODE` (immediate, mailbox, fifo, auto_vsync, auto_no_vsync): a present mode to
+/// use instead of `AutoNoVsync`. A mode the surface does not support is ignored, as is an unknown
+/// value, so a typo can never leave the window without a surface.
+fn present_mode_override(value: Option<&str>, supported: &[PresentMode]) -> Option<PresentMode> {
+    let mode = match value?.trim().to_ascii_lowercase().as_str() {
+        "immediate" => PresentMode::Immediate,
+        "mailbox" => PresentMode::Mailbox,
+        "fifo" => PresentMode::Fifo,
+        "auto_vsync" => return Some(PresentMode::AutoVsync),
+        "auto_no_vsync" => return Some(PresentMode::AutoNoVsync),
+        _ => return None,
+    };
+    supported.contains(&mode).then_some(mode)
+}
+
+/// `PHOSPHOR_FRAME_LATENCY` (1..=3): `desired_maximum_frame_latency` to use instead of the
+/// per-backend default.
+fn frame_latency_override(value: Option<&str>) -> Option<u32> {
+    value?.trim().parse().ok().filter(|n| (1..=3).contains(n))
 }
 
 /// One INFO line describing how a surface was configured, for diagnosing input latency reports.
