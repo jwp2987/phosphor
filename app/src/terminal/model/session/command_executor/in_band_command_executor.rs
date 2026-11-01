@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::cmp::min;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::{collections::VecDeque, fmt};
 
@@ -97,6 +98,10 @@ pub struct InBandCommandExecutor {
     cancel_command_tx: Sender<InBandCommandCancelledEvent>,
     running_command: Arc<Mutex<Option<CommandExecutionInfo>>>,
     pending_commands: Arc<Mutex<VecDeque<CommandExecutionInfo>>>,
+    /// Last command id handed out, so ids are strictly increasing and never collide even when
+    /// two commands are issued within the same microsecond (#1352): a colliding id would let
+    /// one job's cancel, or a cancelled command's late output, hit another job's command.
+    last_command_id: AtomicI64,
 }
 
 /// Output is written as if it's going to a grid, but we store it as a string. This
@@ -187,6 +192,26 @@ impl InBandCommandExecutor {
             cancel_command_tx,
             running_command: Arc::new(Mutex::new(None)),
             pending_commands: Arc::new(Mutex::new(VecDeque::new())),
+            last_command_id: AtomicI64::new(0),
+        }
+    }
+
+    /// A fresh command id: the wall-clock microsecond timestamp, bumped past the previous id
+    /// when the clock has not advanced (or went backwards).
+    fn next_command_id(&self) -> String {
+        let now = DateTime::now().timestamp_micros();
+        let mut prev = self.last_command_id.load(Ordering::Relaxed);
+        loop {
+            let next = now.max(prev + 1);
+            match self.last_command_id.compare_exchange_weak(
+                prev,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next.to_string(),
+                Err(actual) => prev = actual,
+            }
         }
     }
 
@@ -439,7 +464,7 @@ impl CommandExecutor for InBandCommandExecutor {
         _environment_variables: Option<HashMap<String, String>>,
         _execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
-        let command_id = DateTime::now().timestamp_micros().to_string();
+        let command_id = self.next_command_id();
 
         // If the future is aborted (via a call to `AbortHandle#abort`) we need to make sure to
         // remove the command from the in-band generator pending command queue to ensure that
@@ -456,6 +481,11 @@ impl CommandExecutor for InBandCommandExecutor {
     }
 
     /// "Cancels" active in-band commands.
+    ///
+    /// SESSION-WIDE: clears every running and pending command. Per-job cancellation is dropping
+    /// the `execute_command` future (see its `on_cancel`), which removes exactly that command.
+    /// Callers that merely supersede one job must drop its future, not call this (#1352); it is
+    /// for "the user is running a command in the shell now".
     ///
     /// In reality, this does not cancel command execution (that is, however, actually done on the
     /// shell side in `warp_preexec`). This merely clears the running and pending command IDs from

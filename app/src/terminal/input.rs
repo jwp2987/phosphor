@@ -8990,9 +8990,6 @@ impl Input {
         let completion_context = completer_data
             .completion_session_context(ctx)
             .map(SessionContext::for_background);
-        let completion_session = completion_context
-            .as_ref()
-            .map(|completion_context| completion_context.session.clone());
 
         // Get current ignored shell commands to filter during generation. They are also
         // excluded from the history scan below so they never take up one of its bounded
@@ -9193,9 +9190,10 @@ impl Input {
                 },
                 Self::on_autosuggestion_result,
                 move |_, _| {
-                    if let Some(session) = completion_session {
-                        session.cancel_active_commands();
-                    }
+                    // Superseding this job drops its future, which cancels exactly the in-band commands it
+                    // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
+                    // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
+                    // and would also kill other jobs' in-flight Tab completions (#1352).
                 },
             )
             .abort_handle();
@@ -12182,7 +12180,10 @@ impl Input {
                     )
                 },
                 move |_, _| {
-                    completion_session.cancel_active_commands();
+                    // Superseding this job drops its future, which cancels exactly the in-band commands it
+                    // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
+                    // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
+                    // and would also kill other jobs' in-flight Tab completions (#1352).
                 },
             )
             .abort_handle();

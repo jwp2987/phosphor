@@ -159,7 +159,6 @@ impl TuiTerminalSessionView {
         };
         let line = request.input.buffer_text[..request.input.cursor_byte_offset].to_owned();
         let cursor_byte_offset = request.input.cursor_byte_offset;
-        let completion_session = completion_context.session.clone();
         self.completion_request.future = Some(ctx.spawn_abortable(
             async move {
                 let results = suggestions(
@@ -175,7 +174,9 @@ impl TuiTerminalSessionView {
             |view, (request, results), ctx| {
                 view.handle_shell_completion_results(request, results, ctx);
             },
-            move |_, _| completion_session.cancel_active_commands(),
+            // Dropping the aborted future cancels exactly its own in-band commands; a
+            // session-wide cancel would kill other jobs' completions too (#1352).
+            |_, _| {},
         ));
     }
 

@@ -372,8 +372,6 @@ impl Input {
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.decorations_cancel = Some(cancel.clone());
 
-                let completion_session = completion_context.session.clone();
-
                 self.decorations_future_handle = Some(ctx.spawn_abortable(
                     async move {
                         // #1019: a program installed since the bootstrap scan is a command.
@@ -407,7 +405,10 @@ impl Input {
                         }
                     },
                     move |_, _| {
-                        completion_session.cancel_active_commands();
+                        // Superseding this job drops its future, which cancels exactly the in-band commands it
+                        // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
+                        // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
+                        // and would also kill other jobs' in-flight Tab completions (#1352).
                     },
                 ));
             }

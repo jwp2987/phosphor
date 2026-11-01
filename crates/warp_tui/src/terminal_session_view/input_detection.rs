@@ -194,7 +194,6 @@ impl TuiTerminalSessionView {
         ) else {
             return;
         };
-        let completion_session = completion_context.session.clone();
 
         self.input_detection.future = Some(ctx.spawn_abortable(
             async move {
@@ -255,9 +254,9 @@ impl TuiTerminalSessionView {
                     );
                 });
             },
-            move |_, _| {
-                completion_session.cancel_active_commands();
-            },
+            // Dropping the aborted future cancels exactly its own in-band commands; a
+            // session-wide cancel would kill other jobs' commands too (#1352).
+            |_, _| {},
         ));
     }
 }

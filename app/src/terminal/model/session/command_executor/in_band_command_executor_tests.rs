@@ -593,3 +593,172 @@ fn test_nu_generator_call_is_a_space_led_raw_string() {
         drop(execute_future);
     });
 }
+
+/// Builds an executor with an inert pty side, for tests that drive the queue by hand.
+fn test_executor() -> Arc<InBandCommandExecutor> {
+    let (executor_command_tx, _) = async_channel::unbounded();
+    let (in_band_command_cancelled_tx, _) = async_channel::unbounded();
+    Arc::new(InBandCommandExecutor::new(
+        executor_command_tx,
+        in_band_command_cancelled_tx,
+    ))
+}
+
+#[test]
+fn test_command_ids_are_unique_within_one_microsecond() {
+    // Fails on the timestamp-only id: a burst of ids inside one clock tick collided, so one
+    // job's cancel (or a cancelled command's late output) could hit another job's command.
+    let executor = test_executor();
+    let ids: Vec<String> = (0..10_000).map(|_| executor.next_command_id()).collect();
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len());
+    assert!(ids
+        .windows(2)
+        .all(|w| w[0].parse::<i64>().unwrap() < w[1].parse::<i64>().unwrap()));
+}
+
+#[test]
+fn test_aborting_one_job_leaves_another_jobs_command_pending_and_resolvable() {
+    // A superseded decoration parse aborts only its own `execute_command` future; a Tab
+    // completion's command queued behind it must survive and still resolve (#1352).
+    App::test((), |_app| async move {
+        let executor = test_executor();
+        let task_executor = async_executor::LocalExecutor::new();
+
+        // The decoration parse's command, aborted later.
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let parse_executor = executor.clone();
+        let parse_future = task_executor.spawn(Abortable::new(
+            execute_test_command(parse_executor, "parse", |_| {}),
+            abort_registration,
+        ));
+        // The Tab completion's command.
+        let completion_future = task_executor.spawn(execute_test_command(
+            executor.clone(),
+            "complete",
+            assert_command_output_result_fn("done", true),
+        ));
+
+        let driver = task_executor.spawn(async move {
+            let parse_id = executor
+                .running_command_id()
+                .expect("parse command running");
+            let pending = executor.pending_command_ids();
+            assert_eq!(pending.len(), 1);
+            let completion_id = pending[0].clone();
+
+            abort_handle.abort();
+            // Let the aborted future drop (running its on_cancel).
+            async_io_yield().await;
+
+            // Only the parse's command is gone; the completion's command now runs.
+            assert_eq!(executor.running_command_id(), Some(completion_id.clone()));
+            assert!(executor.pending_command_ids().is_empty());
+
+            // The aborted command's late output is dropped, not given to the completion.
+            executor.handle_executed_command_event(ExecutedExecutorCommandEvent {
+                command_id: parse_id,
+                exit_code: 0,
+                output: "stale".as_bytes().to_vec(),
+            });
+            assert_eq!(executor.running_command_id(), Some(completion_id.clone()));
+
+            executor.handle_executed_command_event(ExecutedExecutorCommandEvent {
+                command_id: completion_id,
+                exit_code: 0,
+                output: "done".as_bytes().to_vec(),
+            });
+        });
+
+        task_executor
+            .run(async move {
+                assert!(parse_future.await.is_err(), "the parse job was aborted");
+                completion_future.await;
+                driver.await;
+            })
+            .await;
+    });
+}
+
+/// Yields to the executor once so a just-aborted sibling task gets polled and dropped.
+async fn async_io_yield() {
+    let mut yielded = false;
+    futures_util::future::poll_fn(|cx| {
+        if yielded {
+            std::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    })
+    .await
+}
+
+#[test]
+fn test_late_output_of_a_cancelled_running_command_is_dropped() {
+    App::test((), |_app| async move {
+        let executor = test_executor();
+        let task_executor = async_executor::LocalExecutor::new();
+
+        let first =
+            task_executor.spawn(execute_test_command(executor.clone(), "first", |result| {
+                let output = result.expect("ok");
+                assert_eq!(output.status, CommandExitStatus::Failure);
+            }));
+        let second = task_executor.spawn(execute_test_command(
+            executor.clone(),
+            "second",
+            assert_command_output_result_fn("second-out", true),
+        ));
+
+        let driver = task_executor.spawn(async move {
+            let first_id = executor.running_command_id().unwrap();
+            executor.handle_cancelled_in_band_command_event(InBandCommandCancelledEvent {
+                command_id: first_id.clone(),
+            });
+            let second_id = executor.running_command_id().expect("second now runs");
+            assert_ne!(first_id, second_id);
+
+            // The cancelled command's output arrives late: it must not resolve `second`.
+            executor.handle_executed_command_event(ExecutedExecutorCommandEvent {
+                command_id: first_id,
+                exit_code: 0,
+                output: "first-out".as_bytes().to_vec(),
+            });
+            assert_eq!(executor.running_command_id(), Some(second_id.clone()));
+
+            executor.handle_executed_command_event(ExecutedExecutorCommandEvent {
+                command_id: second_id,
+                exit_code: 0,
+                output: "second-out".as_bytes().to_vec(),
+            });
+        });
+
+        task_executor
+            .run(async move {
+                first.await;
+                second.await;
+                driver.await;
+            })
+            .await;
+    });
+}
+
+#[test]
+fn test_abort_callbacks_do_not_cancel_the_whole_session() {
+    // Source guard: the abort callbacks of the decoration/detection parse, autosuggestion and
+    // Tab-completion jobs once called the session-wide `cancel_active_commands()`, killing every
+    // other job's in-flight in-band command (#1352). Superseding a job drops its future, which
+    // cancels exactly its own commands. The only genuine session-wide cancel in `input` is
+    // none; in `view.rs` it is "the user ran a command" (checked below to still exist).
+    fn code_calls(src: &str) -> usize {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(".cancel_active_commands()"))
+            .count()
+    }
+    assert_eq!(code_calls(include_str!("../../../input/decorations.rs")), 0);
+    assert_eq!(code_calls(include_str!("../../../input.rs")), 0);
+    assert_eq!(code_calls(include_str!("../../../view.rs")), 1);
+}
