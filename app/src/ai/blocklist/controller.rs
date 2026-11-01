@@ -23,8 +23,8 @@ use super::{
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
-        block_context_from_terminal_model, context_and_files_for_attachments,
-        BlocklistAIContextModel, PendingAttachment,
+        BlocklistAIContextModel, PendingAttachment, ReadAttachment, attachments_need_disk_read,
+        block_context_from_terminal_model, context_and_files_from_read, read_attachments,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
@@ -830,6 +830,9 @@ pub struct BlocklistAIController {
     /// At most 1 kept per conversation; a subsequent request submitted directly by
     /// the user overwrites it.
     pending_byop_requests: HashMap<AIConversationId, PendingByopRequest>,
+    /// Submits waiting (in order) for their attached files to be read off the UI thread.
+    pending_query_sends: std::collections::VecDeque<PendingQuerySend>,
+    next_query_send_seq: u64,
     /// True while this controller's pane is closed but restorable from the undo-close stack
     /// (#848). A closed pane sends nothing: `send_request_input` -- the single place a request
     /// is started -- refuses, no auto-resume is scheduled, and finished actions neither trigger
@@ -966,6 +969,27 @@ struct PendingByopRequest {
     default_to_follow_up_on_success: bool,
     recovery: RecoveryBudget,
     is_queued_prompt: bool,
+}
+
+/// Everything `send_query` has decided by the time it needs the attachments' content, carried
+/// across the (off-thread) attachment read.
+struct UserQuerySend {
+    input_query: InputQueryType,
+    query: String,
+    inputs: Vec<AIAgentInput>,
+    task_id: TaskId,
+    conversation_id: AIConversationId,
+    user_query_mode: UserQueryMode,
+    additional_attachments: HashMap<String, AIAgentAttachment>,
+    entrypoint_type: EntrypointType,
+    is_queued_prompt: bool,
+}
+
+/// A submit waiting for its attachment read, in submit order.
+struct PendingQuerySend {
+    seq: u64,
+    send: UserQuerySend,
+    read: Option<Vec<ReadAttachment>>,
 }
 
 enum InputQueryType {
@@ -1290,6 +1314,8 @@ impl BlocklistAIController {
             synthetic_result_resumes_this_turn: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
+            pending_query_sends: Default::default(),
+            next_query_send_seq: 0,
             suspended_for_close: false,
             monitored_completion_follow_ups: HashSet::new(),
             deferred_monitored_completions: HashMap::new(),
@@ -1823,41 +1849,188 @@ impl BlocklistAIController {
 
         let additional_attachments = input_query.additional_attachments;
         let queued_query_id = input_query.queued_query_id;
-        let ai_input = match input_query.input_query {
+
+        // Resolve the attachment set for this submission. A fired queued row reads the
+        // attachments captured when it was queued (it may no longer match whatever is
+        // live-staged now, e.g. if the user has since attached something new for their
+        // next message); a direct submission consumes the live staging as before.
+        let prompt_attachments = match &input_query.input_query {
+            InputQueryType::UserSubmittedQueryFromInput { .. } => match queued_query_id {
+                Some(query_id) => QueuedQueryModel::as_ref(ctx)
+                    .attachments_for(conversation_id, query_id)
+                    .to_vec(),
+                None => self
+                    .context_model
+                    .as_ref(ctx)
+                    .pending_attachments()
+                    .to_vec(),
+            },
+            InputQueryType::AIInputType { .. } => Vec::new(),
+        };
+
+        let send = UserQuerySend {
+            input_query: input_query.input_query,
+            query,
+            inputs,
+            task_id,
+            conversation_id,
+            user_query_mode,
+            additional_attachments,
+            entrypoint_type,
+            is_queued_prompt,
+        };
+
+        // Reading attached files is disk IO that grows with the file (up to 10 MB), so it runs
+        // on a worker thread. Submits stay strictly ordered: while an earlier submit is still
+        // waiting on its read, every later one queues behind it, and they are sent in the order
+        // they were made.
+        let needs_read = attachments_need_disk_read(&prompt_attachments);
+        if !needs_read && self.pending_query_sends.is_empty() {
+            self.finish_user_query_send(send, read_attachments(prompt_attachments), ctx);
+            return;
+        }
+        let seq = self.next_query_send_seq;
+        self.next_query_send_seq += 1;
+        if !needs_read {
+            self.pending_query_sends.push_back(PendingQuerySend {
+                seq,
+                send,
+                read: Some(read_attachments(prompt_attachments)),
+            });
+            return;
+        }
+        self.pending_query_sends.push_back(PendingQuerySend {
+            seq,
+            send,
+            read: None,
+        });
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let fallback = prompt_attachments.clone();
+        let spawned = std::thread::Builder::new()
+            .name("attachment-read".into())
+            .spawn(move || {
+                let _ = tx.send(read_attachments(prompt_attachments));
+            });
+        let spawn_ok = match spawned {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("Failed to spawn attachment read thread ({e}); reading inline");
+                false
+            }
+        };
+        ctx.spawn(
+            async move {
+                if spawn_ok {
+                    if let Ok(read) = rx.await {
+                        return read;
+                    }
+                }
+                read_attachments(fallback)
+            },
+            move |me, read, ctx| {
+                if let Some(entry) = me.pending_query_sends.iter_mut().find(|e| e.seq == seq) {
+                    entry.read = Some(read);
+                }
+                me.drain_ready_query_sends(ctx);
+            },
+        );
+    }
+
+    /// Tells the user which attached files could not be read; the request is still sent without
+    /// their content (the file path reference stays).
+    fn notify_attachment_read_failures(&self, names: &[String], ctx: &mut ModelContext<Self>) {
+        let terminal_view_id = self.terminal_view_id;
+        let window_ids: Vec<warpui::WindowId> = ctx.window_ids().collect();
+        let Some(window_id) = window_ids.into_iter().find(|window_id| {
+            ctx.view_ids_for_window(*window_id)
+                .contains(&terminal_view_id)
+        }) else {
+            return;
+        };
+        let message = if names.len() == 1 {
+            format!("Could not read attached file {}.", names[0])
+        } else {
+            format!("Could not read {} attached files.", names.len())
+        };
+        crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                crate::view_components::DismissibleToast::error(message),
+                window_id,
+                ctx,
+            );
+        });
+    }
+
+    /// Sends, in submit order, every queued submit whose attachment read has finished.
+    fn drain_ready_query_sends(&mut self, ctx: &mut ModelContext<Self>) {
+        while self
+            .pending_query_sends
+            .front()
+            .is_some_and(|entry| entry.read.is_some())
+        {
+            let Some(PendingQuerySend {
+                send,
+                read: Some(read),
+                ..
+            }) = self.pending_query_sends.pop_front()
+            else {
+                break;
+            };
+            self.finish_user_query_send(send, read, ctx);
+        }
+    }
+
+    /// The second half of `send_query`: builds the user input from the already-read attachments
+    /// and sends the request.
+    fn finish_user_query_send(
+        &mut self,
+        send: UserQuerySend,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let UserQuerySend {
+            input_query,
+            query,
+            mut inputs,
+            task_id,
+            conversation_id,
+            user_query_mode,
+            additional_attachments,
+            entrypoint_type,
+            is_queued_prompt,
+        } = send;
+        let failed_files: Vec<String> = read
+            .iter()
+            .filter_map(|item| match (&item.attachment, &item.file_context) {
+                (PendingAttachment::File(file), None) => Some(file.file_name.clone()),
+                _ => None,
+            })
+            .collect();
+        if !failed_files.is_empty() {
+            self.notify_attachment_read_failures(&failed_files, ctx);
+        }
+        let ai_input = match input_query {
             InputQueryType::UserSubmittedQueryFromInput {
                 static_query_type,
                 running_command,
                 ..
-            } => {
-                // Resolve the attachment set for this submission. A fired queued row reads the
-                // attachments captured when it was queued (it may no longer match whatever is
-                // live-staged now, e.g. if the user has since attached something new for their
-                // next message); a direct submission consumes the live staging as before.
-                let prompt_attachments = match queued_query_id {
-                    Some(query_id) => QueuedQueryModel::as_ref(ctx)
-                        .attachments_for(conversation_id, query_id)
-                        .to_vec(),
-                    None => self
-                        .context_model
-                        .as_ref(ctx)
-                        .pending_attachments()
-                        .to_vec(),
-                };
-                input_for_query(
-                    query,
-                    &task_id,
-                    conversation_id,
-                    static_query_type,
-                    user_query_mode,
-                    running_command,
-                    additional_attachments,
-                    prompt_attachments,
-                    self.context_model.as_ref(ctx),
-                    self.active_session.as_ref(ctx),
-                    ctx,
-                )
+            } => input_for_query(
+                query,
+                &task_id,
+                conversation_id,
+                static_query_type,
+                user_query_mode,
+                running_command,
+                additional_attachments,
+                read,
+                self.context_model.as_ref(ctx),
+                self.active_session.as_ref(ctx),
+                ctx,
+            ),
+            InputQueryType::AIInputType { ai_input } => {
+                drop(read);
+                ai_input
             }
-            InputQueryType::AIInputType { ai_input } => ai_input,
         };
         inputs.push(ai_input);
 
@@ -5844,7 +6017,7 @@ fn input_for_query(
     user_query_mode: UserQueryMode,
     running_command: Option<RunningCommand>,
     additional_attachments: HashMap<String, AIAgentAttachment>,
-    prompt_attachments: Vec<PendingAttachment>,
+    read: Vec<ReadAttachment>,
     context_model: &BlocklistAIContextModel,
     active_session: &ActiveSession,
     app: &AppContext,
@@ -5853,8 +6026,10 @@ fn input_for_query(
     // explicitly-resolved `prompt_attachments` set (the queued row's captured attachments, or
     // live staging captured at send time — decided by the caller) rather than from whatever
     // happens to be staged in `context_model` when this request is actually built.
-    let (attachment_context, file_attachments) =
-        context_and_files_for_attachments(prompt_attachments);
+    let (attachment_context, file_attachments, failed_files) = context_and_files_from_read(read);
+    if !failed_files.is_empty() {
+        log::warn!("Could not read attached file(s) for the request: {failed_files:?}");
+    }
     let context = input_context_for_request(
         true,
         context_model,

@@ -477,29 +477,56 @@ pub fn open_in_default_editor_only(
 /// Used so that if xdg-open will work on a file we already know about,
 /// we can use line and col numbers.
 fn get_app_for_file_from_mime(path: &Path) -> Option<Editor> {
-    let mime_type = String::from_utf8(
-        Command::new("xdg-mime")
-            .arg("query")
-            .arg("filetype")
-            .arg(path)
-            .output()
-            .ok()?
-            .stdout,
-    )
-    .ok()?;
+    let mut mime_query = Command::new("xdg-mime");
+    mime_query.arg("query").arg("filetype").arg(path);
+    let mime_type = String::from_utf8(output_with_timeout(mime_query, XDG_MIME_TIMEOUT)?).ok()?;
 
-    let default_app = String::from_utf8(
-        Command::new("xdg-mime")
-            .args(["query", "default", mime_type.trim()])
-            .output()
-            .ok()?
-            .stdout,
-    )
-    .ok()?;
+    let mut default_query = Command::new("xdg-mime");
+    default_query.args(["query", "default", mime_type.trim()]);
+    let default_app =
+        String::from_utf8(output_with_timeout(default_query, XDG_MIME_TIMEOUT)?).ok()?;
 
     let app_id = default_app.trim().replace(".desktop", "");
 
     get_editor_by_app_id(compute_editors_by_id(), app_id.as_str())
+}
+
+/// Longest the UI thread waits for one `xdg-mime` query. A hung `xdg-mime` (broken mime database,
+/// stuck D-Bus or desktop-file lookup) used to freeze the whole app; on timeout the lookup finds
+/// no editor and the caller falls back to `xdg-open` / the in-app editor.
+const XDG_MIME_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Runs `command` and returns its stdout, or `None` if it fails to start, fails, or does not
+/// finish within `timeout` (in which case it is killed).
+fn output_with_timeout(mut command: Command, timeout: std::time::Duration) -> Option<Vec<u8>> {
+    let child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // The worker owns the child, so it also reaps it after a kill.
+    std::thread::Builder::new()
+        .name("xdg-mime-wait".into())
+        .spawn(move || {
+            let _ = tx.send(child.wait_with_output());
+        })
+        .ok()?;
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => Some(output.stdout),
+        Ok(_) => None,
+        Err(_) => {
+            log::warn!("{command:?} did not finish within {timeout:?}; giving up on it");
+            // SAFETY: plain signal send to a child this function spawned; the worker thread
+            // still owns and will reap it.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            None
+        }
+    }
 }
 
 static EDITORS_BY_ID: OnceLock<HashMap<&'static str, Editor>> = OnceLock::new();

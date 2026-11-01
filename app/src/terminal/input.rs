@@ -5318,70 +5318,70 @@ impl Input {
         let action_model = self.ai_action_model.as_ref(ctx);
         let conversation_text = conversation.export_to_markdown(Some(action_model));
 
-        // Check if file already exists and warn user
-        let file_exists = file_path.exists();
-        if file_exists {
-            let window_id = ctx.window_id();
-            let display_path = file_path.display().to_string();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                let toast = DismissibleToast::default(format!(
-                    "File {display_path} already exists and will be overwritten"
-                ));
-                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        // The exists check and the write are disk IO (the target may be on a slow or network
+        // mount), so they run on a worker thread; the toasts come back on the UI thread.
+        let window_id = ctx.window_id();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let write_path = file_path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("export-conversation".into())
+            .spawn(move || {
+                let file_exists = write_path.exists();
+                let result = fs::write(&write_path, conversation_text);
+                let _ = tx.send((file_exists, result));
             });
+        if let Err(e) = spawned {
+            log::error!("Failed to start the conversation export thread: {e}");
+            return;
         }
-
-        // Write to file
-        match fs::write(&file_path, conversation_text) {
-            Ok(_) => {
-                // Show success toast
-                let window_id = ctx.window_id();
+        ctx.spawn(async move { rx.await.ok() }, move |_me, outcome, ctx| {
+            let Some((file_exists, result)) = outcome else {
+                return;
+            };
+            if file_exists {
                 let display_path = file_path.display().to_string();
-                ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     let toast = DismissibleToast::default(format!(
-                        "Conversation exported to {display_path}"
+                        "File {display_path} already exists and will be overwritten"
                     ));
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
             }
-            Err(e) => {
-                // Show error toast with user-friendly message
-                let user_message = match e.kind() {
-                    std::io::ErrorKind::PermissionDenied => {
-                        format!(
-                            "Permission denied writing to {}. Check file permissions.",
-                            file_path.display()
-                        )
+            match result {
+                Ok(_) => {
+                    let display_path = file_path.display().to_string();
+                    ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                        let toast = DismissibleToast::default(format!(
+                            "Conversation exported to {display_path}"
+                        ));
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
+                }
+                match result {
+                    Ok(_) => {
+                        let display_path = file_path.display().to_string();
+                        ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                            let toast = DismissibleToast::default(format!(
+                                "Conversation exported to {display_path}"
+                            ));
+                            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                        });
                     }
-                    std::io::ErrorKind::NotFound => {
-                        format!(
-                            "Directory not found: {}",
-                            file_path
-                                .parent()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default()
-                        )
+                    Err(e) => {
+                        let user_message = export_error_message(&file_path, &e);
+                        log::error!(
+                            "Failed to write conversation to file {}: {}",
+                            file_path.display(),
+                            e
+                        );
+                        ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                            let toast = DismissibleToast::default(user_message);
+                            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                        });
                     }
-                    std::io::ErrorKind::AlreadyExists => {
-                        format!("File {} already exists", file_path.display())
-                    }
-                    _ => {
-                        format!("Failed to export to {}: {}", file_path.display(), e)
-                    }
-                };
-
-                log::error!(
-                    "Failed to write conversation to file {}: {}",
-                    file_path.display(),
-                    e
-                );
-                let window_id = ctx.window_id();
-                ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
-                    let toast = DismissibleToast::default(user_message);
-                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-                });
+                }
             }
-        }
+        });
 
         // Clear the buffer after execution
         self.editor.update(ctx, |editor, ctx| {
@@ -17357,6 +17357,28 @@ fn hint_inputs_changed(
     let unchanged = last.as_ref() == Some(&now);
     *last = Some(now);
     !(is_streaming_delta && unchanged)
+}
+
+/// The user-facing message for a failed `/export` write.
+#[cfg(not(target_family = "wasm"))]
+fn export_error_message(file_path: &std::path::Path, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied => format!(
+            "Permission denied writing to {}. Check file permissions.",
+            file_path.display()
+        ),
+        std::io::ErrorKind::NotFound => format!(
+            "Directory not found: {}",
+            file_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        ),
+        std::io::ErrorKind::AlreadyExists => {
+            format!("File {} already exists", file_path.display())
+        }
+        _ => format!("Failed to export to {}: {}", file_path.display(), e),
+    }
 }
 
 #[cfg(test)]

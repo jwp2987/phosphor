@@ -5987,3 +5987,35 @@ fn test_byop_preflight_persistence_failure_sees_through_update_history_error() {
     ));
     assert!(super::byop_preflight_persistence_failure(&unrelated).is_none());
 }
+
+/// Loading a not-in-memory conversation returns a future that resolves (here to `None`, since the
+/// test model has no database); the database read happens on a worker thread, not inside the
+/// `load_conversation_data` call itself.
+#[cfg(feature = "local_fs")]
+#[test]
+fn load_conversation_data_resolves_through_worker_thread() {
+    let mut model = BlocklistAIHistoryModel::new_for_test();
+    let conversation_id = AIConversationId::new();
+    model.all_conversations_metadata.insert(
+        conversation_id,
+        AIConversationMetadata {
+            id: conversation_id,
+            title: "t".to_string(),
+            initial_query: String::new(),
+            last_modified_at: Utc::now().naive_utc(),
+            initial_working_directory: None,
+            credits_spent: None,
+            server_conversation_token: None,
+            has_local_data: true,
+            artifacts: vec![],
+            ambient_agent_task_id: None,
+            parent_conversation_id: None,
+            parent_agent_id: None,
+        },
+    );
+    let future = model.load_conversation_data(conversation_id);
+    assert!(futures::executor::block_on(future).is_none());
+    assert!(
+        super::conversation_loader::read_conversation_from_db(None, &conversation_id).is_none()
+    );
+}

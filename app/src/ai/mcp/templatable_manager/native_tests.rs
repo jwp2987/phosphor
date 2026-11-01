@@ -542,3 +542,34 @@ mod app_exit {
         assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
 }
+
+#[test]
+fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
+    use crate::ai::mcp::{MCPServer, ServerSentEvents, TransportType};
+    use crate::server::ids::{ClientId, SyncId};
+
+    let main_thread = std::thread::current().id();
+    let servers: Vec<_> = (0..3)
+        .map(|i| {
+            (
+                SyncId::ClientId(ClientId::new()),
+                MCPServer {
+                    transport_type: TransportType::ServerSentEvents(ServerSentEvents {
+                        url: format!("http://localhost:{i}"),
+                        headers: vec![],
+                    }),
+                    name: format!("s{i}"),
+                    uuid: uuid::Uuid::new_v4(),
+                },
+            )
+        })
+        .collect();
+    let expected: Vec<_> = servers.iter().map(|(_, s)| s.uuid).collect();
+    let out =
+        futures::executor::block_on(super::read_legacy_env_vars_in_background(None, servers));
+    assert_eq!(
+        out.iter().map(|(_, s)| s.uuid).collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(main_thread, std::thread::current().id());
+}

@@ -164,7 +164,7 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
                 UserQueryMode::Normal,
                 None,
                 HashMap::new(),
-                prompt_attachments,
+                super::read_attachments(prompt_attachments),
                 context_model.as_ref(ctx),
                 active_session.as_ref(ctx),
                 ctx,

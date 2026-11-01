@@ -179,11 +179,7 @@ impl Resources {
             let mut surface_config = self.surface_config.borrow_mut();
             surface_config.width = size.x() as u32;
             surface_config.height = size.y() as u32;
-            block_on(configure_surface(
-                &self.surface,
-                &self.device,
-                &surface_config,
-            ))
+            configure_surface_bounded(&self.surface, &self.device, &surface_config)
         } else {
             Ok(())
         }
@@ -226,7 +222,7 @@ impl Resources {
                 Err(error)
             }
             GetSurfaceTextureError::Lost | GetSurfaceTextureError::Outdated => {
-                block_on(configure_surface(surface, device, &surface_config.borrow()))
+                configure_surface_bounded(surface, device, &surface_config.borrow())
                     .map_err(GetSurfaceTextureError::ConfigurationError)?;
 
                 match get_surface_texture(surface) {
@@ -1060,6 +1056,62 @@ async fn configure_surface(
             config: surface_config.clone(),
         }),
         None => Ok(()),
+    }
+}
+
+/// Upper bound on how long the UI thread waits for the validation error scope of a surface
+/// reconfigure to resolve. The configure call itself has already been issued by then; the wait only
+/// collects a validation error, so on timeout we report success and let the next acquire surface
+/// any real problem (it returns `Lost`/`Outdated`/`Validation`).
+const CONFIGURE_SURFACE_WAIT: Duration = Duration::from_millis(100);
+
+fn configure_surface_bounded(
+    surface: &Surface<'_>,
+    device: &Device,
+    surface_config: &SurfaceConfiguration,
+) -> Result<(), SurfaceConfigureError> {
+    match block_on_bounded(
+        configure_surface(surface, device, surface_config),
+        CONFIGURE_SURFACE_WAIT,
+    ) {
+        Some(result) => result,
+        None => {
+            log::warn!(
+                "Timed out after {CONFIGURE_SURFACE_WAIT:?} waiting for surface reconfigure validation"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Drives `future` on the calling thread for at most `timeout`. Returns `None` if it did not
+/// complete in time (the future is dropped).
+fn block_on_bounded<T>(
+    future: impl std::future::Future<Output = T>,
+    timeout: Duration,
+) -> Option<T> {
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ThreadWaker(std::thread::Thread);
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return Some(value);
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        std::thread::park_timeout(deadline - now);
     }
 }
 
