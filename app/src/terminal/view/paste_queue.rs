@@ -94,6 +94,10 @@ pub(super) enum PromptHoldEnd {
 /// far beyond any of them. Logged when it fires.
 const CLI_SUBMIT_LEAK_NET: Duration = Duration::from_secs(20);
 
+/// Net for a PowerShell setup gate nothing ever closed: twice the typed-input hold limit that
+/// releases it in every normal case (the setup's own events end it). Logged when it fires.
+const POWERSHELL_GATE_LEAK_NET: Duration = Duration::from_secs(180);
+
 impl PasteQueueState {
     pub(super) fn new() -> Self {
         Self {
@@ -527,6 +531,12 @@ impl TerminalView {
             #[cfg(not(target_family = "wasm"))]
             warpui::clipboard::abandon_pending_reads();
         }
+        if kind == Some(GateKind::PowershellSetup) {
+            // Nothing closed the PowerShell gate: the setup is treated as over and its keys go.
+            log::warn!("input queue: PowerShell setup gate never closed; releasing the held keys");
+            self.release_subshell_setup_held_bytes(ctx);
+            return;
+        }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
             // keys are delivered, so none of them is held a second time.
@@ -553,6 +563,7 @@ impl TerminalView {
                 legacy::SUBSHELL_BOOTSTRAP
             }
             Some(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
+            Some(queue) if queue.has_gate_kind(GateKind::PowershellSetup) => legacy::SUBSHELL_SETUP,
             Some(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
             Some(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
@@ -990,6 +1001,77 @@ impl TerminalView {
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
     }
 
+    /// Whether the PowerShell setup gate is open (#1048: its keys are entries of the queue).
+    pub(super) fn powershell_gate_open(&self) -> bool {
+        self.paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::PowershellSetup))
+    }
+
+    /// A key typed (or released from another gate) while a PowerShell setup governs input is held
+    /// behind the `PowershellSetup` gate, in typed order. The first one opens the gate with its
+    /// entry (or goes back under it when the queue is delivering it); later ones queue behind.
+    pub(super) fn hold_powershell_keys(
+        &mut self,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.paste_queue.requeueable_delivery && self.powershell_gate_open() {
+            let queue = self.paste_queue.queue.clone();
+            let Some(mut guard) = queue.try_lock() else {
+                log::warn!("input queue: PowerShell setup key not held, the queue was busy");
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.offer(
+                &mut host,
+                EntryKind::PtyBytes {
+                    bytes,
+                    takes_over_agent_control,
+                },
+            );
+            return;
+        }
+        let spec =
+            GateSpec::new(GateKind::PowershellSetup, 0).with_cap(Some(POWERSHELL_GATE_LEAK_NET));
+        self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
+    }
+
+    /// Takes the keys held for the PowerShell setup out of the queue, in typed order, as bytes.
+    /// The gate closes with them; the caller holds again what it does not consume.
+    pub(super) fn take_powershell_held_bytes(&mut self, ctx: &mut ViewContext<Self>) -> Vec<u8> {
+        let queue = self.paste_queue.queue.clone();
+        let entries = {
+            let Some(mut guard) = queue.try_lock() else {
+                return Vec::new();
+            };
+            if !guard.has_gate_kind(GateKind::PowershellSetup) {
+                return Vec::new();
+            }
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::PowershellSetup, 0)
+        };
+        self.bytes_of_taken_entries(entries, ctx).concat()
+    }
+
+    /// The PowerShell setup is over: the gate closes (its event) and the queue's one drain writes
+    /// what it held, in typed order.
+    pub(super) fn close_powershell_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            return;
+        };
+        if !guard.has_gate_kind(GateKind::PowershellSetup) {
+            return;
+        }
+        let (chunks, bytes) = guard.queued_since_gate(GateKind::PowershellSetup);
+        trace::release(trace::legacy::SUBSHELL_SETUP, chunks, bytes, "pty");
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::PowershellSetup, 0);
+    }
+
     /// Whether the subshell setup gate is open (keys are held behind a setup that is not over).
     pub(super) fn subshell_setup_gate_open(&self) -> bool {
         self.paste_queue
@@ -1016,7 +1098,9 @@ impl TerminalView {
                     queue.gates().iter().all(|gate| {
                         matches!(
                             gate.kind,
-                            GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite
+                            GateKind::SubshellSetup
+                                | GateKind::SubshellBootstrapWrite
+                                | GateKind::PowershellSetup
                         )
                     }),
                 ),

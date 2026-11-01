@@ -38,10 +38,9 @@ fn flat(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> Vec<u8> {
 }
 
 /// X6, the "exactly one holder" proof: what the LEGACY holders of this pane hold right now (the
-/// PowerShell setup buffer, the editor's replay list). On the
+/// editor's replay list). On the
 /// queue path every one of them must be empty while the queue holds the keys.
 fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
-    let setup: usize = view.subshell_setup_held_bytes.iter().map(Vec::len).sum();
     let replay = usize::from(
         view.input
             .as_ref(ctx)
@@ -50,7 +49,7 @@ fn legacy_held(view: &TerminalView, ctx: &AppContext) -> usize {
             .paste_hold()
             .replay_pending(),
     );
-    setup + replay
+    replay
 }
 
 #[test]

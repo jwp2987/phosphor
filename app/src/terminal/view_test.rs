@@ -15321,19 +15321,22 @@ fn pty_keys_with_no_paste_pending_leave_the_queue_idle() {
 
 /// #933 x ^C: an Enter held because the command may already have finished does not swallow a
 /// Ctrl-C typed within the window. The ETX is written to the pty, once, and the hold is dropped.
-/// Keys held for an unfinished subshell setup, as (entries, bytes): on the input queue, or in the
-/// legacy buffer (kill switch, or a write made while the queue was delivering).
+/// Keys held for an unfinished subshell setup, as (entries, bytes): on the input queue.
 fn held_for_subshell_setup(view: &TerminalView) -> (usize, usize) {
-    let (entries, bytes) = view.paste_queue.queue.borrow().queued_summary();
-    (
-        entries + view.subshell_setup_held_bytes.len(),
-        bytes
-            + view
-                .subshell_setup_held_bytes
-                .iter()
-                .map(Vec::len)
-                .sum::<usize>(),
-    )
+    view.paste_queue.queue.borrow().queued_summary()
+}
+
+/// The keys held by the PowerShell setup gate (#1048), one chunk per entry, in typed order.
+fn powershell_held(view: &TerminalView) -> Vec<Vec<u8>> {
+    view.paste_queue
+        .queue
+        .borrow()
+        .entries()
+        .filter_map(|entry| match &entry.kind {
+            input_queue::EntryKind::PtyBytes { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// #1014: keys typed while the paced subshell bootstrap is still in flight (an rc file that
@@ -15840,7 +15843,7 @@ fn powershell_setup_holds_keys_although_the_output_looks_like_a_prompt() {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
             assert_eq!(
-                view.subshell_setup_held_bytes,
+                powershell_held(view),
                 vec![b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()]
             );
         });
@@ -15870,7 +15873,7 @@ fn powershell_setup_holds_keys_and_enter_typed_after_its_first_precmd() {
             view.keydown_on_terminal("\r", ctx);
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(
-                view.subshell_setup_held_bytes.concat(),
+                powershell_held(view).concat(),
                 b"echo 1\rls".to_vec(),
                 "every key is held, in order, the Enter included"
             );
@@ -15940,7 +15943,7 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
             (
                 view.input.as_ref(ctx).buffer_text(ctx),
                 view.powershell_setup_hold,
-                view.subshell_setup_held_bytes.clone(),
+                powershell_held(view),
             )
         });
         let mut everything = delivered.borrow().clone();
@@ -15979,16 +15982,13 @@ fn early_ctrl_c_in_a_powershell_setup_discards_the_line_being_typed_and_lets_set
                 view.typed_characters_on_terminal("ls", ctx);
                 view.ctrl_c(ctx);
                 assert_eq!(
-                    view.subshell_setup_held_bytes.concat(),
+                    powershell_held(view).concat(),
                     b"echo 1\r".to_vec(),
                     "only the line being typed is discarded"
                 );
                 assert_eq!(view.powershell_setup_hold, hold, "setup carries on");
                 view.typed_characters_on_terminal("pwd", ctx);
-                assert_eq!(
-                    view.subshell_setup_held_bytes.concat(),
-                    b"echo 1\rpwd".to_vec()
-                );
+                assert_eq!(powershell_held(view).concat(), b"echo 1\rpwd".to_vec());
             });
             assert!(
                 delivered.borrow().is_empty(),
@@ -16018,7 +16018,7 @@ fn ctrl_c_after_a_stalled_powershell_profile_stops_it_and_keeps_the_keys_held() 
                 view.powershell_setup_hold,
                 PowerShellSetupHold::ScriptRunning
             );
-            assert_eq!(view.subshell_setup_held_bytes.concat(), b"ls".to_vec());
+            assert_eq!(powershell_held(view).concat(), b"ls".to_vec());
         });
         assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C");
     })
@@ -16056,7 +16056,7 @@ fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {
         terminal.update(&mut app, |view, ctx| {
             view.end_powershell_abort_wait(generation, ctx);
             assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
-            assert!(view.subshell_setup_held_bytes.is_empty());
+            assert!(powershell_held(view).is_empty());
         });
         assert_eq!(
             *delivered.borrow(),
@@ -16275,33 +16275,6 @@ fn subshell_announcement_applies_to_the_bootstrapped_parent_block_before_initshe
         Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
         false
     ));
-}
-
-/// #1222: between the `Bootstrapped` hook (the announcement stops applying) and the first prompt
-/// (where the held keys are released) a key typed now used to pass the hold and be written ahead of
-/// the keys held earlier, reordering the command line (`s/tmdate +%s%N ... /home/winterp-perf`).
-/// The held keys must go first. On the old code the write path had no such rule, so a key typed in
-/// that gap was written first.
-#[test]
-fn held_setup_keys_are_delivered_before_a_key_typed_after_the_setup_finished() {
-    let young = Some(Duration::from_millis(1500));
-    // Setup over (no announcement applies), keys held, an ordinary key: held keys first.
-    assert!(setup_held_keys_go_before(true, true, false, None));
-    // Setup still announced: the hold keeps queueing behind them, nothing to deliver yet.
-    assert!(!setup_held_keys_go_before(true, true, false, young));
-    // The hold limit has passed (announcement still recorded): the timer releases, not this key.
-    assert!(!setup_held_keys_go_before(
-        true,
-        true,
-        false,
-        Some(SUBSHELL_SETUP_TYPED_HOLD_LIMIT)
-    ));
-    // Nothing held: nothing to deliver.
-    assert!(!setup_held_keys_go_before(false, true, false, None));
-    // Abort keys have their own order (the abort first, then what was held).
-    assert!(!setup_held_keys_go_before(true, true, true, None));
-    // PowerShell delivers through the editor at its own prompt.
-    assert!(!setup_held_keys_go_before(true, false, false, None));
 }
 
 /// #1014 (Mac, third stalled subshell in a row): the 90 s hold-limit timer of the first setup
@@ -20471,7 +20444,7 @@ fn powershell_abort_settle_ends_on_the_read_marker_not_the_clock() {
         );
         terminal.update(&mut app, |view, ctx| {
             assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
-            view.subshell_setup_held_bytes.push(b"ls\r".to_vec());
+            view.hold_powershell_keys(b"ls\r".to_vec(), true, ctx);
             view.write_user_bytes_to_pty(vec![3], ctx);
             assert!(matches!(
                 view.powershell_setup_hold,
