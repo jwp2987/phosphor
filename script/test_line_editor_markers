@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""The line-editor activity markers every bootstrap sends (#1390, #1391, #1392).
+
+Each Precmd and Preexec carries the shell's per-session counter `seq` (#1353 phase 6). On top of
+that the bootstraps send, as one unencoded OSC (`ESC ] 9278 ; f ; {json} BEL`):
+
+  LineEditorReading   the line editor is about to read a line (bash readline, zle, fish, reedline,
+                      PSReadLine). seq = the last Precmd's. Once per primary prompt.
+  ContinuationPrompt  PS2 is about to be read (bash, zsh only: fish/nushell/PowerShell keep an
+                      unfinished command in the same editor and run no hook). seq = the last Precmd's.
+
+A builtin raw read (`read -n1`, `read -k`) has no marker of its own: it runs after the command's
+Preexec and never starts the line editor, so the app tells the two apart by order -- a Preexec
+that is not followed by a LineEditorReading is a running program. This script pins that, in a pty,
+against the real shells (bash, zsh, fish, and nu / pwsh when installed), with the user's prompt
+honored and with Phosphor's own prompt:
+
+  1. every Precmd is followed by exactly one LineEditorReading with the same seq, before the
+     next Preexec;
+  2. a continued line (bash/zsh) produces a ContinuationPrompt with the Precmd's seq, no Precmd;
+  3. a builtin raw read produces no LineEditorReading between its Preexec and the next Precmd;
+  4. PHOSPHOR_LINE_EDITOR_MARKERS=0 turns the markers off.
+
+USAGE
+    script/test_line_editor_markers [--bash PATH] [--zsh PATH] [--fish PATH] [--nu PATH] [--pwsh PATH] [--only SHELL]
+
+A shell that is not installed is reported and skipped. Exit 0 when every check passes, 1 otherwise.
+"""
+
+import glob
+import json
+import os
+import pty
+import re
+import select
+import shlex
+import shutil
+import sys
+import tempfile
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ASSETS = os.path.join(ROOT, "app", "assets")
+BOOT = os.path.join(ASSETS, "bundled", "bootstrap")
+DCS_RE = re.compile(rb"\x1bP\$d([0-9a-f]*)(?:\x9c|\xc2\x9c)")
+OSC_RE = re.compile(rb"\x1b\]9278;f;(\{.*?\})\x07")
+OSC_D_RE = re.compile(rb"\x1b\]9278;d;([0-9A-Fa-f]*)\x07")
+EVENT_RE = re.compile("|".join(r.pattern.decode() for r in (DCS_RE, OSC_RE, OSC_D_RE)).encode(), re.S)
+
+SHELLS = {"bash": shutil.which("bash"), "zsh": shutil.which("zsh"), "fish": shutil.which("fish"),
+          "nu": shutil.which("nu") or next(iter(sorted(glob.glob("/home/linuxbrew/.linuxbrew/Cellar/nushell/*/bin/nu"))), None),
+          "pwsh": shutil.which("pwsh")}
+args = sys.argv[1:]
+ONLY = None
+while args:
+    if args[0] == "--only" and len(args) >= 2:
+        ONLY = args[1]
+        args = args[2:]
+    elif args[0] in ("--bash", "--zsh", "--fish", "--nu", "--pwsh") and len(args) >= 2:
+        SHELLS[args[0][2:]] = args[1]
+        args = args[2:]
+    else:
+        sys.exit(__doc__)
+
+failures = []
+SID = "4242"
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def read(name):
+    with open(os.path.join(BOOT, name)) as f:
+        return f.read()
+
+
+def assemble(text):
+    """Mirror bootstrap.rs: inline #include, trim, drop blank and comment lines."""
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("#include "):
+            with open(os.path.join(ASSETS, line[len("#include "):])) as f:
+                out.extend(assemble(f.read().replace("@@USING_CON_PTY_BOOLEAN@@", "false")).split("\n"))
+            continue
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = " " + stripped
+        line = line.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def pwsh_process(text):
+    """Mirror test_pwsh_hook_equivalence.process: drop comments and the analyzer attributes."""
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = line[len(line) - len(stripped) - 1:]
+        line = line.rstrip()
+        t = line.lstrip()
+        if not t or t.startswith("#") or t.startswith("[Diagnostics.CodeAnalysis.SuppressMessageAttribute"):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+class Shell:
+    def __init__(self, kind, home, honor, markers="1"):
+        self.kind = kind
+        env = {"HOME": home, "USER": os.environ.get("USER", "user"), "PATH": "/usr/local/bin:/usr/bin:/bin:" + os.path.dirname(SHELLS.get(kind) or ""),
+               "TERM": "xterm-256color", "LANG": "C.UTF-8", "WARP_IS_LOCAL_SHELL_SESSION": "1", "WARP_HONOR_PS1": honor,
+               "WARP_PROMPT_NODE_VERSION_ENABLED": "0", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
+               "PHOSPHOR_LINE_EDITOR_MARKERS": markers}
+        cwd = home
+        if kind == "bash":
+            init = read("bash_init_shell.sh").replace("@@WARP_SESSION_ID@@", SID).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc")
+            with open(rc, "w") as f:
+                f.write("PS1='U> '\n" + init + "\n" + assemble(read("bash.sh")) + "\n")
+            argv = [SHELLS["bash"], "--noprofile", "--rcfile", rc, "-i"]
+        elif kind == "fish":
+            init = read("fish_init_shell.sh").replace("@@WARP_SESSION_ID@@", SID).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            rc = os.path.join(home, "rc.fish")
+            with open(rc, "w") as f:
+                f.write("function fish_prompt\n  echo -n '> '\nend\n" + init + "\n" + assemble(read("fish.sh")) + "\n")
+            argv = [SHELLS["fish"], "-N", "-C", "source " + rc]
+        elif kind == "zsh":
+            zd = os.path.join(home, "zdot")
+            os.makedirs(zd)
+            open(os.path.join(zd, ".zshenv"), "w").close()
+            # As the app does: the body is typed into a running zsh whose rc files are done (the body
+            # sources them itself, so it cannot live in .zshrc), with ZLE off for the typing.
+            open(os.path.join(zd, ".zshrc"), "w").close()
+            self.body = os.path.join(home, "body.sh")
+            with open(self.body, "w") as f:
+                f.write(assemble(read("zsh_body.sh")).replace("@@USING_CON_PTY_BOOLEAN@@", "false") + "\n")
+            env["ZDOTDIR"] = zd
+            env["PS1"] = "U> "
+            argv = [SHELLS["zsh"], "-g", "--no-rcs", "-i"]
+        elif kind == "nu":
+            lines = [l for l in assemble(read("nu_init_shell.nu")).split("\n") if l]
+            init = ";".join(lines).replace("@@WARP_SESSION_ID@@", SID).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            self.boot = os.path.join(home, "phosphor-nu.nu")
+            with open(self.boot, "w") as f:
+                f.write(assemble(read("nu.nu")) + "\n")
+            env.update({"XDG_CONFIG_HOME": home + "/.config", "XDG_DATA_HOME": home + "/.local/share",
+                        "XDG_CACHE_HOME": home + "/.cache"})
+            argv = [SHELLS["nu"], "--login", "--execute", init]
+            self.after_start = " source '%s'\r" % self.boot
+        else:
+            import base64
+            init = read("pwsh_init_shell.ps1").replace("@@WARP_SESSION_ID@@", SID).replace("@@USING_CON_PTY_BOOLEAN@@", "false")
+            self.boot = os.path.join(home, "phosphor.ps1")
+            with open(self.boot, "w", encoding="utf-8-sig") as f:
+                f.write(pwsh_process(read("pwsh.ps1")))
+            env = dict(os.environ, HOME=home, TERM="xterm-256color", PHOSPHOR_LINE_EDITOR_MARKERS=markers)
+            env.pop("WARP_HONOR_PS1", None)
+            if honor == "0":
+                env["WARP_HONOR_PS1"] = "0"
+            enc = base64.b64encode(pwsh_process(init).encode("utf-16-le")).decode()
+            argv = [SHELLS["pwsh"], "-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand", enc]
+            self.after_start = ". '%s'\r" % self.boot
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(argv[0], argv, env)
+        self.buf = b""
+        if kind in ("nu", "pwsh"):
+            self.pump(40, lambda: any(e[0] == "InitShell" for e in self.events()))
+            self.pump(0.5)
+            os.write(self.fd, self.after_start.encode())
+        if kind == "zsh":
+            self.pump(1.5)
+            os.write(self.fd, ("unsetopt ZLE; WARP_SESSION_ID=%s; WARP_USING_WINDOWS_CON_PTY=false; source %s\r"
+                               % (SID, shlex.quote(self.body))).encode())
+        self.broken = not self.pump(40, lambda: any(e[0] == "Bootstrapped" for e in self.events()))
+        # The first real prompt can come after Bootstrapped (fish bootstraps inside -C).
+        if not self.broken and markers != "0":
+            self.pump(8, lambda: self.count("LineEditorReading") >= 1)
+        self.pump(1.0)
+
+    def pump(self, timeout, until=None):
+        end = time.time() + timeout
+        while time.time() < end:
+            if until is not None and until():
+                return True
+            r, _, _ = select.select([self.fd], [], [], 0.05)
+            if not r:
+                continue
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return until() if until else False
+            if not data:
+                return until() if until else False
+            for _ in range(data.count(b"\x1b[6n")):  # cursor-position queries (reedline, PSReadLine)
+                os.write(self.fd, b"\x1b[1;1R")
+            self.buf += data
+        return until() if until else False
+
+    def events(self):
+        """(name, value) for every hook and marker in the stream, in order."""
+        out = []
+        for m in EVENT_RE.finditer(self.buf):
+            try:
+                if m.group(1) is not None:
+                    j = json.loads(bytes.fromhex(m.group(1).decode()).decode(errors="replace"))
+                elif m.group(2) is not None:
+                    j = json.loads(m.group(2).decode())
+                else:
+                    j = json.loads(bytes.fromhex(m.group(3).decode()).decode(errors="replace"))
+            except ValueError:
+                out.append(("INVALID", {}))
+                continue
+            out.append((j.get("hook", "?"), j.get("value") or {}))
+        return out
+
+    def count(self, name):
+        return sum(1 for e in self.events() if e[0] == name)
+
+    def cycle(self, line, wait_for="Precmd", timeout=15):
+        """Type a line (raw bytes); return the events that followed it, waiting for the next `wait_for`."""
+        n = len(self.events())
+        before = self.count(wait_for)
+        os.write(self.fd, line)
+        self.pump(timeout, lambda: self.count(wait_for) > before)
+        self.pump(0.3)
+        return self.events()[n:]
+
+    def close(self):
+        try:
+            os.kill(self.pid, 9)
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+
+
+def names(evs):
+    return [e[0] for e in evs]
+
+
+def run(kind, honor):
+    label = "%s honor=%s" % (kind, honor)
+    print("%s (%s)" % (label, SHELLS[kind]))
+    base = tempfile.mkdtemp(prefix="phosphor-1390-")
+    sh = None
+    try:
+        sh = Shell(kind, os.path.realpath(base), honor)
+        check(not sh.broken, "%s: bootstraps" % label)
+        if sh.broken:
+            return
+        # 1. the bootstrap's own prompt, then two ordinary commands.
+        boot = sh.events()
+        pre = [e for e in boot if e[0] == "Precmd"]
+        lr = [e for e in boot if e[0] == "LineEditorReading"]
+        check(bool(pre) and bool(lr) and lr[-1][1].get("seq") == pre[-1][1].get("seq") and lr[-1][1].get("session_id") == int(SID),
+              "%s: first prompt sends LineEditorReading with the Precmd's seq and session" % label, repr(names(boot)))
+        for cmd in (b"true", b"echo hi"):
+            evs = sh.cycle(cmd + b"\r")
+            n = names(evs)
+            ok = n.count("LineEditorReading") == 1 and n.count("Preexec") == 1 and n.count("Precmd") == 1
+            if ok:
+                ok = n.index("Preexec") < n.index("Precmd") < n.index("LineEditorReading")
+            check(ok, "%s: %r -> Preexec, Precmd, then one LineEditorReading" % (label, cmd), repr(n))
+            p = [e[1]["seq"] for e in evs if e[0] == "Precmd"]
+            l = [e[1]["seq"] for e in evs if e[0] == "LineEditorReading"]
+            check(p and l and p[-1] == l[-1], "%s: LineEditorReading seq == Precmd seq (%r vs %r)" % (label, l, p))
+        # an empty Enter still ends in one marker with a fresh seq.
+        evs = sh.cycle(b"\r")
+        check(names(evs).count("LineEditorReading") == 1, "%s: empty Enter -> one LineEditorReading" % label, repr(names(evs)))
+        # 2. continuation line.
+        if kind in ("bash", "zsh"):
+            cmd = b"echo 'a\r" if kind == "bash" else b"echo 'a\r"
+            n0 = len(sh.events())
+            os.write(sh.fd, cmd)
+            sh.pump(10, lambda: any(e[0] == "ContinuationPrompt" for e in sh.events()[n0:]))
+            sh.pump(0.3)
+            evs = sh.events()[n0:]
+            cp = [e for e in evs if e[0] == "ContinuationPrompt"]
+            last_pre = [e for e in sh.events()[:n0] if e[0] == "Precmd"][-1][1]["seq"]
+            check(len(cp) == 1 and cp[0][1].get("seq") == last_pre and "Precmd" not in names(evs) and "Preexec" not in names(evs),
+                  "%s: PS2 -> one ContinuationPrompt with the last Precmd's seq, no Precmd/Preexec" % label, repr(names(evs)))
+            evs = sh.cycle(b"b'\r")
+            n = names(evs)
+            check(n.count("Preexec") == 1 and n.count("LineEditorReading") == 1 and n.index("Precmd") < n.index("LineEditorReading"),
+                  "%s: finishing the continued line -> Preexec, Precmd, LineEditorReading" % label, repr(n))
+        # 3. a builtin raw read: no LineEditorReading between its Preexec and the next Precmd.
+        reader = {"bash": b"read -n1 x\r", "zsh": b"read -k1 x\r", "fish": b"read -n1 x\r"}.get(kind)
+        if reader:
+            n0 = len(sh.events())
+            os.write(sh.fd, reader)
+            sh.pump(10, lambda: any(e[0] == "Preexec" for e in sh.events()[n0:]))
+            sh.pump(0.5)
+            evs = sh.events()[n0:]
+            check("Preexec" in names(evs) and "LineEditorReading" not in names(evs) and "Precmd" not in names(evs),
+                  "%s: while a builtin reads, Preexec is the last event (no LineEditorReading)" % label, repr(names(evs)))
+            evs2 = sh.cycle(b"z", wait_for="Precmd")
+            n = names(evs2)
+            check(n.count("Precmd") == 1 and n.count("LineEditorReading") == 1 and n.index("Precmd") < n.index("LineEditorReading"),
+                  "%s: after the builtin returns, Precmd then LineEditorReading" % label, repr(n))
+    finally:
+        if sh:
+            sh.close()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def run_off(kind):
+    label = "%s markers off" % kind
+    base = tempfile.mkdtemp(prefix="phosphor-1390-")
+    sh = None
+    try:
+        sh = Shell(kind, os.path.realpath(base), "1", markers="0")
+        check(not sh.broken, "%s: bootstraps" % label)
+        evs = sh.events() + sh.cycle(b"true\r")
+        check("Precmd" in names(evs) and "LineEditorReading" not in names(evs), "%s: no LineEditorReading" % label, repr(names(evs)))
+    finally:
+        if sh:
+            sh.close()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def main():
+    for kind in ("bash", "zsh", "fish", "nu", "pwsh"):
+        if ONLY and kind != ONLY:
+            continue
+        if not SHELLS.get(kind):
+            print("%s: not installed, skipped" % kind)
+            continue
+        for honor in ("1", "0"):
+            run(kind, honor)
+        run_off(kind)
+    if failures:
+        print("\n%d FAILED" % len(failures))
+        sys.exit(1)
+    print("\nall passed")
+
+
+main()

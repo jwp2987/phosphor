@@ -402,6 +402,12 @@ impl ModelEventDispatcher {
                 ModelEvent::PluggableNotification { title, body }
             }
             Event::ExitShell { session_id } => ModelEvent::ExitShell { session_id },
+            Event::LineEditorReading { session_id, seq } => {
+                ModelEvent::LineEditorReading { session_id, seq }
+            }
+            Event::ContinuationPrompt { session_id, seq } => {
+                ModelEvent::ContinuationPrompt { session_id, seq }
+            }
             _ => return,
         };
 
@@ -595,6 +601,22 @@ pub enum ModelEvent {
     /// child) before the outer ssh tunnel starts closing.
     ExitShell {
         session_id: SessionId,
+    },
+    /// The shell's line editor is about to read a line (#1390): bash readline, zsh zle, fish,
+    /// nushell's reedline, PowerShell's PSReadLine. Fires once per primary prompt, after that
+    /// prompt's Precmd (`seq` equals the Precmd's), and never for a builtin raw read (`read -k`,
+    /// `read -n1`), which runs after the command's Preexec. `seq` is `None` for a bootstrap
+    /// that predates sequence numbers.
+    LineEditorReading {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// The shell is about to read a continuation line (#1391; bash PS2, zsh PS2). `seq` is the
+    /// last Precmd's. fish, nushell and PowerShell keep an unfinished command in the same editor
+    /// and never send it.
+    ContinuationPrompt {
+        session_id: SessionId,
+        seq: Option<u64>,
     },
 }
 

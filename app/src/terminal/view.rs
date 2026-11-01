@@ -17906,6 +17906,8 @@ impl TerminalView {
             }
             // Handled by RemoteServerController via model subscription.
             ModelEvent::SshInitShell { .. } => {}
+            // Consumed by the typeahead hand-off (#1390, #1391), not by the view itself.
+            ModelEvent::LineEditorReading { .. } | ModelEvent::ContinuationPrompt { .. } => {}
             ModelEvent::RemoteServerBlockRequested { session_id } => {
                 self.show_ssh_remote_server_choice_block(*session_id, ctx);
             }

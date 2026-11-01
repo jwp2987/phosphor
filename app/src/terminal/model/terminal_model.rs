@@ -66,8 +66,8 @@ use super::{
 use super::{tmux, Secret, SecretHandle};
 use crate::terminal::model::ansi::{
     ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, InitShellValue,
-    InitSshValue, InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue,
-    PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
+    InitSshValue, InitSubshellValue, LineEditorMarkerValue, PreInteractiveSSHSessionValue,
+    PrecmdValue, PreexecValue, PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
 };
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
@@ -3887,6 +3887,26 @@ impl ansi::Handler for TerminalModel {
             self.pending_legacy_ssh_session = Some(value);
             self.event_proxy
                 .send_terminal_event(Event::SSH(remote_shell));
+        }
+    }
+
+    fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
+        if let Some(session_id) = data.session_id {
+            self.event_proxy
+                .send_terminal_event(Event::LineEditorReading {
+                    session_id: SessionId::from(session_id),
+                    seq: data.seq,
+                });
+        }
+    }
+
+    fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
+        if let Some(session_id) = data.session_id {
+            self.event_proxy
+                .send_terminal_event(Event::ContinuationPrompt {
+                    session_id: SessionId::from(session_id),
+                    seq: data.seq,
+                });
         }
     }
 

@@ -741,6 +741,8 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 self.handler.tmux_install_failed(value)
             }
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
+            Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
+            Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
 
             Err(e) => safe_error!(
                 safe: ("Error when deserializing escape sequence data"),
@@ -773,6 +775,10 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::InitSsh { value }) => {
                 self.handler.init_ssh(value);
             }
+            // The line-editor markers (#1390, #1391) are plain ASCII (two integers), sent
+            // unencoded so a shell emits them with one builtin write and no hex encoding.
+            Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
+            Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
             Ok(_) => {
                 log::error!("Received non hex-encoded hook that is not SourcedRcFileForWarp");
             }

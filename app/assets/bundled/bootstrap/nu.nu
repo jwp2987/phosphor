@@ -48,6 +48,18 @@ def __warp_send [json: string] {
     }
 }
 
+# Phosphor (#1390, #1391): tells the app the line editor is about to read. nushell has no hook
+# between drawing the prompt and reedline's first read, and reedline measures prompt strings, so
+# nothing printable can ride on the prompt: the marker goes out as the LAST thing __warp_precmd
+# does (pre_prompt runs right before reedline paints the prompt and reads). It carries the seq of
+# the Precmd just sent. reedline keeps an unfinished multi-line command in the same editor
+# (PROMPT_MULTILINE_INDICATOR) and runs no hook for it, so nu has no ContinuationPrompt. `input`
+# and other builtins read without pre_prompt, so a builtin read never sends this. print -n only.
+def __warp_line_editor_marker [] {
+    if ($env.PHOSPHOR_LINE_EDITOR_MARKERS? | default "1") == "0" { return }
+    print -n $"\e]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": ($env.WARP_SESSION_ID), \"seq\": ($env.__warp_seq? | default 0)}}\u{7}"
+}
+
 # Drops the replies to terminal queries (DA, cursor position, colour) that ended up in the line
 # buffer; same patterns as __warp_strip_terminal_replies in fish.sh.
 def __warp_strip_terminal_replies [text: string]: nothing -> string {
@@ -221,6 +233,8 @@ def --env __warp_node_version []: nothing -> string {
 def --env __warp_precmd [] {
     if ($env.__warp_internal? | default false) {
         $env.__warp_internal = false
+        # A key-bound helper (report input, prompt switch) ran and reedline reads again: same seq.
+        __warp_line_editor_marker
         return
     }
     let code = ($env.LAST_EXIT_CODE? | default 0 | into int)
@@ -235,6 +249,7 @@ def --env __warp_precmd [] {
     if ($env._WARP_GENERATOR_COMMAND? | default "" | is-not-empty) {
         hide-env _WARP_GENERATOR_COMMAND
         __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": "", "ps1": "", "git_head": "", "git_branch": "", "virtual_env": "", "conda_env": "", "node_version": "", "session_id": ($sid), "seq": ($env.__warp_seq), "is_after_in_band_command": true}}'
+        __warp_line_editor_marker
         return
     }
 
@@ -261,6 +276,7 @@ def --env __warp_precmd [] {
     let ignore_markers = if $honor == "1" { "false" } else { "true" }
     let ps1 = if $honor == "1" { '""' } else { $'"($ps1_preview)"' }
     __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": ($pwd), "ignore_prompt_markers": ($ignore_markers), "ps1": ($ps1), "rprompt": "", "git_head": ($git_head), "git_branch": ($git_branch), "virtual_env": ($venv), "conda_env": ($conda), "node_version": ($node), "session_id": ($sid), "seq": ($env.__warp_seq)}}'
+    __warp_line_editor_marker
 }
 
 # pre_execution hook.
