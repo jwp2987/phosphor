@@ -58,6 +58,11 @@ pub enum Event {
     BlockWorkingDirectoryUpdated(BlockWorkingDirectoryUpdatedEvent),
     /// Sent after a background block is started and added to the block list.
     BackgroundBlockStarted,
+    /// The running command's block became interactive / long running: a program owns the
+    /// terminal (alt screen, raw mode, foreground program). Latched once per block (#1373).
+    CommandBecameInteractive {
+        block_id: BlockId,
+    },
     ClipboardStore(ClipboardType, String),
     ClipboardLoad(
         ClipboardType,
@@ -588,6 +593,7 @@ impl Debug for Event {
             ),
             Event::AfterBlockStarted { .. } => write!(f, "BlockExecutionStarted"),
             Event::BackgroundBlockStarted => write!(f, "BackgroundBlockStarted"),
+            Event::CommandBecameInteractive { .. } => write!(f, "CommandBecameInteractive"),
             Event::VisibleBootstrapBlock => write!(f, "VisibleBootstrapBlock"),
             Event::Title(title) => write!(f, "Title({title})"),
             Event::ClipboardStore(_, text) => write!(f, "ClipboardStore({text})"),

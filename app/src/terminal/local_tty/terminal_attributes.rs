@@ -98,6 +98,32 @@ pub fn foreground_process_names(fd: RawFd) -> Option<Vec<String>> {
     process_group_names(pgid)
 }
 
+/// Who owns the terminal right now, for the interactive latch (#1373). `Input`: the tty is raw
+/// (non-canonical) or reading a password (canonical, no echo), so a program is definitely reading
+/// keys. `Program`: a process group other than the shell's is the foreground group (an `ssh`, a
+/// compiler, `sleep`). `Shell`: neither (a builtin or function, or the shell between commands).
+/// Any failure reads as `Shell`: the latch then waits for a better signal rather than guessing.
+pub fn terminal_owner(
+    fd: RawFd,
+    shell_pid: i32,
+) -> crate::terminal::model::block::interactive_latch::TerminalOwner {
+    use crate::terminal::model::block::interactive_latch::TerminalOwner;
+    if let Ok(termios) = fetch_termial_attributes(fd) {
+        if !termios.local_flags.contains(termios::LocalFlags::ICANON)
+            || is_canonical_without_echo(termios.local_flags)
+        {
+            return TerminalOwner::Input;
+        }
+    }
+    // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
+    let pgid = unsafe { libc::tcgetpgrp(fd) };
+    if pgid > 0 && pgid != shell_pid {
+        TerminalOwner::Program
+    } else {
+        TerminalOwner::Shell
+    }
+}
+
 /// Whether the pty's foreground process group provably cannot hold a shell at its prompt, local
 /// or remote: it is not the shell's own group (`shell_pid`, a session leader) and none of its
 /// processes is a shell or a program that hands the terminal to one (a login hop such as `ssh`,

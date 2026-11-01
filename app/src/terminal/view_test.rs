@@ -7505,7 +7505,7 @@ fn escape_does_not_stop_agent_command_the_agent_is_not_waiting_on() {
     })
 }
 
-/// #850 follow-up: within `LONG_RUNNING_COMMAND_DURATION_MS` of an agent command starting,
+/// #850 follow-up: before an agent command has become interactive (#1373),
 /// ctrl-c fell through to the rich-content path and cancelled the whole conversation. It must
 /// interrupt the command instead, exactly as it does a moment later.
 #[test]
@@ -7520,11 +7520,6 @@ fn ctrl_c_interrupts_agent_command_before_it_counts_as_long_running() {
             let mut model = view.model.lock();
             let active_block = model.block_list_mut().active_block_mut();
             active_block.set_was_long_running(false.into());
-            // A start time in the future holds the block inside the grace window however slowly
-            // the test runs.
-            active_block.set_command_start_time_for_test(
-                std::time::Instant::now() + std::time::Duration::from_secs(3600),
-            );
             assert!(active_block.is_executing());
             assert!(
                 !active_block.is_active_and_long_running(),

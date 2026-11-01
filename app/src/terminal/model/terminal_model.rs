@@ -515,6 +515,9 @@ pub struct TerminalModel {
     pub blocklist_has_been_cleared: bool,
 
     alt_screen_active: bool,
+    /// Asks the pty who owns the terminal; see `block::interactive_latch`. None where the
+    /// platform has no such API (ConPTY).
+    interactive_probe: Option<super::block::interactive_latch::InteractiveProbe>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1248,6 +1251,7 @@ impl TerminalModel {
             command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
+            interactive_probe: None,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -1899,6 +1903,14 @@ impl TerminalModel {
         &self.typeahead_handoff
     }
 
+    /// Installs the pty probe the interactive latch consults (unix local ptys).
+    pub fn set_interactive_probe(
+        &mut self,
+        probe: super::block::interactive_latch::InteractiveProbe,
+    ) {
+        self.interactive_probe = Some(probe);
+    }
+
     pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
         &mut self.typeahead_handoff
     }
@@ -2499,6 +2511,13 @@ impl TerminalModel {
             log::info!("Tried to enter the alternate screen, but it was already active");
             return;
         }
+
+        // A full-screen program owns the terminal: latch the active block as interactive/long
+        // running now, however briefly it has been running (#1373).
+        self.block_list
+            .active_block()
+            .interactive_latch()
+            .latch(super::block::interactive_latch::LatchReason::AltScreen);
 
         // Set alt screen cursor to the current primary screen cursor.
         let block_list_cursor = self
@@ -3714,6 +3733,9 @@ impl ansi::Handler for TerminalModel {
 
     fn preexec(&mut self, data: PreexecValue) {
         let active_block = self.block_list.active_block();
+        active_block
+            .interactive_latch()
+            .set_probe(self.interactive_probe.clone());
         let observation = if active_block.state() == BlockState::Executing {
             if active_block.command_to_string() == data.command.as_str() {
                 PreexecObservation::RepeatedSameCommand
@@ -4108,6 +4130,12 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {
+        // Output while a command executes: ask the pty whether a program is reading input (#1373).
+        self.block_list
+            .active_block()
+            .interactive_latch()
+            .on_output();
+
         if let Some(SshLogin {
             notification_state, ..
         }) = &self.notify_on_end_of_ssh_login

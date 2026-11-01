@@ -332,6 +332,9 @@ impl ModelEventDispatcher {
                 ModelEvent::BlockWorkingDirectoryUpdated(block_working_directory_updated_event)
             }
             Event::BackgroundBlockStarted => ModelEvent::BackgroundBlockStarted,
+            Event::CommandBecameInteractive { block_id } => {
+                ModelEvent::CommandBecameInteractive { block_id }
+            }
             Event::ClipboardStore(clipboard_type, text) => {
                 ModelEvent::ClipboardStore(clipboard_type, text)
             }
@@ -494,6 +497,10 @@ pub enum ModelEvent {
     BlockWorkingDirectoryUpdated(BlockWorkingDirectoryUpdatedEvent),
     /// Sent after a background block is started and added to the block list.
     BackgroundBlockStarted,
+    /// A program took over the running command's terminal (#1373); see `Event`.
+    CommandBecameInteractive {
+        block_id: BlockId,
+    },
     ClipboardStore(ClipboardType, String),
     ClipboardLoad(
         ClipboardType,

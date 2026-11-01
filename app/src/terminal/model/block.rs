@@ -1,4 +1,5 @@
 mod interaction_mode;
+pub mod interactive_latch;
 mod serialized_block;
 
 pub use interaction_mode::*;
@@ -82,7 +83,8 @@ use std::{
     },
 };
 
-pub const LONG_RUNNING_COMMAND_DURATION_MS: u64 = 50;
+/// Presentation debounce only (see `interactive_latch`): never decides interactivity by itself.
+pub const LONG_RUNNING_COMMAND_DURATION_MS: u64 = interactive_latch::SETTLE_DELAY_MS;
 pub const LONG_RUNNING_BOTTOM_PADDING_LINES: f32 = 0.2;
 
 /// Top padding for a block running a long-running command, mirroring
@@ -380,7 +382,8 @@ pub struct Block {
     event_proxy: ChannelEventListener,
 
     render_delay_complete: Arc<AtomicBool>,
-    was_long_running: AtomicBool,
+    /// Latched by events; see [`interactive_latch`]. Replaces the old 50 ms wall-clock test.
+    interactive_latch: interactive_latch::InteractiveLatch,
     bootstrap_stage: BootstrapStage,
 
     show_bootstrap_block: bool,
@@ -548,7 +551,7 @@ impl std::fmt::Debug for Block {
             .field("creation_ts", &self.creation_ts)
             .field("start_ts", &self.start_ts)
             .field("completed_ts", &self.completed_ts)
-            .field("was_long_running", &self.was_long_running)
+            .field("interactive_latch", &self.interactive_latch)
             .field("exit_code", &self.exit_code)
             .finish()
     }
@@ -1074,6 +1077,8 @@ impl Block {
             perform_reset_grid_checks,
         );
 
+        let interactive_latch =
+            interactive_latch::InteractiveLatch::new(id.clone(), event_proxy.clone());
         Block {
             id,
             size: sizes.size,
@@ -1082,7 +1087,7 @@ impl Block {
             output_grid,
             padding: sizes.block_padding,
             render_delay_complete: Arc::new(AtomicBool::new(false)),
-            was_long_running: AtomicBool::new(false),
+            interactive_latch,
             state: BlockState::BeforeExecution,
             precmd_state: PrecmdState::BeforePrecmd,
             exit_code: ExitCode::from(0),
@@ -1755,6 +1760,7 @@ impl Block {
             BlockState::Static => BlockState::Static,
             _ => BlockState::DoneWithNoExecution,
         };
+        self.interactive_latch.set_executing(false);
         log::info!("Block finished with new state {:?}", self.state);
 
         self.block_banner = None;
@@ -1895,55 +1901,55 @@ impl Block {
             && self.output_grid.should_show_as_empty_when_finished()
     }
 
-    /// Whether a command is long running.
-    /// We use this to determine whether to hide the input box.
+    /// Whether a program (rather than the shell prompt) owns the terminal for the running command.
+    /// We use this to determine whether to hide the input box, route keys to the pty, etc.
+    ///
+    /// Decided by latched events, never by elapsed time (#1373): see [`interactive_latch`]. A
+    /// block that is still before `preexec` is not running anything yet, however long ago the
+    /// command line was submitted -- except that entering the alt screen latches in any state.
     pub fn is_active_and_long_running(&self) -> bool {
         if self.is_empty_pre_bootstrap_block() {
             return false;
         }
-        // Use the command grid start time by default (which should be earlier)
-        // than the output grid start time.  If for some reason there isn't a
-        // command grid start time, then fall back to the start time of the output
-        // grid.
-        let start_time = match self.state {
-            BlockState::Background => return !self.finished(),
-            BlockState::BeforeExecution => self.header_grid.command_start_time(),
-            BlockState::Executing => self
-                .header_grid
-                .command_start_time()
-                .or_else(|| self.output_grid.start_time()),
+        match self.state {
+            BlockState::Background => !self.finished(),
+            BlockState::BeforeExecution | BlockState::Executing => {
+                self.interactive_latch.is_latched() || self.is_pre_bootstrap_block_past_debounce()
+            }
             BlockState::DoneWithNoExecution
             | BlockState::DoneWithExecution
-            | BlockState::Static => return false,
-        };
-
-        if self.was_long_running.load(Ordering::Relaxed) {
-            true
-        } else {
-            start_time.is_some_and(|start_time| {
-                let was_long_running =
-                    start_time.elapsed().as_millis() >= (LONG_RUNNING_COMMAND_DURATION_MS as u128);
-                // If we assessed once that a command was long running, it won't become short
-                // running ever again, so we can cache and don't do this computation again
-                if was_long_running {
-                    self.was_long_running.store(true, Ordering::Relaxed);
-                }
-                was_long_running
-            })
+            | BlockState::Static => false,
         }
+    }
+
+    /// A block of the bootstrap script itself: the shell is not yet instrumented, so there is no
+    /// `preexec` hook, no probe and no event to wait for -- the only signal that exists is that the
+    /// script has been running past the presentation debounce. This is the one remaining
+    /// elapsed-time decision, kept because bootstrap output must stay visible, and it cannot
+    /// misfire on a loaded app: no user command is involved before bootstrap completes.
+    fn is_pre_bootstrap_block_past_debounce(&self) -> bool {
+        if self.bootstrap_stage.is_done() {
+            return false;
+        }
+        let start_time = self
+            .header_grid
+            .command_start_time()
+            .or_else(|| self.output_grid.start_time());
+        start_time.is_some_and(|start_time| {
+            start_time.elapsed().as_millis() >= (LONG_RUNNING_COMMAND_DURATION_MS as u128)
+        })
+    }
+
+    /// The latch behind `is_active_and_long_running`, for the event sources that set it (alt
+    /// screen, the pty probe) and for tests.
+    pub fn interactive_latch(&self) -> &interactive_latch::InteractiveLatch {
+        &self.interactive_latch
     }
 
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_was_long_running(&mut self, was_long_running: AtomicBool) {
-        self.was_long_running = was_long_running;
-    }
-
-    /// Test-only: overrides the command start time `is_active_and_long_running` measures from,
-    /// so a test can hold a block deterministically inside (a future instant) or past the
-    /// `LONG_RUNNING_COMMAND_DURATION_MS` window.
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn set_command_start_time_for_test(&mut self, start_time: Instant) {
-        self.header_grid.set_command_start_time_for_test(start_time);
+        self.interactive_latch
+            .force(was_long_running.load(Ordering::Relaxed));
     }
 
     // Collateral of these two predicates, inherited from upstream `ee95ac0fd` and
@@ -2949,8 +2955,14 @@ impl Block {
         // Spawn a future on the background thread to explicitly send a `Wakeup` event. This is so
         // we can force trigger a re-render for a command that is still running but may not have
         // any output (such as the `read` command).
+        //
+        // For an executing command the same task is the presentation debounce of the interactive
+        // latch (`interactive_latch` module docs): once it elapses the probe is consulted about
+        // who owns the terminal NOW. The delay is anchored here, when `preexec` was processed, so a
+        // slow app cannot make a command look old. Pacing only: the probe decides.
         let event_proxy = self.event_proxy.clone();
         let ready_to_render = self.render_delay_complete.clone();
+        let latch = (self.state == BlockState::Executing).then(|| self.interactive_latch.clone());
         let delay_ms = match self.state {
             BlockState::Background => BACKGROUND_OUTPUT_RENDER_DELAY_MS,
             _ => LONG_RUNNING_COMMAND_DURATION_MS,
@@ -2959,6 +2971,9 @@ impl Block {
         self.background_executor
             .spawn(async move {
                 warpui::r#async::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
+                if let Some(latch) = latch {
+                    latch.on_settled();
+                }
                 ready_to_render.store(true, Ordering::Relaxed);
                 event_proxy.send_wakeup_event();
             })
@@ -3475,6 +3490,7 @@ impl Block {
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
+        self.interactive_latch.set_executing(true);
         self.is_for_in_band_command |=
             command_executor::is_in_band_command(self.command_to_string().as_str());
     }
@@ -3949,6 +3965,7 @@ impl ansi::Handler for Block {
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
+        self.interactive_latch.set_executing(true);
         self.is_for_in_band_command = is_for_in_band_command;
 
         self.wakeup_after_delay();

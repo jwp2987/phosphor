@@ -52,7 +52,6 @@ use crate::{
     settings_view::keybindings::KeybindingChangedNotifier,
     terminal::{
         input::SET_INPUT_MODE_TERMINAL_ACTION_NAME,
-        model::block::LONG_RUNNING_COMMAND_DURATION_MS,
         model_events::{ModelEvent, ModelEventDispatcher},
         view::ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent},
         warpify::render::LEFT_STRIPE_WIDTH,
@@ -350,18 +349,10 @@ impl BlocklistAIStatusBar {
             _ => (),
         });
         ctx.subscribe_to_model(model_event_dispatcher, |me, _, event, ctx| match event {
-            ModelEvent::AfterBlockStarted { block_id, .. } => {
-                let terminal_model = me.terminal_model.lock();
-                if terminal_model
-                    .block_list()
-                    .block_with_id(block_id)
-                    .is_some_and(|block| block.agent_interaction_metadata().is_some())
-                {
-                    ctx.spawn(
-                        Timer::after(Duration::from_millis(LONG_RUNNING_COMMAND_DURATION_MS)),
-                        |_, _, ctx| ctx.notify(),
-                    );
-                }
+            // #1373: re-evaluate when the running command becomes interactive (a program owns the
+            // terminal) instead of after a fixed delay from the block's start.
+            ModelEvent::CommandBecameInteractive { .. } => {
+                ctx.notify();
             }
             ModelEvent::BlockCompleted(_) => {
                 ctx.notify();
