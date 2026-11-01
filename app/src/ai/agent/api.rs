@@ -141,7 +141,9 @@ pub struct RequestParams {
     pub user_rules: Vec<(Option<String>, String)>,
     pub warp_drive_context_enabled: bool,
     pub context_window_limit: Option<u32>,
-    pub mcp_context: Option<MCPContext>,
+    /// Shared, not deep-cloned per request: the tool/resource lists can be large and the request
+    /// path hands the context to several stages (#1156).
+    pub mcp_context: Option<Arc<MCPContext>>,
     pub planning_enabled: bool,
     /// Zap BYOP: whether this request runs under `/plan` (read-only Plan Mode).
     ///
@@ -488,11 +490,11 @@ impl RequestParams {
                 None
             } else {
                 #[allow(deprecated)]
-                Some(MCPContext {
+                Some(Arc::new(MCPContext {
                     resources: vec![],
                     tools: vec![],
                     servers,
-                })
+                }))
             }
         } else {
             // Flat lists of resources and tools
@@ -504,11 +506,11 @@ impl RequestParams {
             let tools = templatable_mcp_manager.tools().cloned().collect::<Vec<_>>();
 
             #[allow(deprecated)]
-            (!resources.is_empty() || !tools.is_empty()).then_some(MCPContext {
+            (!resources.is_empty() || !tools.is_empty()).then_some(Arc::new(MCPContext {
                 resources,
                 tools,
                 servers: vec![],
-            })
+            }))
         };
 
         let should_redact_secrets = get_secret_obfuscation_mode(app).should_redact_secret();
