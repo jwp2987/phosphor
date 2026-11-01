@@ -37,7 +37,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     $oscEnd = "$([char]0x07)"
 
     # Writes a hex-encoded JSON message to the PTY.
-    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table) {
+    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table, [string]$trailer = '') {
         $json = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $table -Compress
         # Sends a message to the controlling terminal as an OSC control sequence.
         # TODO(CORE-2718): Determine if we need to hex encode the payload.
@@ -45,7 +45,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         $encodedMessage = Warp-Encode-HexString $json
-        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
+        # $trailer (the reset-grid OSC after Preexec and CommandFinished) goes out in the same
+        # write: every console write on ConPTY takes the console lock and can wait for a render
+        # frame, and these two sit on the Enter -> command start and command end -> prompt paths
+        # (#1280). The bytes on the wire are unchanged.
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd$trailer"
     }
 
     # This script block contains commands and constants that are needed in background threads.
@@ -300,8 +304,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 command = $command
             }
         }
-        Warp-Send-JsonMessage $preexecMsg
-        Warp-Send-ResetGridOSC
+        Warp-Send-JsonMessage $preexecMsg $oscResetGrid
 
         # If this preexec is called for user command, kill ongoing generator command jobs and clean
         # up the bookkeeping temp files used to bookkeep.
@@ -661,8 +664,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 next_block_id = "precmd-${global:_warpSessionId}-$blockId"
             }
         }
-        Warp-Send-JsonMessage $commandFinishedMsg
-        Warp-Send-ResetGridOSC
+        Warp-Send-JsonMessage $commandFinishedMsg $oscResetGrid
 
         # Warp-Configure-PSReadLine-IfChanged runs in Warp-Idle-Maintenance (#1279).
 
