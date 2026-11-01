@@ -2491,6 +2491,10 @@ pub enum CompletionsTrigger {
     SlashCommandAutoOpen,
 }
 
+/// How long the as-you-type completions menu waits, on a remote session, for the keystrokes to
+/// stop before it lists a directory over the shared ssh connection (#1295).
+const REMOTE_AS_YOU_TYPE_DEBOUNCE: Duration = Duration::from_millis(150);
+
 /// Represents whether the input editor should render the subshell flag.
 #[derive(Clone, Debug)]
 enum SubshellRenderState {
@@ -8948,7 +8952,11 @@ impl Input {
             }
         }
 
-        let completion_context = completer_data.completion_session_context(ctx);
+        // Per keystroke: on a remote session a directory listing here would be a command on the
+        // shared ssh connection, so serve only what is already cached (#1295).
+        let completion_context = completer_data
+            .completion_session_context(ctx)
+            .map(SessionContext::for_background);
         let completion_session = completion_context
             .as_ref()
             .map(|completion_context| completion_context.session.clone());
@@ -11773,6 +11781,19 @@ impl Input {
 
         let completion_session = completion_context.session.clone();
         let generation = self.input_generation;
+        // An explicit Tab always asks the remote again, even for a directory that failed to list
+        // a moment ago (#1295); the as-you-type menu waits out a burst of keystrokes instead
+        // of listing for each one. The wait is abortable: the next keystroke supersedes it.
+        let remote_debounce = if completion_session.is_local() {
+            None
+        } else if completions_trigger == CompletionsTrigger::Keybinding {
+            crate::completer::forget_failed_remote_listings(completion_session.id());
+            None
+        } else if completions_trigger == CompletionsTrigger::AsYouType {
+            Some(REMOTE_AS_YOU_TYPE_DEBOUNCE)
+        } else {
+            None
+        };
         if completions_trigger == CompletionsTrigger::Keybinding {
             self.tab_completion_request = Some(TabCompletionRequest {
                 generation,
@@ -11784,6 +11805,9 @@ impl Input {
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
+                    if let Some(debounce) = remote_debounce {
+                        Timer::after(debounce).await;
+                    }
                     let suggestions = completer::suggestions(
                         before_cursor_text.as_str(),
                         cursor_position,
