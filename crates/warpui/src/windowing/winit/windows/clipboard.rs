@@ -2,7 +2,7 @@ use std::ops::Not;
 
 use arboard::{self, Clipboard as WindowsClipboardInner};
 
-use crate::clipboard::{BackgroundTextRead, BackgroundTextReader};
+use crate::clipboard::{BackgroundClipboardWriter, BackgroundTextRead, BackgroundTextReader};
 use crate::{clipboard::ClipboardContent, Clipboard};
 
 // Standard clipboard format ids (winuser.h), spelled out so no extra windows-crate feature is needed.
@@ -58,6 +58,14 @@ impl Clipboard for WindowsClipboard {
     }
 
     fn read_text_and_paths(&mut self) -> ClipboardContent {
+        if let Some(pending) =
+            crate::clipboard::pending_write(crate::clipboard::ClipboardTarget::Clipboard)
+        {
+            let mut content = (*pending).clone();
+            content.html = None;
+            content.images = Default::default();
+            return content;
+        }
         // Text (with the HTML-derived fallback `read` applies) and copied paths only: no image
         // read or decode, and the HTML is dropped as `read_text_and_paths` promises.
         let mut content = self.read_text_html_and_paths(false);
@@ -82,7 +90,38 @@ impl Clipboard for WindowsClipboard {
         }))
     }
 
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        // One long-lived writer thread with one handle keeps writes ordered; a Win32 owner or
+        // viewer that stalls `OpenClipboard` stalls that thread, not the UI (#1307).
+        static WRITER: std::sync::OnceLock<BackgroundClipboardWriter> = std::sync::OnceLock::new();
+        Some(
+            WRITER
+                .get_or_init(|| {
+                    crate::clipboard::serial_writer(
+                        || WindowsClipboard::new().ok(),
+                        |clipboard, contents, _target| {
+                            let result = if let Some(html) = &contents.html {
+                                clipboard.inner.set().html(html, Some(&contents.plain_text))
+                            } else {
+                                clipboard.inner.set().text(&contents.plain_text)
+                            };
+                            result
+                                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                                .is_ok()
+                        },
+                    )
+                })
+                .clone(),
+        )
+    }
+
     fn read(&mut self) -> ClipboardContent {
+        // A copy still being written is what the user just copied (#1307).
+        if let Some(pending) =
+            crate::clipboard::pending_write(crate::clipboard::ClipboardTarget::Clipboard)
+        {
+            return (*pending).clone();
+        }
         let mut content = self.read_text_html_and_paths(true);
 
         // Try to get image content from clipboard

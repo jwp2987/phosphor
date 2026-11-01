@@ -74,4 +74,144 @@ fn background_readers_default_to_none() {
     assert!(Plain.background_text_reader().is_none());
     assert!(Plain.background_full_reader().is_none());
     assert!(!Plain.has_content());
+
+#[test]
+fn later_write_wins_when_it_runs_first() {
+    let order = WriteOrder::new();
+    let first = order.next_generation();
+    let second = order.next_generation();
+    let written = std::cell::RefCell::new(vec![]);
+    assert_eq!(
+        order.run(second, ClipboardTarget::Clipboard, || {
+            written.borrow_mut().push(2);
+            true
+        }),
+        WriteOutcome::Written
+    );
+    assert_eq!(
+        order.run(first, ClipboardTarget::Clipboard, || {
+            written.borrow_mut().push(1);
+            true
+        }),
+        WriteOutcome::Superseded
+    );
+    assert_eq!(*written.borrow(), vec![2]);
+}
+
+#[test]
+fn targets_are_ordered_independently_and_failures_report() {
+    let order = WriteOrder::new();
+    let a = order.next_generation();
+    let b = order.next_generation();
+    assert_eq!(
+        order.run(b, ClipboardTarget::Primary, || true),
+        WriteOutcome::Written
+    );
+    assert_eq!(
+        order.run(a, ClipboardTarget::Clipboard, || false),
+        WriteOutcome::Failed
+    );
+}
+
+#[test]
+fn slow_earlier_write_never_overwrites_a_later_one() {
+    let order = std::sync::Arc::new(WriteOrder::new());
+    let value = std::sync::Arc::new(Mutex::new(0u64));
+    let first = order.next_generation();
+    let second = order.next_generation();
+    let (o1, v1) = (order.clone(), value.clone());
+    let slow = std::thread::spawn(move || {
+        o1.run(first, ClipboardTarget::Clipboard, || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            *v1.lock() = 1;
+            true
+        })
+    });
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (o2, v2) = (order.clone(), value.clone());
+    let fast = std::thread::spawn(move || {
+        o2.run(second, ClipboardTarget::Clipboard, || {
+            *v2.lock() = 2;
+            true
+        })
+    });
+    slow.join().unwrap();
+    fast.join().unwrap();
+    assert_eq!(*value.lock(), 2);
+}
+
+#[test]
+fn in_memory_clipboard_has_no_background_writer() {
+    let mut clipboard = InMemoryClipboard::default();
+    let back = write_in_background(
+        &mut clipboard,
+        ClipboardContent::plain_text("x".into()),
+        ClipboardTarget::Clipboard,
+        |_| {},
+    );
+    assert_eq!(back.unwrap_err().plain_text, "x");
+}
+
+#[test]
+fn read_right_after_copy_sees_the_pending_write() {
+    let pending = PendingWrites::new();
+    let old = std::sync::Arc::new(ClipboardContent::plain_text("old".into()));
+    let new = std::sync::Arc::new(ClipboardContent::plain_text("new".into()));
+    assert!(pending.latest(ClipboardTarget::Clipboard).is_none());
+    pending.add(1, ClipboardTarget::Clipboard, old);
+    pending.add(2, ClipboardTarget::Clipboard, new);
+    pending.add(
+        3,
+        ClipboardTarget::Primary,
+        std::sync::Arc::new(ClipboardContent::plain_text("sel".into())),
+    );
+    // A paste 0 ms after the second copy gets the second copy's text.
+    assert_eq!(
+        pending
+            .latest(ClipboardTarget::Clipboard)
+            .unwrap()
+            .plain_text,
+        "new"
+    );
+    assert_eq!(
+        pending.latest(ClipboardTarget::Primary).unwrap().plain_text,
+        "sel"
+    );
+    // The newer copy finishing first leaves the older one from winning.
+    pending.finish(2);
+    assert_eq!(
+        pending
+            .latest(ClipboardTarget::Clipboard)
+            .unwrap()
+            .plain_text,
+        "old"
+    );
+    pending.finish(1);
+    assert!(pending.latest(ClipboardTarget::Clipboard).is_none());
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn serial_writer_keeps_one_handle_and_write_order() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static OPENED: AtomicUsize = AtomicUsize::new(0);
+    static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let writer = serial_writer::<u8>(
+        || {
+            OPENED.fetch_add(1, Ordering::SeqCst);
+            Some(0)
+        },
+        |_, content, _| {
+            LOG.lock().push(content.plain_text);
+            true
+        },
+    );
+    for text in ["a", "b", "c"] {
+        assert!(writer(
+            ClipboardContent::plain_text(text.into()),
+            ClipboardTarget::Clipboard
+        ));
+    }
+    assert_eq!(*LOG.lock(), vec!["a", "b", "c"]);
+    assert_eq!(OPENED.load(Ordering::SeqCst), 1);
 }

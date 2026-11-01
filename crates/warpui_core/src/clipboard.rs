@@ -51,6 +51,13 @@ pub trait Clipboard: 'static {
         None
     }
 
+    /// A self-contained writer that can run on another thread, or `None` when the platform's
+    /// clipboard write is cheap and must stay on the calling thread. An X11/Wayland or Win32
+    /// clipboard owner can stall a write, which froze the UI (#1307). Returns `true` on success.
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        None
+    }
+
     /// Just the plain text of the clipboard (empty if none).
     fn read_plain_text(&mut self) -> String {
         self.read().plain_text
@@ -83,6 +90,200 @@ pub enum BackgroundTextRead {
 
 /// See [`Clipboard::background_text_reader`].
 pub type BackgroundTextReader = Box<dyn FnOnce() -> BackgroundTextRead + Send + 'static>;
+
+/// Which system clipboard a background write targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    Clipboard,
+    /// The Linux primary selection (middle-click paste); other platforms write the clipboard.
+    Primary,
+}
+
+/// See [`Clipboard::background_writer`].
+pub type BackgroundClipboardWriter =
+    std::sync::Arc<dyn Fn(ClipboardContent, ClipboardTarget) -> bool + Send + Sync + 'static>;
+
+/// How a background clipboard write ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Written,
+    /// A later copy to the same target had already been written, so this one was dropped.
+    Superseded,
+    Failed,
+}
+
+/// Orders background writes: each write takes a generation when it is started (on the calling
+/// thread, so generations follow the user's order) and a write whose generation is older than
+/// one already applied to its target is dropped. Writes to one target are serialized.
+pub struct WriteOrder {
+    next: std::sync::atomic::AtomicU64,
+    applied: [Mutex<u64>; 2],
+}
+
+impl WriteOrder {
+    pub const fn new() -> Self {
+        Self {
+            next: std::sync::atomic::AtomicU64::new(0),
+            applied: [Mutex::new(0), Mutex::new(0)],
+        }
+    }
+
+    pub fn next_generation(&self) -> u64 {
+        self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// Runs `write` unless a later generation has already been applied to `target`.
+    pub fn run(
+        &self,
+        generation: u64,
+        target: ClipboardTarget,
+        write: impl FnOnce() -> bool,
+    ) -> WriteOutcome {
+        let mut applied = self.applied[target as usize].lock();
+        if *applied > generation {
+            return WriteOutcome::Superseded;
+        }
+        *applied = generation;
+        if write() {
+            WriteOutcome::Written
+        } else {
+            WriteOutcome::Failed
+        }
+    }
+}
+
+static WRITE_ORDER: WriteOrder = WriteOrder::new();
+
+/// Writes that were started but have not finished. A read that follows a copy by less than the
+/// write takes must see the new text, so reads consult this before the system clipboard.
+pub struct PendingWrites {
+    writes: Mutex<Vec<(u64, ClipboardTarget, std::sync::Arc<ClipboardContent>)>>,
+}
+
+impl PendingWrites {
+    pub const fn new() -> Self {
+        Self {
+            writes: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn add(
+        &self,
+        generation: u64,
+        target: ClipboardTarget,
+        content: std::sync::Arc<ClipboardContent>,
+    ) {
+        self.writes.lock().push((generation, target, content));
+    }
+
+    /// Forgets the write `generation` (finished, superseded or failed).
+    pub fn finish(&self, generation: u64) {
+        self.writes.lock().retain(|(g, _, _)| *g != generation);
+    }
+
+    /// The newest unfinished write to `target`, if any.
+    pub fn latest(&self, target: ClipboardTarget) -> Option<std::sync::Arc<ClipboardContent>> {
+        self.writes
+            .lock()
+            .iter()
+            .filter(|(_, t, _)| *t == target)
+            .max_by_key(|(g, _, _)| *g)
+            .map(|(_, _, c)| c.clone())
+    }
+}
+
+static PENDING_WRITES: PendingWrites = PendingWrites::new();
+
+/// The content of the newest background write to `target` that has not finished yet. Platform
+/// reads return this instead of the (stale) system clipboard, so a paste right after a copy
+/// pastes the new text.
+pub fn pending_write(target: ClipboardTarget) -> Option<std::sync::Arc<ClipboardContent>> {
+    PENDING_WRITES.latest(target)
+}
+
+/// Builds a [`BackgroundClipboardWriter`] backed by ONE long-lived thread that owns ONE platform
+/// clipboard handle for the process lifetime and performs every write in submission order. The
+/// handle is never dropped after a write: on X11 the selection data is served by the process-global
+/// context, and dropping the last handle hands the data to the clipboard manager and tears the
+/// context down (`lib/arboard/src/platform/linux/x11.rs`, `impl Drop for Clipboard`).
+#[cfg(not(target_family = "wasm"))]
+pub fn serial_writer<H: 'static>(
+    open: fn() -> Option<H>,
+    write: fn(&mut H, ClipboardContent, ClipboardTarget) -> bool,
+) -> BackgroundClipboardWriter {
+    type Job = (
+        ClipboardContent,
+        ClipboardTarget,
+        std::sync::mpsc::Sender<bool>,
+    );
+    let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    let spawned = std::thread::Builder::new()
+        .name("clipboard-owner".into())
+        .spawn(move || {
+            let mut handle: Option<H> = None;
+            while let Ok((content, target, reply)) = rx.recv() {
+                if handle.is_none() {
+                    handle = open();
+                }
+                let ok = handle.as_mut().is_some_and(|h| write(h, content, target));
+                let _ = reply.send(ok);
+            }
+        })
+        .is_ok();
+    let tx = Mutex::new(tx);
+    std::sync::Arc::new(move |content, target| {
+        if !spawned {
+            return false;
+        }
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if tx.lock().send((content, target, reply_tx)).is_err() {
+            return false;
+        }
+        reply_rx.recv().unwrap_or(false)
+    })
+}
+
+/// Writes `content` on a background thread when the platform supports it and returns `Ok`;
+/// `on_done` runs on that thread with the outcome (it is dropped uncalled if the thread cannot be
+/// spawned). Returns the content back as `Err` when the caller should write synchronously. `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1`
+/// forces the synchronous path.
+pub fn write_in_background(
+    clipboard: &mut dyn Clipboard,
+    content: ClipboardContent,
+    target: ClipboardTarget,
+    on_done: impl FnOnce(WriteOutcome) + Send + 'static,
+) -> Result<(), ClipboardContent> {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (clipboard, target, on_done);
+        return Err(content);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        if std::env::var_os("PHOSPHOR_SYNC_CLIPBOARD_WRITE").is_some() {
+            return Err(content);
+        }
+        let Some(writer) = clipboard.background_writer() else {
+            return Err(content);
+        };
+        let generation = WRITE_ORDER.next_generation();
+        let pending = std::sync::Arc::new(content);
+        PENDING_WRITES.add(generation, target, pending.clone());
+        if let Err(err) = std::thread::Builder::new()
+            .name("clipboard-write".into())
+            .spawn(move || {
+                let outcome =
+                    WRITE_ORDER.run(generation, target, || writer((*pending).clone(), target));
+                PENDING_WRITES.finish(generation);
+                on_done(outcome);
+            })
+        {
+            PENDING_WRITES.finish(generation);
+            log::warn!("Unable to start the clipboard write thread: {err}");
+        }
+        Ok(())
+    }
+}
 
 // Clipboard could contain content with multiple data types at the same type.
 #[derive(Debug, Clone, Default)]

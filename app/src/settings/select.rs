@@ -1,7 +1,31 @@
 use std::ops::Not;
 
 use serde::{Deserialize, Serialize};
-use warpui::{clipboard::ClipboardContent, AppContext};
+use warpui::{
+    clipboard::{ClipboardContent, ClipboardTarget, WriteOutcome},
+    AppContext,
+};
+
+/// Writes `content` to `target` off the UI thread when the platform allows it (#1307), else
+/// inline. A failure is logged; callers that can show a toast use `write_in_background` directly.
+pub fn write_clipboard_nonblocking(
+    content: ClipboardContent,
+    target: ClipboardTarget,
+    ctx: &mut AppContext,
+) {
+    let started =
+        warpui::clipboard::write_in_background(ctx.clipboard(), content, target, |outcome| {
+            if outcome == WriteOutcome::Failed {
+                log::warn!("Background clipboard write failed");
+            }
+        });
+    if let Err(content) = started {
+        match target {
+            ClipboardTarget::Clipboard => ctx.clipboard().write(content),
+            ClipboardTarget::Primary => ctx.clipboard().write_to_primary_clipboard(content),
+        }
+    }
+}
 
 use settings::{
     macros::define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
@@ -133,7 +157,7 @@ impl SelectionSettings {
     pub fn maybe_copy_on_select(&self, clipboard_content: ClipboardContent, ctx: &mut AppContext) {
         self.maybe_write_to_linux_selection_clipboard(|_| clipboard_content.clone(), ctx);
         if self.copy_on_select_enabled() && !clipboard_content.plain_text.is_empty() {
-            ctx.clipboard().write(clipboard_content);
+            write_clipboard_nonblocking(clipboard_content, ClipboardTarget::Clipboard, ctx);
         }
     }
 
@@ -147,8 +171,7 @@ impl SelectionSettings {
         if self.linux_selection_clipboard_enabled() {
             let clipboard_content = clipboard_contents_fn(ctx);
             if !clipboard_content.plain_text.is_empty() {
-                ctx.clipboard()
-                    .write_to_primary_clipboard(clipboard_content);
+                write_clipboard_nonblocking(clipboard_content, ClipboardTarget::Primary, ctx);
             }
         }
     }

@@ -7,8 +7,11 @@ use arboard::{
 use zbus::zvariant::NoneValue;
 
 use crate::{
+    clipboard::{
+        BackgroundClipboardWriter, BackgroundTextRead, BackgroundTextReader, ClipboardContent,
+        ClipboardTarget,
+    },
     Clipboard,
-    clipboard::{BackgroundTextRead, BackgroundTextReader, ClipboardContent},
 };
 
 /// How many times the text read is attempted when the owner is slow (#1173).
@@ -81,6 +84,11 @@ impl LinuxClipboard {
     /// The one text read every path uses: retries a timed-out read and records in `read_failed`
     /// whether it ultimately timed out (#1173).
     fn read_text_retrying(&mut self) -> Result<String, arboard::Error> {
+        // A copy still being written is what the user just copied (#1307).
+        if let Some(pending) = crate::clipboard::pending_write(ClipboardTarget::Clipboard) {
+            self.read_failed = false;
+            return Ok(pending.plain_text.clone());
+        }
         let (result, timed_out) = read_text_with_retry(
             || {
                 let start = Instant::now();
@@ -128,14 +136,12 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn has_content(&mut self) -> bool {
+        if crate::clipboard::pending_write(ClipboardTarget::Clipboard).is_some() {
+            return true;
+        }
         // Non-empty text is the overwhelmingly common case and answers the question without
         // the HTML, path and image reads (an image decode can take hundreds of ms).
-        if self
-            .inner
-            .get()
-            .text()
-            .is_ok_and(|text| !text.is_empty())
-        {
+        if self.inner.get().text().is_ok_and(|text| !text.is_empty()) {
             return true;
         }
         !self.read().is_empty()
@@ -172,7 +178,14 @@ impl Clipboard for LinuxClipboard {
     fn background_text_reader(&mut self) -> Option<BackgroundTextReader> {
         // arboard's X11 and Wayland backends are process-global, so a fresh handle on another
         // thread reads the same selections (and the same data when we own them).
-        Some(Box::new(|| {
+        let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
+        Some(Box::new(move || {
+            if let Some(pending) = pending {
+                let mut content = (*pending).clone();
+                content.html = None;
+                content.images = None;
+                return BackgroundTextRead::Content(content);
+            }
             let Ok(mut clipboard) = LinuxClipboard::new() else {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
@@ -188,7 +201,11 @@ impl Clipboard for LinuxClipboard {
     fn background_full_reader(&mut self) -> Option<BackgroundTextReader> {
         // Same process-global backends as `background_text_reader`; this one also probes the HTML
         // and image targets, which a silent owner answers only after the arboard timeout (#1300).
-        Some(Box::new(|| {
+        let pending = crate::clipboard::pending_write(ClipboardTarget::Clipboard);
+        Some(Box::new(move || {
+            if let Some(pending) = pending {
+                return BackgroundTextRead::Content((*pending).clone());
+            }
             let Ok(mut clipboard) = LinuxClipboard::new() else {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
@@ -199,6 +216,27 @@ impl Clipboard for LinuxClipboard {
                 BackgroundTextRead::Content(content)
             }
         }))
+    }
+
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        // ONE long-lived thread owns ONE clipboard handle for the process lifetime and performs
+        // the writes in order, so the owning handle is never dropped after a write: arboard's X11
+        // backend serves the selection from a process-global context and tears it down (handing
+        // the data to the clipboard manager) when the last handle drops
+        // (`lib/arboard/src/platform/linux/x11.rs`, `impl Drop for Clipboard`). The Wayland
+        // backend serves each copy from its own thread, independent of the handle. A stalled
+        // owner stalls this thread, not the UI (#1307).
+        static WRITER: std::sync::OnceLock<BackgroundClipboardWriter> = std::sync::OnceLock::new();
+        Some(
+            WRITER
+                .get_or_init(|| {
+                    crate::clipboard::serial_writer(
+                        || LinuxClipboard::new().ok(),
+                        |clipboard, contents, target| clipboard.write_for_target(&contents, target),
+                    )
+                })
+                .clone(),
+        )
     }
 
     fn read_plain_text(&mut self) -> String {
@@ -250,6 +288,29 @@ impl Clipboard for LinuxClipboard {
 }
 
 impl LinuxClipboard {
+    /// One write to `target` (primary falls back to the clipboard where unsupported); `true` on
+    /// success.
+    fn write_for_target(&mut self, contents: &ClipboardContent, target: ClipboardTarget) -> bool {
+        match target {
+            ClipboardTarget::Clipboard => self
+                .write_to_specific_clipboard(LinuxClipboardKind::Clipboard, contents)
+                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                .is_ok(),
+            ClipboardTarget::Primary => {
+                match self.write_to_specific_clipboard(LinuxClipboardKind::Primary, contents) {
+                    Ok(()) => true,
+                    Err(arboard::Error::ClipboardNotSupported) => self
+                        .write_to_specific_clipboard(LinuxClipboardKind::Clipboard, contents)
+                        .is_ok(),
+                    Err(err) => {
+                        log::warn!("Unable to set primary clipboard text: {err:?}");
+                        false
+                    }
+                }
+            }
+        }
+    }
+
     /// Parses Linux clipboard text for absolute file paths.
     ///
     /// When copying files, Linux file managers typically place the paths as text content onto
@@ -315,6 +376,17 @@ impl LinuxClipboard {
         clipboard_kind: LinuxClipboardKind,
         include_images: bool,
     ) -> Result<ClipboardContent, arboard::Error> {
+        let pending_target = match clipboard_kind {
+            LinuxClipboardKind::Primary => ClipboardTarget::Primary,
+            _ => ClipboardTarget::Clipboard,
+        };
+        if let Some(pending) = crate::clipboard::pending_write(pending_target) {
+            let mut content = (*pending).clone();
+            if !include_images {
+                content.images = None;
+            }
+            return Ok(content);
+        }
         let text_result = self.read_text_retrying();
         let mut content = ClipboardContent {
             plain_text: text_result.as_ref().map(|s| s.clone()).unwrap_or_default(),
