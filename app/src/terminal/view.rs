@@ -19446,13 +19446,13 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        // #1354: bash, zsh and fish print a marker after each line they ran; the next line is
+        // #1354/#1372: bash, zsh, fish and nushell print a marker after each line they ran; the next line is
         // written when it arrives, not after `line_delay`. Other shells (and
         // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
         let marked = !crate::terminal::bootstrap::bootstrap_timed()
             && matches!(
                 shell_type,
-                Some(ShellType::Bash | ShellType::Zsh | ShellType::Fish)
+                Some(ShellType::Bash | ShellType::Zsh | ShellType::Fish | ShellType::Nu)
             );
         let all_lines = init_subshell_command_lines_with_markers(
             shell_type,
