@@ -17182,10 +17182,6 @@ fn ssh_control_only_output_does_not_open_the_gate() {
         // A real prompt ends it.
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("host's password: ");
-            // A person answers a prompt a while after reading it; an instant Enter would be the
-            // tail of the burst the prompt cut off, which is discarded with it (#1292).
-            view.ssh_typeahead_last_key_at =
-                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.keydown_on_terminal("\r", ctx);
         });
         assert!(pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"));
@@ -17716,10 +17712,6 @@ fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
             view.model
                 .lock()
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
-            // A person answers a prompt a while after reading it, not in the instant of the
-            // blind letters (those would be the tail of the same burst).
-            view.ssh_typeahead_last_key_at =
-                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.keydown_on_terminal("\r", ctx);
             assert!(!view.ssh_typeahead_holding);
             assert!(view.ssh_typeahead.is_empty(), "the blind text is gone");
@@ -17736,36 +17728,44 @@ fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
     })
 }
 
-/// #1292: a prompt that appears in the middle of a typing burst discards the rest of the burst
-/// too (no tail answered into the prompt, no fragment typed into the editor, the "7log" bug).
+/// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
+/// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
+/// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
 #[test]
-fn ssh_prompt_mid_burst_discards_the_tail_too() {
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
-        let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
-        terminal.update(&mut app, |view, ctx| {
-            register_local_session_for_ssh_test(view, ctx);
-            submit_command(view, "ssh host", ctx);
-            view.model
-                .lock()
-                .simulate_long_running_block("ssh host", "");
-            view.warpify_state
-                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
-            view.typed_characters_on_terminal("echo hea", ctx);
-            view.model.lock().process_bytes("Password: ");
-            view.typed_characters_on_terminal("d-tail", ctx);
-            view.keydown_on_terminal("\r", ctx);
-            assert!(view.ssh_typeahead.is_empty());
-            assert!(
-                !view.ssh_typeahead_discard_burst,
-                "the Enter ends the burst"
+fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
+    for prompt in [
+        "Password: ",
+        "Are you sure you want to continue connecting (yes/no)? ",
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                view.typed_characters_on_terminal("blind", ctx);
+                view.model.lock().process_bytes(prompt);
+                // Immediately after the prompt: old code discarded this as the burst's tail.
+                view.typed_characters_on_terminal("yes", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead.is_empty());
+                assert!(!view.ssh_typeahead_holding, "{prompt:?}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+            let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                writes, b"yes\r",
+                "{prompt:?}: only post-prompt keys reach it"
             );
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-        });
-        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
-    })
+        })
+    }
 }
 
 /// #1292: a newline-terminated banner / MOTD is visible text but not a prompt: the keys stay
@@ -17826,8 +17826,6 @@ fn ssh_password_and_hostkey_prompts_end_the_hold() {
                 assert!(view.ssh_typeahead_holding);
                 view.model.lock().process_bytes("banner\r\n");
                 view.model.lock().process_bytes(prompt);
-                view.ssh_typeahead_last_key_at =
-                    Instant::now().checked_sub(std::time::Duration::from_secs(2));
                 view.typed_characters_on_terminal("x", ctx);
                 assert!(!view.ssh_typeahead_holding, "{prompt:?}");
                 assert!(view.ssh_typeahead.is_empty(), "{prompt:?}");
@@ -18830,9 +18828,6 @@ fn ssh_silent_connect_holds_typed_runs_whole_then_prompt_gets_keys() {
         );
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().process_bytes("host's password: ");
-            // A person answers after reading the prompt, not in the same instant.
-            view.ssh_typeahead_last_key_at =
-                Instant::now().checked_sub(std::time::Duration::from_secs(2));
             view.typed_characters_on_terminal("pw", ctx);
             view.keydown_on_terminal("\r", ctx);
         });
