@@ -495,6 +495,10 @@ impl LocalGitRepoStatusModel {
                     if update.commit_updated || update.remote_ref_updated {
                         me.main_branch_cache = None;
                     }
+                    if update.commit_updated {
+                        // HEAD / a local branch ref moved: cached branch lists are stale.
+                        crate::util::git::note_refs_changed();
+                    }
                     if Self::is_head_change(&update) || Self::should_refresh_metadata(&update) {
                         me.refresh_gate.mark_dirty();
                     }

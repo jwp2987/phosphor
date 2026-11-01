@@ -10476,9 +10476,12 @@ impl Workspace {
             })
             .unwrap_or_default();
         let branch_refs: HashSet<&str> = branches.iter().map(|s| s.as_str()).collect();
-        Some(warp_util::worktree_names::generate_worktree_branch_name(
-            &branch_refs,
-        ))
+        let name = warp_util::worktree_names::generate_worktree_branch_name(&branch_refs);
+        // A cold or one-step-stale cache must not hand the same name out twice.
+        if let Some(path) = repo_path {
+            crate::util::git::reserve_branch_name(path, &name);
+        }
+        Some(name)
     }
 
     /// Generates a worktree tab config TOML, writes it to `~/.warp/tab_configs/`,

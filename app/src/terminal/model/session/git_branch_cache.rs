@@ -7,6 +7,10 @@
 //! branch is created or deleted by adding or removing a file in one of them). A stamp that
 //! cannot be taken (no repository found, reftable, a huge refs tree) means no caching, so the
 //! caller runs git exactly as before.
+//!
+//! The repository watcher's HEAD/branch-ref events bump a global epoch (`util::git::note_refs_changed`)
+//! that is part of the stamp, so a live watcher invalidates the list on the event itself; the file
+//! stamp remains the fallback for repositories no watcher covers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,12 +30,18 @@ const MAX_CACHED_ENTRIES: usize = 64;
 type FileStamp = Option<(SystemTime, u64)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct BranchStamp(Vec<(PathBuf, FileStamp)>);
+pub(super) struct BranchStamp(Vec<(PathBuf, FileStamp)>, u64);
 
 impl BranchStamp {
     #[cfg(test)]
     pub(super) fn from_entries(entries: Vec<(PathBuf, FileStamp)>) -> Self {
-        Self(entries)
+        Self(entries, 0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_epoch(mut self, epoch: u64) -> Self {
+        self.1 = epoch;
+        self
     }
 }
 
@@ -65,6 +75,9 @@ fn find_git_dirs(pwd: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// Takes the stamp for the repository containing `pwd`, or `None` when it cannot be trusted.
 pub(super) fn branch_stamp(pwd: &str) -> Option<BranchStamp> {
+    // Read the watcher epoch before the files: a ref change landing mid-listing then leaves the
+    // stored stamp behind the epoch, so the next lookup misses (never a stale hit).
+    let epoch = crate::util::git::refs_epoch();
     let (git_dir, common) = find_git_dirs(Path::new(pwd))?;
     if common.join("reftable").exists() {
         return None;
@@ -95,7 +108,7 @@ pub(super) fn branch_stamp(pwd: &str) -> Option<BranchStamp> {
     }
     // Directory listing order is arbitrary; the stamp must not depend on it.
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    Some(BranchStamp(entries))
+    Some(BranchStamp(entries, epoch))
 }
 
 struct Entry {

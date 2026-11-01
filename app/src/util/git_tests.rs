@@ -973,3 +973,30 @@ fn stale_branch_refresh_result_is_dropped() {
     ));
     assert!(super::cached_local_branches(repo).unwrap().contains("new"));
 }
+
+/// #1371: a name generated against a cold cache is visible to the next call (it is reserved until
+/// a listing contains it). Fails on the old code, which had no reservation.
+#[test]
+fn reserved_worktree_name_is_visible_to_next_call_and_released_by_listing() {
+    let repo = Path::new("/nonexistent/reserved-branch-name-test");
+    assert!(super::cached_local_branches(repo).is_none());
+    super::reserve_branch_name(repo, "taken-name");
+    assert!(super::cached_local_branches(repo)
+        .unwrap()
+        .contains("taken-name"));
+    let generation = super::begin_branch_refresh(repo);
+    assert!(super::finish_branch_refresh(
+        repo,
+        generation,
+        ["taken-name".to_string(), "main".to_string()].into()
+    ));
+    let got = super::cached_local_branches(repo).unwrap();
+    assert!(got.contains("taken-name") && got.contains("main"));
+}
+
+#[test]
+fn refs_epoch_advances_on_note() {
+    let before = super::refs_epoch();
+    super::note_refs_changed();
+    assert!(super::refs_epoch() > before);
+}
