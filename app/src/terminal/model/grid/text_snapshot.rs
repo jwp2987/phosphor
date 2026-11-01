@@ -155,6 +155,28 @@ impl From<String> for SelectionPart {
     }
 }
 
+/// A selection's text for callers that only want a small, bounded amount of it (Find-bar prefill,
+/// screen-reader announcements; #1304 follow-up). Never builds more than the caller's row cap.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BoundedSelection {
+    /// Nothing is selected.
+    None,
+    /// The whole selection, which is within the row cap.
+    Text(String),
+    /// The selection is over the row cap; nothing was built.
+    TooLarge,
+}
+
+impl BoundedSelection {
+    pub fn from_parts(parts: Option<SelectionParts>) -> Self {
+        match parts {
+            None => Self::None,
+            Some(parts) if parts.has_snapshots() => Self::TooLarge,
+            Some(parts) => Self::Text(parts.render()),
+        }
+    }
+}
+
 /// The whole selection's text, in output order. `Send`, so [`Self::render`] can run on a
 /// background thread.
 #[derive(Default)]

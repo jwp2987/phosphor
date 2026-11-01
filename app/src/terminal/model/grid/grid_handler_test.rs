@@ -3723,3 +3723,25 @@ fn selection_parts_join_text_and_snapshots_like_the_inline_path() {
     assert!(parts.has_snapshots());
     assert_eq!(parts.render(), format!("ai block\n{block_text}\ntail"));
 }
+
+#[test]
+fn bounded_selection_from_parts_never_renders_snapshots() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, BoundedSelection, SelectionPart, SelectionParts,
+    };
+    assert_eq!(BoundedSelection::from_parts(None), BoundedSelection::None);
+    let text = SelectionParts::new(vec![SelectionPart::Text("hi".to_string())]);
+    assert_eq!(
+        BoundedSelection::from_parts(Some(text)),
+        BoundedSelection::Text("hi".to_string())
+    );
+    let blockgrid = mock_blockgrid("one\r\ntwo");
+    let end = blockgrid.end_point();
+    let big = SelectionParts::new(vec![SelectionPart::Block(BlockTextSnapshot {
+        pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+    })]);
+    assert_eq!(
+        BoundedSelection::from_parts(Some(big)),
+        BoundedSelection::TooLarge
+    );
+}

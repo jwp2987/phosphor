@@ -492,7 +492,7 @@ use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::escape_sequences::{self, C1, EscCodes, ToEscapeSequence};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
-use crate::terminal::model::grid::text_snapshot::SelectionParts;
+use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
@@ -767,6 +767,9 @@ const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
 /// Selections spanning more rows than this are stringified off the UI thread when copied
 /// (#1304); smaller ones stay inline.
 const COPY_SELECTION_DEFER_ROWS: usize = 20_000;
+/// Selections over this many rows are not previewed (Find-bar prefill, screen-reader
+/// announcement): building their text would grow with the selection on the UI thread (#1304).
+const PREVIEW_SELECTION_MAX_ROWS: usize = 500;
 
 /// `PHOSPHOR_COPY_INLINE=1` turns the off-thread selection copy off (#1304).
 fn copy_inline_forced() -> bool {
@@ -25121,9 +25124,13 @@ impl TerminalView {
         }
         self.find_bar.update(ctx, |view, ctx| {
             let semantic_selection = SemanticSelection::as_ref(ctx);
-            if let Some(selected) =
-                model.selection_to_string(semantic_selection, inverted_blocklist, ctx)
-            {
+            // A selection too big to be a sensible query is not prefilled (and not built).
+            if let BoundedSelection::Text(selected) = model.selection_to_bounded_string(
+                semantic_selection,
+                inverted_blocklist,
+                PREVIEW_SELECTION_MAX_ROWS,
+                ctx,
+            ) {
                 if !selected.is_empty() {
                     view.set_query_text(selected.as_str(), ctx);
                 }
@@ -26720,10 +26727,9 @@ impl TerminalView {
 
             let is_shell_mode = !self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
             let are_blocks_selected = !self.selected_blocks.is_empty();
-            let is_text_selected = model
-                .selection_to_string(semantic_selection, false, ctx)
-                .filter(|text| !text.is_empty())
-                .is_some();
+            // Only whether a selection exists matters; building its text on every focus change
+            // grows with the selection (#1304).
+            let is_text_selected = model.has_selection_range(semantic_selection, false);
 
             // Leave the input box focused when selecting blocks or text as context in AI input
             // mode so users can quickly submit queries.
@@ -26859,10 +26865,10 @@ impl TerminalView {
         );
         let has_text_selection = no_blocks_selected && {
             let semantic_selection = SemanticSelection::as_ref(ctx);
+            // Existence only; do not format the selection (#1304).
             self.model
                 .lock()
-                .selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-                .is_some_and(|s| !s.is_empty())
+                .has_selection_range(semantic_selection, self.is_inverted_blocklist(ctx))
         };
         if has_text_selection {
             self.context_menu_copy_selected_text(ctx);
@@ -32400,14 +32406,22 @@ impl TypedActionView for TerminalView {
             BlockTextSelect(_) => {
                 let semantic_selection = SemanticSelection::as_ref(ctx);
                 let model = self.model.lock();
-                model
-                    .selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-                    .map_or(Empty, |selected| {
-                        Custom(AccessibilityContent::new_without_help(
-                            selected,
-                            WarpA11yRole::TextRole,
-                        ))
-                    })
+                // Only runs with a screen reader active; still bounded so a huge selection is not
+                // built on the UI thread just to be announced (#1304).
+                let selected = match model.selection_to_bounded_string(
+                    semantic_selection,
+                    self.is_inverted_blocklist(ctx),
+                    PREVIEW_SELECTION_MAX_ROWS,
+                    ctx,
+                ) {
+                    BoundedSelection::None => return Empty,
+                    BoundedSelection::Text(selected) => selected,
+                    BoundedSelection::TooLarge => "Large selection".to_string(),
+                };
+                Custom(AccessibilityContent::new_without_help(
+                    selected,
+                    WarpA11yRole::TextRole,
+                ))
             }
             BlockSelect { .. }
             | SelectPriorBlock
