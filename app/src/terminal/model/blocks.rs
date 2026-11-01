@@ -3330,19 +3330,39 @@ impl BlockList {
                 .blocks
                 .get(index.0)
                 .map(|b| b.height(&self.transcript_scope));
+            // Where this block starts now (earlier blocks in this batch are already refreshed),
+            // needed to re-address a selection below it.
+            let top = if self.selection.is_some() {
+                let mut cursor = self
+                    .block_heights
+                    .cursor::<BlockIndex, BlockHeightSummary>();
+                cursor.seek(&index, SeekBias::Right);
+                Some(cursor.start().height)
+            } else {
+                None
+            };
             if let Some(block) = self.blocks.get_mut(index.0) {
                 block.set_reflow_stale(false);
                 block.resize(size);
             }
+            let mut changed = None;
             if let (Some(before), Some(block)) = (before, self.blocks.get(index.0)) {
-                height_changed |= block.height(&self.transcript_scope) != before;
+                let after = block.height(&self.transcript_scope);
+                if after != before {
+                    height_changed = true;
+                    changed = Some((before, after));
+                }
             }
             self.refresh_block_height(index);
+            if let (Some((before, after)), Some(top)) = (changed, top) {
+                // Reflow moves every later row, and a selection is addressed by absolute row:
+                // shift it instead of dropping it. It is cleared only when an anchor sits inside
+                // this block, where the text can no longer be located by row.
+                self.remap_selection_for_block_height_change(top, before, after);
+            }
         }
         if height_changed {
-            // Reflow moves every later row, and a selection is addressed by absolute row.
             self.retained_lines_prefix = None;
-            self.clear_selection();
         }
         self.stale_reflow_pending = self.blocks.iter().any(|b| b.is_reflow_stale());
         count
