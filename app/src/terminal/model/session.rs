@@ -1337,20 +1337,17 @@ impl Session {
     /// Swaps this legacy-ssh session's command executor back to the
     /// ControlMaster-based [`RemoteCommandExecutor`], e.g. after the
     /// remote-server proxy died (#1171). Returns `true` if the executor was
-    /// replaced; `false` for a non-ssh session or when it is already the
-    /// ControlMaster executor (so repeated events log and swap only once).
+    /// replaced; `false` for a non-ssh session or when the current executor is
+    /// not the remote-server one (so repeated events log and swap only once).
     #[cfg(feature = "local_tty")]
     pub fn fall_back_to_control_master_executor(&self) -> bool {
         let IsLegacySSHSession::Yes { socket_path, .. } = &self.info.is_legacy_ssh_session else {
             return false;
         };
         let mut executor = self.command_executor.write();
-        if executor
-            .as_ref()
-            .as_any()
-            .downcast_ref::<RemoteCommandExecutor>()
-            .is_some()
-        {
+        // Only the remote-server (helper) executor is swapped; any other executor (the
+        // ControlMaster one already, tmux, test doubles, ...) is left alone (#1253).
+        if !executor.as_ref().is_remote_server_executor() {
             return false;
         }
         let wsl_distro = self.info.wsl_name().map(ToOwned::to_owned);

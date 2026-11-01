@@ -4994,6 +4994,12 @@ impl BlocklistAIController {
                             self.update_compaction_turn_state(conversation_id, |state| {
                                 state.on_request_failed()
                             });
+                        } else {
+                            // The resume is a plain one: a deferred summary that was in
+                            // flight is not re-asked, so give its allowance back (#1238).
+                            self.update_compaction_turn_state(conversation_id, |state| {
+                                state.on_request_resumed()
+                            });
                         }
                     }
                 }

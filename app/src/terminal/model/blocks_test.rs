@@ -521,6 +521,38 @@ fn test_deferred_restore_sends_one_block_completed_per_block_like_eager_restore(
     );
 }
 
+// A selection made on a placeholder points into its empty grid; installing the real content
+// drops it instead of leaving points that may be out of range (#1265).
+#[test]
+fn test_deferred_restore_install_clears_stale_selection() {
+    use crate::terminal::model::grid::Side;
+    use warpui::text::SelectionType;
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    deferred.start_selection(
+        BlockListPoint::new(1.0, 3),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert!(deferred.selection().is_some());
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(
+        deferred.selection().is_none(),
+        "the selection referenced the placeholder and must be cleared on install"
+    );
+    // Installing again with nothing ready must not touch a fresh selection.
+    deferred.start_selection(
+        BlockListPoint::new(1.0, 3),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert!(!deferred.install_ready_deferred_restores());
+    assert!(deferred.selection().is_some());
+}
+
 // A block restored as a placeholder and filled in by the background parse must end up identical
 // to one restored eagerly: same text, same grid sizes, same heights (#1254).
 #[test]

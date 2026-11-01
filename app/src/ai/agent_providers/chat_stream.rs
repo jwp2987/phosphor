@@ -2623,7 +2623,7 @@ fn build_chat_request_for_model(
                 }
                 let (name, args_json) = serialize_outgoing_tool_call(
                     tc,
-                    params.mcp_context.as_ref(),
+                    params.mcp_context.as_deref(),
                     &msg.server_message_data,
                 );
                 let assistant_message_id = buf
@@ -7608,7 +7608,7 @@ pub async fn generate_byop_output(
                             if elapsed_ok {
                                 if let Ok(parsed) = parse_turn_tool_call(
                                     &call,
-                                    mcp_context.as_ref(),
+                                    mcp_context.as_deref(),
                                     &tool_names_for_extract,
                                     &listed_skills,
                                     &skill_path_origin,
@@ -7632,7 +7632,7 @@ pub async fn generate_byop_output(
                             }
                         } else { match parse_turn_tool_call(
                             &call,
-                            mcp_context.as_ref(),
+                            mcp_context.as_deref(),
                             &tool_names_for_extract,
                             &listed_skills,
                             &skill_path_origin,
@@ -8285,7 +8285,7 @@ pub async fn generate_byop_output(
 
             match parse_turn_tool_call(
                 &call,
-                mcp_context.as_ref(),
+                mcp_context.as_deref(),
                 &tool_names_for_extract,
                 &listed_skills,
                 &skill_path_origin,
@@ -14835,7 +14835,7 @@ mod plan_mode_round_trip_tests {
     fn cli_subagent_turn_offers_only_cli_agent_tools() {
         let mut params = tool_result_round_trip(false);
         params.web_search_enabled = true;
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         assert!(!mcp_names.is_empty(), "fixture precondition: one MCP tool");
         for name in ["apply_file_diffs", tools::webfetch::TOOL_NAME]
@@ -14870,7 +14870,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn cli_subagent_turn_refuses_other_tools_at_dispatch() {
         let mut params = tool_result_round_trip(false);
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         params.lrc_command_id = Some("block-1".to_owned());
         params.lrc_is_cli_subagent_turn = true;
@@ -14913,7 +14913,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn monitoring_agent_lrc_turn_keeps_its_tools_except_run_shell_command() {
         let mut params = tool_result_round_trip(false);
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         params.lrc_command_id = Some("block-1".to_owned());
         assert!(!params.lrc_is_cli_subagent_turn);
@@ -15375,7 +15375,7 @@ mod plan_mode_round_trip_tests {
         out.push(("plan mode", p));
 
         let mut p = all_tools_on();
-        p.mcp_context = Some(mcp_context_with_lookup_tool());
+        p.mcp_context = Some(std::sync::Arc::new(mcp_context_with_lookup_tool()));
         out.push(("MCP server, no resources", p));
 
         // Everything off at once: the defaults of `RequestParams::new_for_test`.
@@ -15468,7 +15468,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn mcp_tools_are_gated_by_the_offered_names() {
         let mut params = all_tools_on();
-        params.mcp_context = Some(mcp_context_with_lookup_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_lookup_tool()));
         let offered = available_tool_names(&params);
         let mcp_name = tools::mcp::build_mcp_tool_defs(
             params.mcp_context.as_ref().expect("mcp context set above"),

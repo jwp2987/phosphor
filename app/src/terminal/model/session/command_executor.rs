@@ -98,6 +98,12 @@ pub trait CommandExecutor: Send + Sync + Debug {
     fn connection_lost(&self) -> bool {
         false
     }
+
+    /// Whether this is the remote-server (helper) executor. The only executor a session may
+    /// swap for the ControlMaster one when the helper is lost (#1253).
+    fn is_remote_server_executor(&self) -> bool {
+        false
+    }
 }
 
 #[allow(unused_variables)]
@@ -441,6 +447,37 @@ pub mod testing {
     use warp_completer::completer::CommandOutput;
 
     use super::*;
+
+    /// A test executor that identifies as the remote-server (helper) executor without holding a
+    /// connected client. Every command fails.
+    #[derive(Debug, Default)]
+    pub struct TestRemoteServerKindExecutor {}
+
+    #[async_trait]
+    impl CommandExecutor for TestRemoteServerKindExecutor {
+        async fn execute_command(
+            &self,
+            _command: &str,
+            _shell: &Shell,
+            _current_directory_path: Option<&str>,
+            _environment_variables: Option<HashMap<String, String>>,
+            _execute_command_options: ExecuteCommandOptions,
+        ) -> Result<CommandOutput> {
+            Err(anyhow!("test remote-server executor does not run commands"))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn supports_parallel_command_execution(&self) -> bool {
+            true
+        }
+
+        fn is_remote_server_executor(&self) -> bool {
+            true
+        }
+    }
 
     /// Implementation of `CommandExecutor` for use in tests. This implementation simply executes
     /// the given command in a bash subprocess.

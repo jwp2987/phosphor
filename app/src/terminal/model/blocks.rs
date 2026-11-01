@@ -4209,6 +4209,17 @@ impl BlockList {
             self.refresh_block_height(index);
             installed = true;
         }
+        if installed {
+            // Selection and the smart-select override hold points into the placeholder's empty
+            // grids, and the installed content changes heights and row counts under them. Drop
+            // them (as eviction does) rather than leave points that may be out of range (#1265).
+            // Find matches and scroll need no fix-up here: a find run before install has no
+            // matches inside a placeholder, and scroll positions are clamped by the layout.
+            if self.selection().is_some() {
+                self.clear_selection();
+            }
+            self.clear_smart_select_override();
+        }
         installed
     }
 

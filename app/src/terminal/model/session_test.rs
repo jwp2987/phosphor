@@ -817,8 +817,10 @@ mod control_master_fallback {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use super::super::command_executor::testing::TestCommandExecutor;
     use super::super::command_executor::RemoteCommandExecutor;
+    use super::super::command_executor::testing::{
+        TestCommandExecutor, TestRemoteServerKindExecutor,
+    };
     use super::super::{Session, SessionInfo};
 
     fn is_control_master_executor(session: &Session) -> bool {
@@ -834,7 +836,7 @@ mod control_master_fallback {
     #[test]
     fn losing_the_remote_server_swaps_an_ssh_session_to_the_control_master() {
         let info = SessionInfo::new_for_test().with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock"));
-        let session = Session::new(info, Arc::new(TestCommandExecutor::default()));
+        let session = Session::new(info, Arc::new(TestRemoteServerKindExecutor::default()));
         assert!(!is_control_master_executor(&session));
 
         assert!(session.fall_back_to_control_master_executor());
@@ -843,6 +845,23 @@ mod control_master_fallback {
         // A second disconnect-style event is a no-op, not a second swap.
         assert!(!session.fall_back_to_control_master_executor());
         assert!(is_control_master_executor(&session));
+    }
+
+    #[test]
+    fn a_non_helper_executor_is_never_swapped_to_the_control_master() {
+        let info = SessionInfo::new_for_test().with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock"));
+        let session = Session::new(info, Arc::new(TestCommandExecutor::default()));
+        assert!(!session.fall_back_to_control_master_executor());
+        assert!(!is_control_master_executor(&session));
+        assert!(
+            session
+                .command_executor
+                .read()
+                .as_ref()
+                .as_any()
+                .downcast_ref::<TestCommandExecutor>()
+                .is_some()
+        );
     }
 
     #[test]
