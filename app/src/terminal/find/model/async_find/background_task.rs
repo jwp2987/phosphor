@@ -37,10 +37,23 @@ pub fn spawn_find_task<E: Entity>(
     terminal_model: Arc<FairMutex<TerminalModel>>,
     queue: FindWorkQueue,
     result_tx: async_channel::Sender<FindTaskMessage>,
+    collect_initial_scan: bool,
     ctx: &mut ModelContext<E>,
 ) -> warpui::r#async::SpawnedFutureHandle {
     ctx.spawn(
         async move {
+            if collect_initial_scan {
+                // Collect the blocks to scan here, off the UI thread (#1320), and tell the main
+                // thread about them before any result for those blocks can arrive.
+                let block_info = {
+                    let mut model = terminal_model.lock();
+                    super::collect_block_info_for_full_scan(&mut model, &config)
+                };
+                let _ = result_tx
+                    .send(FindTaskMessage::BlocksCollected(block_info.clone()))
+                    .await;
+                queue.enqueue_full_scan(&block_info);
+            }
             run_find_task_loop(config, terminal_model, queue, result_tx).await;
         },
         |_me, (), _ctx| {

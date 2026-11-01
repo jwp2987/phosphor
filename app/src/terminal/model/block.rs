@@ -497,6 +497,10 @@ pub struct Block {
     /// disagree today; port the desktop guard together with whatever first sets it.
     should_hide_command_grid: bool,
 
+    /// Set when a column change left this finished block's grids at the old wrap width because
+    /// it was far from the viewport (#1303). The block list reflows it before it can be drawn.
+    reflow_stale: bool,
+
     /// [`Self::linefeed`] may discard some linefeeds at the beginning of the prompt. Doing so will
     /// alter the row numbers for [`Self::goto`] and [`Self::goto_line`] when ConPTY is involved. We
     /// track the count of discarded newlines here in order to correct the row number.
@@ -1110,6 +1114,7 @@ impl Block {
             should_hide_output_grid: false,
             ssh_payload_only: false,
             should_hide_command_grid: false,
+            reflow_stale: false,
             leading_linefeeds_ignored: 0,
             restore_pending: false,
             is_ai_ugc_telemetry_enabled,
@@ -2372,6 +2377,15 @@ impl Block {
             // The footer is one line of text.
             1.0.into_lines()
         }
+    }
+
+    /// Whether this block's grids still have the wrap width from before a deferred reflow.
+    pub fn is_reflow_stale(&self) -> bool {
+        self.reflow_stale
+    }
+
+    pub fn set_reflow_stale(&mut self, stale: bool) {
+        self.reflow_stale = stale;
     }
 
     /// Resize terminal to new dimensions.

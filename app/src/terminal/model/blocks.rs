@@ -300,6 +300,16 @@ pub struct BlockList {
     #[cfg(test)]
     sumtree_rebuild_count: usize,
 
+    /// `(k, sum)`: the first `k` blocks are all finished and their `retained_lines` total
+    /// `sum`. Finished blocks' line counts only change on resize or when blocks are removed or
+    /// inserted, all of which clear this, so eviction need not re-sum the whole list on every
+    /// block start (#1321).
+    retained_lines_prefix: Option<(usize, usize)>,
+
+    /// Forces lazy reflow on regardless of `PHOSPHOR_LAZY_REFLOW` (tests).
+    #[cfg(test)]
+    lazy_reflow_forced: bool,
+
     /// The gap height to set after a clear or ctrl-l.
     /// The view needs to tell the model this because the gap height varies based
     /// on the input mode, which is a view concept, not a model concept.
@@ -474,6 +484,17 @@ fn lazy_restore_min_bytes_from_env() -> Option<usize> {
         .map_or(true, |value| value.trim() != "0")
         .then_some(LAZY_RESTORE_MIN_BYTES)
 }
+
+/// Lazy reflow of far-away finished blocks on a column change (#1303) is opt-in
+/// (`PHOSPHOR_LAZY_REFLOW=1`) until the view calls [`BlockList::reflow_stale_blocks_in_range`]
+/// for the blocks it is about to draw; without that call a stale block would be drawn at its old
+/// wrap width.
+fn lazy_reflow_enabled() -> bool {
+    std::env::var("PHOSPHOR_LAZY_REFLOW").is_ok_and(|value| value.trim() == "1")
+}
+
+/// Screens' worth of lines, counted back from the newest block, that reflow immediately.
+const LAZY_REFLOW_WINDOW_SCREENS: f64 = 4.0;
 
 /// How much of `restore_block` runs on the calling thread (#1254).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -929,6 +950,9 @@ impl BlockList {
             dirty_rich_content_items: HashSet::new(),
             #[cfg(test)]
             sumtree_rebuild_count: 0,
+            retained_lines_prefix: None,
+            #[cfg(test)]
+            lazy_reflow_forced: false,
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
@@ -2203,6 +2227,7 @@ impl BlockList {
     pub(super) fn remove_background_block(&mut self) -> Option<Block> {
         let block_index = self.background_block_mut()?.index();
 
+        self.retained_lines_prefix = None;
         let block = self.blocks.remove(block_index.0);
         if block.current_filter().is_some_and(|query| query.is_active) {
             self.active_filter_count = self.active_filter_count.saturating_sub(1);
@@ -2235,6 +2260,7 @@ impl BlockList {
     fn remove_block_at_index(&mut self, block_index: BlockIndex) -> Option<Block> {
         debug_assert!(block_index != self.active_block_index());
 
+        self.retained_lines_prefix = None;
         let block = self.blocks.remove(block_index.0);
         if block.current_filter().is_some_and(|query| query.is_active) {
             self.active_filter_count = self.active_filter_count.saturating_sub(1);
@@ -3107,6 +3133,8 @@ impl BlockList {
     /// here because resizing may result in a change in gap size.
     pub fn resize(&mut self, size_update: &SizeUpdate, update_old_blocks: bool) {
         let size = size_update.new_size;
+        // Reflow changes finished blocks' retained line counts.
+        self.retained_lines_prefix = None;
         // Compare against the size this list actually had, not `size_update.last_size`, so a
         // caller passing a stale `last_size` can never make us skip a needed rebuild.
         let grid_dimensions_changed =
@@ -3128,6 +3156,29 @@ impl BlockList {
 
         let active_block_index = self.active_block_index();
 
+        // Lazy reflow (#1303): on a column change only the newest blocks (about
+        // `LAZY_REFLOW_WINDOW_SCREENS` screens of lines) reflow now; older finished blocks are
+        // flagged stale and keep their old grids and heights until
+        // `reflow_stale_blocks_in_range` / `reflow_stale_blocks` reflow them.
+        #[cfg(test)]
+        let forced = self.lazy_reflow_forced;
+        #[cfg(not(test))]
+        let forced = false;
+        let columns_changed =
+            update_old_blocks && grid_dimensions_changed && (forced || lazy_reflow_enabled());
+        let lazy_window_start = if columns_changed {
+            self.lazy_reflow_window_start(size.rows())
+        } else {
+            0
+        };
+        if columns_changed {
+            for block in self.blocks.iter_mut().take(lazy_window_start) {
+                if block.finished() && block.index() != active_block_index {
+                    block.set_reflow_stale(true);
+                }
+            }
+        }
+
         // Pixel-only changes (pane size, window-edge drags, panel animations) leave rows,
         // columns and the gap alone. Block heights are a function of grid content, padding and
         // visibility, none of which a pure pixel change touches, so the O(blocks) height-tree
@@ -3135,6 +3186,9 @@ impl BlockList {
         // when the dimensions are unchanged, and only record the cell metrics).
         if !grid_dimensions_changed && size_update.new_gap_height.is_none() {
             for b in self.blocks.iter_mut() {
+                if b.is_reflow_stale() {
+                    continue;
+                }
                 if active_block_index == b.index() || update_old_blocks {
                     b.resize(size);
                 }
@@ -3151,7 +3205,11 @@ impl BlockList {
             None,
             None,
             move |b| {
+                if b.is_reflow_stale() && b.index() < lazy_window_start {
+                    return;
+                }
                 if active_block_index == b.index() || update_old_blocks {
+                    b.set_reflow_stale(false);
                     b.resize(size);
                 }
             },
@@ -3161,6 +3219,63 @@ impl BlockList {
                 }
             },
         );
+    }
+
+    /// Index of the oldest block inside the immediate-reflow window: the newest blocks whose
+    /// heights add up to `LAZY_REFLOW_WINDOW_SCREENS * rows` lines.
+    fn lazy_reflow_window_start(&self, rows: usize) -> usize {
+        let budget = LAZY_REFLOW_WINDOW_SCREENS * rows as f64;
+        let mut lines = 0.0;
+        for (i, block) in self.blocks.iter().enumerate().rev() {
+            lines += block.height(&self.transcript_scope).as_f64();
+            if lines >= budget {
+                return i;
+            }
+        }
+        0
+    }
+
+    /// Whether any block is still waiting for its deferred reflow.
+    pub fn has_stale_reflow(&self) -> bool {
+        self.blocks.iter().any(|b| b.is_reflow_stale())
+    }
+
+    /// Reflows stale blocks with index in `first..=last` (what the view is about to draw or
+    /// measure), refreshing their heights. Returns how many were reflowed.
+    pub fn reflow_stale_blocks_in_range(&mut self, first: BlockIndex, last: BlockIndex) -> usize {
+        let indices: Vec<BlockIndex> = self
+            .blocks
+            .iter()
+            .filter(|b| b.is_reflow_stale() && b.index() >= first && b.index() <= last)
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    /// Background-chunk entry point: reflows up to `max_blocks` stale blocks, newest first.
+    pub fn reflow_stale_blocks(&mut self, max_blocks: usize) -> usize {
+        let indices: Vec<BlockIndex> = self
+            .blocks
+            .iter()
+            .rev()
+            .filter(|b| b.is_reflow_stale())
+            .take(max_blocks)
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    fn reflow_blocks_now(&mut self, indices: Vec<BlockIndex>) -> usize {
+        let size = self.size;
+        let count = indices.len();
+        for index in indices {
+            if let Some(block) = self.blocks.get_mut(index.0) {
+                block.set_reflow_stale(false);
+                block.resize(size);
+            }
+            self.refresh_block_height(index);
+        }
+        count
     }
 
     /// Helper function to update each block--ensuring the BlockHeights sumtree is appropriately
@@ -3842,6 +3957,7 @@ impl BlockList {
         );
 
         let background_block_index = self.active_block_index();
+        self.retained_lines_prefix = None;
         self.blocks.insert(background_block_index.0, block);
         self.reset_internal_block_index(background_block_index);
         self.reset_internal_block_index(background_block_index + BlockIndex::from(1));
@@ -3973,8 +4089,35 @@ impl BlockList {
         }
     }
 
+    /// Total `retained_lines` over all blocks, maintained incrementally (#1321): the leading run
+    /// of finished blocks is cached and only the tail is summed per call.
+    fn total_retained_lines(&mut self) -> usize {
+        let len = self.blocks.len();
+        let (mut k, mut sum) = self.retained_lines_prefix.unwrap_or((0, 0));
+        if k > len {
+            k = 0;
+            sum = 0;
+        }
+        while k < len && self.blocks[k].finished() {
+            sum += self.blocks[k].retained_lines();
+            k += 1;
+        }
+        self.retained_lines_prefix = Some((k, sum));
+        sum + self.blocks[k..]
+            .iter()
+            .map(|b| b.retained_lines())
+            .sum::<usize>()
+    }
+
+    /// Test hook: the incrementally maintained total and a full re-sum.
+    #[cfg(test)]
+    pub(crate) fn retained_lines_total_for_test(&mut self) -> (usize, usize) {
+        let full = self.blocks.iter().map(|b| b.retained_lines()).sum();
+        (self.total_retained_lines(), full)
+    }
+
     pub fn evict_oldest_blocks_to_budget(&mut self, line_budget: usize) -> EvictedBlocks {
-        let mut total: usize = self.blocks.iter().map(|b| b.retained_lines()).sum();
+        let mut total = self.total_retained_lines();
         let last = self.blocks.len().saturating_sub(1);
         let mut evict_count = 0;
         for (i, block) in self.blocks.iter().enumerate() {
@@ -4008,10 +4151,21 @@ impl BlockList {
             cursor.start().height
         };
         let mut block_ids = Vec::with_capacity(evict_count);
+        let prefix_before = self.retained_lines_prefix;
+        let mut evicted_lines = 0usize;
         for _ in 0..evict_count {
+            evicted_lines += self.blocks.first().map_or(0, |b| b.retained_lines());
             if let Some(block) = self.remove_block_at_index(BlockIndex::zero()) {
                 block_ids.push(block.id().clone());
             }
+        }
+        // Only finished blocks are evicted, so they were all inside the cached prefix; keep the
+        // running total instead of re-summing the survivors next time.
+        if let Some((k, sum)) = prefix_before
+            && k >= evict_count
+            && sum >= evicted_lines
+        {
+            self.retained_lines_prefix = Some((k - evict_count, sum - evicted_lines));
         }
         let removed_height = height_before - self.block_heights.summary().height;
         // Bump the monotonic counter that stamps queued PTY-thread events (still holding the

@@ -1174,6 +1174,95 @@ fn test_eviction_partial_budget_keeps_recent_blocks_and_stays_consistent() {
 }
 
 #[test]
+fn test_eviction_running_total_matches_a_full_sum() {
+    let mut block_list = block_list_with_finished_blocks(8);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+    // Evict a couple of blocks; the maintained total must still equal a full re-sum.
+    let first_two: usize = block_list
+        .blocks()
+        .iter()
+        .take(2)
+        .map(|b| b.retained_lines())
+        .sum();
+    block_list.evict_oldest_blocks_to_budget(full - first_two);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+    // Evicting again from the maintained prefix agrees with a fresh sum.
+    block_list.evict_oldest_blocks_to_budget(0);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+}
+
+fn resize_columns(block_list: &mut BlockList, columns: usize) {
+    let rows = block_list.size().rows();
+    let update = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, columns),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: columns,
+    };
+    block_list.resize(&update, true);
+}
+
+#[test]
+fn test_lazy_reflow_defers_far_blocks_and_flushes_before_draw() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let base = block_list.size().columns();
+    let new_cols = base + 7;
+    resize_columns(&mut block_list, new_cols);
+
+    // The newest blocks reflowed synchronously; the oldest are stale at the old width.
+    assert!(block_list.has_stale_reflow());
+    let first = block_list.blocks().first().unwrap();
+    assert!(first.is_reflow_stale());
+    assert_eq!(first.size().columns(), base);
+    let last_finished = block_list.blocks().len() - 2;
+    assert!(!block_list.blocks()[last_finished].is_reflow_stale());
+    assert_eq!(
+        block_list.blocks()[last_finished].size().columns(),
+        new_cols
+    );
+
+    // A later pixel-only change must not reflow stale blocks behind the height tree's back.
+    let stale_before = block_list
+        .blocks()
+        .iter()
+        .filter(|b| b.is_reflow_stale())
+        .count();
+    resize_columns(&mut block_list, new_cols);
+    assert_eq!(
+        block_list
+            .blocks()
+            .iter()
+            .filter(|b| b.is_reflow_stale())
+            .count(),
+        stale_before
+    );
+
+    // Reflowing the range about to be drawn clears the flag and applies the new width.
+    let n = block_list.reflow_stale_blocks_in_range(0.into(), 3.into());
+    assert!(n > 0);
+    for b in &block_list.blocks()[..=3] {
+        assert!(!b.is_reflow_stale());
+        assert_eq!(b.size().columns(), new_cols);
+    }
+    // Background chunks drain the rest.
+    while block_list.reflow_stale_blocks(8) > 0 {}
+    assert!(!block_list.has_stale_reflow());
+    assert!(
+        block_list
+            .blocks()
+            .iter()
+            .all(|b| b.size().columns() == new_cols)
+    );
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
 fn test_eviction_never_removes_the_active_block() {
     let mut block_list = block_list_with_finished_blocks(4);
     let active_id = block_list.active_block().id().clone();
