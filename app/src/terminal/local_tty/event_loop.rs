@@ -1219,6 +1219,10 @@ where
             while offset < bytes_in_buffer {
                 let end = (offset + PARSE_SLICE).min(bytes_in_buffer);
                 warpui::profiling::zone!("parse");
+                // What the main thread left for the model (a key's bookkeeping, #1403) is applied
+                // before the bytes are parsed: the record of a key is in place before the echo it
+                // causes. Then the facts the user-key path reads without this lock are published.
+                terminal.apply_inbox();
                 let held_since = Instant::now();
                 parse_slice(
                     state,
@@ -1226,6 +1230,7 @@ where
                     &self.reply_ledger,
                     &buf[offset..end],
                 );
+                terminal.publish_key_facts();
                 let held = held_since.elapsed();
                 SLOW_PTY_PARSE.finish(held_since, || {
                     format!("{} bytes, terminal model locked", end - offset)

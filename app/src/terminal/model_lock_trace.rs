@@ -82,6 +82,15 @@ pub fn legacy_lock_scoping() -> bool {
     *LEGACY.get_or_init(|| legacy_from_value(std::env::var("PHOSPHOR_RENDER_LOCK_LEGACY").ok()))
 }
 
+/// True when `PHOSPHOR_HANDOFF_FACTS=0`: the user-key path takes the model's blocking lock again
+/// instead of reading published facts and leaving its bookkeeping in the inbox (#1403). Read once.
+pub fn key_path_uses_model_lock() -> bool {
+    static LEGACY: OnceLock<bool> = OnceLock::new();
+    *LEGACY.get_or_init(|| {
+        std::env::var("PHOSPHOR_HANDOFF_FACTS").is_ok_and(|value| value.trim() == "0")
+    })
+}
+
 fn legacy_from_value(value: Option<String>) -> bool {
     value.is_some_and(|v| !v.is_empty() && v != "0")
 }

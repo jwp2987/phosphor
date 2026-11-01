@@ -17,11 +17,12 @@
 //!   one logged give-up timer, armed once ([`TerminalView::settle_enter_queue`]).
 //! * otherwise the view's `ReplayAfterDeferredEnter` handler closes the gate at once.
 //!
-//! Closing the gate drains it, in order. The host does not route anything itself (a delivery must
-//! not re-enter the pipeline that holds, #1222): it emits `Event::ReplayEnterEntry` per entry and
-//! the view routes each one when the event arrives. An entry that then opens a new gate (a
-//! replayed Enter that waits again) holds the entries after it, which were already queued as
-//! events: the view offers them back to the queue (`queue_behind_enter`), so order survives.
+//! Closing the gate drains it, in order. A drain driven from here stops at the first `Text` /
+//! `Enter` entry (the input reaches no pty: `Host::handles`) and the terminal view continues it,
+//! delivering each entry to the editor or the pty with its leaf writers, never the pipeline that
+//! holds (#1222). The entries are never turned into events, so they stay in the queue in order:
+//! a replayed Enter that waits again returns its new gate as the delivery's `OpensGate`
+//! ([`Input::take_stashed_gate`]), and everything behind it waits for that gate.
 //!
 //! Timers: none here. The give-ups are the #1351 compute caps and backstops (they submit the
 //! Enter, which closes the gate), the route-settle cap in the view, and a long leak net on the
@@ -114,16 +115,22 @@ impl Input {
     /// Opens the gate of the wait `id` that just started (an Enter held for its verdict or a Tab
     /// completion): keys arriving from now on queue behind it.
     pub(super) fn open_enter_gate(&mut self, id: u64, kind: GateKind, ctx: &mut ViewContext<Self>) {
+        let spec = GateSpec::new(kind, id).with_cap(Some(ENTER_GATE_LEAK_NET));
         let queue = self.enter_queue_handle(ctx);
-        let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: Enter gate not opened, the queue was busy");
-            return;
-        };
-        let mut host = InputQueueHost::new(self, ctx);
-        queue.open_gate(
-            &mut host,
-            GateSpec::new(kind, id).with_cap(Some(ENTER_GATE_LEAK_NET)),
-        );
+        if queue.is_draining() {
+            // This Enter is being delivered by the queue's own drain (a replayed Enter that waits
+            // again): the drain cannot be re-entered. The delivering host takes the gate right
+            // after this call and returns it as the delivery's `OpensGate`, which holds the
+            // entries already queued behind the Enter.
+            self.stashed_gate = Some(spec);
+        } else {
+            let Some(mut queue) = queue.try_lock() else {
+                log::warn!("input queue: Enter gate not opened, the queue was busy");
+                return;
+            };
+            let mut host = InputQueueHost::new(self, ctx);
+            queue.open_gate(&mut host, spec);
+        }
         self.enter_gate = Some(EnterGate {
             key: id,
             kind,
@@ -131,6 +138,22 @@ impl Input {
             awaits_pty: false,
             route_cap_armed: false,
         });
+    }
+
+    /// The gate [`Self::open_enter_gate`] could not open because the queue was delivering the
+    /// Enter that needed it; taken once by the delivering host.
+    pub(crate) fn take_stashed_gate(&mut self) -> Option<GateSpec> {
+        self.stashed_gate.take()
+    }
+
+    /// Records that the view routed `input` after an Enter that waited, for tests.
+    pub(crate) fn note_replayed_after_enter(&self, input: &AfterEnterInput) {
+        #[cfg(test)]
+        if let Some(sink) = &self.replayed_sink_for_test {
+            sink.borrow_mut().push(input.clone());
+        }
+        #[cfg(not(test))]
+        let _ = input;
     }
 
     /// Queues `input` behind the Enter whose gate is open. False when no gate holds the queue.
@@ -153,6 +176,27 @@ impl Input {
         let mut host = InputQueueHost::new(self, ctx);
         queue.offer(&mut host, kind);
         true
+    }
+
+    /// Queues an Enter that reached the editor while another is deferred behind the hand-off's
+    /// report, behind that Enter's `HandoffReport` gate. The gate is open from the moment the
+    /// Enter is deferred (the view opens it on `TypeaheadHandoffEnterDeferred`); without it the
+    /// Enter has nowhere to wait and is logged.
+    pub(super) fn queue_enter_behind_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.enter_queue_handle(ctx);
+        if !queue
+            .try_peek()
+            .is_some_and(|queue| queue.has_gate_kind(GateKind::HandoffReport))
+        {
+            log::warn!("input queue: an Enter typed behind a deferred Enter found no gate");
+            return;
+        }
+        let Some(mut queue) = queue.try_lock() else {
+            log::warn!("input queue: an Enter typed behind a deferred Enter found the queue busy");
+            return;
+        };
+        let mut host = InputQueueHost::new(self, ctx);
+        queue.offer(&mut host, EntryKind::Enter);
     }
 
     /// An Enter typed behind the one that waits, on the queue behind the Enter's gate. The queue
@@ -216,8 +260,8 @@ impl Input {
         true
     }
 
-    /// Closes the Enter's gate and releases what waited behind it, in order: each entry becomes an
-    /// `Event::ReplayEnterEntry` for the view to route.
+    /// Closes the Enter's gate and releases what waited behind it, in order: the drain stops at
+    /// the first entry only the terminal view routes and the view continues it.
     pub(crate) fn release_enter_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(gate) = self.enter_gate.take() else {
             return;

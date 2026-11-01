@@ -9540,10 +9540,10 @@ fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) 
     use crate::terminal::input_queue::{GateKind, is_editor_paste_id};
     queue.peek().gates().iter().any(|gate| match gate.kind {
         GateKind::PasteReading => is_editor_paste_id(gate.key),
-        GateKind::EnterVerdict
-        | GateKind::TabCompletion
-        | GateKind::HandoffReport
-        | GateKind::EditorDisplayMap => true,
+        GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorDisplayMap => true,
+        // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
+        // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`, through
+        // the editor's own event), which a signal offered to the queue would flush to the pty.
         _ => false,
     })
 }

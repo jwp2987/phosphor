@@ -31,9 +31,12 @@
 //!
 //! Consumers: paste, the subshell setup / bootstrap holds, the Enter verdict / Tab / after-Enter
 //! ordering plus the paced CLI-agent submit (`input/enter_queue.rs`), the ssh connect typeahead
-//! (`view/ssh_queue.rs`) and the typeahead hand-off's ConPTY prompt hold (`LineEditorActive` gate,
-//! entries put back with [`DeliverOutcome::Requeue`]; see `view/paste_queue.rs`). The old holders
-//! and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are gone; the revert path is git.
+//! (`view/ssh_queue.rs`) and the typeahead hand-off's holds: the ConPTY prompt hold
+//! (`LineEditorActive` gate, entries put back with [`DeliverOutcome::Requeue`]), a young Enter
+//! (`PromptSeen`) and the keys behind an Enter deferred for the shell's report (`HandoffReport`,
+//! which a young hold's gate becomes in place with [`InputQueue::retag_gate`]); see
+//! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
+//! gone; the revert path is git.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
@@ -363,6 +366,15 @@ pub trait Host {
         true
     }
 
+    /// What goes back to the front of the queue after [`DeliverOutcome::Requeue`]: by default the
+    /// entry that was delivered (a key or a paste whose bytes a later stage took into a hold). A
+    /// host whose delivery had other effects (it wrote part of the entry, or delivered an entry
+    /// of another shape) says what is left: the same entry id, so the gate's barrier holds
+    /// everything behind it, with the remaining content.
+    fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
+        entry.clone()
+    }
+
     /// Whether a signal meeting `gate` must wait like any entry (an interrupt must not land in
     /// the middle of the remote bootstrap, #1001).
     fn signal_must_wait(&self, _gate: GateKind) -> bool {
@@ -657,6 +669,46 @@ impl InputQueue {
         self.push_gate(host, spec, barrier)
     }
 
+    /// Turns the open gate `(kind, key)` into `spec` in place: the same barrier, so everything it
+    /// holds stays held with no window in which it is not (a take and a re-offer would have one),
+    /// under a new token, so the cap timer armed for the old gate finds nothing. With
+    /// `drop_first_byte` the first byte of the first pty bytes entry the gate holds is removed
+    /// (the Enter of a young hold that now runs in the editor); an entry left empty is removed.
+    /// Returns whether the gate was open.
+    pub fn retag_gate<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: GateKind,
+        key: u64,
+        spec: GateSpec,
+        drop_first_byte: bool,
+    ) -> bool {
+        let Some(index) = self
+            .gates
+            .iter()
+            .position(|gate| gate.kind == kind && gate.key == key)
+        else {
+            return false;
+        };
+        let barrier = self.gates.remove(index).barrier;
+        if drop_first_byte
+            && let Some(position) = self.entries.iter().position(|entry| entry.id >= barrier)
+        {
+            let emptied = match &mut self.entries[position].kind {
+                EntryKind::PtyBytes { bytes, .. } if !bytes.is_empty() => {
+                    bytes.remove(0);
+                    bytes.is_empty()
+                }
+                _ => false,
+            };
+            if emptied {
+                self.entries.remove(position);
+            }
+        }
+        self.push_gate(host, spec, barrier);
+        true
+    }
+
     fn make_entry(&mut self, kind: EntryKind, origin: Origin) -> InputEntry {
         let id = EntryId(self.next_id);
         self.next_id += 1;
@@ -948,7 +1000,7 @@ impl InputQueue {
             }
             DeliverOutcome::Requeue(spec) => {
                 // Not delivered: back to the front, held by the new gate along with the rest.
-                self.entries.push_front(entry.clone());
+                self.entries.push_front(host.requeued_entry(entry));
                 self.push_gate(host, spec, entry.id);
             }
         }

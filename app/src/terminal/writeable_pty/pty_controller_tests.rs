@@ -1733,7 +1733,7 @@ mod typeahead_handoff {
     use crate::terminal::model::ansi::{Handler, PreexecValue};
     use crate::terminal::model::terminal_model::ExitReason;
     use crate::terminal::model::typeahead_handoff::{
-        HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute,
+        HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungHoldEnd,
     };
 
     const SHELL: ShellType = ShellType::Zsh;
@@ -2033,26 +2033,34 @@ mod typeahead_handoff {
             line_editor_becomes_active(&mut app, &harness);
             assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
 
-            // Enter in the editor before the report: deferred, and later keys are held.
-            {
+            // Enter in the editor before the report: deferred, and later keys are held (as
+            // entries of the view's queue; the controller keeps no bytes for them).
+            let gate = {
                 let mut model = harness.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 assert!(handoff.defer_enter());
-                assert_eq!(handoff.on_user_bytes(b"pwd\r"), UserBytesRoute::Held);
+                let gate = handoff.deferred_gate().expect("a gate");
                 assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-            }
+                gate
+            };
             // The deferred submit, with the report (`ec`) inserted in front of the editor text.
             submit(&mut app, &harness, "echo 1");
             let written = written(&harness);
             assert_eq!(
-                &written[written.len() - 2..],
-                &[
-                    bytes_to_execute_command("echo 1", SHELL, false),
-                    b"pwd\r".to_vec()
-                ]
+                written.last(),
+                Some(&bytes_to_execute_command("echo 1", SHELL, false))
             );
+            // The keys behind the Enter follow the command: the hand-off records the end for the
+            // view, which writes them behind the command and counts them.
+            let mut model = harness.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(
-                harness.model.lock().typeahead_handoff().state(),
+                handoff.take_young_hold_ends(),
+                vec![(gate, YoungHoldEnd::FollowCommand)]
+            );
+            handoff.count_followed_young_hold(gate, b"pwd\r");
+            assert_eq!(
+                handoff.state(),
                 &HandoffState::PtyOwned {
                     wrote_user_bytes: false,
                     enters_written: 2,
@@ -2782,7 +2790,7 @@ mod typeahead_handoff {
                 "the legacy request is written"
             );
             let mut model = harness.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(handoff.state(), &HandoffState::EditorOwned);
             assert!(handoff.untracked_bytes_requested());
             assert!(handoff.editor_text_precedes_report());
@@ -2802,7 +2810,7 @@ mod typeahead_handoff {
             assert_eq!(written(&harness), vec![REQUEST.to_vec()]);
             {
                 let mut model = harness.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.note_untracked_line_bytes();
                 // The report of the first request: it missed the keys.
                 handoff.on_report();
@@ -2821,7 +2829,7 @@ mod typeahead_handoff {
                 "the second request covers the keys; no third"
             );
             let mut model = harness.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert!(handoff.editor_text_precedes_report());
             handoff.on_report();
             assert!(!handoff.editor_text_precedes_report());

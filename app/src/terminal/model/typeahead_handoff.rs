@@ -9,8 +9,10 @@
 //! written after a request, so the shell's report -- which also clears the shell's line -- covers
 //! every byte the user typed.
 //!
-//! This module is pure. `TerminalModel` owns one [`TypeaheadHandoff`] under the model lock; the
-//! terminal view, the input editor and `PtyController` feed it events and act on its decisions.
+//! This module is pure. One [`PaneHandoff`] per terminal owns the [`TypeaheadHandoff`] behind its
+//! own leaf lock (not the model's, #1403); the terminal view, the input editor and
+//! `PtyController` feed it events and act on its decisions, and the model thread feeds it the
+//! prompt facts it parses.
 //!
 //! # Prompt sequence numbers (#1353 phase 6)
 //!
@@ -31,26 +33,27 @@
 //!
 //! # Where held keys live (#1353 phase 5)
 //!
-//! On the queue path (the only production path since the kill switches were deleted) this module
-//! keeps no bytes for the ConPTY prompt hold (a `LineEditorActive` gate, released by the line editor's signal) nor, since
-//! phase 5b, for the young-Enter hold (a `PromptSeen` gate keyed by the hold's id). A hold whose
-//! keys are in the view's queue is only a marker here; every way it can end records a
+//! This module keeps no bytes for the ConPTY prompt hold (a `LineEditorActive` gate, released by
+//! the line editor's signal), for the young-Enter hold (a `PromptSeen` gate keyed by the hold's
+//! id) nor for the keys behind a deferred Enter (a `HandoffReport` gate keyed by
+//! [`TypeaheadHandoff::deferred_gate`]). A hold is only a marker here; every way it can end records a
 //! [`YoungHoldEnd`] (or hands the id over synchronously for a signal) and the view turns that into
-//! taking or dropping the gate's entries. The byte buffers and the view's timer that remain in
-//! this struct are used only for a key the queue cannot take at that moment (a write made while
-//! the queue is delivering something that cannot go back under a gate) and by the unit tests of
-//! the buffered form; `HoldAfterEnter.held` (phase 5b step 2) is still a buffer in this struct.
-//! Deleting them is the open part of the holder-deletion round.
+//! taking or dropping the gate's entries. A key the queue cannot take at that moment (a write made
+//! while the queue is delivering something) is put back under its gate by the view when that
+//! delivery returns.
 //!
 //! Still timing, because no signal exists: the young-Enter window and its round-trip learning where
 //! the platform can say nothing about the shell (ssh, ConPTY, macOS without a sample), the PS2
-//! continued line (no Precmd, no Preexec), and every give-up above.
+//! continued line (no Precmd, no Preexec) for a bootstrap that sends no line-editor markers, and
+//! every give-up above.
 
 use std::collections::VecDeque;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use instant::Instant;
 
@@ -101,6 +104,28 @@ pub enum ShellPromptFact {
     LineEditorReading,
     /// Nothing is known (no probe, ssh, ConPTY, a cooked tty): the caller keeps its timing path.
     Unknown,
+}
+
+/// What the shell's own line-editor markers say it is doing (#1390, #1391, #1392), applied on the
+/// model thread in the order the markers arrive in the pty stream. The platform sample
+/// ([`ShellPromptFact`]) is read ahead of the stream; this is the stream's own, ordered, account,
+/// so it is never newer than the output the app has parsed. A bootstrap that sends no markers
+/// leaves it [`Self::Unknown`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShellActivity {
+    /// No marker seen this session (an older bootstrap, or nothing yet).
+    #[default]
+    Unknown,
+    /// A Precmd was parsed and the line editor has not said it is reading yet.
+    Prompt,
+    /// The line editor said it is reading a primary-prompt line (`LineEditorReading`).
+    Reading,
+    /// The shell showed a continuation prompt (`ContinuationPrompt`): it consumed an Enter as part
+    /// of a line that goes on.
+    Continuation,
+    /// A Preexec was parsed after the last of those: a command (or a builtin such as `read -k`)
+    /// is running. A raw read in this state is not the line editor: it never sends the marker.
+    Running,
 }
 
 /// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
@@ -172,6 +197,9 @@ pub fn prompt_seq_env_enabled() -> bool {
 /// prompt's Precmd, or the report, normally releases it within milliseconds, so reaching this
 /// means the signal is not coming. Logged by the view when it fires.
 pub const EVENT_HOLD_GIVE_UP: Duration = Duration::from_secs(2);
+
+/// Tags the ids of a deferred Enter's `HandoffReport` gate; a young hold's ids never carry it.
+const DEFERRED_GATE_ID_BIT: u64 = 1 << 62;
 
 /// The shell's last Precmd sequence number the app has parsed (#1353 phase 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -310,10 +338,11 @@ pub enum HandoffState {
     },
     /// The request was written. The editor owns input and the shell's report is outstanding.
     AwaitingReport,
-    /// Enter was pressed while the report was outstanding. Keys typed since are held here, in
-    /// order, and follow the deferred command to the pty once it has been written.
+    /// Enter was pressed while the report was outstanding. Keys typed since are held, in order,
+    /// as entries behind a `HandoffReport` gate of the view's queue (the hand-off keeps no bytes,
+    /// only the gate's id: [`TypeaheadHandoff::deferred_gate`]), and follow the deferred command
+    /// to the pty once it has been written.
     HoldAfterEnter {
-        held: Vec<u8>,
         /// Whether the deferred submit has run (after the report arrived).
         released: bool,
     },
@@ -387,19 +416,6 @@ pub enum ReportDisposition {
     Stash,
 }
 
-/// Where keys held behind a deferred Enter go when the submit that the report triggered wrote no
-/// command (the report is in, so nothing is outstanding in the tty any more).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HeldKeysRelease {
-    /// One unfinished line (no Enter): back into the editor, for a submit that stays a shell
-    /// command.
-    ToEditor(Vec<u8>),
-    /// Shell lines (an Enter in them): to the pty as typed. Never into the editor, where the
-    /// next Enter would submit them as one multi-line buffer -- to the agent, if natural-language
-    /// detection took it for a query (#826 N1).
-    ToPty(Vec<u8>),
-}
-
 /// What a Ctrl-C written while the pty owns input means for the hand-off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InterruptOutcome {
@@ -426,6 +442,35 @@ enum Owner {
     Hold {
         released: bool,
     },
+}
+
+/// The handle on one pane's [`TypeaheadHandoff`] (#1403). The state lives behind its own small
+/// lock instead of inside the terminal model's, so a user key reaches it without waiting for the
+/// pty reader, which holds the model's lock while it parses.
+///
+/// The lock is a leaf: held for one method call, never across I/O, a parse, a view update or any
+/// other lock. The one order that exists is model lock first, hand-off second (the model thread
+/// updates the hand-off while it parses); code that holds a hand-off guard must not take the
+/// model's lock. Reads are recursive, so two shared guards alive in one statement cannot deadlock.
+#[derive(Clone, Debug, Default)]
+pub struct PaneHandoff(Arc<RwLock<TypeaheadHandoff>>);
+
+impl From<TypeaheadHandoff> for PaneHandoff {
+    fn from(handoff: TypeaheadHandoff) -> Self {
+        Self(Arc::new(RwLock::new(handoff)))
+    }
+}
+
+impl PaneHandoff {
+    /// Shared access (recursive: nested reads on one thread are safe).
+    pub fn read(&self) -> RwLockReadGuard<'_, TypeaheadHandoff> {
+        self.0.read_recursive()
+    }
+
+    /// Exclusive access. Never call while a guard of this handle is alive on the same thread.
+    pub fn write(&self) -> RwLockWriteGuard<'_, TypeaheadHandoff> {
+        self.0.write()
+    }
 }
 
 /// The hand-off state of one terminal. See the module documentation.
@@ -471,19 +516,12 @@ pub struct TypeaheadHandoff {
     rtt_pending: VecDeque<Instant>,
     /// The last [`RTT_WINDOW`] request-to-report round trips of this session.
     rtt_samples: VecDeque<Duration>,
-    /// The user's Enter, and every key typed after it, held while the pty owns input and the
-    /// command that was written may already have finished (#933). Nothing in it was written.
-    young_hold: Option<Vec<u8>>,
-    /// A hold was just created, so the view must arm its expiry timer.
+    /// A young hold was just created, so the view must put the key that started it (the user's
+    /// Enter, typed while the pty owns input and the command that was written may already have
+    /// finished, #933) behind a `PromptSeen` gate keyed by the hold's id.
     young_hold_started: bool,
-    /// Identifies the current hold; a timer armed for an earlier one must not release it.
+    /// Identifies the current hold; a give-up armed for an earlier one must not release it.
     young_hold_id: u64,
-    /// The length of each routed write appended to `young_hold`, in typed order (#1162).
-    young_hold_chunks: Vec<usize>,
-    /// #1353 phase 5b: the keys of a young hold live in the view's input queue (entries behind a
-    /// `PromptSeen` gate keyed by the hold's id), not in `young_hold`. Set by the view before a
-    /// key is routed, when its queue can take them; off keeps the buffer above.
-    young_hold_in_queue: bool,
     /// A young hold exists and its keys are in the view's queue, undecided. Every way it can end
     /// records a [`YoungHoldEnd`] for the view to turn into taking or dropping the gate's
     /// entries ([`Self::take_young_hold_ends`]); the hold's give-up cap is the only timer.
@@ -493,6 +531,25 @@ pub struct TypeaheadHandoff {
     /// The id of a queued hold whose keys follow the command just written, between that decision
     /// and the view's [`Self::count_followed_young_hold`]. No request is decided meanwhile.
     young_hold_follow_pending: Option<u64>,
+    /// The id of the `HandoffReport` gate that holds the keys typed behind a deferred Enter, while
+    /// the state is [`HandoffState::HoldAfterEnter`]. The ids carry [`DEFERRED_GATE_ID_BIT`], so
+    /// one number never names a young hold's gate as well.
+    deferred_gate: Option<u64>,
+    /// Counts the deferred gates handed out (the low bits of their ids); survives a reset.
+    deferred_gate_seq: u64,
+    /// A key reached the hand-off in `HoldAfterEnter` without having been queued behind the gate
+    /// (the queue was idle or mid-delivery): the view puts it behind the gate
+    /// ([`Self::take_deferred_key_started`]).
+    deferred_key_started: bool,
+    /// What the shell's markers say it is doing now (see [`ShellActivity`]).
+    shell_activity: ShellActivity,
+    /// The prompt sequence number of the last `LineEditorReading` applied, so a second marker for
+    /// the same prompt changes nothing.
+    reading_seq: Option<u64>,
+    /// A line-editor marker has been seen this session: the bootstrap sends them, so the
+    /// events (not the logged give-ups, which stay as the net) account for the shell's line
+    /// editor.
+    line_editor_markers_live: bool,
     /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
@@ -511,20 +568,12 @@ pub struct TypeaheadHandoff {
     /// A hold ran to the give-up cap with no signal: the shell does not signal after all, so
     /// the hold stays off for the rest of the session (#1349).
     prompt_hold_gave_up: bool,
-    /// Raw user keys held between a precmd and the line editor becoming active (#1162), in typed
-    /// order. Separate from `young_hold`, which holds an Enter for a different reason.
-    prompt_hold: Option<Vec<u8>>,
-    /// The length of each routed write appended to `prompt_hold`.
-    prompt_hold_chunks: Vec<usize>,
-    /// A prompt hold was just created, so the view must arm its expiry timer.
+    /// A prompt hold was just created, so the view must put the key that started it behind a
+    /// `LineEditorActive` gate keyed by the hold's id.
     prompt_hold_started: bool,
-    /// Identifies the current prompt hold; a timer armed for an earlier one must not release it.
+    /// Identifies the current prompt hold; a give-up armed for an earlier one must not release it.
     prompt_hold_id: u64,
-    /// #1353 phase 5: the keys of a prompt hold live in the view's input queue (entries behind a
-    /// `LineEditorActive` gate), not in `prompt_hold`. Set once by the view when its queue
-    /// handles the hand-off holds; off keeps the buffer above.
-    prompt_hold_in_queue: bool,
-    /// A prompt hold exists and its keys are in the view's queue (see `prompt_hold_in_queue`).
+    /// A prompt hold exists and its keys are in the view's queue.
     /// Cleared by the view when it has released them ([`Self::finish_queued_prompt_hold`]) or by
     /// a signal that takes them ([`Self::take_queued_prompt_hold_for_signal`]).
     prompt_hold_queued: bool,
@@ -596,8 +645,9 @@ pub enum YoungHoldEnd {
     /// ([`TypeaheadHandoff::count_followed_young_hold`]).
     FollowCommand,
     /// The shell's report arrived: the first held byte (the Enter) is run in the editor and the
-    /// rest becomes the keys held behind it.
-    SubmitOnReport,
+    /// rest becomes the keys held behind it, under the `HandoffReport` gate `deferred_gate`
+    /// (the view turns the hold's gate into that one in place).
+    SubmitOnReport { deferred_gate: u64 },
 }
 
 /// What a queued young hold's give-up cap should do.
@@ -639,27 +689,9 @@ impl TypeaheadHandoff {
         self.prompt_hold_shell_signals = signals;
     }
 
-    /// #1353 phase 5: the view's input queue holds the keys of a prompt hold (entries behind a
-    /// `LineEditorActive` gate) instead of this struct. Set once, before any key is routed.
-    pub fn set_prompt_hold_in_queue(&mut self, in_queue: bool) {
-        self.prompt_hold_in_queue = in_queue;
-    }
-
-    /// #1353 phase 5b: the view's input queue may hold the keys of a young hold (entries behind a
-    /// `PromptSeen` gate) instead of this struct. The view sets it before a key is routed, from
-    /// whether the queue can take the entry right now.
-    pub fn set_young_hold_in_queue(&mut self, in_queue: bool) {
-        self.young_hold_in_queue = in_queue;
-    }
-
     /// Whether a young hold is live and its keys are in the view's queue.
     pub fn young_hold_queued(&self) -> bool {
         self.young_hold_queued
-    }
-
-    /// Whether any young hold is live, in this struct or in the view's queue.
-    fn has_young_hold_any(&self) -> bool {
-        self.young_hold.is_some() || self.young_hold_queued
     }
 
     /// Ends recorded for the view to apply to the queue's gate, oldest first.
@@ -678,17 +710,15 @@ impl TypeaheadHandoff {
         self.young_hold_ends.insert(0, (id, end));
     }
 
-    /// Ends the young hold, whoever has its keys, with the keys void. Returns whether there was
-    /// one. A hold whose keys are in the view's queue is reported to the view as
-    /// [`YoungHoldEnd::Dropped`].
+    /// Ends the young hold with the keys void. Returns whether there was one. The hold's keys
+    /// are in the view's queue, which is told with [`YoungHoldEnd::Dropped`].
     fn drop_young_hold(&mut self) -> bool {
-        let buffered = self.young_hold.take().is_some();
         let queued = mem::take(&mut self.young_hold_queued);
         if queued {
             self.young_hold_ends
                 .push((self.young_hold_id, YoungHoldEnd::Dropped));
         }
-        buffered || queued
+        queued
     }
 
     /// The view is about to queue a key behind a live young hold: ends a hold the state has
@@ -697,11 +727,6 @@ impl TypeaheadHandoff {
     pub fn check_queued_young_hold(&mut self) -> bool {
         self.drop_stale_hold();
         self.young_hold_end_pending()
-    }
-
-    /// Whether the view's queue holds the keys of a prompt hold.
-    pub fn prompt_hold_in_queue(&self) -> bool {
-        self.prompt_hold_in_queue
     }
 
     /// The stamp the view writes, without the model lock, for each key it queues behind a prompt
@@ -747,60 +772,22 @@ impl TypeaheadHandoff {
         self.awaiting_line_editor_since.is_some()
     }
 
-    /// Takes the "a prompt hold was just created" flag, returning its id so the view arms the
-    /// expiry timer once.
+    /// Takes the "a prompt hold was just created" flag, returning its id so the view queues the
+    /// key that started it behind the hold's gate once.
     pub fn take_prompt_hold_started(&mut self) -> Option<u64> {
         mem::take(&mut self.prompt_hold_started).then_some(self.prompt_hold_id)
     }
 
     #[cfg(test)]
     pub(crate) fn has_prompt_hold(&self) -> bool {
-        self.prompt_hold.is_some() || self.prompt_hold_queued
-    }
-
-    /// A signal or EOF byte is about to be written while keys are held for the prompt: the held
-    /// keys (an Enter among them may have to run before the ^C reaches it) are returned with
-    /// `bytes`, to be routed and written as one user write, in typed order.
-    pub fn take_prompt_hold_before_signal(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        if !bytes.iter().any(is_signal_byte) {
-            return None;
-        }
-        self.awaiting_line_editor_since = None;
-        self.prompt_hold_chunks.clear();
-        let mut held = self.prompt_hold.take()?;
-        held.extend_from_slice(bytes);
-        Some(held)
-    }
-
-    /// Routes the held prompt keys one chunk per original key event, in order, and returns the
-    /// chunks to write. A chunk the current state absorbs (`HoldAfterEnter`) is not returned.
-    fn drain_prompt_hold(&mut self) -> Vec<Vec<u8>> {
-        let Some(bytes) = self.prompt_hold.take() else {
-            self.prompt_hold_chunks.clear();
-            return Vec::new();
-        };
-        let lengths = mem::take(&mut self.prompt_hold_chunks);
-        let lengths = if lengths.iter().sum::<usize>() == bytes.len() {
-            lengths
-        } else {
-            vec![bytes.len()]
-        };
-        let mut start = 0;
-        let mut chunks = Vec::with_capacity(lengths.len());
-        for len in lengths {
-            let chunk = bytes[start..start + len].to_vec();
-            start += len;
-            if self.route_released_chunk(&chunk) {
-                chunks.push(chunk);
-            }
-        }
-        chunks
+        self.prompt_hold_queued
     }
 
     /// Routes one chunk that was held (for the prompt, #1162) as the write it was typed as,
     /// bypassing every hold, and returns whether the caller must write it. A chunk the current
-    /// state absorbs (`HoldAfterEnter`) is not written. The view's queue releases a queued prompt
-    /// hold chunk by chunk through this (#1353 phase 5), exactly as `drain_prompt_hold` does.
+    /// state absorbs (`HoldAfterEnter`) is not written: the caller puts it behind the deferred
+    /// Enter's gate ([`Self::take_deferred_key_started`]). The view's queue releases a queued prompt
+    /// hold chunk by chunk through this (#1353 phase 5).
     pub fn route_released_chunk(&mut self, chunk: &[u8]) -> bool {
         match self.route_user_bytes_unheld(chunk, true) {
             UserBytesRoute::WriteCounted => true,
@@ -813,12 +800,13 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// The line editor's ready signal arrived and the keys of the prompt hold are in the view's
-    /// queue (#1353 phase 5): ends the wait and returns the hold's id when one is live, so the
-    /// view releases that gate. The hold stays live ([`Self::prompt_hold_queued`]) until the view
-    /// has accounted the released keys ([`Self::finish_queued_prompt_hold`]), and no request is
-    /// decided meanwhile (see `on_line_editor_active`). Same wait handling as
-    /// [`Self::release_prompt_hold_on_signal`]: a signal with no wait pending releases nothing.
+    /// The line editor's ready signal arrived (#1349), observed in the pty output after the
+    /// prompt's precmd, and the keys of the prompt hold are in the view's queue (#1353 phase 5):
+    /// ends the wait and returns the hold's id when one is live, so the view releases that gate.
+    /// The hold stays live ([`Self::prompt_hold_queued`]) until the view has accounted the
+    /// released keys ([`Self::finish_queued_prompt_hold`]), and no request is decided meanwhile
+    /// (see `on_line_editor_active`). A signal with no wait pending (a program enabling bracketed
+    /// paste itself, or a second signal for the same prompt) releases nothing.
     pub fn release_queued_prompt_hold_on_signal(&mut self) -> Option<u64> {
         if self.awaiting_line_editor_since.take().is_none() {
             return None;
@@ -834,18 +822,6 @@ impl TypeaheadHandoff {
             )
         });
         self.prompt_hold_queued.then_some(self.prompt_hold_id)
-    }
-
-    /// The line editor's ready signal, for whichever kind of prompt hold is live: the chunks of a
-    /// hold the hand-off itself buffered (to be written now, in typed order), or the id of a hold
-    /// whose keys are in the view's queue (which the view releases). Both empty when no wait was
-    /// pending.
-    pub fn release_prompt_hold_on_signal_any(&mut self) -> (Vec<Vec<u8>>, Option<u64>) {
-        if self.prompt_hold_queued {
-            (Vec::new(), self.release_queued_prompt_hold_on_signal())
-        } else {
-            (self.release_prompt_hold_on_signal(), None)
-        }
     }
 
     /// The give-up cap of the queued prompt hold `id` ran out with no line editor signal
@@ -868,8 +844,7 @@ impl TypeaheadHandoff {
 
     /// A signal or EOF byte is about to be written while the view's queue holds keys for the
     /// prompt: ends the wait and hands the hold over (returns its id) so the view prepends the
-    /// held keys to `bytes`, one write in typed order, as `take_prompt_hold_before_signal` does
-    /// for the buffer. The hold is over once this returns.
+    /// held keys to `bytes`, one write in typed order. The hold is over once this returns.
     pub fn take_queued_prompt_hold_for_signal(&mut self, bytes: &[u8]) -> Option<u64> {
         if !bytes.iter().any(is_signal_byte) {
             return None;
@@ -884,49 +859,6 @@ impl TypeaheadHandoff {
         if id == self.prompt_hold_id {
             self.prompt_hold_queued = false;
         }
-    }
-
-    /// The shell's line editor signalled that it is ready (#1349), observed in the pty output
-    /// after the prompt's precmd: the held keys are due now, in typed order, ahead of any
-    /// request. Also ends the wait for the line editor. A signal with no wait pending (a program
-    /// enabling bracketed paste itself, or a second signal for the same prompt) releases nothing.
-    pub fn release_prompt_hold_on_signal(&mut self) -> Vec<Vec<u8>> {
-        if self.awaiting_line_editor_since.take().is_none() {
-            return Vec::new();
-        }
-        let waited_ms = self
-            .last_precmd_at
-            .map(|at| at.elapsed().as_secs_f64() * 1000.0);
-        let chunks = self.drain_prompt_hold();
-        warpui::input_order::log_hop("prompt_hold_signal", || {
-            format!(
-                "since_precmd_ms={} released_chunks={}",
-                waited_ms.map_or_else(|| "none".to_string(), |ms| format!("{ms:.1}")),
-                chunks.len()
-            )
-        });
-        chunks
-    }
-
-    /// The give-up cap of prompt hold `id` ran out with no line editor signal: the keys are
-    /// written anyway, and the hold is off for the rest of the session (#1349). `None` when
-    /// that hold is gone already.
-    pub fn expire_prompt_hold(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
-        if id != self.prompt_hold_id || self.prompt_hold.is_none() {
-            return None;
-        }
-        self.awaiting_line_editor_since = None;
-        self.prompt_hold_gave_up = true;
-        log::warn!(
-            "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt; \
-             writing the held keys and turning the hold off for this session",
-            CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
-        );
-        let chunks = self.drain_prompt_hold();
-        warpui::input_order::log_hop("prompt_hold_expired", || {
-            format!("released_chunks={}", chunks.len())
-        });
-        Some(chunks)
     }
 
     /// Whether, on a ConPTY session, the user typed into the shell's line so recently that a
@@ -982,6 +914,56 @@ impl TypeaheadHandoff {
             seq,
             preexecs_before,
         });
+    }
+
+    /// The shell's line editor said it is reading a line (model thread, in stream order after the
+    /// prompt's Precmd). Returns whether it is news: a second marker for the same prompt
+    /// (`seq`), or one older than the last Precmd's, changes nothing.
+    pub fn on_line_editor_reading(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
+        self.line_editor_markers_live = true;
+        let stale = match (seq, self.prompt_seq) {
+            (Some(seq), Some(prompt)) => prompt.session == session && seq < prompt.seq,
+            _ => false,
+        };
+        if stale || (self.shell_activity == ShellActivity::Reading && self.reading_seq == seq) {
+            return false;
+        }
+        self.shell_activity = ShellActivity::Reading;
+        self.reading_seq = seq;
+        true
+    }
+
+    /// The shell showed a continuation prompt (PS2): it consumed the Enter that ended the line
+    /// so far, which no Precmd and no Preexec answers (model thread, in stream order). The line
+    /// counts are re-baselined on this event instead of waiting for the logged give-up of the
+    /// stale counts: one unanswered Enter is answered. Returns whether the counts changed.
+    pub fn on_continuation_prompt(&mut self) -> bool {
+        self.line_editor_markers_live = true;
+        self.shell_activity = ShellActivity::Continuation;
+        if let HandoffState::PtyOwned {
+            enters_written,
+            precmds_seen,
+            ..
+        } = &mut self.state
+            && *enters_written > *precmds_seen
+        {
+            *precmds_seen += 1;
+            // A line the counts counted as unanswered was answered: a reset armed before this
+            // (which would treat every line as consumed) is void.
+            self.activity_generation = self.activity_generation.wrapping_add(1);
+            return true;
+        }
+        false
+    }
+
+    /// What the shell's markers say it is doing now.
+    pub fn shell_activity(&self) -> ShellActivity {
+        self.shell_activity
+    }
+
+    /// Whether this session's shell sends line-editor markers (one was seen).
+    pub fn line_editor_markers_live(&self) -> bool {
+        self.line_editor_markers_live
     }
 
     /// The command that just finished was interactive (a program read the keys typed into it)
@@ -1080,6 +1062,10 @@ impl TypeaheadHandoff {
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
         self.interactive_command_finished = false;
+        // ... and may not send line-editor markers either.
+        self.shell_activity = ShellActivity::Unknown;
+        self.reading_seq = None;
+        self.line_editor_markers_live = false;
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -1104,7 +1090,7 @@ impl TypeaheadHandoff {
     /// must queue behind that Enter, not reach the editor ahead of it, so the terminal keeps
     /// routing them (into the hold).
     fn holds_young_enter_behind_request(&self) -> bool {
-        self.state == HandoffState::AwaitingReport && self.has_young_hold_any()
+        self.state == HandoffState::AwaitingReport && self.young_hold_queued
     }
 
     /// Whether the terminal, rather than the input editor, should hold focus.
@@ -1288,9 +1274,10 @@ impl TypeaheadHandoff {
     /// for is not coming (a program ate the request, the shell hung). The Enter is given up
     /// WITHOUT running: the shell's line still holds the head of what the user typed, so the
     /// editor's text would run as a fragment. Input goes back to the editor; a late report is then
-    /// inserted in front of it like any legacy report. Returns the keys held behind the Enter,
-    /// for the view to put in the editor; `None` when the deferral is over already.
-    pub fn give_up_report_deferral(&mut self, id: u64) -> Option<Vec<u8>> {
+    /// inserted in front of it like any legacy report. Returns the id of the gate that holds the
+    /// keys typed behind the Enter, for the view to take them out and put them in the editor;
+    /// `None` when the deferral is over already.
+    pub fn give_up_report_deferral(&mut self, id: u64) -> Option<u64> {
         if self.report_deferral_id != Some(id) {
             return None;
         }
@@ -1304,12 +1291,8 @@ impl TypeaheadHandoff {
         self.uncovered_deferral_id = None;
         self.deferred_young = false;
         self.drop_young_hold();
-        match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => Some(held),
-            HandoffState::EditorOwned | HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport => {
-                None
-            }
-        }
+        self.state = HandoffState::EditorOwned;
+        self.deferred_gate.take()
     }
 
     /// The patience timer of deferral `id` ran out: the report covering the untracked bytes
@@ -1383,22 +1366,28 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// A command from the input editor was accepted and written (or queued) to the pty. Returns
-    /// the keys held since a deferred Enter, which must be written right after the command.
-    pub fn on_command_written(&mut self) -> Vec<u8> {
+    /// A command from the input editor was accepted and written (or queued) to the pty. The keys
+    /// held behind an Enter (a young hold, or a deferred Enter's `HandoffReport` gate) follow it
+    /// as typeahead: the end is recorded for the view, which writes them behind the command and
+    /// counts them ([`Self::count_followed_young_hold`]).
+    pub fn on_command_written(&mut self) {
         self.forget_untracked_line_bytes();
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
-        // An Enter held behind the request follows the command as typeahead (#933).
-        let pending_hold = self.young_hold.take();
-        // ... or, with its keys in the view's queue, the view writes them once it is told (below);
-        // in every state but `PtyOwned` the hold was void, as the buffer was.
+        // An Enter held behind the request follows the command as typeahead (#933): the view
+        // writes the keys of the hold once it is told (below); in every state but `PtyOwned` the
+        // hold is void.
         let queued_hold = mem::take(&mut self.young_hold_queued);
         let mut queued_hold_follows = false;
+        // Keys held behind a deferred Enter follow its command too.
+        let mut deferred_follows = None;
         self.young_line = false;
         self.deferred_young = false;
-        let (held, enters_before, precmds_seen) = match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => (held, 0, 0),
+        let (enters_before, precmds_seen) = match mem::take(&mut self.state) {
+            HandoffState::HoldAfterEnter { .. } => {
+                deferred_follows = self.deferred_gate.take();
+                (0, 0)
+            }
             // Lines the user already queued are still ahead of this command in the tty.
             HandoffState::PtyOwned {
                 enters_written,
@@ -1406,21 +1395,16 @@ impl TypeaheadHandoff {
                 ..
             } => {
                 queued_hold_follows = queued_hold;
-                (
-                    pending_hold.unwrap_or_default(),
-                    enters_written,
-                    precmds_seen,
-                )
+                (enters_written, precmds_seen)
             }
-            HandoffState::EditorOwned | HandoffState::AwaitingReport => (Vec::new(), 0, 0),
+            HandoffState::EditorOwned | HandoffState::AwaitingReport => (0, 0),
         };
         let now = Instant::now();
         self.last_activity_at = Some(now);
         self.command_written_at = Some(now);
-        let (held_enters, wrote_user_bytes) = scan_line_terminators(&held, false);
         self.state = HandoffState::PtyOwned {
-            wrote_user_bytes,
-            enters_written: enters_before.saturating_add(1).saturating_add(held_enters),
+            wrote_user_bytes: false,
+            enters_written: enters_before.saturating_add(1),
             precmds_seen,
         };
         if queued_hold {
@@ -1432,7 +1416,10 @@ impl TypeaheadHandoff {
                 self.young_hold_ends.push((id, YoungHoldEnd::Dropped));
             }
         }
-        held
+        if let Some(id) = deferred_follows {
+            self.young_hold_follow_pending = Some(id);
+            self.young_hold_ends.push((id, YoungHoldEnd::FollowCommand));
+        }
     }
 
     /// The view wrote the keys of queued young hold `id` behind the command (it took them out of
@@ -1510,6 +1497,8 @@ impl TypeaheadHandoff {
 
     /// The shell emitted a precmd hook (model thread).
     pub fn on_precmd(&mut self) {
+        self.shell_activity = ShellActivity::Prompt;
+        self.reading_seq = None;
         self.activity_generation = self.activity_generation.wrapping_add(1);
         let now = Instant::now();
         self.last_activity_at = Some(now);
@@ -1543,6 +1532,7 @@ impl TypeaheadHandoff {
     /// started this command itself (a typeahead line), rather than the app writing it. Returns
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
+        self.shell_activity = ShellActivity::Running;
         self.activity_generation = self.activity_generation.wrapping_add(1);
         // The shell took a line: its line editor is not about to start.
         self.awaiting_line_editor_since = None;
@@ -1673,7 +1663,7 @@ impl TypeaheadHandoff {
                         }
                     }
                 } else if !can_request {
-                    if self.has_young_hold_any() {
+                    if self.young_hold_queued {
                         // The hold's expiry writes the Enter; nothing can ask the shell for its line.
                         return ActiveDecision::Drain;
                     }
@@ -1721,30 +1711,6 @@ impl TypeaheadHandoff {
             return self.route_user_bytes_unheld(bytes, reaches_shell_line);
         }
         self.drop_stale_hold();
-        // #933: keys typed behind a held Enter stay behind it, until the report brings the
-        // line back and the Enter is run (or until the hold expires). Keys the editor takes
-        // while the request is outstanding do not pass through here and can land ahead of the
-        // held Enter; that window is the report's latency.
-        if let Some(hold) = &mut self.young_hold {
-            hold.extend_from_slice(bytes);
-            self.young_hold_chunks.push(bytes.len());
-            // #1189: held keys are still typing; the ConPTY mid-line guard must see them, or a
-            // request is written between them once the hold is released.
-            if reaches_shell_line {
-                self.last_line_bytes_at = Some(Instant::now());
-            }
-            return UserBytesRoute::Held;
-        }
-        // #1162: keys typed after a prompt's precmd and before its line editor is active stay
-        // behind any key already held for it, never overtaking.
-        if let Some(hold) = &mut self.prompt_hold {
-            hold.extend_from_slice(bytes);
-            self.prompt_hold_chunks.push(bytes.len());
-            if reaches_shell_line {
-                self.last_line_bytes_at = Some(Instant::now());
-            }
-            return UserBytesRoute::Held;
-        }
         if self.young_hold_queued {
             // The view's queue holds the keys of a young hold and takes every key typed behind it
             // (its pre-key check ends a hold the state has outgrown first), so a key only gets
@@ -1762,23 +1728,11 @@ impl TypeaheadHandoff {
             log::warn!(
                 "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live"
             );
-        } else if self.young_hold.is_none()
-            && self.should_hold_for_prompt(reaches_shell_line, Instant::now())
-            && self.prompt_hold_in_queue
-        {
+        } else if self.should_hold_for_prompt(reaches_shell_line, Instant::now()) {
             // #1353 phase 5: the bytes are not stored here; the view puts this key at the front of
             // its queue behind a `LineEditorActive` gate (one entry per key event, in typed
             // order) and releases them by the line editor's signal.
             self.prompt_hold_queued = true;
-            self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
-            self.prompt_hold_started = true;
-            self.last_line_bytes_at = Some(Instant::now());
-            return UserBytesRoute::Held;
-        } else if self.young_hold.is_none()
-            && self.should_hold_for_prompt(reaches_shell_line, Instant::now())
-        {
-            self.prompt_hold = Some(bytes.to_vec());
-            self.prompt_hold_chunks = vec![bytes.len()];
             self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
             self.prompt_hold_started = true;
             self.last_line_bytes_at = Some(Instant::now());
@@ -1790,15 +1744,10 @@ impl TypeaheadHandoff {
             self.young_hold_event_driven = event_driven;
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
             self.young_hold_started = true;
-            if self.young_hold_in_queue {
-                // #1353 phase 5b: the bytes are not stored here; the view puts this key at the
-                // front of its queue behind a `PromptSeen` gate and every key typed after it
-                // queues behind that.
-                self.young_hold_queued = true;
-            } else {
-                self.young_hold = Some(bytes.to_vec());
-                self.young_hold_chunks = vec![bytes.len()];
-            }
+            // #1353 phase 5b: the bytes are not stored here; the view puts this key at the front
+            // of its queue behind a `PromptSeen` gate and every key typed after it queues behind
+            // that.
+            self.young_hold_queued = true;
             return UserBytesRoute::Held;
         }
         self.route_user_bytes_unheld(bytes, reaches_shell_line)
@@ -1919,45 +1868,16 @@ impl TypeaheadHandoff {
         )
     }
 
-    /// Puts `bytes` in front of the keys held behind the deferred Enter (#1016): they reached
-    /// the editor after the Enter was pressed but before the terminal took the keys, so they
-    /// precede everything held. Returns whether an Enter is deferred; if not, nothing changed.
-    pub fn prepend_held_keys(&mut self, bytes: &[u8]) -> bool {
-        match &mut self.state {
-            HandoffState::HoldAfterEnter { held, .. } => {
-                held.splice(0..0, bytes.iter().copied());
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// Whether an Enter is held, for tests.
     #[cfg(test)]
     pub(crate) fn has_young_hold(&self) -> bool {
-        self.has_young_hold_any()
+        self.young_hold_queued
     }
 
-    /// Takes the "a hold was just created" flag, returning the hold's id so the view arms its
-    /// expiry timer once.
+    /// Takes the "a hold was just created" flag, returning the hold's id so the view queues the
+    /// key that started it behind the hold's gate once.
     pub fn take_young_hold_started(&mut self) -> Option<u64> {
         mem::take(&mut self.young_hold_started).then_some(self.young_hold_id)
-    }
-
-    /// A lone EOF (^D) is about to be written while an Enter is held: the tty keeps typeahead
-    /// across it (unlike ^C, ^Z and ^\\, which flush it), so the held Enter and the keys behind
-    /// it must reach the program before the EOF (#933). Returns them with the EOF, to be routed
-    /// and written as one user write.
-    pub fn take_young_hold_before_eof(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        if !bytes.contains(&0x04) || bytes.iter().any(|b| matches!(b, 0x03 | 0x1a | 0x1c)) {
-            return None;
-        }
-        if !matches!(self.state, HandoffState::PtyOwned { .. }) {
-            return None;
-        }
-        let mut held = self.young_hold.take()?;
-        held.extend_from_slice(bytes);
-        Some(held)
     }
 
     /// A signal or EOF is about to be written while the keys of a young hold are in the view's
@@ -1979,8 +1899,7 @@ impl TypeaheadHandoff {
     /// The give-up cap of the queued young hold `id` ran out (the window of
     /// [`Self::young_hold_wait`], or [`EVENT_HOLD_GIVE_UP`] when an event was to release it).
     /// [`YoungHoldExpiry::Release`] ends the hold: the caller writes its keys through
-    /// [`Self::route_expired_young_chunks`], as [`Self::expire_young_hold_chunks`] does for the
-    /// buffered one.
+    /// [`Self::route_expired_young_chunks`].
     pub fn expire_queued_young_hold(&mut self, id: u64) -> YoungHoldExpiry {
         self.drop_stale_hold();
         if !self.young_hold_queued || id != self.young_hold_id {
@@ -2006,51 +1925,6 @@ impl TypeaheadHandoff {
             self.route_user_bytes_unheld(chunk, true);
         }
         chunks
-    }
-
-    /// The window of hold `id` ran out with no prompt: the command is running, so the held Enter
-    /// and the keys behind it are typeahead for it. Returns the bytes to write, counted as a
-    /// routed user write. `None` when that hold is gone (a later one has another id), or the
-    /// request already went out (the report will bring the line back and run the Enter).
-    pub fn expire_young_hold(&mut self, id: u64) -> Option<Vec<u8>> {
-        self.drop_stale_hold();
-        if id != self.young_hold_id || !matches!(self.state, HandoffState::PtyOwned { .. }) {
-            return None;
-        }
-        let bytes = self.young_hold.take()?;
-        self.young_hold_chunks.clear();
-        self.route_user_bytes_unheld(&bytes, true);
-        Some(bytes)
-    }
-
-    /// As [`Self::expire_young_hold`], but on a ConPTY session the bytes come back as the
-    /// separate writes the user typed them in (#1162), each routed and counted on its own, so
-    /// they reach the pty in the granularity of the controls that never lost a line. Elsewhere
-    /// it is one chunk, exactly what `expire_young_hold` returns.
-    pub fn expire_young_hold_chunks(&mut self, id: u64) -> Option<Vec<Vec<u8>>> {
-        if !self.conpty_input {
-            return self.expire_young_hold(id).map(|bytes| vec![bytes]);
-        }
-        self.drop_stale_hold();
-        if id != self.young_hold_id || !matches!(self.state, HandoffState::PtyOwned { .. }) {
-            return None;
-        }
-        let bytes = self.young_hold.take()?;
-        let lengths = mem::take(&mut self.young_hold_chunks);
-        let lengths = if lengths.iter().sum::<usize>() == bytes.len() {
-            lengths
-        } else {
-            vec![bytes.len()]
-        };
-        let mut start = 0;
-        let mut chunks = Vec::with_capacity(lengths.len());
-        for len in lengths {
-            let chunk = bytes[start..start + len].to_vec();
-            start += len;
-            self.route_user_bytes_unheld(&chunk, true);
-            chunks.push(chunk);
-        }
-        Some(chunks)
     }
 
     fn route_user_bytes_unheld(
@@ -2098,12 +1972,20 @@ impl TypeaheadHandoff {
                 self.writes_in_flight = self.writes_in_flight.saturating_add(1);
                 UserBytesRoute::WriteCounted
             }
-            HandoffState::HoldAfterEnter { held, .. } => {
-                held.extend_from_slice(bytes);
+            // The keys typed behind a deferred Enter are entries behind its gate; the view's
+            // queue takes every one of them (the gate is open from the moment the Enter is
+            // deferred), so a key only gets here if the queue was idle or mid-delivery. The view
+            // puts it behind the gate; it is never held here.
+            HandoffState::HoldAfterEnter { .. } if self.deferred_gate.is_some() => {
+                self.deferred_key_started = true;
                 if reaches_shell_line {
                     self.last_line_bytes_at = Some(Instant::now());
                 }
                 UserBytesRoute::Held
+            }
+            HandoffState::HoldAfterEnter { .. } => {
+                log::warn!("typeahead hand-off: a key reached a deferred Enter with no gate");
+                UserBytesRoute::Write
             }
             // In `AwaitingReport` such a write is a key typed into a command drained behind the
             // outstanding request (a queued command written right after it): the tty holds the
@@ -2171,11 +2053,31 @@ impl TypeaheadHandoff {
             self.arm_report_deferral();
         }
         self.deferred_young = self.young_line;
-        self.state = HandoffState::HoldAfterEnter {
-            held: Vec::new(),
-            released: false,
-        };
+        self.deferred_gate = Some(self.next_gate_id());
+        self.state = HandoffState::HoldAfterEnter { released: false };
         true
+    }
+
+    /// The next id of a deferred Enter's gate: a counter tagged with [`DEFERRED_GATE_ID_BIT`], so
+    /// it never equals the id of a young hold's gate (both are recorded in one list of ends).
+    fn next_gate_id(&mut self) -> u64 {
+        self.deferred_gate_seq = self.deferred_gate_seq.wrapping_add(1) & !DEFERRED_GATE_ID_BIT;
+        self.deferred_gate_seq | DEFERRED_GATE_ID_BIT
+    }
+
+    /// The id of the `HandoffReport` gate that holds the keys typed behind the deferred Enter,
+    /// while one is deferred. The view opens it when the Enter is deferred and keys queue behind it
+    /// (the hand-off keeps no bytes).
+    pub fn deferred_gate(&self) -> Option<u64> {
+        self.deferred_gate
+    }
+
+    /// Takes the "a key reached the hand-off while an Enter is deferred, unqueued" flag, returning
+    /// the gate's id: the view puts that key behind the gate.
+    pub fn take_deferred_key_started(&mut self) -> Option<u64> {
+        mem::take(&mut self.deferred_key_started)
+            .then_some(self.deferred_gate)
+            .flatten()
     }
 
     /// The shell reported its line buffer.
@@ -2188,25 +2090,17 @@ impl TypeaheadHandoff {
             Owner::AwaitingReport => {
                 // #933: the user's Enter was held behind the request; run it now, in the editor,
                 // with the keys typed after it held behind it.
-                if let Some(mut held) = self.young_hold.take() {
-                    let rest = held.split_off(1);
-                    self.state = HandoffState::HoldAfterEnter {
-                        held: rest,
-                        released: true,
-                    };
-                    self.young_line = false;
-                    return ReportDisposition::InsertThenSubmitYoung;
-                }
                 if mem::take(&mut self.young_hold_queued) {
-                    // Same, with the keys in the view's queue: the view takes them out right after
-                    // this returns (before anything else touches the held keys) and puts all but
-                    // the Enter behind it ([`Self::prepend_held_keys`]).
-                    self.young_hold_ends
-                        .push((self.young_hold_id, YoungHoldEnd::SubmitOnReport));
-                    self.state = HandoffState::HoldAfterEnter {
-                        held: Vec::new(),
-                        released: true,
-                    };
+                    // The keys are in the view's queue: the view turns the hold's gate into the
+                    // deferred Enter's `HandoffReport` gate right after this returns (before
+                    // anything else touches the held keys), dropping the Enter that runs now.
+                    let deferred_gate = self.next_gate_id();
+                    self.deferred_gate = Some(deferred_gate);
+                    self.young_hold_ends.push((
+                        self.young_hold_id,
+                        YoungHoldEnd::SubmitOnReport { deferred_gate },
+                    ));
+                    self.state = HandoffState::HoldAfterEnter { released: true };
                     self.young_line = false;
                     return ReportDisposition::InsertThenSubmitYoung;
                 }
@@ -2240,37 +2134,31 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// The submit run after the report wrote no command: release the keys held behind it.
-    /// Returns `None` unless that is the state (keys held, deferred submit already run).
-    pub fn release_after_unsubmitted_enter(&mut self) -> Option<HeldKeysRelease> {
+    /// The submit run after the report wrote no command: the keys held behind it are released.
+    /// Returns the id of the gate that holds them (the view takes them out and sends them to the
+    /// pty as typed if an Enter is among them, else back to the editor, #826 N1), or `None`
+    /// unless that is the state (keys held, deferred submit already run).
+    pub fn release_after_unsubmitted_enter(&mut self) -> Option<u64> {
         if self.owner() != (Owner::Hold { released: true }) {
             return None;
         }
-        match mem::take(&mut self.state) {
-            HandoffState::HoldAfterEnter { held, .. } => {
-                if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
-                    Some(HeldKeysRelease::ToPty(held))
-                } else {
-                    Some(HeldKeysRelease::ToEditor(held))
-                }
-            }
-            other => {
-                self.state = other;
-                None
-            }
-        }
+        self.state = HandoffState::EditorOwned;
+        self.deferred_gate.take()
     }
 
     /// The session ended: nothing can answer an outstanding request or run held keys.
     pub fn reset_on_exit(&mut self) {
         // A young hold whose keys are in the view's queue ends with the session: the view drops
-        // them, and the ids keep growing so a later hold never reuses the gate's key.
+        // them, and the ids keep growing so a later hold never reuses the gate's key. So do the
+        // keys held behind a deferred Enter.
         self.drop_young_hold();
+        if let Some(gate) = self.deferred_gate.take() {
+            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
+        }
         *self = Self {
             tracks_view_precmds: self.tracks_view_precmds,
-            prompt_hold_in_queue: self.prompt_hold_in_queue,
-            young_hold_in_queue: self.young_hold_in_queue,
             young_hold_id: self.young_hold_id,
+            deferred_gate_seq: self.deferred_gate_seq,
             young_hold_ends: mem::take(&mut self.young_hold_ends),
             queued_line_bytes: self.queued_line_bytes.clone(),
             ..Self::default()
@@ -2374,16 +2262,26 @@ impl TypeaheadHandoff {
                 self.uncovered_deferral_id = None;
                 self.report_deferral_id = None;
                 self.state = HandoffState::AwaitingReport;
+                self.drop_deferred_gate();
                 true
             }
             // The deferred submit already ran without writing a command.
             Owner::Hold { released: true } => {
                 self.state = HandoffState::EditorOwned;
+                self.drop_deferred_gate();
                 true
             }
             // #933: an Enter held behind the request is cancelled with its keys.
             Owner::AwaitingReport => self.drop_young_hold(),
             Owner::Editor | Owner::Pty { .. } => false,
+        }
+    }
+
+    /// The keys held behind a deferred Enter are void: the view drops the gate's entries
+    /// ([`YoungHoldEnd::Dropped`]).
+    fn drop_deferred_gate(&mut self) {
+        if let Some(gate) = self.deferred_gate.take() {
+            self.young_hold_ends.push((gate, YoungHoldEnd::Dropped));
         }
     }
 

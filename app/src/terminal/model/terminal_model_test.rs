@@ -9,15 +9,15 @@ use crate::terminal::model::block::BlockId;
 use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::grid::Dimensions as _;
 use crate::terminal::model::index::Side;
+use crate::terminal::model::kitty::parse_kitty_chunk;
 use crate::terminal::model::selection::ExpandedSelectionRange;
 use crate::terminal::model::test_utils::block_size;
 use chrono::{DateTime, Local};
 use vec1::vec1;
 use warp_core::command::ExitCode;
 use warp_terminal::model::ansi::ClearMode;
-use crate::terminal::model::kitty::parse_kitty_chunk;
-use warpui::text::str_to_byte_vec;
 use warpui::text::SelectionType;
+use warpui::text::str_to_byte_vec;
 
 /// Helper function to create a SerializedBlock with default values,
 /// including the new is_local field.
@@ -1218,7 +1218,11 @@ fn precmd_with_completion_metadata_recovers_missing_completion_with_exact_side_e
     assert_eq!(completed_block.command_to_string(), "missing-finish");
     assert_eq!(terminal.active_block_id(), &next_block_id);
     assert_eq!(
-        terminal.block_list().active_block().pwd().map(String::as_str),
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
         Some("/recovered")
     );
 
@@ -2148,8 +2152,8 @@ fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored()
 }
 
 #[test]
-fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled(
-) {
+fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled()
+ {
     let _recovery_disabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(false);
     let mut terminal = TerminalModel::mock(None, None);
     normal_command_finished_and_precmd(
@@ -3654,5 +3658,45 @@ fn line_editor_markers_become_terminal_events_in_order() {
         ),
         "{:?}",
         events[1]
+    );
+}
+
+/// #1390, #1391: the markers also update the typeahead hand-off's own account of the shell, on the
+/// thread that parses them and in the order the shell sent them. A marker without a session is
+/// not attributable and changes nothing.
+#[test]
+fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
+    use crate::terminal::model::typeahead_handoff::ShellActivity;
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    let mut terminal = TerminalModel::mock(None, None);
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Unknown
+    );
+    assert!(!terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: None,
+        seq: Some(4),
+    });
+    assert!(!terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Reading
+    );
+    assert!(terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.continuation_prompt(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Continuation
     );
 }

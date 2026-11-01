@@ -13,7 +13,7 @@ fn after_submit() -> TypeaheadHandoff {
 /// at a prompt the app has not noticed yet (#933).
 fn young_after_submit() -> TypeaheadHandoff {
     let mut handoff = TypeaheadHandoff::default();
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     handoff
 }
 
@@ -24,6 +24,15 @@ fn type_and_flush(handoff: &mut TypeaheadHandoff, bytes: &[u8]) -> UserBytesRout
         handoff.on_user_write_flushed();
     }
     route
+}
+
+/// The keys of a young hold as the view's input queue holds them: the hand-off keeps no bytes, so
+/// every key after the one that started the hold goes to the queue (as one chunk per key event)
+/// and never reaches the hand-off.
+fn hold_young_enter(handoff: &mut TypeaheadHandoff, enter: &[u8]) -> (u64, Vec<Vec<u8>>) {
+    assert_eq!(handoff.on_user_bytes(enter), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().expect("a hold started");
+    (id, vec![enter.to_vec()])
 }
 
 /// Drives a hand-off with typeahead in the shell's line to the point where it has written the
@@ -92,14 +101,15 @@ fn awaiting_report_routes_to_the_editor_and_hold_holds() {
     assert!(handoff.defer_enter());
     assert!(handoff.routes_keys_to_pty());
     assert!(!handoff.editor_owns_input());
+    // The keys are entries behind the Enter's gate, which the view opens when it is deferred; the
+    // hand-off keeps no bytes. A key that reaches it anyway is held for the view to put there.
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
     assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    assert_eq!(handoff.take_deferred_key_started(), Some(gate));
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"ls\r".to_vec(),
-            released: false,
-        }
+        &HandoffState::HoldAfterEnter { released: false }
     );
 }
 
@@ -236,15 +246,30 @@ fn two_lines_typed_across_the_boundary_run_once_each_in_order() {
 fn deferred_enter_writes_report_then_command_then_held_keys() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    assert_eq!(handoff.on_user_bytes(b"pwd\rl"), UserBytesRoute::Held);
+    let gate = handoff.deferred_gate().expect("the Enter holds a gate");
 
-    // The report arrives: insert it, then run the deferred Enter.
+    // The report arrives: insert it, then run the deferred Enter. The keys typed meanwhile
+    // (`pwd`, Enter, `l`, `s`) are entries behind the gate, still held behind it.
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    // Keys typed while the deferred submit is on its way are still held behind it.
-    assert_eq!(handoff.on_user_bytes(b"s"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.deferred_gate(),
+        Some(gate),
+        "the report keeps the gate"
+    );
 
     // The deferred command is written; the held keys follow it, counted as its typeahead.
-    assert_eq!(handoff.on_command_written(), b"pwd\rls".to_vec());
+    handoff.on_command_written();
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::FollowCommand)]
+    );
+    // Until the view has written them no request is decided.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.count_followed_young_hold(gate, b"pwd\rls");
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -260,7 +285,7 @@ fn a_report_after_the_deferred_command_was_written_is_stashed() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.on_report(),
         ReportDisposition::Stash,
@@ -395,7 +420,7 @@ fn nothing_is_held_or_counted_when_nothing_was_typed() {
     assert!(!handoff.holds_queued_writes());
     handoff.on_precmd();
     assert!(handoff.try_commit_at_prompt());
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -421,7 +446,7 @@ fn a_command_the_shell_starts_itself_gives_the_pty_input() {
 fn a_command_written_while_lines_are_queued_keeps_their_count() {
     let mut handoff = after_submit();
     type_and_flush(&mut handoff, b"a\r");
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert_eq!(
         handoff.state(),
         &HandoffState::PtyOwned {
@@ -605,12 +630,16 @@ fn the_editor_takeover_window_is_tracked() {
 fn a_deferred_enter_waits_for_the_report_however_long_it_takes() {
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    let gate = handoff.deferred_gate().unwrap();
     // Nothing but the report (or Ctrl-C, or the session ending) releases it.
     assert_eq!(handoff.release_after_unsubmitted_enter(), None);
     assert!(handoff.routes_keys_to_pty());
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(handoff.on_command_written(), b"echo 1\recho 2\r".to_vec());
+    handoff.on_command_written();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::FollowCommand)]
+    );
 }
 
 /// S2: the report arrived and its submit wrote no command: the held keys are released at once,
@@ -618,24 +647,16 @@ fn a_deferred_enter_waits_for_the_report_however_long_it_takes() {
 /// editor (#826 N1).
 #[test]
 fn keys_held_behind_an_unsubmitted_enter_are_released_where_they_belong() {
+    // The hand-off hands the gate over; the view takes the entries out and decides by their
+    // content (view tests: an Enter among them goes to the pty, an unfinished line to the editor).
     let mut handoff = awaiting_report();
     assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"echo 1\recho 2\r");
+    let gate = handoff.deferred_gate().unwrap();
     assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToPty(b"echo 1\recho 2\r".to_vec()))
-    );
+    assert_eq!(handoff.release_after_unsubmitted_enter(), Some(gate));
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-
-    let mut handoff = awaiting_report();
-    assert!(handoff.defer_enter());
-    handoff.on_user_bytes(b"ls -l");
-    assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-    assert_eq!(
-        handoff.release_after_unsubmitted_enter(),
-        Some(HeldKeysRelease::ToEditor(b"ls -l".to_vec()))
-    );
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(handoff.release_after_unsubmitted_enter(), None, "once");
 }
 
 /// Released keys that reduce to no editor text must not arm the shell-submit flag, or a later
@@ -685,29 +706,41 @@ fn an_enter_typed_right_after_a_command_is_held_until_the_prompt_and_run_in_the_
     let mut handoff = young_after_submit();
     assert_eq!(handoff.on_user_bytes(b"frob"), UserBytesRoute::WriteCounted);
     handoff.on_user_write_flushed();
-    // The Enter and the keys behind it are held, not written (#933).
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let id = handoff.take_young_hold_started().expect("a hold started");
+    // The Enter is held, not written (#933); the keys behind it are the queue's.
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
     assert_eq!(handoff.take_young_hold_started(), None);
-    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    queued.push(b"x".to_vec());
     assert_eq!(handoff.writes_in_flight(), 0);
     handoff.on_precmd();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
         ActiveDecision::SendRequest
     );
-    // The timer of a hold the report already ran does nothing.
-    assert_eq!(handoff.expire_young_hold(id), None);
+    // The give-up of a hold the report has not run yet keeps waiting for the report.
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Keep);
     assert_eq!(
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
+    // The view turns the hold's gate into the deferred Enter's gate in place: the Enter runs in
+    // the editor, the rest stays held behind it, in the queue.
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
+    );
+    assert_ne!(gate, id, "a new gate id");
+    assert_eq!(queued.concat(), b"\rx".to_vec());
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"x".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -715,14 +748,20 @@ fn an_enter_typed_right_after_a_command_is_held_until_the_prompt_and_run_in_the_
 fn a_held_enter_is_written_as_typeahead_when_no_prompt_comes() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let id = handoff.take_young_hold_started().unwrap();
-    assert_eq!(handoff.on_user_bytes(b"d"), UserBytesRoute::Held);
-    assert_eq!(handoff.expire_young_hold(id), Some(b"\rd".to_vec()));
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
+    queued.push(b"d".to_vec());
+    assert_eq!(
+        handoff.expire_queued_young_hold(id),
+        YoungHoldExpiry::Release
+    );
+    assert_eq!(
+        handoff.route_expired_young_chunks(queued),
+        vec![b"\rd".to_vec()]
+    );
     // Counted as the routed write it now is, and its Enter is queued for the shell.
     assert_eq!(handoff.writes_in_flight(), 1);
     assert!(handoff.has_unanswered_lines());
-    assert_eq!(handoff.expire_young_hold(id), None);
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
 }
 
 #[test]
@@ -747,7 +786,7 @@ fn signal_and_eof_bytes_are_never_held_and_drop_a_held_enter() {
             UserBytesRoute::WriteCounted
         );
         assert!(!handoff.has_young_hold());
-        assert_eq!(handoff.expire_young_hold(id), None);
+        assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
     }
     // Not even as the first byte of a would-be hold.
     let mut handoff = young_after_submit();
@@ -763,18 +802,26 @@ fn signal_and_eof_bytes_are_never_held_and_drop_a_held_enter() {
 fn an_expired_timer_cannot_release_a_later_hold() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let first = handoff.take_young_hold_started().unwrap();
+    let (first, _) = hold_young_enter(&mut handoff, b"\r");
     handoff.on_user_bytes(&[0x03]);
     handoff.on_user_write_flushed();
     assert_eq!(handoff.on_interrupt(), InterruptOutcome::CommandRunning);
     type_and_flush(&mut handoff, b"def");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let second = handoff.take_young_hold_started().unwrap();
+    let (second, queued) = hold_young_enter(&mut handoff, b"\r");
     assert_ne!(first, second);
-    assert_eq!(handoff.expire_young_hold(first), None);
+    assert_eq!(
+        handoff.expire_queued_young_hold(first),
+        YoungHoldExpiry::Gone
+    );
     assert!(handoff.has_young_hold());
-    assert_eq!(handoff.expire_young_hold(second), Some(b"\r".to_vec()));
+    assert_eq!(
+        handoff.expire_queued_young_hold(second),
+        YoungHoldExpiry::Release
+    );
+    assert_eq!(
+        handoff.route_expired_young_chunks(queued),
+        vec![b"\r".to_vec()]
+    );
 }
 
 #[test]
@@ -787,21 +834,23 @@ fn a_hold_does_not_outlive_the_state_it_was_made_in() {
     assert!(!handoff.has_young_hold());
     assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
 
-    // A command from the editor takes the held keys behind it.
+    // A command from the editor takes the held keys behind it (the view writes them).
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_command_written(), b"\rx".to_vec());
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.on_command_written();
     assert!(!handoff.has_young_hold());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::FollowCommand)]
+    );
 
-    // A hold in a state that cannot own one is dropped, not appended to.
+    // A hold in a state that cannot own one is dropped.
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let id = handoff.take_young_hold_started().unwrap();
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
     handoff.reset_on_exit();
-    assert_eq!(handoff.expire_young_hold(id), None);
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
 }
 
 #[test]
@@ -924,7 +973,7 @@ fn a_view_event_without_a_pending_prompt_is_harmless() {
 fn keys_typed_while_the_request_is_outstanding_queue_behind_a_held_enter() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
     handoff.on_precmd();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
@@ -934,20 +983,32 @@ fn keys_typed_while_the_request_is_outstanding_queue_behind_a_held_enter() {
     assert_eq!(handoff.state(), &HandoffState::AwaitingReport);
     assert!(handoff.routes_keys_to_pty());
     assert!(handoff.wants_terminal_focus());
+    // The keys queue behind the Enter in the view's queue, never reaching the hand-off.
     for key in [&b"d"[..], b"e", b"f"] {
-        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
+        queued.push(key.to_vec());
     }
     assert_eq!(
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
-    // The order typed is the order executed: the Enter, then d, e, f.
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
+    );
+    // The order typed is the order executed: the Enter, then d, e, f -- the Enter runs in the
+    // editor, the rest stays in the queue behind the new gate.
+    assert_eq!(queued.concat(), b"\rdef".to_vec());
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"def".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -969,8 +1030,8 @@ fn an_enter_behind_an_unanswered_report_is_given_up_without_running() {
         .take_report_deferral_started()
         .expect("the plain report deferral arms a patience timer");
     assert_eq!(handoff.take_report_deferral_started(), None, "armed once");
-    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
-    assert_eq!(handoff.give_up_report_deferral(id), Some(b"ls".to_vec()));
+    let gate = handoff.deferred_gate().unwrap();
+    assert_eq!(handoff.give_up_report_deferral(id), Some(gate));
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
     assert_eq!(handoff.give_up_report_deferral(id), None, "over already");
 
@@ -1055,28 +1116,36 @@ fn an_eof_flushes_a_held_enter_ahead_of_itself_but_other_signals_drop_it() {
     // must receive the lines (#933).
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"line one");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_user_bytes(b"line two\r"), UserBytesRoute::Held);
-    let combined = handoff
-        .take_young_hold_before_eof(&[0x04])
-        .expect("held bytes");
-    assert_eq!(combined, b"\rline two\r\x04".to_vec());
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
+    queued.push(b"line two\r".to_vec());
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04]),
+        Some((id, true)),
+        "the keys go out in front of a lone EOF"
+    );
     assert!(!handoff.has_young_hold());
     // Routed as one user write, counting both Enters, plus the submitted command's.
+    let mut combined = queued.concat();
+    combined.push(0x04);
+    assert_eq!(combined, b"\rline two\r\x04".to_vec());
     assert_eq!(
         handoff.on_user_bytes(&combined),
         UserBytesRoute::WriteCounted
     );
     assert!(handoff.has_unanswered_lines());
     // ^C (and ^Z, ^\) flush the tty's typeahead anyway, and ^D with nothing held is a no-op.
-    let mut handoff = young_after_submit();
-    type_and_flush(&mut handoff, b"x");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert_eq!(handoff.take_young_hold_before_eof(&[0x03]), None);
-    assert_eq!(handoff.take_young_hold_before_eof(&[0x04, 0x03]), None);
-    assert!(handoff.has_young_hold());
+    for bytes in [&[0x03][..], &[0x04, 0x03]] {
+        let mut handoff = young_after_submit();
+        type_and_flush(&mut handoff, b"x");
+        let (id, _) = hold_young_enter(&mut handoff, b"\r");
+        assert_eq!(
+            handoff.take_queued_young_hold_for_signal(bytes),
+            Some((id, false)),
+            "the keys are void"
+        );
+    }
     assert_eq!(
-        young_after_submit().take_young_hold_before_eof(&[0x04]),
+        young_after_submit().take_queued_young_hold_for_signal(&[0x04]),
         None
     );
 }
@@ -1437,7 +1506,8 @@ fn a_prompt_arriving_first_resolves_a_held_enter_without_its_timer() {
         handoff.on_line_editor_active(true, true),
         ActiveDecision::SendRequest
     );
-    assert_eq!(handoff.expire_young_hold(id), None);
+    // The request went out: the report will run the Enter, so the give-up keeps waiting for it.
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Keep);
 }
 
 #[test]
@@ -1512,7 +1582,11 @@ fn a_command_write_to_preexec_round_trip_seeds_the_hold_before_any_report() {
 
     let mut queued = young_after_submit();
     assert!(!queued.on_preexec(true));
-    assert_eq!(queued.rtt_samples.len(), 0, "a shell-started line is not the command");
+    assert_eq!(
+        queued.rtt_samples.len(),
+        0,
+        "a shell-started line is not the command"
+    );
     assert!(!queued.on_preexec(false));
     assert_eq!(
         queued.rtt_samples.len(),
@@ -1557,12 +1631,15 @@ fn conpty_young_after_submit() -> TypeaheadHandoff {
 fn conpty_writes_a_held_run_back_one_chunk_per_key_event() {
     let mut handoff = conpty_young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let id = handoff.take_young_hold_started().unwrap();
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
     for key in [&b"e"[..], b"c", b"h", b"\x1b[A", b"o", b"\r", b"x"] {
-        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
+        queued.push(key.to_vec());
     }
-    let chunks = handoff.expire_young_hold_chunks(id).unwrap();
+    assert_eq!(
+        handoff.expire_queued_young_hold(id),
+        YoungHoldExpiry::Release
+    );
+    let chunks = handoff.route_expired_young_chunks(queued);
     // Old behaviour (one write, `\recho\x1b[Ao\rx`, one in-flight count) coalesced the Enters.
     assert_eq!(
         chunks,
@@ -1580,19 +1657,22 @@ fn conpty_writes_a_held_run_back_one_chunk_per_key_event() {
     // Each chunk is its own routed write, and both Enters are queued for the shell.
     assert_eq!(handoff.writes_in_flight(), 8);
     assert!(handoff.has_unanswered_lines());
-    assert_eq!(handoff.expire_young_hold_chunks(id), None);
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
 }
 
 #[test]
 fn other_platforms_write_a_held_run_as_one_chunk() {
     let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    let id = handoff.take_young_hold_started().unwrap();
-    assert_eq!(handoff.on_user_bytes(b"d"), UserBytesRoute::Held);
+    let (id, mut queued) = hold_young_enter(&mut handoff, b"\r");
+    queued.push(b"d".to_vec());
     assert_eq!(
-        handoff.expire_young_hold_chunks(id),
-        Some(vec![b"\rd".to_vec()])
+        handoff.expire_queued_young_hold(id),
+        YoungHoldExpiry::Release
+    );
+    assert_eq!(
+        handoff.route_expired_young_chunks(queued),
+        vec![b"\rd".to_vec()]
     );
     assert_eq!(handoff.writes_in_flight(), 1);
 }
@@ -1649,7 +1729,8 @@ fn conpty_midline_guard_counts_held_keys() {
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     handoff.last_line_bytes_at = Some(Instant::now() - CONPTY_MIDLINE_QUIET * 2);
     assert!(!handoff.typing_a_line_on_conpty(Instant::now()));
-    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    // A key typed behind the hold goes to the view's queue, which stamps it for the guard.
+    handoff.queued_line_bytes_stamp().note_now();
     assert!(handoff.typing_a_line_on_conpty(Instant::now()));
 }
 
@@ -1672,7 +1753,7 @@ fn a_new_session_drops_the_previous_sessions_round_trips() {
         "unmeasured again until the new shell's first command"
     );
     // The new session's first command measures afresh.
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     assert!(!handoff.on_preexec(false));
     assert_eq!(handoff.rtt_samples.len(), 1);
 }
@@ -1691,23 +1772,21 @@ fn conpty_awaiting_line_editor() -> TypeaheadHandoff {
 #[test]
 fn keys_between_precmd_and_active_are_held_and_released_in_order() {
     let mut handoff = conpty_awaiting_line_editor();
-    for key in [&b"f"[..], b"o", b"\x1b[A", b"\r", b"x"] {
-        assert_eq!(handoff.on_user_bytes(key), UserBytesRoute::Held);
-    }
-    assert!(handoff.take_prompt_hold_started().is_some());
+    // The first key starts the hold; the view's queue takes the keys behind it.
+    let keys: [&[u8]; 5] = [b"f", b"o", b"\x1b[A", b"\r", b"x"];
+    assert_eq!(handoff.on_user_bytes(keys[0]), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
     assert_eq!(handoff.writes_in_flight(), 0);
     // Old behaviour: every key above was WriteCounted straight to the pty, ahead of readline.
-    let chunks = handoff.release_prompt_hold_on_signal();
-    assert_eq!(
-        chunks,
-        vec![
-            b"f".to_vec(),
-            b"o".to_vec(),
-            b"\x1b[A".to_vec(),
-            b"\r".to_vec(),
-            b"x".to_vec()
-        ]
-    );
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    let mut written = Vec::new();
+    for key in keys {
+        if handoff.route_released_chunk(key) {
+            written.push(key.to_vec());
+        }
+    }
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(written, keys.map(|key| key.to_vec()).to_vec());
     assert_eq!(handoff.writes_in_flight(), 5);
     assert!(!handoff.has_prompt_hold());
     // Once active nothing is held.
@@ -1719,14 +1798,13 @@ fn the_hold_expiry_releases_the_keys_in_order() {
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
-    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert_eq!(handoff.expire_prompt_hold(id + 1), None);
-    assert_eq!(
-        handoff.expire_prompt_hold(id),
-        Some(vec![b"a".to_vec(), b"b".to_vec(), b"\r".to_vec()])
-    );
-    assert_eq!(handoff.expire_prompt_hold(id), None);
+    assert!(!handoff.expire_queued_prompt_hold(id + 1));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    for key in [&b"a"[..], b"b", b"\r"] {
+        assert!(handoff.route_released_chunk(key));
+    }
+    handoff.finish_queued_prompt_hold(id);
+    assert!(!handoff.expire_queued_prompt_hold(id));
     assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::WriteCounted);
 }
 
@@ -1744,15 +1822,12 @@ fn the_hold_releases_on_the_signal_and_not_before_however_long_it_takes() {
     // line editor had signalled.
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
     // A late prompt: the precmd is 1.4 s old (inside the give-up cap), still no signal.
     handoff.awaiting_line_editor_since = Some(Instant::now() - Duration::from_millis(1400));
-    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
     assert!(handoff.has_prompt_hold());
     assert!(handoff.awaiting_line_editor_signal());
-    assert_eq!(
-        handoff.release_prompt_hold_on_signal(),
-        vec![b"a".to_vec(), b"b".to_vec()]
-    );
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
     assert!(!handoff.awaiting_line_editor_signal());
 }
 
@@ -1760,9 +1835,14 @@ fn the_hold_releases_on_the_signal_and_not_before_however_long_it_takes() {
 fn a_signal_with_no_wait_pending_releases_nothing() {
     // A program enabling bracketed paste itself, or a second signal for the same prompt.
     let mut handoff = conpty_awaiting_line_editor();
-    assert!(handoff.release_prompt_hold_on_signal().is_empty());
-    assert!(handoff.release_prompt_hold_on_signal().is_empty());
-    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // The wait is still pending for the held key: the first signal names the hold, the second
+    // finds no wait.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
 }
 
 #[test]
@@ -1770,7 +1850,9 @@ fn a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell() {
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
-    assert_eq!(handoff.expire_prompt_hold(id), Some(vec![b"a".to_vec()]));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
     // The next prompt is not delayed again.
     handoff.on_precmd();
     assert!(!handoff.awaiting_line_editor_signal());
@@ -1798,13 +1880,13 @@ fn a_shell_not_known_to_signal_is_never_held_for() {
 fn a_signal_goes_out_behind_the_held_keys() {
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
     assert_eq!(
-        handoff.take_prompt_hold_before_signal(b"\x03"),
-        Some(b"ls\r\x03".to_vec())
+        handoff.take_queued_prompt_hold_for_signal(b"\x03"),
+        Some(id)
     );
     assert!(!handoff.has_prompt_hold());
-    assert_eq!(handoff.take_prompt_hold_before_signal(b"a"), None);
+    assert_eq!(handoff.take_queued_prompt_hold_for_signal(b"a"), None);
 }
 
 #[test]
@@ -1841,11 +1923,8 @@ fn a_precmd_that_found_the_editor_flagged_active_still_gets_a_signal() {
     let mut handoff = conpty_awaiting_line_editor();
     handoff.on_precmd();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
-    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
-    assert_eq!(
-        handoff.release_prompt_hold_on_signal(),
-        vec![b"a".to_vec(), b"b".to_vec()]
-    );
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
 }
 
 /// #1345: the view reads how many prompts it has yet to handle, to hold the ssh hand-off until
@@ -1863,82 +1942,71 @@ fn view_precmds_pending_counts_prompts_until_the_view_handles_them() {
 }
 
 // ---- #1353 phase 5: the prompt hold's keys live in the view's input queue ------------------
-// Not compiled/run when written.
-
-/// As `conpty_awaiting_line_editor`, with the keys of the prompt hold kept by the view's queue.
-fn conpty_awaiting_line_editor_in_queue() -> TypeaheadHandoff {
-    let mut handoff = conpty_awaiting_line_editor();
-    handoff.set_prompt_hold_in_queue(true);
-    handoff
-}
 
 /// The queued hold keeps no bytes: the first key is Held and counted nowhere, the view puts it
 /// in the queue, and the line editor's signal names the hold for the view to release.
 #[test]
 fn a_queued_prompt_hold_keeps_no_bytes_and_the_signal_names_it() {
-    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"f"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().expect("a hold started");
     assert!(handoff.prompt_hold_queued());
-    assert!(handoff.prompt_hold.is_none(), "the bytes are the queue's");
     assert_eq!(handoff.writes_in_flight(), 0);
     // Nothing is counted until the view releases the keys: the signal only names the hold.
-    let (chunks, queued) = handoff.release_prompt_hold_on_signal_any();
-    assert!(chunks.is_empty());
-    assert_eq!(queued, Some(id));
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
     assert!(
         handoff.prompt_hold_queued(),
         "live until the view accounted the keys"
     );
     assert_eq!(handoff.writes_in_flight(), 0);
     // A second signal for the same prompt has no wait pending.
-    assert_eq!(
-        handoff.release_prompt_hold_on_signal_any(),
-        (Vec::new(), None)
-    );
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
 }
 
 /// Releasing the queued keys counts each one as the legacy buffer did: five keys, five writes in
 /// flight, the Enter among them counted as a line terminator.
 #[test]
-fn releasing_the_queued_keys_counts_them_like_the_buffer_did() {
-    let mut buffered = conpty_awaiting_line_editor();
-    let mut queued = conpty_awaiting_line_editor_in_queue();
+fn releasing_the_queued_keys_counts_them_one_write_per_key() {
+    let mut handoff = conpty_awaiting_line_editor();
     let keys: [&[u8]; 5] = [b"f", b"o", b"\x1b[A", b"\r", b"x"];
-    for key in keys {
-        assert_eq!(buffered.on_user_bytes(key), UserBytesRoute::Held);
-    }
     // The view's queue takes the keys after the first, which never reach the hand-off.
-    assert_eq!(queued.on_user_bytes(keys[0]), UserBytesRoute::Held);
-    let id = queued.take_prompt_hold_started().unwrap();
-    let legacy_chunks = buffered.release_prompt_hold_on_signal();
-    assert_eq!(queued.release_prompt_hold_on_signal_any().1, Some(id));
+    assert_eq!(handoff.on_user_bytes(keys[0]), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
     let mut written = Vec::new();
     for key in keys {
-        if queued.route_released_chunk(key) {
+        if handoff.route_released_chunk(key) {
             written.push(key.to_vec());
         }
     }
-    queued.finish_queued_prompt_hold(id);
-    assert_eq!(written, legacy_chunks, "same chunks, same order");
-    assert_eq!(queued.writes_in_flight(), buffered.writes_in_flight());
-    assert_eq!(queued.state(), buffered.state());
-    assert!(!queued.prompt_hold_queued());
-    assert_eq!(queued.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(written, keys.map(|key| key.to_vec()).to_vec(), "same order");
+    // Five keys, five writes in flight, the Enter counted as a line terminator.
+    assert_eq!(handoff.writes_in_flight(), 5);
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 2,
+            precmds_seen: 1,
+        }
+    );
+    assert!(!handoff.prompt_hold_queued());
+    assert_eq!(handoff.on_user_bytes(b"y"), UserBytesRoute::WriteCounted);
 }
 
 /// No request is decided while the keys wait in the queue: their Enter is not counted yet, so
 /// the shell's line looks empty and the editor would take over ahead of them.
 #[test]
 fn no_request_is_decided_while_queued_keys_are_uncounted() {
-    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
     assert!(matches!(
         handoff.on_line_editor_active(true, true),
         ActiveDecision::Wait { .. }
     ));
-    handoff.release_prompt_hold_on_signal_any();
+    handoff.release_queued_prompt_hold_on_signal();
     assert!(handoff.route_released_chunk(b"\r"));
     handoff.finish_queued_prompt_hold(id);
     // Decided again with the Enter counted: a line is queued ahead of the prompt, so no request.
@@ -1951,7 +2019,7 @@ fn no_request_is_decided_while_queued_keys_are_uncounted() {
 /// The give-up cap: the hold's id guards it, it fires once, and the hold is off for the session.
 #[test]
 fn the_queued_hold_give_up_is_id_guarded_and_switches_the_hold_off() {
-    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
     assert!(!handoff.expire_queued_prompt_hold(id + 1));
@@ -1967,7 +2035,7 @@ fn the_queued_hold_give_up_is_id_guarded_and_switches_the_hold_off() {
 /// A signal takes the hold over: the view puts the held keys in front of it as one write.
 #[test]
 fn a_signal_takes_the_queued_hold_and_ends_the_wait() {
-    let mut handoff = conpty_awaiting_line_editor_in_queue();
+    let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"l"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
     assert_eq!(handoff.take_queued_prompt_hold_for_signal(b"a"), None);
@@ -1997,19 +2065,6 @@ fn the_midline_guard_sees_keys_the_view_queued() {
     assert!(handoff.typing_a_line_on_conpty(Instant::now()));
 }
 
-/// With the hold off or the queue unavailable the buffer is used, exactly as before.
-#[test]
-fn without_the_queue_the_prompt_hold_keeps_its_buffer() {
-    let mut handoff = conpty_awaiting_line_editor();
-    assert!(!handoff.prompt_hold_in_queue());
-    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
-    assert!(!handoff.prompt_hold_queued());
-    assert_eq!(handoff.prompt_hold.as_deref(), Some(&b"a"[..]));
-    let (chunks, queued) = handoff.release_prompt_hold_on_signal_any();
-    assert_eq!(chunks, vec![b"a".to_vec()]);
-    assert_eq!(queued, None);
-}
-
 // ---- #1353 phase 6: prompt sequence numbers replace the timing guesses -------------------------
 
 /// A hand-off whose shell sends prompt sequence numbers (the prompt-sequence path is on), with the
@@ -2021,7 +2076,7 @@ fn seq_after_submit(fact: ShellPromptFact) -> TypeaheadHandoff {
     handoff.on_precmd_seq(Some(7), Some(1));
     handoff
         .set_foreground_probe(ForegroundProbe::default().with_prompt_fact(Arc::new(move || fact)));
-    assert!(handoff.on_command_written().is_empty());
+    handoff.on_command_written();
     handoff
 }
 
@@ -2091,7 +2146,7 @@ fn a_young_enter_is_matched_to_its_prompt_by_sequence_not_by_the_window() {
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
-    assert_eq!(handoff.expire_young_hold(id), None);
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
 
     // The old path (kill switch) decides by the window: outside it, the Enter is written.
     let mut legacy = young_after_submit();
@@ -2328,16 +2383,9 @@ fn the_conpty_request_waits_for_the_queue_boundary_not_for_a_quiet_period() {
 // The same scenarios as the buffered hold above, with the keys in the view's queue: the hand-off
 // keeps no bytes, and every way the hold can end is recorded for the view to apply to the gate.
 
-/// A hand-off whose command was written just now and whose young holds live in the view's queue.
-fn queued_young_after_submit() -> TypeaheadHandoff {
-    let mut handoff = young_after_submit();
-    handoff.set_young_hold_in_queue(true);
-    handoff
-}
-
 /// Types `frob`, then an Enter that is held, and returns the hold's id.
 fn queued_young_hold() -> (TypeaheadHandoff, u64) {
-    let mut handoff = queued_young_after_submit();
+    let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"frob");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let id = handoff.take_young_hold_started().expect("a hold started");
@@ -2347,18 +2395,11 @@ fn queued_young_hold() -> (TypeaheadHandoff, u64) {
 #[test]
 fn a_queued_young_hold_keeps_no_bytes_and_says_so() {
     let (handoff, _) = queued_young_hold();
-    assert!(handoff.young_hold.is_none());
     assert!(handoff.young_hold_queued());
     assert!(handoff.has_young_hold());
     assert!(!handoff.young_hold_end_pending());
     // The Enter is held behind nothing in the tty: nothing was counted or written.
     assert_eq!(handoff.writes_in_flight(), 0);
-    // Off, the hold keeps the buffer, exactly as before.
-    let mut buffered = young_after_submit();
-    type_and_flush(&mut buffered, b"frob");
-    assert_eq!(buffered.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert!(buffered.young_hold.is_some());
-    assert!(!buffered.young_hold_queued());
 }
 
 #[test]
@@ -2376,19 +2417,23 @@ fn the_report_of_a_queued_young_hold_runs_the_enter_and_asks_the_view_to_split_t
         handoff.on_report(),
         ReportDisposition::InsertThenSubmitYoung
     );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
     assert_eq!(
         handoff.take_young_hold_ends(),
-        vec![(id, YoungHoldEnd::SubmitOnReport)]
+        vec![(
+            id,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
     );
     assert!(!handoff.young_hold_queued());
-    // The view puts the keys after the Enter behind it, as the buffered hold's split did.
-    assert!(handoff.prepend_held_keys(b"x"));
+    // The view turns the hold's gate into the deferred Enter's, dropping the Enter that runs.
     assert_eq!(
         handoff.state(),
-        &HandoffState::HoldAfterEnter {
-            held: b"x".to_vec(),
-            released: true,
-        }
+        &HandoffState::HoldAfterEnter { released: true }
     );
 }
 
@@ -2542,18 +2587,11 @@ fn ctrl_c_cancels_a_queued_young_hold_behind_the_request() {
 
 #[test]
 fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
-    // The buffered hold, for comparison: the keys come back from the call and are counted by it.
-    let mut buffered = young_after_submit();
-    type_and_flush(&mut buffered, b"abc");
-    assert_eq!(buffered.on_user_bytes(b"\r"), UserBytesRoute::Held);
-    assert_eq!(buffered.on_user_bytes(b"x"), UserBytesRoute::Held);
-    assert_eq!(buffered.on_command_written(), b"\rx".to_vec());
-
-    let mut handoff = queued_young_after_submit();
+    let mut handoff = young_after_submit();
     type_and_flush(&mut handoff, b"abc");
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let id = handoff.take_young_hold_started().unwrap();
-    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    handoff.on_command_written();
     assert!(!handoff.young_hold_queued());
     assert_eq!(
         handoff.take_young_hold_ends(),
@@ -2565,9 +2603,16 @@ fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
         ActiveDecision::Wait { .. }
     ));
     handoff.count_followed_young_hold(id, b"\rx");
-    // The same lines and bytes as the buffered hold's call counted, plus the one write in flight
-    // the writer retires.
-    assert_eq!(handoff.state(), buffered.state());
+    // The submitted command's Enter and the held Enter are queued for the shell, the line holds
+    // `x`, and one write is in flight (the writer retires it).
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written: 3,
+            precmds_seen: 0,
+        }
+    );
     assert_eq!(handoff.writes_in_flight(), 1);
     handoff.on_user_write_flushed();
     assert_eq!(handoff.writes_in_flight(), 0);
@@ -2577,11 +2622,197 @@ fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
 fn a_command_written_in_a_state_that_cannot_own_the_hold_drops_it() {
     let (mut handoff, id) = queued_young_hold();
     handoff.state = HandoffState::AwaitingReport;
-    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    handoff.on_command_written();
     assert_eq!(
         handoff.take_young_hold_ends(),
         vec![(id, YoungHoldEnd::Dropped)]
     );
     // Nothing follows the command, so nothing waits for the view to write it.
     assert!(handoff.young_hold_follow_pending.is_none());
+}
+
+// ---- the keys behind a deferred Enter are entries behind a `HandoffReport` gate ------------------
+//
+// The hand-off keeps no bytes for them: it names the gate and records every way the hold can end
+// for the view to apply to the queue.
+
+#[test]
+fn a_deferred_enter_names_its_gate_and_every_end_is_recorded_for_the_view() {
+    // Ctrl-C cancels the Enter and voids the keys behind it.
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().expect("a gate");
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(handoff.deferred_gate(), None);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(gate, YoungHoldEnd::Dropped)]
+    );
+
+    // So does the session ending, and the next gate never reuses an id.
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let first = handoff.deferred_gate().unwrap();
+    handoff.reset_on_exit();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(first, YoungHoldEnd::Dropped)]
+    );
+    let mut handoff2 = awaiting_report();
+    assert!(handoff2.defer_enter());
+    assert!(handoff2.deferred_gate().is_some());
+}
+
+#[test]
+fn a_young_hold_and_a_deferred_enter_never_share_a_gate_id() {
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    let (hold, _) = hold_young_enter(&mut handoff, b"\r");
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    let gate = handoff
+        .deferred_gate()
+        .expect("the report made a deferred Enter");
+    assert_ne!(gate, hold);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(
+            hold,
+            YoungHoldEnd::SubmitOnReport {
+                deferred_gate: gate
+            }
+        )]
+    );
+}
+
+#[test]
+fn a_chunk_absorbed_by_a_deferred_enter_is_flagged_for_the_view_not_stored() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().unwrap();
+    // A released prompt-hold chunk (or a key the queue could not take) reaches the deferred state:
+    // it is not written, the view is told to put it behind the gate.
+    assert!(!handoff.route_released_chunk(b"x"));
+    assert_eq!(handoff.take_deferred_key_started(), Some(gate));
+    assert_eq!(handoff.take_deferred_key_started(), None, "once");
+}
+
+#[test]
+fn a_given_up_report_deferral_hands_over_its_gate_and_forgets_it() {
+    let mut handoff = awaiting_report();
+    assert!(handoff.defer_enter());
+    let gate = handoff.deferred_gate().unwrap();
+    let id = handoff.take_report_deferral_started().unwrap();
+    assert_eq!(handoff.give_up_report_deferral(id), Some(gate));
+    assert_eq!(handoff.deferred_gate(), None);
+    assert!(
+        !handoff.young_hold_end_pending(),
+        "the view takes the entries synchronously; no end is left behind"
+    );
+}
+
+// ---- the shell's line-editor markers (#1390, #1391, #1392) -----------------------------------
+
+/// A hand-off in prompt-sequence mode that has parsed a Precmd, `seq` of the session.
+fn at_prompt_with_seq(session: u64, seq: u64) -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(session), Some(seq));
+    handoff
+}
+
+#[test]
+fn the_markers_are_applied_in_stream_order_and_a_second_one_for_a_prompt_changes_nothing() {
+    let mut handoff = at_prompt_with_seq(7, 3);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(!handoff.line_editor_markers_live());
+
+    assert!(handoff.on_line_editor_reading(Some(7), Some(3)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+    assert!(handoff.line_editor_markers_live());
+    // Idempotent per prompt: the same sequence number again is not news.
+    assert!(!handoff.on_line_editor_reading(Some(7), Some(3)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+
+    // The user's line runs: Preexec says a command (or a builtin) is running.
+    handoff.on_preexec(true);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    // A late duplicate of the OLD prompt's marker is older than the last Precmd's number only
+    // once the next Precmd is parsed; here it is the same prompt, which changes nothing new.
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(5));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(
+        !handoff.on_line_editor_reading(Some(7), Some(3)),
+        "a marker older than the last Precmd is stale"
+    );
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert!(handoff.on_line_editor_reading(Some(7), Some(5)));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+}
+
+#[test]
+fn a_raw_read_after_preexec_has_no_marker_so_the_stream_still_says_running() {
+    // #1392: a builtin raw read (`read -k`) runs after the command's Preexec and never starts the
+    // line editor, so no `LineEditorReading` follows it.
+    let mut handoff = at_prompt_with_seq(7, 1);
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    handoff.on_preexec(true);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    assert!(handoff.line_editor_markers_live());
+}
+
+#[test]
+fn a_new_session_forgets_the_markers_of_the_last_one() {
+    let mut handoff = at_prompt_with_seq(7, 1);
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    handoff.on_new_session();
+    assert_eq!(handoff.shell_activity(), ShellActivity::Unknown);
+    assert!(!handoff.line_editor_markers_live());
+}
+
+/// #1391: a continued line (PS2) answers the Enter that ended the line so far with neither Precmd
+/// nor Preexec; the marker re-baselines the counts, once per continuation prompt.
+#[test]
+fn a_continuation_prompt_answers_one_unanswered_enter_by_event() {
+    let mut handoff = young_after_submit();
+    handoff.age_last_activity_for_test();
+    // `echo "a` Enter (the command), then `b"` Enter typed into the continued line.
+    type_and_flush(&mut handoff, b"b\"\r");
+    assert!(handoff.has_unanswered_lines());
+    let generation = match handoff.on_line_editor_active(true, true) {
+        ActiveDecision::DrainAndWait {
+            activity_generation,
+        }
+        | ActiveDecision::Wait {
+            activity_generation,
+        } => activity_generation,
+        other => panic!("unexpected decision {other:?}"),
+    };
+
+    assert!(handoff.on_continuation_prompt());
+    assert_eq!(handoff.shell_activity(), ShellActivity::Continuation);
+    assert!(handoff.line_editor_markers_live());
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::PtyOwned {
+            wrote_user_bytes: false,
+            enters_written: 2,
+            precmds_seen: 1,
+        }
+    );
+    // The stale-count reset armed before the marker is void: the counts are not "all consumed".
+    assert!(!handoff.reset_stale_counts(generation));
+    // With nothing unanswered a continuation prompt changes no count.
+    let mut balanced = after_submit();
+    balanced.on_precmd();
+    assert!(!balanced.on_continuation_prompt());
 }

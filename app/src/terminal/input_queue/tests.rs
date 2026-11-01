@@ -33,6 +33,9 @@ struct MockHost {
     /// The entry with this id is not delivered but taken into a hold of the later stage
     /// (`DeliverOutcome::Requeue`) the first time it comes up.
     requeue: HashMap<EntryId, GateSpec>,
+    /// What goes back to the front instead of the delivered entry itself when it is requeued
+    /// (`Host::requeued_entry`): the entry delivered some other way, only its held part remains.
+    requeue_as: HashMap<EntryId, EntryKind>,
 }
 
 enum ScriptedFollow {
@@ -101,6 +104,14 @@ impl Host for MockHost {
 
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
         self.discarded.push((entry.id, why));
+    }
+
+    fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
+        let mut remaining = entry.clone();
+        if let Some(kind) = self.requeue_as.remove(&entry.id) {
+            remaining.kind = kind;
+        }
+        remaining
     }
 
     fn arm_give_up(&mut self, token: GateToken, kind: GateKind, after: Duration) {
@@ -1276,6 +1287,32 @@ fn a_requeued_entry_holds_its_place_and_everything_behind_it() {
     assert_eq!(h.delivered_ids(), vec![1, 5]);
 }
 
+/// A delivery that wrote part of its entry (a routed paste, an ssh-held text) and had the rest held
+/// by the later stage puts back what is left, under the same id: the gate still holds everything
+/// behind it, and the event takes out the remainder, not the entry that was delivered.
+#[test]
+fn a_requeued_entry_can_come_back_as_what_the_hold_kept() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    h.requeue
+        .insert(EntryId(1), GateSpec::new(GateKind::LineEditorActive, 4));
+    h.requeue_as.insert(EntryId(1), pty_bytes(b"kept"));
+    q.offer(&mut h, text("whole line"));
+    q.offer(&mut h, text("next"));
+    assert!(q.has_gate(GateKind::LineEditorActive, 4));
+    let taken = q.close_gate_taking(&mut h, GateKind::LineEditorActive, 4);
+    assert_eq!(
+        taken.iter().map(|entry| entry.id.0).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        taken[0].kind,
+        pty_bytes(b"kept"),
+        "the remainder, not the delivered text"
+    );
+    assert_eq!(taken[1].kind, text("next"));
+}
+
 /// The hold's cap is the gate's: armed once with the spec's value, and a given-up gate delivers
 /// what it held through the ordinary stages, in order (the host decides to release it itself
 /// before that; this is the net under it).
@@ -1383,6 +1420,101 @@ fn gate_kind_names_are_unique() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), GateKind::ALL.len());
+}
+
+// ---- retag_gate (a young hold's gate becomes a deferred Enter's, #1353 / #1403) --------------
+
+fn pty_bytes(bytes: &[u8]) -> EntryKind {
+    EntryKind::PtyBytes {
+        bytes: bytes.to_vec(),
+        takes_over_agent_control: true,
+    }
+}
+
+fn held_bytes(entries: &[InputEntry]) -> Vec<Vec<u8>> {
+    entries
+        .iter()
+        .map(|entry| match &entry.kind {
+            EntryKind::PtyBytes { bytes, .. } => bytes.clone(),
+            other => panic!("unexpected entry {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn retag_gate_keeps_everything_held_under_a_new_token_and_drops_the_enters_first_byte() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer_gated(
+        &mut h,
+        pty_bytes(b"\rx"),
+        GateSpec::new(GateKind::PromptSeen, 5).with_cap(None),
+    );
+    q.offer(&mut h, pty_bytes(b"y"));
+    let old = q.gates()[0].token;
+    let spec = GateSpec::new(GateKind::HandoffReport, 9).with_cap(Some(Duration::from_secs(60)));
+    assert!(q.retag_gate(&mut h, GateKind::PromptSeen, 5, spec, true));
+    assert!(!q.has_gate(GateKind::PromptSeen, 5));
+    assert!(q.has_gate(GateKind::HandoffReport, 9));
+    assert_ne!(
+        q.gates()[0].token,
+        old,
+        "a new token: the old cap finds nothing"
+    );
+    assert_eq!(
+        h.armed.last().map(|armed| armed.1),
+        Some(GateKind::HandoffReport)
+    );
+    assert!(!q.give_up(&mut h, old));
+    assert!(h.delivered.is_empty(), "nothing was released by the retag");
+    assert_eq!(q.queued_len(), 2);
+    let taken = q.close_gate_taking(&mut h, GateKind::HandoffReport, 9);
+    assert_eq!(held_bytes(&taken), vec![b"x".to_vec(), b"y".to_vec()]);
+}
+
+#[test]
+fn retag_gate_removes_an_entry_the_enter_emptied_and_keeps_the_barrier() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer_gated(
+        &mut h,
+        pty_bytes(b"\r"),
+        GateSpec::new(GateKind::PromptSeen, 1).with_cap(None),
+    );
+    q.offer(&mut h, pty_bytes(b"a"));
+    assert!(q.retag_gate(
+        &mut h,
+        GateKind::PromptSeen,
+        1,
+        GateSpec::new(GateKind::HandoffReport, 2).with_cap(None),
+        true,
+    ));
+    assert_eq!(q.queued_len(), 1);
+    // A key typed after the retag still queues behind the gate.
+    q.offer(&mut h, pty_bytes(b"b"));
+    assert!(h.delivered.is_empty());
+    let taken = q.close_gate_taking(&mut h, GateKind::HandoffReport, 2);
+    assert_eq!(held_bytes(&taken), vec![b"a".to_vec(), b"b".to_vec()]);
+    assert!(q.is_idle());
+}
+
+#[test]
+fn retagging_a_gate_that_is_not_open_changes_nothing() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 3).with_cap(None),
+    );
+    assert!(!q.retag_gate(
+        &mut h,
+        GateKind::PromptSeen,
+        3,
+        GateSpec::new(GateKind::HandoffReport, 4).with_cap(None),
+        true,
+    ));
+    assert!(q.has_gate(GateKind::SshConnect, 3));
+    assert!(!q.has_gate(GateKind::HandoffReport, 4));
 }
 
 mod prop_model;

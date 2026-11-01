@@ -10,6 +10,7 @@ use crate::ai::agent::AIAgentPtyWriteMode;
 use crate::terminal::input::CommandExecutionSource;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
+use crate::terminal::model::key_facts::{ModelCommand, ModelInbox};
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::model::session::BootstrapSessionType;
@@ -18,7 +19,7 @@ use crate::terminal::model::session::{
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
 use crate::terminal::model::typeahead_handoff::{
-    ActiveDecision, HeldAgentCommand, ShellPromptFact,
+    ActiveDecision, HeldAgentCommand, PaneHandoff, ShellPromptFact,
 };
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
@@ -248,6 +249,12 @@ pub struct PtyController<T: EventLoopSender> {
     /// typeahead instead of overtaking it into the shell's current line.
     handoff_command_pending: bool,
     handoff_bytes_after_command: Vec<u8>,
+    /// The pane's typeahead hand-off, reached without the model's lock (#1403): a user key's
+    /// write must not wait for the pty reader, which holds that lock while it parses.
+    handoff: PaneHandoff,
+    /// Where a key's write leaves its bookkeeping for the model (the typed-ahead record of its
+    /// echo), applied before the model parses the next bytes.
+    model_inbox: ModelInbox,
     /// Typeahead hand-off: the last request decision had to wait. Queued writes stay queued while
     /// the shell's line may hold user bytes, which a queued command's kill prefix would destroy.
     handoff_request_waiting: bool,
@@ -318,14 +325,11 @@ impl<T: EventLoopSender> PtyController<T> {
                 // decision again. The hand-off decides no request while the hold is live.
                 let mut released_queued_hold = false;
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    let (held_chunks, queued_hold) = {
+                    let queued_hold = {
                         let mut model = me.terminal_model.lock();
-                        let handoff = model.typeahead_handoff_mut();
-                        handoff.release_prompt_hold_on_signal_any()
+                        let mut handoff = model.typeahead_handoff_mut();
+                        handoff.release_queued_prompt_hold_on_signal()
                     };
-                    for chunk in held_chunks {
-                        me.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
-                    }
                     if let Some(hold_id) = queued_hold {
                         released_queued_hold = true;
                         ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
@@ -357,6 +361,12 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
+            }
+            ModelEvent::LineEditorReading { .. } => {
+                me.on_line_editor_reading_marker(ctx);
+            }
+            ModelEvent::ContinuationPrompt { .. } => {
+                me.on_continuation_prompt_marker(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -532,6 +542,10 @@ impl<T: EventLoopSender> PtyController<T> {
         );
 
         let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
+        let (handoff, model_inbox) = {
+            let model = terminal_model.lock();
+            (model.pane_handoff(), model.model_inbox())
+        };
         Self {
             event_loop_tx,
             terminal_model,
@@ -556,6 +570,8 @@ impl<T: EventLoopSender> PtyController<T> {
             has_logged_current_pty_write_stall: false,
             handoff_command_pending: false,
             handoff_bytes_after_command: Vec::new(),
+            handoff,
+            model_inbox,
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
@@ -682,6 +698,38 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
+    /// The shell said its line editor is reading a line (`LineEditorReading`, #1390): an explicit
+    /// ready signal, which releases the keys held since the prompt's precmd (ConPTY, #1349) exactly
+    /// as the bracketed-paste enable does. It works where that one never comes (readline with
+    /// `enable-bracketed-paste off`), so the give-up cap of the hold is not reached there. The
+    /// hand-off's own account of the marker (idempotent per prompt, in stream order) was applied
+    /// on the model thread; releasing a hold twice, for the marker and for the enable, releases
+    /// it once.
+    fn on_line_editor_reading_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        let queued_hold = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_queued_prompt_hold_on_signal();
+        if let Some(hold_id) = queued_hold {
+            ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
+    }
+
+    /// The shell showed a continuation prompt (`ContinuationPrompt`, #1391): the hand-off
+    /// re-baselined its line counts on this event (model thread, in stream order); a request
+    /// decision that was waiting on counts that disagreed is decided again now, not after the
+    /// give-up of the stale counts.
+    fn on_continuation_prompt_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        self.retry_typeahead_handoff_request(ctx);
+    }
+
     /// Re-runs a typeahead hand-off request decision that had to wait, if the shell's line
     /// editor is still active.
     pub fn retry_typeahead_handoff_request(&mut self, ctx: &mut ModelContext<Self>) {
@@ -700,7 +748,7 @@ impl<T: EventLoopSender> PtyController<T> {
         // lines the counts consider queued, so they are answered; no waiting for a quiet period.
         let (seq_mode, program_consumed_them) = {
             let mut model = self.terminal_model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             let seq_mode = handoff.prompt_seq_mode();
             let program = seq_mode
                 && handoff.counts_diverged()
@@ -734,7 +782,7 @@ impl<T: EventLoopSender> PtyController<T> {
             move |me, _, ctx| {
                 let (did_reset, diverged) = {
                     let mut model = me.terminal_model.lock();
-                    let handoff = model.typeahead_handoff_mut();
+                    let mut handoff = model.typeahead_handoff_mut();
                     let diverged = handoff.counts_diverged();
                     (handoff.reset_stale_counts(activity_generation), diverged)
                 };
@@ -780,7 +828,7 @@ impl<T: EventLoopSender> PtyController<T> {
         // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
         // fresh one) rather than leave nobody to.
         let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
-        {
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
             // #1033: the tty echoes these keys wherever the output is when they arrive; record
             // them so that echo can be told from output. A full-screen program reads them raw.
             let mut model = self.terminal_model.lock();
@@ -789,6 +837,13 @@ impl<T: EventLoopSender> PtyController<T> {
             } else {
                 model.block_list_mut().record_typed_ahead_bytes(&bytes);
             }
+        } else {
+            // The same record, left in the model's inbox instead of written under its lock (the
+            // pty reader holds that lock while it parses, and this write waited for it, #1403).
+            // The model applies it before it parses the next bytes, and the echo of these bytes
+            // cannot be parsed before they are written, which happens below.
+            self.model_inbox
+                .post(ModelCommand::TypedAhead(bytes.to_vec()));
         }
         let deferred_behind_command = self.handoff_command_pending;
         let byte_count = bytes.len();
@@ -799,11 +854,7 @@ impl<T: EventLoopSender> PtyController<T> {
         } else {
             self.write_bytes(bytes, ctx);
         }
-        let writes_in_flight = self
-            .terminal_model
-            .lock()
-            .typeahead_handoff_mut()
-            .on_user_write_flushed();
+        let writes_in_flight = self.handoff.write().on_user_write_flushed();
         // #1162: where each typed-ahead write went and what was still in flight behind it.
         warpui::input_order::log_hop("handoff_user_write", || {
             format!(
@@ -1584,7 +1635,6 @@ impl<T: EventLoopSender> PtyController<T> {
         warpui::input_order::log_hop("write_command", String::new);
         let is_editor_command = matches!(source, CommandExecutionSource::User);
         let mut engages_typeahead_handoff = false;
-        let mut handoff_held_bytes: Vec<u8> = Vec::new();
         {
             let mut model = self.terminal_model.lock();
 
@@ -1603,6 +1653,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 return outcome;
             }
 
+            // The key path reads the active block's state from the published facts (#1403); a
+            // command that starts here changes it.
+            model.publish_key_facts();
+
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not
             // currently being received by the `TerminalModel`, this is a no-op.
@@ -1615,11 +1669,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     == TypeaheadMode::ShellReported;
                 engages_typeahead_handoff = is_editor_command && can_report;
                 if engages_typeahead_handoff {
-                    handoff_held_bytes = model.typeahead_handoff_mut().on_command_written();
-                    // #1033: keys typed behind the command's Enter follow it to the pty.
-                    model
-                        .block_list_mut()
-                        .record_typed_ahead_bytes(&handoff_held_bytes);
+                    // Keys typed behind the command's Enter (a held young Enter, a deferred
+                    // Enter's gate) follow it to the pty: the hand-off records the end and the
+                    // view writes them through `write_handoff_user_bytes`, which records their
+                    // echo (#1033) and keeps them behind a command that is still parked.
+                    model.typeahead_handoff_mut().on_command_written();
                     model
                         .block_list_mut()
                         .early_output_mut()
@@ -1652,21 +1706,18 @@ impl<T: EventLoopSender> PtyController<T> {
             // Cancel the async writer task and clear the async write queue.
             // Check if line editor is active
             self.send_write_to_event_loop(write, ctx);
-            if self.handoff_command_pending || !handoff_held_bytes.is_empty() {
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
+            if self.handoff_command_pending {
                 self.flush_handoff_bytes_after_command(ctx);
             }
         } else if self.handoff_held_command_pending {
             self.pending_writes.push_front(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         } else {
             self.pending_writes.push_back(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         }
         if engages_typeahead_handoff {
@@ -1817,6 +1868,7 @@ impl<T: EventLoopSender> PtyController<T> {
             before_write_fn: Some(Box::new(move || {
                 let mut model = terminal_model.lock();
                 let outcome = start_command_execution_for_source(&mut model, source);
+                model.publish_key_facts();
                 if outcome.is_accepted() {
                     if let Some(annotate_block) = annotate_block {
                         annotate_block(&mut model);
@@ -1886,7 +1938,11 @@ impl<T: EventLoopSender> PtyController<T> {
         // get written to the active block.
         // TODO: reconsider this behavior since the output was not the result of a command, and given the function name
         // is start_command_execution and no command was executed.
-        self.terminal_model.lock().start_command_execution();
+        {
+            let mut model = self.terminal_model.lock();
+            model.start_command_execution();
+            model.publish_key_facts();
+        }
     }
 
     /// Resizes the PTY's size (i.e. its notion of the number of columns and rows in the screen) via
