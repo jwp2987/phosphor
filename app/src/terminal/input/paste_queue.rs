@@ -17,6 +17,7 @@ use warpui::{SingletonEntity as _, ViewContext};
 use warpui::r#async::Timer;
 
 use super::{AfterEnterInput, Event, Input, PasteSource, clipboard_content_with_escaped_paths};
+use crate::editor::DisplayMapStep;
 use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, PaneQueue, is_pty_entry,
@@ -65,7 +66,7 @@ impl Host for InputQueueHost<'_, '_> {
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
-        _follow: &mut FollowUps,
+        follow: &mut FollowUps,
     ) -> DeliverOutcome {
         match &entry.kind {
             EntryKind::Paste {
@@ -103,10 +104,26 @@ impl Host for InputQueueHost<'_, '_> {
                 }
             }
             EntryKind::EditorKey(payload) => {
+                // #1353 merge step 4: a key that reads the display map waits for it behind a
+                // queue gate of its own (shared queue); the replay step closes it.
+                let step = self
+                    .input
+                    .editor
+                    .as_ref(self.ctx)
+                    .paste_hold()
+                    .display_map_step(payload, follow.flushing());
+                if let DisplayMapStep::Wait(spec) = step {
+                    self.input
+                        .editor
+                        .as_ref(self.ctx)
+                        .paste_hold()
+                        .request_display_step();
+                    return DeliverOutcome::Requeue(spec);
+                }
                 if let Some(key) = payload.take() {
-                    self.input.editor.update(self.ctx, |editor, ctx| {
-                        editor.apply_held_paste_key(key, ctx)
-                    });
+                    self.input
+                        .editor
+                        .update(self.ctx, |editor, ctx| editor.apply_queued_key(key, ctx));
                 }
             }
             // Typed behind an Enter that waited (#1353 phase 3). The terminal view routes them
@@ -183,8 +200,43 @@ impl Input {
         queue: PaneQueue,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        self.editor
-            .update(ctx, |editor, _| editor.paste_hold().adopt_queue(queue))
+        let adopted = self
+            .editor
+            .update(ctx, |editor, _| editor.paste_hold().adopt_queue(queue));
+        if adopted {
+            // #1353 merge step 4: held keys that read the display map wait behind a gate of the
+            // shared queue; this input runs the replay step that closes it, once the effects of
+            // the edits before the key have flushed (a stream item is delivered after them).
+            let (tx, rx) = async_channel::bounded::<()>(1);
+            self.editor.as_ref(ctx).paste_hold().enable_display_gate(tx);
+            let _ = ctx.spawn_stream_local(
+                rx,
+                |me, _, ctx| me.on_display_map_step(ctx),
+                |_, _| {}, /* on_done */
+            );
+        }
+        adopted
+    }
+
+    /// The replay step of the editor's display-map gate (#1353 merge step 4, #1389): the effects of
+    /// the edits applied before the waiting key have flushed, so the display map is current for
+    /// it. Closes the gate; the queue's drain applies the key and what is behind it, up to the next
+    /// key that needs a fresher map (which opens a new gate and requests another step).
+    fn on_display_map_step(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = self.editor.as_ref(ctx).paste_hold();
+        // None: a ^C already flushed the gate; the late step finds nothing to do.
+        let Some(key) = hold.take_display_gate() else {
+            return;
+        };
+        let queue = hold.queue();
+        let Some(mut guard) = queue.try_lock() else {
+            log::warn!("input queue: display-map replay step found the queue busy");
+            return;
+        };
+        hold.set_map_fresh(true);
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.on_gate_event(&mut host, GateKind::EditorDisplayMap, key);
+        hold.set_map_fresh(false);
     }
 
     /// An entry of the pane's shared queue that the editor side delivers, handed over by the

@@ -371,11 +371,13 @@ fn the_key_holding_table_is_parity_with_the_two_instance_behaviour() {
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
         GateKind::HandoffReport,
+        GateKind::EditorDisplayMap,
     ];
     let not_pty_gates = [
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
         GateKind::EditorFocusPending,
+        GateKind::EditorDisplayMap,
     ];
     for kind in GateKind::ALL {
         assert_eq!(
@@ -487,4 +489,89 @@ fn an_editor_interrupt_applies_each_gates_plan_across_both_sides() {
     rig.queue.poke(&mut view);
     assert!(rig.queue.is_idle());
     assert!(rig.violations.borrow().is_empty());
+}
+
+// ---- the display-map gate and signal flushes (merge step 4) -------------------------------
+
+#[derive(Default)]
+struct FlushHost {
+    seen: Vec<(u64, bool)>,
+}
+
+impl Host for FlushHost {
+    fn facts(&self) -> DestFacts {
+        DestFacts {
+            pty_takes_input: true,
+            pty_open: true,
+            input_box_visible: true,
+            ..DestFacts::default()
+        }
+    }
+
+    fn deliver(
+        &mut self,
+        entry: &InputEntry,
+        _dest: Destination,
+        follow: &mut FollowUps,
+    ) -> DeliverOutcome {
+        self.seen.push((entry.id.0, follow.flushing()));
+        DeliverOutcome::Delivered
+    }
+
+    fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
+        panic!("unexpected discard {:?} {why:?}", entry.id);
+    }
+
+    fn arm_give_up(&mut self, _t: GateToken, _k: GateKind, _a: std::time::Duration) {}
+
+    fn warn(&mut self, line: &str) {
+        panic!("unexpected warning: {line}");
+    }
+}
+
+/// A key held behind the display-map gate is delivered by the gate's own event as an ordinary
+/// delivery, but by a signal as a FLUSH: the signal must see everything typed before it, so the
+/// editor applies the key without waiting for a fresher display map (what
+/// `flush_held_replay_now` did on the replay list).
+#[test]
+fn a_signal_flushes_the_display_map_gate_and_tells_the_host() {
+    let mut q = InputQueue::new();
+    let mut h = FlushHost::default();
+    q.open_gate(&mut h, GateSpec::new(GateKind::EditorDisplayMap, 1));
+    q.offer(&mut h, editor_key("left"));
+    assert!(h.seen.is_empty(), "the gate holds the key");
+    assert!(q.on_gate_event(&mut h, GateKind::EditorDisplayMap, 1));
+    assert_eq!(
+        h.seen,
+        vec![(1, false)],
+        "the replay step's delivery is not a flush"
+    );
+
+    q.open_gate(&mut h, GateSpec::new(GateKind::EditorDisplayMap, 2));
+    q.offer(&mut h, editor_key("left again"));
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(
+        h.seen[1..].to_vec(),
+        vec![(2, true), (3, true)],
+        "the held key, then the signal, both delivered as part of the flush"
+    );
+    assert!(q.is_idle());
+    // A later ordinary delivery is not a flush again.
+    q.offer(&mut h, editor_key("x"));
+    assert_eq!(h.seen.last(), Some(&(4, false)));
+}
+
+#[test]
+fn a_key_that_reads_the_display_map_says_so_until_it_is_delivered() {
+    let motion = EditorKeyPayload::new(HeldPasteKey::Action(crate::editor::EditorAction::Left));
+    let text = EditorKeyPayload::new(HeldPasteKey::Text("x".to_owned()));
+    let enter = EditorKeyPayload::new(HeldPasteKey::Action(crate::editor::EditorAction::Enter));
+    assert!(motion.needs_fresh_display_map());
+    assert!(!text.needs_fresh_display_map());
+    assert!(!enter.needs_fresh_display_map());
+    motion.take();
+    assert!(
+        !motion.needs_fresh_display_map(),
+        "once delivered it needs nothing"
+    );
 }

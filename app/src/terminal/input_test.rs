@@ -13635,3 +13635,81 @@ fn test_enter_queue_off_keeps_the_legacy_wait_list() {
         });
     });
 }
+
+/// #1353 merge step 4 (X5), #1389 on the pane's shared queue: keys typed while a paste is read are
+/// held, and a cursor key among them waits for the display map behind a queue gate (not in the
+/// editor's replay list). The final buffer is the one the replay list and the legacy sequencer
+/// produce, the gate is closed by the replay step, and no legacy holder keeps a copy.
+#[test]
+fn test_shared_queue_display_map_gate_replays_cursor_keys_in_order() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let gate_path = editor.read(&app, |editor, _| editor.paste_hold().display_gate_enabled());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("a", ctx);
+        });
+
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        });
+        input.update(&mut app, |input, ctx| {
+            input.start_background_paste(reader, ctx)
+        });
+        // Typed while the read is pending: held behind the paste's gate, not applied.
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            editor.handle_action(&EditorAction::Left, ctx);
+            editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+        });
+        input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
+
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            let pending = editor.read(&app, |editor, _| editor.paste_hold().has_pending());
+            if !pending {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        // The replay step (an event of the effects flushing) applies the Left and the z behind it.
+        for _ in 0..1000 {
+            let idle = editor.read(&app, |editor, _| {
+                let hold = editor.paste_hold();
+                hold.queue().peek().is_idle() && !hold.replay_pending()
+            });
+            if idle {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "aPASTExzy",
+                "the Left saw the map with the paste and the x and y in it (gate path: {gate_path})"
+            );
+        });
+        editor.read(&app, |editor, _| {
+            let hold = editor.paste_hold();
+            assert!(
+                !hold.replay_pending(),
+                "the replay list is not used or is drained"
+            );
+            if gate_path {
+                assert!(
+                    hold.queue().peek().is_idle(),
+                    "the gate was closed by the replay step"
+                );
+            }
+        });
+    });
+}

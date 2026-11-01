@@ -14,12 +14,12 @@ mod voice;
 pub use {
     element::{EditorDecoratorElements, EditorElement, TextColors},
     key_hold::{EditorKeyHold, HeldEditorKey, TakenKeys},
-    paste_hold::{EditorPasteHold, HeldPasteKey},
     model::{
         Chars, CrdtOperation, DisplayPoint, EditOrigin, EditorSnapshot, InteractionState,
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
         SelectAction, TextRun, TextStyleOperation,
     },
+    paste_hold::{DisplayMapStep, EditorPasteHold, HeldPasteKey},
 };
 
 use self::model::{LocalSelections, Selection, UpdateBufferOption};
@@ -3048,6 +3048,18 @@ impl EditorView {
             return;
         }
         self.apply_held_paste_key_now(key, ctx);
+    }
+
+    /// Applies a key the input queue delivers. On the pane's shared queue the display-map wait is
+    /// the queue's own `EditorDisplayMap` gate (the delivering host asked `display_map_step` and
+    /// only calls this when the key may apply), so there is no replay list to join; elsewhere it is
+    /// [`Self::apply_held_paste_key`] with its replay list.
+    pub fn apply_queued_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.display_gate_enabled() {
+            self.apply_held_paste_key_now(key, ctx);
+        } else {
+            self.apply_held_paste_key(key, ctx);
+        }
     }
 
     fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {

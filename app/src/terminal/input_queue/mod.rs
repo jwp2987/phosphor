@@ -21,6 +21,12 @@
 //!   the pipeline and gets held a second time.
 //! - Content is never logged (it can be a password): `Debug` prints kind and length only.
 //!
+//! One queue per pane (merge steps 1-4, `kill_switch::Area::Shared`): the terminal view's
+//! [`PaneQueue`] is adopted by the input editor, so editor keys and pty keys are ordered by one
+//! instance. A [`Host`] says which entries it can deliver ([`Host::handles`]); a drain driven from
+//! the editor side stops at a pty entry and the view continues it (`pending_foreign`). The
+//! editor's wait for a fresh display map (#1389) is the [`GateKind::EditorDisplayMap`] gate.
+//!
 //! Consumers so far: paste (phase 1, `kill_switch::Area::Paste`), the subshell setup /
 //! bootstrap holds (phase 2, `kill_switch::Area::Subshell`), the Enter verdict / Tab /
 //! after-Enter ordering plus the paced CLI-agent submit (phase 3, `kill_switch::Area::Enter`, on
@@ -90,6 +96,16 @@ pub struct EditorKeyPayload(Rc<RefCell<Option<HeldPasteKey>>>);
 impl EditorKeyPayload {
     pub fn new(key: HeldPasteKey) -> Self {
         Self(Rc::new(RefCell::new(Some(key))))
+    }
+
+    /// Delivering this key reads the editor's display map (cursor motion, deletion by display
+    /// position), so it must wait until the map has caught up with the edits before it (#1389).
+    /// False once the key was delivered.
+    pub fn needs_fresh_display_map(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(HeldPasteKey::needs_fresh_display_map)
     }
 
     /// The key, once. `None` if it was already delivered.
@@ -263,6 +279,10 @@ pub enum DiscardReason {
 #[derive(Debug, Default)]
 pub struct FollowUps {
     items: Vec<Follow>,
+    /// The delivery is part of a signal's flush (^C met a gate and released what it held). The
+    /// queue sets it; hosts that would otherwise wait (the editor's display-map gate) apply at
+    /// once, because the signal must see everything typed before it.
+    flushing: bool,
 }
 
 #[derive(Debug)]
@@ -273,6 +293,11 @@ enum Follow {
 }
 
 impl FollowUps {
+    /// Whether this delivery is part of a signal's flush.
+    pub fn flushing(&self) -> bool {
+        self.flushing
+    }
+
     /// Queue another entry behind everything already queued (a replayed key).
     pub fn offer(&mut self, kind: EntryKind) {
         self.items.push(Follow::Offer(kind));
@@ -352,6 +377,9 @@ pub struct InputQueue {
     /// The last drain stopped at an entry its host does not handle (see [`Host::handles`]); the
     /// entry is still at the head. Cleared by the next drain.
     foreign_stop: bool,
+    /// A signal is being applied (its gates resolved, what they held delivered): deliveries made
+    /// meanwhile are a flush ([`FollowUps::flushing`]).
+    in_signal: bool,
     /// Poked (once, idempotent: a bounded channel of one) when a drain stops at a foreign entry,
     /// so the host that CAN deliver it continues the drain. The view listens; nothing polls.
     foreign_waker: Option<async_channel::Sender<()>>,
@@ -374,6 +402,7 @@ impl InputQueue {
             line_pin: None,
             give_ups: 0,
             foreign_stop: false,
+            in_signal: false,
             foreign_waker: None,
         }
     }
@@ -893,7 +922,10 @@ impl InputQueue {
             (kind, dest) if kind.is_line_content() => self.line_pin = Some(dest),
             _ => {}
         }
-        let mut follow = FollowUps::default();
+        let mut follow = FollowUps {
+            flushing: self.in_signal,
+            ..FollowUps::default()
+        };
         let outcome = host.deliver(entry, dest, &mut follow);
         match outcome {
             DeliverOutcome::Delivered => {}
@@ -940,6 +972,12 @@ impl InputQueue {
     /// signal always resolves the gates it passes (so the queue cannot stay wedged behind one),
     /// except `SignalThenKeepGate`, which leaves its gate for its own event.
     fn handle_signal<H: Host>(&mut self, host: &mut H, entry: InputEntry) {
+        self.in_signal = true;
+        self.apply_signal(host, entry);
+        self.in_signal = false;
+    }
+
+    fn apply_signal<H: Host>(&mut self, host: &mut H, entry: InputEntry) {
         while let Some(gate) = self.earliest_gate() {
             if host.signal_must_wait(gate.kind) {
                 // Waits like any entry, behind the gate.

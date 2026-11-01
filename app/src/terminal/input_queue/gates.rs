@@ -45,6 +45,11 @@ pub enum GateKind {
     SshConnect,
     /// The editor took focus from the pty and has not been focused yet.
     EditorFocusPending,
+    /// A held editor key that reads the display map (cursor motion, deletion by display position)
+    /// is waiting for the map to catch up with the edits applied before it in the same update
+    /// (#1389). Replaces the editor's separate replay list on the shared queue: every key behind
+    /// the waiting one stays behind it.
+    EditorDisplayMap,
 }
 
 /// What a signal (^C, ^D, ^Z, ^\) does to the entries held behind the gate it meets (design 2.5).
@@ -65,7 +70,7 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 13] = [
+    pub const ALL: [GateKind; 14] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
@@ -79,6 +84,7 @@ impl GateKind {
         GateKind::SubshellBootstrapWrite,
         GateKind::SshConnect,
         GateKind::EditorFocusPending,
+        GateKind::EditorDisplayMap,
     ];
 
     pub fn name(self) -> &'static str {
@@ -96,6 +102,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "subshell_bootstrap_write",
             GateKind::SshConnect => "ssh_connect",
             GateKind::EditorFocusPending => "editor_focus_pending",
+            GateKind::EditorDisplayMap => "editor_display_map",
         }
     }
 
@@ -115,6 +122,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "bootstrap_write_started",
             GateKind::SshConnect => "ssh_connect_started",
             GateKind::EditorFocusPending => "editor_took_over",
+            GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
         }
     }
 
@@ -135,6 +143,7 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => "last_bootstrap_line_written",
             GateKind::SshConnect => "gate_released_and_first_remote_precmd",
             GateKind::EditorFocusPending => "editor_focused_or_pointer_down",
+            GateKind::EditorDisplayMap => "replay_step_dispatched",
         }
     }
 
@@ -152,7 +161,8 @@ impl GateKind {
             | GateKind::PtyRouteSettling
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
-            | GateKind::EditorFocusPending => SignalPlan::FlushThenSignal,
+            | GateKind::EditorFocusPending
+            | GateKind::EditorDisplayMap => SignalPlan::FlushThenSignal,
             GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite => {
                 SignalPlan::SignalThenRelease
             }
@@ -173,7 +183,8 @@ impl GateKind {
             GateKind::PasteReading
             | GateKind::EnterVerdict
             | GateKind::TabCompletion
-            | GateKind::HandoffReport => true,
+            | GateKind::HandoffReport
+            | GateKind::EditorDisplayMap => true,
             GateKind::CliSubmit
             | GateKind::PtyRouteSettling
             | GateKind::PromptSeen
@@ -192,9 +203,10 @@ impl GateKind {
     /// ([`Gate::holds_pty_keys`] looks at the id).
     pub fn holds_pty_keys(self) -> bool {
         match self {
-            GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorFocusPending => {
-                false
-            }
+            GateKind::EnterVerdict
+            | GateKind::TabCompletion
+            | GateKind::EditorFocusPending
+            | GateKind::EditorDisplayMap => false,
             GateKind::PasteReading
             | GateKind::CliSubmit
             | GateKind::HandoffReport
@@ -225,6 +237,9 @@ impl GateKind {
             GateKind::SubshellBootstrapWrite => None,
             GateKind::SshConnect => Some(Duration::from_secs(5)),
             GateKind::EditorFocusPending => Some(Duration::from_secs(1)),
+            // The deferred replay step runs as soon as this update's effects have flushed; this
+            // only guards a step that never runs (logged when it fires).
+            GateKind::EditorDisplayMap => Some(Duration::from_secs(1)),
         }
     }
 }
