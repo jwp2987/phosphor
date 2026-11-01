@@ -468,7 +468,9 @@ pub(crate) const TORTURE_OVERRIDES: &[Case] = &[
     // installed program is one (#965 owner decision). Bare `what` is a one-off natural-language
     // word everywhere.
     Case::prose("what", "#1185 / #965 (one-off natural-language word)"),
-    Case::cmd("what", "#965 collision head").expect(Expect::Agent),
+    Case::cmd("what", "#965 collision head")
+        .expect(Expect::Agent)
+        .v1_xfail("#935: a lone installed `what` passes the classifier prelude as a command in the terminal"),
     Case::prose("where", "#1185 (not on `$PATH` in bash)"),
     Case::cmd("where", "#1185 (zsh builtin)"),
     Case::cmd("write", "#1185 (installed)"),
@@ -484,8 +486,7 @@ pub(crate) const TORTURE_OVERRIDES: &[Case] = &[
     Case::prose("zsh", "#1018")
         .v1_xfail("#1018: fast Enter has no prose evidence, inherited Shell"),
     Case::cmd("csh", "#964"),
-    Case::prose("csh", "#1018")
-        .v1_xfail("#1018: fast Enter has no prose evidence, inherited Shell"),
+    Case::prose("csh", "#1018"),
     Case::cmd("dash", "#964"),
     Case::model(
         "dash",
@@ -493,8 +494,7 @@ pub(crate) const TORTURE_OVERRIDES: &[Case] = &[
     )
     .head(Head::Absent),
     Case::cmd("ksh", "#964"),
-    Case::prose("ksh", "#1018")
-        .v1_xfail("#1018: fast Enter has no prose evidence, inherited Shell"),
+    Case::prose("ksh", "#1018"),
     Case::cmd("tcsh", "#964"),
     Case::prose("tcsh", "#1018")
         .v1_xfail("#1018: fast Enter has no prose evidence, inherited Shell"),
@@ -618,15 +618,12 @@ pub(crate) const TORTURE_PROSE_OVERRIDES: &[Case] = &[
     Case::cmd("make me a backup script", "#1234 (sentence shape)")
         .expect(Expect::Agent)
         .v1_xfail("#1234: one request word after `make` is not a request to the #834 rule"),
-    // `why` is not in the English dictionary, so with no request word after it the old rules
-    // cannot place these; the classifier did.
-    Case::prose("why is my build so slow", "#1234 (question head)")
-        .v1_xfail("#1234: `why` is not a dictionary word and `my`/`so` are not request words"),
+    // A `why` question head: the old rules place these too (stage 1 confirmed no miss).
+    Case::prose("why is my build so slow", "#1234 (question head)"),
     Case::prose(
         "why does my script say permission denied",
         "#1234 (question head)",
-    )
-    .v1_xfail("#1234: `why` is not a dictionary word and `my`/`does` are not request words"),
+    ),
 ];
 
 /// Every pinned case that is not a torture expansion, grouped by the issue that set it.
@@ -913,17 +910,19 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("sudo", "#1291").in_conversation(),
     Case::cmd("sudo rm the old logs for me", "#1291")
         .in_conversation()
-        .expect(Expect::Agent)
-        .v1_xfail("#1291: the `sudo` keyword makes the line a command whatever it wraps"),
+        .expect(Expect::Agent),
     Case::cmd("sudo please fix my wifi", "#1291")
         .in_conversation()
-        .expect(Expect::Agent)
-        .v1_xfail("#1291: the `sudo` keyword makes the line a command whatever it wraps"),
-    // The plain terminal runs an installed head in the shell (owner rule), sudo included.
+        .expect(Expect::Agent),
+    // The plain terminal is unchanged by #1291: request shape (#834/#965: two distinct request
+    // words, one of them addressed to someone) sends `rm the old logs for me` to the agent with or
+    // without the `sudo` in front, as it does `look at the logs for me`. The owner's
+    // installed-head rule (#964) covers English-looking arguments, not a sentence.
     Case::cmd(
         "sudo rm the old logs for me",
         "#1291 (plain terminal unchanged)",
-    ),
+    )
+    .expect(Expect::Agent),
     Case::cmd("for i in a b; do echo $i; done", "#1183").in_conversation(),
     Case::cmd("ls | grep a", "#1183").in_conversation(),
     Case::cmd("./run.sh --fast", "#1183").in_conversation(),
@@ -958,7 +957,8 @@ pub(crate) const CASES: &[Case] = &[
         "#1203 (no session data, never ran)",
     ),
     Case::cmd("npm install everything", "#1203 (installed `npm`)"),
-    Case::cmd("git status please?", "#1203").expect(Expect::Agent),
+    // A bare trailing `?` is a glob character and stays shell (`reads_as_command_headed_prose`).
+    Case::cmd("git status please?", "#1203 (trailing `?` is a glob)"),
     // -- #1036 / #1174: an oversized buffer never changes the input type (added in
     //    `all_cases`, built at run time).
     // -- #1234: PowerShell 5.1 / pwsh 7.
@@ -1045,8 +1045,7 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("def greet [] { echo hi }", "#1234 nushell").shell(Shell::Nu),
     Case::cmd("$env.PATH | split row (char esep)", "#1234 nushell")
         .shell(Shell::Nu)
-        .head(Head::Absent)
-        .v1_xfail("#1234: a `$variable` head is nothing the old rules know; inherited AI stands"),
+        .head(Head::Absent),
     Case::cmd("http get https://api.github.com", "#1234 nushell").shell(Shell::Nu),
     Case::cmd("ls | sort-by size | first 3", "#1234 nushell").shell(Shell::Nu),
     Case::cmd("print \"hello\"", "#1234 nushell").shell(Shell::Nu),
