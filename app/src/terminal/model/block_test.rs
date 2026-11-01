@@ -2673,6 +2673,48 @@ fn slow_non_interactive_command_is_not_long_running() {
     assert!(!block.is_active_and_long_running());
 }
 
+/// #1373: a builtin waiting silently in the shell itself (`read x` typed at the prompt): no
+/// output, the shell is still the foreground group, but its process is blocked. The debounce
+/// consults the probe and latches, so keys go to the pty. `ls` (probe: a foreground program that
+/// exits before the debounce) never latches; vim (raw tty) latches at once.
+#[test]
+fn silent_blocked_shell_builtin_latches_at_the_debounce() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    assert!(!block.is_active_and_long_running());
+    block.interactive_latch().on_settled();
+    assert!(block.is_active_and_long_running());
+}
+
+#[test]
+fn fast_program_and_vim_cases_for_the_builtin_latch() {
+    // `ls`: finished before the debounce ran.
+    let mut ls = executing_block();
+    ls.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    ls.finish(0);
+    ls.interactive_latch().on_settled();
+    assert!(!ls.is_active_and_long_running());
+    // A blocked shell printing within the debounce does not flash the presentation.
+    let early = executing_block();
+    early
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    early.interactive_latch().on_output();
+    assert!(!early.is_active_and_long_running());
+    // `read -p "x: " v`: after the debounce, output with the shell blocked latches.
+    early.interactive_latch().on_settled();
+    assert!(early.is_active_and_long_running());
+    // vim: raw tty latches immediately on output.
+    let vim = executing_block();
+    vim.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Input)));
+    vim.interactive_latch().on_output();
+    assert!(vim.is_active_and_long_running());
+}
+
 /// A command that finished before the debounce task ran must not latch, even if the probe would
 /// still answer "program".
 #[test]

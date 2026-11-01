@@ -10,6 +10,9 @@
 //! * the alternate screen was entered (`TerminalModel::enter_alt_screen`), immediately;
 //! * the tty went non-canonical (raw mode) or canonical-without-echo (a password read), observed
 //!   by the [`InteractiveProbe`] whenever the command produces output, immediately;
+//! * the shell itself is blocked waiting (a builtin such as `read x` typed at the prompt: the
+//!   foreground group is still the shell and it prints nothing, but its process is asleep), observed
+//!   by the probe at the debounce, and on every output batch after it;
 //! * a program other than the shell is the terminal's foreground process group, observed by the
 //!   probe once the presentation debounce below has elapsed, and on every output batch after it.
 //!
@@ -38,6 +41,11 @@ pub enum TerminalOwner {
     Shell,
     /// A program other than the shell is the foreground process group.
     Program,
+    /// The shell itself is the foreground group, the tty is cooked, and the shell process is
+    /// blocked in the kernel (asleep) rather than computing: a builtin waiting on the tty, e.g.
+    /// `read x` typed at the prompt (#1373). Nothing else distinguishes it from a builtin that is
+    /// merely slow, so the blocked state is the signal; a busy shell function stays `Shell`.
+    ShellBlocked,
     /// The tty is in raw mode or reading a password: a program is definitely reading input.
     Input,
 }
@@ -51,6 +59,8 @@ pub enum LatchReason {
     AltScreen,
     InputMode,
     ForegroundProgram,
+    /// The shell is blocked waiting (a builtin such as `read` reading the tty).
+    ShellBlockedBuiltin,
     NoProbeFallback,
 }
 
@@ -150,6 +160,9 @@ impl InteractiveLatch {
             TerminalOwner::Program if self.0.settled.load(Ordering::Relaxed) => {
                 self.latch(LatchReason::ForegroundProgram);
             }
+            TerminalOwner::ShellBlocked if self.0.settled.load(Ordering::Relaxed) => {
+                self.latch(LatchReason::ShellBlockedBuiltin);
+            }
             _ => {}
         }
     }
@@ -168,6 +181,9 @@ impl InteractiveLatch {
                 }
                 TerminalOwner::Input => {
                     self.latch(LatchReason::InputMode);
+                }
+                TerminalOwner::ShellBlocked => {
+                    self.latch(LatchReason::ShellBlockedBuiltin);
                 }
                 TerminalOwner::Shell => {}
             },
