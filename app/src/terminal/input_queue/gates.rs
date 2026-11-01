@@ -21,7 +21,9 @@ pub enum GateKind {
     HandoffReport,
     /// An Enter just ran as a shell command and the hand-off route is still settling (Q2).
     PtyRouteSettling,
-    /// An Enter arrived while the last command may already have finished (Q3b).
+    /// An Enter arrived while the last command may already have finished (Q3b); phase 5b keeps the
+    /// held Enter and the keys behind it here (`view/paste_queue.rs`), keyed by the hand-off's hold
+    /// id and ended by the hand-off's decision (a command, the report, a signal), never a timer.
     PromptSeen,
     /// ConPTY: between a precmd and the shell's line editor becoming active (Q3c); phase 5 keeps
     /// the held keys here (`view/paste_queue.rs`), opened by the line editor's bracketed-paste signal.

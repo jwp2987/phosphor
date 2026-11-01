@@ -2322,3 +2322,266 @@ fn the_conpty_request_waits_for_the_queue_boundary_not_for_a_quiet_period() {
         ActiveDecision::Wait { .. }
     ));
 }
+
+// ---- #1353 phase 5b: a young Enter's hold in the view's input queue ----------------------------
+//
+// The same scenarios as the buffered hold above, with the keys in the view's queue: the hand-off
+// keeps no bytes, and every way the hold can end is recorded for the view to apply to the gate.
+
+/// A hand-off whose command was written just now and whose young holds live in the view's queue.
+fn queued_young_after_submit() -> TypeaheadHandoff {
+    let mut handoff = young_after_submit();
+    handoff.set_young_hold_in_queue(true);
+    handoff
+}
+
+/// Types `frob`, then an Enter that is held, and returns the hold's id.
+fn queued_young_hold() -> (TypeaheadHandoff, u64) {
+    let mut handoff = queued_young_after_submit();
+    type_and_flush(&mut handoff, b"frob");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().expect("a hold started");
+    (handoff, id)
+}
+
+#[test]
+fn a_queued_young_hold_keeps_no_bytes_and_says_so() {
+    let (handoff, _) = queued_young_hold();
+    assert!(handoff.young_hold.is_none());
+    assert!(handoff.young_hold_queued());
+    assert!(handoff.has_young_hold());
+    assert!(!handoff.young_hold_end_pending());
+    // The Enter is held behind nothing in the tty: nothing was counted or written.
+    assert_eq!(handoff.writes_in_flight(), 0);
+    // Off, the hold keeps the buffer, exactly as before.
+    let mut buffered = young_after_submit();
+    type_and_flush(&mut buffered, b"frob");
+    assert_eq!(buffered.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(buffered.young_hold.is_some());
+    assert!(!buffered.young_hold_queued());
+}
+
+#[test]
+fn the_report_of_a_queued_young_hold_runs_the_enter_and_asks_the_view_to_split_the_keys() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    // The give-up of a hold the request already went out for keeps waiting for the report.
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Keep);
+    assert!(handoff.young_hold_queued());
+    assert_eq!(
+        handoff.on_report(),
+        ReportDisposition::InsertThenSubmitYoung
+    );
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::SubmitOnReport)]
+    );
+    assert!(!handoff.young_hold_queued());
+    // The view puts the keys after the Enter behind it, as the buffered hold's split did.
+    assert!(handoff.prepend_held_keys(b"x"));
+    assert_eq!(
+        handoff.state(),
+        &HandoffState::HoldAfterEnter {
+            held: b"x".to_vec(),
+            released: true,
+        }
+    );
+}
+
+#[test]
+fn a_signal_ends_a_queued_young_hold_as_it_ends_the_buffered_one() {
+    for signal in [0x03u8, 0x04, 0x1a, 0x1c] {
+        let (mut handoff, id) = queued_young_hold();
+        assert_eq!(
+            handoff.on_user_bytes(&[signal]),
+            UserBytesRoute::WriteCounted
+        );
+        assert!(!handoff.has_young_hold());
+        assert_eq!(
+            handoff.take_young_hold_ends(),
+            vec![(id, YoungHoldEnd::Dropped)]
+        );
+        // Nothing is left to expire.
+        assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
+    }
+    // The view ends the hold itself before the signal is routed: a lone EOF takes the keys with
+    // it, the others void them, and no end is left behind.
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.take_queued_young_hold_for_signal(&[0x04]),
+        Some((id, true))
+    );
+    assert!(!handoff.has_young_hold());
+    assert!(!handoff.young_hold_end_pending());
+    for bytes in [&[0x03][..], &[0x04, 0x03], &[0x1a], &[0x1c]] {
+        let (mut handoff, id) = queued_young_hold();
+        assert_eq!(
+            handoff.take_queued_young_hold_for_signal(bytes),
+            Some((id, false))
+        );
+        assert!(!handoff.young_hold_end_pending());
+    }
+    // Not a signal, or nothing held: nothing happens.
+    let (mut handoff, _) = queued_young_hold();
+    assert_eq!(handoff.take_queued_young_hold_for_signal(b"x"), None);
+    assert!(handoff.young_hold_queued());
+    assert_eq!(
+        young_after_submit().take_queued_young_hold_for_signal(&[0x04]),
+        None
+    );
+}
+
+#[test]
+fn a_queued_young_hold_is_released_as_typeahead_when_no_prompt_comes() {
+    let (mut handoff, id) = queued_young_hold();
+    assert_eq!(
+        handoff.expire_queued_young_hold(id),
+        YoungHoldExpiry::Release
+    );
+    assert!(!handoff.has_young_hold());
+    // One write elsewhere (the keys the view took from the gate, in order), counted as the routed
+    // write it now is, and its Enter is queued for the shell.
+    let writes = handoff.route_expired_young_chunks(vec![b"\r".to_vec(), b"d".to_vec()]);
+    assert_eq!(writes, vec![b"\rd".to_vec()]);
+    assert_eq!(handoff.writes_in_flight(), 1);
+    assert!(handoff.has_unanswered_lines());
+    assert_eq!(handoff.expire_queued_young_hold(id), YoungHoldExpiry::Gone);
+
+    // On ConPTY the keys stay the separate writes they were typed in (#1162).
+    let (mut conpty, id) = queued_young_hold();
+    conpty.set_conpty_input(true);
+    assert_eq!(
+        conpty.expire_queued_young_hold(id),
+        YoungHoldExpiry::Release
+    );
+    let writes = conpty.route_expired_young_chunks(vec![b"\r".to_vec(), b"d".to_vec()]);
+    assert_eq!(writes, vec![b"\r".to_vec(), b"d".to_vec()]);
+    assert_eq!(conpty.writes_in_flight(), 2);
+}
+
+#[test]
+fn an_expired_timer_cannot_release_a_later_queued_hold() {
+    let (mut handoff, first) = queued_young_hold();
+    handoff.on_user_bytes(&[0x03]);
+    handoff.on_user_write_flushed();
+    assert_eq!(handoff.on_interrupt(), InterruptOutcome::CommandRunning);
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(first, YoungHoldEnd::Dropped)]
+    );
+    type_and_flush(&mut handoff, b"def");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let second = handoff.take_young_hold_started().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        handoff.expire_queued_young_hold(first),
+        YoungHoldExpiry::Gone
+    );
+    assert!(handoff.has_young_hold());
+    assert_eq!(
+        handoff.expire_queued_young_hold(second),
+        YoungHoldExpiry::Release
+    );
+}
+
+#[test]
+fn a_queued_young_hold_does_not_outlive_the_state_it_was_made_in() {
+    // An uncounted command's kill prefix ends the line the Enter belongs to.
+    let (mut handoff, id) = queued_young_hold();
+    handoff.on_uncounted_command_written();
+    assert!(!handoff.has_young_hold());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+
+    // A state that cannot own a hold ends it before the next key is queued behind it.
+    let (mut handoff, id) = queued_young_hold();
+    handoff.state = HandoffState::EditorOwned;
+    assert!(!handoff.young_hold_end_pending());
+    assert!(handoff.check_queued_young_hold());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+    // ... and while the hold is fine, the check leaves it alone.
+    let (mut handoff, _) = queued_young_hold();
+    assert!(!handoff.check_queued_young_hold());
+    assert!(handoff.young_hold_queued());
+
+    // The session ending drops it, and the next hold never reuses its gate's key.
+    let (mut handoff, id) = queued_young_hold();
+    handoff.reset_on_exit();
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+    assert!(!handoff.has_young_hold());
+    assert_eq!(handoff.young_hold_id, id);
+}
+
+#[test]
+fn ctrl_c_cancels_a_queued_young_hold_behind_the_request() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.on_precmd();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+    assert!(handoff.cancel_deferred_enter());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+    assert!(!handoff.cancel_deferred_enter());
+}
+
+#[test]
+fn a_command_written_behind_a_queued_young_hold_takes_its_keys_with_it() {
+    // The buffered hold, for comparison: the keys come back from the call and are counted by it.
+    let mut buffered = young_after_submit();
+    type_and_flush(&mut buffered, b"abc");
+    assert_eq!(buffered.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(buffered.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert_eq!(buffered.on_command_written(), b"\rx".to_vec());
+
+    let mut handoff = queued_young_after_submit();
+    type_and_flush(&mut handoff, b"abc");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    let id = handoff.take_young_hold_started().unwrap();
+    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    assert!(!handoff.young_hold_queued());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::FollowCommand)]
+    );
+    // Until the view has written them no request is decided: the line looks shorter than it is.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    handoff.count_followed_young_hold(id, b"\rx");
+    // The same lines and bytes as the buffered hold's call counted, plus the one write in flight
+    // the writer retires.
+    assert_eq!(handoff.state(), buffered.state());
+    assert_eq!(handoff.writes_in_flight(), 1);
+    handoff.on_user_write_flushed();
+    assert_eq!(handoff.writes_in_flight(), 0);
+}
+
+#[test]
+fn a_command_written_in_a_state_that_cannot_own_the_hold_drops_it() {
+    let (mut handoff, id) = queued_young_hold();
+    handoff.state = HandoffState::AwaitingReport;
+    assert_eq!(handoff.on_command_written(), Vec::<u8>::new());
+    assert_eq!(
+        handoff.take_young_hold_ends(),
+        vec![(id, YoungHoldEnd::Dropped)]
+    );
+    // Nothing follows the command, so nothing waits for the view to write it.
+    assert!(handoff.young_hold_follow_pending.is_none());
+}

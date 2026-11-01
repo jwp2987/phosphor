@@ -21360,3 +21360,234 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
         assert_eq!(*pty_writes.borrow(), vec![b"a".to_vec(), b"b".to_vec()]);
     })
 }
+
+// ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
+//
+// Every scenario runs on both paths: `queue == true` holds the Enter and the keys behind it as
+// entries behind a `PromptSeen` gate, `queue == false` is `PHOSPHOR_INPUT_QUEUE_HANDOFF=0` (the
+// hand-off's own buffer and the view's window timer). Not compiled/run when written.
+
+/// A command that was written just now with a line typed into it: an Enter typed now is held,
+/// because the shell may already be back at a prompt the app has not noticed (#933).
+fn young_enter_setup(view: &mut TerminalView, queue: bool) {
+    view.paste_queue.set_handoff_enabled_for_test(queue);
+    let mut model = view.model.lock();
+    model.block_list_mut().active_block_mut().start();
+    let handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"frob");
+    handoff.on_user_write_flushed();
+}
+
+fn young_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::PromptSeen)
+}
+
+/// Types the held Enter and a key behind it and checks they are held, not written.
+fn hold_a_young_enter(
+    view: &mut TerminalView,
+    queue: bool,
+    pty_writes: &Rc<RefCell<Vec<Vec<u8>>>>,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+    view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+    assert!(
+        pty_writes.borrow().is_empty(),
+        "queue={queue}: nothing is written ahead of the prompt"
+    );
+    assert!(view.model.lock().typeahead_handoff().has_young_hold());
+    assert_eq!(young_gate_open(view), queue);
+    if queue {
+        assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
+        assert!(
+            view.model.lock().typeahead_handoff().young_hold_queued(),
+            "the hand-off keeps no bytes"
+        );
+    }
+}
+
+/// No prompt came: the give-up (the gate's cap on the queue path, the window timer on the other)
+/// writes the Enter and the key behind it as typeahead, in typed order, once.
+#[test]
+fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view, queue);
+                hold_a_young_enter(view, queue, &pty_writes, ctx);
+                if queue {
+                    let token = view.paste_queue.queue.borrow().gates()[0].token;
+                    view.on_paste_queue_give_up(token, ctx);
+                    // A second timer for the same gate changes nothing.
+                    view.on_paste_queue_give_up(token, ctx);
+                } else {
+                    view.release_expired_young_hold(1, ctx);
+                }
+                assert!(!young_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "queue={queue}: one write, in typed order"
+            );
+        });
+    }
+}
+
+/// ^C voids the held Enter and the keys behind it (the tty flushes its typeahead): only the ^C is
+/// written. A lone ^D keeps the typeahead, so the held keys go out in front of it as one write.
+#[test]
+fn a_signal_ends_a_young_hold_the_way_the_tty_would() {
+    for queue in [false, true] {
+        for (signal, expected) in [
+            (0x03u8, vec![vec![0x03u8]]),
+            (0x04u8, vec![b"\rx\x04".to_vec()]),
+        ] {
+            App::test((), move |mut app| async move {
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    young_enter_setup(view, queue);
+                    hold_a_young_enter(view, queue, &pty_writes, ctx);
+                    view.write_user_bytes_to_pty(vec![signal], ctx);
+                    assert!(!young_gate_open(view));
+                    assert!(view.paste_queue.queue.borrow().is_idle());
+                    assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                });
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    expected,
+                    "queue={queue} signal={signal:#x}"
+                );
+            });
+        }
+    }
+}
+
+/// The editor's command is written while the Enter is held: the keys follow it, counted as the
+/// lines they are -- the same state on both paths.
+#[test]
+fn a_command_written_behind_a_young_hold_takes_its_keys_with_it() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view, queue);
+                hold_a_young_enter(view, queue, &pty_writes, ctx);
+                // What the pty controller does (`write_command`): the buffered hold's keys come
+                // back from the call; a queued hold's are announced, and the view takes them.
+                let returned = view
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_command_written();
+                assert_eq!(returned, if queue { Vec::new() } else { b"\rx".to_vec() });
+                view.drain_young_hold_ends(ctx);
+                assert!(!young_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert_eq!(
+                    view.model.lock().typeahead_handoff().state(),
+                    &HandoffState::PtyOwned {
+                        wrote_user_bytes: true,
+                        enters_written: 3,
+                        precmds_seen: 0,
+                    },
+                    "queue={queue}"
+                );
+            });
+            let expected: Vec<Vec<u8>> = if queue { vec![b"\rx".to_vec()] } else { vec![] };
+            assert_eq!(*pty_writes.borrow(), expected, "queue={queue}");
+        });
+    }
+}
+
+/// The report arrives: the Enter is run in the editor and the key typed after it is held behind
+/// it (#933), the same on both paths.
+#[test]
+fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
+    for queue in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view, queue);
+                hold_a_young_enter(view, queue, &pty_writes, ctx);
+                {
+                    let mut model = view.model.lock();
+                    let handoff = model.typeahead_handoff_mut();
+                    handoff.on_precmd();
+                    assert_eq!(
+                        handoff.on_line_editor_active(true, true),
+                        ActiveDecision::SendRequest
+                    );
+                    handoff.on_report();
+                }
+                view.drain_young_hold_ends(ctx);
+                assert!(!young_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert_eq!(
+                    view.model.lock().typeahead_handoff().state(),
+                    &HandoffState::HoldAfterEnter {
+                        held: b"x".to_vec(),
+                        released: true,
+                    },
+                    "queue={queue}"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "queue={queue}");
+        });
+    }
+}
+
+/// A hold that ended (here: an uncounted command took the line) is dropped with its keys, and a
+/// key typed after that is not swallowed by the gate -- whether or not the end was applied yet.
+#[test]
+fn a_key_after_a_young_hold_ended_is_not_swallowed() {
+    for queue in [false, true] {
+        for drained_first in [false, true] {
+            App::test((), move |mut app| async move {
+                initialize_app_for_terminal_view(&mut app);
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = collect_pty_writes(&mut app, &terminal);
+                terminal.update(&mut app, |view, ctx| {
+                    young_enter_setup(view, queue);
+                    hold_a_young_enter(view, queue, &pty_writes, ctx);
+                    view.model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .on_uncounted_command_written();
+                    if drained_first {
+                        view.drain_young_hold_ends(ctx);
+                        assert!(!young_gate_open(view));
+                    }
+                    view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+                    assert!(!young_gate_open(view));
+                    assert!(view.paste_queue.queue.borrow().is_idle());
+                });
+                assert_eq!(
+                    *pty_writes.borrow(),
+                    vec![b"y".to_vec()],
+                    "queue={queue} drained_first={drained_first}: the held Enter and key are void"
+                );
+            });
+        }
+    }
+}
