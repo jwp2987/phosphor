@@ -2715,6 +2715,34 @@ fn fast_program_and_vim_cases_for_the_builtin_latch() {
     assert!(vim.is_active_and_long_running());
 }
 
+/// #1373 follow-up: the debounce probe saw the shell not yet asleep (`Shell`); the silent `read`
+/// then blocked. The next keystroke re-probes and latches, so the key goes to the pty -- no
+/// timer, no output needed.
+#[test]
+fn key_reprobes_a_silent_builtin_that_slept_after_the_debounce() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let asleep = Arc::new(AtomicBool::new(false));
+    let block = executing_block();
+    let flag = asleep.clone();
+    block.interactive_latch().set_probe(Some(Arc::new(move || {
+        if flag.load(Ordering::SeqCst) {
+            TerminalOwner::ShellBlocked
+        } else {
+            TerminalOwner::Shell
+        }
+    })));
+    block.interactive_latch().on_settled();
+    assert!(!block.is_active_and_long_running());
+    // A key while the shell is still running does not latch.
+    assert!(block.interactive_latch().needs_key_probe());
+    block.interactive_latch().on_key();
+    assert!(!block.is_active_and_long_running());
+    asleep.store(true, Ordering::SeqCst);
+    block.interactive_latch().on_key();
+    assert!(block.is_active_and_long_running());
+    assert!(!block.interactive_latch().needs_key_probe());
+}
+
 /// A command that finished before the debounce task ran must not latch, even if the probe would
 /// still answer "program".
 #[test]

@@ -10678,9 +10678,28 @@ impl TerminalView {
         }
     }
 
+    /// #1373: a key arrived. If the active block executes and is not latched interactive, re-probe
+    /// the pty now, BEFORE the key is routed, so a silent builtin (`read x`) that went to sleep
+    /// after the debounce probe still gets the key. The model lock is held only to clone the
+    /// latch handle; the probe's syscalls run outside it. Nothing happens at a prompt (no
+    /// executing block): the check is two atomic loads.
+    fn reprobe_interactive_latch_on_key(&self) {
+        let latch = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .interactive_latch()
+            .clone();
+        if latch.needs_key_probe() {
+            latch.on_key();
+        }
+    }
+
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        self.reprobe_interactive_latch_on_key();
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if is_ssh_interrupt_key(characters) {
             // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
@@ -11678,6 +11697,7 @@ impl TerminalView {
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        self.reprobe_interactive_latch_on_key();
         // #1345: the terminal view received typed characters (a live key or the held ones being
         // delivered); `chars` is a count, never the text.
         warpui::input_order::log_key_hop("kh_terminal_typed_entry", || {
