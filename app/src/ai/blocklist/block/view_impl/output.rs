@@ -463,7 +463,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 output_items.add_child(with_empty_enter_hint(
                                     rendered_command,
                                     id,
-                                    props,
+                                    &props,
                                     app,
                                 ));
                             }
@@ -605,7 +605,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                         app,
                                     );
                                     output_items.add_child(with_empty_enter_hint(
-                                        edit_card, id, props, app,
+                                        edit_card, id, &props, app,
                                     ));
                                 }
                             }
@@ -716,7 +716,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 output_items.add_child(with_empty_enter_hint(
                                     rendered_mcp_tool,
                                     id,
-                                    props,
+                                    &props,
                                     app,
                                 ));
                             }

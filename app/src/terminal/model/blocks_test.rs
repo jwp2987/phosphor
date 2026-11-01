@@ -525,7 +525,7 @@ fn test_deferred_restore_sends_one_block_completed_per_block_like_eager_restore(
 // drops it instead of leaving points that may be out of range (#1265).
 #[test]
 fn test_deferred_restore_install_clears_stale_selection() {
-    use crate::terminal::model::grid::Side;
+    use crate::terminal::Side;
     use warpui::text::SelectionType;
     let restored_blocks = lazy_restore_test_blocks();
     let mut deferred = TestBlockListBuilder::new()
