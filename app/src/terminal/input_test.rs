@@ -11932,7 +11932,16 @@ fn test_history_file_does_not_route_requests_or_bare_english_words_to_the_shell(
 #[test]
 fn test_history_ghost_is_requested_for_an_unlocked_ai_guess_every_cycle() {
     App::test((), |mut app| async move {
+        // An unlocked AI input is only a *guess* while autodetection is live (AgentMode on and
+        // the setting enabled), as in the app and as `input_with_shell_history` sets it up.
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
         initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
         let terminal = add_window_with_bootstrapped_terminal(
             &mut app,
             Some(vec!["echo seedghost_alpha3".to_owned()]),
