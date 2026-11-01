@@ -12306,13 +12306,14 @@ impl TerminalView {
                     me.release_expired_young_hold(hold_id, ctx);
                 });
             }
-            // #1162: keys held between a prompt's precmd and its line editor becoming active.
+            // #1162: keys held between a prompt's precmd and its line editor's ready signal; the timer is only
+            // the give-up cap (#1349).
             let prompt_hold = if FeatureFlag::TypeaheadHandoff.is_enabled() {
                 let mut model = self.model.lock();
                 let handoff = model.typeahead_handoff_mut();
                 handoff
                     .take_prompt_hold_started()
-                    .map(|id| (id, handoff.prompt_hold_expiry()))
+                    .map(|id| (id, handoff.prompt_hold_give_up()))
             } else {
                 None
             };
@@ -12374,7 +12375,7 @@ impl TerminalView {
         }
     }
 
-    /// The line editor never signalled within the prompt hold's expiry (#1162, #1343): the keys held since the prompt's precmd are written anyway, in typed order.
+    /// The line editor never signalled within the prompt hold's give-up cap (#1162, #1349): the keys held since the prompt's precmd are written anyway, in typed order, and the hold is off for the session.
     fn release_expired_prompt_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
         let chunks = self
             .model

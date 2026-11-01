@@ -26,6 +26,12 @@ pub struct LineEditorStatus {
     is_line_editor_active: bool,
     mark_line_editor_active_abort_handle: Option<SpawnedFutureHandle>,
     sessions: ModelHandle<Sessions>,
+    /// ConPTY prompt hold (#1349): while set, a precmd's activation waits this long for the
+    /// shell's bracketed-paste signal before falling back, instead of
+    /// [`LINE_EDITOR_ACTIVATION_DELAY`]. The held keys are released by the signal itself, so the
+    /// fallback must not fire (and start the hand-off) ahead of it. It only bounds a shell that
+    /// never signals; when it fires, the shell is known not to signal and this is cleared.
+    signal_wait: Option<Duration>,
 
     /// `true` if the active session is zsh and precmd was received before the most recent end
     /// prompt marker.
@@ -55,6 +61,7 @@ impl LineEditorStatus {
             mark_line_editor_active_abort_handle: None,
             did_receive_zsh_precmd: false,
             sessions,
+            signal_wait: None,
         }
     }
 
@@ -88,10 +95,30 @@ impl LineEditorStatus {
         ctx.emit(LineEditorStatusEvent::Active);
     }
 
+    /// Makes a precmd's fallback activation wait `wait` for the shell's ready signal (see
+    /// `signal_wait`), or restores the default fallback delay.
+    pub(super) fn set_signal_wait(&mut self, wait: Option<Duration>) {
+        self.signal_wait = wait;
+    }
+
+    /// The signal arrived but could not end the wait itself (a typeahead line is queued ahead of
+    /// the hand-off): the pending activation is brought down to the default fallback delay, as
+    /// it was before the prompt hold waited for the signal.
+    pub(super) fn expedite_pending_activation(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.is_line_editor_active
+            || self.signal_wait.is_none()
+            || self.mark_line_editor_active_abort_handle.is_none()
+        {
+            return;
+        }
+        self.mark_line_editor_active_after_delay(LINE_EDITOR_ACTIVATION_DELAY, ctx);
+    }
+
     /// Arms the activation delay as a precmd does, without the model event.
     #[cfg(test)]
     pub(crate) fn arm_activation_for_test(&mut self, ctx: &mut ModelContext<Self>) {
-        self.mark_line_editor_active_after_delay(LINE_EDITOR_ACTIVATION_DELAY, ctx);
+        let delay = self.signal_wait.unwrap_or(LINE_EDITOR_ACTIVATION_DELAY);
+        self.mark_line_editor_active_after_delay(delay, ctx);
     }
 
     fn handle_model_event(&mut self, event: &ModelEvent, ctx: &mut ModelContext<Self>) {
@@ -110,7 +137,8 @@ impl LineEditorStatus {
                 if is_active_session_zsh {
                     self.did_receive_zsh_precmd = true;
                 } else if !self.is_line_editor_active {
-                    self.mark_line_editor_active_after_delay(LINE_EDITOR_ACTIVATION_DELAY, ctx);
+                    let delay = self.signal_wait.unwrap_or(LINE_EDITOR_ACTIVATION_DELAY);
+                    self.mark_line_editor_active_after_delay(delay, ctx);
                     self.did_receive_zsh_precmd = false;
                 }
             }
@@ -140,7 +168,15 @@ impl LineEditorStatus {
         // editor is active.
         let abort_handle = ctx.spawn_abortable(
             async move { warpui::r#async::Timer::after(delay).await },
-            |me, _, ctx| {
+            move |me, _, ctx| {
+                if me.signal_wait.is_some_and(|wait| wait <= delay) {
+                    log::warn!(
+                        "line editor: no ready signal within {} ms of the prompt; the shell \
+                         does not signal, falling back to the default activation delay",
+                        delay.as_millis()
+                    );
+                    me.signal_wait = None;
+                }
                 me.is_line_editor_active = true;
                 ctx.emit(LineEditorStatusEvent::Active);
             },

@@ -292,6 +292,19 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(true);
+                // #1349: the line editor's ready signal releases the keys held since the
+                // prompt's precmd (ConPTY), in typed order, ahead of any request. This is the
+                // only thing that releases them besides a command start, a ^C or the give-up cap.
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let held_chunks = me
+                        .terminal_model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .release_prompt_hold_on_signal();
+                    for chunk in held_chunks {
+                        me.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
+                    }
+                }
                 // #1208: readline and zle enable bracketed paste as they start reading a line, so
                 // the shell is at its prompt now, not 50 ms after precmd. Only while the hand-off
                 // can vouch that no typeahead line is queued ahead of a write: readline would
@@ -305,23 +318,15 @@ impl<T: EventLoopSender> PtyController<T> {
                 {
                     me.line_editor_status
                         .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
+                } else {
+                    // The signal cannot end the activation wait itself (#1349): fall back to the
+                    // default delay now that the keys held for it are released.
+                    me.line_editor_status
+                        .update(ctx, |status, ctx| status.expedite_pending_activation(ctx));
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
-            }
-            ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
-                // #1343: a precmd that finds the line editor still flagged active is followed by
-                // no activation (neither the bracketed-paste signal nor the fallback timer), so
-                // keys held for the prompt expire on the shorter no-signal delay.
-                if FeatureFlag::TypeaheadHandoff.is_enabled()
-                    && me.line_editor_status.as_ref(ctx).is_line_editor_active()
-                {
-                    me.terminal_model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .note_no_line_editor_signal();
-                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -538,19 +543,9 @@ impl<T: EventLoopSender> PtyController<T> {
     /// set when this re-runs a decision that had to wait, rather than answering a fresh
     /// activation of the shell's line editor.
     fn decide_typeahead_handoff_request(&mut self, is_retry: bool, ctx: &mut ModelContext<Self>) {
-        // #1162: raw keys held since the prompt's precmd are written first, in typed order,
-        // ahead of any request and queued command: the line editor is active now. A retry is not
-        // a fresh activation, and an expiry timer releases what a retry would see.
-        if !is_retry {
-            let held_chunks = self
-                .terminal_model
-                .lock()
-                .typeahead_handoff_mut()
-                .release_prompt_hold_on_active();
-            for chunk in held_chunks {
-                self.write_handoff_user_bytes_inner(Cow::Owned(chunk), false, ctx);
-            }
-        }
+        // #1349: keys held since the prompt's precmd are released by the line editor's ready
+        // signal (see the `SetBracketedPaste` handler), never by this activation: the fallback
+        // timer behind it is not a signal.
         // The editor's command is still queued behind this activation: write it (and the keys
         // typed after it) first. The decision belongs to the prompt that follows it.
         if self.handoff_command_pending {
@@ -1845,6 +1840,18 @@ impl<T: EventLoopSender> PtyController<T> {
             },
             ctx,
         );
+    }
+
+    /// ConPTY prompt hold (#1349): the session's shell signals its line editor being ready, so
+    /// the activation fallback waits for that signal for the (long) give-up cap instead of
+    /// firing 50 ms after the precmd and releasing held keys ahead of it.
+    pub fn set_conpty_prompt_hold_signals(
+        &mut self,
+        wait: Option<std::time::Duration>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.line_editor_status
+            .update(ctx, |status, _| status.set_signal_wait(wait));
     }
 
     pub fn set_foreground_sigint(&mut self, f: std::sync::Arc<dyn Fn() -> bool>) {

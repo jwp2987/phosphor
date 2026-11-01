@@ -1683,6 +1683,7 @@ fn conpty_awaiting_line_editor() -> TypeaheadHandoff {
     let mut handoff = young_after_submit();
     handoff.set_conpty_input(true);
     handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
     handoff.on_precmd();
     handoff
 }
@@ -1696,7 +1697,7 @@ fn keys_between_precmd_and_active_are_held_and_released_in_order() {
     assert!(handoff.take_prompt_hold_started().is_some());
     assert_eq!(handoff.writes_in_flight(), 0);
     // Old behaviour: every key above was WriteCounted straight to the pty, ahead of readline.
-    let chunks = handoff.release_prompt_hold_on_active();
+    let chunks = handoff.release_prompt_hold_on_signal();
     assert_eq!(
         chunks,
         vec![
@@ -1730,11 +1731,67 @@ fn the_hold_expiry_releases_the_keys_in_order() {
 }
 
 #[test]
-fn a_stale_precmd_does_not_hold_new_keys() {
+fn a_precmd_older_than_the_give_up_cap_does_not_hold_new_keys() {
     let mut handoff = conpty_awaiting_line_editor();
     handoff.awaiting_line_editor_since =
-        Some(Instant::now() - CONPTY_PROMPT_HOLD_EXPIRY - Duration::from_millis(1));
+        Some(Instant::now() - CONPTY_PROMPT_HOLD_GIVE_UP - Duration::from_millis(1));
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn the_hold_releases_on_the_signal_and_not_before_however_long_it_takes() {
+    // #1349: old behaviour released the keys 150 ms (70 ms) after the precmd whether or not the
+    // line editor had signalled.
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    // A late prompt: the precmd is 1.4 s old (inside the give-up cap), still no signal.
+    handoff.awaiting_line_editor_since = Some(Instant::now() - Duration::from_millis(1400));
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
+    assert!(handoff.has_prompt_hold());
+    assert!(handoff.awaiting_line_editor_signal());
+    assert_eq!(
+        handoff.release_prompt_hold_on_signal(),
+        vec![b"a".to_vec(), b"b".to_vec()]
+    );
+    assert!(!handoff.awaiting_line_editor_signal());
+}
+
+#[test]
+fn a_signal_with_no_wait_pending_releases_nothing() {
+    // A program enabling bracketed paste itself, or a second signal for the same prompt.
+    let mut handoff = conpty_awaiting_line_editor();
+    assert!(handoff.release_prompt_hold_on_signal().is_empty());
+    assert!(handoff.release_prompt_hold_on_signal().is_empty());
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.expire_prompt_hold(id), Some(vec![b"a".to_vec()]));
+    // The next prompt is not delayed again.
+    handoff.on_precmd();
+    assert!(!handoff.awaiting_line_editor_signal());
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::WriteCounted);
+    // A new shell (ssh) may signal.
+    handoff.on_new_session();
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::Held);
+}
+
+#[test]
+fn a_shell_not_known_to_signal_is_never_held_for() {
+    // PowerShell 5.1, cmd, an unknown WSL shell: no signal could release the hold, so it would
+    // only be a timer.
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.on_precmd();
+    assert!(!handoff.awaiting_line_editor_signal());
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.has_prompt_hold());
 }
 
 #[test]
@@ -1763,46 +1820,32 @@ fn the_kill_switch_and_other_platforms_never_hold() {
     let mut handoff = young_after_submit();
     handoff.set_conpty_input(true);
     handoff.set_conpty_prompt_hold(false);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
     handoff.on_precmd();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
     // Not a ConPTY session (Linux, macOS): the flag alone changes nothing.
     let mut handoff = young_after_submit();
     handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
     handoff.on_precmd();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
     assert!(!handoff.has_prompt_hold());
 }
 
 #[test]
-fn a_precmd_with_no_line_editor_signal_holds_only_for_the_short_expiry() {
-    // #1343: the editor was still flagged active at the precmd, so neither the bracketed-paste
-    // signal nor the fallback timer follows it. Old behaviour: keys were held the full 150 ms
-    // and released in one burst.
+fn a_precmd_that_found_the_editor_flagged_active_still_gets_a_signal() {
+    // #1343/#1349: the editor model stayed flagged active across an empty line (readline sends no
+    // preexec for it), so it armed no activation for the next precmd and the hold fell back to
+    // a 70 ms timer. The hold no longer depends on that flag: the bracketed-paste signal
+    // releases it whatever the editor model thinks.
     let mut handoff = conpty_awaiting_line_editor();
-    assert_eq!(handoff.prompt_hold_expiry(), CONPTY_PROMPT_HOLD_EXPIRY);
-    handoff.note_no_line_editor_signal();
-    assert_eq!(
-        handoff.prompt_hold_expiry(),
-        CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY
-    );
-    // Within the short window keys are still held, in order.
+    handoff.on_precmd();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
-    // Past it a new key is no longer held (it would have been, with the 150 ms window).
-    let mut late = conpty_awaiting_line_editor();
-    late.note_no_line_editor_signal();
-    late.awaiting_line_editor_since =
-        Some(Instant::now() - CONPTY_PROMPT_HOLD_NO_SIGNAL_EXPIRY - Duration::from_millis(1));
-    assert_eq!(late.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
-    assert!(!late.has_prompt_hold());
-}
-
-#[test]
-fn the_next_precmd_expects_a_signal_again() {
-    let mut handoff = conpty_awaiting_line_editor();
-    handoff.note_no_line_editor_signal();
-    handoff.on_precmd();
-    assert_eq!(handoff.prompt_hold_expiry(), CONPTY_PROMPT_HOLD_EXPIRY);
+    assert_eq!(
+        handoff.release_prompt_hold_on_signal(),
+        vec![b"a".to_vec(), b"b".to_vec()]
+    );
 }
 
 /// #1345: the view reads how many prompts it has yet to handle, to hold the ssh hand-off until
