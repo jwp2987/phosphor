@@ -125,6 +125,10 @@ where
     /// held keys for the prompt (#1353 phase 5): release the gate `hold_id` names.
     fn on_prompt_hold_released(&mut self, _hold_id: u64, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when a young hold whose keys sit in the surface's input queue ended in the
+    /// controller (#1353 phase 5b): the surface takes or drops the gate's entries.
+    fn on_young_hold_ended(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when `command` was not run because another one is already waiting to start
     /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
     fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}

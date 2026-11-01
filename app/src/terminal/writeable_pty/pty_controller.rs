@@ -1094,6 +1094,7 @@ impl<T: EventLoopSender> PtyController<T> {
                     .lock()
                     .typeahead_handoff_mut()
                     .on_uncounted_command_written();
+                self.announce_young_hold_end(ctx);
             }
             if !is_command || !did_write {
                 self.execute_next_queued_write(ctx);
@@ -1653,7 +1654,24 @@ impl<T: EventLoopSender> PtyController<T> {
             self.handoff_request_waiting = false;
             ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
         }
+        self.announce_young_hold_end(ctx);
         StartCommandOutcome::Accepted
+    }
+
+    /// Tells the view that the hand-off ended a young hold whose keys are in its input queue
+    /// (#1353 phase 5b), when it did. A no-op without the hand-off or without such a hold.
+    fn announce_young_hold_end(&self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        let pending = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff()
+            .young_hold_end_pending();
+        if pending {
+            ctx.emit(PtyControllerEvent::YoungHoldEnded);
+        }
     }
 
     /// Drops every queued (not yet written) command, so a command parked until the line editor
@@ -2221,6 +2239,10 @@ pub enum PtyControllerEvent {
     /// The shell's line editor signalled it is ready while the view's input queue held keys for
     /// the prompt (#1353 phase 5, ConPTY): the view releases that gate (`hold_id` names it).
     PromptHoldReleased { hold_id: u64 },
+    /// A command was written (or counted) while the view's input queue held the keys of a young
+    /// hold, and the hand-off ended that hold (#1353 phase 5b): the view takes or drops the
+    /// gate's entries.
+    YoungHoldEnded,
 }
 
 impl<T: EventLoopSender> Entity for PtyController<T> {

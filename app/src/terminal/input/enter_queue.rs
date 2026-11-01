@@ -51,6 +51,8 @@ pub(super) const ENTER_GATE_LEAK_NET: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, Debug)]
 pub(super) struct EnterGate {
     pub(super) key: u64,
+    /// What the Enter waits for: `EnterVerdict` or `TabCompletion`.
+    pub(super) kind: GateKind,
     /// The Enter has run (`submit_held_enter`): the gate now waits for its route to settle.
     pub(super) submitted: bool,
     /// The Enter submitted a shell command, so the keys behind it wait for the pty to take it.
@@ -92,7 +94,7 @@ impl Input {
         self.enter_gate.is_some_and(|gate| {
             self.enter_queue_handle(ctx)
                 .try_borrow()
-                .is_ok_and(|queue| queue.has_gate(GateKind::EnterVerdict, gate.key))
+                .is_ok_and(|queue| queue.has_gate(gate.kind, gate.key))
         })
     }
 
@@ -145,7 +147,7 @@ impl Input {
 
     /// Opens the gate of the wait `id` that just started (an Enter held for its verdict or a Tab
     /// completion): keys arriving from now on queue behind it. A no-op on the legacy path.
-    pub(super) fn open_enter_gate(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+    pub(super) fn open_enter_gate(&mut self, id: u64, kind: GateKind, ctx: &mut ViewContext<Self>) {
         if !self.enter_queue_on(ctx) {
             return;
         }
@@ -157,10 +159,11 @@ impl Input {
         let mut host = InputQueueHost::new(self, ctx);
         queue.open_gate(
             &mut host,
-            GateSpec::new(GateKind::EnterVerdict, id).with_cap(Some(ENTER_GATE_LEAK_NET)),
+            GateSpec::new(kind, id).with_cap(Some(ENTER_GATE_LEAK_NET)),
         );
         self.enter_gate = Some(EnterGate {
             key: id,
+            kind,
             submitted: false,
             awaits_pty: false,
             route_cap_armed: false,
@@ -208,9 +211,7 @@ impl Input {
         };
         self.enter_queue_handle(ctx)
             .try_borrow()
-            .map_or(0, |queue| {
-                queue.held_behind_gate(GateKind::EnterVerdict, gate.key)
-            })
+            .map_or(0, |queue| queue.held_behind_gate(gate.kind, gate.key))
     }
 
     /// The waiting Enter is void (^C, an edit of its line): closes the gate and hands back the text
@@ -227,7 +228,7 @@ impl Input {
         };
         let mut host = InputQueueHost::new(self, ctx);
         queue
-            .close_gate_taking(&mut host, GateKind::EnterVerdict, gate.key)
+            .close_gate_taking(&mut host, gate.kind, gate.key)
             .into_iter()
             .filter_map(|entry| match entry.kind {
                 EntryKind::Text(text) => Some(text),
@@ -267,7 +268,7 @@ impl Input {
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
-        queue.on_gate_event(&mut host, GateKind::EnterVerdict, gate.key);
+        queue.on_gate_event(&mut host, gate.kind, gate.key);
     }
 
     /// The route-settle give-up of gate `key` fired: the event that should have opened it (the pty
@@ -309,7 +310,7 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         self.set_enter_queue_for_test(true);
-        self.open_enter_gate(1, ctx);
+        self.open_enter_gate(1, GateKind::EnterVerdict, ctx);
         let queue = self.enter_queue_handle(ctx);
         {
             let mut queue = queue.borrow_mut();

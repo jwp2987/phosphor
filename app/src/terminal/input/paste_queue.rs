@@ -144,7 +144,7 @@ impl Host for InputQueueHost<'_, '_> {
             }
             DiscardReason::PasteCancelled => {}
             // ^C met the Enter's gate: the keys typed behind that Enter are dropped with it.
-            DiscardReason::SignalDiscard(GateKind::EnterVerdict) => {}
+            DiscardReason::SignalDiscard(GateKind::EnterVerdict | GateKind::TabCompletion) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
     }

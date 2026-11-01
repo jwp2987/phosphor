@@ -51,6 +51,7 @@ use crate::terminal::input_queue::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
     GateSpec, GateToken, Host, InputEntry, InputQueue, SignalKind, trace,
 };
+use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
 
 /// What the pane's paste ordering needs: the queue, the paste bytes waiting for their turn, and
@@ -107,10 +108,6 @@ pub(super) enum PromptHoldEnd {
     /// The give-up cap: no signal came.
     GaveUp,
 }
-
-/// CLI-agent submit gates share the `PasteReading` kind (a submit is a paste with a paced tail);
-/// their keys live above this so they can never collide with a paste id.
-const CLI_SUBMIT_GATE_KEY_BASE: u64 = 1 << 62;
 
 /// A paced CLI-agent submit is a few hundred ms to a few seconds (a Copilot bracketed paste waits
 /// 300 ms for its Enter, each image 300 ms); this is a net for a submit that never reports its end,
@@ -369,6 +366,19 @@ impl TerminalView {
         if self.only_ssh_gates_open() {
             return None;
         }
+        // A young Enter's hold the hand-off's state has outgrown ends before this key is queued
+        // behind it (#1353 phase 5b). One borrow-flag read when no such gate is open.
+        if abort_signal(bytes).is_none() {
+            self.settle_stale_young_hold_before_key(ctx);
+            if self
+                .paste_queue
+                .queue
+                .try_borrow()
+                .map_or(true, |queue| queue.is_idle())
+            {
+                return None;
+            }
+        }
         let kind = match abort_signal(bytes).filter(|_| !abort_as_entry) {
             Some(signal) => {
                 // Ctrl-C / Ctrl-D skips an announced subshell setup (the held keys follow it).
@@ -388,11 +398,10 @@ impl TerminalView {
                 // A key typed for the shell's line behind a prompt hold: the ConPTY mid-line
                 // guard learns of it here, without the model lock.
                 if let Some(stamp) = &self.paste_queue.line_stamp
-                    && self
-                        .paste_queue
-                        .queue
-                        .try_borrow()
-                        .is_ok_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+                    && self.paste_queue.queue.try_borrow().is_ok_and(|queue| {
+                        queue.has_gate_kind(GateKind::LineEditorActive)
+                            || queue.has_gate_kind(GateKind::PromptSeen)
+                    })
                 {
                     stamp.note_now();
                 }
@@ -421,7 +430,7 @@ impl TerminalView {
             return;
         }
         self.paste_queue.next_cli_submit_key += 1;
-        let key = CLI_SUBMIT_GATE_KEY_BASE + self.paste_queue.next_cli_submit_key;
+        let key = self.paste_queue.next_cli_submit_key;
         let queue = Rc::clone(&self.paste_queue.queue);
         let Ok(mut queue) = queue.try_borrow_mut() else {
             log::warn!("input queue: CLI-agent submit gate not opened, the queue was busy");
@@ -430,7 +439,7 @@ impl TerminalView {
         let mut host = PtyQueueHost::new(self, ctx);
         queue.open_gate(
             &mut host,
-            GateSpec::new(GateKind::PasteReading, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
+            GateSpec::new(GateKind::CliSubmit, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
         );
         self.paste_queue.cli_submit_gate = Some(key);
     }
@@ -448,7 +457,7 @@ impl TerminalView {
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.on_gate_event(&mut host, GateKind::PasteReading, key);
+        queue.on_gate_event(&mut host, GateKind::CliSubmit, key);
     }
 
     /// Writes a piece of a CLI-agent submit. While the submit holds the queue its own writes go
@@ -500,6 +509,25 @@ impl TerminalView {
             self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
             return;
         }
+        if kind == Some(GateKind::PromptSeen) {
+            // The prompt never came for a held young Enter (#933): the hand-off decides what the
+            // give-up does (write the keys as typeahead, keep waiting for the report, or find the
+            // hold already ended) and the queue's own give-up must not deliver them through the
+            // stages a second time.
+            let key = queue
+                .try_borrow()
+                .ok()
+                .and_then(|queue| {
+                    queue
+                        .gates()
+                        .iter()
+                        .find(|gate| gate.token == token)
+                        .map(|gate| gate.key)
+                })
+                .unwrap_or_default();
+            self.give_up_queued_young_hold(key, ctx);
+            return;
+        }
         if kind == Some(GateKind::PasteReading) {
             // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
             // cancel flag is signalled and the blocked-reader count / log reflect it.
@@ -527,11 +555,13 @@ impl TerminalView {
         use crate::terminal::input_queue::trace::legacy;
         match self.paste_queue.queue.try_borrow() {
             Ok(queue) if queue.has_gate_kind(GateKind::PasteReading) => legacy::PASTE_PTY,
+            Ok(queue) if queue.has_gate_kind(GateKind::CliSubmit) => legacy::PASTE_PTY,
             Ok(queue) if queue.has_gate_kind(GateKind::SubshellBootstrapWrite) => {
                 legacy::SUBSHELL_BOOTSTRAP
             }
             Ok(queue) if queue.has_gate_kind(GateKind::SubshellSetup) => legacy::SUBSHELL_SETUP,
             Ok(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
+            Ok(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
         }
     }
@@ -558,6 +588,32 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let spec = GateSpec::new(GateKind::LineEditorActive, hold_id).with_cap(Some(give_up));
+        self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
+    }
+
+    /// The hand-off just held `bytes` for a young Enter (#933) and told us it keeps no copy
+    /// (#1353 phase 5b): they become the first entry of a `PromptSeen` gate keyed by the hold's
+    /// id, ended by the hand-off's decision ([`Self::drain_young_hold_ends`]), the give-up cap
+    /// being the only timer.
+    pub(super) fn hold_young_keys_in_queue(
+        &mut self,
+        hold_id: u64,
+        give_up: Duration,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let spec = GateSpec::new(GateKind::PromptSeen, hold_id).with_cap(Some(give_up));
+        self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
+    }
+
+    fn hold_keys_behind_gate(
+        &mut self,
+        spec: GateSpec,
+        bytes: Vec<u8>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if self.paste_queue.requeueable_delivery {
             // The queue is delivering this very entry: the host puts it back under the gate.
             self.paste_queue.requeue_request = Some(RequeueRequest { spec, bytes });
@@ -615,6 +671,251 @@ impl TerminalView {
         trace::release(trace::legacy::HANDOFF, 1, combined.len(), "pty");
         combined.extend_from_slice(&bytes);
         Cow::Owned(combined)
+    }
+
+    /// Whether a young Enter's gate is open.
+    fn young_hold_gate_open(&self) -> bool {
+        self.paste_queue
+            .queue
+            .try_borrow()
+            .is_ok_and(|queue| queue.has_gate_kind(GateKind::PromptSeen))
+    }
+
+    /// A signal or EOF is about to be written while the queue holds a young Enter's keys (#933,
+    /// #1353 phase 5b). The hold ends here, in typed order with the signal: the keys are void
+    /// for ^C, ^Z and ^\\ (the tty flushes its typeahead), and go out in front of a lone EOF
+    /// (the tty keeps typeahead across it). Anything else passes through untouched.
+    pub(super) fn settle_queued_young_hold_for_signal(
+        &mut self,
+        bytes: Cow<'static, [u8]>,
+        ctx: &mut ViewContext<Self>,
+    ) -> Cow<'static, [u8]> {
+        if !self.paste_queue.enabled
+            || !bytes.iter().any(super::is_signal_byte)
+            || !self.young_hold_gate_open()
+        {
+            return bytes;
+        }
+        let ended = {
+            let mut model = self.model.lock();
+            model
+                .typeahead_handoff_mut()
+                .take_queued_young_hold_for_signal(&bytes)
+        };
+        let Some((hold_id, before_eof)) = ended else {
+            return bytes;
+        };
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let entries = {
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                // Mid-drain: nothing else can end the hold, so record it for the next attempt.
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .restore_young_hold_end(hold_id, YoungHoldEnd::Dropped);
+                return bytes;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
+        };
+        let chunks = self.bytes_of_taken_entries(entries);
+        if !before_eof {
+            return bytes;
+        }
+        let mut combined = chunks.concat();
+        trace::release(trace::legacy::HANDOFF, 1, combined.len(), "pty");
+        combined.extend_from_slice(&bytes);
+        Cow::Owned(combined)
+    }
+
+    /// A key is about to be queued behind a young Enter's gate: a hold the hand-off's state has
+    /// outgrown ends first (what the next routed key would have found), so the key is not
+    /// swallowed by a stale gate.
+    pub(super) fn settle_stale_young_hold_before_key(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.young_hold_gate_open() {
+            return;
+        }
+        let ended = {
+            let mut model = self.model.lock();
+            model.typeahead_handoff_mut().check_queued_young_hold()
+        };
+        if ended {
+            self.drain_young_hold_ends(ctx);
+        }
+    }
+
+    /// Applies, to the gate of the queue, every end the hand-off recorded for a young Enter's
+    /// hold (a command written, a report, a signal, a state that outgrew it): the entries are
+    /// dropped, written behind the command, or split at the Enter. Called from the few places a
+    /// hold can end, never per key.
+    pub(super) fn drain_young_hold_ends(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.paste_queue.enabled {
+            return;
+        }
+        let ends = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .take_young_hold_ends();
+        for (hold_id, end) in ends {
+            self.apply_young_hold_end(hold_id, end, ctx);
+        }
+    }
+
+    fn apply_young_hold_end(
+        &mut self,
+        hold_id: u64,
+        end: YoungHoldEnd,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let entries = {
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                // Mid-drain: keep the end for the next attempt (the gate's give-up finds it too).
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .restore_young_hold_end(hold_id, end);
+                log::warn!("input queue: young hold {hold_id} end deferred, the queue was busy");
+                return;
+            };
+            if !guard.has_gate(GateKind::PromptSeen, hold_id) {
+                // Never queued (the hold's keys stayed in the hand-off's buffer) or already taken.
+                if end == YoungHoldEnd::FollowCommand {
+                    drop(guard);
+                    self.model
+                        .lock()
+                        .typeahead_handoff_mut()
+                        .count_followed_young_hold(hold_id, &[]);
+                }
+                return;
+            }
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
+        };
+        let chunks = self.bytes_of_taken_entries(entries);
+        let held_bytes: usize = chunks.iter().map(Vec::len).sum();
+        match end {
+            YoungHoldEnd::Dropped => {
+                trace::release(trace::legacy::HANDOFF, 0, held_bytes, "dropped");
+            }
+            YoungHoldEnd::FollowCommand => {
+                // The command is written (or queued ahead of these): the keys typed behind the
+                // Enter follow it, counted as the lines they are.
+                let bytes = chunks.concat();
+                self.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .count_followed_young_hold(hold_id, &bytes);
+                trace::release(trace::legacy::HANDOFF, 1, held_bytes, "pty");
+                if !bytes.is_empty() {
+                    ctx.emit(Event::WriteHandoffUserBytesToPty {
+                        bytes: Cow::Owned(bytes),
+                    });
+                }
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
+            YoungHoldEnd::SubmitOnReport => {
+                // The Enter is run in the editor; the keys typed after it are held behind it.
+                let mut bytes = chunks.concat();
+                if !bytes.is_empty() {
+                    let rest = bytes.split_off(1);
+                    if !rest.is_empty() {
+                        self.model
+                            .lock()
+                            .typeahead_handoff_mut()
+                            .prepend_held_keys(&rest);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The give-up cap of the gate of young hold `hold_id` fired (no prompt came within the
+    /// window, or the 2 s an event was to release it in): the hand-off says what the keys do.
+    fn give_up_queued_young_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
+        // Anything the hand-off already decided wins over the give-up.
+        self.drain_young_hold_ends(ctx);
+        if !self
+            .paste_queue
+            .queue
+            .try_borrow()
+            .is_ok_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
+        {
+            return;
+        }
+        let expiry = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .expire_queued_young_hold(hold_id);
+        match expiry {
+            YoungHoldExpiry::Keep => {}
+            YoungHoldExpiry::Gone => {
+                self.drain_young_hold_ends(ctx);
+                if self.young_hold_gate_has_key(hold_id) {
+                    // The gate outlived a hold with no recorded end: never lose what was typed.
+                    log::warn!(
+                        "input queue: young hold {hold_id} is gone but its gate is open; writing its keys"
+                    );
+                    self.release_young_hold_keys(hold_id, false, ctx);
+                }
+            }
+            YoungHoldExpiry::Release => {
+                self.release_young_hold_keys(hold_id, true, ctx);
+            }
+        }
+    }
+
+    fn young_hold_gate_has_key(&self, hold_id: u64) -> bool {
+        self.paste_queue
+            .queue
+            .try_borrow()
+            .is_ok_and(|queue| queue.has_gate(GateKind::PromptSeen, hold_id))
+    }
+
+    /// Takes the keys out of young hold `hold_id`'s gate and writes them to the pty as typeahead,
+    /// in typed order (one write, or one per key event on ConPTY), routed and counted by the
+    /// hand-off. `routed` is whether the hand-off already ended the hold.
+    fn release_young_hold_keys(&mut self, hold_id: u64, routed: bool, ctx: &mut ViewContext<Self>) {
+        let queue = Rc::clone(&self.paste_queue.queue);
+        let entries = {
+            let Ok(mut guard) = queue.try_borrow_mut() else {
+                log::warn!("input queue: young hold {hold_id} not released, the queue was busy");
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::PromptSeen, hold_id)
+        };
+        let chunks = self.bytes_of_taken_entries(entries);
+        let writes = {
+            let mut model = self.model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            if routed {
+                handoff.route_expired_young_chunks(chunks)
+            } else {
+                chunks
+            }
+        };
+        // The give-up safety net fired: no prompt arrived in time. Ids and counts only, never bytes.
+        log::warn!(
+            "typeahead young hold {hold_id} expired with no prompt: releasing {} chunk(s), {} byte(s) to the pty",
+            writes.len(),
+            writes.iter().map(Vec::len).sum::<usize>()
+        );
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_mark());
+        trace::release(
+            trace::legacy::HANDOFF,
+            writes.len(),
+            writes.iter().map(Vec::len).sum(),
+            "pty",
+        );
+        for bytes in writes {
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
+        }
     }
 
     /// The bytes of entries taken out of a hand-off gate, one chunk per entry, in order.

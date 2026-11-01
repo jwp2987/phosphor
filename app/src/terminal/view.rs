@@ -4214,6 +4214,8 @@ impl TerminalView {
             handoff.track_view_precmds();
             // #1353 phase 5: the ConPTY prompt hold's keys live in this view's input queue.
             handoff.set_prompt_hold_in_queue(paste_queue::handoff_queue_enabled_by_default());
+            // #1353 phase 5b: so does a young Enter's hold (a `PromptSeen` gate).
+            handoff.set_young_hold_in_queue(paste_queue::handoff_queue_enabled_by_default());
         }
         let maa_passive_suggestions_model = ctx.add_model(|ctx| {
             MaaPassiveSuggestionsModel::new(
@@ -9489,6 +9491,7 @@ impl TerminalView {
                 .lock()
                 .typeahead_handoff_mut()
                 .cancel_deferred_enter();
+            self.drain_young_hold_ends(ctx);
             if cancelled {
                 self.redetermine_terminal_focus(ctx);
             }
@@ -9880,6 +9883,7 @@ impl TerminalView {
                     .is_agent_requested_command_in_flight();
                 (cancelled, agent_command_in_flight)
             };
+            self.drain_young_hold_ends(ctx);
             if cancelled && !agent_command_in_flight {
                 self.redetermine_terminal_focus(ctx);
                 ctx.notify();
@@ -12122,6 +12126,8 @@ impl TerminalView {
         // #1353 phase 5: a signal or EOF goes out behind the keys the queue holds for the shell's
         // prompt (ConPTY, #1162), as one write in typed order. Idle, this is one byte scan.
         let bytes = self.prepend_queued_prompt_hold_to_signal(bytes, ctx);
+        // ... and a signal ends a young Enter's hold: void for ^C, ahead of a lone EOF (#933).
+        let bytes = self.settle_queued_young_hold_for_signal(bytes, ctx);
         // A paste is still being read off the main thread (#1255): what is typed meanwhile goes
         // out behind it, in order; an abort key cancels the paste instead. On the input queue
         // (#1353) the paste is an entry held by a gate and these bytes queue behind it; idle, this
@@ -12394,15 +12400,21 @@ impl TerminalView {
                     // #1353 phase 5: this hold's keys go to the input queue, or stay in the
                     // hand-off's buffer when the queue cannot take them right now.
                     handoff.set_prompt_hold_in_queue(hold_in_queue);
+                    handoff.set_young_hold_in_queue(hold_in_queue);
                     handoff.on_user_bytes(&bytes)
                 };
                 if route == UserBytesRoute::Held {
                     // What the held key started, read under this same lock (it used to be three
                     // more acquisitions).
                     let handoff = terminal_model.typeahead_handoff_mut();
-                    hold_start.young = handoff
-                        .take_young_hold_started()
-                        .map(|id| (id, handoff.young_hold_wait(Instant::now())));
+                    hold_start.young = handoff.take_young_hold_started().map(|id| {
+                        (
+                            id,
+                            handoff.young_hold_wait(Instant::now()),
+                            handoff.young_hold_queued(),
+                            handoff.queued_line_bytes_stamp(),
+                        )
+                    });
                     hold_start.prompt = handoff.take_prompt_hold_started().map(|id| {
                         (
                             id,
@@ -12425,10 +12437,24 @@ impl TerminalView {
         if handoff_route == UserBytesRoute::Held {
             input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
             // #933: an Enter held because the command may already have finished.
-            if let Some((hold_id, hold_wait)) = hold_start.young {
+            if let Some((hold_id, hold_wait, in_queue, stamp)) = hold_start.young {
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
+                if in_queue {
+                    // #1353 phase 5b: the Enter and the keys behind it are entries of the input
+                    // queue behind a `PromptSeen` gate; the prompt's precmd, the report, a command
+                    // or a signal end the hold (events), and the gate's cap is only the give-up.
+                    self.paste_queue.line_stamp.get_or_insert(stamp);
+                    self.hold_young_keys_in_queue(
+                        hold_id,
+                        hold_wait,
+                        bytes.into_owned(),
+                        takes_over_agent_control,
+                        ctx,
+                    );
+                    return true;
+                }
                 ctx.spawn(Timer::after(hold_wait), move |me, _, ctx| {
                     me.release_expired_young_hold(hold_id, ctx);
                 });
@@ -12779,6 +12805,9 @@ impl TerminalView {
     /// behind it, and the editor holds only what was typed after it -- submitting that would run
     /// a fragment. Only the report, Ctrl-C or the session ending releases it.
     fn handle_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        // A hold the hand-off ended since (a command written, a state that outgrew it) is
+        // applied to the queue before anything decides on the keys behind it.
+        self.drain_young_hold_ends(ctx);
         let has_stashed_report = {
             let model = self.model.lock();
             model.typeahead_handoff().editor_owns_input()
@@ -12847,6 +12876,9 @@ impl TerminalView {
     /// Applies a shell typeahead report under the typeahead hand-off.
     fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
         let disposition = self.model.lock().typeahead_handoff_mut().on_report();
+        // #1353 phase 5b: a young Enter held in the input queue is split here, before anything
+        // else (the editor's own keys, #1016) is put in front of the keys held behind it.
+        self.drain_young_hold_ends(ctx);
         match disposition {
             ReportDisposition::InsertLegacy => {
                 self.handle_typeahead_event(ctx);
@@ -13408,6 +13440,7 @@ impl TerminalView {
                 handoff.interrupt_awaiting_cycle(),
             )
         };
+        self.drain_young_hold_ends(ctx);
         if outcome == InterruptOutcome::NotOwned {
             return;
         }
@@ -33458,6 +33491,10 @@ impl TerminalSurface for TerminalView {
         TerminalView::on_prompt_hold_released(self, hold_id, ctx);
     }
 
+    fn on_young_hold_ended(&mut self, ctx: &mut ViewContext<Self>) {
+        self.drain_young_hold_ends(ctx);
+    }
+
     fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
         const MAX_COMMAND_LENGTH: usize = 43;
         let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
@@ -36452,8 +36489,15 @@ fn subshell_bootstrap_key_forwarded(
 /// What a user key that the hand-off held started, read under the key path's one model lock.
 #[derive(Default)]
 struct HandoffHoldStart {
-    /// A young Enter was held: the hold's id and how long the view waits for the prompt.
-    young: Option<(u64, Duration)>,
+    /// A young Enter was held: the hold's id, how long the view waits for the prompt, whether
+    /// its keys are in the input queue (else in the hand-off's buffer) and the mid-line stamp to
+    /// share.
+    young: Option<(
+        u64,
+        Duration,
+        bool,
+        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
+    )>,
     /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap, whether the keys
     /// are in the input queue (else in the hand-off's buffer) and the mid-line stamp to share.
     prompt: Option<(

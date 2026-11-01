@@ -14158,7 +14158,11 @@ impl Input {
             .update(ctx, |model, _| model.clear_typeahead_provenance());
         let since = Instant::now();
         let wait_id = self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
-        self.open_enter_gate(wait_id, ctx);
+        self.open_enter_gate(
+            wait_id,
+            crate::terminal::input_queue::GateKind::EnterVerdict,
+            ctx,
+        );
         self.cancel_pending_completions_for_deferred_enter();
         self.begin_deferred_enter_activity(ctx);
         // Released by the verdict landing (the input model's notification); see
@@ -14256,7 +14260,11 @@ impl Input {
             },
             ctx,
         );
-        self.open_enter_gate(wait_id, ctx);
+        self.open_enter_gate(
+            wait_id,
+            crate::terminal::input_queue::GateKind::TabCompletion,
+            ctx,
+        );
         self.begin_deferred_enter_activity(ctx);
         // Released by the completion result (`deliver_completion_suggestions_results`).
         self.watch_hold_compute(ctx);

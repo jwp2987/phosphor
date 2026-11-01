@@ -1328,3 +1328,74 @@ fn a_signal_flushes_a_requeued_hold_in_typed_order() {
     assert_eq!(h.delivered_ids(), vec![1, 2, 3]);
     assert!(q.is_idle());
 }
+
+// ---- #1353 phase 5b: gate kinds of their own -------------------------------------------------
+
+/// A paced CLI-agent submit holds the keys typed behind it on a `CliSubmit` gate: its key can
+/// equal a paste's id without the two touching, only its own event opens it, and a signal flushes
+/// what was typed before it (no paste entry exists to cancel).
+#[test]
+fn a_cli_submit_gate_is_its_own_kind_and_never_a_paste() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::CliSubmit, 1));
+    q.offer(&mut h, text("a"));
+    q.offer(&mut h, text("b"));
+    assert!(h.delivered.is_empty());
+    // A paste read finishing under the same number is not the submit's event.
+    q.on_paste_read(&mut h, 1, Ok(b"p".to_vec()));
+    assert!(h.delivered.is_empty());
+    assert!(q.has_gate(GateKind::CliSubmit, 1));
+    assert!(q.on_gate_event(&mut h, GateKind::CliSubmit, 1));
+    assert_eq!(h.delivered_ids(), vec![1, 2]);
+    assert!(q.is_idle());
+
+    // Its cap is the gate's: the keys come out, in order, and nothing is reported as a paste.
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::CliSubmit, 2).with_cap(Some(Duration::from_secs(20))),
+    );
+    q.offer(&mut h, text("c"));
+    let token = h.armed.last().unwrap().0;
+    assert_eq!(h.armed.last().unwrap().1, GateKind::CliSubmit);
+    assert!(q.give_up(&mut h, token));
+    assert_eq!(h.delivered_ids(), vec![1, 2, 3]);
+    assert!(h.discarded.is_empty());
+}
+
+/// An Enter waiting for a Tab completion is a `TabCompletion` gate, distinct from one waiting
+/// for the verdict, with the same signal rule: what was typed behind the Enter is dropped with it.
+#[test]
+fn a_tab_completion_gate_is_distinct_from_the_verdict_gate_and_drops_its_keys_on_a_signal() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::TabCompletion, 7));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EnterVerdict, 7));
+    assert!(q.has_gate(GateKind::TabCompletion, 7));
+    assert!(q.has_gate(GateKind::EnterVerdict, 7));
+    assert_eq!(
+        GateKind::TabCompletion.signal_plan(),
+        GateKind::EnterVerdict.signal_plan()
+    );
+    // The verdict's event does not open the Tab completion's gate.
+    assert!(q.on_gate_event(&mut h, GateKind::EnterVerdict, 7));
+    assert!(q.has_gate(GateKind::TabCompletion, 7));
+    q.offer(&mut h, text("a"));
+    assert!(h.delivered.is_empty());
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(h.discarded.len(), 1);
+    assert_eq!(
+        h.discarded[0].1,
+        DiscardReason::SignalDiscard(GateKind::TabCompletion)
+    );
+    assert!(q.is_idle());
+}
+
+/// Every gate kind has a distinct name (the trace and the logs key on it).
+#[test]
+fn gate_kind_names_are_unique() {
+    let mut names: Vec<&str> = GateKind::ALL.iter().map(|kind| kind.name()).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), GateKind::ALL.len());
+}

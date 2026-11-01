@@ -236,6 +236,9 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     surface.on_prompt_hold_released(hold_id, ctx)
                 });
             }
+            PtyControllerEvent::YoungHoldEnded => {
+                surface.update(ctx, |surface, ctx| surface.on_young_hold_ended(ctx));
+            }
         }
     });
 }
