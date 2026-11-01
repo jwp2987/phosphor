@@ -26,15 +26,16 @@ use warp_completer::ParsedTokensSnapshot;
 use super::{
     AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, MAX_PREFILTER_BYTES, QUESTION_HEADS,
     REQUEST_OPENER_HEADS, SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
-    buffer_has_prose_colon_shape, effective_head_index, ends_in_sentence_punctuation,
-    has_no_prose_evidence, has_prose_veto_word, is_agent_follow_up_input, is_data_shaped_word,
-    is_env_assignment_token, is_explicit_path_token, is_function_word, is_known_shell_command_word,
-    is_misplaced_re_command_word, is_non_english_shell_name, is_one_off_natural_language_word,
-    is_one_off_shell_command_keyword, is_prose_article, is_prose_word,
-    is_unambiguous_shell_command, lacks_command_evidence_in_agent_conversation,
-    lone_word_belongs_to_agent, reads_as_prose_with_unknown_head, reads_as_request_to_agent,
-    split_shell_words, starts_with_slash_command_not_path, strip_sentence_punctuation,
-    strip_trailing_comment, takes_free_text, word_basename,
+    buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
+    ends_in_sentence_punctuation, has_no_prose_evidence, has_prose_veto_word,
+    is_agent_follow_up_input, is_data_shaped_word, is_env_assignment_token, is_explicit_path_token,
+    is_function_word, is_known_shell_command_word, is_misplaced_re_command_word,
+    is_non_english_shell_name, is_one_off_natural_language_word, is_one_off_shell_command_keyword,
+    is_prose_article, is_prose_word, is_unambiguous_shell_command,
+    lacks_command_evidence_in_agent_conversation, lone_word_belongs_to_agent,
+    reads_as_prose_with_unknown_head, reads_as_request_to_agent, split_shell_words,
+    starts_with_slash_command_not_path, strip_sentence_punctuation, strip_trailing_comment,
+    takes_free_text, word_basename,
 };
 
 /// The syntax family of the shell the line is typed into. bash and zsh are one family here.
@@ -860,12 +861,19 @@ fn reads_as_sentence_with_command_head(
         return false;
     };
     let head = &words[head_index];
-    let basename = word_basename(head);
-    if head.quoted
-        || is_explicit_path_token(&head.text)
-        || is_one_off_shell_command_keyword(basename)
-        || FREE_TEXT_ARG_HEADS.contains(&basename)
-        || takes_free_text(words, head_index)
+    // `watch echo what is this`: a binary opener runs the command after it, so that command's
+    // keyword / free-text status exempts the line too (`reads_as_request_to_agent` does the same).
+    if effective_head_chain(words, first_index)
+        .iter()
+        .any(|&index| {
+            let word = &words[index];
+            let basename = word_basename(word);
+            word.quoted
+                || is_explicit_path_token(&word.text)
+                || is_one_off_shell_command_keyword(basename)
+                || FREE_TEXT_ARG_HEADS.contains(&basename)
+                || takes_free_text(words, index)
+        })
     {
         return false;
     }

@@ -732,7 +732,6 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "cat the log file",
             "kill the server running on port 8080",
             "git is failing to push",
-            "cargo build",
             "make it work",
             "time how long the build takes",
             "~/.bashrc has a syntax error",
@@ -1317,6 +1316,9 @@ fn test_is_unambiguous_shell_command_rule3_known_subcommand_is_the_only_prose_wo
             "git log --oneline",
             "git commit -m 'fix the login bug'",
             "cargo build --release",
+            // Moved here from the prose corpus: since #1203 a known CLI's own subcommand alone
+            // is unambiguous, with or without flags.
+            "cargo build",
         ] {
             assert!(
                 is_unambiguous_shell_command_for(buffer).await,

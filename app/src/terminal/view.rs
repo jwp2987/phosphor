@@ -10562,9 +10562,14 @@ impl TerminalView {
             return false;
         }
         let had_keys = !self.ssh_typeahead.is_empty();
-        let mid_burst = burst_continues(self.ssh_typeahead_last_key_at, Instant::now());
+        let last_key_at = self.ssh_typeahead_last_key_at;
+        let mid_burst = burst_continues(last_key_at, Instant::now());
         self.reset_ssh_typeahead();
         self.ssh_typeahead_discard_burst = had_keys && mid_burst;
+        if self.ssh_typeahead_discard_burst {
+            // The burst's tail is recognised by its gap to the last key, which the reset cleared.
+            self.ssh_typeahead_last_key_at = last_key_at;
+        }
         if had_keys {
             self.show_ssh_typing_toast(
                 "Text typed before the SSH prompt appeared was discarded",

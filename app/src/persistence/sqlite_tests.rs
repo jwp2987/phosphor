@@ -2782,8 +2782,7 @@ fn lock_retry_slows_down_instead_of_giving_up() {
 
 /// A rollback-journal file database whose writer connection `a` has a short busy
 /// timeout, plus `t(x)`; used to make `COMMIT` fail with `SQLITE_BUSY` (a reader
-/// on another connection holds a SHARED lock), which diesel's `transaction()`
-/// reports without ending the transaction (#971).
+/// on another connection holds a SHARED lock) (#971).
 fn stray_transaction_fixture() -> (
     tempfile::TempDir,
     String,
@@ -2826,9 +2825,32 @@ fn count_rows_from_fresh_connection(url: &str) -> i64 {
         .n
 }
 
-/// #971: a failed COMMIT left the writer inside an open transaction with diesel
-/// counting depth 1, so every later write was a SAVEPOINT in a transaction that
-/// never committed: "saved" in the log, invisible to every other connection.
+/// Leaves `a` in the state #971 describes: SQLite inside an open transaction holding a pending
+/// write, diesel counting depth 1, after a `COMMIT` that was blocked by the fixture's reader.
+/// diesel's own `transaction()` used to end up here when `COMMIT` failed; diesel 2.3.14 (#1286)
+/// rolls that back instead, so the state is built by hand to keep exercising the settle path
+/// (any other code that issues a raw `COMMIT` can still leave it behind).
+fn leave_stray_transaction(a: &mut diesel::sqlite::SqliteConnection) {
+    use diesel::{
+        RunQueryDsl as _,
+        connection::{AnsiTransactionManager, SimpleConnection as _, TransactionManager as _},
+    };
+
+    AnsiTransactionManager::begin_transaction(a).expect("transaction begins");
+    diesel::sql_query("INSERT INTO t VALUES (1)")
+        .execute(a)
+        .expect("write is pending");
+    assert!(
+        a.batch_execute("COMMIT;").is_err(),
+        "COMMIT must be blocked by the reader's SHARED lock"
+    );
+}
+
+/// #971: a blocked COMMIT must never leave the writer inside an open transaction, whichever way
+/// the driver reports it: later writes have to commit promptly instead of nesting in it. diesel
+/// 2.3.14 rolls the failed top-level commit back itself (the caller's retry re-sends the write);
+/// older diesel returned early with the transaction open, which `settle_stray_transaction`
+/// (called after every write) ends.
 #[test]
 fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
     use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
@@ -2843,9 +2865,40 @@ fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
         result.is_err(),
         "COMMIT must be blocked by the reader's SHARED lock"
     );
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    super::settle_stray_transaction(&mut a);
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the writer must be back in autocommit"
+    );
+
+    // And later writes commit promptly instead of nesting in an old transaction.
+    a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
+        Ok(())
+    })
+    .expect("a later write commits");
+    assert!(
+        count_rows_from_fresh_connection(&url) >= 1,
+        "the later write must be visible to another connection"
+    );
+    assert!(
+        !super::settle_stray_transaction(&mut a),
+        "nothing left to settle"
+    );
+}
+
+/// #971: a transaction left open by a blocked COMMIT is committed (not lost) once the lock
+/// clears, and the writer is back in autocommit.
+#[test]
+fn stray_transaction_is_committed_by_the_settle_once_the_lock_clears() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+    leave_stray_transaction(&mut a);
     assert!(
         super::in_open_transaction(&mut a),
-        "precondition: diesel's early return leaves SQLite inside the transaction"
+        "precondition: the blocked COMMIT leaves SQLite inside the transaction"
     );
 
     reader.batch_execute("ROLLBACK;").expect("reader released");
@@ -2863,7 +2916,6 @@ fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
         "the intended write must be committed, not lost"
     );
 
-    // And later writes commit promptly instead of nesting in the old transaction.
     a.transaction::<_, diesel::result::Error, _>(|conn| {
         diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
         Ok(())
@@ -2883,10 +2935,7 @@ fn write_lock_probe_ends_a_stray_transaction_and_leaves_autocommit() {
     use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
 
     let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
-    let _ = a.transaction::<_, diesel::result::Error, _>(|conn| {
-        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
-        Ok(())
-    });
+    leave_stray_transaction(&mut a);
     assert!(super::in_open_transaction(&mut a));
     reader.batch_execute("ROLLBACK;").expect("reader released");
 
