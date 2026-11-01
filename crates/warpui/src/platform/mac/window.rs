@@ -1468,6 +1468,10 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
         app::callback_dispatcher().with_mutable_app_context(|ctx| {
             renderer.render(&scene, window.as_ref(), ctx.font_cache());
         });
+        // Glyphs left unrasterised by the per-frame budget (#1168 F6) need another frame.
+        if crate::rendering::glyph_cache::take_deferred_redraw() {
+            window.schedule_redraw();
+        }
 
         app::callback_dispatcher()
             .for_window(&Window(window.clone()))

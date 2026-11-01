@@ -967,6 +967,12 @@ impl Window {
             capture_callback,
         )?;
 
+        // Glyphs left unrasterised by the per-frame budget (#1168 F6) need another frame; the
+        // scene is still valid, so ask winit directly.
+        if crate::rendering::glyph_cache::take_deferred_redraw() {
+            window.request_redraw();
+        }
+
         #[cfg(windows)]
         {
             use crate::windowing::winit::windows::WindowExt;
