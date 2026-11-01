@@ -759,16 +759,6 @@ const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
 
 const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
-/// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
-/// banner's freshly saved position (#958). Must be longer than one frame.
-const FIND_BAR_BANNER_RELAYOUT_DELAY: Duration = Duration::from_millis(50);
-
-/// The delay after which the find bar must be redrawn following a banner change, if at all.
-/// Only an open find bar offsets itself by the banner.
-fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
-    find_bar_open.then_some(FIND_BAR_BANNER_RELAYOUT_DELAY)
-}
-
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
 /// the conversation is cancelled, the command handed to the user and the agent view left
 /// (#899, #900). Long enough for an ordinary process to run its signal handlers and exit.
@@ -25680,12 +25670,21 @@ impl TerminalView {
     /// this it would stay partly behind a banner that appeared while it was open (#958).
     fn notify_notice_banner_changed(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.notify();
-        if let Some(delay) =
-            find_bar_banner_relayout_delay(self.find_model.as_ref(ctx).is_find_bar_open())
-        {
-            ctx.spawn(Timer::after(delay), |me, _, ctx| {
-                me.find_bar.update(ctx, |_, ctx| ctx.notify());
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            // #1374: driven by the frame-drawn callback (the frame `notify` above schedules is the
+            // one that saves the banner's position), not by a guessed 50 ms delay.
+            let (frame_tx, frame_rx) = async_channel::bounded::<()>(1);
+            ctx.on_next_frame_drawn(move || {
+                let _ = frame_tx.try_send(());
             });
+            ctx.spawn(
+                async move {
+                    let _ = frame_rx.recv().await;
+                },
+                |me, _, ctx| {
+                    me.find_bar.update(ctx, |_, ctx| ctx.notify());
+                },
+            );
         }
     }
 
