@@ -150,7 +150,7 @@ const SNACKBAR_HOVER_OPACITY: Opacity = 60;
 
 // If the header is more than SNACKBAR_HEADER_MAX_RATIO percent of the entire
 // grid height, we disable the "sticky" behavior and have the block scroll normally.
-const SNACKBAR_HEADER_MAX_RATIO: f32 = 0.5;
+pub(super) const SNACKBAR_HEADER_MAX_RATIO: f32 = 0.5;
 
 /// Scrolling speed increases by this exponent curve the further out of bounds the
 /// mouse has been dragged
@@ -164,7 +164,7 @@ const LINEAR_SCROLLING: ScrollingAcceleration = ScrollingAcceleration::Polynomia
 /// Height for a block hover button element.
 /// Without making the vertical size fixed, for some reason some elements (bookmark, block filter, shared session avatar)
 /// have a height that extends down to the bottom of the window when there's a horizontal scroll bar, which messes with the on-hover behavior.
-const BLOCK_HOVER_BUTTON_HEIGHT: f32 = 28.;
+pub(super) const BLOCK_HOVER_BUTTON_HEIGHT: f32 = 28.;
 
 enum ScrollingAcceleration {
     Polynomial(f32),

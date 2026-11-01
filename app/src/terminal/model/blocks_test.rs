@@ -4014,3 +4014,32 @@ fn test_output_row_content_anchor_survives_a_column_change() {
     assert_eq!(grid.row_content_anchor(last_of_line).unwrap().0, 10);
     assert_eq!(grid.row_content_anchor(last_of_line + 1).unwrap().0, 11);
 }
+
+#[test]
+fn test_output_row_content_anchor_keeps_the_same_line_across_repeated_column_changes() {
+    // #1328 round 2: lines of mixed lengths, narrowed and widened repeatedly, keep the same
+    // logical line at the anchored row at every width.
+    let mut block_list = block_list_with_finished_blocks(0);
+    let cols = block_list.size().columns();
+    let output: String = (0..200)
+        .map(|i| format!("{}\n", "y".repeat(1 + (i * 37) % (cols * 3))))
+        .collect();
+    let index = insert_block(&mut block_list, "cmd\n", &output);
+
+    let anchored_line = 150;
+    let mut row = block_list.blocks()[index.0]
+        .output_grid()
+        .row_for_content_anchor((anchored_line, 0))
+        .expect("line present");
+    for columns in [cols / 2, cols, cols / 3, cols * 2, cols / 2 + 1, cols] {
+        let anchor = block_list.blocks()[index.0]
+            .output_grid()
+            .row_content_anchor(row)
+            .expect("row in range");
+        assert_eq!(anchor, (anchored_line, 0));
+        resize_columns(&mut block_list, columns.max(2));
+        let grid = block_list.blocks()[index.0].output_grid();
+        row = grid.row_for_content_anchor(anchor).expect("line present");
+        assert_eq!(grid.row_content_anchor(row), Some((anchored_line, 0)));
+    }
+}
