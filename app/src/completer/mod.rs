@@ -5,8 +5,8 @@ mod js;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -40,6 +40,10 @@ lazy_static! {
     };
     static ref EMPTY_COMMAND_REGISTRY: Arc<CommandRegistry> = Arc::new(CommandRegistry::empty());
 }
+
+/// The exit status `ssh` itself returns when it could not run the command (no usable
+/// ControlMaster, connection lost) -- not a verdict from the remote shell.
+const SSH_TRANSPORT_EXIT_CODE: i32 = 255;
 
 /// Attempts at one remote directory listing before it is given up as empty (and not cached).
 const REMOTE_LISTING_ATTEMPTS: usize = 2;
@@ -91,6 +95,44 @@ fn shared_directory_cache_at(
         },
     );
     entries
+}
+
+/// How long a remote directory whose listing definitively failed (the shell ran the script and
+/// it exited non-zero, e.g. the directory does not exist or is unreadable, or its output was
+/// malformed) is not asked for again (#1295). Deliberately longer than
+/// [`SHARED_DIRECTORY_CACHE_TTL`] and NOT dropped when a command runs: a directory that failed
+/// to list is almost never fixed by the next command, and re-asking once per command is the
+/// traffic #1295 measured. An explicit Tab forgets it ([`forget_failed_remote_listings`]).
+const FAILED_LISTING_TTL: Duration = Duration::from_secs(15);
+
+lazy_static! {
+    /// Negative cache for remote listings, keyed by (session, absolute directory).
+    static ref FAILED_REMOTE_LISTINGS: parking_lot::Mutex<HashMap<(SessionId, TypedPathBuf), Instant>> =
+        parking_lot::Mutex::new(HashMap::new());
+}
+
+fn remote_listing_failed_recently_at(
+    session_id: SessionId,
+    directory: &TypedPathBuf,
+    now: Instant,
+) -> bool {
+    let mut failed = FAILED_REMOTE_LISTINGS.lock();
+    failed.retain(|_, at| now.saturating_duration_since(*at) < FAILED_LISTING_TTL);
+    failed.contains_key(&(session_id, directory.clone()))
+}
+
+fn note_remote_listing_failed_at(session_id: SessionId, directory: TypedPathBuf, now: Instant) {
+    FAILED_REMOTE_LISTINGS
+        .lock()
+        .insert((session_id, directory), now);
+}
+
+/// Forgets the session's failed-listing memory. Called for an explicit Tab, which must always
+/// try the remote again (the user may have just created the directory).
+pub fn forget_failed_remote_listings(session_id: SessionId) {
+    FAILED_REMOTE_LISTINGS
+        .lock()
+        .retain(|(id, _), _| *id != session_id);
 }
 
 /// Drops the session's shared directory-listing cache. Called when a block completes or a
@@ -243,6 +285,13 @@ pub struct SessionContext {
     /// unported upstream change rather than something the fork broke.
     cached_directory_entries: Arc<DirectoryEntryMap>,
 
+    /// When set, a listing on a non-local session is answered from the cache only: a miss is an
+    /// empty directory and issues no remote command (#1295). For background consumers that
+    /// run per keystroke (autosuggestion, highlighting, classification, next-command), which
+    /// must not put a command on the shared ssh connection; an explicit Tab or the
+    /// completions-while-typing menu still lists.
+    cached_listings_only: bool,
+
     /// Per-path coalescing gates for `refresh_directory_entries`. `Arc` for the same
     /// load-bearing reason as `cached_directory_entries` above: these are useless unless
     /// every clone of this context shares them.
@@ -266,6 +315,17 @@ impl SessionContext {
     pub fn for_decoration(mut self) -> Self {
         if !self.session.is_local() {
             self.generators_disabled = true;
+            self.cached_listings_only = true;
+        }
+        self
+    }
+
+    /// A context for background consumers (autosuggestion, next-command prediction): on a
+    /// non-local session directory listings come from the cache only, never from a new remote
+    /// command (#1295). Local sessions are returned unchanged.
+    pub fn for_background(mut self) -> Self {
+        if !self.session.is_local() {
+            self.cached_listings_only = true;
         }
         self
     }
@@ -277,6 +337,9 @@ impl SessionContext {
     /// deterministic whichever session the line is typed in.
     pub fn for_classification(mut self) -> Self {
         self.generators_disabled = true;
+        if !self.session.is_local() {
+            self.cached_listings_only = true;
+        }
         self
     }
 
@@ -437,18 +500,35 @@ impl SessionContext {
                                         "Executing `ls` on remote box returned malformed or truncated output: `{:?}`",
                                         AsciiDebug(command_output.output())
                                     );
+                                    note_remote_listing_failed_at(
+                                        self.session.id(),
+                                        directory.to_path_buf(),
+                                        Instant::now(),
+                                    );
                                     (vec![], false)
                                 }
                             }
                         }
                         CommandExitStatus::Failure => {
                             safe_warn!(
-                                safe: ("Executing `ls` on remote box failed with non-zero status code."),
+                                safe: ("Executing `ls` on remote box failed with non-zero status code {:?}.", command_output.exit_code),
                                 full: ("Executing `ls` on remote box failed with error: {}", &String::from_utf8_lossy(command_output.output()))
                             );
                             // An exit code is the shell's own verdict on this directory; no
-                            // exit code means the command was killed from outside.
-                            (vec![], command_output.exit_code.is_some())
+                            // exit code means the command was killed from outside. 255 is ssh's
+                            // own failure (no usable master), which says nothing about the
+                            // directory.
+                            let shell_verdict = command_output
+                                .exit_code
+                                .is_some_and(|code| code.value() != SSH_TRANSPORT_EXIT_CODE);
+                            if shell_verdict {
+                                note_remote_listing_failed_at(
+                                    self.session.id(),
+                                    directory.to_path_buf(),
+                                    Instant::now(),
+                                );
+                            }
+                            (vec![], shell_verdict)
                         }
                     },
                     Err(err) => {
@@ -497,6 +577,17 @@ impl PathCompletionContext for SessionContext {
                 && !self.session.is_legacy_ssh_session()
                 && self.session.subshell_info().is_none()
             {
+                return Arc::new(vec![]);
+            }
+        }
+
+        if !self.session.is_local() {
+            // A per-keystroke consumer never costs a remote command (#1295).
+            if self.cached_listings_only {
+                return Arc::new(vec![]);
+            }
+            // A directory the shell already said it cannot list is not asked again for a while.
+            if remote_listing_failed_recently_at(self.session.id(), &directory, Instant::now()) {
                 return Arc::new(vec![]);
             }
         }
@@ -814,6 +905,7 @@ impl SessionContext {
                     current_working_directory,
                     js_ctx: js_function_caller.map(js::SessionJsExecutionContext::new),
                     cached_directory_entries,
+                    cached_listings_only: false,
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
                     generators_disabled: false,
@@ -824,6 +916,7 @@ impl SessionContext {
                     command_registry,
                     current_working_directory,
                     cached_directory_entries,
+                    cached_listings_only: false,
                     refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
                     generators_disabled: false,

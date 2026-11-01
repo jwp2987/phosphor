@@ -15,12 +15,12 @@ use warpui::App;
 use std::time::Instant;
 
 use super::{
-    invalidate_shared_directory_cache, shared_directory_cache_at, SHARED_DIRECTORY_CACHE_TTL,
+    SHARED_DIRECTORY_CACHE_TTL, invalidate_shared_directory_cache, shared_directory_cache_at,
 };
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, BootstrapSessionType, SessionId, SessionInfo,
+    BootstrapSessionType, SessionId, SessionInfo, command_executor::testing::TestCommandExecutor,
 };
 use crate::test_util::{Stub, VirtualFS};
 
@@ -648,8 +648,7 @@ pub fn test_concurrent_directory_refreshes_are_coalesced() {
                 // it must never turn `refresh_` into a cache read. Adding a file after the
                 // burst has settled has to be visible.
                 sandbox.touch(vec![Stub::EmptyFile("second.txt")]);
-                let after =
-                    warpui::r#async::block_on(ctx.refresh_directory_entries(tests_dir));
+                let after = warpui::r#async::block_on(ctx.refresh_directory_entries(tests_dir));
                 assert_eq!(
                     HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(after)),
                     HashSet::from_iter([
@@ -1081,4 +1080,176 @@ pub fn test_remote_listing_failure_is_not_cached() {
             "a failed listing must not be cached as an empty directory"
         );
     });
+}
+
+/// Executor for #1295: every call counts itself and returns the shell's failure with `exit`.
+#[derive(Debug)]
+struct FailingListExecutor {
+    exit: i32,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingListExecutor {
+    fn new(exit: i32) -> Arc<Self> {
+        Arc::new(Self {
+            exit,
+            calls: Default::default(),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::terminal::model::session::command_executor::CommandExecutor for FailingListExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &crate::terminal::shell::Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _options: crate::terminal::model::session::command_executor::ExecuteCommandOptions,
+    ) -> anyhow::Result<warp_completer::completer::CommandOutput> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(warp_completer::completer::CommandOutput {
+            stdout: vec![],
+            stderr: b"cd: no such file or directory".to_vec(),
+            status: warp_completer::completer::CommandExitStatus::Failure,
+            exit_code: Some(warp_core::command::ExitCode::from(self.exit)),
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+fn failing_remote_session(id: u64, executor: Arc<FailingListExecutor>) -> Session {
+    let info = SessionInfo::new_for_test()
+        .with_id(id)
+        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+        .with_shell_type(crate::terminal::shell::ShellType::Bash);
+    Session::new(info, executor)
+}
+
+/// #1295: a directory the remote shell cannot list is asked for once, not once per command. The
+/// positive cache is dropped on every command submit (#1130), so this survives that.
+#[test]
+pub fn test_remote_listing_failure_is_remembered_across_command_submits() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1295-negative/");
+        let id = SessionId::from(9501u64);
+        let session = failing_remote_session(9501, executor.clone());
+        let ctx = test_session_context(session, cwd.clone(), &app);
+        for _ in 0..5 {
+            assert!(warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone())).is_empty());
+            // A command ran: the listing cache is dropped, as `execute_command` does.
+            invalidate_shared_directory_cache(id);
+        }
+        assert_eq!(executor.calls(), 1, "a failing directory is listed once");
+    });
+}
+
+/// #1295: an explicit Tab asks the remote again even for a directory that failed a moment ago.
+#[test]
+pub fn test_explicit_tab_forgets_failed_remote_listings() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1295-tab/");
+        let id = SessionId::from(9502u64);
+        let ctx = test_session_context(
+            failing_remote_session(9502, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        invalidate_shared_directory_cache(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        assert_eq!(executor.calls(), 1);
+
+        super::forget_failed_remote_listings(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(executor.calls(), 2, "Tab must try the remote again");
+    });
+}
+
+/// #1295: ssh's own exit status (255, no usable master) says nothing about the directory, so it
+/// is not remembered as a bad directory.
+#[test]
+pub fn test_ssh_transport_failure_is_not_remembered_as_a_bad_directory() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(255);
+        let cwd = TypedPathBuf::from("/test-1295-255/");
+        let id = SessionId::from(9503u64);
+        let ctx = test_session_context(
+            failing_remote_session(9503, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        invalidate_shared_directory_cache(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(executor.calls(), 2);
+    });
+}
+
+/// #1295: background consumers (autosuggestion, highlighting, classification, next-command) on a
+/// remote session never issue a listing; they read the cache only.
+#[test]
+pub fn test_background_contexts_never_list_over_a_remote_session() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(0);
+        let cwd = TypedPathBuf::from("/test-1295-background/");
+        let ctx = test_session_context(
+            failing_remote_session(9504, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        for background in [
+            ctx.clone().for_background(),
+            ctx.clone().for_decoration(),
+            ctx.clone().for_classification(),
+        ] {
+            for _ in 0..10 {
+                assert!(
+                    warpui::r#async::block_on(background.list_directory_entries(cwd.clone()))
+                        .is_empty()
+                );
+            }
+        }
+        assert_eq!(executor.calls(), 0, "no remote command per keystroke");
+    });
+}
+
+/// #1295: the listing script is quoted for the session's own shell for awkward directory names,
+/// so it does not fail on the remote for a reason of its own.
+#[test]
+pub fn test_ls_script_quotes_awkward_directory_names_per_shell() {
+    let directory = TypedPath::unix("/home/u/it's a $dir (x)");
+    for dialect in [ShellDialect::Posix, ShellDialect::Fish] {
+        let script = super::ls_script_for_dir(&directory, dialect).expect("UTF-8 path");
+        assert!(!script.contains('\n'), "{script:?}");
+        assert!(script.contains("cd /home/u/it"), "{script:?}");
+        // No unescaped space, quote, `$` or paren between `cd ` and ` && find`.
+        let arg = script
+            .split_once("cd ")
+            .and_then(|(_, rest)| rest.split_once(" && find"))
+            .map(|(arg, _)| arg.to_owned())
+            .expect("cd <dir> && find");
+        let mut chars = arg.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else {
+                assert!(!" '$()".contains(c), "{dialect:?}: {arg:?}");
+            }
+        }
+    }
 }

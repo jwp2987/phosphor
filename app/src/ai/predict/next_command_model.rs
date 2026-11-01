@@ -498,7 +498,10 @@ impl NextCommandModel {
         // also be resolved pre-spawn (the render runs where `&AppContext` is gone).
         let next_command_prompt_override = byop_next_command::resolve_prompt_override(ctx, None);
 
-        let completion_context = completer_data.completion_session_context(ctx);
+        // Cached listings only on a remote session: this runs per keystroke (#1295).
+        let completion_context = completer_data
+            .completion_session_context(ctx)
+            .map(crate::completer::SessionContext::for_background);
         // This is only needed if we have a prefix.
         let reverse_chronological_potential_autosuggestions = if let Some(prefix) = &prefix {
             Self::get_reverse_chronological_potential_autosuggestions(
