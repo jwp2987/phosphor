@@ -1015,6 +1015,18 @@ impl StallTracker {
             }
         }
     }
+
+    /// How long until the current fingerprint will have been unchanged for `threshold`, or
+    /// `None` when no stall-eligible screen is being tracked. This is what a single quiet timer
+    /// is armed with, so a streaming (ineligible) command has no timer at all (#1365).
+    pub fn time_until_stalled(
+        &self,
+        threshold: std::time::Duration,
+        now: instant::Instant,
+    ) -> Option<std::time::Duration> {
+        let (_, since) = self.current?;
+        Some(threshold.saturating_sub(now.saturating_duration_since(since)))
+    }
 }
 
 /// What the termios poller should do about a waited agent command stalled on a full-screen

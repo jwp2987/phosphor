@@ -1035,3 +1035,82 @@ fn cancelling_a_block_action_resolves_its_future_as_cancelled() {
         );
     });
 }
+
+/// #1365: a snapshot-capable model's waited command is watched for a stall through output
+/// wake-ups, not a polling tick. The watcher exists only for that delay kind, a burst of
+/// output coalesces into one signal, a finished future's watcher is pruned, and cancelling
+/// drops it so the future ends as `Cancelled`.
+#[test]
+fn stall_detection_is_driven_by_output_wakeups() {
+    App::test((), |mut app| async move {
+        let action_id = AIAgentActionId::from("waited".to_owned());
+        let (executor, terminal_model, _interrupts) =
+            executor_with_unpreexeced_agent_command(&mut app, &action_id);
+        let block_id = terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        let selector = BlockSelector::Id(block_id);
+
+        // Other delay kinds never register a watcher.
+        let plain = executor.update(&mut app, |executor, _| {
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::Duration(Duration::from_secs(30)),
+            )
+        });
+        executor.update(&mut app, |executor, _| {
+            assert!(!executor.has_output_watchers());
+        });
+        drop(plain);
+
+        let future = executor.update(&mut app, |executor, _| {
+            executor
+                .block_action_selectors
+                .insert(action_id.clone(), (selector.clone(), false));
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::OnCompletionOrStall {
+                    timeout: Duration::from_secs(30),
+                },
+            )
+        });
+        executor.update(&mut app, |executor, _| {
+            assert!(executor.has_output_watchers());
+            // A burst of output does not queue up or drop the watcher.
+            for _ in 0..100 {
+                executor.note_output();
+            }
+            assert!(executor.has_output_watchers());
+        });
+
+        executor.update(&mut app, |executor, ctx| {
+            executor.cancel_execution(
+                &action_id,
+                Some(CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                }),
+                ctx,
+            );
+            assert!(!executor.has_output_watchers());
+        });
+        assert!(matches!(future.await, ActionResult::Cancelled));
+
+        // A future dropped without finishing leaves a closed watcher; the next wake-up prunes it.
+        let abandoned = executor.update(&mut app, |executor, _| {
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::OnCompletionOrStall {
+                    timeout: Duration::from_secs(30),
+                },
+            )
+        });
+        drop(abandoned);
+        executor.update(&mut app, |executor, _| {
+            executor.note_output();
+            assert!(!executor.has_output_watchers());
+        });
+    });
+}

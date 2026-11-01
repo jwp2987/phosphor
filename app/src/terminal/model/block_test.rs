@@ -2435,6 +2435,42 @@ fn stall_tracker_measures_an_unchanged_screen_and_resets_on_change() {
     assert_eq!(tracker.observe(Some(2), sec(9)), Duration::ZERO);
 }
 
+/// #1365: the quiet timer is armed from event timestamps only while a stall-eligible screen is
+/// tracked; a streaming command (no eligible screen) has no timer at all.
+#[test]
+fn stall_tracker_arms_a_quiet_timer_only_for_an_eligible_screen() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let after = Duration::from_secs(3);
+    let mut tracker = StallTracker::default();
+    // Streaming output: nothing eligible, nothing to schedule.
+    assert_eq!(tracker.time_until_stalled(after, sec(0)), None);
+    tracker.observe(None, sec(1));
+    assert_eq!(tracker.time_until_stalled(after, sec(1)), None);
+    // An eligible screen appears: the timer is the remaining quiet time.
+    tracker.observe(Some(9), sec(2));
+    assert_eq!(tracker.time_until_stalled(after, sec(2)), Some(after));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(4)),
+        Some(Duration::from_secs(1))
+    );
+    // Unchanged re-observation does not push it out; a change restarts it.
+    tracker.observe(Some(9), sec(4));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(4)),
+        Some(Duration::from_secs(1))
+    );
+    tracker.observe(Some(10), sec(4));
+    assert_eq!(tracker.time_until_stalled(after, sec(4)), Some(after));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(9)),
+        Some(Duration::ZERO)
+    );
+    // Back to streaming: the timer is gone again.
+    tracker.observe(None, sec(10));
+    assert_eq!(tracker.time_until_stalled(after, sec(10)), None);
+}
+
 #[test]
 fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold() {
     let t0 = instant::Instant::now();

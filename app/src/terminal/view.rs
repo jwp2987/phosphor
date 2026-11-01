@@ -12749,6 +12749,11 @@ impl TerminalView {
         if self.ssh_typeahead_holding {
             self.deliver_ssh_typeahead_if_ready("output", ctx);
         }
+        // #1365: output is also what a waited agent command's stall detection runs on.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        if executor.as_ref(ctx).has_output_watchers() {
+            executor.update(ctx, |executor, _| executor.note_output());
+        }
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
