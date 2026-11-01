@@ -10,6 +10,7 @@ use uuid::Uuid;
 use warp_multi_agent_api::response_event;
 use warpui::{Entity, ModelContext};
 
+use super::project_rules_wait;
 use crate::{
     ai::agent::{
         api::{self, ConvertToAPITypeError},
@@ -745,7 +746,7 @@ impl ResponseStream {
     }
 
     pub fn new(
-        params: api::RequestParams,
+        mut params: api::RequestParams,
         ai_identifiers: AIIdentifiers,
         recovery: RecoveryBudget,
         ctx: &mut ModelContext<Self>,
@@ -754,7 +755,10 @@ impl ResponseStream {
         let start_time = Local::now();
 
         let request_id = Uuid::new_v4();
-        let params_clone = params.clone();
+        // Project rules the context build left out because the background scan had not landed
+        // are added here if they are known now, else the send awaits the scan (#1364).
+        let rules_wait = project_rules_wait::begin(&mut params, ctx);
+        let mut params_clone = params.clone();
         // BYOP path: if the selected base model is an LLMId coded for a
         // user-defined provider, then before spawning, (provider, api_key,
         // model_id, root_task_id) are taken out of ctx and it goes through custom
@@ -769,6 +773,24 @@ impl ResponseStream {
             async move {
                 if let Some(mut byop) = byop_dispatch {
                     let mut cancellation_rx = cancellation_rx;
+                    if let Some(rules_wait) = rules_wait {
+                        match project_rules_wait::wait_for_project_rules(
+                            rules_wait,
+                            &mut cancellation_rx,
+                        )
+                        .await
+                        {
+                            project_rules_wait::RulesWaitOutcome::Ready(rules) => {
+                                project_rules_wait::apply_project_rules(&mut params_clone, rules);
+                            }
+                            project_rules_wait::RulesWaitOutcome::GaveUp => {}
+                            project_rules_wait::RulesWaitOutcome::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                        }
+                    }
                     if let Some(key_wait) = key_wait {
                         match wait_for_loaded_keys(
                             key_wait,
@@ -969,7 +991,8 @@ impl ResponseStream {
 
         let request_id = Uuid::new_v4();
         self.current_request_id = Some(request_id);
-        let params = self.params.clone();
+        let rules_wait = project_rules_wait::begin(&mut self.params, ctx);
+        let mut params = self.params.clone();
         let byop_dispatch = byop_dispatch_info(&params, &self.ai_identifiers, ctx);
         let key_wait = register_key_wait(byop_dispatch.as_ref(), ctx);
         // Exponential backoff: 0.5s / 1s / 2s. Previously there was no interval at
@@ -1002,6 +1025,24 @@ impl ResponseStream {
                 }
                 if let Some(mut byop) = byop_dispatch {
                     let mut cancellation_rx = cancellation_rx;
+                    if let Some(rules_wait) = rules_wait {
+                        match project_rules_wait::wait_for_project_rules(
+                            rules_wait,
+                            &mut cancellation_rx,
+                        )
+                        .await
+                        {
+                            project_rules_wait::RulesWaitOutcome::Ready(rules) => {
+                                project_rules_wait::apply_project_rules(&mut params, rules);
+                            }
+                            project_rules_wait::RulesWaitOutcome::GaveUp => {}
+                            project_rules_wait::RulesWaitOutcome::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                        }
+                    }
                     if let Some(key_wait) = key_wait {
                         match wait_for_loaded_keys(
                             key_wait,

@@ -3154,6 +3154,29 @@ impl AIAgentInput {
         }
     }
 
+    /// Mutable access to the context entries, for the send path to add late-arriving
+    /// context (project rules, #1364). `None` for inputs that carry no context.
+    pub fn context_mut(&mut self) -> Option<&mut Arc<[AIAgentContext]>> {
+        match self {
+            Self::UserQuery { context, .. }
+            | Self::ActionResult { context, .. }
+            | Self::AutoCodeDiffQuery { context, .. }
+            | Self::ResumeConversation { context, .. }
+            | Self::InitProjectRules { context, .. }
+            | Self::TriggerPassiveSuggestion { context, .. }
+            | Self::CreateNewProject { context, .. }
+            | Self::CloneRepository { context, .. }
+            | Self::CodeReview { context, .. }
+            | Self::FetchReviewComments { context, .. }
+            | Self::InvokeSkill { context, .. }
+            | Self::StartFromAmbientRunPrompt { context, .. }
+            | Self::PassiveSuggestionResult { context, .. } => Some(context),
+            Self::SummarizeConversation { .. }
+            | Self::MessagesReceivedFromAgents { .. }
+            | Self::EventsFromAgents { .. } => None,
+        }
+    }
+
     /// Returns all of the attachments for the given input,
     /// converting any blocks blocks attached in the context into the correct type of attachment.
     pub fn attachments(&self) -> Option<Vec<AIAgentAttachment>> {

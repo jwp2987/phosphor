@@ -582,6 +582,32 @@ pub fn block_context_from_terminal_model(
     })
 }
 
+/// Packs a project-rules lookup into the context entry an agent request carries. Shared by
+/// `pending_context` and the send path, which adds the rules once the fast-path scan lands
+/// (#1364).
+pub(crate) fn project_rules_context(
+    rules: ai::project_context::model::ProjectRulesResult,
+) -> AIAgentContext {
+    AIAgentContext::ProjectRules {
+        root_path: rules.root_path.to_string_lossy().into(),
+        active_rules: rules
+            .active_rules
+            .into_iter()
+            .map(|rule| {
+                let line_count = rule.content.lines().count();
+                FileContext {
+                    file_name: rule.path.to_string_lossy().into(),
+                    content: AnyFileContent::StringContent(rule.content.clone()),
+                    line_range: None,
+                    last_modified: None,
+                    line_count,
+                }
+            })
+            .collect(),
+        additional_rule_paths: rules.additional_rule_paths,
+    }
+}
+
 impl BlocklistAIContextModel {
     pub fn new(
         sessions: ModelHandle<Sessions>,
@@ -969,12 +995,11 @@ impl BlocklistAIContextModel {
                 .and_then(|s| s.canonicalize().ok())
         }) {
             // Prefers the normal path (zero IO, taking results from the HashMap once
-            // async indexing has finished); when not ready, synchronously
-            // fast-path-stats and reads rule files from cwd/ancestor directories.
-            // Matches opencode's `findUp` pattern, ensuring AGENTS.md is available
-            // even if a question is asked right after `cd`. The fast-path has an
-            // internal cache + time budget, so the UI never blocks. See
-            // `crates/ai/src/project_context/model.rs::find_rules_with_fast_path`。
+            // async indexing has finished), then the fast-path cache filled by the
+            // cd-time background scan. Never scans on this (UI) thread: when neither
+            // has the answer yet, the rules are left out here and the send path adds
+            // them once the scan lands (`controller/project_rules_wait.rs`, #1364).
+            // See `crates/ai/src/project_context/model.rs::find_rules_with_fast_path`.
             ProjectContextModel::as_ref(app).find_rules_with_fast_path(&pwd)
         } else {
             None
@@ -1019,24 +1044,7 @@ impl BlocklistAIContextModel {
 
         // Always include project rules if available
         if let Some(rules) = project_rules {
-            context.push(AIAgentContext::ProjectRules {
-                root_path: rules.root_path.to_string_lossy().into(),
-                active_rules: rules
-                    .active_rules
-                    .into_iter()
-                    .map(|rule| {
-                        let line_count = rule.content.lines().count();
-                        FileContext {
-                            file_name: rule.path.to_string_lossy().into(),
-                            content: AnyFileContent::StringContent(rule.content.clone()),
-                            line_range: None,
-                            last_modified: None,
-                            line_count,
-                        }
-                    })
-                    .collect(),
-                additional_rule_paths: rules.additional_rule_paths,
-            });
+            context.push(project_rules_context(rules));
         }
 
         // If this is a user query, add user-selected contexts
