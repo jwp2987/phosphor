@@ -583,7 +583,7 @@ pub fn init_subshell_command_lines(
 }
 
 /// [`init_subshell_command_lines`], optionally with a setup-line marker after every line but the
-/// last (bash, zsh and fish only; other shells ignore `marked`). The marker is an OSC the shell
+/// last (bash, zsh, fish, nushell and PowerShell; other shells ignore `marked`). The marker is an OSC the shell
 /// prints once it has *executed* that line (`ESC ] 7771 ; <session id> ; <line index> BEL`, see
 /// [`setup_line_marker`]), so the app can write line N+1 when line N is known to be consumed
 /// instead of after a fixed delay.
@@ -612,9 +612,17 @@ pub fn init_subshell_command_lines_with_markers(
             // big line below would be saved. A short first line installs an AddToHistoryHandler
             // (chained to any the user had) that refuses the bootstrap line and the line that
             // later sources the temp bootstrap file; nothing rewrites the user's history file.
+            let (history_line, policy_line) = if marked {
+                powershell_marked_setup_lines(session_id.as_u64())
+            } else {
+                (
+                    POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
+                    POWERSHELL_EXECUTION_POLICY_LINE.to_owned(),
+                )
+            };
             vec![
-                POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
-                POWERSHELL_EXECUTION_POLICY_LINE.to_owned(),
+                history_line,
+                policy_line,
                 format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"),
             ]
         }
@@ -647,7 +655,7 @@ pub fn init_subshell_command_lines_with_markers(
 /// (`apikey`: lines matching its sensitive pattern are saved to memory only on PSReadLine 2.2 and
 /// later). A user-replaced handler or an older PSReadLine still saves this one short line; nothing
 /// ever rewrites or deletes history.
-const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["']?\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
+const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
 
 /// Second line of the PowerShell subshell bootstrap (#1116): lifts a Restricted execution policy
 /// for this process, as `pwsh_init_shell.ps1` does for the app-started shell, so the ` . <tmp>.ps1`
@@ -656,6 +664,40 @@ const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRA
 /// subshell script is typed as one line and must stay under
 /// [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`]; it starts with the guard the history handler filters.
 const POWERSHELL_EXECUTION_POLICY_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { if ($PSEdition -eq 'Desktop' -or $IsWindows) { $EP = [Microsoft.PowerShell.ExecutionPolicy]; $m = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope MachinePolicy; $u = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope UserPolicy; if ($m -eq $EP::Restricted -or $u -eq $EP::Restricted) { Microsoft.PowerShell.Utility\Write-Error 'ExecutionPolicy is Restricted. Unable to Phosphorize this session.' } elseif ((Microsoft.PowerShell.Security\Get-ExecutionPolicy) -eq $EP::Restricted -and $m -eq $EP::Undefined -and $u -eq $EP::Undefined) { $global:_warp_PSProcessExecPolicy = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope Process; Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force }} }"#;
+
+/// The marker index PowerShell prints, instead of a line's own, at a `PSConsoleHostReadLine` entry
+/// that no setup line is waiting on: "PSReadLine is about to read". The app ends the wait behind a
+/// Ctrl-C that skipped the setup on it (#1372).
+pub const POWERSHELL_READY_MARKER_INDEX: usize = 1_000_000;
+
+/// The text that makes PowerShell print setup-line markers *after* PSReadLine is ready (#1372).
+///
+/// A marker printed at the end of a line (what bash/zsh/fish do) comes before PSReadLine redraws
+/// its prompt, and a line written into that window is what crashed PSReadLine (#1047). So the line
+/// only records its index in `$global:_phMk`, and a wrapper around `PSConsoleHostReadLine` -- the
+/// function the host calls to read each line, after the prompt is written, the same hook
+/// `pwsh.ps1` wraps for preexec -- prints it when the *next* read starts. A read that follows no
+/// pending line prints [`POWERSHELL_READY_MARKER_INDEX`] instead (the read after a Ctrl-C). The
+/// wrapper is guarded so a second bootstrap does not wrap itself; `pwsh.ps1` clears `$_phMk` at the
+/// first command, which turns it into a no-op. Printed with `[Console]::Out`, as `pwsh.ps1` does.
+fn powershell_marker_install(token: u64) -> String {
+    format!(
+        "if (-not $global:_phOldRL) {{ $global:_phOldRL = $function:global:PSConsoleHostReadLine; $function:global:PSConsoleHostReadLine = {{ if ($null -ne $global:_phMk) {{ [Console]::Out.Write(\"$([char]27)]{SETUP_LINE_MARKER_OSC};{token};$($global:_phMk)$([char]7)\"); $global:_phMk = {POWERSHELL_READY_MARKER_INDEX} }}; & $global:_phOldRL }} }}; $global:_phMk = 0"
+    )
+}
+
+/// The first two PowerShell setup lines with their markers (#1372): the marker installer goes
+/// before the history line's trailing comment word, and the second line records that it ran.
+fn powershell_marked_setup_lines(token: u64) -> (String, String) {
+    const COMMENT: &str = " # apikey";
+    let base = POWERSHELL_HISTORY_HANDLER_LINE
+        .strip_suffix(COMMENT)
+        .unwrap_or(POWERSHELL_HISTORY_HANDLER_LINE);
+    (
+        format!("{base}; {}{COMMENT}", powershell_marker_install(token)),
+        format!("{POWERSHELL_EXECUTION_POLICY_LINE}; $global:_phMk = 1"),
+    )
+}
 
 /// Single-quote escapes `text` for embedding in a single-quoted word of `shell_type`.
 fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {

@@ -274,6 +274,9 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Preexec([string]$command) {
+        # The subshell setup lines (#1372) leave a PSConsoleHostReadLine wrapper that prints a
+        # "reading again" marker while `$global:_phMk` is set; the first command ends that.
+        $global:_phMk = $null
         # Phosphor (#935): title a multi-line command with its first line and an ellipsis.
         # Clamped: Windows PowerShell 5.1's console host throws above ~1023 characters, and a throw
         # here would keep PSConsoleHostReadLine from returning the line (#1106).
