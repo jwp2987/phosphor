@@ -4009,12 +4009,20 @@ impl Workspace {
                 self.check_and_trigger_onboarding(ctx);
             }
             NewWorkspaceSource::Session { options } => {
+                let apply_default_session_mode = options.apply_default_session_mode
+                    && options.conversation_restoration.is_none();
                 self.add_tab_with_pane_layout(
                     PanesLayout::SingleTerminal(options),
                     Arc::new(HashMap::new()),
                     None,
                     ctx,
                 );
+                if apply_default_session_mode
+                    && AISettings::as_ref(ctx).default_session_mode(ctx)
+                        == DefaultSessionMode::Agent
+                {
+                    self.enter_agent_view_on_active_tab(ctx);
+                }
                 self.check_and_trigger_onboarding(ctx);
             }
             NewWorkspaceSource::FromCloudConversationId { conversation_id } => {

@@ -474,6 +474,10 @@ pub struct BlockList {
     /// Where background-parsed restored blocks arrive (#1254). `None` unless startup restore
     /// deferred at least one large saved block.
     deferred_restores: Option<Arc<DeferredRestoreMailbox>>,
+    /// Blocks whose deferred restore content was installed and which the view has not yet
+    /// been told about (find rescan, scroll compensation), see
+    /// [`Self::take_installed_restore_blocks`] (#1265).
+    installed_restore_ids: Vec<BlockId>,
 }
 
 /// Saved blocks whose command + output bytes together reach this size are restored as cheap
@@ -998,6 +1002,7 @@ impl BlockList {
             pinned_to_bottom: None,
             is_executing_oz_environment_startup_commands: false,
             deferred_restores: None,
+            installed_restore_ids: Vec::new(),
         }
     }
 
@@ -4399,6 +4404,16 @@ impl BlockList {
             .is_some_and(|mailbox| mailbox.has_ready())
     }
 
+    /// Drains the blocks installed by [`Self::install_ready_deferred_restores`] since the last
+    /// call, as current indices (blocks evicted meanwhile are skipped). The view uses this to
+    /// rescan them for an active Find (#1265); the placeholders had no content when the find ran.
+    pub fn take_installed_restore_blocks(&mut self) -> Vec<BlockIndex> {
+        std::mem::take(&mut self.installed_restore_ids)
+            .into_iter()
+            .filter_map(|id| self.block_id_to_block_index.get(&id).copied())
+            .collect()
+    }
+
     /// Moves the grids of blocks parsed off-thread into their placeholders and refreshes the
     /// placeholders' heights (#1254). One atomic load when nothing is waiting, so it is cheap
     /// enough to call every frame and every pty chunk. Returns whether anything was installed.
@@ -4426,14 +4441,15 @@ impl BlockList {
             }
             placeholder.adopt_restored_content(restored);
             self.refresh_block_height(index);
+            self.installed_restore_ids.push(id);
             installed = true;
         }
         if installed {
             // Selection and the smart-select override hold points into the placeholder's empty
             // grids, and the installed content changes heights and row counts under them. Drop
             // them (as eviction does) rather than leave points that may be out of range (#1265).
-            // Find matches and scroll need no fix-up here: a find run before install has no
-            // matches inside a placeholder, and scroll positions are clamped by the layout.
+            // Find and scroll are fixed up by the view (`take_installed_restore_blocks`): it
+            // rescans the installed blocks and re-anchors a scrolled-back position (#1265).
             if self.selection().is_some() {
                 self.clear_selection();
             }
