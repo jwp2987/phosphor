@@ -1307,7 +1307,7 @@ fn prewarm_fast_path_fills_the_cache_asynchronously() {
             assert!(model.fast_path_in_flight.contains(&cwd));
         });
 
-        app.finish_pending_tasks().await;
+        finish_fast_path_scans(&model, &mut app).await;
 
         model.read(&app, |model, _| {
             assert!(model.fast_path_in_flight.is_empty());
@@ -1354,7 +1354,7 @@ fn request_before_prewarm_waits_for_the_scan_instead_of_scanning() {
             assert!(model.fast_path_cache.borrow().is_empty());
         });
 
-        app.finish_pending_tasks().await;
+        finish_fast_path_scans(&model, &mut app).await;
 
         let rules = receiver
             .await
@@ -1381,7 +1381,7 @@ fn request_wait_resolves_when_the_directory_has_no_rules() {
             RulesWait::Pending(receiver) => receiver,
             RulesWait::Ready(_) => panic!("the scan cannot have landed yet"),
         };
-        app.finish_pending_tasks().await;
+        finish_fast_path_scans(&model, &mut app).await;
         let resolved = receiver.await.expect("resolved, not dropped");
         assert!(resolved.is_none());
     });
@@ -1403,4 +1403,18 @@ fn fast_path_scan_is_not_time_truncated() {
     let entry = scan_fast_path_isolated(&deep);
     assert_eq!(entry.rules.len(), 1);
     assert_eq!(entry.rules[0].content, "top");
+}
+
+/// Awaits every fast-path scan the model has spawned (by future id, an event, not a timer).
+#[cfg(feature = "local_fs")]
+async fn finish_fast_path_scans(
+    model: &warpui::ModelHandle<ProjectContextModel>,
+    app: &mut warpui::App,
+) {
+    let ids = model.read(&*app, |model, _| model.fast_path_spawned.clone());
+    for id in ids {
+        model
+            .update(app, |_, ctx| ctx.await_spawned_future(id))
+            .await;
+    }
 }

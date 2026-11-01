@@ -422,6 +422,10 @@ pub struct ProjectContextModel {
     /// Canonical cwds with an async fast-path scan in flight (see `prewarm_fast_path`).
     #[cfg(feature = "local_fs")]
     fast_path_in_flight: HashSet<PathBuf>,
+    /// Test-only: the spawned fast-path scans, so a test awaits the scan's completion event
+    /// (`ctx.await_spawned_future`) instead of sleeping or polling.
+    #[cfg(all(test, feature = "local_fs"))]
+    fast_path_spawned: Vec<warpui::r#async::FutureId>,
     /// Sends waiting for the fast-path scan of a canonical cwd (see `request_rules_wait`);
     /// each gets the layered rules when the scan lands, or `None`-rules if it failed.
     #[cfg(feature = "local_fs")]
@@ -1123,7 +1127,7 @@ impl ProjectContextModel {
         if !self.fast_path_in_flight.insert(cwd.clone()) {
             return;
         }
-        ctx.spawn(
+        let _scan = ctx.spawn(
             async move {
                 let scanned = cwd.canonicalize().ok().map(|canonical| {
                     let entry = Self::scan_fast_path(&canonical);
@@ -1146,6 +1150,8 @@ impl ProjectContextModel {
                 me.notify_rules_waiters(&canonical);
             },
         );
+        #[cfg(test)]
+        self.fast_path_spawned.push(_scan.future_id());
     }
 
     /// Synchronously stat + read rule files level by level upward from `start`.

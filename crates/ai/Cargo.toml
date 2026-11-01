@@ -82,6 +82,7 @@ serial_test = "0.8.0"
 tempfile.workspace = true
 virtual-fs.workspace = true
 warp_core = { workspace = true, features = ["test-util"] }
+warpui = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 anyhow.workspace = true
