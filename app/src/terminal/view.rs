@@ -11262,6 +11262,10 @@ impl TerminalView {
         if text.is_empty() {
             return;
         }
+        // Whatever happens to the text below, an Enter typed in the same burst must not run what
+        // the user meant for the remote machine on this one.
+        self.input
+            .update(ctx, |input, _| input.arm_ssh_handover_enter_guard());
         // Never concatenated with anything: only into an EMPTY editor that is showing.
         if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
             self.show_ssh_typing_toast(

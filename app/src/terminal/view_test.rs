@@ -17937,34 +17937,45 @@ fn release_ssh_gate_for_test(view: &mut TerminalView) {
     view.ssh_connect_gate_released_at = Some(chrono::Local::now());
 }
 
-/// #1292: typing that crosses the gate release is held WHOLE and in order. Nothing reaches the
-/// pty or the editor while holding; with no remote prompt (the connect ended) the line is shown
-/// unexecuted in the local editor.
+/// #1292 / #1348: typing that crosses the gate release is neither split, reordered nor run on the
+/// wrong machine. The key that arrives after the release is an event (#1348): it first hands over
+/// what was held (no remote prompt ever came, so the held text goes back to the local editor as
+/// text, unexecuted) and is then typed live behind it. An Enter in the same continuous burst must
+/// NOT run the line here: the first Enter after a hand-back is consumed (owner rule: a line meant
+/// for the remote machine never executes locally because the connect ended mid-line).
 #[test]
-fn ssh_line_typed_across_gate_release_is_held_whole() {
+fn ssh_line_typed_across_gate_release_is_never_run_locally() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo QW", ctx);
             assert!(view.ssh_typeahead_holding);
+            // Held while the gate is up: nothing in the editor yet.
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             release_ssh_gate_for_test(view);
             view.typed_characters_on_terminal("ERTY && x", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert!(
-                view.ssh_typeahead_holding,
-                "still held until the poll decides"
-            );
-            // No remote prompt ever came: the line is shown, unexecuted.
-            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            // The hand-over ran on this key: no remote prompt, so the line is shown unexecuted.
             assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            // The Enter of the same burst is consumed: the line stays, nothing is submitted.
+            editor_key(view, EditorAction::Enter, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
             });
@@ -17972,6 +17983,11 @@ fn ssh_line_typed_across_gate_release_is_held_whole() {
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
         });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["ssh host".to_owned()],
+            "the line typed across the release was never run here"
+        );
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
@@ -18131,31 +18147,44 @@ fn ssh_prompt_arrival_discards_editor_queued_keys() {
     })
 }
 
-/// #1292: a paste after held typing is held in order with it.
+/// #1292 / #1348: a paste that arrives after the gate released hands over the held typing first
+/// (unexecuted, as text in the local editor) and is then pasted behind it: order is kept, nothing
+/// reaches the pty, and an Enter typed right behind it is consumed, not run here.
 #[test]
-fn ssh_paste_across_gate_release_is_held_whole() {
+fn ssh_paste_across_gate_release_is_never_run_locally() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_typeahead_holding);
             release_ssh_gate_for_test(view);
             ctx.clipboard()
                 .write(ClipboardContent::plain_text("ERTY".to_owned()));
             view.paste(false, ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert_eq!(
-                view.ssh_hold_take(),
-                vec![
-                    HeldInput::Typed("echo QW".to_owned()),
-                    HeldInput::Paste("ERTY".to_owned())
-                ]
-            );
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
+            editor_key(view, EditorAction::Enter, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
         });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["ssh host".to_owned()],
+            "the line typed across the release was never run here"
+        );
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
@@ -20317,6 +20346,31 @@ fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
+        // The model's startup events (the bootstrap block's `AfterBlockCompleted`) are still queued
+        // on the view's channel. That handler disarms a waiting auto-warpify (the subshell's
+        // command "is over"), so arming before it ran would lose the trigger to an event that
+        // precedes the subshell; in a real session the bootstrap finished long before. Wait for
+        // those events by EVENT, not by time: a marker sent through the same FIFO channel is
+        // dispatched after everything queued before it.
+        let dispatcher = terminal.read(&app, |view, _| view.model_events_handle.clone());
+        let (marker_tx, marker_rx) = futures::channel::oneshot::channel::<()>();
+        let marker_tx = RefCell::new(Some(marker_tx));
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&dispatcher, move |_, event, _| {
+                if matches!(event, ModelEvent::CursorBlinkingChange(_)) {
+                    if let Some(tx) = marker_tx.borrow_mut().take() {
+                        let _ = tx.send(());
+                    }
+                }
+            });
+        });
+        terminal.read(&app, |view, _| {
+            view.model
+                .lock()
+                .event_proxy
+                .send_terminal_event(crate::terminal::event::Event::CursorBlinkingChange(false));
+        });
+        marker_rx.await.expect("the marker event is dispatched");
         terminal.update(&mut app, |view, ctx| {
             view.model.lock().simulate_long_running_block("bash", "");
             view.arm_awaiting_subshell_prompt(
