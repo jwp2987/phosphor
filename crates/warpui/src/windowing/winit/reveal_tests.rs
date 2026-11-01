@@ -80,7 +80,7 @@ fn show_items_failure_falls_back_to_parent_folder() {
     let opened = RefCell::new(Vec::new());
     execute(
         RevealAction::Select(PathBuf::from("/p/f.txt")),
-        |_| Err("no such service".into()),
+        |_| Err(ShowItemsError::Failed("no such service".into())),
         |d| opened.borrow_mut().push(d.to_path_buf()),
     );
     assert_eq!(*opened.borrow(), vec![PathBuf::from("/p")]);
@@ -98,4 +98,22 @@ fn show_items_success_does_not_open_folder() {
         |_| panic!("should not open folder"),
     );
     assert_eq!(selected.borrow().len(), 1);
+}
+
+#[test]
+fn show_items_timeout_does_not_open_second_window() {
+    execute(
+        RevealAction::Select(PathBuf::from("/p/f.txt")),
+        |_| Err(ShowItemsError::TimedOut),
+        |_| panic!("a timeout must not fall back to opening the folder"),
+    );
+}
+
+#[test]
+fn fallback_decision() {
+    assert!(should_fall_back(&Err(ShowItemsError::Failed(
+        "org.freedesktop.DBus.Error.ServiceUnknown".into()
+    ))));
+    assert!(!should_fall_back(&Err(ShowItemsError::TimedOut)));
+    assert!(!should_fall_back(&Ok(())));
 }
