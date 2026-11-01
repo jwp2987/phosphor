@@ -81,7 +81,8 @@ fn has_content_from_formats(
     formats.as_ref().ok().map(arboard::ClipboardFormats::any)
 }
 
-/// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop.
+/// Tighter cap for the post-text probes (#1192): replaces whatever deadline the read started with
+/// and clears it on drop.
 struct ProbeBudget;
 
 impl ProbeBudget {
@@ -94,6 +95,43 @@ impl ProbeBudget {
 impl Drop for ProbeBudget {
     fn drop(&mut self) {
         arboard::set_first_answer_deadline(None);
+    }
+}
+
+thread_local! {
+    /// Whether a [`ReadBudget`] is already capping this thread's reads, so a nested read (the
+    /// fallback probe calling `read()`) keeps the outer, tighter-started deadline.
+    static READ_BUDGET_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Caps the owner's first-answer wait on this thread while alive; clears the cap on drop. An
+/// outer budget wins: starting one inside another is a no-op. Every synchronous read on the
+/// `Clipboard` trait takes one, so a caller that still reads on the UI thread waits at most the
+/// budget instead of arboard's 10 s per attempt (#1380).
+struct ReadBudget {
+    owns: bool,
+}
+
+impl ReadBudget {
+    fn start(budget: Duration) -> Self {
+        Self::start_at(Instant::now() + budget)
+    }
+
+    fn start_at(deadline: Instant) -> Self {
+        let owns = !READ_BUDGET_ACTIVE.with(|active| active.replace(true));
+        if owns {
+            arboard::set_first_answer_deadline(Some(deadline));
+        }
+        Self { owns }
+    }
+}
+
+impl Drop for ReadBudget {
+    fn drop(&mut self) {
+        if self.owns {
+            arboard::set_first_answer_deadline(None);
+            READ_BUDGET_ACTIVE.with(|active| active.set(false));
+        }
     }
 }
 
@@ -192,6 +230,7 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn read(&mut self) -> ClipboardContent {
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
         match self.read_from_specific_clipboard(LinuxClipboardKind::Clipboard) {
             Ok(content) => content,
             Err(err) => {
@@ -220,13 +259,12 @@ impl Clipboard for LinuxClipboard {
             log::info!("Clipboard targets query failed ({formats:?}); falling back to reads");
         }
         // The fallback reads wait at most the full-read budget for the owner's first answer.
-        arboard::set_first_answer_deadline(Some(Instant::now() + FULL_READ_BUDGET));
-        let answer = self.has_content_by_reading();
-        arboard::set_first_answer_deadline(None);
-        answer
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
+        self.has_content_by_reading()
     }
 
     fn read_without_images(&mut self) -> ClipboardContent {
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
         match self.read_from_specific_clipboard_inner(LinuxClipboardKind::Clipboard, false) {
             Ok(content) => content,
             Err(err) => {
@@ -239,6 +277,7 @@ impl Clipboard for LinuxClipboard {
     fn read_text_and_paths(&mut self) -> ClipboardContent {
         // One text read plus the syntactic path check; the HTML target and image probes are
         // skipped because paste never uses them (a multi-MB paste paid for them on every read).
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
         let plain_text = match self.read_text_retrying() {
             Ok(text) => text,
             Err(err) => {
@@ -271,9 +310,9 @@ impl Clipboard for LinuxClipboard {
             // Same bounded first-answer wait as the full reader (#1331): the terminal paste holds
             // typed keys for as long as this takes, and arboard's retries made that 30+ s.
             let started = Instant::now();
-            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
+            let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
             let content = clipboard.read_text_and_paths();
-            arboard::set_first_answer_deadline(None);
+            drop(budget);
             let flagged = clipboard.take_read_failure();
             if read_timed_out(
                 flagged,
@@ -324,9 +363,9 @@ impl Clipboard for LinuxClipboard {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
             let started = Instant::now();
-            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
+            let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
             let content = clipboard.read();
-            arboard::set_first_answer_deadline(None);
+            drop(budget);
             let flagged = clipboard.take_read_failure();
             if read_timed_out(
                 flagged,
@@ -354,9 +393,9 @@ impl Clipboard for LinuxClipboard {
                 return BackgroundTextRead::Content(ClipboardContent::null_value());
             };
             let started = Instant::now();
-            arboard::set_first_answer_deadline(Some(started + FULL_READ_BUDGET));
+            let budget = ReadBudget::start_at(started + FULL_READ_BUDGET);
             let content = clipboard.read_from_primary_clipboard();
-            arboard::set_first_answer_deadline(None);
+            drop(budget);
             let flagged = clipboard.take_read_failure();
             if read_timed_out(
                 flagged,
@@ -393,6 +432,7 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn read_plain_text(&mut self) -> String {
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
         self.read_text_retrying().unwrap_or_default()
     }
 
@@ -417,6 +457,7 @@ impl Clipboard for LinuxClipboard {
     }
 
     fn read_from_primary_clipboard(&mut self) -> ClipboardContent {
+        let _budget = ReadBudget::start(FULL_READ_BUDGET);
         match self.read_from_specific_clipboard(LinuxClipboardKind::Primary) {
             Ok(content) => content,
             Err(arboard::Error::ClipboardNotSupported) => {

@@ -1478,6 +1478,7 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             .borrow_mut();
         let renderer = renderer_manager.renderer_for_device(device, window.physical_size());
 
+        crate::rendering::glyph_cache::begin_window_render();
         app::callback_dispatcher().with_mutable_app_context(|ctx| {
             renderer.render(&scene, window.as_ref(), ctx.font_cache());
         });

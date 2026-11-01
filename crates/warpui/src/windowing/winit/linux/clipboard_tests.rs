@@ -355,3 +355,32 @@ mod targets_query_tests {
         assert_eq!(has_content_from_formats(&formats), None);
     }
 }
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod read_budget_tests {
+    use super::super::{READ_BUDGET_ACTIVE, ReadBudget};
+    use std::time::Duration;
+
+    fn active() -> bool {
+        READ_BUDGET_ACTIVE.with(|active| active.get())
+    }
+
+    /// Every synchronous read takes a budget (#1380); a nested one (the fallback probe calling
+    /// `read()`) must not replace or clear the outer one, and the cap is released afterwards.
+    #[test]
+    fn nested_budget_defers_to_the_outer_and_releases_on_drop() {
+        assert!(!active());
+        let outer = ReadBudget::start(Duration::from_secs(2));
+        assert!(outer.owns && active());
+        {
+            let inner = ReadBudget::start(Duration::from_secs(60));
+            assert!(!inner.owns, "an inner budget never loosens the outer one");
+        }
+        assert!(
+            active(),
+            "dropping the inner budget leaves the outer cap in place"
+        );
+        drop(outer);
+        assert!(!active());
+    }
+}
