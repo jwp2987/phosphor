@@ -291,6 +291,18 @@ fn open_worktree_sidecar(workspace: &ViewHandle<Workspace>, app: &mut App) {
     });
 }
 
+/// Opening a worktree lists the repo's branches off the UI thread (#1313) and adds the tab when
+/// that finishes, so the tab count is only right after the background work has landed.
+#[cfg(feature = "local_fs")]
+async fn wait_for_tab_count(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
+    for _ in 0..1000 {
+        if workspace.read(app, |workspace, _| workspace.tab_count()) == expected {
+            return;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_hover_takes_precedence_over_selection() {
@@ -460,6 +472,7 @@ fn test_worktree_sidecar_close_via_select_item_executes_from_workspace() {
             workspace.handle_new_session_sidecar_event(&MenuEvent::ItemSelected, ctx);
         });
 
+        wait_for_tab_count(&workspace, &mut app, 2).await;
         workspace.read(&app, |workspace, _| {
             assert_eq!(workspace.tab_count(), 2);
         });
@@ -926,6 +939,7 @@ fn test_worktree_sidecar_search_editor_enter_executes_selection() {
                 });
         });
 
+        wait_for_tab_count(&workspace, &mut app, 2).await;
         workspace.read(&app, |workspace, _| {
             assert_eq!(workspace.tab_count(), 2);
             assert!(workspace.show_new_session_dropdown_menu.is_none());
