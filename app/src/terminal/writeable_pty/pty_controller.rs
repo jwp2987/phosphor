@@ -606,14 +606,17 @@ impl<T: EventLoopSender> PtyController<T> {
             .active_session_id()
             .and_then(|id| self.sessions.as_ref(ctx).get(id))
             .and_then(|session| session.shell().input_reporting_sequence());
-        let (decision, at_prompt) = {
-            let mut model = self.terminal_model.lock();
-            let at_prompt = model.is_at_prompt_for_typeahead_request();
-            let decision = model
-                .typeahead_handoff_mut()
-                .on_line_editor_active(at_prompt, input_reporting_seq.is_some());
-            (decision, at_prompt)
-        };
+        // The one model read is the exact "at a prompt" fact (the decision depends on it, so it is
+        // not a published copy); the hand-off is mutated through its own handle, after the model's
+        // lock is released, so the decision never holds the model while it takes the hand-off.
+        let at_prompt = self
+            .terminal_model
+            .lock()
+            .is_at_prompt_for_typeahead_request();
+        let decision = self
+            .handoff
+            .write()
+            .on_line_editor_active(at_prompt, input_reporting_seq.is_some());
 
         warpui::input_order::log_hop("handoff_decision", || {
             format!("decision={decision:?} retry={is_retry}")
@@ -623,10 +626,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.handoff_request_waiting = false;
                 if let Some(bytes) = input_reporting_seq {
                     // #1089: its report covers user bytes the hand-off did not adopt.
-                    self.terminal_model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .on_legacy_request_written();
+                    self.handoff.write().on_legacy_request_written();
                     self.pending_writes.push_front(PtyWrite::Bytes {
                         bytes: Cow::Owned(bytes.to_vec()),
                     });
@@ -639,12 +639,8 @@ impl<T: EventLoopSender> PtyController<T> {
                 // clears it, so those bytes would stay there; one more request, behind them,
                 // collects them. Queued commands go out behind it, not ahead of the bytes.
                 let drain_request = if is_retry && decision == ActiveDecision::Legacy {
-                    input_reporting_seq.filter(|_| {
-                        self.terminal_model
-                            .lock()
-                            .typeahead_handoff_mut()
-                            .drain_request_due(at_prompt, true)
-                    })
+                    input_reporting_seq
+                        .filter(|_| self.handoff.write().drain_request_due(at_prompt, true))
                 } else {
                     None
                 };
@@ -653,11 +649,7 @@ impl<T: EventLoopSender> PtyController<T> {
                         bytes: Cow::Owned(bytes.to_vec()),
                     });
                 } else if self.handoff_held_command_pending
-                    && self
-                        .terminal_model
-                        .lock()
-                        .typeahead_handoff()
-                        .holds_queued_writes()
+                    && self.handoff.read().holds_queued_writes()
                 {
                     // A command held behind untracked user bytes stays held until a request
                     // behind them is written; its kill prefix would destroy them unreported.
