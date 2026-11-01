@@ -4012,8 +4012,10 @@ impl ansi::Handler for TerminalModel {
         // #1162: the shell's report, as the shell sent it and after the reply-residue filter.
         warpui::input_order::log_hop("input_report", || {
             format!(
-                "reported_chars={reported_len} kept_chars={}",
-                data.buffer.chars().count()
+                "reported_chars={reported_len} kept_chars={} text={}",
+                data.buffer.chars().count(),
+                // #1393: what the shell reported, to compare with what the editor then holds.
+                warpui::input_order::describe_text(&data.buffer)
             )
         });
         delegate!(self.input_buffer(data));

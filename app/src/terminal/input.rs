@@ -8457,7 +8457,19 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         let len_before = self.buffer_text(ctx).chars().count();
+        let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
+        // #1393: the report's insertion into the editor, before and after, with the count of
+        // characters of an earlier report it replaced.
+        warpui::input_order::log_hop("handoff_insert", || {
+            format!(
+                "replaced_prefix_chars={} report={} before={} after={}",
+                num_typeahead_chars_inserted.as_usize(),
+                warpui::input_order::describe_text(typeahead),
+                warpui::input_order::describe_text(&text_before.unwrap_or_default()),
+                warpui::input_order::describe_text(&self.buffer_text(ctx))
+            )
+        });
         if self.handoff_enter_mark.is_some() {
             let len_after = self.buffer_text(ctx).chars().count();
             if let Some(mark) = self.handoff_enter_mark.as_mut() {
@@ -13510,7 +13522,14 @@ impl Input {
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         warpui::input_order::log_hop("enter_begin", || {
-            format!("deferred={}", self.running_deferred_enter)
+            // #1393: the text and input type the Enter is about to route, so a line that went to
+            // the agent can be told from one the editor held wrongly.
+            format!(
+                "deferred={} buffer={} input_type={:?}",
+                self.running_deferred_enter,
+                warpui::input_order::describe_text(&self.buffer_text(ctx)),
+                self.input_type(ctx)
+            )
         });
         if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
             // If the @ context menu is open, Enter selects the highlighted item
