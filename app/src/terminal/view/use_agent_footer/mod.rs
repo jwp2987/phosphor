@@ -79,6 +79,18 @@ use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PAST
 use super::{TerminalAction, TerminalView};
 use crate::terminal::view::block_banner::WarpificationMode;
 
+// WHY THESE THREE ARE STILL TIMERS (#1364, owner events-not-timers rule):
+// the three delays below pace writes into a third-party TUI's stdin, and no event exists to
+// sequence them on. A CLI agent gives no acknowledgement that it has consumed a mode-switch
+// prefix, a bracketed paste, or an image-paste keystroke (the clipboard read for the image
+// happens inside the agent, invisibly to us). The only observable candidate, "the agent
+// produced pty output after our write", is not a usable signal: agents such as Claude Code or
+// Copilot redraw continuously (spinners, status lines), so output arriving says nothing about
+// whether the write was processed, and gating on it would release the Enter/next paste EARLIER
+// than the fixed delay does. The CLI-agent session events (prompt submit, stop, ...) fire only
+// after the submit, so they cannot sequence it. These stay as per-agent pacing delays, not
+// give-up nets; if an agent ever exposes an input-consumed acknowledgement, replace them.
+
 /// Small delay inserted between separate PTY writes to CLI agents.
 /// (Used both for the mode-switch prefix split and for the `DelayedEnter`
 /// submit strategy so each write is delivered as a distinct stdin read.)
