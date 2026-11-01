@@ -12335,6 +12335,102 @@ fn test_enter_during_a_pending_paste_submits_the_full_line() {
     });
 }
 
+/// #1335: an async paste with an Enter held behind it (the 0 ms "paste, Enter" flow) classifies the
+/// pasted line like typing before the Enter submits it. The editor reports the insert one effect
+/// hop after the replayed Enter's own event, so without the explicit request the Enter found no
+/// detection pending and submitted on the inherited AI type: a shell command went to the agent.
+#[test]
+fn test_paste_then_held_enter_classifies_the_pasted_line() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+
+        for (text, runs_in_shell) in [
+            ("echo PASTE-G1; echo PASTE-H1", true),
+            ("please explain why the build failed", false),
+        ] {
+            executed.borrow_mut().clear();
+            *ai_queries.borrow_mut() = 0;
+            // The agent's input as a fresh agent view leaves it, with its explicit-write window
+            // long past: AI, unlocked, no conversation evidence.
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: false,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+
+            let owned = text.to_string();
+            let reader: BackgroundTextReader = Box::new(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                BackgroundTextRead::Content(ClipboardContent::plain_text(owned))
+            });
+            input.update(&mut app, |input, ctx| {
+                input.start_background_paste(reader, ctx)
+            });
+            editor.update(&mut app, |editor, ctx| {
+                editor.apply_held_paste_key(HeldPasteKey::Action(EditorAction::Enter), ctx);
+            });
+            for _ in 0..1000 {
+                if !editor.read(&app, |editor, _| editor.paste_hold().has_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            if runs_in_shell {
+                assert_eq!(
+                    executed.borrow().as_slice(),
+                    [text.to_owned()],
+                    "a pasted shell command Enter-ed at once runs in the shell"
+                );
+                assert_eq!(*ai_queries.borrow(), 0);
+            } else {
+                assert!(
+                    executed.borrow().is_empty(),
+                    "pasted prose is not run by the shell"
+                );
+            }
+        }
+    });
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn export_error_message_names_the_failure() {

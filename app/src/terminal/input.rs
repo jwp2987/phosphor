@@ -11134,7 +11134,34 @@ impl Input {
                 }
             }
         }
+        if !held.is_empty() {
+            self.request_detection_for_pasted_text(ctx);
+        }
         self.replay_held_paste_keys(held, ctx);
+    }
+
+    /// Requests input-type detection for the text a background paste just inserted, before the
+    /// keys held behind it are replayed (#1335). The editor reports the insert as an `Edited`
+    /// event one effect hop after the model's own, while a replayed Enter's event is emitted
+    /// directly; so the Enter reaches this view BEFORE the paste's edit does, finds no detection
+    /// pending, and submits the pasted line on the inherited input type (the agent's, in a fresh
+    /// agent view). Typing never races this: the edit is handled before the next key arrives.
+    /// The edit's own request that follows is for the same text and supersedes this one.
+    #[cfg(not(target_family = "wasm"))]
+    fn request_detection_for_pasted_text(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.buffer_text(ctx).trim().is_empty()
+            || self
+                .suggestions_mode_model
+                .as_ref(ctx)
+                .is_inline_menu_open()
+            || !self
+                .ai_input_model
+                .as_ref(ctx)
+                .should_run_input_autodetection(ctx)
+        {
+            return;
+        }
+        self.request_input_detection_for_current_buffer(ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
