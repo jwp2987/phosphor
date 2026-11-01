@@ -52,34 +52,39 @@ impl SuggestNewConversationExecutor {
 
         let message_id = message_id.clone();
         let receiver = self.suggest_new_conversation_result_rx.clone().1;
-        // Drop any decision left over from an earlier card (a late Accept after Stop) so it
-        // cannot be consumed in place of this call's Reject (#1278).
-        while receiver.try_recv().is_ok() {}
+        // The UI queues the user's decision BEFORE it asks for the action to execute, so a decision
+        // already waiting here is this call's and must be kept (draining it, as an earlier version
+        // did, turned every Accept into the Reject below). Only when nobody has decided is the
+        // fast-fail Reject queued.
+        //
         // Zap: there's no "Start a new conversation?" confirmation modal view
         // component, so this fast-fails with Reject to prevent the BYOP loop from
         // hanging forever waiting on the receiver. The model seeing Rejected is fine
-        // and doesn't affect the main flow. Send a Reject to the channel
-        // synchronously so the following receiver.recv() gets it immediately.
-        let _ = self
-            .suggest_new_conversation_result_rx
-            .0
-            .try_send(NewConversationDecision::Reject);
-        ActionExecution::new_async(async move { receiver.recv().await }, move |result, _ctx| {
-            match result {
-                Ok(NewConversationDecision::Accept) => {
-                    AIAgentActionResultType::SuggestNewConversation(
-                        SuggestNewConversationResult::Accepted { message_id },
-                    )
-                }
-                Ok(NewConversationDecision::Reject) => {
-                    AIAgentActionResultType::SuggestNewConversation(
-                        SuggestNewConversationResult::Rejected,
-                    )
-                }
-                Err(_) => AIAgentActionResultType::SuggestNewConversation(
-                    SuggestNewConversationResult::Cancelled,
-                ),
-            }
+        // and doesn't affect the main flow. The Reject is sent synchronously so the
+        // following receiver.recv() gets it immediately.
+        if receiver.is_empty() {
+            let _ = self
+                .suggest_new_conversation_result_rx
+                .0
+                .try_send(NewConversationDecision::Reject);
+        }
+        // Once this call has its decision, anything else still queued is stale (a late second
+        // click): drop it so it cannot be taken for the next card's decision (#1278).
+        let decision = async move {
+            let decision = receiver.recv().await;
+            while receiver.try_recv().is_ok() {}
+            decision
+        };
+        ActionExecution::new_async(decision, move |result, _ctx| match result {
+            Ok(NewConversationDecision::Accept) => AIAgentActionResultType::SuggestNewConversation(
+                SuggestNewConversationResult::Accepted { message_id },
+            ),
+            Ok(NewConversationDecision::Reject) => AIAgentActionResultType::SuggestNewConversation(
+                SuggestNewConversationResult::Rejected,
+            ),
+            Err(_) => AIAgentActionResultType::SuggestNewConversation(
+                SuggestNewConversationResult::Cancelled,
+            ),
         })
     }
 
@@ -105,3 +110,7 @@ impl Default for SuggestNewConversationExecutor {
 impl Entity for SuggestNewConversationExecutor {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "suggest_new_conversation_tests.rs"]
+mod tests;
