@@ -6,6 +6,7 @@
 mod background_task;
 mod work_queue;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -319,6 +320,22 @@ pub(crate) struct BlockFindResults {
     terminal_total_indices: HashMap<BlockIndex, TotalIndex>,
     /// TotalIndex for each AI block that has been scanned.
     ai_total_indices: HashMap<EntityId, TotalIndex>,
+    /// Running count of visible matches (see [`Self::total_match_count`]), updated by every
+    /// mutation so reading it is O(1) instead of a pass over every stored match (#1327).
+    visible_count: Cell<usize>,
+}
+
+// Free functions so a caller holding a `&mut` into a match map can still adjust the count.
+fn count_add(count: &Cell<usize>, n: usize) {
+    count.set(count.get() + n);
+}
+
+fn count_sub(count: &Cell<usize>, n: usize) {
+    count.set(count.get().saturating_sub(n));
+}
+
+fn visible_in(matches: &[AbsoluteMatch]) -> usize {
+    matches.iter().filter(|m| !m.is_filtered).count()
 }
 
 impl BlockFindResults {
@@ -329,6 +346,26 @@ impl BlockFindResults {
     /// treated as if they don't exist for search. Command and AI matches are
     /// never filtered.
     fn total_match_count(&self) -> usize {
+        // Tests edit the match maps directly, bypassing the running count, so they recount.
+        #[cfg(test)]
+        {
+            self.recount_visible()
+        }
+        #[cfg(not(test))]
+        {
+            self.visible_count.get()
+        }
+    }
+
+    /// The running visible-match count, which production reads via [`Self::total_match_count`].
+    #[cfg(test)]
+    pub(crate) fn running_visible_count(&self) -> usize {
+        self.visible_count.get()
+    }
+
+    /// Counts visible matches by scanning every stored match; the ground truth for
+    /// `visible_count`.
+    pub(crate) fn recount_visible(&self) -> usize {
         let terminal_count: usize = self
             .terminal_matches
             .values()
@@ -338,12 +375,21 @@ impl BlockFindResults {
         terminal_count + ai_count
     }
 
+    fn count_add(&self, n: usize) {
+        count_add(&self.visible_count, n);
+    }
+
+    fn count_sub(&self, n: usize) {
+        count_sub(&self.visible_count, n);
+    }
+
     /// Clears all results.
     fn clear(&mut self) {
         self.terminal_matches.clear();
         self.ai_matches.clear();
         self.terminal_total_indices.clear();
         self.ai_total_indices.clear();
+        self.visible_count.set(0);
     }
 
     /// Removes all results for a specific block index.
@@ -355,6 +401,13 @@ impl BlockFindResults {
             .terminal_matches
             .iter()
             .any(|((idx, _), matches)| *idx == block_index && !matches.is_empty());
+        let removed_visible: usize = self
+            .terminal_matches
+            .iter()
+            .filter(|((idx, _), _)| *idx == block_index)
+            .map(|(_, matches)| visible_in(matches))
+            .sum();
+        self.count_sub(removed_visible);
         self.terminal_matches
             .retain(|(idx, _), _| *idx != block_index);
         self.terminal_total_indices.remove(&block_index);
@@ -384,11 +437,13 @@ impl BlockFindResults {
             .terminal_matches
             .entry((block_index, grid_type))
             .or_default();
+        let new_visible = visible_in(&new_matches);
 
         // If there are no current matches, just insert the new ones.
         if matches.is_empty() {
             let changed = !new_matches.is_empty();
             *matches = new_matches;
+            count_add(&self.visible_count, new_visible);
             return changed;
         }
 
@@ -401,6 +456,7 @@ impl BlockFindResults {
                 return false;
             }
             matches.splice(0..0, new_matches);
+            count_add(&self.visible_count, new_visible);
             return true;
         }
 
@@ -413,6 +469,7 @@ impl BlockFindResults {
                 return false;
             }
             matches.extend(new_matches);
+            count_add(&self.visible_count, new_visible);
             return true;
         }
 
@@ -441,7 +498,10 @@ impl BlockFindResults {
             return false;
         }
 
+        let old_visible = visible_in(&matches[replace_range.clone()]);
         matches.splice(replace_range, new_matches);
+        count_sub(&self.visible_count, old_visible);
+        count_add(&self.visible_count, new_visible);
 
         // Assert that matches are still in ascending order.
         debug_assert!(
@@ -905,7 +965,9 @@ impl AsyncFindController {
                     // Only the appended tail is new: re-flagging every earlier match on each
                     // chunk made a many-match scan quadratic on the UI thread (#1327).
                     let first_new = stored.len();
+                    let added_visible = visible_in(&matches);
                     stored.extend(matches);
+                    self.block_results.count_add(added_visible);
 
                     // Auto-select the first match when results first arrive.
                     if self.focused_match_index.is_none() {
@@ -964,7 +1026,14 @@ impl AsyncFindController {
                         view_id
                     );
                     if !match_ids.is_empty() {
-                        self.block_results.ai_matches.insert(view_id, match_ids);
+                        let new_len = match_ids.len();
+                        let old_len = self
+                            .block_results
+                            .ai_matches
+                            .insert(view_id, match_ids)
+                            .map_or(0, |old| old.len());
+                        self.block_results.count_sub(old_len);
+                        self.block_results.count_add(new_len);
                         self.block_results
                             .ai_total_indices
                             .insert(view_id, total_index);
@@ -1167,8 +1236,15 @@ impl AsyncFindController {
             return false;
         };
         let len_before = matches.len();
+        let visible_before = visible_in(matches);
         matches.retain(|m| !m.is_truncated(num_lines_truncated));
-        matches.len() != len_before
+        let changed = matches.len() != len_before;
+        let visible_after = visible_in(matches);
+        count_sub(
+            &self.block_results.visible_count,
+            visible_before.saturating_sub(visible_after),
+        );
+        changed
     }
 
     /// Recomputes `is_filtered` for the Output-grid matches of `block_index`,
@@ -1216,7 +1292,14 @@ impl AsyncFindController {
                             // Truncated from scrollback — treat as hidden/gone.
                             None => true,
                         };
-                    flags_changed |= absolute_match.is_filtered != is_filtered;
+                    if absolute_match.is_filtered != is_filtered {
+                        flags_changed = true;
+                        if is_filtered {
+                            count_sub(&self.block_results.visible_count, 1);
+                        } else {
+                            count_add(&self.block_results.visible_count, 1);
+                        }
+                    }
                     absolute_match.is_filtered = is_filtered;
                 }
             }

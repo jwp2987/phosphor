@@ -1758,3 +1758,104 @@ fn controller_active_block(controller: &AsyncFindController) -> BlockIndex {
         .block_list()
         .active_block_index()
 }
+
+fn flagged(mut m: AbsoluteMatch) -> AbsoluteMatch {
+    m.is_filtered = true;
+    m
+}
+
+#[test]
+fn test_running_visible_count_tracks_updates_and_removals() {
+    let mut results = BlockFindResults::default();
+    let key = (BlockIndex(0), GridType::Output);
+    let check = |results: &BlockFindResults| {
+        assert_eq!(results.running_visible_count(), results.recount_visible());
+    };
+
+    // Empty existing, prepend-less insert, filtered entries do not count.
+    results.update_dirty_matches(
+        key.0,
+        key.1,
+        0..=10,
+        vec![make_match(5), flagged(make_match(6)), make_match(7)],
+    );
+    assert_eq!(results.running_visible_count(), 2);
+    check(&results);
+
+    // Prepend and append.
+    results.update_dirty_matches(key.0, key.1, 0..=1, vec![make_match(0)]);
+    results.update_dirty_matches(key.0, key.1, 20..=21, vec![make_match(20), make_match(21)]);
+    assert_eq!(results.running_visible_count(), 5);
+    check(&results);
+
+    // Replace the middle (drops the flagged match and a visible one).
+    results.update_dirty_matches(key.0, key.1, 6..=7, vec![make_match(6)]);
+    assert_eq!(results.running_visible_count(), 5 - 1 + 1);
+    check(&results);
+
+    // A second grid, then removing the block drops both.
+    results.update_dirty_matches(
+        key.0,
+        GridType::PromptAndCommand,
+        0..=0,
+        vec![make_match(0)],
+    );
+    check(&results);
+    results.remove_block(key.0);
+    assert_eq!(results.running_visible_count(), 0);
+    check(&results);
+
+    results.update_dirty_matches(key.0, key.1, 0..=0, vec![make_match(0)]);
+    results.clear();
+    assert_eq!(results.running_visible_count(), 0);
+}
+
+#[test]
+fn test_running_count_matches_recount_after_chunks_and_invalidations() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            let mut controller = AsyncFindController::new(terminal_model);
+            controller.set_test_status(AsyncFindStatus::Scanning);
+            model.async_find_controller = Some(controller);
+            model
+        });
+        model.update(&mut app, |model, ctx| {
+            let controller = model.async_find_controller.as_mut().unwrap();
+            let active = controller_active_block(controller);
+            for chunk in 0..5u64 {
+                let matches = (0..10).map(|i| make_match(chunk * 10 + i)).collect();
+                controller.process_message(
+                    FindTaskMessage::BlockGridMatches {
+                        block_index: active,
+                        grid_type: GridType::Output,
+                        matches,
+                    },
+                    ctx,
+                );
+                let results = controller.block_results_mut();
+                assert_eq!(results.running_visible_count(), results.recount_visible());
+            }
+            assert_eq!(controller.match_count(), 50);
+
+            // Focus the last match, then a dirty-range rescan that removes most matches must
+            // clamp the focused index into the shrunken range.
+            controller.focused_match_index = Some(49);
+            controller.process_message(
+                FindTaskMessage::DirtyRangeMatches {
+                    block_index: active,
+                    grid_type: GridType::Output,
+                    dirty_range: 5..=49,
+                    matches: vec![],
+                },
+                ctx,
+            );
+            let results = controller.block_results_mut();
+            assert_eq!(results.running_visible_count(), results.recount_visible());
+            assert_eq!(controller.match_count(), 5);
+            assert_eq!(controller.focused_match_index(), Some(4));
+        });
+    });
+}
