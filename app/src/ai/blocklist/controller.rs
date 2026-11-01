@@ -237,10 +237,13 @@ impl SessionContext {
         } else {
             path.to_owned()
         };
-        crate::ai::paths::host_native_absolute_path(
+        // A remote session's paths use the remote host's (unix) rules, not the local OS's
+        // (#1278).
+        crate::ai::paths::host_native_absolute_path_for(
             &expanded,
             &self.shell,
             &self.current_working_directory,
+            self.is_remote(),
         )
     }
 

@@ -242,8 +242,8 @@ fn parse_null_delimited_grep_output_handles_colon_in_windows_path() {
     // git-grep-`-z`-style record: both separators are NUL.
     let output = "C:\\repo\\file.rs\x0042\0some content\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(matched_files.len(), 1);
     assert_eq!(matched_files[0].file_path, r#"C:\repo\file.rs"#);
@@ -259,8 +259,8 @@ fn parse_null_delimited_grep_output_handles_gnu_grep_null_style() {
     // line-number separator stays `:`.
     let output = "path/with:colon/file.go\x007:content\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(matched_files.len(), 1);
     assert_eq!(matched_files[0].file_path, "path/with:colon/file.go");
@@ -277,8 +277,8 @@ fn parse_null_delimited_grep_output_handles_path_that_looks_like_a_record_bounda
     // NUL-delimited format has no such ambiguity.
     let output = "src/a:123:part.rs\x007\0needle\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(matched_files.len(), 1);
     assert_eq!(matched_files[0].file_path, "src/a:123:part.rs");
@@ -294,8 +294,8 @@ fn parse_null_delimited_grep_output_handles_newline_embedded_in_path() {
     // the first NUL byte regardless of what bytes precede it.
     let output = "weird\nname.rs\x0042\0content\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(matched_files.len(), 1);
     assert_eq!(matched_files[0].file_path, "weird\nname.rs");
@@ -316,8 +316,8 @@ fn parse_null_delimited_grep_output_ignores_a_blank_line_before_the_first_record
     // notice.
     let output = "\nsrc/a.rs\x0010\0x\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(
         matched_files,
@@ -334,8 +334,8 @@ fn parse_null_delimited_grep_output_ignores_leading_spaces_before_the_first_reco
     // emits spaces before a path, so leading spaces are transport noise.
     let output = "   src/a.rs\x0010\0x\n";
 
-    let matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
 
     assert_eq!(
         matched_files,
@@ -364,8 +364,8 @@ fn parse_null_delimited_grep_output_keeps_every_record_of_the_select_string_shap
     // the case this whole change exists for.
     let output = "C:\\repo\\a.rs\x001\0C:\\repo\\b.rs\x002\0";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -391,8 +391,8 @@ fn parse_null_delimited_grep_output_keeps_select_string_records_with_implicit_ne
     // undocumented host behavior in either direction.
     let output = "a.rs\x001\0\nb.rs\x002\0\n";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -416,8 +416,8 @@ fn parse_null_delimited_grep_output_keeps_select_string_records_over_crlf() {
     // Windows PowerShell session.
     let output = "a.rs\x001\0\r\nb.rs\x002\0\r\n";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -441,8 +441,8 @@ fn parse_null_delimited_grep_output_keeps_a_final_record_with_no_trailing_newlin
     // still yields its last match; content simply runs to end of input.
     let output = "a.rs\x001\0first\nb.rs\x002\0no trailing newline";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -488,8 +488,8 @@ fn parse_null_delimited_grep_output_handles_multiple_records() {
     // another.
     let output = "colon:file.txt\x001\0needle one\ncolon:file.txt\x002\0second line needle\nnormal.txt\x001\0needle two\n";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -517,8 +517,8 @@ fn parse_null_delimited_grep_output_skips_unparseable_records_but_keeps_valid_ma
     // going instead of misattributing it to a neighboring record.
     let output = "src/main.rs\x0010\0foo\nbad\0not-a-number\nsrc/lib.rs\x0020\0bar\n";
 
-    let mut matched_files =
-        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    let mut matched_files = parse_null_delimited_grep_output(output, None, None, false)
+        .expect("Should parse successfully");
     matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
 
     assert_eq!(
@@ -540,7 +540,7 @@ fn parse_null_delimited_grep_output_skips_unparseable_records_but_keeps_valid_ma
 fn parse_null_delimited_grep_output_errors_when_every_record_is_unparseable() {
     let output = "not a grep record\nneither is this one";
 
-    let result = parse_null_delimited_grep_output(output, None, None);
+    let result = parse_null_delimited_grep_output(output, None, None, false);
 
     assert!(result.is_err());
 }
@@ -548,7 +548,7 @@ fn parse_null_delimited_grep_output_errors_when_every_record_is_unparseable() {
 #[test]
 fn parse_null_delimited_grep_output_returns_empty_for_empty_output() {
     let matched_files =
-        parse_null_delimited_grep_output("", None, None).expect("Should parse successfully");
+        parse_null_delimited_grep_output("", None, None, false).expect("Should parse successfully");
 
     assert!(matched_files.is_empty());
 }
@@ -594,7 +594,7 @@ fn parse_single_file_grep_output_returns_empty_for_empty_output() {
 fn parse_grep_content_scan_output_handles_multiple_files() {
     let output = "\x00src/main.rs\x0010:foo\n\x00src/lib.rs\x0020:bar\n25:baz\n";
 
-    let matched_files = parse_grep_content_scan_output(output, &None, &None);
+    let matched_files = parse_grep_content_scan_output(output, &None, &None, false);
 
     assert_eq!(
         matched_files,
@@ -618,7 +618,7 @@ fn parse_grep_content_scan_output_handles_multiple_files() {
 fn parse_grep_content_scan_output_handles_colon_in_path() {
     let output = "\x00src/a:123:part.rs\x007:needle\n";
 
-    let matched_files = parse_grep_content_scan_output(output, &None, &None);
+    let matched_files = parse_grep_content_scan_output(output, &None, &None, false);
 
     assert_eq!(
         matched_files,
@@ -640,7 +640,7 @@ fn parse_grep_content_scan_output_handles_a_marker_containing_a_raw_newline() {
     // produces for a path like this in practice.
     let output = "\x00weird\nname.rs\x0042:content\n";
 
-    let matched_files = parse_grep_content_scan_output(output, &None, &None);
+    let matched_files = parse_grep_content_scan_output(output, &None, &None, false);
 
     assert_eq!(
         matched_files,
@@ -662,7 +662,7 @@ fn parse_grep_content_scan_output_skips_fragments_of_a_newline_bearing_path() {
     // a missed match, not a misattribution to some other file.
     let output = "\x00weird\x00\x00name.rs\x00";
 
-    let matched_files = parse_grep_content_scan_output(output, &None, &None);
+    let matched_files = parse_grep_content_scan_output(output, &None, &None, false);
 
     assert_eq!(matched_files, Vec::<GrepFileMatch>::new());
 }
@@ -674,7 +674,7 @@ fn parse_grep_content_scan_output_skips_a_file_whose_content_came_back_empty() {
     // rather than reported with zero matches.
     let output = "\x00src/main.rs\x00\x00src/lib.rs\x0010:foo\n";
 
-    let matched_files = parse_grep_content_scan_output(output, &None, &None);
+    let matched_files = parse_grep_content_scan_output(output, &None, &None, false);
 
     assert_eq!(
         matched_files,
@@ -688,7 +688,7 @@ fn parse_grep_content_scan_output_skips_a_file_whose_content_came_back_empty() {
 #[test]
 fn parse_grep_content_scan_output_returns_empty_for_empty_output() {
     assert_eq!(
-        parse_grep_content_scan_output("", &None, &None),
+        parse_grep_content_scan_output("", &None, &None, false),
         Vec::<GrepFileMatch>::new()
     );
 }

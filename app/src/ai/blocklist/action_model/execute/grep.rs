@@ -19,7 +19,7 @@ use crate::ai::agent::{
 use crate::ai::blocklist::{
     BlocklistAIPermissions, telemetry_banner::should_collect_ai_ugc_telemetry,
 };
-use crate::ai::paths::{host_native_absolute_path, shell_native_absolute_path};
+use crate::ai::paths::{host_native_absolute_path_for, shell_native_absolute_path_for};
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::{sh_script_quote_arg, shell_quote_arg};
 use crate::{
@@ -225,7 +225,9 @@ impl GrepExecutor {
             return false;
         }
         let path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
-        let absolute_path = host_native_absolute_path(&path, &shell, &current_working_directory);
+        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let absolute_path =
+            host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
         BlocklistAIPermissions::handle(ctx)
             .as_ref(ctx)
@@ -259,10 +261,12 @@ impl GrepExecutor {
             .current_working_directory()
             .cloned();
         let expanded_path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
-        let absolute_path = shell_native_absolute_path(
+        let remote = super::is_remote_session(self.active_session.as_ref(ctx), ctx);
+        let absolute_path = shell_native_absolute_path_for(
             &expanded_path,
             shell_launch_data.as_ref(),
             current_working_directory.as_ref(),
+            remote,
         );
 
         let session = self.active_session.as_ref(ctx).session(ctx);
@@ -558,6 +562,7 @@ async fn run_git_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
+            !session.is_local(),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -586,6 +591,7 @@ async fn run_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
+            !session.is_local(),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -656,6 +662,7 @@ async fn run_grep_per_file_fallback(
                 &output,
                 &shell_launch_data,
                 &Some(execute_directory.to_string()),
+                !session.is_local(),
             ),
         }),
         Err(_) => Err(original_error),
@@ -747,6 +754,7 @@ fn parse_grep_content_scan_output(
     output: &str,
     shell_launch_data: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
+    remote: bool,
 ) -> Vec<GrepFileMatch> {
     let mut segments = output.split('\0');
     // Text before the first marker; empty in well-formed output.
@@ -767,10 +775,11 @@ fn parse_grep_content_scan_output(
             continue;
         }
         matched_files.push(GrepFileMatch {
-            file_path: host_native_absolute_path(
+            file_path: host_native_absolute_path_for(
                 path,
                 shell_launch_data,
                 current_working_directory,
+                remote,
             ),
             matched_lines,
         });
@@ -810,6 +819,7 @@ async fn run_select_string_command(
             output.as_ref(),
             shell_launch_data,
             Some(execute_directory.to_string()),
+            !session.is_local(),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -927,6 +937,7 @@ fn parse_null_delimited_grep_output(
     output: &str,
     shell_launch_data: Option<ShellLaunchData>,
     current_working_directory: Option<String>,
+    remote: bool,
 ) -> anyhow::Result<Vec<GrepFileMatch>> {
     let mut matched_files: HashMap<&str, Vec<GrepLineMatch>> = HashMap::new();
     let mut unparseable_record_count = 0usize;
@@ -981,10 +992,11 @@ fn parse_null_delimited_grep_output(
     Ok(matched_files
         .into_iter()
         .map(|(file, matched_lines)| GrepFileMatch {
-            file_path: host_native_absolute_path(
+            file_path: host_native_absolute_path_for(
                 file,
                 &shell_launch_data,
                 &current_working_directory,
+                remote,
             ),
             matched_lines,
         })

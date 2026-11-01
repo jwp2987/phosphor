@@ -393,3 +393,34 @@ fn expand_tilde_against_leaves_everything_else_alone() {
     assert_eq!(expand_tilde_against("~/x", None), "~/x");
     assert_eq!(expand_tilde_against("~/x", Some("")), "~/x");
 }
+
+/// #1278: a Windows host driving a Linux remote session must join and normalise agent paths
+/// with the REMOTE rules. The local OS is passed explicitly so this runs on any host.
+#[test]
+fn remote_session_on_a_windows_host_uses_unix_rules() {
+    // Windows local, no remote: Windows rules. Windows local + remote: unix rules.
+    assert!(!remote_style_for_test(false, false));
+    assert!(remote_style_for_test(false, true));
+    assert!(remote_style_for_test(true, false));
+
+    assert_eq!(
+        join_for_test(
+            &["/home/u/proj", "src", "a.rs"],
+            remote_style_for_test(false, true)
+        ),
+        "/home/u/proj/src/a.rs"
+    );
+    assert_eq!(
+        normalize_for_test(
+            "../lib/b.rs",
+            "/home/u/proj",
+            remote_style_for_test(false, true)
+        ),
+        "/home/u/lib/b.rs"
+    );
+    // The old (local-OS) behaviour on a Windows host used backslashes for the same input.
+    assert_eq!(
+        join_for_test(&["C:\\proj", "src"], remote_style_for_test(false, false)),
+        "C:\\proj\\src"
+    );
+}

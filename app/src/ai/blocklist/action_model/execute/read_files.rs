@@ -10,7 +10,7 @@ use crate::{
             ReadFilesFailedFile, ReadFilesRequest, ReadFilesResult,
         },
         blocklist::BlocklistAIPermissions,
-        paths::host_native_absolute_path,
+        paths::host_native_absolute_path_for,
     },
     terminal::model::session::{SessionType, active_session::ActiveSession},
 };
@@ -73,7 +73,7 @@ impl ReadFilesExecutor {
                 locations
                     .iter()
                     .map(|file| {
-                        PathBuf::from(host_native_absolute_path(
+                        PathBuf::from(host_native_absolute_path_for(
                             &super::expand_session_tilde(
                                 self.active_session.as_ref(ctx),
                                 &file.name,
@@ -81,6 +81,7 @@ impl ReadFilesExecutor {
                             ),
                             &shell,
                             &current_working_directory,
+                            super::is_remote_session(self.active_session.as_ref(ctx), ctx),
                         ))
                     })
                     .collect(),
@@ -185,10 +186,13 @@ impl ReadFilesExecutor {
                         files: locations
                             .iter()
                             .map(|loc| {
-                                let absolute_path = host_native_absolute_path(
+                                // A remote host's paths use its own (unix) rules, not the
+                                // local OS's (#1278).
+                                let absolute_path = host_native_absolute_path_for(
                                     &loc.name,
                                     &shell,
                                     &current_working_directory,
+                                    true,
                                 );
                                 remote_server::proto::ReadFileContextFile {
                                     path: absolute_path,
