@@ -1,0 +1,52 @@
+---
+source: app/src/terminal/pane_key_snapshot_tests.rs
+expression: pane_key_target_table
+---
+Typed text_field=false editor=false terminal=false ssh_hold=false -> Terminal
+Typed text_field=true editor=false terminal=false ssh_hold=false -> NotMine
+Typed text_field=false editor=true terminal=false ssh_hold=false -> Editor
+Typed text_field=true editor=true terminal=false ssh_hold=false -> NotMine
+Typed text_field=false editor=false terminal=true ssh_hold=false -> Terminal
+Typed text_field=true editor=false terminal=true ssh_hold=false -> NotMine
+Typed text_field=false editor=true terminal=true ssh_hold=false -> Editor
+Typed text_field=true editor=true terminal=true ssh_hold=false -> NotMine
+Typed text_field=false editor=false terminal=false ssh_hold=true -> Terminal
+Typed text_field=true editor=false terminal=false ssh_hold=true -> NotMine
+Typed text_field=false editor=true terminal=false ssh_hold=true -> Terminal
+Typed text_field=true editor=true terminal=false ssh_hold=true -> NotMine
+Typed text_field=false editor=false terminal=true ssh_hold=true -> Terminal
+Typed text_field=true editor=false terminal=true ssh_hold=true -> NotMine
+Typed text_field=false editor=true terminal=true ssh_hold=true -> Terminal
+Typed text_field=true editor=true terminal=true ssh_hold=true -> NotMine
+Control text_field=false editor=false terminal=false ssh_hold=false -> NotMine
+Control text_field=true editor=false terminal=false ssh_hold=false -> NotMine
+Control text_field=false editor=true terminal=false ssh_hold=false -> NotMine
+Control text_field=true editor=true terminal=false ssh_hold=false -> NotMine
+Control text_field=false editor=false terminal=true ssh_hold=false -> NotMine
+Control text_field=true editor=false terminal=true ssh_hold=false -> NotMine
+Control text_field=false editor=true terminal=true ssh_hold=false -> NotMine
+Control text_field=true editor=true terminal=true ssh_hold=false -> NotMine
+Control text_field=false editor=false terminal=false ssh_hold=true -> Terminal
+Control text_field=true editor=false terminal=false ssh_hold=true -> NotMine
+Control text_field=false editor=true terminal=false ssh_hold=true -> NotMine
+Control text_field=true editor=true terminal=false ssh_hold=true -> NotMine
+Control text_field=false editor=false terminal=true ssh_hold=true -> NotMine
+Control text_field=true editor=false terminal=true ssh_hold=true -> NotMine
+Control text_field=false editor=true terminal=true ssh_hold=true -> NotMine
+Control text_field=true editor=true terminal=true ssh_hold=true -> NotMine
+Composition text_field=false editor=false terminal=false ssh_hold=false -> NotMine
+Composition text_field=true editor=false terminal=false ssh_hold=false -> NotMine
+Composition text_field=false editor=true terminal=false ssh_hold=false -> Editor
+Composition text_field=true editor=true terminal=false ssh_hold=false -> NotMine
+Composition text_field=false editor=false terminal=true ssh_hold=false -> Terminal
+Composition text_field=true editor=false terminal=true ssh_hold=false -> NotMine
+Composition text_field=false editor=true terminal=true ssh_hold=false -> Editor
+Composition text_field=true editor=true terminal=true ssh_hold=false -> NotMine
+Composition text_field=false editor=false terminal=false ssh_hold=true -> NotMine
+Composition text_field=true editor=false terminal=false ssh_hold=true -> NotMine
+Composition text_field=false editor=true terminal=false ssh_hold=true -> Editor
+Composition text_field=true editor=true terminal=false ssh_hold=true -> NotMine
+Composition text_field=false editor=false terminal=true ssh_hold=true -> Terminal
+Composition text_field=true editor=false terminal=true ssh_hold=true -> NotMine
+Composition text_field=false editor=true terminal=true ssh_hold=true -> Editor
+Composition text_field=true editor=true terminal=true ssh_hold=true -> NotMine

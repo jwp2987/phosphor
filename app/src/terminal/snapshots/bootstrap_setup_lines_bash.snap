@@ -1,0 +1,13 @@
+---
+source: app/src/terminal/bootstrap_snapshot_tests.rs
+expression: bootstrap_setup_lines_bash
+---
+unmarked
+[0]  __hc0=${__hc0-${HISTCONTROL-}}; HISTCONTROL=ignorespace:${HISTCONTROL-}
+[1]  _wbs='echo '"'"'q'"'"' \ "x" é'
+[2]  HISTCONTROL=${__hc0-}; unset __hc0; if [ -z "${WARP_BOOTSTRAPPED-}" ]; then if [ "${#_wbs}" -eq 16 ] || [ "${#_wbs}" -eq 17 ]; then eval "$_wbs"; else builtin printf '\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\n' "${#_wbs}"; fi; fi; unset _wbs
+
+marked (token 4242)
+[0]  __hc0=${__hc0-${HISTCONTROL-}}; HISTCONTROL=ignorespace:${HISTCONTROL-}; builtin printf '\e]7771;4242;0\a'
+[1]  _wbs='echo '"'"'q'"'"' \ "x" é'; builtin printf '\e]7771;4242;1\a'
+[2]  HISTCONTROL=${__hc0-}; unset __hc0; if [ -z "${WARP_BOOTSTRAPPED-}" ]; then if [ "${#_wbs}" -eq 16 ] || [ "${#_wbs}" -eq 17 ]; then eval "$_wbs"; else builtin printf '\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\n' "${#_wbs}"; fi; fi; unset _wbs

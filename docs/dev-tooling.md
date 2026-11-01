@@ -22,3 +22,17 @@ RUSTFLAGS="--cfg loom" cargo test -p warp --lib --features warp/gui --release --
 
 Use a separate `CARGO_TARGET_DIR` (the cfg changes every crate's build). Model builds do not
 model time: `Condvar::wait_until` waits for a notification and never times out.
+
+## insta (snapshot tests)
+
+Reviewed snapshots instead of hand-maintained golden strings:
+
+| snapshot | test | what it pins |
+|---|---|---|
+| `bootstrap_setup_lines_{bash,zsh,fish,nu,pwsh}` | `app/src/terminal/bootstrap_snapshot_tests.rs` | the subshell setup lines per shell, unmarked and with `OSC 7771` markers |
+| `pane_key_target_table`, `pane_key_typed_route_scenarios`, `pane_key_after_pty_attempt_table` | `app/src/terminal/pane_key_snapshot_tests.rs` | the pane key destination tables and the order the routing rows ask their probes |
+| `input_order_canonical_sequences` | `crates/warpui_core/src/input_order_snapshot_tests.rs` | the input-order trace lines of a typed key, ^C, Enter and an IME commit (times redacted) |
+
+The `.snap` files sit in `snapshots/` next to each test file. Review a change with
+`cargo insta review` (needs `cargo install cargo-insta` on the machine that runs it) or accept
+with `INSTA_UPDATE=always cargo test ...`. CI (`CI=true`) never writes: a mismatch fails.

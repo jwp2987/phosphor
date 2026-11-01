@@ -1,0 +1,29 @@
+---
+source: crates/warpui_core/src/input_order_snapshot_tests.rs
+expression: input_order_canonical_sequences
+---
+typed key
+input_order keydown key=<1 chars> ctrl=false alt=false shift=false cmd=false t=<t> seq=1
+input_order typed_characters text=<1 chars> t=<t> seq=1
+input_order pty_write bytes=1 t=<t>
+input_order pty_read bytes=1 since_write_ms=0.8 t=<t>
+input_order frame layout=false t=<t>
+
+ctrl-c
+input_order keydown key=<1 chars> ctrl=true alt=false shift=false cmd=false t=<t> seq=2
+input_order pty_write bytes=1 t=<t>
+
+enter
+input_order keydown key=enter ctrl=false alt=false shift=false cmd=false t=<t> seq=3
+input_order submit buffer=<1 chars> t=<t>
+input_order hop=kh_enter_gate seq=3 held=1 t=<t>
+input_order hop=kh_enter_release seq=3 chunks=1 bytes=2 t=<t>
+input_order pty_write bytes=2 t=<t>
+input_order pty_read bytes=2 since_write_ms=12.3 t=<t>
+input_order frame layout=true t=<t>
+
+input method commit
+input_order typed_characters text=<11 chars> t=<t> seq=4
+input_order pty_write bytes=11 t=<t>
+input_order pty_read bytes=11 since_write_ms=2.0 t=<t>
+input_order frame layout=true t=<t>

@@ -1,0 +1,13 @@
+---
+source: app/src/terminal/bootstrap_snapshot_tests.rs
+expression: bootstrap_setup_lines_zsh
+---
+unmarked
+[0]  [ -n "${__whi-}" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n "${__wpe-}" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value; [ -n "${__wee-}" ] || { __wee=0; [[ -o err_exit ]] && __wee=1; }; unsetopt err_exit err_return; [ -n "${__wpf-}" ] || { __wpf=0; [[ -o pipe_fail ]] && __wpf=1; }; unsetopt pipe_fail; [ -n "${__wnu-}" ] || { __wnu=0; [[ -o unset ]] || __wnu=1; }; setopt unset
+[1]  _wbs='echo '"'"'q'"'"' \ "x" é'
+[2]  if [ "${__whi-}" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ -z "${WARP_BOOTSTRAPPED-}" ]; then if [ "${#_wbs}" -eq 16 ] || [ "${#_wbs}" -eq 17 ]; then eval "$_wbs"; else builtin printf '\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\n' "${#_wbs}"; fi; fi; if [ "${__wpf-}" = 1 ]; then setopt pipe_fail; fi; if [ "${__wnu-}" = 1 ]; then unsetopt unset; fi; if [ "${__wee-}" = 1 ]; then setopt err_exit; fi; [ "${__wpe-}" != 1 ] || WARP_RESTORE_PRINT_EXIT_VALUE=1; unset __wpe __wpf __wnu __wee _wbs WARP_HIST_IGNORE_SPACE_USER
+
+marked (token 4242)
+[0]  [ -n "${__whi-}" ] || { __whi=0; [[ -o hist_ignore_space ]] && __whi=1; }; setopt hist_ignore_space; [ -n "${__wpe-}" ] || { __wpe=0; [[ -o print_exit_value ]] && __wpe=1; }; unsetopt print_exit_value; [ -n "${__wee-}" ] || { __wee=0; [[ -o err_exit ]] && __wee=1; }; unsetopt err_exit err_return; [ -n "${__wpf-}" ] || { __wpf=0; [[ -o pipe_fail ]] && __wpf=1; }; unsetopt pipe_fail; [ -n "${__wnu-}" ] || { __wnu=0; [[ -o unset ]] || __wnu=1; }; setopt unset; builtin printf '\e]7771;4242;0\a'
+[1]  _wbs='echo '"'"'q'"'"' \ "x" é'; builtin printf '\e]7771;4242;1\a'
+[2]  if [ "${__whi-}" = 1 ]; then WARP_HIST_IGNORE_SPACE_USER=1; else unsetopt hist_ignore_space; fi; unset __whi; if [ -z "${WARP_BOOTSTRAPPED-}" ]; then if [ "${#_wbs}" -eq 16 ] || [ "${#_wbs}" -eq 17 ]; then eval "$_wbs"; else builtin printf '\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\n' "${#_wbs}"; fi; fi; if [ "${__wpf-}" = 1 ]; then setopt pipe_fail; fi; if [ "${__wnu-}" = 1 ]; then unsetopt unset; fi; if [ "${__wee-}" = 1 ]; then setopt err_exit; fi; [ "${__wpe-}" != 1 ] || WARP_RESTORE_PRINT_EXIT_VALUE=1; unset __wpe __wpf __wnu __wee _wbs WARP_HIST_IGNORE_SPACE_USER

@@ -1,0 +1,11 @@
+---
+source: app/src/terminal/bootstrap_snapshot_tests.rs
+expression: bootstrap_setup_lines_fish
+---
+unmarked
+[0]  set -g _wbs 'echo '"'"'q'"'"' \\ "x" é'
+[1]  [ -z $WARP_BOOTSTRAPPED ] && contains -- (string length -- $_wbs) 16 17 && eval $_wbs; set -e _wbs
+
+marked (token 4242)
+[0]  set -g _wbs 'echo '"'"'q'"'"' \\ "x" é'; builtin printf '\e]7771;4242;0\a'
+[1]  [ -z $WARP_BOOTSTRAPPED ] && contains -- (string length -- $_wbs) 16 17 && eval $_wbs; set -e _wbs
