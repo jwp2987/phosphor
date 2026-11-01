@@ -69,72 +69,62 @@ const PROMPT_DEBOUNCE_PERIOD_KEY: &str = "PromptDebouncePeriod";
 /// Chips polling at least this slowly (the VCS chips, date) are gated by [`poll_decision`]; fast
 /// chips (the 1 s clock) are not, since they do no I/O.
 const GATED_POLL_MIN_INTERVAL: Duration = Duration::from_secs(30);
-/// Polling interval floor for sessions that are not local (ssh): every chip command there is a
-/// round trip on the shared connection (and, on the ControlMaster executor, queues ahead of
-/// keystroke-driven completions).
-const REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(120);
-/// A poll tick is not allowed to start a chip command within this long of editor activity: typing
-/// wins over bookkeeping.
-const TYPING_QUIET_PERIOD: Duration = Duration::from_millis(1500);
-const TYPING_RECHECK_DELAY: Duration = Duration::from_secs(1);
-
 /// What a due poll tick should do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PollDecision {
     Run,
-    /// Skip this tick and look again after the given delay.
-    Defer(Duration),
-    /// The terminal is not on screen (hidden tab, unfocused or minimised window): do not look
-    /// again on a timer at all. [`CurrentPrompt::resume_parked_polls`] restarts the poll when the
-    /// tab is shown or the window regains focus, so a background tab costs zero wakeups.
+    /// The terminal is not on screen (hidden tab, unfocused or minimised window) or the user has
+    /// a command half-typed: do not look again on a timer at all.
+    /// [`CurrentPrompt::resume_parked_polls`] restarts the poll when the tab is shown, the window
+    /// regains focus, or the input editor reports its buffer empty again (command submitted or
+    /// cleared), so neither case costs a wakeup and nothing is inferred from elapsed time.
     Park,
 }
 
-/// Decides whether a due slow-poll tick runs its chip command now. `since_editor_activity` is the
-/// time since the last input-editor event of this terminal, if any.
-fn poll_decision(in_foreground: bool, since_editor_activity: Option<Duration>) -> PollDecision {
-    if !in_foreground {
+/// Decides whether a due slow-poll tick runs its chip command now. Typing wins over bookkeeping:
+/// `input_has_text` is the input editor's own state (a non-empty buffer), not a quiet-period guess.
+fn poll_decision(in_foreground: bool, input_has_text: bool) -> PollDecision {
+    if !in_foreground || input_has_text {
         return PollDecision::Park;
-    }
-    if since_editor_activity.is_some_and(|elapsed| elapsed < TYPING_QUIET_PERIOD) {
-        return PollDecision::Defer(TYPING_RECHECK_DELAY);
     }
     PollDecision::Run
 }
 
-/// Whether `kind` is a git chip fed by the per-repo status watcher on a local session.
+/// Whether `kind` is a git chip that is driven by events instead of a poll.
 ///
-/// For these, the poll is gone, not just slowed: the filesystem watcher
-/// (`GitRepoStatusModel`, attached by the terminal view via `set_git_repo_status`) pushes branch,
-/// ahead/behind and diff-stat changes, and block completion refreshes the chips after any command
-/// run in the terminal (`cd`, `git init`, `git clone`).  Only a remote (ssh) session has no
-/// watcher and no event source for the remote repo, so it keeps polling (see
-/// `REMOTE_POLL_INTERVAL`).
-fn is_git_chip_driven_by_watcher(kind: &ContextChipKind, session_is_remote: bool) -> bool {
-    !session_is_remote
-        && matches!(
-            kind,
-            ContextChipKind::ShellGitBranch
-                | ContextChipKind::GitBranchStatus
-                | ContextChipKind::GitDiffStats
-        )
+/// For these, the poll is gone: on a local session the filesystem watcher (`GitRepoStatusModel`,
+/// attached by the terminal view via `set_git_repo_status`) pushes branch, ahead/behind and
+/// diff-stat changes. On a remote (ssh) session there is no watcher, but the remote shell's own
+/// precmd hook starts a new block each time a command finishes (and carries the new cwd), which
+/// reaches [`CurrentPrompt::update_context`] and re-runs every chip; that is the remote session's
+/// signal for "the repo may have changed" (`cd`, `git checkout`, `git commit` all end in a
+/// precmd). Only a change made outside this shell (another terminal) goes unseen until the next
+/// prompt, which is the same staleness the local chip has for non-watched state. A remote
+/// session without precmd hooks has no blocks at all, so no chip is computed for it in the first
+/// place; there is no signal for a timer to stand in for.
+fn is_git_chip_driven_by_events(kind: &ContextChipKind) -> bool {
+    matches!(
+        kind,
+        ContextChipKind::ShellGitBranch
+            | ContextChipKind::GitBranchStatus
+            | ContextChipKind::GitDiffStats
+    )
 }
 
 /// When a chip's poll should next fire, or `None` if it should not poll at all.
 ///
-/// * Local git chips: never (see [`is_git_chip_driven_by_watcher`]).
+/// * Git chips: never (see [`is_git_chip_driven_by_events`]).
 /// * The clock chips display minutes, so they only change on a minute boundary: wake once per
 ///   minute, aligned to it, instead of every second.  Here time itself is the requirement.
-/// * Everything else: the configured (remote-adjusted) interval.
+/// * Everything else: the configured interval.
 ///
 /// `millis_into_minute` is the wall clock's position within the current minute.
 fn next_poll_delay(
     kind: &ContextChipKind,
     base: Duration,
-    session_is_remote: bool,
     millis_into_minute: u64,
 ) -> Option<Duration> {
-    if is_git_chip_driven_by_watcher(kind, session_is_remote) {
+    if is_git_chip_driven_by_events(kind) {
         return None;
     }
     if matches!(kind, ContextChipKind::Time12 | ContextChipKind::Time24) {
@@ -143,7 +133,7 @@ fn next_poll_delay(
             60_000 - (millis_into_minute % 60_000) + 10,
         ));
     }
-    Some(effective_poll_interval(base, session_is_remote))
+    Some(base)
 }
 
 fn millis_into_current_minute() -> u64 {
@@ -162,14 +152,6 @@ fn effective_command_timeout(policy_timeout: Option<Duration>) -> Duration {
     policy_timeout.unwrap_or(DEFAULT_CHIP_COMMAND_TIMEOUT)
 }
 
-/// The interval between polls of a chip whose configured interval is `base`.
-fn effective_poll_interval(base: Duration, session_is_remote: bool) -> Duration {
-    if session_is_remote && base >= GATED_POLL_MIN_INTERVAL {
-        base.max(REMOTE_POLL_INTERVAL)
-    } else {
-        base
-    }
-}
 type ChipFingerprint = u64;
 
 /// The lifecycle state of a chip's value computation within a [`CurrentPrompt`].
@@ -298,8 +280,9 @@ pub struct CurrentPrompt {
     /// Window of the terminal's input editor; with `terminal_view_id` it tells slow polls whether
     /// the terminal is on screen and focused. `None` means "unknown, assume foreground".
     terminal_window_id: Option<WindowId>,
-    /// Last time the terminal's input editor reported any event (typing, cursor, ...).
-    last_editor_activity: Option<Instant>,
+    /// Whether the terminal's input editor currently holds text (a half-typed command). Updated
+    /// from the editor's own events; slow polls do not start a chip command while it is set.
+    editor_input_has_text: bool,
 
     /// When set, `ShellGitBranch` chip values are driven by filesystem events from
     /// `GitRepoStatusModel` instead of the 30s periodic timer.
@@ -431,7 +414,7 @@ impl CurrentPrompt {
             agent_view_controller: None,
             terminal_view_id: None,
             terminal_window_id: None,
-            last_editor_activity: None,
+            editor_input_has_text: false,
             same_line_prompt_enabled: prompt.as_ref(ctx).same_line_prompt_enabled(),
             separator: prompt.as_ref(ctx).separator(),
             #[cfg(feature = "local_fs")]
@@ -479,7 +462,9 @@ impl CurrentPrompt {
         // A WeakViewHandle is used here to avoid leaking the terminal model
         let weak_editor_handle = editor.downgrade();
         ctx.subscribe_to_view(&editor, move |me, _, ctx| {
-            me.last_editor_activity = Some(Instant::now());
+            if let Some(editor) = weak_editor_handle.upgrade(ctx) {
+                me.editor_input_has_text = !editor.as_ref(ctx).buffer_text(ctx).is_empty();
+            }
             me.resume_parked_polls(ctx);
             if !me.active(ctx) {
                 return;
@@ -1237,10 +1222,9 @@ impl CurrentPrompt {
             let Some(interval) = next_poll_delay(
                 chip_kind,
                 *interval,
-                self.session_is_remote(ctx),
                 millis_into_current_minute(),
             ) else {
-                // Event-driven chip: no timer (see `is_git_chip_driven_by_watcher`).
+                // Event-driven chip: no timer (see `is_git_chip_driven_by_events`).
                 if let Some(state) = self.states.get_mut(chip_kind) {
                     state.refresh_handle = None;
                     state.parked = false;
@@ -1267,8 +1251,8 @@ impl CurrentPrompt {
     }
 
     /// A periodic timer fired. Slow pollers (VCS chips) skip the tick while their terminal is in
-    /// a hidden tab / unfocused window or the user is typing, and re-check shortly; the chip
-    /// refreshes on the first check that finds the terminal shown and idle. Block completion
+    /// a hidden tab / unfocused window or a half-typed command and park (no timer); the chip
+    /// refreshes when the terminal is shown or the input empties. Block completion
     /// refreshes chips independently of this, so a `cd`/branch switch run in the terminal never
     /// waits on the poll.
     fn handle_poll_tick(&mut self, chip_kind: &ContextChipKind, ctx: &mut ModelContext<Self>) {
@@ -1282,10 +1266,7 @@ impl CurrentPrompt {
             )
         });
         let decision = if gated {
-            poll_decision(
-                self.terminal_in_foreground(ctx),
-                self.last_editor_activity.map(|at| at.elapsed()),
-            )
+            poll_decision(self.terminal_in_foreground(ctx), self.editor_input_has_text)
         } else {
             PollDecision::Run
         };
@@ -1301,20 +1282,6 @@ impl CurrentPrompt {
                     state.parked = true;
                 }
             }
-            PollDecision::Defer(delay) => {
-                let chip_kind_clone = chip_kind.clone();
-                let future = ctx.spawn(
-                    async move {
-                        Timer::after(delay).await;
-                        chip_kind_clone
-                    },
-                    |me, chip_kind, ctx| me.handle_poll_tick(&chip_kind, ctx),
-                );
-                match self.states.get_mut(chip_kind) {
-                    Some(state) => state.refresh_handle = Some(future),
-                    None => log::warn!("Missing state for {chip_kind:?}"),
-                }
-            }
         }
     }
 
@@ -1322,7 +1289,10 @@ impl CurrentPrompt {
     /// (called when its tab is shown, its window regains focus, or the editor reports activity).
     /// Each restarted poll runs at once, so a chip is fresh the moment its tab is shown.
     pub fn resume_parked_polls(&mut self, ctx: &mut ModelContext<Self>) {
-        if !self.states.values().any(|state| state.parked) || !self.terminal_in_foreground(ctx) {
+        if !self.states.values().any(|state| state.parked)
+            || self.editor_input_has_text
+            || !self.terminal_in_foreground(ctx)
+        {
             return;
         }
         let parked: Vec<ContextChipKind> = self
@@ -1348,20 +1318,6 @@ impl CurrentPrompt {
         };
         ctx.windows().state().active_window == Some(window_id)
             && ctx.check_view_or_child_focused(window_id, &view_id)
-    }
-
-    /// Whether the active session runs commands remotely (ssh); false when unknown.
-    fn session_is_remote(&self, ctx: &AppContext) -> bool {
-        let Some(session_id) = self
-            .latest_context
-            .as_ref()
-            .and_then(|context| context.active_block_metadata.session_id())
-        else {
-            return false;
-        };
-        self.sessions
-            .read(ctx, |sessions, _| sessions.get(session_id))
-            .is_some_and(|session| !session.is_local())
     }
 
     fn run_chips(&mut self, chips: Vec<ContextChipKind>, ctx: &mut ModelContext<Self>) {

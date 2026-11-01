@@ -12,6 +12,7 @@ use warp_core::command::ExitCode;
 use warpui::{App, SingletonEntity};
 use warpui_extras::user_preferences;
 
+use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToolbarItemKind;
 #[cfg(feature = "local_fs")]
 use crate::code_review::diff_state::DiffStats;
 #[cfg(feature = "local_fs")]
@@ -20,7 +21,6 @@ use crate::code_review::git_status_update::{GitRepoStatusModel, GitStatusMetadat
 use crate::context_chips::display_chip::GitBranchTrackingStatus;
 #[cfg(windows)]
 use crate::system::SystemInfo;
-use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToolbarItemKind;
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext, CLIAgentSessionStatus,
     CLIAgentSessionsModel,
@@ -55,17 +55,14 @@ use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::{
-    effective_command_timeout, effective_poll_interval, next_poll_delay, poll_decision,
-    ActiveChipSurfaces,
-    ChipState, ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext,
-    DEFAULT_CHIP_COMMAND_TIMEOUT, REMOTE_POLL_INTERVAL,
-    TYPING_QUIET_PERIOD, TYPING_RECHECK_DELAY,
+    effective_command_timeout, next_poll_delay, poll_decision, ActiveChipSurfaces, ChipState,
+    ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext, DEFAULT_CHIP_COMMAND_TIMEOUT,
 };
-use std::time::Duration;
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
 use crate::util::git::PrInfo;
+use std::time::Duration;
 
 #[cfg(feature = "local_fs")]
 fn git_status_metadata(branch: &str) -> GitStatusMetadata {
@@ -1458,47 +1455,21 @@ fn test_git_status_pr_info_updates_github_pr_chip_value() {
 }
 
 #[test]
-fn poll_runs_when_foreground_and_idle() {
-    assert_eq!(poll_decision(true, None), PollDecision::Run);
-    assert_eq!(
-        poll_decision(true, Some(Duration::from_secs(10))),
-        PollDecision::Run
-    );
+fn poll_runs_when_foreground_and_input_empty() {
+    assert_eq!(poll_decision(true, false), PollDecision::Run);
 }
 
 #[test]
 fn poll_parks_for_background_terminals() {
     // Parked, not re-timed: a hidden tab arms no timer until it is shown again.
-    assert_eq!(poll_decision(false, None), PollDecision::Park);
-    // Hidden wins over idle: a hidden tab never starts a chip command.
-    assert_eq!(
-        poll_decision(false, Some(Duration::from_secs(60))),
-        PollDecision::Park
-    );
+    assert_eq!(poll_decision(false, false), PollDecision::Park);
+    assert_eq!(poll_decision(false, true), PollDecision::Park);
 }
 
+/// A half-typed command parks the poll (no recheck timer); the input emptying resumes it.
 #[test]
-fn poll_defers_while_typing() {
-    assert_eq!(
-        poll_decision(true, Some(Duration::from_millis(200))),
-        PollDecision::Defer(TYPING_RECHECK_DELAY)
-    );
-    assert_eq!(
-        poll_decision(true, Some(TYPING_QUIET_PERIOD)),
-        PollDecision::Run
-    );
-}
-
-#[test]
-fn remote_sessions_poll_slowly_but_fast_chips_are_untouched() {
-    let thirty = Duration::from_secs(30);
-    assert_eq!(effective_poll_interval(thirty, false), thirty);
-    assert_eq!(effective_poll_interval(thirty, true), REMOTE_POLL_INTERVAL);
-    let clock = Duration::from_secs(1);
-    assert_eq!(effective_poll_interval(clock, true), clock);
-    // Never shorten an already longer interval (the date chip).
-    let date = Duration::from_secs(30 * 60);
-    assert_eq!(effective_poll_interval(date, true), date);
+fn poll_parks_while_a_command_is_half_typed() {
+    assert_eq!(poll_decision(true, true), PollDecision::Park);
 }
 
 #[test]
@@ -1563,26 +1534,64 @@ fn parked_poll_stays_parked_while_the_terminal_is_not_on_screen() {
     });
 }
 
-/// Local git chips are driven by the repo watcher and block completion: no poll timer. A remote
-/// (ssh) session has no watcher, so it keeps its (120 s) poll.
+/// A poll parked because a command is half-typed is not restarted by editor events while the
+/// buffer still holds text (no recheck timer, no elapsed-time guess).
 #[test]
-fn local_git_chips_do_not_poll_but_remote_ones_do() {
+fn poll_parked_for_typing_is_not_resumed_while_input_has_text() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::ShellGitBranch],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, ctx| {
+            let mut state = ChipState::new(&ContextChipKind::ShellGitBranch);
+            state.parked = true;
+            current_prompt
+                .states
+                .insert(ContextChipKind::ShellGitBranch, state);
+
+            // Foreground (no window ids), but the user is mid-command.
+            current_prompt.editor_input_has_text = true;
+            current_prompt.resume_parked_polls(ctx);
+            let state = &current_prompt.states[&ContextChipKind::ShellGitBranch];
+            assert!(state.parked, "stays parked while the input has text");
+            assert!(state.refresh_handle.is_none(), "and arms no timer");
+        });
+    });
+}
+
+/// Git chips never poll, local (repo watcher) or remote (the remote shell's precmd starts a new
+/// block, which re-runs the chips). No 120 s remote tick.
+#[test]
+fn git_chips_do_not_poll_local_or_remote() {
     let thirty = Duration::from_secs(30);
     for kind in [
         ContextChipKind::ShellGitBranch,
         ContextChipKind::GitBranchStatus,
         ContextChipKind::GitDiffStats,
     ] {
-        assert_eq!(next_poll_delay(&kind, thirty, false, 0), None, "{kind:?}");
-        assert_eq!(
-            next_poll_delay(&kind, thirty, true, 0),
-            Some(REMOTE_POLL_INTERVAL),
-            "{kind:?}"
-        );
+        assert_eq!(next_poll_delay(&kind, thirty, 0), None, "{kind:?}");
     }
     // Non-git slow chips are unchanged.
     assert_eq!(
-        next_poll_delay(&ContextChipKind::Date, Duration::from_secs(1800), false, 0),
+        next_poll_delay(&ContextChipKind::Date, Duration::from_secs(1800), 0),
         Some(Duration::from_secs(1800))
     );
 }
@@ -1593,11 +1602,11 @@ fn clock_chips_wake_on_the_minute_boundary() {
     let one_s = Duration::from_secs(1);
     for kind in [ContextChipKind::Time12, ContextChipKind::Time24] {
         assert_eq!(
-            next_poll_delay(&kind, one_s, false, 0),
+            next_poll_delay(&kind, one_s, 0),
             Some(Duration::from_millis(60_010))
         );
         assert_eq!(
-            next_poll_delay(&kind, one_s, false, 59_500),
+            next_poll_delay(&kind, one_s, 59_500),
             Some(Duration::from_millis(510))
         );
     }
