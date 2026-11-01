@@ -8,8 +8,11 @@
 //! imports), scanning terminal block output already captured by
 //! `TerminalDriver` with the same `RegexDFAs` machinery the find feature
 //! uses (`app/src/terminal/model/find.rs`). See #289.
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+
+use futures::FutureExt as _;
 
 use regex::escape;
 use warpui::ModelSpawner;
@@ -20,22 +23,20 @@ use crate::terminal::cli_agent_sessions::CLIAgentSessionStatus;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::find::RegexDFAs;
 
-const SCAN_INTERVALS: &[Duration] = &[
-    Duration::from_secs(5),
-    Duration::from_secs(5),
-    Duration::from_secs(5),
-    Duration::from_secs(5),
-    Duration::from_secs(5),
-    Duration::from_secs(5),
-    Duration::from_secs(15),
-    Duration::from_secs(15),
-    Duration::from_secs(15),
-    Duration::from_secs(15),
-];
-
+/// How long the harness block must stay unchanged after a pattern hit before the hit is
+/// believed (a retrying harness repaints a spinner; a dead one does not). Time itself is the
+/// requirement here: "stopped producing output" cannot be an event. It is only ever started by
+/// a pattern hit, never polled.
 const STALL_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Give-up for a single confirmation: if the block keeps changing this long after a hit, the
+/// hit is dropped (logged) and scanning resumes on the next output event.
 const STALL_CONFIRMATION_BUDGET: Duration = Duration::from_secs(60);
+
+/// Minimum gap between two scans of the block. Output events are coalesced into one pending
+/// signal, so a flood of output costs at most one scan per gap and the last output is always
+/// scanned (trailing edge). Pacing for the main-thread grid scan, not a correctness delay.
+const MIN_SCAN_GAP: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub(crate) struct DetectedHarnessError {
@@ -114,41 +115,135 @@ async fn fetch_plaintext(
         .flatten()
 }
 
-/// Run the stall-confirmation loop after a pattern hit.
-async fn confirm_stall(
-    block_id: &BlockId,
-    dfas: &Arc<RegexDFAs>,
+/// Subscribe to the terminal's output events (one coalesced signal per burst of output).
+async fn subscribe_output(
     foreground: &ModelSpawner<AgentDriver>,
-) -> (Option<BlockOutputMatch>, Duration) {
-    let mut previous = fetch_plaintext(block_id, foreground).await;
-    let mut elapsed = Duration::ZERO;
-    while elapsed < STALL_CONFIRMATION_BUDGET {
-        warpui::r#async::Timer::after(STALL_POLL_INTERVAL).await;
-        elapsed += STALL_POLL_INTERVAL;
-        let current = fetch_plaintext(block_id, foreground).await;
-        if outputs_stalled(previous.as_deref(), current.as_deref()) {
-            // Output settled. Re-run the DFA so we report the post-dwell
-            // match in case the row positions shifted while we waited.
-            return (find_match_once(block_id, dfas, foreground).await, elapsed);
-        }
-        previous = current;
-    }
-    (None, elapsed)
+) -> Option<async_channel::Receiver<()>> {
+    foreground
+        .spawn(|me, ctx| {
+            let view = me.terminal_driver.as_ref(ctx).terminal_view().clone();
+            view.update(ctx, |terminal, _| terminal.subscribe_output())
+        })
+        .await
+        .ok()
 }
 
-/// Watch the given block for harness output errors on the
-/// [`SCAN_INTERVALS`] cadence.
+#[derive(Debug, PartialEq, Eq)]
+enum Quiet {
+    /// Unchanged for the whole quiet window.
+    Stalled,
+    /// Still changing when the budget ran out.
+    Moving,
+    /// The output signal closed (terminal gone).
+    Closed,
+}
+
+/// After a pattern hit, wait for the block to go quiet. Returns [`Quiet::Stalled`] when the block
+/// stayed unchanged for the quiet window (the harness really is stuck on the error),
+/// [`Quiet::Moving`] when it kept changing for the whole budget (a retry in progress). The window restarts only when an output event shows the block actually
+/// changed; events that leave the block identical do not extend it.
+async fn confirm_quiet<S, SF>(
+    output_rx: &async_channel::Receiver<()>,
+    mut snapshot: S,
+    quiet: Duration,
+    budget: Duration,
+) -> Quiet
+where
+    S: FnMut() -> SF,
+    SF: Future<Output = Option<String>>,
+{
+    let mut previous = snapshot().await;
+    let mut quiet_timer = warpui::r#async::Timer::after(quiet).fuse();
+    let mut budget_timer = warpui::r#async::Timer::after(budget).fuse();
+    loop {
+        futures::select! {
+            _ = quiet_timer => {
+                // Last look: a change that raced the timer must still count.
+                let current = snapshot().await;
+                if outputs_stalled(previous.as_deref(), current.as_deref()) {
+                    return Quiet::Stalled;
+                }
+                previous = current;
+                quiet_timer = warpui::r#async::Timer::after(quiet).fuse();
+            }
+            _ = budget_timer => {
+                log::info!(
+                    "Harness output kept changing for {budget:?} after an error pattern hit; \
+                     treating it as a retry, not a failure"
+                );
+                return Quiet::Moving;
+            }
+            event = output_rx.recv().fuse() => {
+                if event.is_err() {
+                    return Quiet::Closed;
+                }
+                let current = snapshot().await;
+                if !outputs_stalled(previous.as_deref(), current.as_deref()) {
+                    // The block changed: it is still moving. Restart the quiet window.
+                    previous = current;
+                    quiet_timer = warpui::r#async::Timer::after(quiet).fuse();
+                }
+            }
+        }
+    }
+}
+
+/// The scan loop, parameterised over how the block is probed so it can be tested without a
+/// running app. Scans once up front (output may already be there), then once per output event
+/// (paced by `min_gap`), until a hit is confirmed quiet or the signal closes.
+async fn watch_with<F, FF, S, SF>(
+    output_rx: async_channel::Receiver<()>,
+    mut find: F,
+    mut snapshot: S,
+    quiet: Duration,
+    budget: Duration,
+    min_gap: Duration,
+) -> Option<BlockOutputMatch>
+where
+    F: FnMut() -> FF,
+    FF: Future<Output = Option<BlockOutputMatch>>,
+    S: FnMut() -> SF,
+    SF: Future<Output = Option<String>>,
+{
+    let mut first = true;
+    loop {
+        if !first {
+            output_rx.recv().await.ok()?;
+        }
+        first = false;
+        if find().await.is_some() {
+            match confirm_quiet(&output_rx, &mut snapshot, quiet, budget).await {
+                Quiet::Stalled => {
+                    // Re-run the DFA so we report the post-dwell match in case the row
+                    // positions shifted while we waited.
+                    if let Some(hit) = find().await {
+                        return Some(hit);
+                    }
+                }
+                // The confirmation consumed the output signal while the block kept changing;
+                // judge the block as it is now rather than waiting for output that may never
+                // come.
+                Quiet::Moving => first = true,
+                Quiet::Closed => return None,
+            }
+        }
+        if !min_gap.is_zero() {
+            warpui::r#async::Timer::after(min_gap).await;
+        }
+    }
+}
+
+/// Watch the given block for harness output errors, driven by the terminal's output events
+/// (#1381, APP-13): an error is seen when it is printed, not at the next 5-15 s sample, and
+/// the watch no longer gives up after a fixed observation window.
 ///
-/// On every pattern hit, run a stall-confirmation loop (up to
-/// [`STALL_CONFIRMATION_BUDGET`]) and only resolve with
-/// `Some(DetectedHarnessError)` when the harness output stabilizes with
-/// the pattern still present. If the harness keeps producing output
-/// (e.g. spinner frames during an automatic retry), the detection is
-/// dropped and the scanner resumes normal polling.
+/// On every pattern hit, wait for the block to go quiet (see [`confirm_quiet`]) and only
+/// resolve with `Some(DetectedHarnessError)` when the harness output stabilizes with the
+/// pattern still present. If the harness keeps producing output (e.g. spinner frames during
+/// an automatic retry), the hit is dropped and the watch resumes on the next output event.
 ///
-/// Returns `None` when the schedule completes without a confirmed hit
-/// (or when `patterns` is empty / DFA construction fails).
-/// Cancellation-safe: dropping the future stops both loops.
+/// Returns `None` when `patterns` is empty, DFA construction fails, or the terminal goes
+/// away. Cancellation-safe: dropping the future stops the watch.
 pub(crate) async fn watch_block_for_errors(
     block_id: BlockId,
     patterns: &'static [&'static str],
@@ -158,48 +253,28 @@ pub(crate) async fn watch_block_for_errors(
         return None;
     }
     let dfas = Arc::new(build_dfas(patterns)?);
+    let output_rx = subscribe_output(foreground).await?;
 
-    // Total observation budget = sum of all scan intervals. Used as an
-    // early-exit guard after stall confirmation in case a flaky harness
-    // has burned most of the window into confirmation loops.
-    let total_budget: Duration = SCAN_INTERVALS.iter().copied().sum();
-    let mut elapsed = Duration::ZERO;
+    let hit = watch_with(
+        output_rx,
+        || find_match_once(&block_id, &dfas, foreground),
+        || fetch_plaintext(&block_id, foreground),
+        STALL_POLL_INTERVAL,
+        STALL_CONFIRMATION_BUDGET,
+        MIN_SCAN_GAP,
+    )
+    .await?;
 
-    for &interval in SCAN_INTERVALS {
-        warpui::r#async::Timer::after(interval).await;
-        elapsed += interval;
-
-        if find_match_once(&block_id, &dfas, foreground)
-            .await
-            .is_none()
-        {
-            continue;
-        }
-
-        // Candidate match observed. Confirm via the stall loop so we
-        // don't false-positive while the harness is mid-retry.
-        let (confirmed, confirmation_elapsed) = confirm_stall(&block_id, &dfas, foreground).await;
-        elapsed += confirmation_elapsed;
-
-        let Some(hit) = confirmed else {
-            if elapsed >= total_budget {
-                break;
-            }
-            continue;
-        };
-
-        // The DFA matched one of our needles, so `pattern_for_match`
-        // should always resolve. Fall back to the matched substring
-        // verbatim if it somehow doesn't.
-        let pattern = pattern_for_match(&hit.matched_text, patterns)
-            .map(str::to_owned)
-            .unwrap_or_else(|| hit.matched_text.clone());
-        return Some(DetectedHarnessError {
-            pattern,
-            excerpt: cap_excerpt(&hit.excerpt),
-        });
-    }
-    None
+    // The DFA matched one of our needles, so `pattern_for_match`
+    // should always resolve. Fall back to the matched substring
+    // verbatim if it somehow doesn't.
+    let pattern = pattern_for_match(&hit.matched_text, patterns)
+        .map(str::to_owned)
+        .unwrap_or_else(|| hit.matched_text.clone());
+    Some(DetectedHarnessError {
+        pattern,
+        excerpt: cap_excerpt(&hit.excerpt),
+    })
 }
 
 pub(crate) fn should_suppress_runtime_failure(status: Option<&CLIAgentSessionStatus>) -> bool {
