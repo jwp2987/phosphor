@@ -292,6 +292,10 @@ fn run(shared: &Shared) {
         state.in_flight = false;
         match result {
             Ok(()) => {
+                // The file now holds exactly this write; the one before it is gone from disk,
+                // so a pending newer write must not make it look like an echo (#1253).
+                let keep_from = state.recent.len().saturating_sub(1);
+                state.recent.drain(..keep_from);
                 failing = false;
                 retry_delay = shared.retry_delay;
                 state.last_error = None;

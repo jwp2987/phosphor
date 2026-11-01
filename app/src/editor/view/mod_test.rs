@@ -5227,10 +5227,12 @@ fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
             // The held "x" was applied before the Ctrl-C acted, and the Ctrl-C then cleared the
             // line as it always does: the buffer is empty, but it had held the one typed byte.
             assert_eq!(view.buffer_text(ctx), "");
-            assert_eq!(cleared.get(), Some(1));
             // The late read of the cancelled paste pastes nothing.
             assert!(hold.complete(id).is_none());
         });
+        // Emitted events reach subscribers when the update's effects flush, i.e. after the
+        // closure above returns, not inside it.
+        assert_eq!(cleared.get(), Some(1));
     })
 }
 
