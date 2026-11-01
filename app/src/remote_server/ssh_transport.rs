@@ -1094,8 +1094,11 @@ mod tests {
             let ipqos = line.find("warp_ipqos_args").unwrap();
             let control = line.find("-o ControlMaster=").expect("ControlMaster");
             assert!(ipqos < control, "{name}: IPQoS must precede ControlMaster");
+            // The bash wrapper reads the key from its single `ssh -G` capture through
+            // `warp_ssh_g_value` (1594b17a4, #1172); zsh and fish still sed it out of that capture.
             assert!(
-                script.contains("s/^ipqos //p"),
+                script.contains("s/^ipqos //p")
+                    || script.contains("warp_ssh_g_value warp_ssh_ipqos ipqos"),
                 "{name}: must read the configured IPQoS with ssh -G"
             );
             assert!(
