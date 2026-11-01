@@ -20934,10 +20934,41 @@ fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_legacy_buffer(
     ssh_key_via_editor_route_before_handover_joins_the_hold(false);
 }
 
-/// #1400: 14 keys held, then 15 more typed while focus is already in the editor: each is seen by
-/// the terminal element (which offers it to the hold) AND the editor (its action copy of the same
-/// event, which must drop itself), and a few reach only the editor. Hand-over: all 29, once, in
-/// typed order, nothing left in the editor's side queue.
+/// A typed key as the pane's key sink receives it, with focus on the terminal view or inside the
+/// input's editor (#1404).
+fn pane_typed(
+    view: &mut TerminalView,
+    chars: &str,
+    focus_in_editor: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let editor_id = view.input.as_ref(ctx).editor().id();
+    let focus_chain = if focus_in_editor {
+        vec![view.view_id, view.input.id(), editor_id]
+    } else {
+        vec![view.view_id]
+    };
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::Typed {
+            chars: chars.to_string(),
+            ime_commit: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: focus_in_editor,
+        },
+        ctx,
+    )
+}
+
+/// #1400 (and #1339): 14 keys held, then 15 more typed while focus moves between the terminal and
+/// the editor. The pane's key sink receives each key exactly once, whichever view has focus, and
+/// the ssh hold takes it. Hand-over: all 29, once, in typed order, nothing left in the editor's
+/// side queue.
 fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);
@@ -20949,16 +20980,9 @@ fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order(queue: bo
         assert!(view.ssh_typeahead_holding);
         remote_first_prompt_is_next_for_test(view);
         for (i, c) in chars[14..].iter().enumerate() {
-            if i % 5 == 4 {
-                // Only the editor is reached by this one.
-                editor_text(view, c, ctx);
-            } else {
-                // The element offers it, then the editor's copy of the same event.
-                let seq = warpui::input_order::bump_typed_dispatch_seq();
-                view.paste_queue.queue.mark_typed_offered(seq, c);
-                view.typed_characters_on_terminal(c, ctx);
-                editor_text(view, c, ctx);
-            }
+            // Every fifth key is typed with focus already in the editor.
+            let outcome = pane_typed(view, c, i % 5 == 4, ctx);
+            assert_eq!(outcome, PaneKeyOutcome::Consumed, "key {i} is the pane's");
         }
         assert_eq!(
             view.input.as_ref(ctx).buffer_text(ctx),

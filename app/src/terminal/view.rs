@@ -409,6 +409,7 @@ use warpui::elements::{
 use warpui::event::ModifiersState;
 use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification};
+use warpui::pane_key::{PaneKey, PaneKeyContext, PaneKeyKind, PaneKeyOutcome};
 use warpui::platform::{Cursor, OperatingSystem};
 use warpui::windowing::WindowManager;
 
@@ -508,6 +509,9 @@ use crate::terminal::model::typeahead_handoff::{
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
     blocks::BlockListPoint,
+};
+use crate::terminal::pane_key::{
+    self, KeyClass, KeyTarget, PaneFocusFacts, PaneKeyMode, TailAction, TypedRoute,
 };
 use crate::terminal::view::inline_banner::{
     AgentModeSetupSpeedbumpBannerAction, AgentModeSetupSpeedbumpBannerState,
@@ -2515,19 +2519,6 @@ pub struct TerminalViewRenderContext {
     /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
     /// card's "choose an option first" hint instead of dropping them silently (#1087).
     pub ssh_choice_card_view_id: Option<EntityId>,
-    /// The input view and the key hold the terminal view switches on while it holds the keys
-    /// typed during an ssh connect: a key that neither the terminal nor the input's editor takes
-    /// in a focus gap (#1332) is handed to the terminal view, which holds it.
-    pub input_view_id: EntityId,
-    /// The input's editor view: when it holds focus it takes (and queues) the key itself, so the
-    /// element must not also take it (#1339).
-    pub input_editor_view_id: EntityId,
-    /// Views inside the terminal that take typed text themselves (the find bar, the block filter
-    /// editor): a key typed there is theirs, never rescued by the block list (#1397).
-    pub own_text_view_ids: Vec<EntityId>,
-    /// The pane's one input queue: the element reads whether the ssh hold is active from it and
-    /// marks the typed-characters events it offered (#1332, #1400).
-    pub pane_queue: crate::terminal::input_queue::PaneQueue,
     pub is_terminal_selecting: bool,
     pub is_context_menu_open: bool,
     pub is_waterfall_gap_mode: bool,
@@ -11670,9 +11661,122 @@ impl TerminalView {
 
         was_bootstrap_script_echoed || is_shared_session_executor || subshell_bootstrap_stalled
     }
-    /// Receiving a warpui::Event::TypedCharacters event from a child element.
+    /// What has focus, read from the live focus chain of the key being routed (no render
+    /// snapshot, #934).
+    fn pane_focus_facts(
+        &self,
+        key_ctx: &PaneKeyContext,
+        ctx: &ViewContext<Self>,
+    ) -> PaneFocusFacts {
+        let editor_focused = key_ctx.in_focus_chain(self.input.as_ref(ctx).editor().id());
+        // The find bar and the block filter, and any other text field inside the pane (the focused
+        // view says it takes text): a key typed there is the field's.
+        let in_own_text_view = key_ctx.in_focus_chain(self.find_bar.id())
+            || key_ctx.in_focus_chain(self.block_filter_editor.id());
+        PaneFocusFacts {
+            in_text_field: !editor_focused && (in_own_text_view || key_ctx.leaf_takes_typed_text),
+            editor_focused,
+            terminal_focused: key_ctx.is_focused_exactly(self.view_id),
+            ssh_hold_active: self.paste_queue.queue.ssh_hold_active(),
+        }
+    }
+
+    /// The pane's one key entry point (#1404): every key event of a focused pane arrives here once,
+    /// from the window's key dispatch, and the destination is decided from the facts of this
+    /// moment (`pane_key::key_target`). Elements render, hit-test and select; they do not claim
+    /// keys.
+    fn on_pane_key_event(
+        &mut self,
+        key: &PaneKey,
+        key_ctx: &PaneKeyContext,
+        ctx: &mut ViewContext<Self>,
+    ) -> PaneKeyOutcome {
+        // A printable key down is not acted on: the platform follows it with a typed event unless
+        // something consumes it, and that event is the key. A key down of control characters is
+        // the key itself.
+        let class = match &key.kind {
+            PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => KeyClass::Typed,
+            PaneKeyKind::KeyDown { chars, .. }
+                if !chars.is_empty() && chars.chars().all(|c| c.is_control()) =>
+            {
+                KeyClass::Control
+            }
+            PaneKeyKind::SetMarkedText { .. } | PaneKeyKind::ClearMarkedText => {
+                KeyClass::Composition
+            }
+            _ => return PaneKeyOutcome::NotMine,
+        };
+        let facts = self.pane_focus_facts(key_ctx, ctx);
+        let target = pane_key::key_target(class, &facts);
+        warpui::input_order::log_key_hop("kh_pane_key", || {
+            format!(
+                "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
+                 in_text_field={} ssh_hold={} shadow={}",
+                key.seq,
+                facts.editor_focused,
+                facts.terminal_focused,
+                facts.in_text_field,
+                facts.ssh_hold_active,
+                pane_key::mode() == PaneKeyMode::Shadow
+            )
+        });
+        // Shadow mode: decide and log, leave delivery to the elements.
+        if pane_key::mode() == PaneKeyMode::Shadow {
+            return PaneKeyOutcome::NotMine;
+        }
+        match (target, &key.kind) {
+            (KeyTarget::NotMine, _) => return PaneKeyOutcome::NotMine,
+            (KeyTarget::Terminal, PaneKeyKind::Typed { chars, .. }) => {
+                self.typed_characters_on_terminal(chars, ctx)
+            }
+            (KeyTarget::Editor, PaneKeyKind::Typed { chars, .. }) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| editor.pane_typed(chars, ctx));
+            }
+            (KeyTarget::Terminal, PaneKeyKind::KeyDown { chars, .. }) => {
+                self.keydown_on_terminal(chars, ctx)
+            }
+            (
+                KeyTarget::Terminal,
+                PaneKeyKind::SetMarkedText {
+                    marked_text,
+                    selected_range,
+                },
+            ) => self.set_marked_text_on_terminal(marked_text, selected_range, ctx),
+            (
+                KeyTarget::Editor,
+                PaneKeyKind::SetMarkedText {
+                    marked_text,
+                    selected_range,
+                },
+            ) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| {
+                    editor.pane_set_marked_text(marked_text, selected_range, ctx)
+                });
+            }
+            (KeyTarget::Terminal, PaneKeyKind::ClearMarkedText) => {
+                self.clear_marked_text_on_terminal(ctx)
+            }
+            (KeyTarget::Editor, PaneKeyKind::ClearMarkedText) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| editor.pane_clear_marked_text(ctx));
+            }
+            // A control key never targets the editor (its keys are its bindings); a table that
+            // said so would be a bug, and the event then simply continues to the elements.
+            (KeyTarget::Editor, PaneKeyKind::KeyDown { .. }) => return PaneKeyOutcome::NotMine,
+        }
+        PaneKeyOutcome::Consumed
+    }
+
+    /// Text for the terminal destination: delivered by the pane key sink (a typed key or an IME
+    /// commit), by a key the input queue replays behind an Enter, or by a file drop (#1404).
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
+    ///
+    /// The ordered rows that decide where it goes (ssh choice card, ssh interrupt, ssh setup hold,
+    /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
+    /// are `pane_key::route_typed`; this function acts on its answer.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         self.reprobe_interactive_latch_on_key();
         // #1345: the terminal view received typed characters (a live key or the held ones being
@@ -11685,94 +11789,66 @@ impl TerminalView {
                 self.ssh_connect_gate.is_some()
             )
         });
-        // #1087: while the SSH-extension choice card holds focus the input editor is hidden and
-        // the card only takes arrows/Enter, so printable keys went nowhere, silently. They now
-        // show the card's "choose an option first" hint. They are not buffered for the session:
-        // see `SshRemoteServerChoiceView::typed_before_choice`.
-        if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
-            choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
-            return;
-        }
-        if is_ssh_interrupt_key(characters) {
-            // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
-            // in the connect window before the remote session is announced (#983/#1001).
-            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
-                || self.ssh_gate_holds_interrupt()
-                || (characters == "\u{4}" && self.ssh_connect_holds_eot())
-            {
-                self.note_ssh_interrupt_held(ctx);
-                return;
-            }
-            // The interrupt passes straight through; what was typed before it is stale, as the
-            // tty's own input flush on ^C would make it.
-            self.reset_ssh_typeahead();
-        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
-            return;
-        }
-        // #1353 phase 3: behind an Enter whose gate is open on the input queue, in the same order.
-        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
-            let queued = self.input.update(ctx, |input, ctx| {
-                input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
-            });
-            if queued {
-                return;
-            }
-        }
-        self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
-
-        // The pty refuses user bytes while the agent controls the running command. Typing is
-        // then meant for the agent's input, not the void (#901): fall through to the input.
-        // #1048: during a PowerShell subshell setup every key joins the held keys, whatever block
-        // is active (after the setup's first `Precmd` the editor would take it and drop its Enter).
-        if self.holds_keys_for_powershell_subshell_setup() {
-            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
-            return;
-        }
-        // #1028: while the pending approval card holds focus, printable keys are for the agent
-        // input (a follow-up), never the running command underneath, even when the pty would take
-        // them.
-        // #1095: so is an AI block that holds focus itself while one of its actions awaits
-        // confirmation (its Enter approves).
-        let typed_on_approval_card =
-            self.typed_on_approval_card(ctx) || self.typed_on_ai_block_awaiting_confirmation(ctx);
-        // #1095: focus left on a settled action card or an AI block takes no printable keys;
-        // route them as if the terminal held focus, and let focus follow them.
-        let typed_on_settled_ai_target =
-            !typed_on_approval_card && self.typed_on_settled_ai_target(ctx);
-        // #1179: an agent-driven command's pty takes no user bytes; the text is for the agent's
-        // input. Ctrl-C / Ctrl-D keep their own route to the command.
-        let agent_owns_typing =
-            !is_abort_key(characters.as_bytes()) && self.agent_owns_command_pty();
-        let written_to_pty = !typed_on_approval_card
-            && !agent_owns_typing
-            && self.should_write_typed_chars_to_pty(ctx)
-            && {
-                self.highlighted_link.invalidate();
-                self.report_possible_typeahead(characters);
-                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
+        let route = {
+            let mut probes = TypedKeyProbes {
+                view: &mut *self,
+                ctx: &mut *ctx,
+                characters,
             };
+            pane_key::route_typed(is_ssh_interrupt_key(characters), &mut probes)
+        };
+        let tail = match route {
+            // #1087: while the SSH-extension choice card holds focus the input editor is hidden
+            // and the card only takes arrows/Enter, so printable keys went nowhere, silently.
+            // They now show the card's "choose an option first" hint. They are not buffered for
+            // the session: see `SshRemoteServerChoiceView::typed_before_choice`.
+            TypedRoute::SshChoiceCardHint => {
+                if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
+                    choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
+                }
+                return;
+            }
+            // Held, queued or swallowed by the probe that answered yes.
+            TypedRoute::SshInterruptHeld
+            | TypedRoute::SshSetupHeld
+            | TypedRoute::QueuedBehindEnter => return,
+            // #1048: during a PowerShell subshell setup every key joins the held keys, whatever
+            // block is active (after the setup's first `Precmd` the editor would take it and drop
+            // its Enter).
+            TypedRoute::PowerShellHeld => {
+                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+                return;
+            }
+            TypedRoute::Deliver(tail) => tail,
+        };
+        let mut written_to_pty = false;
+        if tail.try_pty {
+            self.highlighted_link.invalidate();
+            self.report_possible_typeahead(characters);
+            written_to_pty = self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+        }
         warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
             format!(
-                "written_to_pty={written_to_pty} approval_card={typed_on_approval_card} \
-                 agent_owns_typing={agent_owns_typing}"
+                "written_to_pty={written_to_pty} approval_card={} agent_owns_typing={}",
+                tail.approval_card, tail.agent_owns_typing
             )
         });
-        if written_to_pty && typed_on_settled_ai_target {
+        if written_to_pty && tail.settled_ai_target {
             self.focus_terminal(ctx);
         }
         // The pty refused the bytes for another reason (e.g. the alt screen) and the input is
         // hidden: keep the old behaviour and drop them. Not when the agent owns the command
         // (#1179): those keys are the user's steer text, buffered in the input (shown, with the
         // text, once it is visible) instead of discarded.
-        let refused_with_hidden_input = !written_to_pty
-            && !typed_on_approval_card
-            && !agent_owns_typing
-            && self.should_write_typed_chars_to_pty(ctx)
-            && !{
-                let model = self.model.lock();
-                self.is_input_box_visible(&model, ctx)
+        let action = {
+            let mut probes = TypedKeyProbes {
+                view: &mut *self,
+                ctx: &mut *ctx,
+                characters,
             };
-        if !written_to_pty && !refused_with_hidden_input {
+            pane_key::after_pty_attempt(&tail, written_to_pty, &mut probes)
+        };
+        if action == TailAction::InsertIntoEditor {
             // We should only insert typed characters into the input box buffer.
             // When input_sequence is triggered on KeyDown, we should focus
             // on the input area and let the editor view handle the TypedCharacters
@@ -11795,7 +11871,7 @@ impl TerminalView {
             // #1028: keys typed while the approval card holds focus move focus to the input
             // with them, so a following Enter submits the follow-up instead of reaching the
             // card's Enter -> Run binding.
-            if typed_on_approval_card || typed_on_settled_ai_target {
+            if tail.approval_card || tail.settled_ai_target {
                 self.focus_input_box(ctx);
             }
             self.input
@@ -30168,10 +30244,6 @@ impl TerminalView {
             ssh_choice_card_view_id: self
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),
-            input_view_id: self.input.id(),
-            input_editor_view_id: self.input.as_ref(app).editor().id(),
-            own_text_view_ids: vec![self.find_bar.id(), self.block_filter_editor.id()],
-            pane_queue: self.paste_queue.queue.clone(),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
             is_context_menu_open: self.is_context_menu_open(),
@@ -34911,9 +34983,117 @@ impl TypedActionView for TerminalView {
     }
 }
 
+/// The questions `pane_key::route_typed` asks about a key on the terminal destination, answered
+/// by the view. A probe that answers yes has already acted (held, queued or swallowed the key).
+struct TypedKeyProbes<'a, 'b> {
+    view: &'a mut TerminalView,
+    ctx: &'a mut ViewContext<'b, TerminalView>,
+    characters: &'a str,
+}
+
+impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
+    fn ssh_choice_card_up(&mut self) -> bool {
+        self.view.ssh_choice_card_holding_keys(self.ctx).is_some()
+    }
+
+    fn ssh_interrupt_held(&mut self) -> bool {
+        // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor in
+        // the connect window before the remote session is announced (#983/#1001).
+        let held = self.view.ssh_bootstrap_interrupt_route()
+            == Some(SshBootstrapInterruptRoute::Hold)
+            || self.view.ssh_gate_holds_interrupt()
+            || (self.characters == "\u{4}" && self.view.ssh_connect_holds_eot());
+        if held {
+            self.view.note_ssh_interrupt_held(self.ctx);
+        }
+        held
+    }
+
+    fn ssh_interrupt_passes(&mut self) {
+        // The interrupt passes straight through; what was typed before it is stale, as the tty's
+        // own input flush on ^C would make it.
+        self.view.reset_ssh_typeahead();
+    }
+
+    fn ssh_setup_holds_key(&mut self) -> bool {
+        self.view
+            .swallow_input_during_ssh_setup(Some(self.characters), self.ctx)
+    }
+
+    fn enter_queue_takes_key(&mut self) -> bool {
+        // #1353 phase 3: behind an Enter whose gate is open on the input queue, in the same order.
+        if !self
+            .view
+            .input
+            .as_ref(self.ctx)
+            .enter_queue_holds_keys(self.ctx)
+        {
+            return false;
+        }
+        let characters = self.characters;
+        self.view.input.update(self.ctx, |input, ctx| {
+            input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
+        })
+    }
+
+    fn note_warpification_key(&mut self) {
+        self.view.on_ssh_warpification_key_event(
+            Some(SshKeyEvent::from_chars(self.characters)),
+            self.ctx,
+        );
+    }
+
+    fn powershell_setup_holds(&mut self) -> bool {
+        self.view.holds_keys_for_powershell_subshell_setup()
+    }
+
+    fn on_approval_card(&mut self) -> bool {
+        // #1028: while the pending approval card holds focus, printable keys are for the agent
+        // input (a follow-up), never the running command underneath, even when the pty would take
+        // them. #1095: so is an AI block that holds focus itself while one of its actions awaits
+        // confirmation (its Enter approves).
+        self.view.typed_on_approval_card(self.ctx)
+            || self.view.typed_on_ai_block_awaiting_confirmation(self.ctx)
+    }
+
+    fn on_settled_ai_target(&mut self) -> bool {
+        // #1095: focus left on a settled action card or an AI block takes no printable keys;
+        // route them as if the terminal held focus, and let focus follow them.
+        self.view.typed_on_settled_ai_target(self.ctx)
+    }
+
+    fn agent_owns_typing(&mut self) -> bool {
+        // #1179: an agent-driven command's pty takes no user bytes; the text is for the agent's
+        // input. Ctrl-C / Ctrl-D keep their own route to the command.
+        !is_abort_key(self.characters.as_bytes()) && self.view.agent_owns_command_pty()
+    }
+
+    fn pty_takes_input(&mut self) -> bool {
+        self.view.should_write_typed_chars_to_pty(self.ctx)
+    }
+
+    fn input_box_visible(&mut self) -> bool {
+        let model = self.view.model.lock();
+        self.view.is_input_box_visible(&model, self.ctx)
+    }
+}
+
 impl View for TerminalView {
     fn ui_name() -> &'static str {
         "Terminal"
+    }
+
+    fn is_pane_key_sink(&self) -> bool {
+        pane_key::mode() != PaneKeyMode::Off
+    }
+
+    fn on_pane_key(
+        &mut self,
+        key: &PaneKey,
+        key_ctx: &PaneKeyContext,
+        ctx: &mut ViewContext<Self>,
+    ) -> PaneKeyOutcome {
+        self.on_pane_key_event(key, key_ctx, ctx)
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {

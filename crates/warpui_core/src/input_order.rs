@@ -73,22 +73,6 @@ static KEY_SEQ: AtomicU64 = AtomicU64::new(0);
 /// A `keydown` was numbered and its `typed_characters` has not arrived yet.
 static KEYDOWN_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Count of `typed_characters` events dispatched (always on, unlike the logging seq above).
-/// Every view that reacts to one typed-characters event sees the same number, so a key that two
-/// routes could both act on (the terminal element and the focused editor, #1339/#1400) can be
-/// recognised as ONE key by comparing it, instead of by timing or focus guesses.
-static TYPED_DISPATCH_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// The number of the typed-characters event being dispatched (or handled) now; 0 before the first.
-pub fn typed_dispatch_seq() -> u64 {
-    TYPED_DISPATCH_SEQ.load(Ordering::Relaxed)
-}
-
-/// Advances the clock; called once per dispatched typed-characters event.
-pub fn bump_typed_dispatch_seq() -> u64 {
-    TYPED_DISPATCH_SEQ.fetch_add(1, Ordering::Relaxed) + 1
-}
-
 /// The number of the key being dispatched now (0 before the first).
 pub fn current_key_seq() -> u64 {
     KEY_SEQ.load(Ordering::Relaxed)

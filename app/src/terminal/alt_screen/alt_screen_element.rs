@@ -199,6 +199,12 @@ impl AltScreenElement {
         self
     }
 
+    /// Whether the pane key sink is on and was offered this event (see the block list element).
+    fn sink_has_seen_keys(&self, ctx: &EventContext) -> bool {
+        crate::terminal::pane_key::sink_owns_keys()
+            && ctx.live_focus_of(self.terminal_view_id).is_some()
+    }
+
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
         if self.is_terminal_focused && !chars.is_empty() && chars.chars().all(|c| c.is_control()) {
             ctx.dispatch_typed_action(TerminalAction::KeyDown(chars.to_string()));
@@ -209,8 +215,13 @@ impl AltScreenElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        // #1397: the live focus decides (the render snapshot is stale right after a focus change,
-        // #934), and a key that is not delivered is not consumed.
+        // #1404: the pane's key sink has delivered (or declined) this text before any element saw
+        // it. With the sink off (`PHOSPHOR_PANE_KEY=0`) or only shadowing, the terminal takes it
+        // when it has focus; the live focus decides (the render snapshot is stale right after a
+        // focus change, #934).
+        if self.sink_has_seen_keys(ctx) {
+            return false;
+        }
         let focused = crate::terminal::block_list_element::terminal_accepts_keys(
             self.is_terminal_focused,
             ctx.live_focus_is_exactly(self.terminal_view_id),
@@ -218,13 +229,6 @@ impl AltScreenElement {
         if focused && !chars.is_empty() {
             ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
             return true;
-        }
-        if !chars.is_empty() && ctx.live_focus_of(self.terminal_view_id).is_none() {
-            crate::terminal::block_list_element::warn_unclaimed_key(
-                "alt_screen typed_characters",
-                false,
-                None,
-            );
         }
         false
     }
@@ -235,7 +239,7 @@ impl AltScreenElement {
         selected_range: &Range<usize>,
         ctx: &mut EventContext,
     ) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::SetMarkedText {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
@@ -246,7 +250,7 @@ impl AltScreenElement {
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::ClearMarkedText);
             return true;
         }

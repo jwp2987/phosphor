@@ -4762,10 +4762,7 @@ impl AppContext {
                     keystroke.cmd,
                 )
             }
-            Event::TypedCharacters { chars } => {
-                crate::input_order::bump_typed_dispatch_seq();
-                crate::input_order::log_typed_characters(chars)
-            }
+            Event::TypedCharacters { chars } => crate::input_order::log_typed_characters(chars),
             _ => {}
         }
         // #1404: a pane key sink takes the key event first (the keybinding system has already had
