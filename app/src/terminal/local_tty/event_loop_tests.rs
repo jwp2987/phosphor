@@ -64,6 +64,10 @@ struct CaptureWriter(
     /// When set, how many more bytes the "tty" takes before it answers `WouldBlock` (a full input
     /// queue); a test refills it to model the shell reading.
     Option<Arc<Mutex<usize>>>,
+    /// An overlapped pipe (the Windows ConPTY): when set, a write is taken whole and sets this
+    /// flag (the write is in flight); every write while it is set answers `WouldBlock`, until a
+    /// test clears it (the completion event).
+    Option<Arc<AtomicBool>>,
 );
 
 /// Records how many reads had been made when the first write happened.
@@ -84,6 +88,11 @@ impl io::Write for CaptureWriter {
             );
         }
         let mut take = buf.len();
+        if let Some(in_flight) = &self.3 {
+            if in_flight.swap(true, Ordering::SeqCst) {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+        }
         if let Some(budget) = &self.2 {
             let mut budget = budget.lock().unwrap();
             if *budget == 0 {
@@ -1844,4 +1853,147 @@ fn agent_abort_message_through_the_loop() {
     let mut expected = paste;
     expected.push(b'k');
     assert_eq!(*written.lock().unwrap(), expected);
+}
+
+fn coalescing_state() -> State {
+    State {
+        coalesce_keys: true,
+        ..State::default()
+    }
+}
+
+/// Keys that queued up behind a write in flight go out as ONE write, in typed order.
+#[test]
+fn adjacent_plain_keys_are_merged_into_one_write_in_order() {
+    let mut state = coalescing_state();
+    for k in [&b"e"[..], b"c", b"h", b"o", b" ", b"h", b"i"] {
+        state.queue_input(Cow::Owned(k.to_vec()));
+    }
+    assert_eq!(drain(&mut state), vec![b"echo hi".to_vec()]);
+}
+
+/// Without the flag (every unix pty) nothing is merged: one write per job, as before.
+#[test]
+fn keys_are_not_merged_when_the_pty_does_not_coalesce() {
+    let mut state = State::default();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_input(Cow::Borrowed(b"b"));
+    assert_eq!(drain(&mut state), vec![b"a".to_vec(), b"b".to_vec()]);
+}
+
+/// A merge never crosses a reply, a command, a paste, an agent write, an escape sequence, a
+/// signal byte or a control byte: the concatenation of the writes is exactly the queue order, and
+/// each of those stays its own write.
+#[test]
+fn coalescing_never_moves_or_merges_anything_but_adjacent_plain_text() {
+    let mut state = coalescing_state();
+    state.queue_input(Cow::Borrowed(b"ab"));
+    state.queue_input(Cow::Borrowed(b"cd"));
+    state.queue_input(Cow::Borrowed(b"\x1b[A"));
+    state.queue_input(Cow::Borrowed(b"e"));
+    state.queue_input(Cow::Borrowed(b"\x1b"));
+    state.queue_input(Cow::Borrowed(b"f"));
+    state.queue_command_input(Cow::Borrowed(b"g\r"));
+    state.queue_input(Cow::Borrowed(b"h"));
+    state.queue_response(b"\x1b[0n".to_vec(), None);
+    state.queue_input(Cow::Borrowed(b"i"));
+    state.queue_input(Cow::Borrowed(b"\x03"));
+    state.queue_input(Cow::Borrowed(b"j"));
+    state.queue_agent_input(Cow::Borrowed(b"k"));
+    state.queue_input(Cow::Borrowed(b"l"));
+    state.queue_paste_input(Cow::Borrowed(b"m"));
+    state.queue_input(Cow::Borrowed(b"\r"));
+    let writes = drain(&mut state);
+    assert_eq!(
+        writes,
+        vec![
+            b"abcd".to_vec(),
+            b"\x1b[A".to_vec(),
+            b"e".to_vec(),
+            b"\x1b".to_vec(),
+            b"f".to_vec(),
+            b"g\r".to_vec(),
+            b"h".to_vec(),
+            b"\x1b[0n".to_vec(),
+            b"i".to_vec(),
+            b"\x03".to_vec(),
+            b"j".to_vec(),
+            b"k".to_vec(),
+            b"l".to_vec(),
+            b"m".to_vec(),
+            b"\r".to_vec(),
+        ]
+    );
+}
+
+/// A merged write is capped, and the cap never splits or reorders: the rest follows in order.
+#[test]
+fn a_coalesced_write_is_capped_and_the_rest_follows_in_order() {
+    let mut state = coalescing_state();
+    let key = vec![b'x'; 1000];
+    for _ in 0..6 {
+        state.queue_input(Cow::Owned(key.clone()));
+    }
+    let writes = drain(&mut state);
+    assert_eq!(
+        writes.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![4000, 2000]
+    );
+}
+
+/// An abort still takes a queued command, and the keys around it still merge in order.
+#[test]
+fn an_abort_still_drops_a_queued_command_after_coalescing() {
+    let mut state = coalescing_state();
+    state.queue_input(Cow::Borrowed(b"a"));
+    state.queue_command_input(Cow::Borrowed(b"cmd\r"));
+    state.abort(AbortScope::Discardable);
+    state.queue_input(Cow::Borrowed(b"b"));
+    assert_eq!(drain(&mut state), vec![b"ab".to_vec()]);
+}
+
+/// The overlapped-pipe fake through the loop: while a write is in flight every later key is
+/// `WouldBlock`; on the completion event all keys that piled up go out as ONE write, nothing is
+/// lost, duplicated or reordered, and the kill-buffer chord stays its own write.
+#[test]
+fn keys_piled_up_behind_an_in_flight_write_go_out_as_one_write_on_completion() {
+    let (mut pty, _) = FakePty::new(None);
+    let in_flight = Arc::new(AtomicBool::new(false));
+    pty.writer.3 = Some(in_flight.clone());
+    let writes = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let written = pty.writer.0.clone();
+    let mode = pty.mode.clone();
+    let mut h = GateHarness {
+        event_loop: new_event_loop(pty).expect("event loop"),
+        mode,
+        written: written.clone(),
+    };
+    let mut state = coalescing_state();
+    let mut can_write = true;
+
+    state.queue_input(Cow::Borrowed(b"a"));
+    h.pass_with(&mut state, &mut can_write);
+    assert_eq!(h.take_written(), b"a".to_vec());
+    assert!(in_flight.load(Ordering::SeqCst));
+
+    // Ten keys arrive while "a" is in flight.
+    for k in b"bcdefghijk" {
+        state.queue_input(Cow::Owned(vec![*k]));
+    }
+    state.queue_input(Cow::Borrowed(b"\x1b2"));
+    state.queue_command_input(Cow::Borrowed(b"echo\r"));
+    h.pass_with(&mut state, &mut can_write);
+    assert!(!can_write, "the in-flight write pushed back");
+    assert!(h.take_written().is_empty());
+
+    // Completion event: the pipe is writable again. One write for the keys, then the chord, then
+    // the command, each after the previous one's completion.
+    for expected in [&b"bcdefghijk"[..], b"\x1b2", b"echo\r"] {
+        in_flight.store(false, Ordering::SeqCst);
+        can_write = true;
+        h.pass_with(&mut state, &mut can_write);
+        writes.lock().unwrap().push(h.take_written().len());
+        assert_eq!(writes.lock().unwrap().last().copied(), Some(expected.len()));
+    }
+    assert_eq!(*writes.lock().unwrap(), vec![10, 2, 5]);
 }
