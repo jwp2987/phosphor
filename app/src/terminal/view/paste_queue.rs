@@ -687,6 +687,7 @@ impl TerminalView {
             Some(queue) if queue.has_gate_kind(GateKind::PowershellSetup) => legacy::SUBSHELL_SETUP,
             Some(queue) if queue.has_gate_kind(GateKind::LineEditorActive) => legacy::HANDOFF,
             Some(queue) if queue.has_gate_kind(GateKind::PromptSeen) => legacy::HANDOFF,
+            Some(queue) if queue.has_gate_kind(GateKind::HandoffReport) => legacy::HANDOFF,
             _ => legacy::PASTE_PTY,
         }
     }
