@@ -401,3 +401,133 @@ fn test_history_order() {
         HistoryOrder::DifferentSession
     );
 }
+
+fn big_results(count: usize) -> std::sync::Arc<SuggestionResults> {
+    std::sync::Arc::new(SuggestionResults {
+        replacement_span: Span::default(),
+        suggestions: (0..count)
+            .map(|i| prefix_matched_suggestion(&format!("f{i:05}")))
+            .collect(),
+        match_strategy: MatchStrategy::CaseSensitive,
+    })
+}
+
+#[test]
+fn small_list_refilters_inline() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, suggestions) = app.add_window(WindowStyle::NotStealFocus, InputSuggestions::new);
+        let options = big_results(10);
+        suggestions.update(&mut app, |s, ctx| {
+            let empty = s.refilter_tab_completions(
+                "f0000",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            assert!(!empty);
+            assert!(!s.has_pending_refilter());
+            assert!(!s.items().is_empty());
+        });
+    });
+}
+
+#[test]
+fn big_list_refilters_off_thread_and_keeps_previous_list() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, suggestions) = app.add_window(WindowStyle::NotStealFocus, InputSuggestions::new);
+        let options = big_results(super::INLINE_REFILTER_MAX_ENTRIES + 500);
+        suggestions.update(&mut app, |s, ctx| {
+            s.prefix_search_for_tab_completion(
+                "f1",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            let before = s.items().len();
+            assert!(before > 0);
+            let empty = s.refilter_tab_completions(
+                "f2",
+                &options,
+                TabCompletionsPreselectOption::Unchanged,
+                ctx,
+            );
+            // Returned immediately: nothing known yet, previous list still shown.
+            assert!(!empty);
+            assert!(s.has_pending_refilter());
+            assert_eq!(s.items().len(), before);
+            assert!(s.items()[0].text.starts_with("f1"));
+        });
+    });
+}
+
+#[test]
+fn stale_refilter_result_is_ignored() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, suggestions) = app.add_window(WindowStyle::NotStealFocus, InputSuggestions::new);
+        let options = big_results(super::INLINE_REFILTER_MAX_ENTRIES + 500);
+        suggestions.update(&mut app, |s, ctx| {
+            s.refilter_tab_completions(
+                "f1",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            let stale_generation = s.refilter_generation;
+            s.refilter_tab_completions(
+                "f2",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            assert!(s.has_pending_refilter());
+
+            let stale_items = super::filter_tab_suggestions(&options, "f1", s.path_separators.all);
+            assert!(!s.apply_refilter_result(stale_generation, stale_items, ctx));
+            assert!(s.items().is_empty());
+            assert!(s.has_pending_refilter());
+
+            let current = s.refilter_generation;
+            let fresh_items = super::filter_tab_suggestions(&options, "f2", s.path_separators.all);
+            assert!(s.apply_refilter_result(current, fresh_items, ctx));
+            assert!(!s.has_pending_refilter());
+            assert!(s.items()[0].text.starts_with("f2"));
+        });
+    });
+}
+
+#[test]
+fn tab_during_pending_refilter_picks_item_for_current_text() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, suggestions) = app.add_window(WindowStyle::NotStealFocus, InputSuggestions::new);
+        let options = big_results(super::INLINE_REFILTER_MAX_ENTRIES + 500);
+        suggestions.update(&mut app, |s, ctx| {
+            s.prefix_search_for_tab_completion(
+                "f1",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            s.refilter_tab_completions(
+                "f2",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            let late_generation = s.refilter_generation;
+            assert!(s.has_pending_refilter());
+            // Tab: moves selection; must act on the list for "f2", not the stale "f1" one.
+            s.select_next(ctx);
+            assert!(!s.has_pending_refilter());
+            assert!(s.get_selected_item_text().unwrap().starts_with("f2"));
+
+            // The late background result for the superseded refilter is dropped.
+            let late = super::filter_tab_suggestions(&options, "f2", s.path_separators.all);
+            assert!(!s.apply_refilter_result(late_generation, late, ctx));
+            assert!(s.get_selected_item_text().unwrap().starts_with("f2"));
+        });
+    });
+}

@@ -4215,14 +4215,14 @@ fn test_cursor_movement() {
         let expected_completion = InputSuggestionsMode::CompletionSuggestions {
             replacement_start: 3,
             buffer_text_original: "cd D".to_string(),
-            completion_results: SuggestionResults {
+            completion_results: std::sync::Arc::new(SuggestionResults {
                 suggestions: vec![
                     argument_suggestion("Downloads"),
                     argument_suggestion("Documents"),
                 ],
                 replacement_span: Span::new(3, 4),
                 match_strategy: MatchStrategy::CaseInsensitive,
-            },
+            }),
             trigger: CompletionsTrigger::Keybinding,
             menu_position: TabCompletionsMenuPosition::AtLastCursor,
         };
