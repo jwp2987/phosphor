@@ -1,4 +1,4 @@
-﻿use crate::{auth::AuthState, send_telemetry_on_executor, server::telemetry::TelemetryEvent};
+use crate::{auth::AuthState, send_telemetry_on_executor, server::telemetry::TelemetryEvent};
 use async_broadcast::Receiver;
 use instant::{Duration, Instant};
 use std::sync::{
@@ -107,10 +107,7 @@ mod tests {
         assert_eq!(t.record(t0 + Duration::from_secs(2), 10), None);
         assert_eq!(t.max_throughput, 150);
         // Metric interval elapsed: emits the max, resets.
-        assert_eq!(
-            t.record(t0 + Duration::from_secs(12), 1),
-            Some(150)
-        );
+        assert_eq!(t.record(t0 + Duration::from_secs(12), 1), Some(150));
     }
 
     #[test]
