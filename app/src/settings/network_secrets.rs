@@ -22,12 +22,27 @@ pub enum ProxyCredentialsEvent {
 /// Singleton: manages the Basic Auth password for the global HTTP proxy.
 pub struct ProxyCredentials {
     password: String,
+    /// Whether `password` reflects the keychain. The read is deferred (#1164 item 6): most
+    /// installs use no custom proxy, so nothing needs the password and the (possibly
+    /// blocking, possibly prompting) keychain read is skipped at launch. Everything that
+    /// consumes or overwrites the password calls [`Self::ensure_loaded`] first.
+    loaded: bool,
 }
 
 impl ProxyCredentials {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        let _ = ctx;
         Self {
-            password: Self::load_from_storage(ctx),
+            password: String::new(),
+            loaded: false,
+        }
+    }
+
+    /// Reads the password from secure storage the first time it is needed. Does not emit.
+    pub fn ensure_loaded(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.loaded {
+            self.password = Self::load_from_storage(ctx);
+            self.loaded = true;
         }
     }
 
@@ -38,6 +53,9 @@ impl ProxyCredentials {
 
     /// Sets / updates the password. Passing an empty string is equivalent to deleting it.
     pub fn set_password(&mut self, password: String, ctx: &mut ModelContext<Self>) {
+        // Load first so the equality check below compares against the stored value, not the
+        // not-yet-loaded placeholder (otherwise clearing a stored password would be skipped).
+        self.ensure_loaded(ctx);
         if self.password == password {
             return;
         }
@@ -82,3 +100,7 @@ impl Entity for ProxyCredentials {
 }
 
 impl SingletonEntity for ProxyCredentials {}
+
+#[cfg(test)]
+#[path = "network_secrets_tests.rs"]
+mod tests;
