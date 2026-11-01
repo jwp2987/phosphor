@@ -693,9 +693,22 @@ impl AIContextMenu {
 
     /// Whether Enter would select anything right now. False for a menu showing "No results",
     /// so terminal-mode Enter can close it and submit the line instead (#1337).
-    pub fn has_selectable_item(&self, ctx: &AppContext) -> bool {
+    ///
+    /// `typed_filter` is what the user has typed after the `@`. The menu's own query reaches it
+    /// through a debounce channel, so an Enter right after the last key would still see the
+    /// unfiltered category list and report something selectable; the typed text is authoritative.
+    pub fn has_selectable_item(&self, typed_filter: &str, ctx: &AppContext) -> bool {
         match &self.state.navigation_state {
-            NavigationState::MainMenu => !self.get_filtered_categories(ctx).is_empty(),
+            NavigationState::MainMenu => {
+                let typed = typed_filter.trim().to_lowercase();
+                if typed.is_empty() {
+                    !self.get_filtered_categories(ctx).is_empty()
+                } else {
+                    self.get_filtered_categories(ctx)
+                        .iter()
+                        .any(|category| category.name().to_lowercase().contains(&typed))
+                }
+            }
             NavigationState::Category(_) | NavigationState::AllCategories => self
                 .search_bar_state
                 .as_ref(ctx)
