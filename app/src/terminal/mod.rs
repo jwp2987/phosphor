@@ -19,6 +19,7 @@ use warpui::SingletonEntity;
 use warpui::WindowId;
 pub use {history::History, history::HistoryEntry, history::HistoryEvent, history::ShellHost};
 mod block_list_settings;
+pub mod model_lock_trace;
 
 mod alias;
 pub(crate) mod alt_screen;
