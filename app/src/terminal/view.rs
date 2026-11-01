@@ -28810,7 +28810,7 @@ impl TerminalView {
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),
             input_view_id: self.input.id(),
-            input_editor_view_id: self.input.as_ref(ctx).editor().id(),
+            input_editor_view_id: self.input.as_ref(app).editor().id(),
             ssh_key_hold: self.ssh_editor_key_hold.clone(),
             is_terminal_selecting: self.is_selecting(),
             rich_content_drag_selecting: self.rich_content_drag_selecting.clone(),
