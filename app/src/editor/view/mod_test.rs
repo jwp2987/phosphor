@@ -5269,19 +5269,24 @@ fn test_cursor_blink_tick_requests_paint_only_frame() {
         });
         // Drain whatever the setup invalidated.
         let _ = app.take_invalidation_kind_for_test(window_id);
-        app.update_view(&editor_handle, |editor, ctx| {
-            let before = editor.cursors_visible;
-            let epoch = editor.next_blink_epoch();
-            editor.blink_cursors(epoch, ctx);
-            assert_ne!(editor.cursors_visible, before);
-            assert_eq!(
-                editor
-                    .cursors_visible_shared
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                editor.cursors_visible
-            );
+        // One `app.update` defers the effect flush: outside it, the flush after `update_view`
+        // builds the scene eagerly (the unit-test `on_window_invalidated` path) and consumes the
+        // pending invalidation before it can be inspected.
+        let (needs_layout, paint_only) = app.update(|ctx| {
+            ctx.update_view(&editor_handle, |editor, ctx| {
+                let before = editor.cursors_visible;
+                let epoch = editor.next_blink_epoch();
+                editor.blink_cursors(epoch, ctx);
+                assert_ne!(editor.cursors_visible, before);
+                assert_eq!(
+                    editor
+                        .cursors_visible_shared
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    editor.cursors_visible
+                );
+            });
+            ctx.take_invalidation_kind_for_test(window_id)
         });
-        let (needs_layout, paint_only) = app.take_invalidation_kind_for_test(window_id);
         assert!(!needs_layout, "a blink tick must not notify the view");
         assert!(paint_only, "a blink tick must request a paint-only frame");
     });
