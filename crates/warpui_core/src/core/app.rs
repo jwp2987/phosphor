@@ -4638,6 +4638,100 @@ impl AppContext {
         }
     }
 
+    /// Offers a key event to the pane key sink in the focus chain, if there is one. Returns
+    /// whether the sink consumed it (then no element sees the event).
+    ///
+    /// The sink is the nearest ancestor of the focused view that says it is one
+    /// ([`View::is_pane_key_sink`]). The live focus chain is handed over with the event, so the
+    /// sink decides on the focus of this moment, not on what an element captured at its last
+    /// render (#934).
+    fn offer_pane_key(
+        &mut self,
+        event: &Event,
+        window_id: WindowId,
+        presenter: &Rc<RefCell<Presenter>>,
+    ) -> bool {
+        use crate::pane_key::{
+            PaneKey, PaneKeyContext, PaneKeyKind, PaneKeyOutcome, note_event_and_is_ime_commit,
+        };
+        let kind = match event {
+            Event::KeyDown {
+                keystroke,
+                chars,
+                is_composing,
+                ..
+            } => {
+                note_event_and_is_ime_commit(false, false);
+                let printable = !chars.is_empty() && !chars.chars().all(|c| c.is_control());
+                PaneKeyKind::KeyDown {
+                    keystroke: keystroke.clone(),
+                    chars: chars.clone(),
+                    is_composing: *is_composing,
+                    will_type: printable && !keystroke.cmd,
+                }
+            }
+            Event::TypedCharacters { chars } => PaneKeyKind::Typed {
+                chars: chars.clone(),
+                ime_commit: note_event_and_is_ime_commit(false, true),
+            },
+            Event::SetMarkedText {
+                marked_text,
+                selected_range,
+            } => {
+                note_event_and_is_ime_commit(false, false);
+                PaneKeyKind::SetMarkedText {
+                    marked_text: marked_text.clone(),
+                    selected_range: selected_range.clone(),
+                }
+            }
+            Event::ClearMarkedText => {
+                note_event_and_is_ime_commit(true, false);
+                PaneKeyKind::ClearMarkedText
+            }
+            _ => return false,
+        };
+        let Some(focused) = self.focused_view_id(window_id) else {
+            return false;
+        };
+        let focus_chain = presenter.borrow().ancestors(focused);
+        let Some(sink_id) = focus_chain.iter().rev().copied().find(|view_id| {
+            self.windows
+                .get(&window_id)
+                .and_then(|window| window.views.get(view_id))
+                .is_some_and(|view| view.is_pane_key_sink())
+        }) else {
+            return false;
+        };
+        let leaf_takes_typed_text = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.views.get(&focused))
+            .is_some_and(|view| view.takes_typed_text());
+        let key = PaneKey {
+            seq: crate::input_order::current_key_seq(),
+            kind,
+        };
+        let key_ctx = PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text,
+        };
+        let Some(mut sink) = self
+            .windows
+            .get_mut(&window_id)
+            .and_then(|window| window.views.remove(&sink_id))
+        else {
+            return false;
+        };
+        // Same discipline as a typed action: effects the sink queues flush once it is done.
+        self.pending_flushes += 1;
+        let outcome = sink.on_pane_key(&key, &key_ctx, self, window_id, sink_id);
+        if let Some(window) = self.windows.get_mut(&window_id) {
+            window.views.insert(sink_id, sink);
+        }
+        self.flush_effects();
+        outcome == PaneKeyOutcome::Consumed
+    }
+
     fn handle_non_keybound_event(
         &mut self,
         event: Event,
@@ -4655,6 +4749,33 @@ impl AppContext {
                 log::Level::Debug
             }
         };
+        // Numbers and logs the key events (before the sink: a consumed event never reaches the
+        // presenter, and its `kh_*` hops carry this number).
+        match &event {
+            Event::KeyDown { keystroke, .. } => {
+                crate::profiling::mark!("key_down");
+                crate::input_order::log_key_down(
+                    &keystroke.key,
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd,
+                )
+            }
+            Event::TypedCharacters { chars } => {
+                crate::input_order::bump_typed_dispatch_seq();
+                crate::input_order::log_typed_characters(chars)
+            }
+            _ => {}
+        }
+        // #1404: a pane key sink takes the key event first (the keybinding system has already had
+        // its chance at a chord), so a key reaches a terminal pane exactly once.
+        if self.offer_pane_key(&event, window_id, &presenter) {
+            return crate::windowing::EventDispatchResult {
+                handled: true,
+                soft_keyboard_requested: false,
+            };
+        }
         let slow_start = Instant::now();
         let event_kind = crate::event::EventDiscriminants::from(&event);
         let dispatch_result = presenter.borrow_mut().dispatch_event(event, self);

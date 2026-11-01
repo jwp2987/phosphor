@@ -154,6 +154,29 @@ pub trait View: Entity {
     fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
         Vec::new()
     }
+
+    /// Whether this view is a pane key sink (#1404): it receives every key event (key down, typed
+    /// characters, IME composition) exactly once while focus is inside it, before any element
+    /// sees the event. See [`crate::pane_key`].
+    fn is_pane_key_sink(&self) -> bool {
+        false
+    }
+
+    /// Whether this view, when it is the focused view, takes typed text itself (an editor). A pane
+    /// key sink uses it to leave the keys typed into a text field inside its pane to that field.
+    fn takes_typed_text(&self) -> bool {
+        false
+    }
+
+    /// A key event offered to this pane key sink. Only called when [`Self::is_pane_key_sink`].
+    fn on_pane_key(
+        &mut self,
+        _key: &crate::pane_key::PaneKey,
+        _key_ctx: &crate::pane_key::PaneKeyContext,
+        _ctx: &mut ViewContext<Self>,
+    ) -> crate::pane_key::PaneKeyOutcome {
+        crate::pane_key::PaneKeyOutcome::NotMine
+    }
 }
 
 /// The accessibility data of a current view.

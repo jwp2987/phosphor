@@ -765,23 +765,6 @@ impl Presenter {
 
     pub fn dispatch_event(&mut self, event: Event, app: &AppContext) -> DispatchResult {
         crate::profiling::zone!("input_dispatch");
-        match &event {
-            Event::KeyDown { keystroke, .. } => {
-                crate::profiling::mark!("key_down");
-                crate::input_order::log_key_down(
-                    &keystroke.key,
-                    keystroke.ctrl,
-                    keystroke.alt,
-                    keystroke.shift,
-                    keystroke.cmd,
-                )
-            }
-            Event::TypedCharacters { chars } => {
-                crate::input_order::bump_typed_dispatch_seq();
-                crate::input_order::log_typed_characters(chars)
-            }
-            _ => {}
-        }
         // Translate all events to be in the coordinate space after factoring in the
         // zoom factor.
         let event = event.scale_down(app.zoom_factor());

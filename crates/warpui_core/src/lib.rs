@@ -21,6 +21,7 @@ pub mod keymap;
 pub mod modals;
 pub mod multi_click;
 pub mod notification;
+pub mod pane_key;
 pub mod platform;
 pub mod prelude;
 pub mod presenter;
