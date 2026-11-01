@@ -1467,6 +1467,7 @@ impl TemplatableMCPServerManager {
         space: Space,
         automatically_start_server: bool,
         initiated_by: InitiatedBy,
+        env_vars_prefilled: bool,
         ctx: &mut ModelContext<Self>,
     ) -> Result<ParsedTemplatableMCPServerResult, LegacyToTemplatableMCPConversionError> {
         let template_uuid = legacy_mcp_server.uuid;
@@ -1476,8 +1477,13 @@ impl TemplatableMCPServerManager {
         }
 
         if let Some(conn) = &self.database_connection {
-            let mut conn = conn.lock();
-            legacy_mcp_server.fill_environment_variables(&mut conn);
+            // The startup conversion reads the env vars on a worker thread
+            // (`convert_all_legacy_to_templatable`), so the UI thread never waits on the
+            // shared connection mutex.
+            if !env_vars_prefilled {
+                let mut conn = conn.lock();
+                legacy_mcp_server.fill_environment_variables(&mut conn);
+            }
         } else {
             return Err(LegacyToTemplatableMCPConversionError::NoDBConnection);
         }
@@ -1522,9 +1528,35 @@ impl TemplatableMCPServerManager {
             "Converting {} legacy MCP servers into templatable MCP servers",
             legacy_servers.len()
         );
-        for legacy_server in legacy_servers {
-            let sync_id = legacy_server.sync_id();
-            let legacy_mcp_server = legacy_server.model().string_model.clone();
+        if legacy_servers.is_empty() {
+            return;
+        }
+        let pending: Vec<(SyncId, MCPServer)> = legacy_servers
+            .into_iter()
+            .map(|legacy_server| {
+                (
+                    legacy_server.sync_id(),
+                    legacy_server.model().string_model.clone(),
+                )
+            })
+            .collect();
+
+        // Read every server's environment variables on a worker thread; the conversion itself
+        // (which mutates models) continues on the main thread when the read is done.
+        let connection = self.database_connection.clone();
+        let filled = read_legacy_env_vars_in_background(connection, pending);
+        ctx.spawn(filled, move |me, pending, ctx| {
+            me.finish_legacy_conversion(pending, servers_to_restart, ctx);
+        });
+    }
+
+    fn finish_legacy_conversion(
+        &mut self,
+        pending: Vec<(SyncId, MCPServer)>,
+        servers_to_restart: HashSet<Uuid>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        for (sync_id, legacy_mcp_server) in pending {
             let uuid = legacy_mcp_server.uuid;
             let result = self.convert_legacy_to_templatable(
                 sync_id,
@@ -1532,6 +1564,7 @@ impl TemplatableMCPServerManager {
                 Space::Personal,
                 servers_to_restart.contains(&uuid),
                 InitiatedBy::System,
+                true,
                 ctx,
             );
             match result {
@@ -2441,3 +2474,31 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
 #[cfg(test)]
 #[path = "native_tests.rs"]
 mod tests;
+
+/// Fills the environment variables of each legacy MCP server from the database on a worker
+/// thread. Resolves to the input list (unchanged when there is no connection or the thread could
+/// not start, in which case the caller's per-server `NoDBConnection` / empty-env behaviour applies).
+fn read_legacy_env_vars_in_background(
+    connection: Option<Arc<Mutex<diesel::SqliteConnection>>>,
+    mut pending: Vec<(SyncId, MCPServer)>,
+) -> impl std::future::Future<Output = Vec<(SyncId, MCPServer)>> + Send + 'static {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let fallback = pending.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mcp-env-read".into())
+        .spawn(move || {
+            if let Some(conn) = connection {
+                let mut conn = conn.lock();
+                for (_, server) in pending.iter_mut() {
+                    server.fill_environment_variables(&mut conn);
+                }
+            }
+            let _ = tx.send(pending);
+        });
+    async move {
+        if spawned.is_err() {
+            return fallback;
+        }
+        rx.await.unwrap_or(fallback)
+    }
+}

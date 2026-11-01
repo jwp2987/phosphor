@@ -105,6 +105,32 @@ pub fn convert_persisted_conversation_to_ai_conversation_with_metadata(
     }
 }
 
+/// Reads one conversation from the database. Blocking: takes the connection mutex and does the
+/// query, so it must run off the UI thread.
+#[cfg(feature = "local_fs")]
+pub(super) fn read_conversation_from_db(
+    conn: Option<std::sync::Arc<std::sync::Mutex<diesel::SqliteConnection>>>,
+    conversation_id: &AIConversationId,
+) -> Option<AIConversation> {
+    let persisted = conn.and_then(|conn| {
+        let mut conn = conn.lock().ok()?;
+        let id_str = conversation_id.to_string();
+        log::info!("Loading conversation {id_str} from db");
+        match read_agent_conversation_by_id(&mut conn, &id_str) {
+            Ok(Some(conv)) => Some(conv),
+            Ok(None) => {
+                log::warn!("No AgentConversation found with id {id_str}");
+                None
+            }
+            Err(e) => {
+                log::warn!("Failed to read AgentConversation {id_str}: {e:?}");
+                None
+            }
+        }
+    })?;
+    convert_persisted_conversation_to_ai_conversation(persisted)
+}
+
 /// Boxes a future with the right type for the platform.
 /// On WASM, futures must not implement Send.
 fn box_future<F>(f: F) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>>
@@ -151,11 +177,32 @@ impl BlocklistAIHistoryModel {
         };
 
         if metadata.has_local_data {
-            // Load from local database synchronously
-            let result = self
-                .load_conversation_from_db(&conversation_id)
-                .map(|c| LoadedConversationData::Oz(Box::new(c)));
-            box_future(futures::future::ready(result))
+            // Read from the local database on a worker thread so the (possibly multi-MB) read and
+            // the wait on the shared connection mutex never run on the UI thread. Callers `await`
+            // this future through `ctx.spawn`, so the result is applied on the main thread.
+            #[cfg(feature = "local_fs")]
+            {
+                let conn = self.db_connection.clone();
+                let (tx, rx) = futures::channel::oneshot::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("conversation-load".into())
+                    .spawn(move || {
+                        let _ = tx.send(read_conversation_from_db(conn, &conversation_id));
+                    });
+                if let Err(e) = spawned {
+                    log::warn!("Failed to spawn conversation load thread: {e}");
+                    return box_future(futures::future::ready(None));
+                }
+                return box_future(rx.map(|r| {
+                    r.ok()
+                        .flatten()
+                        .map(|c| LoadedConversationData::Oz(Box::new(c)))
+                }));
+            }
+            #[cfg(not(feature = "local_fs"))]
+            {
+                box_future(futures::future::ready(None))
+            }
         } else {
             log::warn!("Cannot load conversation {conversation_id}: no local data");
             box_future(futures::future::ready(None))
@@ -192,34 +239,10 @@ impl BlocklistAIHistoryModel {
         // If not in memory, try to load from the database
         #[cfg(feature = "local_fs")]
         {
-            let persisted_ai_conversation = self.db_connection.clone().and_then(|conn| {
-                let mut conn = conn.lock().ok()?;
-
-                let id_str = conversation_id.to_string();
-                log::info!("Loading conversation {id_str} from db");
-                match read_agent_conversation_by_id(&mut conn, &id_str) {
-                    Ok(Some(conv)) => Some(conv),
-                    Ok(None) => {
-                        log::warn!("No AgentConversation found with id {id_str}");
-                        None
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to read AgentConversation {id_str}: {e:?}");
-                        None
-                    }
-                }
-            });
-
-            // Convert the persisted conversation to an AIConversation
-            if let Some(persisted_conversation) = persisted_ai_conversation {
-                if let Some(conversation) =
-                    convert_persisted_conversation_to_ai_conversation(persisted_conversation)
-                {
-                    return Some(conversation);
-                }
-            }
+            return read_conversation_from_db(self.db_connection.clone(), conversation_id);
         }
 
+        #[cfg(not(feature = "local_fs"))]
         None
     }
 
