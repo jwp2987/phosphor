@@ -1102,6 +1102,17 @@ impl BlocklistAIContextModel {
         if let Some(session_id) = block_metadata.session_id()
             && let Some(active_session) = sessions.as_ref(ctx).get(session_id)
         {
+            // Start the project-rules scan for the new cwd now, off the UI thread, so the
+            // request built after this `cd` finds it cached instead of walking the disk
+            // (#1364). Local sessions only: a remote cwd is a path on another host.
+            #[cfg(feature = "local_fs")]
+            if active_session.is_local()
+                && let Some(pwd) = pwd.as_ref()
+                && ctx.has_singleton_model::<ProjectContextModel>()
+            {
+                ProjectContextModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.prewarm_fast_path(pwd, ctx));
+            }
             self.update_directory_context(
                 pwd.map(|p| p.to_string_lossy().to_string()),
                 active_session.home_dir().map(|sq| sq.to_owned()),
