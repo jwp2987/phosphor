@@ -80,9 +80,17 @@ struct ExplicitInputTypeSet {
 }
 
 impl ExplicitInputTypeSet {
+    /// Whether the explicit choice still stands. Once a detection request has claimed it, it
+    /// stands for exactly that buffer text and ends when a request for different text arrives (an
+    /// event, see [`InputModel::is_detection_suppressed_by_explicit_set`]); no clock is involved
+    /// (#1375, INP-A2). Only an UNCLAIMED write is time-bounded: nothing ties the edit that
+    /// accompanies an explicit write to it except arriving right after, so
+    /// [`AUTODETECTION_DISABLE_DURATION_MS`] is the give-up after which a request is a new
+    /// question rather than the accompanying echo. That edit has no event of its own.
     fn is_within_window(&self) -> bool {
-        Instant::now()
-            < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
+        self.buffer_text.is_some()
+            || Instant::now()
+                < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
     }
 }
 
@@ -892,7 +900,12 @@ impl BlocklistAIInputModel {
             explicit.buffer_text = Some(buffer_text.to_owned());
             return true;
         }
-        explicit.buffer_text.as_deref() == Some(buffer_text)
+        if explicit.buffer_text.as_deref() == Some(buffer_text) {
+            return true;
+        }
+        // Different text: the explicit write was for another buffer and is history.
+        self.explicit_input_type_set = None;
+        false
     }
 
     /// Whether the input is the agent's own steer/follow-up box: AI is the live type and the
@@ -924,7 +937,11 @@ impl BlocklistAIInputModel {
             Some((true, true)) => {
                 self.is_detection_suppressed_by_explicit_set(&buffer_text);
             }
-            Some((true, false)) | None => {}
+            // Claimed: different text ends the explicit write, the same text keeps it.
+            Some((true, false)) => {
+                self.is_detection_suppressed_by_explicit_set(&buffer_text);
+            }
+            None => {}
         }
         self.drop_typeahead_prefix_unless_leading(&buffer_text);
         self.pending_detection_buffer = Some(buffer_text);
@@ -1407,7 +1424,10 @@ impl BlocklistAIInputModel {
         } else if self
             .explicit_input_type_set
             .as_ref()
-            .is_some_and(ExplicitInputTypeSet::is_within_window)
+            .is_some_and(|explicit| {
+                // The empty claim a submit leaves behind is not a choice about any buffer.
+                explicit.is_within_window() && explicit.buffer_text.as_deref() != Some("")
+            })
         {
             RouteReason::Explicit
         } else {
@@ -1559,7 +1579,7 @@ impl BlocklistAIInputModel {
             return;
         }
 
-        // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
+        // An explicit write keeps its input type -- for the buffer it was made
         // for only; new text is classified (#833).
         if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
             self.settle_detection(&input.buffer_text, ctx);
