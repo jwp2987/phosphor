@@ -2840,6 +2840,12 @@ impl GridHandler {
         }
     }
 
+    /// Whether `row_idx` soft-wraps onto the next row, for callers (find) that must not cut a
+    /// logical line in two.
+    pub(in crate::terminal) fn row_soft_wraps(&self, row_idx: usize) -> bool {
+        self.row_wraps(row_idx)
+    }
+
     pub(in crate::terminal::model) fn row_wraps(&self, row_idx: usize) -> bool {
         match self.storage_row(row_idx) {
             Some(StorageRow::GridStorage(row_idx)) => self.grid.row_wraps(row_idx),
