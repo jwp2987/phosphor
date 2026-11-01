@@ -308,6 +308,10 @@ pub struct BlocklistAIHistoryModel {
     /// via `set_parent_for_conversation` and `restore_conversations`.
     children_by_parent: HashMap<AIConversationId, Vec<AIConversationId>>,
 
+    /// Orchestration children found at startup with no tasks in memory; read off-thread by
+    /// `hydrate_pending_orchestration_children` (#1363).
+    pending_child_hydrations: Vec<AIConversationId>,
+
     /// Tombstone set of conversation ids explicitly killed via the
     /// orchestration pill bar's "Kill agent" action. Bounded LRU, like the
     /// pin's `OrchestrationEventStreamer::killed_run_ids` (which this
@@ -475,7 +479,7 @@ impl BlocklistAIHistoryModel {
 
     /// Returns a conversation by ID by reading from memory. The conversation may not be available if:
     /// * The ID is invalid
-    /// * The conversation has never been read into memory from db. Use load_conversation_from_db to handle reading from db.
+    /// * The conversation has never been read into memory from db. Use `load_conversation_data` to read it from db off the UI thread.
     pub fn conversation(&self, conversation_id: &AIConversationId) -> Option<&AIConversation> {
         self.conversations_by_id.get(conversation_id)
     }
