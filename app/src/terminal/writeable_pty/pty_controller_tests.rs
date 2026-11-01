@@ -1872,6 +1872,10 @@ mod typeahead_handoff {
                 harness.controller.update(&mut app, |controller, _| {
                     controller.force_write_queue(queue)
                 });
+                // A command is running, so the pty owns input and user writes are counted (an
+                // editor-owned write is not, and `user_types` asserts the counted route).
+                submit(&mut app, &harness, "sleep 1");
+                harness.sender.messages.lock().clear();
                 let paste: &'static [u8] =
                     Box::leak(vec![b'x'; PASTE_WRITE_MIN_BYTES].into_boxed_slice());
                 user_types(&mut app, &harness, paste);
