@@ -464,6 +464,31 @@ fn big_list_refilters_off_thread_and_keeps_previous_list() {
 }
 
 #[test]
+fn cancelled_refilter_drops_its_late_result() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, suggestions) = app.add_window(WindowStyle::NotStealFocus, InputSuggestions::new);
+        let options = big_results(super::INLINE_REFILTER_MAX_ENTRIES + 500);
+        suggestions.update(&mut app, |s, ctx| {
+            s.refilter_tab_completions(
+                "f1",
+                &options,
+                TabCompletionsPreselectOption::Unselected,
+                ctx,
+            );
+            assert!(s.has_pending_refilter());
+            let generation = s.refilter_generation;
+            // The menu closed: the pending refilter is cancelled and its result ignored.
+            s.cancel_pending_refilter();
+            assert!(!s.has_pending_refilter());
+            let late = super::filter_tab_suggestions(&options, "f1", s.path_separators.all);
+            assert!(!s.apply_refilter_result(generation, late, ctx));
+            assert!(s.items().is_empty());
+        });
+    });
+}
+
+#[test]
 fn stale_refilter_result_is_ignored() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| Appearance::mock());

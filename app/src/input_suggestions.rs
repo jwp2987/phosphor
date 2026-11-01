@@ -459,7 +459,7 @@ impl InputSuggestions {
         false
     }
 
-    fn cancel_pending_refilter(&mut self) {
+    pub(crate) fn cancel_pending_refilter(&mut self) {
         if let Some(pending) = self.pending_refilter.take() {
             pending.task.abort();
         }

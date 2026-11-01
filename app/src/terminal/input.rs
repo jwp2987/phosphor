@@ -357,6 +357,20 @@ use crate::ai::blocklist::agent_view::{
 use crate::terminal::view::ambient_agent::{HarnessSelector, HostSelector, NakedHeaderButtonTheme};
 use crate::terminal::view::queued_prompts_panel::{QueuedPromptsPanelEvent, QueuedPromptsPanelView};
 use async_channel::Sender;
+
+/// Capacity of the input debounce channels. The debounce stream drains its channel on every
+/// wake, so this is only reached if the UI thread is stalled; it bounds memory then (#1382).
+const DEBOUNCE_CHANNEL_CAPACITY: usize = 64;
+
+/// Tries to queue `item`; hands it back when the channel is full or closed so the caller can
+/// act on it directly instead of losing it.
+fn try_queue<T>(tx: &Sender<T>, item: T) -> Option<T> {
+    match tx.try_send(item) {
+        Ok(()) => None,
+        Err(async_channel::TrySendError::Full(item))
+        | Err(async_channel::TrySendError::Closed(item)) => Some(item),
+    }
+}
 use futures::stream::AbortHandle;
 use parking_lot::FairMutex;
 #[cfg(feature = "local_fs")]
@@ -3269,7 +3283,7 @@ impl Input {
         });
 
         let (debounce_input_background_tx, debounce_input_background_rx) =
-            async_channel::unbounded();
+            async_channel::bounded(DEBOUNCE_CHANNEL_CAPACITY);
         let _ = ctx.spawn_stream_local(
             debounce(
                 DEBOUNCE_INPUT_DECORATION_PERIOD,
@@ -3280,7 +3294,7 @@ impl Input {
         );
 
         let (debounce_ai_query_prediction_tx, debounce_ai_query_prediction_rx) =
-            async_channel::unbounded();
+            async_channel::bounded(DEBOUNCE_CHANNEL_CAPACITY);
         let _ = ctx.spawn_stream_local(
             debounce(
                 DEBOUNCE_AI_QUERY_PREDICTION_PERIOD,
@@ -3380,9 +3394,10 @@ impl Input {
         });
 
         ctx.subscribe_to_model(&ai_input_model, |me, _, event, ctx| {
-            let _ = me
-                .debounce_input_background_tx
-                .try_send(InputBackgroundJobOptions::default().with_command_decoration());
+            me.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
 
             let config = event.updated_config();
             if config.is_locked && me.suggestions_mode_model.as_ref(ctx).is_visible() {
@@ -8251,6 +8266,18 @@ impl Input {
         self.close_input_suggestions(/*should_focus_input=*/ should_focus_input, ctx);
     }
 
+    /// Debounced input background jobs. A full channel (stalled UI thread) runs the job right
+    /// away instead of dropping it or growing the queue without bound (#1382).
+    fn queue_input_background_job(
+        &mut self,
+        mode: InputBackgroundJobOptions,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(mode) = try_queue(&self.debounce_input_background_tx, mode) {
+            self.run_input_background_jobs(mode, ctx);
+        }
+    }
+
     pub fn close_input_suggestions(
         &mut self,
         should_focus_input: bool,
@@ -8265,6 +8292,11 @@ impl Input {
 
             self.suggestions_mode_model.update(ctx, |m, ctx| {
                 m.set_mode(InputSuggestionsMode::Closed, ctx);
+            });
+            // A refilter still computing for the menu that just closed has nobody to show it to
+            // (#1382).
+            self.input_suggestions.update(ctx, |suggestions, _| {
+                suggestions.cancel_pending_refilter();
             });
 
             // If we're closing an inline menu, trigger autodetection on the buffer contents
@@ -10008,7 +10040,7 @@ impl Input {
                     if short_circuit_highlighting {
                         self.run_input_background_jobs(mode, ctx);
                     } else {
-                        let _ = self.debounce_input_background_tx.try_send(mode);
+                        self.queue_input_background_job(mode, ctx);
                     }
                 }
 

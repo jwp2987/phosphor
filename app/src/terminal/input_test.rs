@@ -13030,3 +13030,15 @@ fn test_at_picker_still_opens_in_agent_mode() {
         });
     });
 }
+
+#[test]
+fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
+    let (tx, rx) = async_channel::bounded::<u32>(2);
+    assert_eq!(super::try_queue(&tx, 1), None);
+    assert_eq!(super::try_queue(&tx, 2), None);
+    // Full: the item comes back so the caller can run it directly, nothing grows.
+    assert_eq!(super::try_queue(&tx, 3), Some(3));
+    assert_eq!(rx.len(), 2);
+    drop(rx);
+    assert_eq!(super::try_queue(&tx, 4), Some(4));
+}
