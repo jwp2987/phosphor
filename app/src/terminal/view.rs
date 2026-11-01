@@ -3060,8 +3060,13 @@ pub struct TerminalView {
     /// that reaches it here instead of applying it, so keys typed after focus moved to the editor
     /// but before the held keys are delivered keep their order (#1292).
     ssh_editor_key_hold: Rc<EditorKeyHold>,
-    /// The keys held while the ssh connect is in flight (#1292), exactly as typed.
+    /// The keys held while the ssh connect is in flight (#1292), exactly as typed. With the input
+    /// queue (#1353 phase 4, the default) the held keys are entries behind an `SshConnect` gate
+    /// and this buffer is the legacy path (`PHOSPHOR_INPUT_QUEUE_SSH=0`) plus keys held while the
+    /// queue was mid-delivery.
     ssh_typeahead: SshTypeahead,
+    /// The queue side of the ssh hold: the open gate and what it holds.
+    ssh_iq: ssh_queue::SshQueueState,
     /// A held paste whose text the paste handler has still to store.
     ssh_paste_to_hold: bool,
     /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
@@ -4887,6 +4892,7 @@ impl TerminalView {
             output_listeners: Vec::new(),
             ssh_editor_key_hold,
             ssh_typeahead: SshTypeahead::default(),
+            ssh_iq: ssh_queue::SshQueueState::new(),
             ssh_paste_to_hold: false,
             ssh_typeahead_precmd_wait_since: None,
             ssh_typeahead_deadline_armed: None,
@@ -10795,7 +10801,7 @@ impl TerminalView {
                 "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
                  control_sequence={control_sequence} editor_queue_empty={}",
                 self.ssh_typeahead_holding,
-                self.ssh_typeahead.len_bytes(),
+                self.ssh_held_bytes(),
                 self.ssh_editor_key_hold.is_empty()
             )
         });
@@ -10833,7 +10839,7 @@ impl TerminalView {
                 } else {
                     HeldInput::from_chars(chars)
                 };
-                let outcome = self.ssh_typeahead.push(input);
+                let outcome = self.ssh_hold_push(input, ctx);
                 self.note_ssh_typeahead_outcome(&outcome, ctx);
             }
             // The paste handler stores the text; only it has the clipboard.
@@ -10841,7 +10847,7 @@ impl TerminalView {
         }
         self.schedule_ssh_typeahead_give_up(ctx);
         warpui::input_order::log_key_hop("kh_hold_exit", || {
-            format!("branch=held held_bytes={}", self.ssh_typeahead.len_bytes())
+            format!("branch=held held_bytes={}", self.ssh_held_bytes())
         });
         true
     }
@@ -10875,7 +10881,7 @@ impl TerminalView {
         if copied.is_empty() {
             return;
         }
-        let outcome = self.ssh_typeahead.push(HeldInput::Paste(copied));
+        let outcome = self.ssh_hold_push(HeldInput::Paste(copied), ctx);
         self.note_ssh_typeahead_outcome(&outcome, ctx);
     }
 
@@ -10900,7 +10906,7 @@ impl TerminalView {
         if !self.ssh_typeahead_holding || !self.ssh_prompt_has_arrived() {
             return false;
         }
-        let had_keys = !self.ssh_typeahead.is_empty();
+        let had_keys = !self.ssh_held_is_empty();
         // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
         // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
         self.reset_ssh_typeahead();
@@ -10940,7 +10946,7 @@ impl TerminalView {
             );
         }
         if taken.overflowed {
-            let outcome = self.ssh_typeahead.overflow();
+            let outcome = self.ssh_hold_overflow();
             self.note_ssh_typeahead_outcome(&outcome, ctx);
             return;
         }
@@ -10950,7 +10956,7 @@ impl TerminalView {
                 HeldEditorKey::Control(key) => HeldInput::Key(key.to_owned()),
                 HeldEditorKey::Sequence(seq) => HeldInput::Seq(seq.to_owned()),
             };
-            let outcome = self.ssh_typeahead.push(input);
+            let outcome = self.ssh_hold_push(input, ctx);
             self.note_ssh_typeahead_outcome(&outcome, ctx);
         }
         self.schedule_ssh_typeahead_give_up(ctx);
@@ -10958,7 +10964,7 @@ impl TerminalView {
 
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
     fn reset_ssh_typeahead(&mut self) {
-        self.ssh_typeahead.clear();
+        self.ssh_hold_clear();
         self.ssh_editor_key_hold.clear();
         self.set_ssh_typeahead_holding(false);
         self.ssh_editor_key_hold.end_settle();
@@ -10995,7 +11001,7 @@ impl TerminalView {
         // given it its history; an Enter delivered earlier would be refused. Normally that Precmd
         // IS the signal this runs on, so the wait is over; if the session registers later, its
         // event (or the give-up cap) delivers.
-        let held = !self.ssh_typeahead.is_empty() || !self.ssh_editor_key_hold.is_empty();
+        let held = !self.ssh_held_is_empty() || !self.ssh_editor_key_hold.is_empty();
         let awaiting_first_precmd = self.ssh_remote_prompt_seen
             && held
             && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
@@ -11021,7 +11027,7 @@ impl TerminalView {
                 "source={source} remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
                  view_precmds_pending={}",
                 self.ssh_remote_prompt_seen,
-                self.ssh_typeahead.len_bytes(),
+                self.ssh_held_bytes(),
                 self.ssh_editor_key_hold.is_empty(),
                 self.view_precmds_pending()
             )
@@ -11101,7 +11107,7 @@ impl TerminalView {
                 "remote_prompt_seen={} held_bytes={} editor_queue_empty={} \
                  view_precmds_pending={}",
                 self.ssh_remote_prompt_seen,
-                self.ssh_typeahead.len_bytes(),
+                self.ssh_held_bytes(),
                 self.ssh_editor_key_hold.is_empty(),
                 self.view_precmds_pending()
             )
@@ -11110,8 +11116,8 @@ impl TerminalView {
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
         self.drain_editor_keys_into_ssh_hold(ctx);
-        if self.ssh_typeahead.is_empty() {
-            self.ssh_typeahead.clear();
+        if self.ssh_held_is_empty() {
+            self.ssh_hold_clear();
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
             return;
         }
@@ -11120,17 +11126,10 @@ impl TerminalView {
             // by the terminal view instead of falling between the editor and the live path, until
             // the editor holds focus (#1348: no timed window; the hand-over also focuses input).
             self.ssh_editor_key_hold.begin_settle();
-            let held = self.ssh_typeahead.take();
-            self.ssh_typeahead.clear();
-            self.log_ssh_typeahead_delivery(held.len());
-            for input in held {
-                match input {
-                    HeldInput::Typed(text) => self.typed_characters_on_terminal(&text, ctx),
-                    HeldInput::Key(key) => self.replay_held_key(&key, ctx),
-                    HeldInput::Paste(text) => self.deliver_paste_text(&text, ctx),
-                    HeldInput::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
-                }
-            }
+            self.log_ssh_typeahead_delivery(self.ssh_held_count());
+            // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
+            // writes the held inputs in typed order (the legacy buffer does it in a loop).
+            self.ssh_hold_deliver(ctx);
             // (c) of the hand-over (#1348): focus follows in the same step, so the next key is
             // routed to the editor / live path, never into the gap between them.
             self.redetermine_terminal_focus(ctx);
@@ -11145,8 +11144,8 @@ impl TerminalView {
             });
             return;
         }
-        let text = self.ssh_typeahead.unexecuted_text();
-        self.ssh_typeahead.clear();
+        let text = self.ssh_hold_take_unexecuted_text();
+        self.ssh_hold_clear();
         if text.is_empty() {
             return;
         }
@@ -11186,7 +11185,7 @@ impl TerminalView {
                 target: warpui::input_order::TARGET,
                 "ssh_drop {what} holding={} held_bytes={} gate_armed={}",
                 self.ssh_typeahead_holding,
-                self.ssh_typeahead.len_bytes(),
+                self.ssh_held_bytes(),
                 self.ssh_connect_gate.is_some()
             );
         }
@@ -36406,6 +36405,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 }
 
 mod paste_queue;
+mod ssh_queue;
 mod ssh_typeahead;
 
 #[cfg(test)]

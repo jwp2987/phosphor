@@ -57,6 +57,8 @@ pub fn destination_for(kind: &EntryKind, facts: &DestFacts) -> Destination {
     match kind {
         EntryKind::PtyBytes { .. } => return Destination::Pty,
         EntryKind::EditorKey(_) => return Destination::Editor,
+        // The host routes held input itself at delivery (phase 4).
+        EntryKind::Held { .. } => return Destination::Pty,
         _ => {}
     }
     if let Some(reason) = facts.drop_reason {

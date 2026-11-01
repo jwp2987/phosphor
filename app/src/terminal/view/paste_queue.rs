@@ -179,6 +179,9 @@ impl Host for PtyQueueHost<'_, '_> {
                     self.ctx,
                 );
             }
+            // The ssh connect typeahead (phase 4): delivered at the hand-over, routed from the
+            // facts of this moment.
+            EntryKind::Held { class, text } => self.view.deliver_ssh_held(*class, text, self.ctx),
             other => log::warn!(
                 "input queue: pty paste queue was handed an entry it does not deliver: {other:?}"
             ),
@@ -187,6 +190,10 @@ impl Host for PtyQueueHost<'_, '_> {
     }
 
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
+        if matches!(entry.kind, EntryKind::Held { .. }) {
+            // An ssh-typeahead entry voided by a signal: the hold already said so.
+            return;
+        }
         if let EntryKind::Paste { paste_id, .. } = &entry.kind {
             self.view.paste_queue.payloads.remove(paste_id);
         }
@@ -254,6 +261,11 @@ impl TerminalView {
             .try_borrow()
             .map_or(true, |queue| queue.is_idle())
         {
+            return None;
+        }
+        // Only the ssh connect hold is open: it holds its own keys (before they get here); what
+        // reaches the writer now was never held by the legacy ssh hold either.
+        if self.only_ssh_gates_open() {
             return None;
         }
         let kind = match abort_signal(bytes).filter(|_| !abort_as_entry) {
