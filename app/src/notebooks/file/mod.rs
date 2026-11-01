@@ -107,6 +107,15 @@ pub struct FileNotebookView {
     /// Vertical scroll fraction (`0..=1`) to restore once the file content is first loaded,
     /// captured before a markdown raw->rendered toggle. Consumed on the first `set_content`.
     pending_scroll_fraction: Option<f32>,
+    /// Set while the pane is hidden for undo-close: the rendered content was dropped (the file is
+    /// re-read by [`Self::restore_released_content`]). See [`Self::release_for_undo_close`].
+    released_for_undo_close: bool,
+}
+
+/// Env kill switch: `PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE=1` keeps a closed file pane's rendered
+/// content alive for the whole undo-close grace period (the pre-#1340 behaviour).
+fn keep_content_while_hidden() -> bool {
+    std::env::var("PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +331,7 @@ impl FileNotebookView {
             #[cfg(feature = "local_fs")]
             code_source: None,
             pending_scroll_fraction: None,
+            released_for_undo_close: false,
         }
     }
 
@@ -649,6 +659,57 @@ impl FileNotebookView {
                 }
             },
         );
+    }
+
+    /// Whether a view in `state` can drop its content for the undo-close grace period: only a
+    /// fully loaded local file, which is read-only here and can be re-read from disk. Loading,
+    /// failed, remote and static content is kept as is.
+    fn can_release_for_undo_close(state: &FileState) -> bool {
+        matches!(state, FileState::Loaded(SourceFile::Local { .. }))
+    }
+
+    /// Called when the pane is hidden for the undo-close grace period. The rendered document
+    /// (buffer, paragraph layouts, images) and the file watcher are dropped; undo-close re-reads
+    /// the file ([`Self::restore_released_content`]). The view is read-only, so nothing is lost.
+    /// A large markdown file otherwise stays laid out in memory for the whole window (#1340).
+    #[cfg(feature = "local_fs")]
+    pub fn release_for_undo_close(&mut self, ctx: &mut ViewContext<Self>) {
+        if keep_content_while_hidden()
+            || self.released_for_undo_close
+            || !Self::can_release_for_undo_close(&self.file_state)
+        {
+            return;
+        }
+        let scroll_fraction = self.scroll_fraction(ctx);
+        self.release_file_model(ctx);
+        self.editor
+            .update(ctx, |editor, ctx| editor.reset_with_markdown("", ctx));
+        // Applied once the content is loaded again.
+        self.pending_scroll_fraction = scroll_fraction;
+        self.released_for_undo_close = true;
+        ctx.notify();
+    }
+
+    /// Re-reads the file dropped by [`Self::release_for_undo_close`]. No-op otherwise.
+    pub fn restore_released_content(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.released_for_undo_close {
+            return;
+        }
+        self.released_for_undo_close = false;
+        self.reload_file(ctx);
+    }
+
+    /// Marks the open local file as fully loaded, without waiting for the async read.
+    #[cfg(all(test, feature = "local_fs"))]
+    pub(crate) fn mark_loaded_for_test(&mut self) {
+        if let FileState::Loading(source) = mem::replace(&mut self.file_state, FileState::NoFile) {
+            self.file_state = FileState::Loaded(source);
+        }
+    }
+
+    #[cfg(all(test, feature = "local_fs"))]
+    pub(crate) fn is_released_for_undo_close(&self) -> bool {
+        self.released_for_undo_close
     }
 
     /// The [`FileId`] this view currently holds open, if any.
