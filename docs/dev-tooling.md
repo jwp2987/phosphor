@@ -13,11 +13,11 @@ instead of the modules' ordinary tests (their `static`s need `const` constructor
 
 ```
 # random schedules (broad, fast)
-RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_
-RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_
+RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
+RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
 # every schedule (tiny bodies only)
-RUSTFLAGS="--cfg loom" cargo test -p warpui_core --lib --release -- model_
-RUSTFLAGS="--cfg loom" cargo test -p warp --lib --features warp/gui --release -- model_
+RUSTFLAGS="--cfg loom" cargo test -p warpui_core --lib --release -- model_tests::
+RUSTFLAGS="--cfg loom" cargo test -p warp --lib --features warp/gui --release -- model_tests::
 ```
 
 Use a separate `CARGO_TARGET_DIR` (the cfg changes every crate's build). Model builds do not
@@ -116,3 +116,19 @@ Results are in `mutants.out/` (`missed.txt`, `caught.txt`).
 
 Note for the model-checker runs: `RUSTFLAGS` in the environment replaces `build.rustflags` of
 `.cargo/config.toml` (the v0 symbol mangling and the mac link args); that is fine for tests.
+
+## CI (GitLab, manual jobs only)
+
+All in `.gitlab-ci.yml`, tag `little-thing`, `when: manual`, `allow_failure: true`; none run in
+the default pipeline. Start them from the pipeline page of a protected ref (`main`, `build/*`).
+
+| job | runs | artifacts |
+|---|---|---|
+| `test-shuttle-loom` | the `model_tests::` tests of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg loom` | none |
+| `fuzz-smoke` | each fuzz target for `FUZZ_SECONDS` (180) from the committed corpus; `RUSTC_BOOTSTRAP=1` so the pinned stable toolchain is used | `fuzz/artifacts/` (crashes) |
+| `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE` (set both as pipeline variables to change the subset) | `mutants.out/` |
+| `bench` | both criterion benches | `bench-results/criterion/` (HTML reports, estimates) |
+
+`fuzz-smoke` and `mutants` fetch `cargo-fuzz` / `cargo-mutants` with `cargo binstall` into the
+runner user's own `CARGO_HOME` when missing (the `licenses` job does the same for `cargo-deny`);
+nothing is installed into the maintainer's home or the system.

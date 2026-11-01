@@ -642,6 +642,101 @@ integration-linux-pwsh:
     - pwsh -Version
     - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci -E 'test(test_input_reporting_powershell) or test(test_pwsh_vi_edit_mode_does_not_corrupt_commands)'
 
+# ---------------------------------------------------------------------------
+# Dev-tooling suites (docs/dev-tooling.md). All MANUAL and non-blocking: nothing here runs
+# unless someone starts it from the pipeline page, and none of it gates the default pipeline.
+# They use the runner user's own CARGO_HOME for any tool they fetch (cargo binstall, as the
+# `licenses` job does); nothing is installed into the maintainer's home or the system.
+# ---------------------------------------------------------------------------
+
+# shuttle (random schedules) and loom (every schedule) interleaving tests of the clipboard
+# primitives and the key-path cells. `--cfg shuttle` / `--cfg loom` rebuild every crate, so
+# each gets its own agent-cargo target dir; RUSTFLAGS replaces .cargo/config.toml's flags, which
+# only matters for linking on macOS. The `model_tests::` filter selects the model tests (the
+# rest of the suite uses real primitives outside a model).
+test-shuttle-loom:
+  extends: .box_job
+  timeout: 150m
+  when: manual
+  allow_failure: true
+  script:
+    - export RUSTFLAGS="--cfg shuttle"
+    - ./script/agent-cargo ci-shuttle test -p warpui_core --lib --release -- model_tests::
+    - ./script/agent-cargo ci-shuttle test -p warp --features gui --lib --release -- model_tests::
+    - export RUSTFLAGS="--cfg loom"
+    - ./script/agent-cargo ci-loom test -p warpui_core --lib --release -- model_tests::
+    - ./script/agent-cargo ci-loom test -p warp --features gui --lib --release -- model_tests::
+
+# cargo-fuzz smoke: each target for FUZZ_SECONDS (default 180, i.e. 2-5 minutes each), seeded
+# from the committed corpora. RUSTC_BOOTSTRAP=1 lets the pinned stable toolchain build with the
+# sanitizer flags cargo-fuzz needs, so no nightly is installed. A crash fails the job and the
+# artifacts are kept.
+fuzz-smoke:
+  extends: .box_job
+  timeout: 90m
+  when: manual
+  allow_failure: true
+  variables:
+    FUZZ_SECONDS: "180"
+    RUSTC_BOOTSTRAP: "1"
+  script:
+    - command -v cargo-fuzz >/dev/null || ./script/install_cargo_binstall
+    - command -v cargo-fuzz >/dev/null || cargo binstall --force -y cargo-fuzz
+    # The fuzz crate has its own lockfile; start from the app's so versions match.
+    - cp Cargo.lock fuzz/Cargo.lock
+    - |
+      for target in ansi_parser hook_parsers input_queue; do
+        ./script/agent-cargo ci-fuzz fuzz run --fuzz-dir fuzz "$target" -- -max_total_time="$FUZZ_SECONDS" -timeout=20
+      done
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - fuzz/artifacts/
+
+# cargo-mutants on a chosen subset (MUTANTS_FILES, space separated, default the pure pane-key
+# and key-facts modules). A full-crate run is hours: always name files. Misses are reported, not
+# failed on; `mutants.out/` is kept as the artifact.
+mutants:
+  extends: .box_job
+  timeout: 5h
+  when: manual
+  allow_failure: true
+  variables:
+    MUTANTS_PACKAGE: "warp"
+    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs"
+  script:
+    - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
+    - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
+    - |
+      FILE_ARGS=""
+      for f in $MUTANTS_FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
+      ./script/agent-cargo ci-mutants mutants -p "$MUTANTS_PACKAGE" --no-shuffle $FILE_ARGS || echo "cargo-mutants exited $? (missed mutants are reported in mutants.out/)"
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+# criterion benches (the pane queue, destination table, hand-off reads, ANSI throughput). The
+# HTML reports and raw estimates are stored as artifacts; compare two runs with
+# `--baseline` locally. Timings on a shared build box are noisy: read them as order of
+# magnitude against the budgets in the bench headers, not as a gate.
+bench:
+  extends: .box_job
+  timeout: 90m
+  when: manual
+  allow_failure: true
+  script:
+    - ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench
+    - mkdir -p bench-results
+    - cp -r "$PHOSPHOR_TARGET_ROOT"/ci-bench/criterion bench-results/ 2>/dev/null || { echo "no criterion output found under $PHOSPHOR_TARGET_ROOT/ci-bench" >&2; exit 1; }
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - bench-results/
+
 # Usage/acceptance smoke suite (manual, like the nightly-less original). Linux needs
 # a display (xvfb-run). The Mac runner is a daemon with no WindowServer session, so
 # only the TUI surface can run there.

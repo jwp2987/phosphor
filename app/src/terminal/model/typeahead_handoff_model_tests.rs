@@ -2,7 +2,7 @@
 //! the main thread) and the model thread (writes while it parses).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warp --lib --features warp/gui --release -- model_tests::
 //! ```
 
 use warpui_core::sync_shim::{check, thread};

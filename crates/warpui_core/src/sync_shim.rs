@@ -12,12 +12,12 @@
 //! never times out. A model test must therefore make sure the notification comes.
 //!
 //! Run the model tests of a crate (a model build compiles only the model tests of the modules
-//! that have them; filter by `model_` to skip the rest of the crate's tests, which use real
+//! that have them; filter by `model_tests::` to skip the rest of the crate's tests, which use real
 //! primitives outside a model):
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_
-//! RUSTFLAGS="--cfg loom"    cargo test -p warpui_core --lib --release -- model_
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
+//! RUSTFLAGS="--cfg loom"    cargo test -p warpui_core --lib --release -- model_tests::
 //! ```
 //!
 //! [`check`] runs a test body under the active checker: shuttle explores randomly scheduled

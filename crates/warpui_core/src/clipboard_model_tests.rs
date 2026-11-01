@@ -2,8 +2,8 @@
 //! schedules) or loom (every schedule); see `crate::sync_shim`.
 //!
 //! ```text
-//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_
-//! RUSTFLAGS="--cfg loom"    cargo test -p warpui_core --lib --release -- model_
+//! RUSTFLAGS="--cfg shuttle" cargo test -p warpui_core --lib --release -- model_tests::
+//! RUSTFLAGS="--cfg loom"    cargo test -p warpui_core --lib --release -- model_tests::
 //! ```
 //!
 //! Every test builds its own instances; the module's `static`s are never touched (a model's
