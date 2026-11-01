@@ -17,6 +17,17 @@ license.workspace = true
 name = "warp"
 path = "src/lib.rs"
 
+# Criterion benches: `cargo bench -p warp --features dev-support` (see docs/dev-tooling.md).
+[[bench]]
+name = "key_path_bench"
+harness = false
+required-features = ["dev-support"]
+
+[[bench]]
+name = "ansi_bench"
+harness = false
+required-features = ["dev-support"]
+
 # Phosphor keeps only one bin: phosphor-oss. The original warp multi-channel
 # release bins (dev/stable/preview/local) have been removed, and the separate
 # generate_settings_schema build target was folded into this one as the
@@ -37,6 +48,8 @@ test = false
 
 [dependencies]
 addr = "0.15.6"
+# Only with the dev-only `dev-support` feature (cargo-fuzz op sequences).
+arbitrary = { version = "1.4.1", features = ["derive"], optional = true }
 ai.workspace = true
 alphanumeric-sort.workspace = true
 anyhow.workspace = true
@@ -454,6 +467,8 @@ mockall = "0.13.1"
 proptest = "1.5.0"
 # Reviewed snapshot tests (`cargo insta review`); .snap files live in `snapshots/` beside the tests.
 insta = "1.41.1"
+# Benches (`benches/`); budgets are in each bench file's header.
+criterion = { version = "0.5.1", features = ["html_reports"] }
 mockito.workspace = true
 serial_test = "0.8.0"
 sum_tree = { workspace = true, features = ["test-util"] }
@@ -502,6 +517,10 @@ autoupdate = []
 # `debug_text_content` override) calls trait methods warpui_core only compiles under
 # its OWN test-util feature, and app's test-util did not forward that far (#769).
 test-util = ["warp_core/test-util", "warpui/test-util", "dep:mockito"]
+# Dev-only: exposes `warp::dev_support` (the pane input queue and its model-based test runner)
+# to the criterion benches (`benches/`) and the cargo-fuzz targets (`fuzz/`). Never enabled by a
+# normal or release build.
+dev-support = ["test-util", "dep:arbitrary"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []

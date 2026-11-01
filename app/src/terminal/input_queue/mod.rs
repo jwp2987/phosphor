@@ -48,8 +48,8 @@ pub mod trace;
 
 #[cfg(test)]
 mod split_tests;
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "dev-support"))]
+pub(crate) mod tests;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

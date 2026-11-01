@@ -1517,4 +1517,6 @@ fn retagging_a_gate_that_is_not_open_changes_nothing() {
     assert!(!q.has_gate(GateKind::HandoffReport, 4));
 }
 
+#[cfg(test)]
 mod prop_model;
+pub mod ops;

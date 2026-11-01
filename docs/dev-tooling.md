@@ -36,3 +36,26 @@ Reviewed snapshots instead of hand-maintained golden strings:
 The `.snap` files sit in `snapshots/` next to each test file. Review a change with
 `cargo insta review` (needs `cargo install cargo-insta` on the machine that runs it) or accept
 with `INSTA_UPDATE=always cargo test ...`. CI (`CI=true`) never writes: a mismatch fails.
+
+## criterion (benchmarks)
+
+`app/benches/` (feature `dev-support`, which exposes `warp::dev_support`):
+
+```
+cargo bench -p warp --features dev-support --bench key_path_bench
+cargo bench -p warp --features dev-support --bench ansi_bench
+cargo bench -p warp --features dev-support --bench key_path_bench -- --save-baseline before
+cargo bench -p warp --features dev-support --bench key_path_bench -- --baseline before
+```
+
+| bench | measures |
+|---|---|
+| `pane_queue/idle_key` | one key through an idle pane queue |
+| `pane_queue/gate_open_offer_drain` | 64 keys held behind one open gate, then drained by its event |
+| `destination_for` | the destination table, 15 (kind, facts) pairs per iteration |
+| `handoff/*` | `young_submit_decision`, `KeyFactsCell::load`, `PaneHandoff::read` |
+| `ansi/mixed_1mb_in_4k_reads` | 1 MB mixed VT stream into a real `TerminalModel` |
+
+Budget notes are in each file's header. Owner budget: key-to-paint Phosphor overhead <= 2 ms,
+Enter <= 2 ms, UI work <= 4 ms per event; the pure parts here should each be microseconds. HTML
+reports land in `target/criterion/`.
