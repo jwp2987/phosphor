@@ -130,6 +130,10 @@ pub struct ShellCommandExecutor {
     /// pending poll future to resolve immediately with a fresh snapshot, bypassing the
     /// agent-set timeout.
     force_refresh_senders: HashMap<BlockSelector, oneshot::Sender<()>>,
+    /// Output wake-ups for waited commands on a snapshot-capable model, so their stall detection
+    /// runs when the terminal produced output instead of on a polling tick (#1365). Capacity 1:
+    /// a burst of output coalesces into one pending signal.
+    output_watchers: HashMap<BlockSelector, async_channel::Sender<()>>,
     /// The sender-map key each in-flight write / read / transfer action registered, so
     /// cancelling the action can drop its senders (which resolves its future with
     /// `Cancelled`) instead of leaving the detached future to run to its timeout (#1278). The
@@ -151,8 +155,6 @@ pub struct ShellCommandExecutor {
 
 impl ShellCommandExecutor {
     pub const MAX_WAIT_DURATION: Duration = Duration::from_secs(2);
-    /// How often a snapshot-capable model's waited command is checked for a stalled screen.
-    const STALL_POLL_INTERVAL: Duration = Duration::from_millis(500);
     /// Maximum delay we will honor for any agent-requested wait. Applies both  
     /// to finite `ShellCommandDelay::Duration` requests and to  
     /// `ShellCommandDelay::OnCompletion`, which would otherwise wait indefinitely.  
@@ -184,6 +186,7 @@ impl ShellCommandExecutor {
             terminal_model,
             block_finished_senders: HashMap::new(),
             force_refresh_senders: HashMap::new(),
+            output_watchers: HashMap::new(),
             block_action_selectors: HashMap::new(),
             terminal_view_id,
             control_handback_sender: None,
@@ -230,6 +233,20 @@ impl ShellCommandExecutor {
     #[cfg(test)]
     pub fn unmark_awaiting_completion_for_test(&mut self, action_id: &AIAgentActionId) {
         self.awaiting_completion_action_ids.remove(action_id);
+    }
+
+    /// Whether any waited command is watching terminal output for a stall. Cheap; lets the
+    /// terminal view skip the per-wakeup call entirely when nothing is watching.
+    pub fn has_output_watchers(&self) -> bool {
+        !self.output_watchers.is_empty()
+    }
+
+    /// The terminal produced output: wake the stall detection of every watching command. Takes
+    /// no terminal-model lock and never blocks.
+    pub fn note_output(&mut self) {
+        self.output_watchers.retain(|_, tx| {
+            !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_)))
+        });
     }
 
     fn handle_terminal_model_event(&mut self, event: &ModelEvent, _ctx: &mut ModelContext<Self>) {
@@ -534,6 +551,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
                                 me.awaiting_completion_action_ids.remove(&action_id);
                                 pager_closed = me.pager_closed_action_ids.remove(&action_id);
                             });
@@ -616,6 +634,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
                                 me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
@@ -683,6 +702,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
                                 me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
@@ -839,6 +859,16 @@ impl ShellCommandExecutor {
         self.force_refresh_senders
             .insert(block_selector.clone(), force_refresh_tx);
 
+        // Output wake-ups drive the stall detection of a snapshot-capable model's waited command.
+        let output_rx = if matches!(delay, ActionResultDelay::OnCompletionOrStall { .. }) {
+            let (output_tx, output_rx) = async_channel::bounded(1);
+            self.output_watchers
+                .insert(block_selector.clone(), output_tx);
+            Some(output_rx)
+        } else {
+            None
+        };
+
         // Create a future that resolves when we should send a result to the agent.
         let terminal_model = self.terminal_model.clone();
 
@@ -874,10 +904,42 @@ impl ShellCommandExecutor {
                 // snapshot (sends `q`, answers the prompt) with the write-to-command tool.
                 let deadline = Timer::after(timeout_duration).fuse();
                 pin!(deadline);
+                // Stall detection is event driven: the screen is judged when the terminal
+                // produced output (and once at the start), and a single quiet timer is armed
+                // only while a stall-eligible screen is on display. No polling tick, no lock
+                // taken on a clock (#1365). "Unchanged for 3 s" is itself a time question, so
+                // the quiet timer is the one legitimate clock here.
+                let Some(output_rx) = output_rx else {
+                    return ActionResult::Cancelled;
+                };
                 let mut tracker = StallTracker::default();
+                let mut observe = true;
                 loop {
-                    let tick = Timer::after(Self::STALL_POLL_INTERVAL).fuse();
-                    pin!(tick);
+                    if observe {
+                        observe = false;
+                        let fingerprint = {
+                            let model = terminal_model.lock();
+                            stall_fingerprint(&model, &block_selector)
+                        };
+                        let now = instant::Instant::now();
+                        if tracker.observe(fingerprint, now) >= STALL_SNAPSHOT_AFTER {
+                            break WakeReason::Stalled;
+                        }
+                    }
+                    let quiet_for =
+                        tracker.time_until_stalled(STALL_SNAPSHOT_AFTER, instant::Instant::now());
+                    let quiet_timer = async move {
+                        match quiet_for {
+                            Some(remaining) => {
+                                Timer::after(remaining).await;
+                            }
+                            None => futures::future::pending::<()>().await,
+                        }
+                    }
+                    .fuse();
+                    pin!(quiet_timer);
+                    let output = output_rx.recv().fuse();
+                    pin!(output);
                     select! {
                         val = block_metadata_received_rx.as_mut() => match val {
                             Ok(_) => break WakeReason::BlockFinished,
@@ -888,17 +950,13 @@ impl ShellCommandExecutor {
                             Err(_) => return ActionResult::Cancelled,
                         },
                         _ = deadline.as_mut() => break WakeReason::Timeout,
-                        _ = tick => {
-                            let fingerprint = {
-                                let model = terminal_model.lock();
-                                stall_fingerprint(&model, &block_selector)
-                            };
-                            let stalled_for =
-                                tracker.observe(fingerprint, instant::Instant::now());
-                            if stalled_for >= STALL_SNAPSHOT_AFTER {
-                                break WakeReason::Stalled;
-                            }
-                        }
+                        val = output => match val {
+                            Ok(()) => observe = true,
+                            // The executor dropped the watcher: the action was cancelled.
+                            Err(_) => return ActionResult::Cancelled,
+                        },
+                        // Re-judge the screen once when the quiet period is up.
+                        _ = quiet_timer => observe = true,
                     }
                 }
             } else if let Some(timeout_duration) = timeout_duration {
@@ -1032,6 +1090,7 @@ impl ShellCommandExecutor {
         let requested_selector = BlockSelector::RequestedCommandId(id.clone());
         self.block_finished_senders.remove(&requested_selector);
         self.force_refresh_senders.remove(&requested_selector);
+        self.output_watchers.remove(&requested_selector);
         self.awaiting_completion_action_ids.remove(id);
 
         // A write / read / transfer action: drop its senders now, which resolves its detached
@@ -1040,6 +1099,7 @@ impl ShellCommandExecutor {
         if let Some((selector, is_transfer)) = self.block_action_selectors.remove(id) {
             self.block_finished_senders.remove(&selector);
             self.force_refresh_senders.remove(&selector);
+            self.output_watchers.remove(&selector);
             if is_transfer {
                 self.control_handback_sender = None;
             }
