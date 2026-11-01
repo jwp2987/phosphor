@@ -2226,7 +2226,8 @@ pub struct Input {
     /// editor (the connect ended without a remote shell), so the line may be one the user meant
     /// for the remote machine. The first Enter after that hand-back is not executed (it may have
     /// been typed in the same burst as the line); the user sees the line and presses Enter again.
-    ssh_handover_enter_guard: bool,
+    /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
+    ssh_handover_enter_guard: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -4005,7 +4006,7 @@ impl Input {
             after_enter_replay_awaits_pty: false,
             after_enter_replay_generation: 0,
             running_deferred_enter: false,
-            ssh_handover_enter_guard: false,
+            ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
             last_enter_submitted_ai_query: false,
@@ -14862,13 +14863,15 @@ impl Input {
 
     /// Arms the guard of [`Self::hold_back_enter_after_ssh_handover`]: typed text was handed back
     /// to this editor, unexecuted, because the ssh connect ended without a remote shell.
-    pub(crate) fn arm_ssh_handover_enter_guard(&mut self) {
-        self.ssh_handover_enter_guard = true;
+    /// `baseline` is the editor text the hand-back left; the guard only applies while the line
+    /// still starts with it.
+    pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
+        self.ssh_handover_enter_guard = Some(baseline);
     }
 
     #[cfg(test)]
     pub(crate) fn ssh_handover_enter_guard_armed(&self) -> bool {
-        self.ssh_handover_enter_guard
+        self.ssh_handover_enter_guard.is_some()
     }
 
     /// The first Enter after typed text was handed back to the editor (ssh ended without a remote
@@ -14876,11 +14879,16 @@ impl Input {
     /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
     /// An empty buffer has nothing to run, so the guard is simply dropped.
     fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.ssh_handover_enter_guard {
+        let Some(baseline) = self.ssh_handover_enter_guard.take() else {
+            return false;
+        };
+        if self.editor.as_ref(ctx).is_empty(ctx) {
             return false;
         }
-        self.ssh_handover_enter_guard = false;
-        if self.editor.as_ref(ctx).is_empty(ctx) {
+        // #1395: the user replaced the handed-back line (cleared it, ran something else, typed a
+        // new command). This Enter belongs to the new line: swallowing it merged the next typed
+        // text into that line. Only a line that still starts with the handed-back text is held.
+        if !self.editor.as_ref(ctx).buffer_text(ctx).starts_with(&baseline) {
             return false;
         }
         if !ctx.has_singleton_model::<ToastStack>() {

@@ -18135,6 +18135,61 @@ fn ssh_line_typed_across_gate_release_is_never_run_locally() {
     })
 }
 
+/// #1395: an ssh whose command line carries a quoted `;` (`-o ProxyCommand='sleep 3; false'`)
+/// hangs, then fails. Keys typed during the hang are held (never written to the pty, so the local
+/// shell cannot read them as typeahead after ssh dies); on failure the text returns unexecuted.
+#[test]
+fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh -o ProxyCommand='sleep 3; false' host", ctx);
+            assert!(view.ssh_connect_gate.is_some(), "the gate must be armed");
+            view.typed_characters_on_terminal("echo X >> f", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            let id = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&id, 255);
+            view.typed_characters_on_terminal("\r", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    })
+}
+
+/// #1395 (FS2): after a held-back Enter the user replaces the handed-back line; the next Enter
+/// belongs to the new line and is not swallowed (which merged the next typing into it).
+#[test]
+fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, _| {
+                input.arm_ssh_handover_enter_guard("echo old".into())
+            });
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("ssh other", ctx)
+            });
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert_ne!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "ssh other",
+                "the new line was submitted, not swallowed"
+            );
+        });
+    })
+}
+
 /// Sends `action` to the input editor the way a key typed into it does.
 fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
     view.input.update(ctx, |input, ctx| {
