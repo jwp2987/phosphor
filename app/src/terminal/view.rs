@@ -3050,6 +3050,9 @@ pub struct TerminalView {
     fork_restore_persist: fork_restore_persist::ForkRestorePersist,
     /// Signalled on terminal output while a waited agent command exists (#1365).
     fullscreen_output_signal: Option<async_channel::Sender<()>>,
+    /// Listeners woken on every terminal output wakeup (one coalesced signal each). Used by the
+    /// agent driver's harness output monitor (#1381).
+    output_listeners: Vec<async_channel::Sender<()>>,
     /// Shared with the input's editor: while `ssh_typeahead_holding` it queues every editing key
     /// that reaches it here instead of applying it, so keys typed after focus moved to the editor
     /// but before the held keys are delivered keep their order (#1292).
@@ -4873,6 +4876,7 @@ impl TerminalView {
             ssh_typeahead_holding: false,
             fork_restore_persist: Default::default(),
             fullscreen_output_signal: None,
+            output_listeners: Vec::new(),
             ssh_editor_key_hold,
             ssh_typeahead: SshTypeahead::default(),
             ssh_paste_to_hold: false,
@@ -12970,6 +12974,8 @@ impl TerminalView {
         if executor.as_ref(ctx).has_output_watchers() {
             executor.update(ctx, |executor, _| executor.note_output());
         }
+        self.output_listeners
+            .retain(|tx| !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_))));
         // Also the signal password/interactive-prompt detection runs on (#1383), for user
         // commands too, so it is sent whether or not an agent call is awaiting. The receiving
         // watches gate themselves (inactive block / no stall-eligible screen => no work).
@@ -18985,6 +18991,14 @@ fn fork_label_for_query(query: &str) -> String {
 }
 
 impl TerminalView {
+    /// A signal that fires after terminal output (coalesced: at most one pending). The event
+    /// the agent driver's harness output monitor runs on instead of sampling (#1381).
+    pub fn subscribe_output(&mut self) -> async_channel::Receiver<()> {
+        let (tx, rx) = async_channel::bounded(1);
+        self.output_listeners.push(tx);
+        rx
+    }
+
     fn start_agent_onboarding_tutorial(
         &mut self,
         version: AgentOnboardingVersion,

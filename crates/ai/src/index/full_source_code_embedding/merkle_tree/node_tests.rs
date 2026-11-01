@@ -832,3 +832,48 @@ fn test_merkle_node_multiple_operations() {
         },
     );
 }
+
+/// #1381 (APP-A1): building a file node must not sleep. The old code slept 5 ms per file, so
+/// 200 files took at least a full second even on one thread; the lowered-priority indexing
+/// pool is what bounds CPU use.
+#[test]
+fn test_file_nodes_are_built_without_a_per_file_sleep() {
+    VirtualFS::test(
+        "test_file_nodes_are_built_without_a_per_file_sleep",
+        |dirs, mut sandbox| {
+            let names: Vec<String> = (0..200).map(|i| format!("f{i}.txt")).collect();
+            sandbox.with_files(
+                names
+                    .iter()
+                    .map(|name| Stub::FileWithContent(name, "some content\n"))
+                    .collect(),
+            );
+            let mut directory_entry = DirectoryEntry {
+                path: warp_util::standardized_path::StandardizedPath::try_from_local(dirs.tests())
+                    .unwrap(),
+                children: vec![],
+                ignored: false,
+                loaded: true,
+            };
+            for name in &names {
+                directory_entry
+                    .find_or_insert_child(&dirs.tests().join(name))
+                    .expect("Should be able to insert into directory entry");
+            }
+            let files: Vec<Entry> = directory_entry.children.clone();
+            let started = std::time::Instant::now();
+            let mut built = 0;
+            for file in files {
+                if MerkleNode::new(DirEntryOrFragment::Entry(file)).is_ok() {
+                    built += 1;
+                }
+            }
+            let elapsed = started.elapsed();
+            assert_eq!(built, 200);
+            assert!(
+                elapsed < std::time::Duration::from_millis(1000),
+                "200 files took {elapsed:?}: a per-file sleep is back"
+            );
+        },
+    );
+}

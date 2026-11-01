@@ -122,8 +122,25 @@ async fn byop_generate_input_suggestions(
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 const NUM_ADDITIONAL_PREV_COMMAND_CONTEXT_LLM: usize = 2;
 
+/// Give-up for an arg-validation generator that never answers (#1381). The validation runs in
+/// the background and its answer is the generator finishing, so this is a safety net for a
+/// generator that hangs, not a latency budget: it sits just above the completer's own
+/// 20 s generator run bound, which ends the run first. Previously 150 ms, after which the arg was
+/// ASSUMED valid, so any generator slower than that (a cold `git branch`) vouched for whatever
+/// the history suggested.
 #[cfg(feature = "local_fs")]
-const ARG_GENERATOR_VALIDATION_TIMEOUT: Duration = Duration::from_millis(150);
+const ARG_GENERATOR_VALIDATION_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// A generator validation that gave up is "unknown", and an unknown arg is not validated: the
+/// suggestion is skipped rather than shown on the strength of an answer we never got.
+#[cfg(feature = "local_fs")]
+fn generator_validation_gave_up(arg: &str, command: &str) -> bool {
+    log::warn!(
+        "Generator validation for arg `{arg}` in command `{command}` gave up after \
+         {ARG_GENERATOR_VALIDATION_TIMEOUT:?}; not treating the arg as valid"
+    );
+    false
+}
 
 pub fn is_next_command_enabled(app: &warpui::AppContext) -> bool {
     AISettings::as_ref(app).is_intelligent_autosuggestions_enabled(app)
@@ -906,11 +923,10 @@ async fn is_arg_valid(
                     ctx,
                 );
 
-                // If the completions call times out, assume the arg is valid.
-                // This is necessary because some generators can hang (e.g. kubectl commands if the cluster isn't running).
+                // Some generators can hang (e.g. kubectl commands if the cluster isn't running):
+                // that is bounded by a give-up, and a give-up is "unknown", not "valid".
                 let Ok(completion_result) = completions_future.with_timeout(ARG_GENERATOR_VALIDATION_TIMEOUT).await else {
-                    log::debug!("Generator validation for arg `{}` in command `{}` timed out - assuming it's valid", arg.value().as_str(), full_command);
-                    return true;
+                    return generator_validation_gave_up(arg.value().as_str(), full_command);
                 };
 
                 let Some(completion_result) = completion_result else {

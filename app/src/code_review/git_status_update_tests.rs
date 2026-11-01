@@ -222,3 +222,22 @@ fn vcs_command_detection() {
     assert!(!command_may_change_git_state("echo digit"));
     assert!(!command_may_change_git_state(""));
 }
+
+/// #1381 (APP-R12): only the newest refresh's result may be applied. An older refresh whose
+/// completion callback was already queued must not overwrite what a newer one (or a direct
+/// metadata set) put there.
+#[test]
+fn only_the_newest_refresh_result_is_current() {
+    let mut gate = RefreshGate::default();
+    assert!(gate.request_refresh());
+    let first = gate.issue_token();
+    assert!(gate.is_current(first));
+    assert!(!gate.refresh_finished());
+    assert!(gate.request_refresh());
+    let second = gate.issue_token();
+    assert!(!gate.is_current(first), "an older result must be dropped");
+    assert!(gate.is_current(second));
+    // Metadata set by other means retires the refresh in flight.
+    gate.retire_in_flight();
+    assert!(!gate.is_current(second));
+}

@@ -1774,8 +1774,8 @@ impl Session {
     /// Cheap and bounded: only local Unix sessions (a remote or WSL `$PATH` is not ours to stat),
     /// only a bare command-name word (never a path or arbitrary typed text, #1007), only once the
     /// bootstrap scan has landed and only if the word is not already known. The probe is a
-    /// `stat` per `$PATH` directory, and a miss is remembered for [`LATE_COMMAND_MISS_TTL`], so
-    /// re-typing the same unknown word costs nothing.
+    /// `stat` per `$PATH` directory, and a miss is remembered until the next command completes
+    /// ([`Self::note_user_command`]), so re-typing the same unknown word costs nothing.
     pub fn discover_command_word(&self, word: &str) {
         if self.command_word_needs_probe(word) {
             self.probe_command_word(word);
@@ -1812,26 +1812,21 @@ impl Session {
             .late_commands
             .missing
             .lock()
-            .get(word)
-            .is_some_and(|at| Instant::now().duration_since(*at) < LATE_COMMAND_MISS_TTL)
+            .contains(word)
     }
 
     /// The `stat`-per-`$PATH`-directory half of [`Self::discover_command_word`]; records a miss
     /// in the negative cache. Blocks on the filesystem: call off the main thread.
     pub fn probe_command_word(&self, word: &str) {
-        let now = Instant::now();
         {
             let mut missing = self.late_commands.missing.lock();
-            if missing
-                .get(word)
-                .is_some_and(|at| now.duration_since(*at) < LATE_COMMAND_MISS_TTL)
-            {
+            if missing.contains(word) {
                 return;
             }
             if missing.len() >= MAX_MISSING_COMMAND_WORDS {
                 missing.clear();
             }
-            missing.insert(word.to_owned(), now);
+            missing.insert(word.to_owned());
         }
         let mut dirs: Vec<PathBuf> = self
             .info
@@ -1915,10 +1910,13 @@ impl Session {
     /// `a && pip install y` both count. There is no re-scan: the simplest correct choice is to
     /// stop answering, which keeps the line in the shell.
     pub fn note_user_command(&self, command: &str) {
+        // #1019/#1381: a word found missing on `$PATH` is missing until something runs that could
+        // have created it, and any command can (a build, `./install.sh`, `cp`). The completed
+        // command is the event that ends the miss, not a clock; there is no event for installs
+        // done outside this session, which are picked up when the next command here completes.
+        self.late_commands.missing.lock().clear();
         if command_may_change_known_commands(command) {
             self.command_data_stale.store(true, Ordering::Release);
-            // #1019: words recently found missing on `$PATH` may exist now; look again.
-            self.late_commands.missing.lock().clear();
         }
         // #1019: remember directories the user added to `$PATH`, so a tool put there is found.
         if self.is_local() && command.contains("PATH=") {
@@ -2642,8 +2640,6 @@ const COMMAND_SET_CHANGING_WORDS: &[&str] = &[
     "docker", "podman", "sudo", "su", "bash", "zsh", "fish", "sh", "exec",
 ];
 
-/// How long a word found on no `$PATH` directory is remembered as missing (#1019).
-const LATE_COMMAND_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_LATE_COMMANDS: usize = 64;
 const MAX_MISSING_COMMAND_WORDS: usize = 128;
 const MAX_EXTRA_PATH_DIRS: usize = 16;
@@ -2653,8 +2649,8 @@ const MAX_EXTRA_PATH_DIRS: usize = 16;
 #[derive(Debug, Default)]
 struct LateCommands {
     found: Mutex<Vec<&'static str>>,
-    /// Words not found on `$PATH`, with when that was checked.
-    missing: Mutex<HashMap<String, Instant>>,
+    /// Words not found on `$PATH`; cleared when a command completes.
+    missing: Mutex<HashSet<String>>,
     /// Directories the user has put on `$PATH` since the bootstrap, parsed from `PATH=` commands.
     extra_dirs: Mutex<Vec<PathBuf>>,
 }

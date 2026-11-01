@@ -412,6 +412,34 @@ fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
     });
 }
 
+/// #1381 (APP-R8): ending the wait releases the conversation's pulse registration at once. The
+/// chain's next tick runs on a spawn, and a spawn on a dropped history model never fires, so
+/// relying on that tick to deregister left the id registered forever and no later wait for the
+/// conversation could pulse again.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn clearing_the_wait_releases_the_pulse_registration() {
+    use super::retry_wait_pulse_running;
+    use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let id = AIConversationId::new();
+        set_retry_wait(id, RetryWaitKind::Connection, Duration::from_secs(30));
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        assert!(retry_wait_pulse_running(id));
+        // The stream is cancelled: no tick has to run for the registration to go away.
+        assert!(clear_retry_wait(id));
+        assert!(!retry_wait_pulse_running(id));
+        // A later wait starts its own chain.
+        set_retry_wait(id, RetryWaitKind::Connection, Duration::from_secs(30));
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        assert!(retry_wait_pulse_running(id));
+        clear_retry_wait(id);
+    });
+}
+
 // ── a request waits for the keyring read instead of sending an empty key (#1368) ──
 
 mod key_wait {

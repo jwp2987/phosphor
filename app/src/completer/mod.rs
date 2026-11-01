@@ -51,6 +51,12 @@ const REMOTE_LISTING_ATTEMPTS: usize = 2;
 type DirectoryEntryMap = dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>;
 
 /// How long a non-local session's directory listings are reused across keystrokes (#1130).
+///
+/// #1381: the events that change a listing from inside the session (a command is submitted, a
+/// block completes) already drop it, and a cwd change is a different cache key. What is left for
+/// this bound is a change made OUTSIDE the session (another terminal, an editor), for which a
+/// remote host offers no event we can subscribe to without a per-keystroke round trip; it is the
+/// staleness bound for that case, not a correctness delay for anything this session does.
 const SHARED_DIRECTORY_CACHE_TTL: Duration = Duration::from_secs(2);
 
 struct SharedDirectoryCacheSlot {

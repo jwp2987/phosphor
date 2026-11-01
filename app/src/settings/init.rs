@@ -454,6 +454,38 @@ pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext)
     apply_network_settings_to_global_slots(ctx, &password);
 }
 
+/// The restore of a settings file that looked deleted, waiting out
+/// [`user_preferences::RESTORE_CONFIRM_DELAY`]. An editor that saves by delete + rename (or
+/// delete, then write) shows up as a Delete event followed by a Create/Modify one; the second
+/// event is the answer to "was it really deleted?", so it cancels the restore instead of
+/// leaving the timer to guess (#1381, APP-19). The delay stays only as the give-up for a file
+/// that is never recreated: time is the only evidence of "deleted for good".
+#[cfg(feature = "local_fs")]
+#[derive(Default)]
+struct PendingRestore(std::sync::atomic::AtomicU64);
+
+#[cfg(feature = "local_fs")]
+impl PendingRestore {
+    /// A restore is now waiting; returns the token its timer must present.
+    fn begin(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// The file's own watcher events say it is not deleted (or was deleted again later):
+    /// whatever restore was waiting is void.
+    fn cancel(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_current(&self, token: u64) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) == token
+    }
+}
+
+#[cfg(feature = "local_fs")]
+static PENDING_SETTINGS_RESTORE: std::sync::LazyLock<PendingRestore> =
+    std::sync::LazyLock::new(Default::default);
+
 /// Handles a `WarpConfig` change event, reloading settings from disk when
 /// the settings file is modified, created, or deleted.
 #[cfg(feature = "local_fs")]
@@ -473,10 +505,16 @@ fn handle_warp_config_change(
             // The file looks deleted. An editor's delete + rename save leaves it missing for a
             // moment, so confirm on a timer instead of sleeping here: this handler runs on the
             // UI thread (#862).
+            let token = PENDING_SETTINGS_RESTORE.begin();
             WarpConfig::handle(ctx).update(ctx, |_, ctx| {
                 ctx.spawn(
                     warpui::r#async::Timer::after(user_preferences::RESTORE_CONFIRM_DELAY),
-                    |_, _, ctx| {
+                    move |_, _, ctx| {
+                        // A Create/Modify event for the file arrived meanwhile: it is being
+                        // rewritten, not deleted, and its own event does the reload.
+                        if !PENDING_SETTINGS_RESTORE.is_current(token) {
+                            return;
+                        }
                         let prefs =
                             <settings::PublicPreferences as warpui::SingletonEntity>::as_ref(ctx);
                         // Restore only if the file is still missing; if it came back, the
@@ -487,10 +525,15 @@ fn handle_warp_config_change(
             });
             return;
         }
-        Ok(user_preferences::ReloadOutcome::Reloaded) => {}
+        Ok(user_preferences::ReloadOutcome::Reloaded) => PENDING_SETTINGS_RESTORE.cancel(),
         // Our own background write echoing back: the settings in memory are already current.
-        Ok(user_preferences::ReloadOutcome::OwnWrite) => return,
+        Ok(user_preferences::ReloadOutcome::OwnWrite) => {
+            PENDING_SETTINGS_RESTORE.cancel();
+            return;
+        }
         Err(err) => {
+            // The file exists (it failed to parse): not deleted.
+            PENDING_SETTINGS_RESTORE.cancel();
             report_settings_reload_failure(&err, ctx);
             return;
         }

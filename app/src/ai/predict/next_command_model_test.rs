@@ -697,3 +697,13 @@ fn test_autosuggestion_from_history_skips_the_entry_equal_to_the_buffer() {
     );
     assert!(only_bare.is_empty());
 }
+
+/// #1381: a generator validation that gave up is not a validation. The old code returned `true`
+/// after 150 ms, so a slow generator vouched for any suggestion.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_generator_validation_that_gave_up_does_not_validate_the_arg() {
+    assert!(!generator_validation_gave_up("main", "git checkout main"));
+    // The give-up is a hang net, well above any generator that answers.
+    assert!(ARG_GENERATOR_VALIDATION_TIMEOUT >= Duration::from_secs(20));
+}
