@@ -140,6 +140,12 @@ enum CLIVoiceInputState {
 
 /// How long to wait after session creation before showing the install chip.
 /// Gives the plugin time to connect and send its `SessionStart` event.
+///
+/// #1381 (APP-A2): kept on purpose, as a give-up. The signal that makes the chip unnecessary (the
+/// plugin connecting) is an event and cancels it (`plugin_chip_ready` is cleared and the
+/// timer's callback re-checks the listener). The signal that makes it appropriate is the
+/// ABSENCE of a plugin, and an absent plugin sends nothing, so there is no event to wait for;
+/// the elapsed time is the only evidence available. The chip is cosmetic and never gates input.
 #[cfg(not(target_family = "wasm"))]
 const PLUGIN_CHIP_DEBOUNCE: Duration = Duration::from_secs(3);
 
@@ -506,7 +512,15 @@ impl AgentInputFooter {
                                             .is_some_and(|s| {
                                                 s.listener.is_some() && s.supports_rich_status()
                                             });
-                                        if !suppress {
+                                        // A timer left over from a session that has since ended
+                                        // must not arm the chip for the next one.
+                                        let session_alive = CLIAgentSessionsModel::as_ref(ctx)
+                                            .session(me.terminal_view_id)
+                                            .is_some();
+                                        if !suppress && session_alive {
+                                            log::debug!(
+                                                "No plugin connected within {PLUGIN_CHIP_DEBOUNCE:?}; showing the install chip"
+                                            );
                                             me.plugin_chip_ready = true;
                                             ctx.notify();
                                         }
