@@ -26,6 +26,8 @@ use crate::{
     },
 };
 
+use crate::terminal::model::grid::text_snapshot::{SelectionPart, SelectionParts};
+
 use super::{
     BlockHeight, BlockHeightItem, BlockHeightSummary, BlockList, BlockListPoint, RichContentItem,
 };
@@ -965,12 +967,27 @@ impl BlockList {
         inverted_blocklist: bool,
         app: &AppContext,
     ) -> Option<String> {
+        self.selection_to_parts(semantic_selection, inverted_blocklist, app, None)
+            .map(|parts| parts.render())
+    }
+
+    /// Like [`Self::selection_to_string`], but when the selection spans more than
+    /// `defer_over_rows` rows, the grid text of each block is captured as a snapshot instead of
+    /// being built, so the caller can render it off the UI thread (#1304). Everything else
+    /// (rich content selections, rect selections) is still read inline.
+    pub fn selection_to_parts(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+    ) -> Option<SelectionParts> {
         match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(ExpandedSelectionRange::Regular { start, end, .. }) => {
                 let start_within_grid_point = start.within_grid_point;
                 let end_within_grid_point = end.within_grid_point;
 
-                let mut selected_texts: Vec<String> = vec![];
+                let mut selected_texts: Vec<SelectionPart> = vec![];
                 let mut selection_start_cursor = self
                     .block_heights()
                     .cursor::<BlockHeight, BlockHeightSummary>();
@@ -986,6 +1003,9 @@ impl BlockList {
                     top_row = original_selection.tail.point.row;
                     bottom_row = original_selection.head.point.row;
                 }
+                let defer_blocks = defer_over_rows.is_some_and(|max_rows| {
+                    (bottom_row.as_f64() - top_row.as_f64()) > max_rows as f64
+                });
                 selection_start_cursor.seek(&BlockHeight::from(top_row), SeekBias::Right);
 
                 // Loop over each block, adding their contents to the output.
@@ -1019,15 +1039,23 @@ impl BlockList {
                                     command_block.end_point()
                                 };
 
-                                selected_texts
-                                    .push(command_block.bounds_to_string(start_point, end_point));
+                                selected_texts.push(if defer_blocks {
+                                    SelectionPart::Block(
+                                        command_block
+                                            .bounds_to_text_snapshot(start_point, end_point),
+                                    )
+                                } else {
+                                    SelectionPart::Text(
+                                        command_block.bounds_to_string(start_point, end_point),
+                                    )
+                                });
                             }
                         }
                         BlockHeightItem::RichContent(RichContentItem { view_id, .. }) => {
                             if let Some(selected_text) =
                                 read_selected_text_from_ai_block(*view_id, app)
                             {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
 
                             if let Some(active_window_id) = app.windows().active_window() {
@@ -1038,7 +1066,7 @@ impl BlockList {
                                     if let Some(selected_text) =
                                         warpify_success_block.selected_text()
                                     {
-                                        selected_texts.push(selected_text);
+                                        selected_texts.push(selected_text.into());
                                     }
                                 }
                             }
@@ -1056,10 +1084,10 @@ impl BlockList {
                     selected_texts.reverse();
                 }
 
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
             Some(ExpandedSelectionRange::Rect { rows }) => {
-                let mut selected_texts: Vec<String> = vec![];
+                let mut selected_texts: Vec<SelectionPart> = vec![];
 
                 let mut selection_start_cursor = self
                     .block_heights()
@@ -1090,7 +1118,7 @@ impl BlockList {
                             if let Some(selected_text) =
                                 read_selected_text_from_ai_block(item.view_id, app)
                             {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
                         selection_start_cursor.next();
@@ -1101,7 +1129,11 @@ impl BlockList {
                     };
                     let start_point = start.within_grid_point.into();
                     let end_point = end.within_grid_point.into();
-                    selected_texts.push(command_block.bounds_to_string(start_point, end_point));
+                    selected_texts.push(
+                        command_block
+                            .bounds_to_string(start_point, end_point)
+                            .into(),
+                    );
                 }
 
                 // Read AI block selected text in the trailing AI blocks.
@@ -1111,13 +1143,13 @@ impl BlockList {
                         if let Some(selected_text) =
                             read_selected_text_from_ai_block(item.view_id, app)
                         {
-                            selected_texts.push(selected_text);
+                            selected_texts.push(selected_text.into());
                         }
                     }
                     selection_start_cursor.next();
                 }
 
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
             None => {
                 // Check if there are rich content blocks in the selection. This is to cover
@@ -1137,7 +1169,7 @@ impl BlockList {
                         {
                             let ai_block_view = app.view(&ai_block);
                             if let Some(selected_text) = ai_block_view.selected_text(app) {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
 
@@ -1146,7 +1178,7 @@ impl BlockList {
                         {
                             let block = app.view(&env_var_block);
                             if let Some(selected_text) = block.selected_text(app) {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
 
@@ -1155,7 +1187,7 @@ impl BlockList {
                         {
                             let warpify_success_block = app.view(&ssh_block);
                             if let Some(selected_text) = warpify_success_block.selected_text() {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
                     }
@@ -1163,7 +1195,7 @@ impl BlockList {
 
                 // TODO: If `selected_texts` is empty, should we return `None` instead of `Some("")`?
                 // As of 02/18/2025, this scenario can be reproduced by single-clicking anywhere on an AI response block.
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
         }
     }

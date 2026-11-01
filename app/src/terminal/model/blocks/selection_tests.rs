@@ -1582,3 +1582,60 @@ pub fn test_rect_selection_inverted_multi_block() {
         })
     })
 }
+
+/// #1304: a selection over the deferral threshold is captured as snapshots that render to the
+/// exact text the inline path builds; a smaller one stays inline.
+#[test]
+fn test_selection_to_parts_defers_big_selections_with_identical_text() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let first_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let second_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let first_block = block_list
+                .block_at(first_block_index)
+                .expect("block should exist");
+            let second_block = block_list
+                .block_at(second_block_index)
+                .expect("block should exist");
+            let first_command_grid_offset = first_block.command_grid_offset();
+            let second_output_grid_offset =
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset();
+            let semantic_selection = SemanticSelection::mock(false, "");
+
+            block_list.start_selection(
+                BlockListPoint::new(first_command_grid_offset, 0),
+                SelectionType::Simple,
+                Side::Left,
+            );
+            block_list.update_selection(
+                BlockListPoint::new(second_output_grid_offset, 3),
+                Side::Right,
+            );
+
+            for inverted in [false, true] {
+                let inline = block_list
+                    .selection_to_string(&semantic_selection, inverted, ctx)
+                    .expect("selection should have text");
+                assert!(inline.contains("bazz"));
+
+                // Over the threshold: only snapshots, no built block text.
+                let deferred = block_list
+                    .selection_to_parts(&semantic_selection, inverted, ctx, Some(2))
+                    .expect("selection should have parts");
+                assert!(deferred.has_snapshots());
+                assert_eq!(deferred.render(), inline);
+
+                // Under the threshold: built inline, nothing left to render.
+                let small = block_list
+                    .selection_to_parts(&semantic_selection, inverted, ctx, Some(1_000_000))
+                    .expect("selection should have parts");
+                assert!(!small.has_snapshots());
+                assert_eq!(small.render(), inline);
+            }
+        })
+    })
+}

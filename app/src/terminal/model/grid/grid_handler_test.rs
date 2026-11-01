@@ -3568,3 +3568,158 @@ fn combining_marks_are_stored_on_base_cell() {
     assert_eq!(g.grid_storage()[0][2].c, 'q');
     assert_eq!(g.grid_handler().cursor_point().col, 3);
 }
+
+// ─── #1304: off-thread selection text ────────────────────────────────
+
+fn snapshot_test_grid(columns: usize) -> GridHandler {
+    let size = SizeInfo::new_without_font_metrics(12, columns);
+    let mut grid = GridHandler::new(
+        size,
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        false,
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+    // Wrapped line, tabs, wide chars (including one that wraps), zero-width marks, blank rows.
+    for line in [
+        "abcdefghijklmnopqrstuvwxyz",
+        "a\tb\tc",
+        "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}",
+        "e\u{301}x",
+        "",
+        "tail",
+    ] {
+        for c in line.chars() {
+            grid.input(c);
+        }
+        grid.carriage_return();
+        grid.linefeed();
+    }
+    grid
+}
+
+fn assert_snapshot_matches_inline(grid: &GridHandler, secrets: RespectObfuscatedSecrets) {
+    let total = grid.total_rows();
+    let last_col = grid.columns() - 1;
+    let mut ranges = vec![(Point::new(0, 0), Point::new(total - 1, last_col))];
+    for row in 0..total {
+        ranges.push((Point::new(row, 0), Point::new(row, last_col)));
+        ranges.push((Point::new(row, 1), Point::new(total - 1, 2)));
+        ranges.push((Point::new(0, last_col), Point::new(row, 0)));
+    }
+    for (start, end) in ranges {
+        if (start.row, start.col) > (end.row, end.col) {
+            continue;
+        }
+        let inline = grid.bounds_to_string(
+            start,
+            end,
+            false,
+            secrets,
+            false,
+            RespectDisplayedOutput::Yes,
+        );
+        let snapshot = grid
+            .bounds_to_text_snapshot(start, end, secrets, false, RespectDisplayedOutput::Yes)
+            .render();
+        assert_eq!(snapshot, inline, "range {start:?}..{end:?}");
+    }
+}
+
+#[test]
+fn text_snapshot_is_byte_identical_to_bounds_to_string() {
+    for columns in [6, 7, 10, 40] {
+        let grid = snapshot_test_grid(columns);
+        assert_snapshot_matches_inline(&grid, RespectObfuscatedSecrets::Yes);
+        assert_snapshot_matches_inline(&grid, RespectObfuscatedSecrets::No);
+    }
+}
+
+#[test]
+fn text_snapshot_keeps_secret_redaction() {
+    let mut blockgrid = mock_blockgrid("foo zach@warp.dev bar\r\nsecond line");
+    blockgrid.maybe_enable_secret_obfuscation(ObfuscateSecrets::Yes);
+    blockgrid.grid_handler_mut().mark_secret_range(
+        Point::new(0, 4)..=Point::new(0, 16),
+        IsObfuscated::Yes,
+        "zach@warp.dev".to_string(),
+        SecretLevel::User,
+    );
+    let snapshot = blockgrid.start_to_point_text_snapshot(blockgrid.end_point());
+    let rendered = snapshot.render();
+    assert!(rendered.starts_with("foo ************* bar"), "{rendered}");
+    assert!(!rendered.contains("zach@warp.dev"));
+    assert_eq!(
+        rendered,
+        blockgrid.start_to_point_as_string(blockgrid.end_point())
+    );
+    assert_snapshot_matches_inline(blockgrid.grid_handler(), RespectObfuscatedSecrets::Yes);
+}
+
+#[test]
+fn text_snapshot_of_empty_grid_is_empty() {
+    let size = SizeInfo::new_without_font_metrics(0, 0);
+    let grid = GridHandler::new(
+        size,
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        false,
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::No,
+    );
+    let snapshot = grid.bounds_to_text_snapshot(
+        Point::new(0, 0),
+        Point::new(0, 0),
+        RespectObfuscatedSecrets::No,
+        false,
+        RespectDisplayedOutput::No,
+    );
+    assert_eq!(snapshot.render(), "");
+}
+
+#[test]
+fn text_snapshot_can_render_on_another_thread() {
+    // The point of the snapshot: it owns its data, so it can leave the UI thread.
+    let grid = snapshot_test_grid(10);
+    let total = grid.total_rows();
+    let inline = grid.bounds_to_string(
+        Point::new(0, 0),
+        Point::new(total - 1, 9),
+        false,
+        RespectObfuscatedSecrets::Yes,
+        false,
+        RespectDisplayedOutput::Yes,
+    );
+    let snapshot = grid.bounds_to_text_snapshot(
+        Point::new(0, 0),
+        Point::new(total - 1, 9),
+        RespectObfuscatedSecrets::Yes,
+        false,
+        RespectDisplayedOutput::Yes,
+    );
+    drop(grid);
+    let rendered = std::thread::spawn(move || snapshot.render())
+        .join()
+        .expect("render thread");
+    assert_eq!(rendered, inline);
+}
+
+#[test]
+fn selection_parts_join_text_and_snapshots_like_the_inline_path() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, SelectionPart, SelectionParts,
+    };
+    let blockgrid = mock_blockgrid("one\r\ntwo\r\nthree");
+    let end = blockgrid.end_point();
+    let block_text = blockgrid.start_to_point_as_string(end);
+    let parts = SelectionParts::new(vec![
+        SelectionPart::Text("ai block".to_string()),
+        SelectionPart::Block(BlockTextSnapshot {
+            pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+        }),
+        SelectionPart::Text("tail".to_string()),
+    ]);
+    assert!(parts.has_snapshots());
+    assert_eq!(parts.render(), format!("ai block\n{block_text}\ntail"));
+}
