@@ -349,12 +349,20 @@ fn recovery_action(
 /// conversation, then handed to the spawn closure in one shot (ctx can't cross an
 /// await boundary).
 pub(super) struct PendingTitleGeneration {
+    /// Set when the title provider may send an API key: refreshed from the (by then loaded)
+    /// secrets in [`ResponseStream::take_pending_title_generation`].
+    key_provider_id: Option<String>,
     pub(super) input: crate::ai::agent_providers::chat_stream::TitleGenInput,
     pub(super) user_query: String,
     pub(super) task_id: String,
 }
 
 struct ByopDispatch {
+    /// The provider's id: its key is looked up under this in `AgentProviderSecrets`.
+    provider_id: String,
+    /// The secure-storage load had not landed when this was built and the provider may send a
+    /// key, so `api_key` is not trustworthy yet: the request waits for the load (#1368).
+    waits_for_keys: bool,
     base_url: String,
     api_key: String,
     model_id: String,
@@ -410,6 +418,11 @@ struct ByopDispatch {
 
 /// BYOP config dedicated to title generation (may share the same provider as the main base model, or may not).
 pub(crate) struct TitleGenParams {
+    /// The title provider's id: its key is re-read from `AgentProviderSecrets` when the title
+    /// request is actually started (the load may have landed since this was built).
+    pub provider_id: String,
+    /// Whether that provider can carry a key at all (see `provider_may_send_api_key`).
+    pub may_send_key: bool,
     pub base_url: String,
     pub api_key: String,
     pub model_id: String,
@@ -497,6 +510,10 @@ fn byop_dispatch_info(
                 let t_effort =
                     llm_prefs.get_reasoning_effort(None, t_provider.api_type, &t_model_id);
                 TitleGenParams {
+                    provider_id: t_provider.id.clone(),
+                    may_send_key: crate::ai::agent_providers::provider_may_send_api_key(
+                        &t_provider,
+                    ),
                     base_url: t_provider.resolved_base_url(),
                     api_key: t_api_key,
                     model_id: t_model_id,
@@ -551,7 +568,10 @@ fn byop_dispatch_info(
                 ),
             },
         );
+    let waits_for_keys = crate::ai::agent_providers::must_wait_for_keys(ctx, &provider);
     Some(ByopDispatch {
+        provider_id: provider.id.clone(),
+        waits_for_keys,
         base_url: provider.resolved_base_url(),
         api_key,
         model_id,
@@ -571,6 +591,15 @@ fn byop_dispatch_info(
     })
 }
 
+fn title_gen_may_send_key(byop: &ByopDispatch) -> Option<String> {
+    // The title provider is a different one only when the user picked an independent title
+    // model; the request's own provider decided `waits_for_keys`, so recompute for the title.
+    let title_gen = byop.title_gen.as_ref()?;
+    title_gen
+        .may_send_key
+        .then(|| title_gen.provider_id.clone())
+}
+
 fn pending_title_generation_from_byop(
     params: &api::RequestParams,
     byop: &ByopDispatch,
@@ -585,6 +614,7 @@ fn pending_title_generation_from_byop(
     })?;
 
     Some(PendingTitleGeneration {
+        key_provider_id: title_gen_may_send_key(byop),
         input: crate::ai::agent_providers::chat_stream::TitleGenInput {
             base_url: title_gen.base_url.clone(),
             api_key: title_gen.api_key.clone(),
@@ -731,12 +761,34 @@ impl ResponseStream {
         // chat completions. Otherwise it goes through warp's own multi-agent
         // endpoint (the original path).
         let byop_dispatch = byop_dispatch_info(&params, &ai_identifiers, ctx);
+        let key_wait = register_key_wait(byop_dispatch.as_ref(), ctx);
         let pending_title_generation = byop_dispatch
             .as_ref()
             .and_then(|byop| pending_title_generation_from_byop(&params, byop));
         let _ = ctx.spawn(
             async move {
-                if let Some(byop) = byop_dispatch {
+                if let Some(mut byop) = byop_dispatch {
+                    let mut cancellation_rx = cancellation_rx;
+                    if let Some(key_wait) = key_wait {
+                        match wait_for_loaded_keys(
+                            key_wait,
+                            &mut cancellation_rx,
+                            &byop.provider_id,
+                            &mut byop.api_key,
+                        )
+                        .await
+                        {
+                            KeyWait::Ready => {}
+                            KeyWait::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                            KeyWait::Failed => {
+                                return byop_keyring_error_response_stream(cancellation_rx).await;
+                            }
+                        }
+                    }
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {
                             params: params_clone,
@@ -785,8 +837,22 @@ impl ResponseStream {
         }
     }
 
-    pub(super) fn take_pending_title_generation(&mut self) -> Option<PendingTitleGeneration> {
-        self.pending_title_generation.take()
+    pub(super) fn take_pending_title_generation(
+        &mut self,
+        ctx: &warpui::AppContext,
+    ) -> Option<PendingTitleGeneration> {
+        let mut pending = self.pending_title_generation.take()?;
+        // The title request was built before the keyring read may have landed; by the time the
+        // main response finished it has (the main request itself waited for it), so take the
+        // key from there instead of the possibly-empty one captured at build time.
+        if let Some(provider_id) = pending.key_provider_id.as_deref() {
+            if let Some(key) =
+                crate::ai::agent_providers::AgentProviderSecrets::as_ref(ctx).get(provider_id)
+            {
+                pending.input.api_key = key.to_owned();
+            }
+        }
+        Some(pending)
     }
 
     pub fn id(&self) -> &ResponseStreamId {
@@ -905,6 +971,7 @@ impl ResponseStream {
         self.current_request_id = Some(request_id);
         let params = self.params.clone();
         let byop_dispatch = byop_dispatch_info(&params, &self.ai_identifiers, ctx);
+        let key_wait = register_key_wait(byop_dispatch.as_ref(), ctx);
         // Exponential backoff: 0.5s / 1s / 2s. Previously there was no interval at
         // all, so retrying the same payload three times in a row within seconds was
         // pure waste for deterministic failures (like exceeding a request limit),
@@ -933,7 +1000,28 @@ impl ResponseStream {
                         return Ok(Box::pin(futures::stream::empty()) as api::ResponseStream);
                     }
                 }
-                if let Some(byop) = byop_dispatch {
+                if let Some(mut byop) = byop_dispatch {
+                    let mut cancellation_rx = cancellation_rx;
+                    if let Some(key_wait) = key_wait {
+                        match wait_for_loaded_keys(
+                            key_wait,
+                            &mut cancellation_rx,
+                            &byop.provider_id,
+                            &mut byop.api_key,
+                        )
+                        .await
+                        {
+                            KeyWait::Ready => {}
+                            KeyWait::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                            KeyWait::Failed => {
+                                return byop_keyring_error_response_stream(cancellation_rx).await;
+                            }
+                        }
+                    }
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {
                             params,
@@ -1253,6 +1341,67 @@ pub enum ResponseStreamEvent {
 
 impl Entity for ResponseStream {
     type Event = ResponseStreamEvent;
+}
+
+/// How a request held for the keyring read ended.
+enum KeyWait {
+    /// The keys landed; `ByopDispatch::api_key` now holds the real one.
+    Ready,
+    Cancelled,
+    /// The keyring could not be read (error, or the secure-storage worker gave up on a call
+    /// that never returned): no request is sent.
+    Failed,
+}
+
+type KeyLoad = oneshot::Receiver<Option<std::collections::HashMap<String, String>>>;
+
+/// If this request must not go out before the first keyring read lands (#1368), registers for
+/// that event. Driven by the load's own completion, not a timer; the only timer on the path is
+/// the secure-storage worker's logged give-up for a call that never returns.
+fn register_key_wait(
+    byop: Option<&ByopDispatch>,
+    ctx: &mut ModelContext<ResponseStream>,
+) -> Option<KeyLoad> {
+    if !byop?.waits_for_keys {
+        return None;
+    }
+    crate::ai::agent_providers::AgentProviderSecrets::handle(ctx)
+        .update(ctx, |secrets, ctx| secrets.wait_for_load(ctx))
+}
+
+/// Holds the request until the keyring read settles, racing cancellation. On success the real
+/// key replaces the (empty) one captured while the read was in flight.
+async fn wait_for_loaded_keys(
+    key_load: KeyLoad,
+    cancellation_rx: &mut oneshot::Receiver<()>,
+    provider_id: &str,
+    api_key: &mut String,
+) -> KeyWait {
+    match futures::future::select(cancellation_rx, key_load).await {
+        futures::future::Either::Left(_) => KeyWait::Cancelled,
+        futures::future::Either::Right((Ok(Some(keys)), _)) => {
+            *api_key = keys.get(provider_id).cloned().unwrap_or_default();
+            KeyWait::Ready
+        }
+        futures::future::Either::Right(_) => {
+            log::warn!(
+                "[byop] not sending the request: the API key could not be read from the keyring"
+            );
+            KeyWait::Failed
+        }
+    }
+}
+
+async fn byop_keyring_error_response_stream(
+    cancellation_rx: oneshot::Receiver<()>,
+) -> Result<api::ResponseStream, ConvertToAPITypeError> {
+    let error_stream = futures::stream::once(async {
+        Err(Arc::new(AIApiError::Other(anyhow::Error::new(
+            crate::ai::agent_providers::KeyringReadFailed,
+        ))))
+    })
+    .take_until(cancellation_rx);
+    Ok(Box::pin(error_stream))
 }
 
 async fn byop_required_response_stream(

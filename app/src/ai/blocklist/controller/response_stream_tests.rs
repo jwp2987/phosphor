@@ -411,3 +411,135 @@ fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
         clear_retry_wait(id);
     });
 }
+
+// ── a request waits for the keyring read instead of sending an empty key (#1368) ──
+
+mod key_wait {
+    use std::collections::HashMap;
+
+    use futures::StreamExt as _;
+    use futures::channel::oneshot;
+
+    use super::super::{KeyWait, byop_keyring_error_response_stream, wait_for_loaded_keys};
+    use crate::ai::agent_providers::provider_may_send_api_key;
+    use crate::settings::{AgentProvider, AgentProviderApiType};
+
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        warpui::r#async::block_on(f)
+    }
+
+    #[test]
+    fn a_request_sent_before_the_load_waits_and_then_carries_the_real_key() {
+        let (load_tx, load_rx) = oneshot::channel();
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+
+        // Nothing resolved yet: the wait is pending, not an empty-key send.
+        let mut wait = Box::pin(wait_for_loaded_keys(
+            load_rx,
+            &mut cancel_rx,
+            "prov",
+            &mut api_key,
+        ));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+
+        load_tx
+            .send(Some(HashMap::from([(
+                "prov".to_owned(),
+                "sk-real".to_owned(),
+            )])))
+            .unwrap();
+        assert!(matches!(run(wait), KeyWait::Ready));
+        assert_eq!(api_key, "sk-real");
+    }
+
+    #[test]
+    fn a_failed_load_fails_the_request_with_a_clear_error_and_no_key() {
+        let (load_tx, load_rx) = oneshot::channel();
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+        load_tx.send(None).unwrap();
+        assert!(matches!(
+            run(wait_for_loaded_keys(
+                load_rx,
+                &mut cancel_rx,
+                "prov",
+                &mut api_key
+            )),
+            KeyWait::Failed
+        ));
+        assert!(api_key.is_empty());
+
+        // The error the user sees is the keyring message, not an auth failure from a provider.
+        let (_tx, rx) = oneshot::channel::<()>();
+        let stream = run(byop_keyring_error_response_stream(rx)).unwrap();
+        let items: Vec<_> = run(stream.collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        let err = match items.into_iter().next().unwrap() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the keyring error, not a response event"),
+        };
+        assert!(
+            err.to_string().contains("API key from the keyring"),
+            "{err}"
+        );
+        // Not retried: the user has to unlock the keyring.
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_sends_nothing() {
+        let (_load_tx, load_rx) = oneshot::channel();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+        cancel_tx.send(()).unwrap();
+        assert!(matches!(
+            run(wait_for_loaded_keys(
+                load_rx,
+                &mut cancel_rx,
+                "prov",
+                &mut api_key
+            )),
+            KeyWait::Cancelled
+        ));
+    }
+
+    fn provider(api_type: AgentProviderApiType, base_url: &str) -> AgentProvider {
+        AgentProvider {
+            id: "p".to_owned(),
+            name: "P".to_owned(),
+            kind: Default::default(),
+            api_type,
+            base_url: base_url.to_owned(),
+            models: Vec::new(),
+            extra_headers: Vec::new(),
+            vertex_project: String::new(),
+            vertex_location: String::new(),
+            disabled: false,
+            token_price: None,
+        }
+    }
+
+    #[test]
+    fn keyless_providers_never_wait_for_the_keyring() {
+        // The owner's LAN Ollama: no key is ever sent, so a slow keyring must not delay it.
+        assert!(!provider_may_send_api_key(&provider(
+            AgentProviderApiType::Ollama,
+            "http://203.0.113.125:11434"
+        )));
+        // Plaintext non-loopback http: the key is withheld anyway.
+        assert!(!provider_may_send_api_key(&provider(
+            AgentProviderApiType::OpenAi,
+            "http://203.0.113.125:8080/v1"
+        )));
+        // Hosted APIs and loopback gateways can carry a key and do wait.
+        assert!(provider_may_send_api_key(&provider(
+            AgentProviderApiType::Anthropic,
+            "https://api.anthropic.com/v1"
+        )));
+        assert!(provider_may_send_api_key(&provider(
+            AgentProviderApiType::OpenAi,
+            "http://127.0.0.1:8787/v1"
+        )));
+    }
+}

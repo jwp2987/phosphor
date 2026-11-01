@@ -227,7 +227,12 @@ impl AIApiError {
             | AIApiError::Deserialization(_)
             | AIApiError::NoContextFound
             | AIApiError::Stream { .. } => true,
-            AIApiError::Other(error) => error.downcast_ref::<BlockedByopReadinessError>().is_none(),
+            AIApiError::Other(error) => {
+                error.downcast_ref::<BlockedByopReadinessError>().is_none()
+                    && error
+                        .downcast_ref::<crate::ai::agent_providers::KeyringReadFailed>()
+                        .is_none()
+            }
         }
     }
 }

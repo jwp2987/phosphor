@@ -478,6 +478,43 @@ pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, S
     Some((provider, api_key, model_id))
 }
 
+/// The user-visible error for a request that could not be sent because the keyring never gave
+/// up the API key. Shown instead of sending an empty key, which the provider would answer with
+/// an opaque 401.
+pub const KEYRING_READ_FAILED_MESSAGE: &str = "Couldn't read the API key from the keyring (it may be locked or not responding). \
+     Unlock it and send the message again.";
+
+/// [`KEYRING_READ_FAILED_MESSAGE`] as an error type, so the retry layer can recognise it and not
+/// retry (the user has to unlock the keyring; three silent retries only delay the message).
+#[derive(Debug)]
+pub struct KeyringReadFailed;
+
+impl std::fmt::Display for KeyringReadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(KEYRING_READ_FAILED_MESSAGE)
+    }
+}
+
+impl std::error::Error for KeyringReadFailed {}
+
+/// Whether a request to `provider` could ever carry an API key, i.e. whether it has to wait for
+/// the secure-storage load before it may be sent.
+///
+/// Providers that never send a key must not wait at all (the keyring may be slow or locked):
+/// Ollama's native protocol is keyless, and for a plaintext `http://` endpoint on a non-loopback
+/// host the key is withheld anyway (see [`is_plaintext_bearer_risk`]). Everything else -- hosted
+/// APIs and loopback gateways (LiteLLM, a local proxy) -- can carry a key and waits.
+pub(crate) fn provider_may_send_api_key(provider: &AgentProvider) -> bool {
+    provider.api_type != crate::settings::AgentProviderApiType::Ollama
+        && !is_plaintext_bearer_risk(&provider.resolved_base_url())
+}
+
+/// Whether the keys for a request to `provider` are still being read from the keyring (#1368).
+/// Cheap, read-only: the send path calls it while building the request.
+pub(crate) fn must_wait_for_keys(app: &AppContext, provider: &AgentProvider) -> bool {
+    provider_may_send_api_key(provider) && !AgentProviderSecrets::as_ref(app).is_loaded()
+}
+
 /// The configured context window (tokens) for the currently active BYOP base
 /// model, or `None` if the model is unset or its context window is 0/blank.
 ///
