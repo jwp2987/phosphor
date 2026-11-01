@@ -66,9 +66,10 @@ fn strict_mode() -> bool {
 
 /// Characters that make a text layout produce more than one line even without wrapping.
 pub(crate) fn has_line_break(text: &str) -> bool {
-    text.contains([
+    const BREAKS: &[char] = &[
         '\n', '\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}',
-    ])
+    ];
+    text.contains(BREAKS)
 }
 
 /// Metrics of an unwrapped single-line paragraph without shaping it. Height, line count and
