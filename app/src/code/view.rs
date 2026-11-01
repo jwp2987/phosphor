@@ -237,6 +237,56 @@ pub struct TabData {
     rendered_markdown_view: Option<ViewHandle<RichTextEditorView>>,
 }
 
+/// What is kept of a tab while its pane sits hidden in the undo-close grace period: only the
+/// identity, not the laid-out buffer. Rebuilt by [`CodeView::restore_released_tabs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReleasedTab {
+    pub(crate) location: BufferLocation,
+    pub(crate) preview: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReleasedTabs {
+    pub(crate) tabs: Vec<ReleasedTab>,
+    pub(crate) active_tab_index: usize,
+}
+
+/// Env kill switch: `PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE=1` keeps a closed code pane's editors alive
+/// for the whole undo-close grace period (the pre-#1340 behaviour).
+fn keep_editors_while_hidden() -> bool {
+    std::env::var("PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Decides whether a hidden pane's tabs can be released. Each input is
+/// `(location, preview, has_unsaved_changes)`. Returns `None` (keep everything alive) when there
+/// are no tabs, a tab has unsaved changes (undo-close must not lose edits), or a tab is not a
+/// local file (new files have no path to rebuild from; remote buffers keep their existing path).
+pub(crate) fn plan_tab_release(
+    tabs: &[(Option<BufferLocation>, bool, bool)],
+    active_tab_index: usize,
+) -> Option<ReleasedTabs> {
+    if tabs.is_empty() {
+        return None;
+    }
+    let mut released = Vec::with_capacity(tabs.len());
+    for (location, preview, unsaved) in tabs {
+        match location {
+            Some(location @ BufferLocation::Local(_)) if !unsaved => {
+                released.push(ReleasedTab {
+                    location: location.clone(),
+                    preview: *preview,
+                });
+            }
+            _ => return None,
+        }
+    }
+    let active_tab_index = active_tab_index.min(released.len() - 1);
+    Some(ReleasedTabs {
+        tabs: released,
+        active_tab_index,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub enum PendingSaveIntent {
     Save,
@@ -280,6 +330,9 @@ pub struct CodeView {
     /// until that event arrives, otherwise the tab would already be closed by
     /// the time a save failure occurs and the user would never see the error.
     pending_remote_save_callbacks: HashMap<EntityId, SaveCallback>,
+    /// Set while the pane is hidden for undo-close: the tabs' editors (buffer, paragraph layouts,
+    /// syntax trees) are dropped and only their locations are kept (#1340).
+    released_tabs: Option<ReleasedTabs>,
 }
 
 impl CodeView {
@@ -297,6 +350,69 @@ impl CodeView {
             drag_position: None,
             markdown_mode_segmented_control: None,
             pending_remote_save_callbacks: HashMap::new(),
+            released_tabs: None,
+        }
+    }
+
+    /// Called when the pane is hidden for the undo-close grace period. Drops every tab's editor
+    /// (and with it the buffer, layouts and highlight data, ~100x the file size) when all tabs
+    /// are clean local files; undo-close rebuilds them from disk. Without this a closed 7 MB file
+    /// held ~1.2 GB for the 60 s grace period (#1340).
+    pub fn release_tabs_for_undo_close(&mut self, ctx: &mut ViewContext<Self>) {
+        if keep_editors_while_hidden() {
+            return;
+        }
+        let tabs: Vec<_> = self
+            .tab_group
+            .iter()
+            .map(|tab| {
+                (
+                    tab.location.clone(),
+                    tab.preview,
+                    Self::has_unsaved_changes(tab, ctx),
+                )
+            })
+            .collect();
+        let Some(released) = plan_tab_release(&tabs, self.active_tab_index) else {
+            return;
+        };
+        self.tab_group.clear();
+        self.active_tab_index = 0;
+        self.released_tabs = Some(released);
+        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.remove_deallocated_buffers(ctx);
+        });
+        ctx.notify();
+    }
+
+    /// Rebuilds the tabs dropped by [`Self::release_tabs_for_undo_close`]. No-op otherwise.
+    pub fn restore_released_tabs(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(released) = self.released_tabs.take() else {
+            return;
+        };
+        for tab in released.tabs {
+            let new_tab = self.build_tab_data(Some(tab.location), tab.preview, ctx);
+            self.tab_group.push(new_tab);
+        }
+        if !self.tab_group.is_empty() {
+            let active = released.active_tab_index.min(self.tab_group.len() - 1);
+            self.set_active_tab_index(active, ctx);
+        }
+        ctx.notify();
+    }
+
+    /// The tab paths for session snapshots; reads the released tabs while the editors are dropped.
+    pub fn snapshot_tab_paths(&self) -> Vec<Option<PathBuf>> {
+        match &self.released_tabs {
+            Some(released) => released
+                .tabs
+                .iter()
+                .map(|tab| match &tab.location {
+                    BufferLocation::Local(path) => Some(path.clone()),
+                    BufferLocation::Remote(_) => None,
+                })
+                .collect(),
+            None => self.tab_group.iter().map(|tab| tab.path()).collect(),
         }
     }
 
@@ -863,6 +979,9 @@ impl CodeView {
     }
 
     pub fn active_tab_index(&self) -> usize {
+        if let Some(released) = &self.released_tabs {
+            return released.active_tab_index;
+        }
         self.active_tab_index
     }
 
@@ -2728,3 +2847,7 @@ fn render_unsaved_changes_icon(color: ColorU) -> Box<dyn Element> {
     .with_height(8.)
     .finish()
 }
+
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod tests;
