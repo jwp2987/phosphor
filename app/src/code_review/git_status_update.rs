@@ -379,6 +379,11 @@ pub(super) struct RefreshGate {
     dirty: bool,
     in_flight: bool,
     rerun_pending: bool,
+    /// Identifies the refresh whose result may be applied (#1381, APP-R12). Each started refresh
+    /// takes a new one and anything that sets the metadata some other way retires the one in
+    /// flight, so a queued completion callback of an older refresh can never overwrite a newer
+    /// result. Same pattern as the ctrl-c window token in `cli_agent_sessions`.
+    token: u64,
 }
 
 #[cfg(feature = "local_fs")]
@@ -398,6 +403,22 @@ impl RefreshGate {
         self.in_flight = true;
         self.dirty = false;
         true
+    }
+
+    /// Starts a new result token for the refresh [`Self::request_refresh`] just allowed.
+    pub(super) fn issue_token(&mut self) -> u64 {
+        self.token += 1;
+        self.token
+    }
+
+    /// Whether the result carrying `token` is still the one to apply.
+    pub(super) fn is_current(&self, token: u64) -> bool {
+        self.token == token
+    }
+
+    /// The metadata was set by other means: a result still in flight is older than it.
+    pub(super) fn retire_in_flight(&mut self) {
+        self.token += 1;
     }
 
     /// The in-flight refresh completed (successfully or not). Returns true when a request arrived
@@ -553,14 +574,17 @@ impl LocalGitRepoStatusModel {
         let repo_path_buf = self.repo_path.clone();
         let cached_main_branch = fresh_cached_main_branch(&self.main_branch_cache, Instant::now());
         let reused_main_branch = cached_main_branch.is_some();
+        let token = self.refresh_gate.issue_token();
         self.computing_metadata_abort_handle = Some(ctx.spawn(
             async move { Self::load_metadata(repo_path_buf, cached_main_branch).await },
             move |me, result, ctx| {
-                if let (false, Ok(metadata)) = (reused_main_branch, &result) {
-                    me.main_branch_cache =
-                        Some((metadata.main_branch_name.clone(), Instant::now()));
+                if me.refresh_gate.is_current(token) {
+                    if let (false, Ok(metadata)) = (reused_main_branch, &result) {
+                        me.main_branch_cache =
+                            Some((metadata.main_branch_name.clone(), Instant::now()));
+                    }
+                    me.handle_metadata_result(result, ctx);
                 }
-                me.handle_metadata_result(result, ctx);
                 if me.refresh_gate.refresh_finished() {
                     me.refresh_metadata(ctx);
                 }
@@ -756,6 +780,7 @@ impl LocalGitRepoStatusModel {
         metadata: Option<GitStatusMetadata>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.refresh_gate.retire_in_flight();
         self.metadata = metadata;
         self.has_emitted_metadata = true;
         ctx.emit(GitRepoStatusEvent::MetadataChanged);
