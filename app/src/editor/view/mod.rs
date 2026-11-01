@@ -3786,6 +3786,8 @@ impl EditorView {
                 view.set_current_autosuggestion(Some(full_suggestion));
             });
 
+            // #1279: name the async notify behind a second frame after a key.
+            log::debug!(target: "warpui::notify_cause", "editor: autosuggestion set");
             ctx.notify();
 
             if matches!(location, AutosuggestionLocation::EndOfBuffer)

@@ -82,6 +82,17 @@ impl Renderer {
             return Ok(());
         }
 
+        if log::log_enabled!(target: "warpui::scene_stats", log::Level::Debug) {
+            // `fingerprint` equal to the previous line's means that frame repainted identical
+            // content (#1279).
+            log::debug!(
+                target: "warpui::scene_stats",
+                "fingerprint={:016x} {:?}",
+                scene.fingerprint(),
+                scene.stats()
+            );
+        }
+
         let mut ctx = WGPUContext {
             resources,
             rasterize_glyph_fn,
