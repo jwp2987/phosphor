@@ -15,6 +15,49 @@ use std::time::{Duration, Instant};
 pub const PROBE_TTL: Duration = Duration::from_secs(5);
 const MAX_ENTRIES: usize = 4096;
 
+type Task = Box<dyn FnOnce() + Send + 'static>;
+
+/// Worker threads (a stalled network stat only blocks one of them).
+const WORKERS: usize = 3;
+/// Pending probes beyond this are dropped (and retried by a later lookup).
+const QUEUE_CAPACITY: usize = 256;
+
+static QUEUE: std::sync::OnceLock<Option<std::sync::mpsc::SyncSender<Task>>> =
+    std::sync::OnceLock::new();
+
+fn submit(task: Task) -> bool {
+    let sender = QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Task>(QUEUE_CAPACITY);
+        let rx = std::sync::Arc::new(Mutex::new(rx));
+        for i in 0..WORKERS {
+            let rx = rx.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("path-probe-{i}"))
+                .spawn(move || {
+                    loop {
+                        // Hold the receiver lock only while waiting for the next task.
+                        let task = {
+                            let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+                            guard.recv()
+                        };
+                        match task {
+                            Ok(task) => task(),
+                            Err(_) => return,
+                        }
+                    }
+                });
+            if spawned.is_err() && i == 0 {
+                return None;
+            }
+        }
+        Some(tx)
+    });
+    match sender {
+        Some(tx) => tx.try_send(task).is_ok(),
+        None => false,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Kind {
     Exists,
@@ -60,18 +103,19 @@ impl PathProbeCache {
         if spawn {
             let owned = path.to_path_buf();
             let cache: &'static PathProbeCache = self;
-            let spawned = std::thread::Builder::new()
-                .name("path-probe".into())
-                .spawn(move || {
-                    let result = probe(&owned);
-                    let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(entry) = entries.get_mut(&(kind, owned)) {
-                        entry.value = Some(result);
-                        entry.probed_at = Some(Instant::now());
-                        entry.in_flight = false;
-                    }
-                });
-            if spawned.is_err() {
+            let task: Task = Box::new(move || {
+                let result = probe(&owned);
+                let mut entries = cache.entries.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = entries.get_mut(&(kind, owned)) {
+                    entry.value = Some(result);
+                    entry.probed_at = Some(Instant::now());
+                    entry.in_flight = false;
+                }
+            });
+            // Bounded queue + fixed worker pool: hovering many links can never create many
+            // threads. If the queue is full the probe is simply dropped and retried by a
+            // later lookup.
+            if !submit(task) {
                 let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(entry) = entries.get_mut(&(kind, path.to_path_buf())) {
                     entry.in_flight = false;
@@ -156,5 +200,30 @@ mod tests {
         assert!(!cache.lookup(Kind::IsDir, &dir, false, |p| p.is_dir()));
         wait_for(cache, Kind::IsDir, &dir, true);
         assert!(cache.lookup(Kind::IsDir, &dir, false, |p| p.is_dir()));
+    }
+
+    #[test]
+    fn many_distinct_probes_use_a_fixed_pool_and_all_complete() {
+        let cache: &'static PathProbeCache = Box::leak(Box::default());
+        let base = std::env::temp_dir().join("path-probe-many");
+        let paths: Vec<PathBuf> = (0..100).map(|i| base.join(format!("p{i}"))).collect();
+        for p in &paths {
+            cache.lookup(Kind::Exists, p, true, |p| p.exists());
+        }
+        for p in &paths {
+            wait_for(cache, Kind::Exists, p, false);
+        }
+        // Only the bounded pool's threads exist.
+        let count = std::fs::read_dir("/proc/self/task")
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        std::fs::read_to_string(e.path().join("comm"))
+                            .is_ok_and(|c| c.starts_with("path-probe"))
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert!(count <= WORKERS, "{count} probe threads");
     }
 }

@@ -1,4 +1,3 @@
-use std::path::Path;
 
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -260,8 +259,11 @@ fn parse_ssh_command_tokens(command: &str) -> Option<Vec<String>> {
 }
 
 /// Creates an sftp command that copies a given local file into the pwd in the warpified ssh session.
+/// `is_dir` (whether the local path is a directory, which adds `-r`) is probed by the caller off
+/// the UI thread; this function never touches the filesystem.
 pub fn transfer_file_sftp_command(
     local_file_path: String,
+    is_dir: bool,
     ssh_host: String,
     ssh_port: Option<String>,
     pwd: Option<String>,
@@ -279,9 +281,6 @@ pub fn transfer_file_sftp_command(
     command += " <<< \"put ";
 
     // "sftp -P 2222 sshuser@127.0.0.1 <<< "put -r"
-    let is_dir = Path::new(&local_file_path)
-        .metadata()
-        .is_ok_and(|m| m.is_dir());
     if is_dir {
         command += "-r "
     }

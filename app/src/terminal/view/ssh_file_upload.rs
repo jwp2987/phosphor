@@ -107,6 +107,51 @@ impl View for FileUpload {
     }
 }
 
+/// Stats each path (blocking; call off the UI thread). A path that can't be read is not a dir.
+fn probe_is_dir(paths: &[String]) -> Vec<bool> {
+    paths
+        .iter()
+        .map(|p| Path::new(p).metadata().is_ok_and(|m| m.is_dir()))
+        .collect()
+}
+
+/// Creates an sftp command that copies the local files into the PWD of the warpified ssh
+/// session, if any. `is_dir[i]` says whether `local_file_paths[i]` is a directory.
+fn transfer_file_sftp_command(file_upload: &FileUploadInfo, is_dir: &[bool]) -> String {
+    let mut command = String::from("sftp ");
+    if let Some(port) = &file_upload.remote_port {
+        command += &format!("-P {port} ");
+    }
+    command += &file_upload.remote_host;
+    command += " <<< \"";
+    command += &file_upload
+        .local_file_paths
+        .iter()
+        .zip(is_dir.iter().copied().chain(std::iter::repeat(false)))
+        .map(|(path, is_dir)| sftp_put_command(path, is_dir, &file_upload.remote_dest_path))
+        .join("\n");
+    command += "\"";
+    command
+}
+
+/// Produces a single SFTP `put` command for a given local file and remote destination.
+fn sftp_put_command(
+    local_file_path: &str,
+    is_dir: bool,
+    remote_dest_path: &Option<String>,
+) -> String {
+    let mut command = String::from("put ");
+    if is_dir {
+        command += "-r ";
+    }
+    command += &format!("\\\"{local_file_path}\\\"");
+    if let Some(pwd) = remote_dest_path {
+        command += " ";
+        command += &format!("\\\"{}\\\"", &pwd);
+    }
+    command
+}
+
 impl FileUpload {
     pub fn new() -> Self {
         Self::default()
@@ -136,6 +181,10 @@ impl FileUpload {
         count
     }
 
+    /// Registers the upload and returns its id. Whether each local path is a directory (which
+    /// adds `-r`) is probed off the UI thread FIRST; the sftp command is then built from that
+    /// fresh answer (never a cached one) and emitted back on the main thread. If the upload was
+    /// cleared while probing, nothing is emitted.
     pub fn start_file_upload(
         &mut self,
         remote_host: &str,
@@ -143,7 +192,7 @@ impl FileUpload {
         remote_dest_path: &Option<String>,
         ssh_connection: &InteractiveSshCommand,
         ctx: &mut ViewContext<Self>,
-    ) -> (FileUploadId, String) {
+    ) -> FileUploadId {
         let upload_id = self.generate_upload_id();
         let file_upload_info = self.transfer_details(
             remote_host,
@@ -152,14 +201,22 @@ impl FileUpload {
             ssh_connection,
             upload_id,
         );
-        let command = self.transfer_file_sftp_command(&file_upload_info);
         self.uploads.insert(upload_id, file_upload_info);
-        ctx.emit(FileUploadEvent::CopyFileToRemote {
-            command: command.clone(),
-            upload_id,
-        });
         ctx.notify();
-        (upload_id, command)
+
+        let paths = local_file_paths.to_owned();
+        ctx.spawn(
+            async move { probe_is_dir(&paths) },
+            move |me, is_dir, ctx| {
+                let Some(info) = me.uploads.get(&upload_id) else {
+                    return;
+                };
+                let command = transfer_file_sftp_command(info, &is_dir);
+                ctx.emit(FileUploadEvent::CopyFileToRemote { command, upload_id });
+                ctx.notify();
+            },
+        );
+        upload_id
     }
 
     /// Retrieve the SSH connection information needed to start the file upload.
@@ -185,67 +242,6 @@ impl FileUpload {
             local_session_open: false,
             upload_id,
         }
-    }
-
-    /// Creates an sftp command that copies a given local file into the PWD of the warpified ssh session, if any.
-    fn transfer_file_sftp_command(&self, file_upload: &FileUploadInfo) -> String {
-        // "sftp "
-        let mut command = String::from("sftp ");
-
-        // "sftp -P 2222"
-        if let Some(port) = &file_upload.remote_port {
-            command += &format!("-P {port} ");
-        }
-
-        // "sftp -P 2222 sshuser@127.0.0.1 <<< "
-        command += &file_upload.remote_host;
-
-        // "sftp -P 2222 sshuser@127.0.0.1 <<< "<put_commands>""
-        command += " <<< \"";
-        command += &self.sftp_put_commands(file_upload);
-        command += "\"";
-
-        command
-    }
-
-    /// Produces SFTP `put` commands for the local files given in `file_upload`,
-    /// joined by newlines.
-    fn sftp_put_commands(&self, file_upload: &FileUploadInfo) -> String {
-        file_upload
-            .local_file_paths
-            .iter()
-            .map(|local_file_path| {
-                self.sftp_put_command(local_file_path, &file_upload.remote_dest_path)
-            })
-            .join("\n")
-    }
-
-    /// Produces a single SFTP `put` command for a given local file and remote destination.
-    fn sftp_put_command(
-        &self,
-        local_file_path: &String,
-        remote_dest_path: &Option<String>,
-    ) -> String {
-        let mut command = String::from("put ");
-
-        // "put -r"
-        let is_dir = Path::new(local_file_path)
-            .metadata()
-            .is_ok_and(|m| m.is_dir());
-        if is_dir {
-            command += "-r "
-        }
-
-        // "put -r \"path/to/local/file\"
-        command += &format!("\\\"{local_file_path}\\\"");
-
-        //"put -r path/to/local/file pwd/on/remote"
-        if let Some(pwd) = remote_dest_path {
-            command += " ";
-            command += &format!("\\\"{}\\\"", &pwd);
-        }
-
-        command
     }
 
     pub fn prompt_for_file_upload_password(
@@ -513,5 +509,46 @@ impl FileUpload {
             .with_uniform_margin(4.)
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(paths: &[&str]) -> FileUploadInfo {
+        FileUploadInfo {
+            local_file_paths: paths.iter().map(|s| s.to_string()).collect(),
+            remote_dest_path: Some("/r".into()),
+            remote_host: "u@h".into(),
+            remote_port: Some("2222".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn probe_is_dir_reports_fresh_answers_per_path() {
+        let dir = std::env::temp_dir().join(format!("sftp-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let paths = vec![
+            dir.to_string_lossy().into_owned(),
+            file.to_string_lossy().into_owned(),
+            dir.join("nope").to_string_lossy().into_owned(),
+        ];
+        assert_eq!(probe_is_dir(&paths), vec![true, false, false]);
+        // Fresh every time: the file becomes a directory-less path, the dir disappears.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(probe_is_dir(&paths), vec![false, false, false]);
+    }
+
+    #[test]
+    fn command_adds_r_only_for_directories_in_order() {
+        let cmd = transfer_file_sftp_command(&info(&["/a", "/b"]), &[true, false]);
+        assert_eq!(
+            cmd,
+            "sftp -P 2222 u@h <<< \"put -r \\\"/a\\\" \\\"/r\\\"\nput \\\"/b\\\" \\\"/r\\\"\""
+        );
     }
 }
