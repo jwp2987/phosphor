@@ -13321,6 +13321,55 @@ fn ensure_input_classifier_for_test(app: &mut App) {
     });
 }
 
+/// Registers an autodetection classifier whose every classification waits on a gate, and returns
+/// the gate. Closing it (`close()`) lets every pending and later classification through. A test
+/// that needs a verdict to stay outstanding while keys are typed uses it instead of the real
+/// model, whose job finishes (or spends its compute cap) on a real clock racing the typing.
+fn gated_input_classifier_for_test(app: &mut App) -> async_channel::Sender<()> {
+    use ::input_classifier::{
+        ClassificationResult, Context, HeuristicClassifier, InputClassificationResult,
+        InputClassifier, SafetyGatedClassifier,
+    };
+
+    struct Gated {
+        gate: async_channel::Receiver<()>,
+        inner: SafetyGatedClassifier<HeuristicClassifier>,
+    }
+
+    #[async_trait::async_trait]
+    impl InputClassifier for Gated {
+        async fn detect_input_type(
+            &self,
+            input: warp_completer::ParsedTokensSnapshot,
+            context: &Context,
+        ) -> InputClassificationResult {
+            let _ = self.gate.recv().await;
+            self.inner.detect_input_type(input, context).await
+        }
+
+        async fn classify_input(
+            &self,
+            input: warp_completer::ParsedTokensSnapshot,
+            context: &Context,
+        ) -> anyhow::Result<ClassificationResult> {
+            let _ = self.gate.recv().await;
+            self.inner.classify_input(input, context).await
+        }
+    }
+
+    let (open, gate) = async_channel::unbounded::<()>();
+    app.update(|ctx| {
+        assert!(!ctx.has_singleton_model::<crate::input_classifier::InputClassifierModel>());
+        ctx.add_singleton_model(move |_| crate::input_classifier::InputClassifierModel {
+            classifier: std::sync::Arc::new(Gated {
+                gate,
+                inner: SafetyGatedClassifier::new(HeuristicClassifier),
+            }),
+        });
+    });
+    open
+}
+
 /// Records every key the input queue releases behind an Enter that waited, in release order.
 fn record_released_enter_entries(
     app: &mut App,
@@ -13365,6 +13414,8 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The verdict stays outstanding until the gate is closed, whatever the real clock does.
+        let verdict_gate = gated_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -13405,6 +13456,14 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             );
         });
 
+        // The classification job is parked on the gate while it counts as running, so on the real
+        // clock its compute would reach the cap during the typing below and submit the Enter by
+        // itself. Give the wait an idle clock that has spent nothing: the cap timer re-checks it,
+        // finds it not running, and leaves the wait to the explicit give-up further down.
+        input.update(&mut app, |input, _| {
+            input.verdict_wait.as_mut().expect("waiting").compute = ComputeClock::default();
+        });
+
         // Typed straight after the Enter at 10 ms per key, an Enter, then more.
         for ch in "echo hi".chars() {
             type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
@@ -13425,11 +13484,6 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             );
         });
 
-        // Registered only now: with the model present the Enter's classification job runs on a
-        // real clock and spends its compute cap while the keys above are still being typed, which
-        // submits the Enter by itself. The released keys need it, because the editor classifies
-        // what they type.
-        ensure_input_classifier_for_test(&mut app);
         // The classifier spent its compute cap: the Enter goes ahead on the Enter-time rules.
         input.update(&mut app, |input, ctx| {
             if let Some(wait) = input.verdict_wait.as_mut() {
@@ -13440,6 +13494,8 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             }
             input.wait_for_verdict_then_enter(line.to_string(), ctx);
         });
+        // The Enter has gone ahead; the released keys classify what they type, so let it through.
+        verdict_gate.close();
         let mut expected: Vec<AfterEnterInput> = "echo hi"
             .chars()
             .map(|ch| AfterEnterInput::Text(ch.to_string()))
