@@ -332,20 +332,65 @@ fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
 pub fn context_and_files_for_attachments(
     attachments: Vec<PendingAttachment>,
 ) -> (Vec<AIAgentContext>, Vec<PendingFile>) {
+    let (context, files, _failed) = context_and_files_from_read(read_attachments(attachments));
+    (context, files)
+}
+
+/// One attachment together with the file content read for it. `file_context` is `Some` only for
+/// a `File` whose content was read successfully.
+#[derive(Debug, Clone)]
+pub struct ReadAttachment {
+    pub attachment: PendingAttachment,
+    pub file_context: Option<FileContext>,
+}
+
+/// Reads the content of every file attachment (blocking disk IO: stats and reads of up to the
+/// inline caps per file). Order is preserved. Callers on the UI thread run this on a worker
+/// thread and continue with [`context_and_files_from_read`] when it returns.
+pub fn read_attachments(attachments: Vec<PendingAttachment>) -> Vec<ReadAttachment> {
+    attachments
+        .into_iter()
+        .map(|attachment| {
+            let file_context = match &attachment {
+                PendingAttachment::File(file) => read_pending_file_for_context(file),
+                PendingAttachment::Image(_) => None,
+            };
+            ReadAttachment {
+                attachment,
+                file_context,
+            }
+        })
+        .collect()
+}
+
+/// Builds the context entries and file list from already-read attachments, in the original order,
+/// plus the names of the files whose content could not be read.
+pub fn context_and_files_from_read(
+    read: Vec<ReadAttachment>,
+) -> (Vec<AIAgentContext>, Vec<PendingFile>, Vec<String>) {
     let mut context = Vec::new();
     let mut files = Vec::new();
-    for attachment in attachments {
-        match attachment {
+    let mut failed = Vec::new();
+    for item in read {
+        match item.attachment {
             PendingAttachment::Image(image) => context.push(AIAgentContext::Image(image)),
             PendingAttachment::File(file) => {
-                if let Some(file_context) = read_pending_file_for_context(&file) {
-                    context.push(AIAgentContext::File(file_context));
+                match item.file_context {
+                    Some(file_context) => context.push(AIAgentContext::File(file_context)),
+                    None => failed.push(file.file_name.clone()),
                 }
                 files.push(file);
             }
         }
     }
-    (context, files)
+    (context, files, failed)
+}
+
+/// True when reading `attachments` touches the disk.
+pub fn attachments_need_disk_read(attachments: &[PendingAttachment]) -> bool {
+    attachments
+        .iter()
+        .any(|a| matches!(a, PendingAttachment::File(_)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
