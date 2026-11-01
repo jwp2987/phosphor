@@ -41,7 +41,9 @@ use super::grid::grid_handler::{
 };
 use super::image_map::StoredImageMetadata;
 use super::index::Point;
-use super::key_facts::{KeyFacts, KeyFactsCell, ModelCommand, ModelInbox};
+use super::key_facts::{
+    KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand, ModelInbox,
+};
 use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
     KittyDecodeError, KittyError, KittyMessage, KittyResponse, PendingKittyMessage,
@@ -499,6 +501,8 @@ pub struct TerminalModel {
     /// The facts the user-key path reads without this model's lock (#1403); stored after every
     /// parse and wherever the main thread changes what they derive from.
     key_facts: KeyFactsCell,
+    /// What the rest of the user-key path reads (#1404); see [`KeyModelSnapshot`].
+    key_model: KeyModelCell,
     /// What the main thread left for this model to apply (the key path writes here instead of
     /// taking the lock); drained before every parse.
     inbox: ModelInbox,
@@ -1260,6 +1264,7 @@ impl TerminalModel {
                 PaneHandoff::from(handoff)
             },
             key_facts: KeyFactsCell::default(),
+            key_model: KeyModelCell::default(),
             inbox: ModelInbox::default(),
             reply_ledger: SharedReplyLedger::default(),
             setup_echo_filter: SetupEchoFilter::default(),
@@ -1933,6 +1938,11 @@ impl TerminalModel {
         self.key_facts.clone()
     }
 
+    /// The cell [`KeyModelSnapshot`]s are published to; the view loads from it on the key path.
+    pub fn key_model_cell(&self) -> KeyModelCell {
+        self.key_model.clone()
+    }
+
     /// The inbox the key path leaves its bookkeeping in.
     pub fn model_inbox(&self) -> ModelInbox {
         self.inbox.clone()
@@ -1942,6 +1952,7 @@ impl TerminalModel {
     /// every parse, after the inbox is applied, and by the main thread where it changes them.
     pub fn publish_key_facts(&self) {
         self.key_facts.store(KeyFacts::from_model(self));
+        self.key_model.store(KeyModelSnapshot::from_model(self));
     }
 
     /// Applies, in order, what the main thread left in the inbox (the key path's bookkeeping),
@@ -1970,6 +1981,7 @@ impl TerminalModel {
                         active_block.mark_interrupted_by_ctrl_c();
                     }
                 }
+                ModelCommand::UserInput(input) => self.push_user_input(&input),
                 ModelCommand::TypedAhead(bytes) => {
                     // #1033: the tty echoes these keys wherever the output is when they arrive;
                     // record them so that echo can be told from output. A full-screen program

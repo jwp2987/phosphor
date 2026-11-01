@@ -18,12 +18,17 @@
 //! Both are leaf primitives: a few atomic operations or a `Mutex` held for a `Vec` push, never
 //! across I/O, a parse or any other lock.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use chrono::{DateTime, Local};
 use parking_lot::Mutex;
 
+use super::block::interactive_latch::InteractiveLatch;
+use super::block::interactive_prompt_candidate;
 use super::early_output::TypeaheadMode;
+use super::session::SessionId;
 use super::terminal_model::TerminalModel;
 
 /// The facts of the terminal model the user-key path decides on.
@@ -128,6 +133,87 @@ impl KeyFactsCell {
     }
 }
 
+/// The rest of what a user key reads from the terminal model (#1404), published the same way as
+/// [`KeyFacts`] but too big for one atomic: the ssh connect / subshell bootstrap bookkeeping, the
+/// agent-owned-pty rule and the active block's interactive latch. A key that finds the model free
+/// reads the exact state; one that finds the parser inside the lock reads this copy, at most the
+/// chunk being parsed behind. The cell is a leaf lock held for one clone or one store.
+#[derive(Clone, Debug, Default)]
+pub struct KeyModelSnapshot {
+    /// The session is read only (a finished viewer, a transcript).
+    pub read_only: bool,
+    /// A shared-session executor: it writes to the pty even before its bootstrap script echoed.
+    pub shared_session_executor: bool,
+    /// The remote or subshell session the shell announced and that is not bootstrapped yet.
+    pub pending_session_id: Option<SessionId>,
+    /// The SSH hook was seen for the pending connect.
+    pub has_pending_ssh_session: bool,
+    /// The pending session is a subshell (`su -`, `sudo -i`).
+    pub has_pending_subshell: bool,
+    pub active_block_bootstrapped: bool,
+    pub active_block_started: bool,
+    pub active_and_long_running: bool,
+    /// A hash of the active block's id: compared with the hash of an id the view remembers, so
+    /// "is this still the block I noted" needs no clone of the id on every key.
+    pub active_block_hash: u64,
+    pub active_block_start: Option<DateTime<Local>>,
+    /// The agent, not the user, owns the running command's pty (#1179).
+    pub agent_owns_pty: bool,
+    /// The active block's interactive latch (cheap to clone), for the per-key probe.
+    pub interactive_latch: Option<InteractiveLatch>,
+}
+
+/// The hash [`KeyModelSnapshot::active_block_hash`] holds for a block id.
+pub fn block_id_hash(id: &super::BlockId) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl KeyModelSnapshot {
+    /// Reads the snapshot from the model (the model's lock is held by the caller).
+    pub fn from_model(model: &TerminalModel) -> Self {
+        let active_block = model.block_list().active_block();
+        let agent_owns_pty = !model.is_alt_screen_active()
+            && active_block.is_agent_driving_command()
+            && interactive_prompt_candidate(active_block.output_grid().grid_handler()).is_none();
+        Self {
+            read_only: model.is_read_only(),
+            shared_session_executor: model.shared_session_status().is_executor(),
+            pending_session_id: model.pending_session_id(),
+            has_pending_ssh_session: model.has_pending_ssh_session(),
+            has_pending_subshell: model.pending_subshell_session().is_some(),
+            active_block_bootstrapped: model.is_active_block_bootstrapped(),
+            active_block_started: active_block.started(),
+            active_and_long_running: active_block.is_active_and_long_running(),
+            active_block_hash: block_id_hash(model.active_block_id()),
+            active_block_start: active_block.start_ts().copied(),
+            agent_owns_pty,
+            interactive_latch: Some(active_block.interactive_latch().clone()),
+        }
+    }
+
+    /// `is_long_running` of the view: a running command in a session the user can write to.
+    pub fn is_long_running(&self) -> bool {
+        self.active_and_long_running && !self.read_only
+    }
+}
+
+/// The latest [`KeyModelSnapshot`], shared between the model (which stores) and the views (which
+/// load).
+#[derive(Clone, Debug, Default)]
+pub struct KeyModelCell(Arc<Mutex<KeyModelSnapshot>>);
+
+impl KeyModelCell {
+    pub fn store(&self, snapshot: KeyModelSnapshot) {
+        *self.0.lock() = snapshot;
+    }
+
+    pub fn load(&self) -> KeyModelSnapshot {
+        self.0.lock().clone()
+    }
+}
+
 /// What the key path leaves for the model to apply under its own lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelCommand {
@@ -137,6 +223,9 @@ pub enum ModelCommand {
     /// Bytes the app wrote to the pty as the user's typed-ahead keys: their echo is recorded so it
     /// can be told apart from output (#1033), or forgotten when a full-screen program reads them.
     TypedAhead(Vec<u8>),
+    /// Text the user typed that may turn out to be typeahead: the early-output model matches it
+    /// against the characters the pty echoes (`TerminalModel::push_user_input`).
+    UserInput(String),
 }
 
 /// The inbox of [`ModelCommand`]s: written by the main thread without the model's lock, drained by

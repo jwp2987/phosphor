@@ -21173,6 +21173,50 @@ fn pane_key_ime_composition_goes_to_the_focused_editor_and_the_commit_is_one_key
     });
 }
 
+/// #1404 / #1403: while the pty reader is inside the model's lock (parsing), the reads a user key
+/// makes -- the routing rows, the ssh and subshell bookkeeping, the agent-owned-pty rule, the
+/// interactive latch -- return from the published snapshot instead of waiting. A read that took the
+/// blocking lock would deadlock this test (one thread holds the lock), so a watchdog turns that
+/// into a failure instead of a hang.
+#[test]
+fn key_path_reads_do_not_wait_for_the_pty_reader() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watchdog_done = done.clone();
+            let watchdog = std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                eprintln!("a key-path read waited for the model's lock");
+                std::process::abort();
+            });
+            let parser_inside = view.model.lock();
+            let _scope = KeyPathScope::enter(&view.key_path_depth);
+            let _ = view.read_key_facts();
+            let _ = view.model_facts();
+            let _ = view.should_write_typed_chars_to_pty(ctx);
+            let _ = view.agent_owns_command_pty();
+            view.reprobe_interactive_latch_on_key();
+            let _ = view.is_long_running();
+            let _ = view.subshell_bootstrap_pending();
+            let _ = view.forwards_keys_during_subshell_bootstrap(false);
+            let _ = view.holds_keys_for_powershell_subshell_setup();
+            let _ = view.ssh_bootstrap_interrupt_route();
+            let _ = view.typeahead_handoff_routes_keys_to_pty();
+            drop(parser_inside);
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            watchdog.join().unwrap();
+        });
+    });
+}
+
 fn ssh_keys_during_connect_are_delivered_once_in_order(queue: bool) {
     with_ssh_hold_path(queue, move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);

@@ -494,7 +494,9 @@ use crate::terminal::model::escape_sequences::{self, C1, EscCodes, ToEscapeSeque
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::index::{Point, Side};
-use crate::terminal::model::key_facts::{KeyFacts, KeyFactsCell, ModelCommand, ModelInbox};
+use crate::terminal::model::key_facts::{
+    KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand, ModelInbox, block_id_hash,
+};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
 use crate::terminal::model::session::{BootstrapSessionType, SessionType, Sessions, SessionsEvent};
@@ -2878,6 +2880,10 @@ pub struct TerminalView {
     handoff: PaneHandoff,
     /// The facts of the model the user-key path decides on, published by the model.
     key_facts: KeyFactsCell,
+    /// The rest of what a key reads from the model, published the same way (#1404).
+    key_model: KeyModelCell,
+    /// Depth of user-key handling on this thread; see [`KeyPathScope`].
+    key_path_depth: Rc<Cell<u32>>,
     /// Where the key path leaves what it used to write into the model under its lock.
     model_inbox: ModelInbox,
     view_handle: WeakViewHandle<Self>,
@@ -4459,12 +4465,13 @@ impl TerminalView {
         // types during an ssh connect (#1400) is offered to that same queue as an entry of its own
         // origin, so it is ordered with the terminal's by arrival, with no side buffer.
         let paste_queue = paste_queue::PasteQueueState::new();
-        let (handoff, key_facts, model_inbox) = {
+        let (handoff, key_facts, key_model, model_inbox) = {
             let model = model.lock();
             model.publish_key_facts();
             (
                 model.pane_handoff(),
                 model.key_facts_cell(),
+                model.key_model_cell(),
                 model.model_inbox(),
             )
         };
@@ -5029,6 +5036,8 @@ impl TerminalView {
             paste_queue,
             handoff,
             key_facts,
+            key_model,
+            key_path_depth: Rc::new(Cell::new(0)),
             model_inbox,
             subshell_bootstrap_announced: None,
             powershell_setup_hold: PowerShellSetupHold::Off,
@@ -9822,10 +9831,10 @@ impl TerminalView {
     /// hook the tty is still cooked and the plain ^C reaches ssh as SIGINT.
     fn ssh_pre_init_abort_bytes(&self) -> Option<Vec<u8>> {
         let (hook_seen, pending) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.has_pending_ssh_session(),
-                model.pending_session_id().is_some(),
+                facts.has_pending_ssh_session,
+                facts.pending_session_id.is_some(),
             )
         };
         ssh_pre_init_abort_bytes(hook_seen, pending)
@@ -10494,6 +10503,9 @@ impl TerminalView {
     }
 
     pub fn is_long_running(&self) -> bool {
+        if self.in_key_path() {
+            return self.read_key_snapshot().is_long_running();
+        }
         let model = self.model.lock();
         model
             .block_list()
@@ -10550,6 +10562,7 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         // #1292: during an ssh connect these are held with the typed keys, in order, not written
         // into the bootstrap. Abort keys always pass.
         if !is_abort_key(bytes)
@@ -10706,17 +10719,14 @@ impl TerminalView {
 
     /// #1373: a key arrived. If the active block executes and is not latched interactive, re-probe
     /// the pty now, BEFORE the key is routed, so a silent builtin (`read x`) that went to sleep
-    /// after the debounce probe still gets the key. The model lock is held only to clone the
-    /// latch handle; the probe's syscalls run outside it. Nothing happens at a prompt (no
+    /// after the debounce probe still gets the key. The latch handle comes from the published
+    /// key snapshot, so the key never waits for the pty reader; the probe's syscalls run outside
+    /// any lock. Nothing happens at a prompt (no
     /// executing block): the check is two atomic loads.
     fn reprobe_interactive_latch_on_key(&self) {
-        let latch = self
-            .model
-            .lock()
-            .block_list()
-            .active_block()
-            .interactive_latch()
-            .clone();
+        let Some(latch) = self.read_key_snapshot().interactive_latch else {
+            return;
+        };
         if latch.needs_key_probe() {
             latch.on_key();
         }
@@ -10725,6 +10735,7 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         self.reprobe_interactive_latch_on_key();
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if is_ssh_interrupt_key(characters) {
@@ -10785,12 +10796,9 @@ impl TerminalView {
                 .then(|| self.ssh_pre_init_abort_bytes())
                 .flatten();
             if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
-                // #1178/#1253: the SIGINT path marks the ssh command interrupted too.
-                self.model
-                    .lock()
-                    .block_list_mut()
-                    .active_block_mut()
-                    .mark_interrupted_by_ctrl_c();
+                // #1178/#1253: the SIGINT path marks the ssh command interrupted too (left in the
+                // model's inbox, which applies it before it parses the next bytes).
+                self.leave_user_wrote_in_model_inbox(false, true);
                 ctx.emit(Event::SigintForegroundToPty);
             } else if let Some(abort) = abort {
                 self.write_user_bytes_to_pty(abort, ctx);
@@ -10851,7 +10859,7 @@ impl TerminalView {
         // The dialog only owns input while it belongs to the pending session. A choice block left
         // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
         // command (host-key / password prompts) (#976).
-        let pending_now = self.model.lock().pending_session_id();
+        let pending_now = self.model_facts().pending_session_id;
         // Any block (not just the first) may be the current one: stale ones can precede it.
         let dialog_up = choice_block_owns_input(
             self.rich_content_views
@@ -10865,7 +10873,7 @@ impl TerminalView {
             pending_now,
         );
         let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
-            && self.model.lock().pending_session_id().is_some_and(|sid| {
+            && pending_now.is_some_and(|sid| {
                 self.sessions
                     .as_ref(ctx)
                     .remote_server_setup_state(sid)
@@ -10888,7 +10896,7 @@ impl TerminalView {
             self.deliver_ssh_typeahead_if_ready("key", ctx);
         }
         let pending_sid = if gate_armed || self.has_pending_ssh_command() {
-            self.model.lock().pending_session_id()
+            self.model_facts().pending_session_id
         } else {
             None
         };
@@ -11312,15 +11320,12 @@ impl TerminalView {
     /// from the warpify pending-ssh state (preexec saw ssh) for a command that started after the
     /// last release, releases it when it ran its course, and records a completed ssh block.
     fn refresh_ssh_connect_gate(&mut self) -> bool {
-        let (pending, managed_ssh, block_start, active_block_id) = {
-            let model = self.model.lock();
-            (
-                model.pending_session_id().is_some(),
-                model.has_pending_ssh_session(),
-                model.block_list().active_block().start_ts().copied(),
-                model.active_block_id().clone(),
-            )
-        };
+        let facts = self.model_facts();
+        let (pending, managed_ssh, block_start) = (
+            facts.pending_session_id.is_some(),
+            facts.has_pending_ssh_session,
+            facts.active_block_start,
+        );
         if self.ssh_connect_gate.is_none() && self.has_pending_ssh_command() {
             let age = block_start
                 .and_then(|start| Local::now().signed_duration_since(start).to_std().ok());
@@ -11332,7 +11337,9 @@ impl TerminalView {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
                 let mut gate = SshConnectGate::new(armed_at);
-                gate.block_id = Some(active_block_id);
+                // The id is cloned only when a gate is armed (once per ssh connect), which is why
+                // this one read keeps the model's lock.
+                gate.block_id = Some(self.model.lock().active_block_id().clone());
                 self.ssh_connect_gate = Some(gate);
             }
         }
@@ -11379,7 +11386,7 @@ impl TerminalView {
     /// remote session is pending [`Self::ssh_bootstrap_interrupt_route`] decides. Bounded by the
     /// gate's own ceiling, after which the interrupt is forwarded as usual.
     fn ssh_gate_holds_interrupt(&mut self) -> bool {
-        let pending = self.model.lock().pending_session_id().is_some();
+        let pending = self.model_facts().pending_session_id.is_some();
         if pending || !self.refresh_ssh_connect_gate() {
             return false;
         }
@@ -11407,10 +11414,10 @@ impl TerminalView {
             return true;
         }
         let (pending, hook_seen) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.pending_session_id().is_some(),
-                model.has_pending_ssh_session(),
+                facts.pending_session_id.is_some(),
+                facts.has_pending_ssh_session,
             )
         };
         if pending || !self.refresh_ssh_connect_gate() {
@@ -11427,10 +11434,10 @@ impl TerminalView {
     /// remote startup instead of stopping the client; the signal ends it in cooked and raw mode.
     fn ssh_connect_sigint_applies(&mut self) -> bool {
         let (hook_seen, pending) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.has_pending_ssh_session(),
-                model.pending_session_id().is_some(),
+                facts.has_pending_ssh_session,
+                facts.pending_session_id.is_some(),
             )
         };
         !hook_seen
@@ -11444,7 +11451,7 @@ impl TerminalView {
 
     /// Tells the user (once per pending remote session) that an interrupt was held (#1001).
     fn note_ssh_interrupt_held(&mut self, ctx: &mut ViewContext<Self>) {
-        let sid = self.model.lock().pending_session_id();
+        let sid = self.model_facts().pending_session_id;
         log::info!("Interrupt held until the SSH session finishes starting (session {sid:?})");
         if sid.is_none() {
             // Before the remote session is announced: once per connect window.
@@ -11493,18 +11500,25 @@ impl TerminalView {
         let Some(gate) = self.ssh_connect_gate.as_ref() else {
             return false;
         };
-        let (alt_screen, visible) = {
+        let alt_screen = if self.in_key_path() {
+            self.read_key_facts().alt_screen
+        } else {
+            self.model.lock().is_alt_screen_active()
+        };
+        // The output is read (under the model's lock: this is the one read of the ssh connect
+        // window that needs the grid) only while nothing visible has been seen, which ends for
+        // good with the first banner or prompt.
+        let visible = if !gate.output_seen && !gate.block_done {
             let model = self.model.lock();
-            let visible = !gate.output_seen
-                && !gate.block_done
-                && output_has_visible_text(
-                    &model
-                        .block_list()
-                        .active_block()
-                        .output_grid()
-                        .contents_to_string(false, None),
-                );
-            (model.is_alt_screen_active(), visible)
+            output_has_visible_text(
+                &model
+                    .block_list()
+                    .active_block()
+                    .output_grid()
+                    .contents_to_string(false, None),
+            )
+        } else {
+            false
         };
         let gate = self.ssh_connect_gate.as_mut().expect("checked above");
         if visible {
@@ -11518,11 +11532,11 @@ impl TerminalView {
     /// bootstrapped). Otherwise the pure route for an interrupt key.
     fn ssh_bootstrap_interrupt_route(&self) -> Option<SshBootstrapInterruptRoute> {
         let (pending, is_subshell, bootstrapped) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.pending_session_id(),
-                model.pending_subshell_session().is_some(),
-                model.is_active_block_bootstrapped(),
+                facts.pending_session_id,
+                facts.has_pending_subshell,
+                facts.active_block_bootstrapped,
             )
         };
         if is_subshell || bootstrapped {
@@ -11549,10 +11563,8 @@ impl TerminalView {
     /// interleave with the script (#960). Only Ctrl-C / Ctrl-D are exempt, see
     /// `forwards_keys_during_subshell_bootstrap`.
     fn subshell_bootstrap_pending(&self) -> bool {
-        let model = self.model.lock();
-        !model.is_read_only()
-            && model.pending_subshell_session().is_some()
-            && !model.is_active_block_bootstrapped()
+        let facts = self.model_facts();
+        !facts.read_only && facts.has_pending_subshell && !facts.active_block_bootstrapped
     }
 
     /// Whether a key must go straight to the pty although the bootstrap block is not a running
@@ -11561,10 +11573,11 @@ impl TerminalView {
     /// could type into vim, a password prompt or a remote shell. Other keys stay held so the
     /// user cannot interleave with a healthy-but-slow bootstrap script.
     fn forwards_keys_during_subshell_bootstrap(&self, abort_key: bool) -> bool {
+        let facts = self.model_facts();
         subshell_bootstrap_key_forwarded(
-            self.subshell_bootstrap_pending(),
+            !facts.read_only && facts.has_pending_subshell && !facts.active_block_bootstrapped,
             abort_key,
-            self.subshell_bootstrap_announced_age(),
+            self.subshell_bootstrap_announced_age_in(&facts),
         )
     }
 
@@ -11573,13 +11586,17 @@ impl TerminalView {
     /// session is bootstrapped/read-only. Needs no `InitShell`, so it also covers a script that
     /// the shell never ran (#960).
     fn subshell_bootstrap_announced_age(&self) -> Option<Duration> {
+        self.subshell_bootstrap_announced_age_in(&self.model_facts())
+    }
+
+    /// [`Self::subshell_bootstrap_announced_age`] against facts already read.
+    fn subshell_bootstrap_announced_age_in(&self, facts: &KeyModelSnapshot) -> Option<Duration> {
         let (block_id, at) = self.subshell_bootstrap_announced.as_ref()?;
-        let model = self.model.lock();
         subshell_bootstrap_announcement_applies(
-            model.is_read_only(),
-            model.is_active_block_bootstrapped(),
-            model.block_list().active_block().id() == block_id,
-            model.pending_subshell_session().is_some(),
+            facts.read_only,
+            facts.active_block_bootstrapped,
+            facts.active_block_hash == block_id_hash(block_id),
+            facts.has_pending_subshell,
         )
         .then(|| at.elapsed())
     }
@@ -11603,7 +11620,7 @@ impl TerminalView {
             PowerShellSetupHold::Setup
             | PowerShellSetupHold::ScriptRunning
             | PowerShellSetupHold::AwaitingPrompt => {
-                !self.model.lock().is_read_only()
+                !self.model_facts().read_only
                     && self
                         .subshell_bootstrap_announced
                         .as_ref()
@@ -11629,29 +11646,21 @@ impl TerminalView {
     /// (`on_possible_password_prompt` / `on_stalled_interactive_prompt`) can lag the prompt by
     /// a poll. Reading the cursor line is cheap, unlike scanning the whole output.
     fn agent_owns_command_pty(&self) -> bool {
-        let model = self.model.lock();
-        let active_block = model.block_list().active_block();
-        !model.is_alt_screen_active()
-            && active_block.is_agent_driving_command()
-            && interactive_prompt_candidate(active_block.output_grid().grid_handler()).is_none()
+        self.read_key_snapshot().agent_owns_pty
     }
 
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
-        // Computed before the model lock below (it takes the same lock).
+        // Read without waiting for the pty reader (#1404): see `model_facts`.
+        let facts = self.model_facts();
         let subshell_bootstrap_stalled = self
-            .subshell_bootstrap_announced_age()
+            .subshell_bootstrap_announced_age_in(&facts)
             .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
-        // Lock the model once and hold it throughout the function
-        let model = self.model.lock();
 
         // If the active block hasn't started yet, we don't want to write to the pty.
         // Note that we check block started and NOT block.is_long_running(), because
         // the block starts on enter but only becomes long running on receiving Preexec.
         // We want to make sure we capture any input between enter and receiving Preexec.
-        if !model.block_list().active_block().started()
-            && !(FeatureFlag::TypeaheadHandoff.is_enabled()
-                && model.typeahead_handoff().routes_keys_to_pty())
-        {
+        if !facts.active_block_started && !self.typeahead_handoff_routes_keys_to_pty() {
             return false;
         }
 
@@ -11662,10 +11671,10 @@ impl TerminalView {
             .sessions
             .as_ref(ctx)
             .has_pending_or_bootstrapped_session();
-        let is_shared_session_executor = model.shared_session_status().is_executor();
 
-        was_bootstrap_script_echoed || is_shared_session_executor || subshell_bootstrap_stalled
+        was_bootstrap_script_echoed || facts.shared_session_executor || subshell_bootstrap_stalled
     }
+
     /// What has focus, read from the live focus chain of the key being routed (no render
     /// snapshot, #934).
     fn pane_focus_facts(
@@ -11783,6 +11792,7 @@ impl TerminalView {
     /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
     /// are `pane_key::route_typed`; this function acts on its answer.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         self.reprobe_interactive_latch_on_key();
         // #1345: the terminal view received typed characters (a live key or the held ones being
         // delivered); `chars` is a count, never the text.
@@ -12198,6 +12208,41 @@ impl TerminalView {
         }
     }
 
+    /// The rest of what the user-key path reads from the model (#1404): the exact state when the
+    /// model is free (and the published copy is refreshed from it), else the copy the model
+    /// published after its last parse. Never waits for the pty reader.
+    /// `PHOSPHOR_HANDOFF_FACTS=0` puts the key path back on the model's blocking lock.
+    fn read_key_snapshot(&self) -> KeyModelSnapshot {
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            return KeyModelSnapshot::from_model(&self.model.lock());
+        }
+        match self.model.try_lock() {
+            Some(model) => {
+                let snapshot = KeyModelSnapshot::from_model(&model);
+                self.key_model.store(snapshot.clone());
+                snapshot
+            }
+            None => self.key_model.load(),
+        }
+    }
+
+    /// Whether a user key is being handled on this thread right now (`KeyPathScope`).
+    fn in_key_path(&self) -> bool {
+        self.key_path_depth.get() > 0
+    }
+
+    /// What the ssh-connect and subshell-bootstrap bookkeeping reads from the model. While a user
+    /// key is being handled this is `read_key_snapshot` (the key never waits for the pty reader);
+    /// anywhere else it is the exact state under the model's lock, as those callers always had.
+    fn model_facts(&self) -> KeyModelSnapshot {
+        if self.in_key_path() {
+            self.read_key_snapshot()
+        } else {
+            KeyModelSnapshot::from_model(&self.model.lock())
+        }
+    }
+
     /// Leaves, for the model to apply, that the user wrote to the active block's command: its first
     /// input (`first_input`, the block has none yet) and a ^C (#1178). The model applies it before
     /// it parses the next bytes; when it is free right now it is applied now.
@@ -12481,7 +12526,19 @@ impl TerminalView {
     /// The model matches the input recorded here against the actual characters
     /// echoed to the pty to determine what is typeahead.
     fn report_possible_typeahead(&mut self, input: &str) {
-        self.model.lock().push_user_input(input);
+        // Left in the model's inbox, which applies it before it parses the next bytes, so the
+        // record of the key is in place before the echo it causes; the key never waits for the
+        // pty reader (#1404). When the model is free it is applied now.
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            self.model.lock().push_user_input(input);
+            return;
+        }
+        self.model_inbox
+            .post(ModelCommand::UserInput(input.to_owned()));
+        if let Some(mut model) = self.model.try_lock() {
+            model.apply_inbox();
+        }
     }
 
     /// Show `display` instead of `wrapped` for the command about to run (#952).
@@ -34985,6 +35042,24 @@ impl TypedActionView for TerminalView {
                 }
             }
         }
+    }
+}
+
+/// While alive, the terminal view's ssh and subshell bookkeeping reads the model through the key
+/// snapshot instead of its lock (`TerminalView::model_facts`): the user key being handled never
+/// waits for the pty reader (#1404).
+struct KeyPathScope(Rc<Cell<u32>>);
+
+impl KeyPathScope {
+    fn enter(depth: &Rc<Cell<u32>>) -> Self {
+        depth.set(depth.get() + 1);
+        Self(Rc::clone(depth))
+    }
+}
+
+impl Drop for KeyPathScope {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
     }
 }
 
