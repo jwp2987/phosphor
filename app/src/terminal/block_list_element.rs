@@ -1565,10 +1565,16 @@ impl BlockListElement {
     /// See [`terminal_takes_unclaimed_held_key`] (#1332). Only reached for a key the input's
     /// editor, which sits above this element, did not take.
     fn takes_unclaimed_held_key(&self, ctx: &EventContext) -> bool {
+        let editor_focus = ctx.live_focus_of(self.input_editor_view_id);
+        // #1345: focus is in the editor, which takes every key from here on.
+        if editor_focus == Some(true) {
+            self.ssh_key_hold.end_settle();
+        }
         terminal_takes_unclaimed_held_key(
-            self.ssh_key_hold.is_active(),
+            self.ssh_key_hold
+                .rescues_unclaimed_keys(std::time::Instant::now()),
             ctx.live_focus_of(self.input_view_id),
-            ctx.live_focus_of(self.input_editor_view_id),
+            editor_focus,
         )
     }
 
@@ -5690,6 +5696,32 @@ mod tests {
                 "editor focus {editor_focus:?}"
             );
         }
+    }
+
+    /// #1345: the hold ended (keys delivered) while focus was still settling into the editor.
+    /// A key in that window is claimed by the terminal exactly when the editor does not take it.
+    #[test]
+    fn key_between_hold_off_and_editor_focus_is_not_dropped() {
+        use crate::editor::EditorKeyHold;
+        use std::time::{Duration, Instant};
+        let hold = EditorKeyHold::default();
+        let t0 = Instant::now();
+        hold.set_active(true);
+        hold.set_active(false);
+        hold.begin_settle(t0);
+        let rescue = hold.rescues_unclaimed_keys(t0 + Duration::from_millis(10));
+        // Input focused, editor not yet: nobody else takes it, the terminal must.
+        assert!(super::terminal_takes_unclaimed_held_key(
+            rescue,
+            Some(true),
+            Some(false)
+        ));
+        // Editor already focused: it takes the key, the terminal must not (#1339).
+        assert!(!super::terminal_takes_unclaimed_held_key(
+            rescue,
+            Some(true),
+            Some(true)
+        ));
     }
 
     #[test]

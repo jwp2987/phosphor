@@ -10701,6 +10701,7 @@ impl TerminalView {
         self.ssh_typeahead.clear();
         self.ssh_editor_key_hold.clear();
         self.set_ssh_typeahead_holding(false);
+        self.ssh_editor_key_hold.end_settle();
         self.ssh_typeahead_last_key_at = None;
         self.ssh_typeahead_discard_burst = false;
         self.ssh_paste_to_hold = false;
@@ -10807,6 +10808,9 @@ impl TerminalView {
     fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
         warpui::profiling::zone!("typeahead_handoff");
         self.set_ssh_typeahead_holding(false);
+        // #1345: focus may still be settling into the editor; a key typed meanwhile is taken by
+        // the terminal view for a moment instead of falling between the editor and the live path.
+        self.ssh_editor_key_hold.begin_settle(Instant::now());
         self.ssh_typeahead_last_key_at = None;
         self.ssh_paste_to_hold = false;
         self.ssh_typeahead_precmd_wait_since = None;
