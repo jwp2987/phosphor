@@ -12104,6 +12104,11 @@ impl TerminalView {
             .typeahead_handoff_mut()
             .take_uncovered_deferral_started();
         if let Some(id) = id {
+            // #1192: name the wait that holds the Enter, so a multi-second hold is attributable
+            // from the input_order log alone.
+            warpui::input_order::log_hop("enter_deferred_uncovered_report", || {
+                format!("id={id} patience_ms={}", UNCOVERED_REPORT_PATIENCE.as_millis())
+            });
             let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
             ctx.spawn(
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
@@ -12142,6 +12147,9 @@ impl TerminalView {
         let Some(id) = id else {
             return;
         };
+        warpui::input_order::log_hop("enter_deferred_awaiting_report", || {
+            format!("id={id} patience_ms={}", TYPEAHEAD_REPORT_PATIENCE.as_millis())
+        });
         ctx.spawn(
             Timer::after(TYPEAHEAD_REPORT_PATIENCE),
             move |me, _, ctx| {
