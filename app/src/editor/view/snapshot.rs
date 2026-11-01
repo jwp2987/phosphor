@@ -992,11 +992,11 @@ mod tests;
 /// The most ghost text (an autosuggestion's remaining suffix, a placeholder) the editor offers or
 /// lays out, in bytes (#1398). A 1.3 MB history entry as the suggestion for its first two letters
 /// froze the Mac UI for ~76 s in text layout (ICU line breaking re-scans the string at every
-/// break). 4 KB is far above any command worth completing from a ghost (a long one-liner, a
-/// multi-line script of ~50 lines) and costs well under a millisecond to lay out; a suggestion
+/// break). 16 KB (owner's choice) covers any command worth completing from a ghost (a long
+/// one-liner, a multi-line script of ~200 lines) and stays cheap to lay out; a suggestion
 /// longer than that is not offered at all, since accepting a truncated one would insert a
 /// command the user never saw in full.
-pub(crate) const MAX_GHOST_TEXT_BYTES: usize = 4096;
+pub(crate) const MAX_GHOST_TEXT_BYTES: usize = 16 * 1024;
 
 /// `text`, cut at the last char boundary within [`MAX_GHOST_TEXT_BYTES`] and ended with an
 /// ellipsis when longer. Defence in depth behind the autosuggestion cap in `set_autosuggestion`.
