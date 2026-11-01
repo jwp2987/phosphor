@@ -12344,6 +12344,9 @@ fn test_paste_then_held_enter_classifies_the_pasted_line() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
     App::test((), |mut app| async move {
+        // Without the flag the agent branch of Enter is skipped and every line reaches the
+        // shell, which made the prose case fail for a reason that has nothing to do with routing.
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
