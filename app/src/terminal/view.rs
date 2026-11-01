@@ -7268,6 +7268,12 @@ impl TerminalView {
                 log::warn!("Cannot persist CLI subagent snapshot; block {block_id:?} not found");
                 return;
             };
+            if block.is_restore_pending() {
+                log::warn!(
+                    "Cannot persist CLI subagent snapshot; block {block_id:?} is still loading"
+                );
+                return;
+            }
             let metadata = block.agent_interaction_metadata();
             let conversation_id =
                 conversation_id.or_else(|| metadata.map(|metadata| *metadata.conversation_id()));
@@ -10342,6 +10348,12 @@ impl TerminalView {
                 .then(|| self.ssh_pre_init_abort_bytes())
                 .flatten();
             if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
+                // #1178/#1253: the SIGINT path marks the ssh command interrupted too.
+                self.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_mut()
+                    .mark_interrupted_by_ctrl_c();
                 ctx.emit(Event::SigintForegroundToPty);
             } else if let Some(abort) = abort {
                 self.write_user_bytes_to_pty(abort, ctx);

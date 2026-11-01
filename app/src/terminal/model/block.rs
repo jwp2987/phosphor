@@ -501,6 +501,9 @@ pub struct Block {
     /// alter the row numbers for [`Self::goto`] and [`Self::goto_line`] when ConPTY is involved. We
     /// track the count of discarded newlines here in order to correct the row number.
     leading_linefeeds_ignored: usize,
+    /// True for a restored placeholder whose grids are still being parsed off-thread (#1254):
+    /// serializing it would save a blank block (#1265).
+    restore_pending: bool,
 
     /// `true` if client-side telemetry for user-generated AI data is enabled.
     pub(super) is_ai_ugc_telemetry_enabled: bool,
@@ -1108,6 +1111,7 @@ impl Block {
             ssh_payload_only: false,
             should_hide_command_grid: false,
             leading_linefeeds_ignored: 0,
+            restore_pending: false,
             is_ai_ugc_telemetry_enabled,
             restored_block_was_local: None,
             agent_view_visibility: match conversation_id {
@@ -1270,10 +1274,26 @@ impl Block {
     /// from the same saved bytes (#1254). Everything else on `self` is kept, because the model
     /// and view may have changed it since this placeholder was created.
     pub(super) fn adopt_restored_content(&mut self, mut restored: Block) {
+        // The scratch block was built at the size captured when the job started; the placeholder
+        // may have been resized since (#1265).
+        restored.resize(self.size);
+        // A `honor_ps1` toggle applied to the placeholder meanwhile must survive the grid swap.
+        let honor_ps1 = self.header_grid.honor_ps1();
+        self.restore_pending = false;
         std::mem::swap(&mut self.header_grid, &mut restored.header_grid);
         std::mem::swap(&mut self.output_grid, &mut restored.output_grid);
         self.is_for_in_band_command = restored.is_for_in_band_command;
         self.leading_linefeeds_ignored = restored.leading_linefeeds_ignored;
+        self.header_grid.set_honor_ps1(honor_ps1);
+    }
+
+    /// Whether this is a restored placeholder whose content has not been installed yet (#1265).
+    pub fn is_restore_pending(&self) -> bool {
+        self.restore_pending
+    }
+
+    pub(super) fn set_restore_pending(&mut self, pending: bool) {
+        self.restore_pending = pending;
     }
 
     /// Prefer using the `reset_block_index` fn on the BlockList instead.

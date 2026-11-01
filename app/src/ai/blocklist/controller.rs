@@ -1294,6 +1294,17 @@ impl BlocklistAIController {
     /// completion of the same block is dropped (`already_followed_up`) instead of being held
     /// behind that resume and reported a second time when it ends.
     pub(crate) fn note_block_reported(&mut self, block_id: &BlockId) {
+        self.record_monitored_completion_follow_up(block_id);
+    }
+
+    /// Remembers that `block_id`'s completion has been followed up. Only recent blocks can still
+    /// be reported, so when the set grows past a generous bound it is emptied rather than left to
+    /// grow for the life of the app (#1253).
+    fn record_monitored_completion_follow_up(&mut self, block_id: &BlockId) {
+        const MAX_TRACKED_FOLLOW_UPS: usize = 1024;
+        if self.monitored_completion_follow_ups.len() >= MAX_TRACKED_FOLLOW_UPS {
+            self.monitored_completion_follow_ups.clear();
+        }
         self.monitored_completion_follow_ups
             .insert(block_id.clone());
     }
@@ -1438,8 +1449,8 @@ impl BlocklistAIController {
                 return false;
             }
         }
-        for id in reported {
-            self.monitored_completion_follow_ups.insert(id);
+        for id in &reported {
+            self.record_monitored_completion_follow_up(id);
         }
         true
     }

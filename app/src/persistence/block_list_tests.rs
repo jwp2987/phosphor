@@ -398,3 +398,37 @@ fn cap_persisted_output_keeps_head_and_tail() {
     let capped = cap_persisted_output(&vec![b'y'; MAX_PERSISTED_OUTPUT_BYTES * 4]).unwrap();
     assert!(capped.len() <= MAX_PERSISTED_OUTPUT_BYTES + 256);
 }
+
+/// #1253: an over-long single line must not be cut mid-character or mid-escape-sequence, and
+/// capping a capped block again must not change it.
+#[test]
+fn cap_persisted_output_cuts_on_char_and_escape_boundaries_and_is_idempotent() {
+    use super::{MAX_PERSISTED_OUTPUT_BYTES, cap_persisted_output};
+
+    let half = MAX_PERSISTED_OUTPUT_BYTES / 2;
+    let total = MAX_PERSISTED_OUTPUT_BYTES * 3;
+    let tail_floor = total - half;
+
+    // Plant a 3-byte character straddling the head cut and a CSI sequence straddling the tail cut.
+    let mut big = vec![b'a'; total];
+    big[half - 1..half + 2].copy_from_slice("\u{20ac}".as_bytes());
+    big[tail_floor - 3..tail_floor].copy_from_slice(b"\x1b[3");
+    big[tail_floor..tail_floor + 3].copy_from_slice(b"96m");
+    let capped = cap_persisted_output(&big).expect("must cap");
+    let marker_at = capped
+        .windows(4)
+        .position(|w| w == b"\x1b[0m")
+        .expect("marker");
+    let (head, rest) = capped.split_at(marker_at);
+    assert!(std::str::from_utf8(head).is_ok(), "head ends mid-character");
+    let tail_at = rest.windows(2).rposition(|w| w == b"\r\n").unwrap() + 2;
+    let tail = &rest[tail_at..];
+    assert!(std::str::from_utf8(tail).is_ok());
+    assert!(
+        !tail.starts_with(b"96m"),
+        "tail starts inside a CSI sequence"
+    );
+
+    // Re-capping the capped form is a no-op.
+    assert!(cap_persisted_output(&capped).is_none());
+}

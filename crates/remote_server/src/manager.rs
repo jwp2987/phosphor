@@ -2115,7 +2115,18 @@ impl RemoteServerManager {
     ) {
         log::info!("Remote server connected for session {session_id:?}, host {host_id}");
 
-        // Only transition if the session is still in Initializing state.
+        // Only transition if the session is still in Initializing state. Check before removing:
+        // taking the entry out of any other state (a stream that ended first, a reconnect)
+        // would make it vanish without a `SessionReconnected` / `SessionDisconnected` (#1253).
+        if !matches!(
+            self.sessions.get(&session_id),
+            Some(RemoteSessionState::Initializing { .. })
+        ) {
+            log::info!(
+                "Remote server for session {session_id:?} is no longer initializing; not marking it connected"
+            );
+            return;
+        }
         let Some(RemoteSessionState::Initializing {
             client,
             _child,

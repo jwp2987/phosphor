@@ -540,12 +540,17 @@ fn test_deferred_restore_matches_eager_restore() {
     assert_eq!(deferred.blocks.len(), eager.blocks.len());
     assert_eq!(deferred.blocks[1].command_to_string(), "");
     assert_eq!(deferred.blocks[1].output_to_string(), "");
+    // A placeholder must not be serialized (a fork would save it blank) until it is filled in
+    // (#1265).
+    assert!(deferred.blocks[1].is_restore_pending());
+    assert!(!eager.blocks[1].is_restore_pending());
     assert_ne!(
         deferred.blocks[1].output_to_string(),
         eager.blocks[1].output_to_string()
     );
 
     assert!(deferred.install_ready_deferred_restores());
+    assert!(deferred.blocks.iter().all(|b| !b.is_restore_pending()));
     assert!(!deferred.has_ready_deferred_restores());
     // Nothing left to install.
     assert!(!deferred.install_ready_deferred_restores());

@@ -541,6 +541,11 @@ fn run_deferred_restore_job(
     // on the terminal's own listener reached the view mid-session for a block that was not
     // completing. Only the wakeup below, once a block is in the mailbox, is for the view.
     for serialized in blocks {
+        // The pane closed: the block list (the other owner of the mailbox) is gone, so nothing
+        // will ever install what is parsed from here on (#1265).
+        if Arc::strong_count(&mailbox) <= 1 {
+            return;
+        }
         let mut scratch = BlockList::new_internal(
             config.sizes.clone(),
             ChannelEventListener::detached(),
@@ -553,12 +558,22 @@ fn run_deferred_restore_job(
             config.obfuscate_secrets,
             config.is_ai_ugc_telemetry_enabled,
         );
-        scratch.restore_block_with_mode(
-            &serialized,
-            BootstrapStage::RestoreBlocks,
-            &mut Processor::new(),
-            RestoreMode::Detached,
-        );
+        // A panic parsing one block must not strand the blocks after it as blank placeholders.
+        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scratch.restore_block_with_mode(
+                &serialized,
+                BootstrapStage::RestoreBlocks,
+                &mut Processor::new(),
+                RestoreMode::Detached,
+            );
+        }));
+        if parsed.is_err() {
+            log::error!(
+                "Deferred restore of block {:?} panicked; leaving it blank",
+                serialized.id
+            );
+            continue;
+        }
         if let Some(block) = scratch.blocks.pop() {
             mailbox.push(serialized.id.clone(), block);
             config.event_proxy.send_wakeup_event();
@@ -4275,6 +4290,9 @@ impl BlockList {
 
         // A placeholder (#1254) skips both parses; the detached job does them later.
         let parse_now = mode != RestoreMode::Placeholder;
+        if !parse_now {
+            self.active_block_mut().set_restore_pending(true);
+        }
         if parse_now {
             processor.parse_bytes(self, &block.stylized_command, &mut io::sink());
         }

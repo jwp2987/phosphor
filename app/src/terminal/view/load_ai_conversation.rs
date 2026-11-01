@@ -1166,20 +1166,53 @@ impl TerminalView {
             history_model.on_forked_conversation(conversation_id, self.view_id, ctx);
         });
 
-        let model = self.model.lock();
-        model
-            .block_list()
-            .blocks()
-            .iter()
-            .filter(|b| b.is_restored() && !b.is_background())
-            .map(|b| Arc::new(SerializedBlock::from(b)))
-            .for_each(|block| {
-                ctx.emit(Event::BlockCompleted {
-                    is_local: self.is_block_considered_remote(block.session_id, None, ctx),
-                    persisted_content: None,
-                    block,
-                });
+        self.persist_restored_blocks_for_fork(Default::default(), 0, ctx);
+    }
+
+    /// Emits `BlockCompleted` for the restored blocks of a fork. A restored block whose grids
+    /// are still being parsed off-thread (#1254) would serialize blank, so those are retried
+    /// shortly (#1265) and only given up on if the parse never finishes.
+    fn persist_restored_blocks_for_fork(
+        &mut self,
+        mut done: std::collections::HashSet<BlockId>,
+        attempt: u32,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+        const MAX_ATTEMPTS: u32 = 200;
+        let mut still_pending = false;
+        let blocks = {
+            let model = self.model.lock();
+            model
+                .block_list()
+                .blocks()
+                .iter()
+                .filter(|b| b.is_restored() && !b.is_background() && !done.contains(b.id()))
+                .filter(|b| {
+                    still_pending |= b.is_restore_pending();
+                    !b.is_restore_pending()
+                })
+                .map(|b| Arc::new(SerializedBlock::from(b)))
+                .collect::<Vec<_>>()
+        };
+        for block in blocks {
+            done.insert(block.id.clone());
+            ctx.emit(Event::BlockCompleted {
+                is_local: self.is_block_considered_remote(block.session_id, None, ctx),
+                persisted_content: None,
+                block,
             });
+        }
+        if still_pending && attempt < MAX_ATTEMPTS {
+            ctx.spawn(
+                warpui::r#async::Timer::after(RETRY_DELAY),
+                move |me, _, ctx| {
+                    me.persist_restored_blocks_for_fork(done, attempt + 1, ctx);
+                },
+            );
+        } else if still_pending {
+            log::warn!("Forked conversation: restored blocks never finished loading; not saved");
+        }
     }
 
     /// Show a contextual ephemeral hint when the restored conversation's

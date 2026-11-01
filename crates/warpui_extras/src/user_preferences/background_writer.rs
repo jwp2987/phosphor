@@ -153,6 +153,10 @@ impl BackgroundWriter {
     /// Blocks until everything queued so far is on disk, skipping the debounce. Returns
     /// the error of the last write if it failed. Safe to call with nothing pending.
     pub(super) fn flush(&self) -> Result<(), String> {
+        // Bounded: on quit this is a disk wait, and a stuck disk must not hold the exit past
+        // the SIGTERM watchdog (the write is atomic, so giving up leaves the file intact) (#1253).
+        const FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + FLUSH_TIMEOUT;
         let mut state = self.shared.lock();
         state.flush_requested = true;
         self.shared.changed.notify_all();
@@ -171,6 +175,12 @@ impl BackgroundWriter {
                 state.recent_push(digest(data.as_bytes()));
                 drop(state);
                 return (self.shared.write)(&self.shared.path, &data).map_err(|e| e.to_string());
+            }
+            if std::time::Instant::now() >= deadline {
+                state.flush_requested = false;
+                return Err(format!(
+                    "timed out after {FLUSH_TIMEOUT:?} waiting for the settings write to finish"
+                ));
             }
             let (guard, _) = self
                 .shared
