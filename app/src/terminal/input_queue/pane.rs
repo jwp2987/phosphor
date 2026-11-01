@@ -92,8 +92,11 @@ impl PaneQueue {
 
     /// The view holds (or stops holding) the keys typed during an ssh connect.
     pub fn set_ssh_hold_active(&self, active: bool) {
-        self.inner.ssh_hold_active.set(active);
-        if active {
+        let was_active = self.inner.ssh_hold_active.replace(active);
+        // Only the start of a hold forgets a stale mark: the view re-asserts `active` on every
+        // held key, and that must not erase the mark the element just left for the editor's copy
+        // of the same event (every key typed during the hold was then delivered twice, #1400).
+        if active && !was_active {
             *self.inner.typed_claim.borrow_mut() = None;
         }
     }
@@ -259,6 +262,16 @@ mod tests {
         assert!(!pane.take_typed_offered(9, "x"));
         pane.set_ssh_hold_active(false);
         assert!(!pane.ssh_hold_active());
+    }
+
+    /// The view re-asserts the hold on every held key; that is not a new hold.
+    #[test]
+    fn re_asserting_an_active_hold_keeps_the_fresh_mark() {
+        let pane = PaneQueue::new();
+        pane.set_ssh_hold_active(true);
+        pane.mark_typed_offered(3, "k");
+        pane.set_ssh_hold_active(true);
+        assert!(pane.take_typed_offered(3, "k"));
     }
 
     #[test]
