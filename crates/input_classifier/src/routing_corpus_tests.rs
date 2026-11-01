@@ -480,6 +480,50 @@ fn unknown_head_with_paths_and_a_closing_please_goes_to_the_agent() {
     assert_eq!(decision.route, Route::Undecided, "{}", decision.rule);
 }
 
+/// #1344: `@(1,2,3)` / `@{a=1}` are PowerShell literals only in a PowerShell session; everywhere
+/// else, and for the `@` context mention (`@agent please help`, `@file.rs explain this`), the
+/// line never takes the shell-syntax route. Checked against `route` directly: stage 1 replays the
+/// corpus against the pre-#1234 procedure, where a Shell-voting model decides mentions.
+#[test]
+fn at_literals_are_shell_only_in_powershell_and_mentions_are_not() {
+    for line in [
+        "@agent please help",
+        "@file.rs explain this",
+        "@src/main.rs explain this",
+    ] {
+        for shell in [Shell::PowerShell, Shell::Posix, Shell::Fish] {
+            for conversation in [false, true] {
+                let mut case = Case::prose(line, "#1344 mention").shell(shell);
+                if conversation {
+                    case = case.in_conversation();
+                }
+                for at_enter in [false, true] {
+                    let decision = routing::route(
+                        &snapshot(&case, !at_enter),
+                        &routing_context(&case, at_enter),
+                    );
+                    assert_ne!(
+                        decision.route,
+                        Route::Shell,
+                        "{} ({}): {}",
+                        describe(&case),
+                        if at_enter { "Enter" } else { "keystroke" },
+                        decision.rule
+                    );
+                }
+            }
+        }
+    }
+    // The literal is shell syntax only for PowerShell.
+    for line in ["@(1,2,3)", "@{a=1}"] {
+        let case = Case::model(line, "#1344")
+            .shell(Shell::Posix)
+            .in_conversation();
+        let decision = routing::route(&snapshot(&case, true), &routing_context(&case, false));
+        assert_ne!(decision.rule, routing::Rule::ShellSyntax, "{line}");
+    }
+}
+
 /// The rule names are stable identifiers for the debug log.
 #[test]
 fn every_rule_names_itself() {

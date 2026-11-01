@@ -319,7 +319,13 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
         return Decision::agent(Rule::LoneWord);
     }
 
+    // #1344: in a PowerShell session `@(...)` / `@{...}` is a literal, which is evidence of its own
+    // (it is also what `@` opens as a mention elsewhere, so no other shell gets this).
+    let powershell_literal = ctx.shell == ShellFamily::PowerShell
+        && !first.quoted
+        && is_powershell_literal_head(&first.text);
     let no_evidence = in_conversation
+        && !powershell_literal
         && conversation_lacks_evidence(
             input,
             &head_lower,
@@ -820,8 +826,22 @@ fn has_shell_specific_command_shape(
                 && !args.iter().any(is_prose_word)
                 && !has_prose_veto_word(head_text, args)
         }
-        ShellFamily::PowerShell | ShellFamily::Posix | ShellFamily::Unknown => false,
+        // #1344: `@(1,2,3)` and `@{a=1}` are PowerShell's array and hashtable literals, and
+        // `$x=@(1,2)` an assignment of one. Only here: in bash/zsh/fish `@(` is at most an extglob
+        // fragment and `@name` is the agent's context-mention syntax, so those keep their rules.
+        ShellFamily::PowerShell => is_powershell_literal_head(head_text),
+        ShellFamily::Posix | ShellFamily::Unknown => false,
     }
+}
+
+/// A PowerShell array/hashtable literal head (`@(`, `@{`), bare or as the value of a spaceless
+/// `$name=` assignment (#1344). `@agent` and `@file.rs` are mentions, not literals.
+fn is_powershell_literal_head(head: &str) -> bool {
+    let value = match head.strip_prefix('$').and_then(|rest| rest.split_once('=')) {
+        Some((name, value)) if is_variable_head(&format!("${name}")) => value,
+        _ => head,
+    };
+    value.starts_with("@(") || value.starts_with("@{")
 }
 
 /// The one-off natural-language words that open a message rather than a command when more words
