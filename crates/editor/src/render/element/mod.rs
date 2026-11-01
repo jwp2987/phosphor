@@ -1009,6 +1009,8 @@ impl<V: EditorView> Element for RichTextElement<V> {
         self.buffer_version = model.next_render_buffer_version();
         // Try flushing any pending edits at layout time (if we are performing layout lazily).
         self.pending_edits_flushed = model.try_layout_pending_edits(app);
+        // Lazy paragraph layout: shape the visible rows (and pinned/margin rows), evict far ones.
+        model.update_hydration(app);
 
         let size_buffer = vec2f(
             self.display_options.left_gutter + self.display_options.right_gutter,

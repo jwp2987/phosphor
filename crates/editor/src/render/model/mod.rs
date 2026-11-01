@@ -86,6 +86,7 @@ pub mod bounds;
 pub(crate) mod debug;
 mod char_cell_display;
 pub use self::char_cell_display::{DisplayLattice, DisplayRow, DisplayRowKind};
+pub(crate) mod hydration;
 mod location;
 mod offset_map;
 mod positioned;
@@ -476,6 +477,9 @@ pub struct RenderState {
 
     /// Whether we are performing a lazy layout.
     lazy_layout: bool,
+
+    /// Bookkeeping for lazily laid-out (dehydrated) paragraphs. See [`hydration`].
+    hydration: hydration::HydrationState,
 
     pending_edits: Mutex<Vec<PendingLayout>>,
     pending_selection_change: Mutex<Option<PendingSelectionUpdate>>,
@@ -1123,6 +1127,14 @@ impl LineSource {
     pub fn text(&self) -> &str {
         &self.text
     }
+
+    pub fn paragraph_style(&self) -> &ParagraphStyles {
+        &self.paragraph_style
+    }
+
+    pub fn spacing(&self) -> &BlockSpacing {
+        &self.spacing
+    }
 }
 
 /// The metrics of a paragraph that the rest of the model reads without needing glyphs. They are
@@ -1168,14 +1180,28 @@ impl ParagraphMetrics {
 enum ParagraphLayout {
     /// Glyphs and carets are present.
     Hydrated(Arc<TextFrame>),
-    /// Only the source is kept; the cached [`ParagraphMetrics`] still answer geometry reads.
-    Dehydrated(LineSource),
+    /// No glyphs. Holds one glyph-less placeholder line carrying the right font size, line
+    /// height and (estimated) width, so y-axis geometry and `Positioned<Paragraph>::lines()`
+    /// stay well-formed. The cached [`ParagraphMetrics`] answer all geometry reads.
+    Dehydrated(Box<Line>),
+}
+
+/// Builds the glyph-less placeholder line of a dehydrated paragraph.
+fn placeholder_line(style: &ParagraphStyles, width: Pixels) -> Box<Line> {
+    let mut line = Line::empty(style.font_size, style.line_height_ratio, 0);
+    line.caret_positions = Vec::new();
+    line.width = width.as_f32();
+    Box::new(line)
 }
 
 #[derive(Clone)]
 pub struct Paragraph {
-    /// Laid-out text content of this paragraph, or the source to lay it out again.
+    /// Laid-out text content of this paragraph, or a glyph-less placeholder.
     layout: ParagraphLayout,
+    /// What it takes to lay this paragraph out again. Present on every paragraph built by a
+    /// lazy-layout-capable editor (hydrated ones included, so they can be evicted); `None` for
+    /// eager paragraphs, which are never dehydrated.
+    source: Option<Box<LineSource>>,
     /// Mapping between [`TextFrame`] characters and content characters.
     offsets: OffsetMap,
     /// Cached metrics of the text frame; valid in both layout states.
@@ -1200,6 +1226,7 @@ impl Paragraph {
         let metrics = ParagraphMetrics::from_frame(&frame);
         Self {
             layout: ParagraphLayout::Hydrated(frame),
+            source: None,
             offsets,
             metrics,
             content_length,
@@ -1207,6 +1234,28 @@ impl Paragraph {
             spacing,
             minimum_height,
         }
+    }
+
+    /// Like [`Self::hydrated`], but keeps `source` so the paragraph can be evicted later.
+    pub fn hydrated_with_source(
+        frame: Arc<TextFrame>,
+        source: LineSource,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        let mut paragraph = Self::hydrated(
+            frame,
+            offsets,
+            content_length,
+            active_url,
+            spacing,
+            minimum_height,
+        );
+        paragraph.source = Some(Box::new(source));
+        paragraph
     }
 
     /// Builds a dehydrated paragraph: no frame, `metrics` supplied by the caller.
@@ -1220,7 +1269,11 @@ impl Paragraph {
         minimum_height: Option<Pixels>,
     ) -> Self {
         Self {
-            layout: ParagraphLayout::Dehydrated(source),
+            layout: ParagraphLayout::Dehydrated(placeholder_line(
+                &source.paragraph_style,
+                metrics.width,
+            )),
+            source: Some(Box::new(source)),
             offsets,
             metrics,
             content_length,
@@ -1251,33 +1304,55 @@ impl Paragraph {
 
     /// Drops the frame, keeping `source` and the cached metrics. Returns the previous frame.
     pub fn dehydrate(&mut self, source: LineSource) -> Option<Arc<TextFrame>> {
-        match std::mem::replace(&mut self.layout, ParagraphLayout::Dehydrated(source)) {
+        let placeholder = placeholder_line(&source.paragraph_style, self.metrics.width);
+        self.source = Some(Box::new(source));
+        match std::mem::replace(&mut self.layout, ParagraphLayout::Dehydrated(placeholder)) {
             ParagraphLayout::Hydrated(frame) => Some(frame),
             ParagraphLayout::Dehydrated(_) => None,
         }
     }
 
+    /// Drops the frame using the retained source (eviction). Returns whether anything changed;
+    /// `false` for paragraphs that are already dehydrated or have no source.
+    pub fn evict(&mut self) -> bool {
+        let Some(source) = &self.source else {
+            return false;
+        };
+        if !self.is_hydrated() {
+            return false;
+        }
+        self.layout = ParagraphLayout::Dehydrated(placeholder_line(
+            &source.paragraph_style,
+            self.metrics.width,
+        ));
+        true
+    }
+
     /// Installs a laid-out frame and refreshes the cached metrics from it (the frame is the
-    /// source of truth). Returns whether the height changed, which callers must treat as a layout
-    /// invalidation (scroll extents depend on it).
+    /// source of truth). Returns whether the height or width changed, which callers must treat as
+    /// a layout invalidation (scroll extents depend on both).
     pub fn hydrate(&mut self, frame: Arc<TextFrame>) -> bool {
         let metrics = ParagraphMetrics::from_frame(&frame);
-        let height_changed = metrics.height != self.metrics.height;
+        let changed = metrics.height != self.metrics.height || metrics.width != self.metrics.width;
         self.metrics = metrics;
         self.layout = ParagraphLayout::Hydrated(frame);
-        height_changed
+        changed
+    }
+
+    /// Hydrates and reports only whether the *height* changed (see [`Self::hydrate`]).
+    pub fn hydrate_height_changed(&mut self, frame: Arc<TextFrame>) -> bool {
+        let before = self.metrics.height;
+        self.hydrate(frame);
+        self.metrics.height != before
     }
 
     pub fn is_hydrated(&self) -> bool {
         matches!(self.layout, ParagraphLayout::Hydrated(_))
     }
 
-    /// The source to lay this paragraph out again, if it is dehydrated.
+    /// The source to lay this paragraph out again, if it kept one.
     pub fn line_source(&self) -> Option<&LineSource> {
-        match &self.layout {
-            ParagraphLayout::Hydrated(_) => None,
-            ParagraphLayout::Dehydrated(source) => Some(source),
-        }
+        self.source.as_deref()
     }
 
     pub fn metrics(&self) -> ParagraphMetrics {
@@ -1292,8 +1367,8 @@ impl Paragraph {
         self.spacing
     }
 
-    /// The laid-out frame, or `None` while dehydrated. Painting and hit-testing callers must
-    /// hydrate first (or skip the paragraph).
+    /// The laid-out frame, or `None` while dehydrated. Painting callers skip dehydrated
+    /// paragraphs; the lazy-layout hook hydrates everything visible before painting.
     pub(super) fn frame(&self) -> Option<&TextFrame> {
         match &self.layout {
             ParagraphLayout::Hydrated(frame) => Some(frame),
@@ -1301,9 +1376,14 @@ impl Paragraph {
         }
     }
 
-    /// The laid-out lines; empty while dehydrated.
+    /// The laid-out lines. While dehydrated this is the single glyph-less placeholder line
+    /// (right row and height, estimated width, no carets): geometry stays well-formed but x
+    /// positions are NOT meaningful, so x-dependent callers must have hydrated first.
     fn text_lines(&self) -> &[Line] {
-        self.frame().map_or(&[][..], |frame| frame.lines().as_slice())
+        match &self.layout {
+            ParagraphLayout::Hydrated(frame) => frame.lines().as_slice(),
+            ParagraphLayout::Dehydrated(line) => std::slice::from_ref(&**line),
+        }
     }
 
     /// Whether or not this paragraph is effectively empty.
@@ -2085,6 +2165,7 @@ impl RenderState {
             saved_positions: SavedPositions::new(entity_id),
             buffer_version: RefCell::new(Default::default()),
             lazy_layout,
+            hydration: Default::default(),
             pending_edits: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-util"))]
             outstanding_layouts: Default::default(),
@@ -2705,6 +2786,9 @@ impl RenderState {
                         });
                     } else {
                         *self.selections.borrow_mut() = selections;
+                        // The rows around the new selection must have glyphs before anything
+                        // queries caret geometry (cursor movement, autoscroll, popups).
+                        self.hydrate_pinned(ctx);
                         ctx.notify();
                     }
                 }
@@ -2803,6 +2887,7 @@ impl RenderState {
                     self.update_content_sizing();
 
                     self.flush_pending_selection_update(Some(buffer_version));
+                    self.hydrate_pinned(ctx);
                 }
                 self.buffer_version.borrow_mut().next_render_version = Some(buffer_version);
                 ctx.emit(RenderEvent::LayoutUpdated);
@@ -2878,6 +2963,7 @@ impl RenderState {
             },
         )
         .with_container_scrolls_horizontally(self.container_scrolls_horizontally())
+        .with_lazy_capable(self.lazy_paragraphs_enabled())
     }
 
     /// If we are performing layout lazily, call this to flush the pending edits and selection changes
@@ -2912,8 +2998,16 @@ impl RenderState {
     fn apply_element_update(&mut self, update: ElementUpdate, ctx: &mut ModelContext<Self>) {
         // Clear up the remaining pending edits state after layout is completed. Also make sure we have the updated
         // content sizing.
-        if self.lazy_layout {
+        let (hydration_resized, hydration_more_pending) = self.take_hydration_flags();
+        if self.lazy_layout || hydration_resized {
             self.update_content_sizing();
+            if hydration_resized {
+                ctx.notify();
+            }
+        }
+        if hydration_more_pending {
+            // The per-frame hydration budget ran out with rows still to do.
+            ctx.notify();
         }
         if update.pending_edits_flushed {
             ctx.emit(RenderEvent::PendingEditsFlushed);
@@ -3228,6 +3322,20 @@ impl RenderState {
 
     /// Perform an autoscroll action based on the mode.
     pub fn autoscroll(&mut self, mode: AutoScrollMode, ctx: &mut ModelContext<Self>) {
+        // Autoscroll reads caret geometry at the target, which may be far outside the hydrated
+        // window (go-to-line, find-next, LSP reveal).
+        match &mode {
+            AutoScrollMode::ScrollOffsetsIntoViewport(offsets) => {
+                self.hydrate_around_offsets(&[offsets.start, offsets.end], ctx)
+            }
+            AutoScrollMode::ScrollToExactVertical {
+                character_offset, ..
+            } => self.hydrate_around_offsets(&[*character_offset], ctx),
+            AutoScrollMode::PositionOffsetInViewportCenter(offset) => {
+                self.hydrate_around_offsets(&[*offset], ctx)
+            }
+            AutoScrollMode::ScrollToActiveSelections { .. } => self.hydrate_pinned(ctx),
+        }
         let table_scroll_changed = self.reveal_autoscroll_offsets_in_tables(&mode);
         let ((in_line_selection_start, in_line_selection_end), vertical_autoscroll_only) =
             match mode {
@@ -4375,6 +4483,12 @@ impl sum_tree::Item for BlockItem {
 impl<'a> Positioned<'a, Paragraph> {
     /// Iterator over the lines of a paragraph, along with positioning information.
     fn lines(&self) -> impl Iterator<Item = Positioned<'a, Line>> + '_ {
+        if !self.item.is_hydrated() {
+            // Glyph/caret geometry was requested before hydration: the placeholder line has the
+            // right row and height but no carets. Counted, warned, and a debug_assert in strict
+            // mode; see `hydration`.
+            hydration::report_dehydrated_lines();
+        }
         self.item.text_lines().iter().scan(
             (
                 self.start_y_offset + self.style.top_offset(),

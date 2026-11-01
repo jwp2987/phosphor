@@ -3,7 +3,8 @@
 #[cfg(test)]
 use markdown_parser::FormattedTextInline;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::content::text::{BufferBlockStyle, TextStylesWithMetadata};
 use warpui::AppContext;
@@ -71,13 +72,41 @@ pub(crate) struct InlineTextLayoutInput {
     pub style_runs: Vec<(Range<usize>, StyleAndFont)>,
 }
 
+/// Minimum number of blocks in one edit delta before its plain-text paragraphs are laid out
+/// lazily (dehydrated) instead of being shaped up front. Typing, small pastes and every
+/// interactive edit stay below it and are laid out eagerly.
+pub const LAZY_LAYOUT_MIN_BLOCKS: usize = 512;
+
+/// Number of the widest dehydrated paragraphs of a delta that are shaped once at layout time so
+/// the content width is exact for them (their glyphs are dropped again immediately).
+pub const LAZY_LAYOUT_EXACT_WIDTH_LINES: usize = 8;
+
+/// Whether lazy (dehydrated) paragraph layout is disabled by the kill switch
+/// `PHOSPHOR_EDITOR_EAGER_LAYOUT=1`. Read once.
+pub fn eager_layout_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| {
+        std::env::var("PHOSPHOR_EDITOR_EAGER_LAYOUT").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
 /// Utility for laying out rich text.
 pub struct TextLayout<'a> {
     font_cache: TextLayoutSystem<'a>,
     rich_text_styles: &'a RichTextStyles,
     max_width: f32,
     container_scrolls_horizontally: bool,
+    /// Whether the owner supports dehydrated paragraphs (the unwrapped code editor).
+    lazy_capable: bool,
+    /// Set for the duration of one large edit delta: plain-text paragraphs are then built
+    /// dehydrated (see [`Self::dehydrate_paragraphs`]).
+    dehydrate_now: AtomicBool,
+    /// Advance of a representative monospace glyph, measured on first use.
+    mono_advance: Mutex<Option<(FamilyIdKey, f32)>>,
 }
+
+/// Identity of the font a cached monospace advance belongs to.
+type FamilyIdKey = (warpui::fonts::FamilyId, u32, u32);
 
 impl<'a> TextLayout<'a> {
     pub fn new(
@@ -90,7 +119,65 @@ impl<'a> TextLayout<'a> {
             rich_text_styles,
             max_width,
             container_scrolls_horizontally: false,
+            lazy_capable: false,
+            dehydrate_now: AtomicBool::new(false),
+            mono_advance: Mutex::new(None),
         }
+    }
+
+    /// Declare that paragraphs laid out through this `TextLayout` may be dehydrated (the owner
+    /// hydrates what it paints and queries). Ignored unless the layout is unwrapped.
+    pub fn with_lazy_capable(mut self, flag: bool) -> Self {
+        self.lazy_capable = flag && self.max_width == f32::MAX && !eager_layout_forced();
+        self
+    }
+
+    /// Whether the owner supports dehydrated paragraphs.
+    pub fn lazy_capable(&self) -> bool {
+        self.lazy_capable
+    }
+
+    /// Switch dehydrated plain-text paragraph layout on or off for the current delta.
+    pub(crate) fn set_dehydrate_paragraphs(&self, on: bool) {
+        self.dehydrate_now
+            .store(on && self.lazy_capable, Ordering::Relaxed);
+    }
+
+    /// Whether plain-text paragraphs should currently be built dehydrated.
+    pub(crate) fn dehydrate_paragraphs(&self) -> bool {
+        self.dehydrate_now.load(Ordering::Relaxed)
+    }
+
+    /// Advance, in pixels, of one cell of a monospace run in `style` (measured from the real
+    /// font with a representative glyph, cached per font).
+    pub(crate) fn monospace_advance(&self, style: &ParagraphStyles) -> f32 {
+        let key = (
+            style.font_family,
+            style.font_size.to_bits(),
+            style.font_weight as u32,
+        );
+        let mut cached = self.mono_advance.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_key, advance)) = *cached {
+            if cached_key == key {
+                return advance;
+            }
+        }
+        // 'M' x 16 averaged: robust to hinting/rounding of a single glyph.
+        let sample = "M".repeat(16);
+        let style_runs = [(
+            0..16,
+            self.style_and_font(style, &TextStylesWithMetadata::default()),
+        )];
+        let frame = self.layout_text_with_options(
+            &sample,
+            style,
+            &style_runs,
+            f32::MAX,
+            TextAlignment::default(),
+        );
+        let advance = frame.max_width() / 16.;
+        *cached = Some((key, advance));
+        advance
     }
 
     /// Indicate that the surrounding container (for example, a code editor) already provides
