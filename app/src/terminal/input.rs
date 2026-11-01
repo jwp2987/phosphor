@@ -5334,17 +5334,25 @@ impl Input {
             log::error!("Failed to start the conversation export thread: {e}");
             return;
         }
-        ctx.spawn(
-            async move { rx.await.ok() },
-            move |_me, outcome, ctx| {
-                let Some((file_exists, result)) = outcome else {
-                    return;
-                };
-                if file_exists {
+        ctx.spawn(async move { rx.await.ok() }, move |_me, outcome, ctx| {
+            let Some((file_exists, result)) = outcome else {
+                return;
+            };
+            if file_exists {
+                let display_path = file_path.display().to_string();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    let toast = DismissibleToast::default(format!(
+                        "File {display_path} already exists and will be overwritten"
+                    ));
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
+            }
+            match result {
+                Ok(_) => {
                     let display_path = file_path.display().to_string();
-                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
                         let toast = DismissibleToast::default(format!(
-                            "File {display_path} already exists and will be overwritten"
+                            "Conversation exported to {display_path}"
                         ));
                         toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                     });
@@ -5372,8 +5380,8 @@ impl Input {
                         });
                     }
                 }
-            },
-        );
+            }
+        });
 
         // Clear the buffer after execution
         self.editor.update(ctx, |editor, ctx| {

@@ -988,7 +988,7 @@ fn context_marks_live_sha_as_detached() {
 
 #[test]
 fn read_attachments_preserves_order_and_reports_unreadable_files() {
-    use super::{context_and_files_from_read, read_attachments, attachments_need_disk_read};
+    use super::{attachments_need_disk_read, context_and_files_from_read, read_attachments};
     use crate::ai::agent::AIAgentContext;
 
     let dir = std::env::temp_dir().join(format!("phosphor-read-att-{}", std::process::id()));
@@ -1014,7 +1014,10 @@ fn read_attachments_preserves_order_and_reports_unreadable_files() {
     // Files keep their submit order, including the unreadable one; only the readable ones
     // produce content, and the unreadable one is reported.
     assert_eq!(
-        files.iter().map(|f| f.file_name.as_str()).collect::<Vec<_>>(),
+        files
+            .iter()
+            .map(|f| f.file_name.as_str())
+            .collect::<Vec<_>>(),
         ["good.txt", "missing.txt", "good2.txt"]
     );
     assert_eq!(

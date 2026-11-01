@@ -2672,32 +2672,32 @@ impl FileTreeView {
                 let _ = tx.send(delete_path_blocking(&delete_path));
             });
         if let Err(e) = spawned {
-            log::warn!("Failed to start the delete thread for {}: {e}", path.display());
+            log::warn!(
+                "Failed to start the delete thread for {}: {e}",
+                path.display()
+            );
             self.deleting_paths.remove(&std_path);
             return;
         }
-        ctx.spawn(
-            async move { rx.await.ok() },
-            move |me, result, ctx| {
-                me.deleting_paths.remove(&std_path);
-                match result {
-                    Some(Ok(())) => me.finish_delete(&std_path, path, ctx),
-                    Some(Err(e)) => {
-                        log::warn!("Failed to delete {}: {e}", path.display());
-                        let window_id = ctx.window_id();
-                        let message = format!("Failed to delete {}: {e}", path.display());
-                        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                            toast_stack.add_ephemeral_toast(
-                                DismissibleToast::error(message),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                    }
-                    None => {}
+        ctx.spawn(async move { rx.await.ok() }, move |me, result, ctx| {
+            me.deleting_paths.remove(&std_path);
+            match result {
+                Some(Ok(())) => me.finish_delete(&std_path, path, ctx),
+                Some(Err(e)) => {
+                    log::warn!("Failed to delete {}: {e}", path.display());
+                    let window_id = ctx.window_id();
+                    let message = format!("Failed to delete {}: {e}", path.display());
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::error(message),
+                            window_id,
+                            ctx,
+                        );
+                    });
                 }
-            },
-        );
+                None => {}
+            }
+        });
     }
 
     /// Updates the in-memory tree after `path` was deleted from disk.

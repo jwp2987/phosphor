@@ -23,9 +23,8 @@ use super::{
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
-        attachments_need_disk_read, block_context_from_terminal_model, context_and_files_from_read,
-        read_attachments, ReadAttachment,
-        BlocklistAIContextModel, PendingAttachment,
+        BlocklistAIContextModel, PendingAttachment, ReadAttachment, attachments_need_disk_read,
+        block_context_from_terminal_model, context_and_files_from_read, read_attachments,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
@@ -6029,8 +6028,7 @@ fn input_for_query(
     // explicitly-resolved `prompt_attachments` set (the queued row's captured attachments, or
     // live staging captured at send time — decided by the caller) rather than from whatever
     // happens to be staged in `context_model` when this request is actually built.
-    let (attachment_context, file_attachments, failed_files) =
-        context_and_files_from_read(read);
+    let (attachment_context, file_attachments, failed_files) = context_and_files_from_read(read);
     if !failed_files.is_empty() {
         log::warn!("Could not read attached file(s) for the request: {failed_files:?}");
     }
