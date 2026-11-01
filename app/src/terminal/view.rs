@@ -670,6 +670,23 @@ pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a paint-only wakeup the view checks whether that paint changed a render input
 /// (see `wakeup_redraw`). Long enough for a program's screen redraw to have finished arriving.
+/// Deferred-reflow driver (#1303): after a column change the blocks outside the viewport reflow
+/// in chunks of at most `STALE_REFLOW_CHUNK_BUDGET` of model-lock time, one chunk per
+/// `STALE_REFLOW_CHUNK_INTERVAL`, until none are stale. The timer is only armed while blocks are
+/// stale, so an idle terminal runs nothing.
+const STALE_REFLOW_CHUNK_BUDGET: Duration = Duration::from_millis(4);
+const STALE_REFLOW_CHUNK_INTERVAL: Duration = Duration::from_millis(16);
+/// Lines above and below the viewport that reflow synchronously with a column change.
+const STALE_REFLOW_MARGIN_LINES: f64 = 60.;
+
+/// What `TerminalView::reflow_stale_blocks_keeping_scroll` should reflow.
+#[derive(Clone, Copy)]
+enum StaleReflowWork {
+    NearViewport,
+    Chunk(Duration),
+    All,
+}
+
 const ALT_SCREEN_SETTLE_DELAY: Duration = Duration::from_millis(100);
 
 /// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
@@ -2668,6 +2685,9 @@ pub struct TerminalView {
     /// The current scroll position.
     scroll_position: ScrollState,
 
+    /// A deferred-reflow chunk timer is armed (#1303).
+    stale_reflow_driver_scheduled: bool,
+
     /// Cached scroll position from before entering agent view, used to restore on exit.
     scroll_position_before_entering_agent_view: Option<ScrollPosition>,
 
@@ -4606,6 +4626,7 @@ impl TerminalView {
             snackbar_header_state: Default::default(),
             colors,
             scroll_position: ScrollState::new(ScrollPosition::FollowsBottomOfMostRecentBlock),
+            stale_reflow_driver_scheduled: false,
             scroll_position_before_entering_agent_view: None,
             blocklist_vertical_scroll_state: Default::default(),
             alt_screen_vertical_scroll_state: Default::default(),
@@ -10220,6 +10241,19 @@ impl TerminalView {
         update: ScrollPositionUpdate,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Jumps address a block, row or match by position: reflow what is still stale first so
+        // the target does not move when the background driver reaches it (#1303).
+        if matches!(
+            update,
+            ScrollPositionUpdate::ScrollToTopOfBlock { .. }
+                | ScrollPositionUpdate::ScrollToBottomOfBlock { .. }
+                | ScrollPositionUpdate::ScrollToBlocklistRowIfNotVisible { .. }
+                | ScrollPositionUpdate::ScrollToFindMatchIfNotVisible(_)
+                | ScrollPositionUpdate::ScrollToTopOfBlockWithBuffer { .. }
+                | ScrollPositionUpdate::ScrollToTopOfRichContent { .. }
+        ) {
+            self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
+        }
         let mut model = self.model.lock();
         // Clear the cached pre-filter scroll position if a non-filter user
         // event is detected.
@@ -20398,6 +20432,65 @@ impl TerminalView {
         )
     }
 
+    /// Reflows blocks a column change left stale (#1303) and re-anchors a fixed scroll position
+    /// so the content on screen does not move. Returns how many blocks were reflowed.
+    fn reflow_stale_blocks_keeping_scroll(
+        &mut self,
+        work: StaleReflowWork,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+        let mut model = self.model.lock();
+        if !model.block_list().stale_reflow_pending() {
+            return 0;
+        }
+        let (anchor, range) = {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            (
+                viewport.reflow_anchor(),
+                viewport.block_range_with_margin(Lines::new(STALE_REFLOW_MARGIN_LINES)),
+            )
+        };
+        let reflowed = match work {
+            StaleReflowWork::NearViewport => range.map_or(0, |(first, last)| {
+                model
+                    .block_list_mut()
+                    .reflow_stale_blocks_in_range(first, last)
+            }),
+            StaleReflowWork::Chunk(budget) => {
+                model.block_list_mut().reflow_stale_blocks_within(budget)
+            }
+            StaleReflowWork::All => model.block_list_mut().flush_all_stale_reflow(),
+        };
+        if reflowed > 0 {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            self.scroll_position
+                .compensate_for_reflow(anchor, &viewport);
+            drop(viewport);
+            drop(model);
+            ctx.notify();
+        }
+        reflowed
+    }
+
+    /// Arms the next deferred-reflow chunk, if any block is still stale and none is armed.
+    fn schedule_stale_reflow_driver(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.stale_reflow_driver_scheduled
+            || !self.model.lock().block_list().stale_reflow_pending()
+        {
+            return;
+        }
+        self.stale_reflow_driver_scheduled = true;
+        ctx.spawn(Timer::after(STALE_REFLOW_CHUNK_INTERVAL), |me, _, ctx| {
+            me.stale_reflow_driver_scheduled = false;
+            me.reflow_stale_blocks_keeping_scroll(
+                StaleReflowWork::Chunk(STALE_REFLOW_CHUNK_BUDGET),
+                ctx,
+            );
+            me.schedule_stale_reflow_driver(ctx);
+        });
+    }
+
     fn resize_internal(&mut self, size_update: SizeUpdate, ctx: &mut ViewContext<Self>) {
         // Viewer-driven sizing: report the viewer's natural size to the sharer.
         // This runs before the early-return so the initial report on viewer join
@@ -20438,6 +20531,9 @@ impl TerminalView {
             positioner.set_size_info(size_update.new_size, ctx);
         });
         *self.size_info = size_update.new_size;
+        // Deferred reflow (#1303): what is on screen reflows now, the rest in the background.
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::NearViewport, ctx);
+        self.schedule_stale_reflow_driver(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterResize, ctx);
 
         // Notify subscribers.
@@ -24633,6 +24729,8 @@ impl TerminalView {
     /// Note that the meaning of "first" varies depending on whether the block list is inverted
     /// or not.
     fn run_find(&mut self, mut options: FindOptions, ctx: &mut ViewContext<Self>) {
+        // Match positions are grid coordinates: search the reflowed grids (#1303).
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
         let blocks_to_include_in_results = matches!(
             self.find_bar.as_ref(ctx).display_find_within_block,
             FindWithinBlockState::Enabled
@@ -24874,6 +24972,7 @@ impl TerminalView {
     }
 
     fn select_all_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
         let first_block_index = self
             .model
             .lock()

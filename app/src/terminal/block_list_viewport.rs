@@ -35,6 +35,15 @@ use super::{
     SizeInfo, HEIGHT_FUDGE_FACTOR_LINES,
 };
 
+/// The topmost visible block and where it sat before a reflow, see
+/// [`ScrollState::compensate_for_reflow`].
+#[derive(Copy, Clone, Debug)]
+pub struct ReflowAnchor {
+    block_index: BlockIndex,
+    top_in_lines: Lines,
+    scroll_top_in_lines: Lines,
+}
+
 /// Wraps a scroll position for the purposes of centralizing update logic.
 pub struct ScrollState {
     position: ScrollPosition,
@@ -82,6 +91,28 @@ impl ScrollState {
             },
             other => other,
         };
+    }
+
+    /// Keeps the content on screen still after a deferred reflow (#1303) changed block heights
+    /// outside the viewport: re-anchors a fixed scroll position on the block that was topmost
+    /// before the reflow. Follow-bottom positions need no change. Returns whether it moved.
+    pub fn compensate_for_reflow(
+        &mut self,
+        anchor: Option<ReflowAnchor>,
+        viewport_after: &ViewportState,
+    ) -> bool {
+        let (Some(anchor), ScrollPosition::FixedAtPosition { .. }) = (anchor, self.position) else {
+            return false;
+        };
+        let delta = viewport_after.top_of_block_in_lines(anchor.block_index) - anchor.top_in_lines;
+        if delta == Lines::zero() {
+            return false;
+        }
+        let scroll_top = (anchor.scroll_top_in_lines + delta).max(Lines::zero());
+        self.position = ScrollPosition::FixedAtPosition {
+            scroll_lines: viewport_after.scroll_lines_from_scroll_top(scroll_top),
+        };
+        true
     }
 
     /// Possibly updates the scroll position, returning whether it was actually changed.
@@ -782,6 +813,34 @@ impl<'a> ViewportState<'a> {
     pub fn scroll_top_in_pixels(&self) -> Pixels {
         self.scroll_top_in_lines()
             .to_pixels(self.size_info.cell_height_px())
+    }
+
+    /// Captures the topmost visible block and the current scroll top before heights change.
+    pub fn reflow_anchor(&self) -> Option<ReflowAnchor> {
+        let block_index = self.iter().find_map(|item| item.block_index)?;
+        Some(ReflowAnchor {
+            block_index,
+            top_in_lines: self.top_of_block_in_lines(block_index),
+            scroll_top_in_lines: self.scroll_top_in_lines(),
+        })
+    }
+
+    /// Block indices to reflow before drawing: everything within `margin` lines above and
+    /// below the viewport (the bottom margin also covers the 20-line overhang layout probes).
+    /// `None` when the list is empty.
+    pub fn block_range_with_margin(&self, margin: Lines) -> Option<(BlockIndex, BlockIndex)> {
+        let top = self.scroll_top_in_lines();
+        let bottom = top + self.content_element_height_lines();
+        let mut range: Option<(BlockIndex, BlockIndex)> = None;
+        for item in self.iter_range((top - margin).max(Lines::zero()), bottom + margin) {
+            if let Some(index) = item.block_index {
+                range = Some(match range {
+                    Some((lo, hi)) => (lo.min(index), hi.max(index)),
+                    None => (index, index),
+                });
+            }
+        }
+        range
     }
 
     /// Returns the index of the topmost visible block in the viewport
