@@ -522,6 +522,7 @@ impl Host for PtyQueueHost<'_, '_> {
 impl TerminalView {
     /// Whether a paste is still being read for this pane. Mid-drain (borrowed) means the paste
     /// that was pending has just been delivered.
+    #[cfg(test)]
     pub(super) fn paste_pending(&self) -> bool {
         self.paste_queue
             .queue

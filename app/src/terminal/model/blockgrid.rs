@@ -831,6 +831,7 @@ impl BlockGrid {
     }
 
     /// Snapshot twin of [`Self::start_to_point_as_string`] (#1304).
+    #[cfg(test)]
     pub fn start_to_point_text_snapshot(&self, point: Point) -> GridTextSnapshot {
         self.range_text_snapshot(self.start_point(), point)
     }

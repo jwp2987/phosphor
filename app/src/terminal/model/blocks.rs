@@ -2175,6 +2175,7 @@ impl BlockList {
     /// Startup commands are hidden while they run. Without this, they stay hidden
     /// forever once the harness block is reached -- the blocks exist, occupy no
     /// height, and never come back (#423).
+    #[cfg(test)]
     pub fn finish_oz_environment_startup_commands_at_block(
         &mut self,
         block_id: &BlockId,
@@ -2205,6 +2206,7 @@ impl BlockList {
     /// effects mirror those in [`set_agent_view_state`](Self::set_agent_view_state).
     /// An inline conversation keeps `Terminal` scope -- it renders in the
     /// terminal transcript, not a conversation-scoped one.
+    #[cfg(test)]
     pub fn enter_conversation_context(&mut self, conversation_id: AIConversationId, is_inline: bool) {
         if !self.active_block().finished() {
             if is_inline {
@@ -2302,6 +2304,7 @@ impl BlockList {
         Some(block)
     }
 
+    #[cfg(test)]
     pub fn clear_user_executed_command_blocks_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
@@ -3241,6 +3244,7 @@ impl BlockList {
     }
 
     /// Whether any block is still waiting for its deferred reflow. O(1) when nothing is pending.
+    #[cfg(test)]
     pub fn has_stale_reflow(&self) -> bool {
         self.stale_reflow_pending && self.blocks.iter().any(|b| b.is_reflow_stale())
     }

@@ -12221,6 +12221,7 @@ impl TerminalView {
     /// Observation never delays or drops the write itself, and never arms a
     /// window for a byte that `write_user_bytes_to_pty` rejected (e.g. the
     /// active block is under agent control).
+    #[cfg(test)]
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
         let is_ctrl_c = bytes == [0x03];
         let forwarded = self.write_user_bytes_to_pty(bytes, ctx);

@@ -174,6 +174,7 @@ impl SharedSessionScrollbackType {
     /// even if they were specified as part of the scrollback type.
     /// For example, if the [`Self::All]` variant is used, restored blocks
     /// _won't_ be included in scrollback.
+    #[cfg(test)]
     fn to_scrollback(self, model: &TerminalModel) -> Scrollback {
         let first_block_index = self.first_block_index(model);
         let blocks = model
@@ -322,6 +323,7 @@ impl From<&Role> for InteractionState {
 /// Decode scrollback blocks from their JSON wire format into [`SerializedBlock`]s.
 ///
 /// Blocks that fail to deserialize are silently dropped.
+#[cfg(test)]
 pub(crate) fn decode_scrollback(scrollback: &Scrollback) -> Vec<SerializedBlock> {
     scrollback
         .blocks

@@ -1338,6 +1338,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a ambient-agent pane before it has connected to a shared session.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_ambient_agent_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1400,6 +1401,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a terminal session that is being viewed.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1423,6 +1425,7 @@ impl TerminalModel {
         )
     }
 
+    #[cfg(test)]
     pub fn set_ordered_terminal_events_for_shared_session_tx(
         &mut self,
         tx: Sender<OrderedTerminalEventType>,
@@ -2206,6 +2209,7 @@ impl TerminalModel {
 
     // Starts active block as a background block. Used in Alacritty integration tests to
     // work with the output grid directly.
+    #[cfg(test)]
     pub fn start_active_block_as_background_block(&mut self) {
         self.block_list.active_block_mut().start_background(None);
     }
@@ -2440,6 +2444,7 @@ impl TerminalModel {
         self.colors = colors;
     }
 
+    #[cfg(test)]
     pub fn raw_grid_for_ref_tests(&self) -> &GridHandler {
         if self.alt_screen_active {
             self.alt_screen.grid_handler()
@@ -2734,6 +2739,7 @@ impl TerminalModel {
         self.event_proxy.send_terminal_event(title_event);
     }
 
+    #[cfg(test)]
     pub fn set_custom_title(&mut self, custom_title: Option<String>) {
         self.custom_title.clone_from(&custom_title);
         // If the custom title set by the user is None, we "reset" to whatever the title was set by

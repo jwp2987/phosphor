@@ -648,6 +648,7 @@ impl PresenceManager {
     /// `None` if there are zero present viewers or more than one distinct
     /// present-viewer UID (a single user can appear more than once, e.g. with
     /// multiple tabs open onto the shared session).
+    #[cfg(test)]
     pub(crate) fn single_distinct_present_viewer_uid_from_viewers<'a>(
         viewers: impl Iterator<Item = &'a Viewer>,
     ) -> Option<&'a str> {

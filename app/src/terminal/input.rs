@@ -1062,6 +1062,7 @@ impl CommandExecutionSource {
     }
 
     /// Whether this execution should leave the user's in-progress editor draft alone.
+    #[cfg(test)]
     pub fn should_preserve_input(&self) -> bool {
         matches!(
             self,
@@ -7075,6 +7076,7 @@ impl Input {
     /// ephemeral overlay, so there is no ephemeral state to exit and no display-only
     /// overlay to show. `is_shared_session_viewer_prompt_inflight` is therefore currently
     /// unused here; kept in the signature for call-site parity with the pin.
+    #[cfg(test)]
     pub fn unfreeze_agent_input(
         &mut self,
         is_shared_session_viewer_prompt_inflight: bool,

@@ -902,6 +902,7 @@ impl TerminalView {
     }
 
     /// Resizes the terminal from when the sharer updates size.
+    #[cfg(test)]
     pub fn resize_from_sharer_update(
         &mut self,
         new_sharer_size: WindowSize,

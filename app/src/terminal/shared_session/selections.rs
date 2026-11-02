@@ -51,6 +51,7 @@ impl WithinBlock<Point> {
     /// to a view-agnostic [`BlockPoint`].
     ///
     /// This should be the inverse of [`WithinBlock<Point>::from_session_sharing_block_point`].
+    #[cfg(test)]
     pub fn to_session_sharing_block_point(self, block_list: &BlockList) -> Option<BlockPoint> {
         let block_id = block_list.block_at(self.block_index)?.id();
         let grid = block_list.grid_at_location(&self)?.grid_handler();

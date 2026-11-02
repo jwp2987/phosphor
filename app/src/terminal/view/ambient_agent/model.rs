@@ -149,6 +149,7 @@ impl AmbientAgentViewModel {
 
     /// Sets whether this ambient agent view has a parent terminal to return to.
     /// This should be called when pushing the view onto an existing pane stack.
+    #[cfg(test)]
     pub fn set_has_parent_terminal(&mut self, has_parent: bool) {
         self.has_parent_terminal = has_parent;
     }
@@ -200,6 +201,7 @@ impl AmbientAgentViewModel {
     }
 
     /// Enter the setup state for first-time environment creation.
+    #[cfg(test)]
     pub fn enter_setup(&mut self, ctx: &mut ModelContext<Self>) {
         self.status = Status::Setup;
         ctx.emit(AmbientAgentViewModelEvent::EnteredSetupState);

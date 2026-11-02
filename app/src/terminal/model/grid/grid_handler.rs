@@ -2102,6 +2102,7 @@ impl GridHandler {
 
     /// Whether a pty edit has changed rows away from the cursor since find last consumed the
     /// dirty range (#822).
+    #[cfg(test)]
     pub fn find_has_unlocalized_change(&self) -> bool {
         self.find_unlocalized_change
     }
