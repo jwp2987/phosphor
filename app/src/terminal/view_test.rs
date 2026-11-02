@@ -16206,6 +16206,41 @@ fn input_prompt_detection_and_deferred_setup_readiness() {
     ] {
         assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
     }
+    // #1561: only a line of a shell prompt's shape that is not credential-style is delivered to;
+    // a question, a request for a code, ssh's own text or an unknown shape keeps the discard.
+    for shell_prompt in [
+        "bash-5.1$ ",
+        "me@host ~ % ",
+        "~/src \u{276f} ",
+        "user@fake:~$ ",
+        "root@fake:/# ",
+        "banner\nuser@fake:~$ ",
+    ] {
+        assert!(
+            output_tail_is_shell_prompt(shell_prompt),
+            "{shell_prompt:?}"
+        );
+        assert!(
+            !output_tail_is_input_prompt(shell_prompt),
+            "{shell_prompt:?}"
+        );
+    }
+    for not_shell_prompt in [
+        "",
+        "\n",
+        "Password: ",
+        "Continue connecting (yes/no/[fingerprint])? ",
+        "Press ENTER to continue",
+        "Last login: Mon",
+        "Warning: Permanently added 'h' (ED25519) to the list of known hosts.\n",
+        "Verification code: ",
+        "banner line\n",
+    ] {
+        assert!(
+            !output_tail_is_shell_prompt(not_shell_prompt),
+            "{not_shell_prompt:?}"
+        );
+    }
     let quiet = SUBSHELL_SETUP_DEFER_QUIET;
     assert!(
         !subshell_setup_defer_ready(true, false, quiet * 10),
@@ -17841,6 +17876,7 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             simulate_ssh_hook(view);
             // The event handler observes the hook while the ssh block still runs.
             view.refresh_ssh_connect_gate();
+            view.ssh_observe(ctx);
             assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.managed));
             // The ssh block completes cleanly and the pending ssh state is cleared with it.
             let armed = view.model.lock().active_block_id().clone();
@@ -17870,6 +17906,9 @@ fn ssh_pane_with_held_typeahead_for_test(
         .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
     simulate_ssh_hook(view);
     view.refresh_ssh_connect_gate();
+    // The model events (the ssh hook, InitShell) are the edges that feed the ssh phase in `table`
+    // mode; the test drives the gate directly, so it feeds what those events would.
+    view.ssh_observe(ctx);
     view.model.lock().init_shell(InitShellValue {
         session_id: SessionId::from(167303092612202),
         shell: "bash".to_owned(),
@@ -17878,6 +17917,7 @@ fn ssh_pane_with_held_typeahead_for_test(
         ..Default::default()
     });
     assert!(view.refresh_ssh_connect_gate());
+    view.ssh_observe(ctx);
     view.typed_characters_on_terminal("echo hi", ctx);
     view.keydown_on_terminal("\r", ctx);
     assert!(view.ssh_typeahead_holding, "the keys are held (#1292)");
@@ -17894,9 +17934,23 @@ fn ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             ssh_pane_with_held_typeahead_for_test(view, ctx);
+            // The remote shell's InitShell replaced the finished `ssh` block with the hidden
+            // bootstrap block, and by the time the bootstrap timer fires that block holds the
+            // setup script's echo and is the foreground work of the pane. A fresh test block is
+            // empty and unlatched, which `is_long_running` reads as "no remote shell in front".
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             view.on_bootstrap_failed_timer_complete((), ctx);
             assert!(!view.ssh_typeahead_holding);
@@ -18067,6 +18121,9 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             simulate_ssh_hook(view);
             view.refresh_ssh_connect_gate();
+            // The model events (the ssh hook, InitShell) feed the edge-driven phase in `table`
+            // mode; the test calls the gate directly, so it feeds what the events would.
+            view.ssh_observe(ctx);
             // The remote shell announces itself (pending session); the gate sees it.
             view.model.lock().init_shell(InitShellValue {
                 session_id: remote_session,
@@ -18076,6 +18133,7 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 ..Default::default()
             });
             assert!(view.refresh_ssh_connect_gate());
+            view.ssh_observe(ctx);
             assert!(
                 view.ssh_connect_gate
                     .as_ref()
@@ -18267,6 +18325,11 @@ fn ssh_gate_completion_applies_only_to_the_armed_block() {
 fn release_ssh_gate_for_test(view: &mut TerminalView) {
     view.ssh_connect_gate = None;
     view.ssh_connect_gate_released_at = Some(chrono::Local::now());
+    // Every release in production tells the edge-driven ssh phase (`refresh_ssh_connect_gate`
+    // releasing, `discard_held_ssh_typeahead_for_prompt` delivering). Without the edge the machine
+    // keeps the window open in `table` mode (the default), its phase stays `Holding`, and the
+    // keys this release hands over are held again instead of reaching their destination.
+    view.note_ssh_gate_released(crate::terminal::input_queue::SshRelease::FirstPrompt);
 }
 
 /// #1292 / #1348: typing that crosses the gate release is neither split, reordered nor run on the
@@ -19662,6 +19725,13 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
 #[test]
 fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
     App::test((), |mut app| async move {
+        // Reads the legacy gate's own sticky `output_seen`, which the key path's refreshers set;
+        // in `table` mode (the default) the events own the gate and the machine holds the same
+        // fact, so this runs on the legacy path (the kill switch, still shipped). The table
+        // twin of the rule is `ssh_phase_tests` and the `table_mode_a_*` tests.
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Legacy,
+        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -20525,6 +20595,13 @@ fn typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing() {
         assert!(!card.read(&app, |card, _| card.typed_before_choice()));
 
         terminal.update(&mut app, |view, ctx| {
+            // The pane's key sink notes the focus chain on every key it stamps (the table reads
+            // it from the stamp, not from the live focus); this test calls the typing entry
+            // point directly, so it notes what the sink would have.
+            view.paste_queue
+                .queue
+                .route_state()
+                .note_focus(crate::terminal::input_queue::FocusSnap::SshChoiceCard);
             view.typed_characters_on_terminal("ls", ctx)
         });
 
@@ -24644,7 +24721,7 @@ fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_sh
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
@@ -24747,7 +24824,7 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
         let _mode = force_dest_mode(DestMode::Table);
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             view.model

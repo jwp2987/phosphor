@@ -11125,16 +11125,17 @@ impl TerminalView {
     /// What happens to the held keys once a prompt is known to be up (the legacy probe above, or
     /// the edge machine's `PromptUp` in `table` mode) (#1348, #1561).
     ///
-    /// A credential prompt (password, passphrase, host-key question, a request for a code): what
-    /// was typed before it existed may be a password typed blind, so it is discarded, never shown
-    /// or delivered, as ssh's own tty flush would. Anything else that is up in front of the
-    /// keys is a shell's prompt (a nested `ssh` into a host that is not bootstrapped): plain ssh
-    /// would have the keys read by that shell, so they are delivered to the pty, in order, exactly
-    /// once (hold, don't drop). When delivery is impossible right now (the queue is mid-drain)
-    /// they are handed back to the editor as text instead. Neither path is silent.
+    /// A credential prompt (password, passphrase, host-key question, a request for a code) or any
+    /// line that is not recognisably a shell's prompt: what was typed before it existed may be a
+    /// password typed blind, so it is discarded, never shown or delivered, as ssh's own tty flush
+    /// would. A line of a shell prompt's shape (ends in `$ # % >`, not credential-style: a nested
+    /// `ssh` into a host that is not bootstrapped): plain ssh would have the keys read by that
+    /// shell, so they are delivered to the pty, in order, exactly once (hold, don't drop). When delivery
+    /// is impossible right now (the queue is mid-drain) they are handed back to the editor as
+    /// text instead. Neither path is silent.
     fn discard_held_ssh_typeahead_for_prompt(&mut self, ctx: &mut ViewContext<Self>) {
         let had_keys = !self.ssh_held_is_empty();
-        if had_keys && !self.ssh_prompt_is_credential_prompt() {
+        if had_keys && self.ssh_prompt_is_unmanaged_shell_prompt() {
             if self.paste_queue.queue.is_draining() {
                 log::warn!(
                     "ssh typeahead: a shell prompt is up but the input queue is mid-drain; handing \
@@ -11182,14 +11183,18 @@ impl TerminalView {
         }
     }
 
-    /// Whether the unterminated line in front of the keys asks for input that may be a secret
-    /// (`output_tail_is_input_prompt`). Never waits for the pty reader (#1440): a busy model, or
-    /// no readable tail, answers yes, the conservative side (the keys are discarded, as before).
-    fn ssh_prompt_is_credential_prompt(&self) -> bool {
+    /// Whether the unterminated line in front of the keys is the prompt of a shell (a nested
+    /// `ssh` into a host that is not bootstrapped): a line of the shape
+    /// `output_tail_is_shell_prompt` reads that is not a credential-style prompt
+    /// (`output_tail_is_input_prompt`). Anything else (a host-key question, a request for a code,
+    /// ssh's own text, a line of unknown shape) keeps the #1113 rule: the keys may be a password
+    /// typed blind, so they are discarded. Never waits for the pty reader (#1440): a busy model,
+    /// or no readable tail, answers no, the conservative side.
+    fn ssh_prompt_is_unmanaged_shell_prompt(&self) -> bool {
         let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
             match self.model.try_lock() {
                 Some(model) => model,
-                None => return true,
+                None => return false,
             }
         } else {
             self.model.lock()
@@ -11199,7 +11204,7 @@ impl TerminalView {
             .active_block()
             .output_grid()
             .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
-        output_tail_is_input_prompt(&tail)
+        !output_tail_is_input_prompt(&tail) && output_tail_is_shell_prompt(&tail)
     }
 
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
@@ -37306,6 +37311,17 @@ fn output_tail_is_input_prompt(output: &str) -> bool {
         || ["password", "passphrase", "passcode", "secret"]
             .iter()
             .any(|word| lower.contains(word))
+}
+
+/// Whether the last line of `output` has the shape of a shell's own prompt: it ends in `$`, `#`,
+/// `%`, `>` or the chevron `❯` (after the prompt's trailing space). Callers check that the line is
+/// unterminated and not a credential-style prompt (`output_tail_is_input_prompt`) (#1561).
+fn output_tail_is_shell_prompt(output: &str) -> bool {
+    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
+        return false;
+    };
+    let line = line.trim_end();
+    output_has_visible_text(line) && line.ends_with(['$', '#', '%', '>', '\u{276f}'])
 }
 
 /// Whether a deferred subshell setup (#1032) may be written now: the prompt text is gone from
