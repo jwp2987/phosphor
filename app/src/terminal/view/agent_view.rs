@@ -1,6 +1,5 @@
 use warp_core::{features::FeatureFlag, send_telemetry_from_ctx, ui::appearance::Appearance};
 
-use crate::terminal::model::escape_sequences;
 use warpui::{EntityId, SingletonEntity, ViewContext, keymap::Keystroke};
 
 use crate::{
@@ -72,8 +71,8 @@ impl TerminalView {
         }
     }
 
-    /// Types a prepared local-child-harness command into this pane's PTY and
-    /// presses Enter, starting the harness CLI as though the user had typed
+    /// Runs a prepared local-child-harness command in this pane (as the pending
+    /// command until the shell is ready), starting the harness CLI as though the user had typed
     /// it themselves. Mirrors the "write to PTY so the process runs with a
     /// real shell/tty behind it" pattern used elsewhere (e.g.
     /// `run_aws_login_command`); this pane is created hidden specifically to
@@ -84,8 +83,10 @@ impl TerminalView {
         command: &str,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.clear_line_editor_and_write_to_pty(command.as_bytes().to_vec(), ctx);
-        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // A command, not raw bytes (#1449): the fresh pane may not have finished its shell
+        // bootstrap, where raw text was typed into the bootstrap or lost. This runs it once the
+        // shell can take a command and holds it as the pending command until then.
+        self.execute_command_or_set_pending(command, ctx);
     }
 
     pub fn enter_agent_view_for_new_conversation(

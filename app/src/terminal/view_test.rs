@@ -22935,6 +22935,29 @@ fn aws_login_is_a_command_that_waits_for_the_running_program() {
     })
 }
 
+/// #1449: the hidden local-child harness pane runs its command as a command: while the pane's
+/// shell cannot take one yet it is the pending command, and nothing is written raw to the pty.
+#[test]
+fn local_child_harness_command_waits_as_a_pending_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.start_local_child_harness_process("claude --harness", ctx);
+            assert!(view.input.as_ref(ctx).has_pending_command());
+            assert_eq!(
+                view.input.as_ref(ctx).pending_command_text_for_test(),
+                Some("claude --harness")
+            );
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    })
+}
+
 /// #1430: input synced from another pane does not reach a pane whose hand-over gate is open (here
 /// a PowerShell subshell setup): it would land in the bootstrap. Without a gate it is written
 /// through the pane's write path and is not reported back to the other panes as typed.
