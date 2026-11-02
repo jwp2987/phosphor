@@ -1,0 +1,991 @@
+{
+ "pipeline": 3015761186,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3015761186",
+ "ref": "build/r18bn",
+ "commit": "2b245a3768c16ff12c353102a6ed92fd051152e3",
+ "created_at": "2026-11-02T01:09:16.014Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 1679.857481,
+   "id": 17650494836,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 84.329212,
+   "id": 17650494835,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "success",
+   "duration": 22.201693,
+   "id": 17650494834,
+   "runner": "",
+   "note": "no results artifact (job success)"
+  },
+  "app-test-linux-wayland": {
+   "status": "failed",
+   "duration": 2004.603821,
+   "id": 17650494833,
+   "runner": ""
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494832,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494831,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494830,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 2231.455843,
+   "id": 17650494829,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 2060.338706,
+   "id": 17650494828,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1203.37753,
+   "id": 17650494827,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494826,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494825,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494824,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494823,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494822,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494821,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494820,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494819,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494818,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494817,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494816,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "failed",
+   "duration": 128.737115,
+   "id": 17650494815,
+   "runner": ""
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 89.643545,
+   "id": 17650494814,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 697.728841,
+   "id": 17650494813,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 9.489622,
+   "id": 17650494812,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 11.364259,
+   "id": 17650494811,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494810,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494809,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494808,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17650494807,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 340.724006,
+   "id": 17650494806,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 53.274055,
+   "id": 17650494805,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest": {
+   "summary_line": "Summary [  19.768s] 3197 tests run: 3196 passed, 1 failed, 19 skipped",
+   "duration_s": 19.768,
+   "run": 3197,
+   "passed": 3196,
+   "failed": 1,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "ai",
+     "test": "project_context::model::tests::request_before_prewarm_waits_for_the_scan_instead_of_scanning",
+     "seconds": 0.01
+    }
+   ],
+   "regressions": [
+    "project_context::model::tests::request_before_prewarm_waits_for_the_scan_instead_of_scanning"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-workspace-rest",
+   "status": "failed",
+   "duration": 128.737115
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   4.849s] 771 tests run: 771 passed, 7 skipped",
+   "duration_s": 4.849,
+   "run": 771,
+   "passed": 771,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 89.643545
+  },
+  "test-linux": {
+   "summary_line": "Summary [ 213.199s] 10388 tests run: 10381 passed (1 slow), 7 failed, 29 skipped",
+   "duration_s": 213.199,
+   "run": 10388,
+   "passed": 10381,
+   "failed": 7,
+   "timed_out": 0,
+   "skipped": 29,
+   "slow": 1,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "code::editor::view::vim_handler::tests::test_vim_system_register_paste_holds_the_rest_of_the_same_input",
+     "seconds": 0.067
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "code::editor::view::vim_handler::tests::test_vim_system_register_visual_paste_waits_for_the_read",
+     "seconds": 10.932
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::model::terminal_model::tests::line_editor_markers_update_the_handoffs_account_in_stream_order",
+     "seconds": 0.023
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::model::typeahead_handoff::tests::a_signal_with_no_wait_pending_releases_nothing",
+     "seconds": 0.018
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::a_user_key_does_not_wait_for_the_parser",
+     "seconds": 3.126
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line",
+     "seconds": 0.481
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::test_after_enter_replay_drains_in_typed_order",
+     "seconds": 0.226
+    }
+   ],
+   "regressions": [
+    "code::editor::view::vim_handler::tests::test_vim_system_register_paste_holds_the_rest_of_the_same_input",
+    "code::editor::view::vim_handler::tests::test_vim_system_register_visual_paste_waits_for_the_read",
+    "terminal::model::terminal_model::tests::line_editor_markers_update_the_handoffs_account_in_stream_order",
+    "terminal::model::typeahead_handoff::tests::a_signal_with_no_wait_pending_releases_nothing",
+    "terminal::view::tests::a_user_key_does_not_wait_for_the_parser",
+    "terminal::view::tests::ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line",
+    "terminal::view::tests::test_after_enter_replay_drains_in_typed_order"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 697.728841
+  }
+ },
+ "app": {
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 17650494836,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      "screenshot only (no OCR on the VM): shots\\terminal_proof.png"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "fast typing: 0/30 lines, exact match false"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "paste + instant Enter: 0/6 exact lines"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Ctrl-C delivered 0/5 times"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Enter to command start: Phosphor overhead 1793585450692.5 ms over conhost (powershell.exe) exceeds the 2 ms budget; only 0/30 Enter timings"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      "screenshot only (no OCR on the VM): shots\\agent_proof.png"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "fast typing: 0/30 lines, exact match false"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "paste + instant Enter: 0/6 exact lines"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Ctrl-C delivered 0/5 times"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Enter to command start: Phosphor overhead 1793586220536 ms over conhost (powershell.exe) exceeds the 2 ms budget; only 0/30 Enter timings"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/shots/terminal_fast_typing.jpg",
+    "windows/shots/terminal_paste_instant_enter.jpg",
+    "windows/shots/terminal_ctrl_c.jpg",
+    "windows/shots/terminal_latency_enter.jpg",
+    "windows/shots/agent_fast_typing.jpg",
+    "windows/shots/agent_paste_instant_enter.jpg",
+    "windows/shots/agent_ctrl_c.jpg",
+    "windows/shots/agent_latency_enter.jpg"
+   ],
+   "meta": {},
+   "summary": {
+    "pass": 2,
+    "fail": 8,
+    "skip": 0
+   },
+   "from_trace": true,
+   "screenshots_kept": 8
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17650494835,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "fail",
+     "seconds": 1.2,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 1.2,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 1.3,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md",
+    "macos/shots/terminal_mode_proof_FAIL.jpg",
+    "macos/shots/terminal_cadence_FAIL.jpg",
+    "macos/shots/terminal_fast_typing_FAIL.jpg",
+    "macos/shots/terminal_paste_instant_enter_FAIL.jpg",
+    "macos/shots/terminal_tab_enter_FAIL.jpg",
+    "macos/shots/terminal_ctrl_c_d_FAIL.jpg",
+    "macos/shots/terminal_ssh_connect_typing_FAIL.jpg",
+    "macos/shots/terminal_latency_enter_FAIL.jpg",
+    "macos/shots/terminal_latency_key_log_FAIL.jpg",
+    "macos/shots/terminal_latency_paint_FAIL.jpg",
+    "macos/shots/agent_mode_proof_FAIL.jpg",
+    "macos/shots/agent_cadence_FAIL.jpg"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "2b245a37",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 0,
+    "fail": 20,
+    "skip": 0
+   },
+   "screenshots_skipped": 8,
+   "screenshots_kept": 12
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland",
+   "job_id": 17650494833,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 20.7,
+     "detail": [
+      "ts_reader produced no output (python3 missing or app did not run it)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 124.9,
+     "detail": [
+      "ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None",
+      "ft0: shell received 30 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng >> r_ft0.txt')",
+      "ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None",
+      "ft25: shell received 30 commands, not the typed ones (first mismatch: 'cho t31_wql8ntmpxf >> r_ft25.txt')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 21.2,
+     "detail": [
+      "paste + instant Enter: 0/6 md5 lines exact"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 26.5,
+     "detail": [
+      "Tab+Enter: completed file has 0/12 expected lines"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 261.0,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "Ctrl-D in cat: file []",
+      "Ctrl-D leaves the nested shell: SHLVL lines []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 379.5,
+     "detail": [
+      "remote shell received 0/12 typed-ahead commands exactly (missing 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 128.4,
+     "detail": [
+      "only 0/30 Enter timings captured",
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 12.7,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 20.7,
+     "detail": [
+      "ts_reader produced no output (python3 missing or app did not run it)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 125.3,
+     "detail": [
+      "ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None",
+      "ft0: shell received 12 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng >> r_ft0.txt')",
+      "ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None",
+      "ft25: shell received 14 commands, not the typed ones (first mismatch: 'cho t32_f2fvoytcul >> r_ft25.txt')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 21.1,
+     "detail": [
+      "paste + instant Enter: 0/6 md5 lines exact"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 26.5,
+     "detail": [
+      "Tab+Enter: completed file has 0/12 expected lines"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 260.4,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "Ctrl-D in cat: file []",
+      "Ctrl-D leaves the nested shell: SHLVL lines []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 379.5,
+     "detail": [
+      "remote shell received 0/12 typed-ahead commands exactly (missing 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 128.4,
+     "detail": [
+      "only 0/30 Enter timings captured",
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 12.7,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "wayland/junit.xml",
+    "wayland/results.json",
+    "wayland/summary.md",
+    "wayland/shots/terminal_cadence_FAIL.jpg",
+    "wayland/shots/terminal_fast_typing_FAIL.jpg",
+    "wayland/shots/terminal_paste_instant_enter_FAIL.jpg",
+    "wayland/shots/terminal_tab_enter_FAIL.jpg",
+    "wayland/shots/terminal_ctrl_c_d_FAIL.jpg",
+    "wayland/shots/terminal_ssh_connect_typing_FAIL.jpg",
+    "wayland/shots/terminal_latency_enter_FAIL.jpg",
+    "wayland/shots/terminal_latency_key_log_FAIL.jpg",
+    "wayland/shots/agent_cadence_FAIL.jpg",
+    "wayland/shots/agent_fast_typing_FAIL.jpg",
+    "wayland/shots/agent_paste_instant_enter_FAIL.jpg",
+    "wayland/shots/agent_tab_enter_FAIL.jpg"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "2b245a37",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 2,
+    "fail": 16,
+    "skip": 2
+   },
+   "screenshots_skipped": 4,
+   "screenshots_kept": 12
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 61,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "warpui (lib)": 3,
+   "repo_metadata (lib)": 1,
+   "warp_editor (lib)": 1,
+   "warp_terminal (lib)": 6,
+   "remote_server (lib)": 1,
+   "warp (lib)": 18,
+   "warp (lib test)": 28,
+   "warp_tui (lib)": 1
+  },
+  "warning_lines_by_kind": {
+   "unused import": 43,
+   "unreachable pattern": 24,
+   "unused variable": 18,
+   "function": 12,
+   "variable does not need to be mutable": 10,
+   "use of deprecated type alias": 8,
+   "method": 8,
+   "unused imports": 7,
+   "value assigned to": 4,
+   "trait": 4,
+   "unused doc comment": 1
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 340.724006
+ }
+}

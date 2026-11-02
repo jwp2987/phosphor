@@ -95,6 +95,7 @@ guards:
     - ./script/check_pty_doors
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
+    - ./script/check_test_results
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
     # branch. The commit message stands in for the PR body: it is where a

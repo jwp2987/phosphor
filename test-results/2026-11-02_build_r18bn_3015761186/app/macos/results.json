@@ -1,0 +1,278 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "2b245a37",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-01T19:31:14-0600",
+ "summary": {
+  "pass": 0,
+  "fail": 20,
+  "skip": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_mode_proof_FAIL.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_paint_FAIL.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.2,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_mode_proof_FAIL.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.2,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1.3,
+   "detail": [
+    "harness exception: RuntimeError(\"frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys\")"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_paint_FAIL.png"
+   ]
+  }
+ ]
+}

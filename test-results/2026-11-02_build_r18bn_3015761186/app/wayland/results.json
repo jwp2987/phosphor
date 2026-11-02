@@ -1,0 +1,343 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "2b245a37",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-01T20:45:23-0600",
+ "summary": {
+  "pass": 2,
+  "fail": 16,
+  "skip": 2
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.5,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": false
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 20.7,
+   "detail": [
+    "ts_reader produced no output (python3 missing or app did not run it)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 124.9,
+   "detail": [
+    "ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None",
+    "ft0: shell received 30 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng >> r_ft0.txt')",
+    "ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None",
+    "ft25: shell received 30 commands, not the typed ones (first mismatch: 'cho t31_wql8ntmpxf >> r_ft25.txt')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 21.2,
+   "detail": [
+    "paste + instant Enter: 0/6 md5 lines exact"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 26.5,
+   "detail": [
+    "Tab+Enter: completed file has 0/12 expected lines"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 261.0,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-D in cat: file []",
+    "Ctrl-D leaves the nested shell: SHLVL lines []"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 2.066
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 379.5,
+   "detail": [
+    "remote shell received 0/12 typed-ahead commands exactly (missing 12)"
+   ],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 128.4,
+   "detail": [
+    "only 0/30 Enter timings captured",
+    "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 2.066
+   },
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 12.7,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 1.5,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 20.7,
+   "detail": [
+    "ts_reader produced no output (python3 missing or app did not run it)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_cadence_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 125.3,
+   "detail": [
+    "ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None",
+    "ft0: shell received 12 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng >> r_ft0.txt')",
+    "ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None",
+    "ft25: shell received 14 commands, not the typed ones (first mismatch: 'cho t32_f2fvoytcul >> r_ft25.txt')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 21.1,
+   "detail": [
+    "paste + instant Enter: 0/6 md5 lines exact"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 26.5,
+   "detail": [
+    "Tab+Enter: completed file has 0/12 expected lines"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 260.4,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-D in cat: file []",
+    "Ctrl-D leaves the nested shell: SHLVL lines []"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 2.085
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 379.5,
+   "detail": [
+    "remote shell received 0/12 typed-ahead commands exactly (missing 12)"
+   ],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 128.4,
+   "detail": [
+    "only 0/30 Enter timings captured",
+    "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 2.085
+   },
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 12.7,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  }
+ ]
+}

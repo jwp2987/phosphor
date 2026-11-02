@@ -1,0 +1,29 @@
+{
+ "summary_line": "Summary [  19.768s] 3197 tests run: 3196 passed, 1 failed, 19 skipped",
+ "duration_s": 19.768,
+ "run": 3197,
+ "passed": 3196,
+ "failed": 1,
+ "timed_out": 0,
+ "skipped": 19,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "ai",
+   "test": "project_context::model::tests::request_before_prewarm_waits_for_the_scan_instead_of_scanning",
+   "seconds": 0.01
+  }
+ ],
+ "regressions": [
+  "project_context::model::tests::request_before_prewarm_waits_for_the_scan_instead_of_scanning"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-workspace-rest",
+ "status": "failed",
+ "duration": 128.737115
+}

@@ -222,6 +222,10 @@ step "fork boundary guards"
     || fail "cloud boundary -- run ./script/check_cloud_boundary for detail"
 ./script/check_stub_coverage  >/dev/null 2>&1 && ok "stub coverage" \
     || fail "stub coverage -- run ./script/check_stub_coverage for detail"
+if [[ -x ./script/check_test_results ]]; then
+    ./script/check_test_results >/dev/null 2>&1 && ok "test-results archive" \
+        || fail "test-results archive -- run ./script/check_test_results for detail"
+fi
 if [[ -x ./script/check_queue_access ]]; then
     ./script/check_queue_access >/dev/null 2>&1 && ok "input queue access" \
         || fail "input queue access -- run ./script/check_queue_access for detail"

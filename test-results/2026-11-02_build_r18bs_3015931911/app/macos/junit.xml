@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="21" failures="13" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="3.80">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.10">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="59.20">
+<failure message="Phosphor lost keys the reference keeps with the SAME injection (perline): Phosphor 5/12 bad lines (first char lost 0), Terminal.app (.command via open) 0/12 -- a Phosphor-side drop (#1414)">Phosphor lost keys the reference keeps with the SAME injection (perline): Phosphor 5/12 bad lines (first char lost 0), Terminal.app (.command via open) 0/12 -- a Phosphor-side drop (#1414)
+harness default injection (per-line) still loses lines in Phosphor: {'lost_first': 0, 'other_bad': 4, 'missing': 1}
+phosphor / perline: first char lost on 0/12 lines, other bad 4, missing 1
+reference / perline: first char lost on 0/12 lines, other bad 0, missing 0</failure>
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="131.20">
+<failure message="ft0: file has 29/30 lines, exact match False first diff: exp='t52_50hnynsgbh' got='t52_50hnynsgbh t53_8sie6xt16w'">ft0: file has 29/30 lines, exact match False first diff: exp='t52_50hnynsgbh' got='t52_50hnynsgbh t53_8sie6xt16w'
+ft0: shell received 29 commands, not the typed ones (first mismatch: 'echo t52_50hnynsgbh &gt;&gt; r_ft0.txtecho t53_8sie6xt16w &gt;&gt; r_ft0.txt')
+ft25: file has 29/30 lines, exact match False first diff: exp='t76_f646xguci8' got='t76_f646xguci8 t77_2iz2b7rfqu'
+ft25: shell received 29 commands, not the typed ones (first mismatch: 'echo t76_f646xguci8 &gt;&gt; r_ft25.txtecho t77_2iz2b7rfqu &gt;&gt; r_ft25.txt')</failure>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="22.40">
+<failure message="paste + instant Enter: 2/6 md5 lines exact">paste + instant Enter: 2/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="22.10">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="203.80">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: 209.78 ms over the harness floor exceeds the 20 ms budget
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 95444 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists
+Ctrl-C: n=29 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="385.20">
+<failure message="remote shell received 0/12 typed-ahead commands exactly (missing 12)">remote shell received 0/12 typed-ahead commands exactly (missing 12)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="206.30">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="24.00">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1684 input_order keydown">only 0 key-&gt;frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1684 input_order keydown lines (1684 with ctrl=false) and 16 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="30.40">
+<failure message="only 0 key-&gt;paint samples from kl3 (capture region or Screen Recording permission wrong)">only 0 key-&gt;paint samples from kl3 (capture region or Screen Recording permission wrong)</failure>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.90">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.10">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="63.00">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="22.30">
+<failure message="paste + instant Enter: 2/6 md5 lines exact">paste + instant Enter: 2/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="22.20">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="268.40">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: 223.25 ms over the harness floor exceeds the 20 ms budget
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 3379 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists
+Ctrl-C: n=25 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="33.10">
+<failure message="harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')">harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 6912 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="112.60">
+<failure message="Enter to command start: Phosphor overhead 8.48 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 8.48 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=25 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="23.70">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1207 input_order keydown">only 0 key-&gt;frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1207 input_order keydown lines (1207 with ctrl=false) and 63 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="30.30">
+</testcase>
+</testsuite>

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="20" failures="20" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="cadence" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39023): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.20">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="cadence" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="1.20">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="1.30">
+<failure message="harness exception: RuntimeError(&quot;frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys&quot;)">harness exception: RuntimeError("frontmost is '' (pid None), not Phosphor (pid 39292): refusing to send keys")</failure>
+</testcase>
+</testsuite>
