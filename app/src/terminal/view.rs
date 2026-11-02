@@ -12328,7 +12328,18 @@ impl TerminalView {
                     },
                 );
             } else {
+                // A timed setup (the kill switch, or a host whose markers never came) has no
+                // marker token, so the shell sends nothing that says its console has processed
+                // the Ctrl-C. The settle timer is the only release there is, and it is a logged
+                // give-up like every other (#1438); a marker-paced setup never gets here.
                 ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
+                    if me.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation })
+                    {
+                        log::warn!(
+                            "PowerShell setup has no read marker to wait for after the Ctrl-C; \
+                             releasing the held keys after the settle give-up"
+                        );
+                    }
                     me.end_powershell_abort_wait(generation, ctx)
                 });
             }
@@ -13278,17 +13289,16 @@ impl TerminalView {
         bytes: &[u8],
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        /// Longer than the gap a busy main thread leaves between the hand-off and focus landing
-        /// (75-200 ms measured), short enough that a later key on the terminal (after a click on a
-        /// block) keeps its usual meaning.
-        const EDITOR_TAKEOVER_KEY_WINDOW: Duration = Duration::from_millis(1000);
+        /// The window ends on the focus event (or a click on the terminal), never on a clock
+        /// (#1439); this is only the logged give-up for a focus event that never comes.
+        const EDITOR_TAKEOVER_GIVE_UP: Duration = Duration::from_secs(10);
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
         }
         let just_took_over = self
             .handoff
-            .read()
-            .editor_took_over_within(EDITOR_TAKEOVER_KEY_WINDOW, Instant::now());
+            .write()
+            .editor_takeover_open(EDITOR_TAKEOVER_GIVE_UP, Instant::now());
         if !just_took_over || !self.selected_blocks.is_empty() {
             return false;
         }

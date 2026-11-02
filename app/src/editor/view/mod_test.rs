@@ -5524,6 +5524,79 @@ fn test_queue_second_paste_waits_for_the_first() {
     })
 }
 
+/// Opens a gate of `kind` on the editor's queue, as the terminal does for a pty setup.
+fn open_queue_gate(
+    view: &mut EditorView,
+    ctx: &mut ViewContext<EditorView>,
+    kind: crate::terminal::input_queue::GateKind,
+) {
+    use crate::terminal::input_queue::GateSpec;
+    let queue = view.paste_hold().queue();
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue
+        .borrow_mut()
+        .open_gate(&mut host, GateSpec::new(kind, 0).with_cap(None));
+}
+
+// #1423: behind a subshell / PowerShell setup gate alone, typing in the editor shows at once; an
+// Enter still waits (it would reach the shell mid-setup), and once one key is held the ones
+// after it stay behind it, in order.
+#[test]
+fn test_queue_editor_keys_behind_a_setup_gate_apply_at_once_but_enter_waits() {
+    use crate::terminal::input_queue::GateKind;
+    for kind in [GateKind::SubshellSetup, GateKind::PowershellSetup] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                open_queue_gate(view, ctx, kind);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("a")), ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("b")), ctx);
+                assert_eq!(
+                    view.buffer_text(ctx),
+                    "ab",
+                    "{kind:?}: typing shows at once"
+                );
+                // An Enter is held, and so is everything typed behind it.
+                view.handle_action(&EditorAction::Enter, ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("c")), ctx);
+                assert_eq!(
+                    view.buffer_text(ctx),
+                    "ab",
+                    "{kind:?}: Enter and what follows wait"
+                );
+            });
+        })
+    }
+}
+
+// #1423: a gate that decides where the key goes (an Enter's verdict, the hand-off's report) still
+// holds the editor's text.
+#[test]
+fn test_queue_editor_text_behind_a_handoff_gate_still_waits() {
+    use crate::terminal::input_queue::GateKind;
+    for kind in [
+        GateKind::HandoffReport,
+        GateKind::EnterVerdict,
+        GateKind::CliSubmit,
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                open_queue_gate(view, ctx, kind);
+                view.handle_action(&EditorAction::Left, ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("a")), ctx);
+                assert_eq!(view.buffer_text(ctx), "", "{kind:?}: held");
+            });
+        })
+    }
+}
+
 // #1353 phase 1: the idle fast path. With nothing pending the editor never touches the queue.
 #[test]
 fn test_queue_idle_editor_keys_do_not_touch_the_queue() {

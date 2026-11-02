@@ -1520,3 +1520,69 @@ fn retagging_a_gate_that_is_not_open_changes_nothing() {
 #[cfg(test)]
 mod prop_model;
 pub mod ops;
+
+#[test]
+fn retag_gate_with_a_multi_byte_enter_led_write_keeps_the_tail_and_drops_one_enter() {
+    // #1420: a write that starts with an Enter and carries more (a paste): the Enter leaves, the
+    // tail stays held in order, a `\r\n` pair counts as the one Enter it is.
+    for (write, tail) in [
+        (&b"\rls -la\r"[..], &b"ls -la\r"[..]),
+        (&b"\r\nls"[..], &b"ls"[..]),
+        (&b"\n\nx"[..], &b"\nx"[..]),
+    ] {
+        let mut q = InputQueue::new();
+        let mut h = MockHost::new();
+        q.offer_gated(
+            &mut h,
+            pty_bytes(write),
+            GateSpec::new(GateKind::PromptSeen, 1).with_cap(None),
+        );
+        q.offer(&mut h, pty_bytes(b"z"));
+        assert!(q.retag_gate(
+            &mut h,
+            GateKind::PromptSeen,
+            1,
+            GateSpec::new(GateKind::HandoffReport, 2).with_cap(None),
+            true,
+        ));
+        assert!(h.delivered.is_empty());
+        let taken = q.close_gate_taking(&mut h, GateKind::HandoffReport, 2);
+        assert_eq!(held_bytes(&taken), vec![tail.to_vec(), b"z".to_vec()]);
+    }
+}
+
+#[test]
+fn editor_keys_pass_only_setup_gates_with_no_editor_entry_queued() {
+    // #1423.
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    assert!(!q.editor_keys_pass_gates(), "no gate: nothing to pass");
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SubshellSetup, 0).with_cap(None),
+    );
+    assert!(q.editor_keys_pass_gates());
+    q.offer(&mut h, pty_bytes(b"ls"));
+    assert!(
+        q.editor_keys_pass_gates(),
+        "queued pty bytes are not overtaken"
+    );
+    q.offer(&mut h, EntryKind::Text("a".into()));
+    assert!(
+        !q.editor_keys_pass_gates(),
+        "an editor-bound entry is queued: order"
+    );
+    let mut q = InputQueue::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None),
+    );
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::HandoffReport, 1).with_cap(None),
+    );
+    assert!(!q.editor_keys_pass_gates(), "a hand-off gate is open too");
+    let mut q = InputQueue::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::CliSubmit, 1).with_cap(None));
+    assert!(!q.editor_keys_pass_gates());
+}
