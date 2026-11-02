@@ -28,10 +28,12 @@ def run(script, **kw):
     return subprocess.run([BASH, "-c", script], capture_output=True, text=True, **kw)
 
 
-def check(cond, what):
+def check(cond, what, detail=""):
     print(("  ok   " if cond else "  FAIL ") + what)
     if not cond:
         failures.append(what)
+        if detail:
+            print("       " + detail)
 
 
 # --- warp_at_least_bash_version vs `sort -rVC` -------------------------------------------
@@ -146,6 +148,97 @@ check(not os.path.exists(fake_profile.name + ".calls"), "expanding PS0 no longer
 for f in (fake_profile.name, fake_profile.name + ".calls"):
     if os.path.exists(f):
         os.unlink(f)
+
+# --- `history 1 | sed` without a fork (#1492) ---------------------------------------------------
+# bash < 5.3 forked a command substitution, a pipeline subshell and sed before every command.
+# The replacement writes `history 1` to a temp file and reads it back; it must give the same
+# string for every kind of history entry, in the default and the hostile (set -eu) state.
+PREEXEC = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash.sh")
+ptext = open(PREEXEC).read()
+m1 = re.search(r"^     __bp_history1_strip\(\) \{\n.*?\n     \}\n", ptext, re.S | re.M)
+m2 = re.search(r"^     __bp_history1_viafile\(\) \{\n.*?\n     \}\n", ptext, re.S | re.M)
+assert m1 and m2, "__bp_history1_* not found in bash.sh"
+hist_funcs = m1.group(0) + m2.group(0)
+print("history 1 without a fork")
+entries = {
+    "plain": "ls -la",
+    "leading spaces": "   echo  hi",
+    "digits first": "123 abc",
+    "single digit": "7",
+    "multi-line": "echo a\necho b",
+    "multi-line with blank lines": "if true; then\n\n  echo x\nfi",
+    "trailing newlines": "echo a\n\n",
+    "backslashes": "printf 'a\\nb\\\\' \\",
+    "quotes": "echo \"it's\" `date`",
+    "dash n": "-n",
+    "unicode": "echo caf\u00e9 \u65e5\u672c",
+    "tab": "a\tb",
+    "star-like": "* x",
+    "long": "x" * 5000,
+}
+for name, entry in entries.items():
+    for strict in ("", "set -eu\n"):
+        for tf in ("", "HISTTIMEFORMAT='%F %T '\n"):
+            prelude = f"{strict}set -o history\nHISTFILE=/dev/null\n{tf}"
+            setup = "history -s -- \"$ENTRY\"; "  # same line as the call: it is `history 1`
+            old = subprocess.run(
+                [BASH, "-c", prelude + setup + """o=$(export LC_ALL=C; HISTTIMEFORMAT='' builtin history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'); printf '%s' "$o" """],
+                capture_output=True, env={**os.environ, "ENTRY": entry})
+            new = subprocess.run(
+                [BASH, "-c", prelude + hist_funcs + setup + """__bp_history1_viafile || echo VIAFILE-FAILED; printf '%s' "$__bp_history1"; command -p rm -f "$__bp_h1_file" """],
+                capture_output=True, env={**os.environ, "ENTRY": entry})
+            check(new.stdout == old.stdout and new.returncode == 0 and (old.stdout.strip() != b"" or entry == ""),
+                  f"{name}{' (set -eu)' if strict else ''}{' (HISTTIMEFORMAT)' if tf else ''}",
+                  f"old={old.stdout!r} new={new.stdout!r} err={new.stderr!r}")
+# No temp file available -> the caller falls back to the pipeline.
+r = run(hist_funcs + "__bp_h1_file=none; __bp_history1_viafile && echo used || echo fallback")
+check(r.stdout.strip() == "fallback", "no scratch file: reports failure so the pipeline runs")
+r = run(hist_funcs + 'export TMPDIR=/nonexistent/x; __bp_history1_viafile && echo used || echo fallback; echo "[$__bp_h1_file]"')
+check(r.stdout.split() == ["fallback", "[none]"], "mktemp fails: remembered, no retry per command")
+# The scratch file is private and the cleanup removes it.
+r = run("set -o history; HISTFILE=/dev/null\n" + hist_funcs + 'history -s secret; for i in 1 2 3; do __bp_history1_viafile; done; stat -c %a "$__bp_h1_file"; command -p rm "$__bp_h1_file"')
+check(r.stdout.strip() == "600", "scratch file is mode 600 and reused")
+
+# --- key-value hooks (MSYS2 / Git Bash): one write, same bytes (#1492) ------------------------------
+bm = re.search(r"    # Expects the first argument to be the shell hook\.\n    warp_send_hook_via_kv_pairs_start.*?    warp_send_hook_via_kv_pairs_end \(\) \{\n.*?\n    \}\n", text, re.S)
+assert bm, "kv hook functions not found"
+new_kv = bm.group(0)
+old_kv = """
+    warp_send_hook_via_kv_pairs_start () { __warp_emit "${OSC_START}k;A;%s\\a" "${1-}"; }
+    warp_send_hook_kv_pair_escaped () {
+      if [[ -n "${2-}" ]]; then __warp_emit "${OSC_START}k;B;%s;%q\\a" "$1" "$2"; else __warp_emit "${OSC_START}k;B;%s;\\a" "${1-}"; fi
+    }
+    warp_send_hook_kv_pair () {
+      if [[ -n "${2-}" ]]; then __warp_emit "${OSC_START}k;B;%s;%s\\a" "$1" "$2"; else __warp_emit "${OSC_START}k;B;%s;\\a" "${1-}"; fi
+    }
+    warp_send_hook_via_kv_pairs_end () { __warp_emit "${OSC_START}k;C\\a"; }
+"""
+driver = r"""
+OSC_START="$(builtin printf '\e]9278;')"
+__warp_emit () { builtin printf "$@"; }
+for v in "" "plain" "with space" 'quo"te' "it's" 'back\slash' $'tab\there' $'new\nline' 'a;b' '%s %d' 'caf\xc3\xa9' '$HOME' '`x`' '-n' '~' '*'; do
+  warp_send_hook_via_kv_pairs_start "Hook"
+  warp_send_hook_kv_pair "k1" "$v"
+  warp_send_hook_kv_pair_escaped "k2" "$v"
+  warp_send_hook_kv_pair "" "$v"
+  warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
+  warp_send_hook_via_kv_pairs_end
+  builtin printf '\n--\n'
+done
+"""
+print("key-value hooks")
+for strict in ("", "set -eu\n"):
+    old = run(strict + old_kv + driver)
+    new = run(strict + new_kv + driver)
+    check(old.returncode == 0 and new.stdout == old.stdout and new.returncode == 0 and len(old.stdout) > 200,
+          f"same bytes{' under set -eu' if strict else ''}", f"old={old.stdout!r} new={new.stdout!r} {new.stderr!r}")
+# One write per hook: count write(2) calls on a pty-less fd via strace-free proxy -- the new
+# functions call __warp_emit exactly once per hook.
+r = run(new_kv + r"""
+OSC_START=X; n=0; __warp_emit () { n=$((n+1)); }
+warp_send_hook_via_kv_pairs_start H; warp_send_hook_kv_pair a b; warp_send_hook_kv_pair_escaped c d; warp_send_hook_kv_pair e ""
+warp_send_hook_via_kv_pairs_end; echo $n""")
+check(r.stdout.strip() == "1", "a hook is emitted with one write")
 
 print()
 if failures:

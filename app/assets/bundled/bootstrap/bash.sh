@@ -271,6 +271,29 @@
              [\*\ ]\ *) __bp_history1=${__bp_rest#??} ;;
          esac
      }
+ #### Phosphor (#1492): bash < 5.3 cannot capture a builtin's output without a fork, and the
+ #### `$(history 1 | sed ...)` fallback below is a command substitution, a pipeline subshell and a
+ #### sed exec before EVERY command. On Windows (MSYS2 Git Bash, bash 5.2) a fork costs 5-15 ms,
+ #### which is most of the Enter-to-command-start gap to conhost. A builtin's output can be sent to
+ #### a FILE without forking, so `history 1` is written to a private temp file (mode 600, made once
+ #### per shell by mktemp; removed by __warp_generator_pid_file_cleanup) and read back with `read`.
+ #### The result is then stripped exactly like the 5.3 path (__bp_history1_strip, the sed's job,
+ #### and the trailing newlines `$(...)` drops). Returns 1, leaving the caller to the original
+ #### pipeline, if no temp file can be made or the write/read fails.
+     __bp_history1_viafile() {
+         __bp_history1=
+         if [[ -z ${__bp_h1_file:-} ]]; then
+             __bp_h1_file=$(command -p mktemp 2>/dev/null) || __bp_h1_file=
+             [[ -n $__bp_h1_file ]] || __bp_h1_file=none
+         fi
+         [[ $__bp_h1_file != none ]] || return 1
+         HISTTIMEFORMAT= builtin history 1 >| "$__bp_h1_file" 2>/dev/null || return 1
+         IFS= builtin read -r -d '' __bp_history1 < "$__bp_h1_file" 2>/dev/null
+         while [[ $__bp_history1 == *$'\n' ]]; do
+             __bp_history1=${__bp_history1%$'\n'}
+         done
+         __bp_history1_strip
+     }
      __bp_history1_nofork() {
          __bp_history1=
          eval '__bp_history1=${ HISTTIMEFORMAT= builtin history 1; }'
@@ -365,6 +388,8 @@
  #### bash keeps the original pipeline.
          if ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
              __bp_history1_nofork
+             this_command=$__bp_history1
+         elif __bp_history1_viafile; then
              this_command=$__bp_history1
          else
              this_command=$(
