@@ -220,6 +220,29 @@ PROSE_LINES = ["what does this error mean", "how do I undo my last git commit", 
 AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong"]
 
 
+ENTER_BEGIN_RE = re.compile(r'hop=enter_begin\b.*?\binput_type=(\w+)')
+
+
+def enter_begin_types(text):
+    """input_type of every `hop=enter_begin` line in an app-log excerpt, in order ('Shell' | 'AI' | ...)"""
+    return [m.group(1) for m in ENTER_BEGIN_RE.finditer(text)]
+
+
+def classify_dest(reached_shell, route_rows, begin_types):
+    """Where a typed line went, PROVEN from the app log (#1511). 'shell' = the shell's rec.log has the line; 'BOTH' = it did and the
+    routing decision also says Agent; 'agent' = the shell received nothing AND the app logged the Enter as routed to the agent (the
+    `enter: Agent` decision, or `enter_begin ... input_type=AI`); 'lost' = neither the shell nor an AI-routed Enter has it (a swallowed
+    line); 'unproven' = the shell has nothing and the app log has no routing row at all (no log: nothing can be said)."""
+    route = route_rows[-1]["route"] if route_rows else None
+    if reached_shell:
+        return "BOTH" if route == "Agent" else "shell"
+    if route == "Agent" or (begin_types and begin_types[-1] == "AI"):
+        return "agent"
+    if route is None and not begin_types:
+        return "unproven"
+    return "lost"
+
+
 def routing_table_rows(ctx, off):
     return [dict(route=m.group(1), rule=m.group(2), surface=m.group(3), head=m.group(4), n=int(m.group(5))) for m in ROUTE_RE.finditer(ctx.log_since(off))]
 
@@ -250,19 +273,18 @@ def c_routing_table(ctx, r):
         rows = routing_table_rows(ctx, off)
         enter = rows[-1] if rows else None
         reached_shell = any(c == line for c in ctx.cmds_since(mark))
-        reached_agent = bool(enter and enter["route"] == "Agent") and not reached_shell
         if enter and enter["route"] == "Shell" and not reached_shell:
             ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)
             reached_shell = any(c == line for c in ctx.cmds_since(mark))
-        dest = "shell" if reached_shell else ("agent" if (reached_agent or (not enter and not reached_shell)) else "none")
-        if enter and enter["route"] == "Agent" and reached_shell:
-            dest = "BOTH"
+        dest = classify_dest(reached_shell, rows, enter_begin_types(ctx.log_since(off)))
         surface = enter["surface"] if enter else None
         if kind == "ambiguous":
             want = ("agent" if surface == "AgentConversation" else "shell") if surface else None
         ok = want is None or dest == want
         results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None))
-        if want is None:
+        if dest == "lost" or (dest == "unproven" and want != "shell"):
+            r.check(False, "%r (%s) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest %s, surface %s)" % (line, kind, dest, surface))
+        elif want is None:
             r.note("ambiguous %r: went to %s (no routing log line, so no rule to check)" % (line, dest))
         elif not ok:
             r.check(False, "%r (%s) expected %s, went to %s (surface %s, rule %s); shell received %r" % (line, kind, want, dest, surface, enter["rule"] if enter else "n/a", [c for c in ctx.cmds_since(mark)][:2]))
