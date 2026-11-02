@@ -26,7 +26,7 @@
 # to `Zap-Run-GeneratorCommand` while pwsh.ps1 kept defining
 # `Warp-Run-GeneratorCommand`, so EVERY in-band generator command sent to a
 # PowerShell session invoked a function that did not exist -- warpified remote,
-# Docker sandbox, tmux, remote_tty, and any build with
+# Docker sandbox, tmux, and any build with
 # `are_in_band_generators_for_all_sessions_enabled`. Local PowerShell sessions
 # use LocalCommandExecutor and were unaffected, which is part of why it survived.
 # The Rust unit tests had been renamed to match the Rust side, so they agreed

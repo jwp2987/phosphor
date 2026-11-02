@@ -847,8 +847,6 @@ mcp_server = []
 mcp_oauth = []
 mcp_debugging_ids = []
 notebook_parameter = []
-# Remote-backed tty that connects to a PTY-like interface via a server.
-remote_tty = []
 # Fix for cursor reflow bug during window resize, from Alacritty resizing logic.
 resize_fix = []
 pluggable_notifications = []

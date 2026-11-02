@@ -2509,7 +2509,7 @@ impl PaneGroup {
                             }
                         });
                 }
-                // TODO: Potentially handle remote_tty and mock TerminalManager cases here as well?
+                // TODO: Potentially handle the mock TerminalManager case here as well?
             });
     }
 
@@ -5856,16 +5856,7 @@ impl PaneGroup {
         crate::terminal::focus_env::add_session_focus_env_vars(&mut env_vars, session_uuid);
 
         cfg_if::cfg_if! {
-            if #[cfg(feature = "remote_tty")] {
-                let (terminal_view, terminal_manager) = crate::terminal::remote_tty::TerminalManager::create_model(
-                    resources,
-                    initial_size,
-                    model_event_sender,
-                    ctx.window_id(),
-                    initial_input_config,
-                    ctx,
-                );
-            } else if #[cfg(feature = "local_tty")] {
+            if #[cfg(feature = "local_tty")] {
                 let (terminal_view, terminal_manager) = crate::terminal::local_tty::TerminalManager::create_model(
                     startup_directory,
                     env_vars,

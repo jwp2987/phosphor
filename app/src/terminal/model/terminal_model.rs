@@ -3329,8 +3329,8 @@ impl ansi::Handler for TerminalModel {
     /// The flip was gated on one thing: every emitter of a `requires_registered_session()` hook
     /// must quote an ID this client minted and registered before the emitting process could
     /// write anything back. That now holds for all of them:
-    /// * Local / remote-tty / subshell spawn bake an ID into the launch and register it
-    ///   (`local_tty/terminal_manager.rs`, `remote_tty/event_loop.rs`, `view.rs`).
+    /// * Local / subshell spawn bake an ID into the launch and register it
+    ///   (`local_tty/terminal_manager.rs`, `view.rs`).
     /// * The bootstrap scripts quote `$WARP_SESSION_ID` on `Preexec`, `CommandFinished`,
     ///   `InputBuffer`, `Clear`, `FinishUpdate`, `PreInteractiveSSHSession` and `Bootstrapped`
     ///   (`bash_body.sh` / `zsh_body.sh` / `fish.sh`), matching the pin.
