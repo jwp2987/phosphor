@@ -438,12 +438,21 @@ budget, previous build, baseline, verdict, n).
 
 - **Budgets.** Phosphor *overhead* = Phosphor median minus the reference terminal's median, measured in the same session with the
   same keys, cadence and timestamp command: Enter to command start <= 2 ms (`APPCI_ENTER_BUDGET_MS`), key to paint <= 2 ms
-  (`APPCI_KEY_BUDGET_MS`). Ctrl-C <= 20 ms after subtracting the input-tool floor (`APPCI_CTRLC_MAX_MS`); the CI case is a plain
-  `sleep`, not the output flood of 3.6. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
+  (`APPCI_KEY_BUDGET_MS`), Ctrl-C <= 20 ms (`APPCI_CTRLC_MAX_MS`; the CI case is a plain `sleep`, not the output flood of 3.6).
+  Every one of the three is judged on overhead over the reference terminal (#1486): `ctrl_c_d` types the identical trap line in both
+  terminals (macOS: zsh `$EPOCHREALTIME`, so no `python3` start inside the measurement; the old `~/bin/now` helper cost ~30 ms and
+  was in every absolute number; Linux: `date +%s.%N`), `latency_paint` runs the same kl3 post/capture against Terminal.app's window
+  (macOS only; elsewhere the case skips, there is no read-back to compare). The absolute Phosphor number stays in `metrics`
+  (`ctrl_c_ms`, `key_to_paint_ms`) and includes the input-tool spawn. With no reference the case notes `no reference: absolute only`
+  and the verdict is `NO-REFERENCE`, never pass. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
   while typing and `WARN` means >= 16 ms (a dropped frame); the 4 ms line itself cannot be seen from the log.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.
+  The app logs a `frame` line only for the first frame after pty output that followed a pty write, so keys typed at a prompt (they
+  go to the input editor, not the pty) never produce one (#1486: why the case once found 0 pairs among thousands of `keydown` lines).
+  The case types into a running `cat > /dev/null` instead, pairs each plain `keydown` with the first following `frame`
+  (`key_frame_pairs`), and on failure reports the keydown/frame/pty_write/pty_read counts of its own window with a diagnosis.
 - **Reference terminal** (same session, Phosphor measured first, reference second, same rc and cwd): Linux Wayland = `foot` if installed,
   else `xterm` through XWayland (recorded in the `reference` name); Linux X11 = `xterm`; macOS = Terminal.app, driven through the same
   cliclick/osascript path under the frontmost-app guard (the guard is retargeted to Terminal while its window is driven, no
