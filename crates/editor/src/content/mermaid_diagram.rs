@@ -113,6 +113,14 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
             line.chars().count()
         );
     }
+    // U+0000 is the compound-graph root sentinel in the renderer's graph library (graphlib_rust
+    // `GRAPH_NODE`). A node whose id is "\0" becomes its own parent and child, and every
+    // tree walk in the layout (e.g. dagre nesting_graph `tree_depths`) recurses forever: a stack
+    // overflow, which aborts the app. No real diagram contains a NUL (the real cause of the
+    // remaining #1493 abort).
+    if source.contains('\0') {
+        anyhow::bail!("diagram contains a NUL character, which the renderer cannot lay out");
+    }
     let nesting = max_nesting(source);
     if nesting > MAX_MERMAID_NESTING {
         anyhow::bail!(
@@ -451,6 +459,18 @@ mod render_limit_tests {
         assert!(subgraph_cycle("graph TD\nsubgraph a\nend\nsubgraph a\nend\n").is_none());
         let titles = "graph TD\nsubgraph One two\nsubgraph One two\nend\nend\n";
         assert!(subgraph_cycle(titles).is_none());
+    }
+
+    /// #1493: `\0` is the graph library's root sentinel; a node with that id recurses forever in
+    /// the layout. These are the shapes of the corpus inputs that aborted CI run r18cq.
+    #[test]
+    fn nul_node_ids_are_refused_before_the_renderer_sees_them() {
+        for kind in ["stateDiagram-v2", "classDiagram", "erDiagram", "graph TD"] {
+            let source = format!("{kind}\n{}", "\u{0}-->:: ::: {{ }} [ ( \n".repeat(50));
+            let err = check_render_limits(&source).expect_err("NUL must be refused");
+            assert!(err.to_string().contains("NUL"), "{err}");
+        }
+        assert!(check_render_limits("graph TD\nA --> B\n").is_ok());
     }
 
     #[test]
