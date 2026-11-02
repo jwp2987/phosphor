@@ -12,8 +12,8 @@ Sources are cited by path. Where something is not merged yet it says so ("being 
 | What | Where | How |
 |---|---|---|
 | `cargo` anything (check, build, nextest, bench) | the build box (`little-thing`, linux amd64, 12c/32 GB), through the GitLab runner | push the branch as `build/<name>`, read the pipeline with `glab` (section 2.5) |
-| macOS build / tests / real-app | Mac test box (M1 Pro, 16 GB, dedicated to this project) | manual CI jobs with tag `Mac`; GUI runs over ssh (section 3.3) |
-| Windows build / real-app | Windows 10 VM (also the GitLab Windows runner) | manual CI jobs with tag `windows`; GUI runs through `indesk.ps1` (section 3.4) |
+| macOS build / tests / real-app | Mac test box (M1 Pro, 16 GB, dedicated to this project) | manual CI jobs with tag `Mac`, run by `gitrunner` inside its own logged-in desktop session (3.3); hand-run GUI work over ssh |
+| Windows build / real-app | Windows 10 VM (also the GitLab Windows runner) | manual CI jobs with tag `windows`; the runner is on the console desktop, so CI jobs drive the GUI directly; hand-run GUI work through `indesk.ps1` (3.4) |
 | non-cargo gates, shell-script harnesses | anywhere with bash/python3 | `script/precheck --fast`, `script/test_*` |
 
 Hard rules:
@@ -147,6 +147,20 @@ Pipelines run only on protected refs: `main`, `build/*` branches, `v*` tags. Eve
 PowerShell 5.1). Project `winters-phosphor/phosphor` (id 88085499), use `glab`; run `glab api user` before
 `git push` if auth fails. Jobs never install anything on the boxes; a missing prerequisite fails with a message.
 
+Play-time job variables (`TEST_FILTER`, `APPCI_TIER`, `APPCI_CASES`, ...): the project setting "Minimum role to use
+pipeline variables" is **Maintainer** (changed 2026-11-02; it was "No one allowed", which made every play with variables
+fail with 403). There are no project-level CI variables: personal values never go into GitLab.
+
+Machine-local test settings (owner-provided, NOT in the repo or GitLab), per runner user, mode 600, in
+`~/.config/phosphor-ci/` (Windows: `%USERPROFILE%\.config\phosphor-ci\`): `ci.env` (`APPCI_OLLAMA_URL`,
+`APPCI_OLLAMA_MODEL`; KEY=VALUE) and `owner-settings.toml` (an exact copy of the owner's Phosphor `settings.toml`: layout,
+vertical tabs, theme, fonts, footer, agent and ssh settings). Present for `gitlab-runner` on the box, `gitrunner` on the
+Mac and the console user on the Windows VM. The harness starts its profile from them (2.8); their contents are never
+printed or uploaded. Re-seed all three when the owner changes their config.
+
+Build-box GUI stack for `app-test-linux-*` (installed by the owner 2026-11-01): `sway`, `wtype`, `grim`, `wl-clipboard`,
+`xwayland`, `xterm` (reference terminal); `gitlab-runner` is in the `video` and `render` groups for `/dev/dri`.
+
 Box target-dir pruning: the persistent cargo target dirs under `/home/gitlab-runner/.phosphor-build/targets/<label>`
 are shared by every `build/*` branch and used to grow unbounded (2026-11: `ci-test` 219 GB, `ci-check-linux`
 119 GB, disk full, jobs failed). `script/ci/prune_target.sh` runs at the start of `.box_job` (all box jobs) and
@@ -179,7 +193,8 @@ Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status 
 `glab api "projects/88085499/pipelines?ref=build/<name>&per_page=1"`; play a manual job with
 `glab api -X POST projects/88085499/jobs/<id>/play`. `script/ci/ci_seq.py build/<name> --tier fix|candidate|release`
 plays the jobs of a test tier (section 2.9), then the `app-test-*` jobs of every build that succeeded. Heavy suites are
-long: ask first. Cancelling a running build can orphan cargo processes under `gitlab-runner`.
+long: ask first. Cancelling a running build can orphan cargo processes under `gitlab-runner`; a cancelled app-test job
+can leave the test app, its sshd and `caffeinate` running (seen on the Mac 2026-11-02): check `ps` and stop them by exact PID.
 
 ### 2.6 Environment switches (kill switches and test knobs)
 
@@ -229,20 +244,19 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `WARP_INPUT_ORDER_LOG_TEXT=1` | log typed text in `warp::input_order` (section 4); synthetic text only |
 | `WARP_SSH_KEEPALIVE=0`, `WARP_SSH_OBSCURE_KEYSTROKE_TIMING=0`, `WARP_USE_SSH_WRAPPER`, `WARP_HONOR_PS1` | ssh wrapper / prompt behaviour read by the bootstraps |
 
-### 2.7 Tooling being added (round 18, agent `testlibs`, branch `fix/testlibs`) - TODO verify commands once merged
+### 2.7 Dev test tooling (merged in round 18)
 
-Not on `integ/r18` yet; the commands below are the intended invocations and MUST be re-checked against the
-merged `Cargo.toml` / `.gitlab-ci.yml` before relying on them.
+All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-tooling.md`**. Summary:
 
-| tool | purpose | intended run |
-|---|---|---|
-| shuttle / loom (`warpui_core::sync_shim`, `clipboard_model_tests.rs`) | exhaustive/randomised interleavings of the concurrency models (clipboard owner thread, queue gates) | `nextest run -p warpui_core --features <shuttle\|loom feature>` |
-| insta snapshots | golden output for TUI/render text and bootstrap payloads | `cargo insta test` / `cargo insta review` on the box only |
-| criterion benches | repeatable microbenchmarks (existing: `warp_tui` `transcript_bench`, `zero_state_bench` with `--features test-util`; editor `buffer_bench`) | `cargo bench -p <crate> --features test-util` on the box |
-| expectrl real-shell tests | pty-driven bash/zsh/fish tests in Rust instead of python scripts | `nextest run -p warp --lib --features warp/gui real_shells` |
-| cargo-fuzz targets | parser/protocol fuzzing (escape sequences, OSC, DCS hooks) | `cargo +nightly fuzz run <target>` on the box, never in CI by default |
-| cargo-mutants | do the tests catch a mutated line | `cargo mutants -p <crate>` on the box (slow, manual) |
-| manual CI jobs | the above as `when: manual` jobs | play from the pipeline page; heavy ones ask first |
+| tool | where | what it covers | when it runs |
+|---|---|---|---|
+| proptest | `app/src/terminal/input_queue/tests/prop_model.rs` (`ops.rs` shared with fuzz) | random op sequences against a model of the pane input queue | every test run (in `test-linux`) |
+| insta | `.snap` files under `app/src/terminal/snapshots/`, `crates/warpui_core/src/snapshots/` | per-shell bootstrap lines, pane-key routing tables, input_order trace shapes | every test run; review diffs with `cargo insta review` on the box |
+| expectrl | `app/tests/real_shell_markers.rs` | real bash through a pty: marker order (Preexec, Precmd, LineEditorReading with the same seq) | every test run of `-p warp` (skips without bash) |
+| shuttle / loom | `warpui_core::sync_shim`; `model_tests::*` in `clipboard_model_tests.rs`, `key_facts_model_tests.rs`, `typeahead_handoff_model_tests.rs` | thread interleavings of the clipboard write queue, KeyFacts, PaneHandoff, the reader cap | `test-shuttle-loom` job (release tier) |
+| criterion | `app/benches/key_path_bench.rs`, `ansi_bench.rs` (`--features dev-support`) | per-key cost (idle, behind a gate), routing, hand-off, 1 MB ANSI parse | `bench` job (release tier) |
+| cargo-fuzz | `fuzz/` (own workspace; targets `ansi_parser`, `hook_parsers`, `input_queue`) | crashes on hostile terminal output, hook frames, queue op sequences | `fuzz-smoke` job (release tier) |
+| cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, input_queue gates/destination) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
 
 ### 2.8 Real-app tests in CI (`app-test-*`, stage `apptest`)
 
@@ -491,6 +505,18 @@ code-refuter agents.
   (ScreenCaptureKit, 120 Hz; resolution about 8 ms; fixed settle interval, so wrap it for random gaps).
 - Build under test comes from the manual `build-macos-arm64` job (ad-hoc signed DMG artifact); install to a scratch
   location (`~/phosphor-profile/apps/<name>/Phosphor.app`), never over the owner's app.
+- **CI runner (since 2026-11-02).** The GitLab runner runs as the standard user `gitrunner` (created by
+  `setup-mac-runner.sh` to keep CI away from the owner's files) as a **per-user LaunchAgent**
+  (`/Users/gitrunner/Library/LaunchAgents/com.gitlab.runner.gitrunner.plist`, Aqua session only). Mac CI jobs therefore run
+  **only while `gitrunner` is logged in at the console** (fast user switching is fine; the screen must not lock: set its Lock
+  Screen options to "Never"). After a reboot the owner unlocks FileVault, then logs `gitrunner` in. Accessibility and
+  Screen Recording are granted to `/usr/local/bin/gitlab-runner` in that session. The old system LaunchDaemon is kept as
+  `/Library/LaunchDaemons/com.gitlab.runner.gitrunner.plist.disabled`. `script/ci/mac/fix-gitrunner-login.sh`
+  made the account loggable and moved the runner (`--apply --gui-runner`); `--apply --daemon-runner` reverts.
+  Isolation still holds: `gitrunner` cannot read the owner's home and has no sudo (the script re-checks).
+  Lesson: macOS shows another user's `AuthenticationAuthority` only to root and that user, so test a password with
+  `dscl . -authonly <user>`, never by reading the attribute. Each Mac build's DMG step briefly opens a Finder window on
+  that desktop (the bundler lays out the installer window); that is expected.
 
 ### 3.4 Windows
 
@@ -517,6 +543,8 @@ code-refuter agents.
   variants from `gen.sh`). Windows scripts contain `@WINUSER@`; render with `script/realapp/shared/render.sh`.
   Key to photon: `script/keylat/windows/lat.ps1` (`keybd_event`, needs the interactive session).
 - Build under test: manual `build-windows-x86_64` (unsigned Inno installer artifact) or `build-windows-profiling`.
+- CI runner: runs on the console (interactive desktop), not as a session-0 service, so `app-test-windows` launches the app,
+  sends keys and takes screenshots from the job itself; the `indesk.ps1` indirection is only for hand-run work over ssh.
 
 ### 3.5 Case matrix (run on each platform; EVERY case in both modes)
 
