@@ -3,22 +3,17 @@ pub mod app;
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod mac;
-#[cfg(target_family = "wasm")]
-pub mod wasm;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
 pub mod headless;
 pub mod session_end_gate;
 pub mod shutdown_progress;
-#[cfg(not(target_family = "wasm"))]
 pub(crate) mod termination_signals;
 
 pub mod current {
     cfg_if::cfg_if! {
-        if #[cfg(target_family = "wasm")] {
-            pub use super::wasm::*;
-        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+        if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
             pub use super::linux::*;
         } else if #[cfg(target_os = "macos")] {
             pub use super::mac::*;
@@ -36,7 +31,7 @@ pub use app::AppBuilder;
 
 /// Creates a handle to the OS clipboard for the current platform.
 ///
-/// Returns an error on platforms without a system clipboard (e.g. wasm/headless).
+/// Returns an error on platforms without a system clipboard (e.g. headless).
 pub fn create_system_clipboard() -> anyhow::Result<Box<dyn crate::Clipboard + Send>> {
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
@@ -51,18 +46,10 @@ pub fn create_system_clipboard() -> anyhow::Result<Box<dyn crate::Clipboard + Se
     }
 }
 
-/// Returns whether the current device is a mobile device with touch input.
-///
-/// This is a cross-platform wrapper around the platform-specific implementation.
+/// Returns whether the current device is a mobile device with touch input. Always `false`:
+/// no supported target is a mobile device.
 pub fn is_mobile_device() -> bool {
-    #[cfg(target_family = "wasm")]
-    {
-        wasm::is_mobile_device()
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        false
-    }
+    false
 }
 
 /// A trait for accessing internal per-platform concrete implementations

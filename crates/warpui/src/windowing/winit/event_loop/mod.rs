@@ -30,7 +30,6 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow},
 };
 
-use crate::actions::StandardAction;
 use crate::event::ModifiersState;
 use crate::platform::NotificationInfo;
 use crate::platform::OperatingSystem;
@@ -45,10 +44,6 @@ use crate::windowing::winit::window::MIN_WINDOW_SIZE;
 use crate::Event::{ClearMarkedText, SetMarkedText, TypedCharacters};
 use crate::{AppContext, WindowId};
 
-#[cfg(target_family = "wasm")]
-use wasm_bindgen::JsCast;
-
-use super::app::ClipboardEvent;
 use super::window::DEFAULT_TITLEBAR_HEIGHT;
 use super::CustomEvent;
 
@@ -196,11 +191,6 @@ struct WindowState {
     owed_redraw: draw_retry::OwedRedraw,
     /// Skips redraws while the window is minimized; see [`MinimizedRedrawGate`].
     minimized_gate: MinimizedRedrawGate,
-    /// For touch events, stores whether soft keyboard was requested during LeftMouseDown.
-    /// This is needed because touch keyboard updates are deferred to LeftMouseUp, but the
-    /// UI element only requests the keyboard during LeftMouseDown.
-    #[cfg(target_family = "wasm")]
-    pending_soft_keyboard_request: bool,
 }
 
 impl WindowState {
@@ -224,8 +214,6 @@ impl WindowState {
             redraw_retry_at: None,
             owed_redraw: Default::default(),
             minimized_gate: MinimizedRedrawGate::default(),
-            #[cfg(target_family = "wasm")]
-            pending_soft_keyboard_request: false,
         }
     }
 
@@ -473,7 +461,7 @@ fn convert_touch_moved(
             // Touch in titlebar = window drag
             let initial_pos: winit::dpi::LogicalPosition<f32> =
                 last_touch.location.to_logical(scale_factor as f64);
-            if initial_pos.y < titlebar_height && !cfg!(target_family = "wasm") {
+            if initial_pos.y < titlebar_height {
                 let start_touch = last_touch.location;
                 window_state.last_touch_purpose = Some(TouchPurpose::WindowDrag { start_touch });
                 return Some(ConvertedEvent::MoveWindowBy {
@@ -672,9 +660,6 @@ pub(super) struct EventLoop {
     /// the Integrated GPU won't be rendered to and puts it in an idle / partially loaded state that
     /// will eventually trigger these DRI3 `BadMatch` errors when we attempt to render to it.
     downrank_non_nvidia_vulkan_adapters: bool,
-    /// Soft keyboard manager for mobile WASM.
-    #[cfg(target_family = "wasm")]
-    soft_keyboard_manager: Option<std::rc::Rc<crate::platform::wasm::SoftKeyboardManager>>,
     /// The signal that requested the termination request currently driving this
     /// loop's exit, if any -- set only by [`CustomEvent::TerminateFromSignal`],
     /// right before the `window_target.exit()` call it caused, and consumed once by
@@ -710,8 +695,6 @@ impl EventLoop {
             last_preedit: None,
             last_ime_cursor_area: None,
             downrank_non_nvidia_vulkan_adapters: false,
-            #[cfg(target_family = "wasm")]
-            soft_keyboard_manager: None,
             terminating_signal: None,
             skipped_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
             slow_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
@@ -748,12 +731,9 @@ impl EventLoop {
             }
         }
 
-        #[cfg(not(target_family = "wasm"))]
         if let Some(deadline) = next_deadline {
             window_target.set_control_flow(ControlFlow::WaitUntil(deadline));
         }
-        #[cfg(target_family = "wasm")]
-        let _ = (next_deadline, window_target);
     }
 
     /// Pays redraws that were owed because the app was mutably borrowed when winit asked for them
@@ -844,12 +824,6 @@ impl EventLoop {
                     Err(e) => {
                         log::warn!("Creating a network connection listener failed: {e:?}");
                     }
-                }
-
-                // Initialize soft keyboard support on mobile WASM devices.
-                #[cfg(target_family = "wasm")]
-                {
-                    self.initialize_soft_keyboard();
                 }
             }
             Event::UserEvent(CustomEvent::OpenWindow {
@@ -1021,9 +995,6 @@ impl EventLoop {
                     window.stop_requesting_user_attention();
                 });
             }
-            Event::UserEvent(CustomEvent::Clipboard(clipboard_event)) => {
-                self.handle_clipboard_event(clipboard_event);
-            }
             Event::UserEvent(CustomEvent::SetCursorShape(cursor)) => {
                 self.ui_app.update(|ctx| {
                     let Some(window_id) = ctx.windows().active_window() else {
@@ -1099,14 +1070,6 @@ impl EventLoop {
             }
             Event::UserEvent(CustomEvent::DragAndDropFilesDebounced { window_id }) => {
                 self.handle_debounced_drag_drop(window_id);
-            }
-            #[cfg(target_family = "wasm")]
-            Event::UserEvent(CustomEvent::SoftKeyboardInput(input)) => {
-                self.handle_soft_keyboard_input(input);
-            }
-            #[cfg(target_family = "wasm")]
-            Event::UserEvent(CustomEvent::VisualViewportResized { width, height }) => {
-                self.handle_visual_viewport_resize(width, height);
             }
             Event::UserEvent(CustomEvent::FlushOwedRedraws) => {
                 self.flush_owed_redraws(true);
@@ -1284,7 +1247,6 @@ impl EventLoop {
         // menu quit reaches this same handler and must not re-raise a signal
         // that merely happened to arrive around the same time, rather than
         // actually being what drove this exit (jwp2987/phosphor#726).
-        #[cfg(not(target_family = "wasm"))]
         crate::platform::termination_signals::exit_after_signal_shutdown_for(
             self.terminating_signal.take(),
         );
@@ -1295,7 +1257,6 @@ impl EventLoop {
         // crashes that produce noise in our crash reporting data.
         // On web, it's not possible to exit cleanly, so just return from the event loop
         // instead.
-        #[cfg(not(target_family = "wasm"))]
         std::process::exit(0);
     }
 
@@ -1777,14 +1738,6 @@ impl EventLoop {
             }
             WindowEvent::Resized(_) => Some(ConvertedEvent::Resize),
             WindowEvent::Focused(is_focused) => {
-                // On mobile WASM, ignore focus-out events. The soft keyboard's hidden input
-                // causes spurious focus events, and mobile doesn't have the concept of
-                // "unfocused windows" anyway - you're either in the app or switched away entirely.
-                #[cfg(target_family = "wasm")]
-                if !is_focused && crate::platform::wasm::is_mobile_device() {
-                    return None;
-                }
-
                 // Clear tracked per-side Alt state when we lose focus so that a release
                 // event dropped while another window had focus can't leave us believing a
                 // side is still held.
@@ -1879,12 +1832,6 @@ impl EventLoop {
         self.ui_app.update(|ctx| {
             ctx.background_executor()
                 .spawn(async move {
-                    #[cfg(target_family = "wasm")]
-                    crate::windowing::winit::notifications::request_notification_permissions(
-                        callback, proxy,
-                    )
-                    .await;
-
                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                     {
                         // On Linux, there is no concept of requesting notification permissions. This
@@ -2144,9 +2091,8 @@ impl EventLoop {
                 ..
             } = event
             {
-                // The WASM "window" does not support dragging or maximization.
                 let titlebar_height = winit_window.titlebar_height();
-                if position.y() < titlebar_height && !cfg!(target_family = "wasm") {
+                if position.y() < titlebar_height {
                     // Double-clicking the titlebar does maximize/restore.
                     if click_count >= 2 {
                         window.toggle_maximized();
@@ -2166,49 +2112,6 @@ impl EventLoop {
                     }
                 }
             }
-        }
-
-        // On mobile WASM, update soft keyboard state based on touch/click events.
-        // This must happen synchronously within the touch event handler (user gesture context)
-        // for the browser to allow focusing the hidden input element.
-        //
-        // For touch events, we defer keyboard updates until LeftMouseUp to avoid showing
-        // the keyboard during drags/scrolls (which start with LeftMouseDown but later get
-        // reclassified as scroll gestures). We only trigger the keyboard if the touch purpose
-        // is still Tap (meaning it was never reclassified to Scroll, Select, or WindowDrag).
-        #[cfg(target_family = "wasm")]
-        {
-            // First, check what kind of event we have without holding a mutable borrow.
-            let touch_info = self.state.windows.get(&window_id).and_then(|ws| {
-                ws.last_touch_purpose.as_ref().map(|purpose| {
-                    // Check if this is still a tap (not a scroll/drag/select)
-                    matches!(purpose, TouchPurpose::Tap(..))
-                })
-            });
-
-            match (&event, touch_info) {
-                // Regular mouse click (not touch) - update keyboard immediately.
-                (crate::event::Event::LeftMouseDown { .. }, None) => {
-                    self.update_soft_keyboard_state(dispatch_result.soft_keyboard_requested);
-                }
-                // Touch LeftMouseDown - store keyboard request for later use on LeftMouseUp.
-                (crate::event::Event::LeftMouseDown { .. }, Some(_)) => {
-                    if let Some(ws) = self.state.windows.get_mut(&window_id) {
-                        ws.pending_soft_keyboard_request = dispatch_result.soft_keyboard_requested;
-                    }
-                }
-                // Touch tap completed and purpose is still Tap - use stored keyboard request.
-                (crate::event::Event::LeftMouseUp { .. }, Some(true)) => {
-                    let should_show = self
-                        .state
-                        .windows
-                        .get(&window_id)
-                        .map(|ws| ws.pending_soft_keyboard_request)
-                        .unwrap_or(false);
-                    self.update_soft_keyboard_state(should_show);
-                }
-                _ => {}
-            };
         }
 
         // On LeftMouseUp: clear touch state and start momentum scrolling if applicable.
@@ -2250,27 +2153,6 @@ impl EventLoop {
                 if let Some(ws) = self.state.windows.get_mut(&window_id) {
                     ws.momentum_scroll_abort = Some(abort_handle);
                 }
-            }
-        }
-    }
-
-    fn handle_clipboard_event(&mut self, clipboard_event: ClipboardEvent) {
-        let Some(active_window_id) = self.ui_app.read(|ctx| ctx.windows().active_window()) else {
-            return;
-        };
-
-        match clipboard_event {
-            #[allow(unused_variables)]
-            ClipboardEvent::Paste(content) => {
-                cfg_if::cfg_if! {
-                    if #[cfg(target_family = "wasm")] {
-                        self.ui_app.update(|ctx| {
-                            ctx.clipboard().save(content);
-                        })
-                    }
-                }
-                self.ui_app
-                    .dispatch_standard_action(active_window_id, StandardAction::Paste);
             }
         }
     }
@@ -2402,200 +2284,6 @@ impl EventLoop {
                 winit_window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
             }
         });
-    }
-
-    /// Initializes the soft keyboard manager on mobile WASM devices.
-    ///
-    /// This creates the hidden input element that triggers the soft keyboard
-    /// when focused. The manager is only created on mobile devices.
-    #[cfg(target_family = "wasm")]
-    fn initialize_soft_keyboard(&mut self) {
-        use crate::platform::wasm::{is_mobile_device, SoftKeyboardInput, SoftKeyboardManager};
-
-        if !is_mobile_device() {
-            log::info!("Not a mobile device, skipping soft keyboard initialization");
-            return;
-        }
-
-        log::info!("Initializing soft keyboard for mobile WASM");
-
-        // Create a callback that handles soft keyboard input events.
-        // These are forwarded to the event loop via CustomEvent, where they
-        // will be dispatched to the active window as TypedCharacters/IME events.
-        let proxy = self.proxy.clone();
-        let on_input = Box::new(move |input: SoftKeyboardInput| {
-            // Never `{:?}` the input here: `SoftKeyboardInput::TextInserted` holds the
-            // user's typed text verbatim, and this line runs on the *success* path, so
-            // `{:?}` published every keystroke on a mobile WASM session at debug level.
-            // `log_shape()` keeps the variant and the payload length, which is what the
-            // diagnostic was actually for.
-            log::debug!(
-                "Soft keyboard callback received input: {}",
-                input.log_shape()
-            );
-            if proxy
-                .send_event(CustomEvent::SoftKeyboardInput(input))
-                .is_err()
-            {
-                // `EventLoopClosed<T>`'s `Debug` is derived over the undelivered event,
-                // so `{:?}` on it re-published the same typed text at error level. Its
-                // `Display` is the static "Tried to wake up a closed `EventLoop`" -- the
-                // failure carries no information beyond that, so state it directly and
-                // never name the payload at all.
-                log::error!("Failed to send SoftKeyboardInput event: the event loop is closed");
-            }
-        });
-
-        match SoftKeyboardManager::new(on_input) {
-            Ok(manager) => {
-                log::info!("Soft keyboard manager initialized successfully");
-                self.soft_keyboard_manager = Some(manager);
-            }
-            Err(err) => {
-                log::error!("Failed to initialize soft keyboard manager: {:?}", err);
-            }
-        }
-    }
-
-    /// Updates the soft keyboard visibility based on the dispatch result.
-    ///
-    /// This is called after processing touch events, while still in user gesture context.
-    /// Since everything renders to a canvas, the browser can't detect taps "outside" the
-    /// keyboard input, so we must explicitly show/hide based on what the app requested.
-    #[cfg(target_family = "wasm")]
-    fn update_soft_keyboard_state(&mut self, requested: bool) {
-        let Some(manager) = &self.soft_keyboard_manager else {
-            return;
-        };
-
-        if requested {
-            log::debug!("App requested soft keyboard, showing it");
-            manager.show_keyboard();
-        } else {
-            log::debug!("App did not request soft keyboard, hiding it");
-            manager.hide_keyboard();
-        }
-    }
-
-    /// Attempts to refocus the main canvas element.
-    ///
-    /// This is needed to restore app interactivity after the soft keyboard is dismissed,
-    /// particularly on iOS Safari which can leave the app in a "blurred" state.
-    ///
-    /// We defer the focus to the next frame using setTimeout(0) because calling focus()
-    /// synchronously during event processing may not work reliably on iOS Safari.
-    #[cfg(target_family = "wasm")]
-    fn refocus_canvas() {
-        use wasm_bindgen::{prelude::Closure, JsCast};
-
-        // Defer focus to next frame to ensure we're outside the current event processing.
-        let callback = Closure::once(Box::new(|| {
-            if let Some(canvas) = gloo::utils::document()
-                .query_selector("canvas")
-                .ok()
-                .flatten()
-            {
-                if let Ok(html_element) = canvas.dyn_into::<web_sys::HtmlElement>() {
-                    let _ = html_element.focus();
-                }
-            }
-        }) as Box<dyn FnOnce()>);
-
-        let _ = gloo::utils::window().set_timeout_with_callback(callback.as_ref().unchecked_ref());
-        // Prevent the closure from being dropped immediately
-        callback.forget();
-    }
-
-    /// Handles input events from the soft keyboard on mobile WASM.
-    ///
-    /// Converts `SoftKeyboardInput` events into warpui `Event`s and dispatches
-    /// them to the active window, similar to how `handle_ime_event` works.
-    #[cfg(target_family = "wasm")]
-    fn handle_soft_keyboard_input(&mut self, input: crate::platform::wasm::SoftKeyboardInput) {
-        use crate::platform::wasm::SoftKeyboardInput;
-
-        // On WASM, get the first (and typically only) window if there's no "active" window
-        let window_id = self.ui_app.read(|ctx| {
-            ctx.windows()
-                .active_window()
-                .or_else(|| ctx.window_ids().next())
-        });
-
-        let Some(window_id) = window_id else {
-            log::debug!("No window for soft keyboard input");
-            return;
-        };
-        let Some(window) = self
-            .ui_app
-            .read(|ctx| ctx.windows().platform_window(window_id))
-        else {
-            log::debug!("Could not get platform window for soft keyboard input");
-            return;
-        };
-
-        let mut window_callbacks = self.callbacks.for_window(window.as_ref());
-
-        match input {
-            SoftKeyboardInput::TextInserted(text) => {
-                window_callbacks.dispatch_event(TypedCharacters { chars: text });
-            }
-            SoftKeyboardInput::Backspace => {
-                window_callbacks.dispatch_event(crate::Event::KeyDown {
-                    keystroke: crate::keymap::Keystroke {
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                        cmd: false,
-                        meta: false,
-                        key: "backspace".to_string(),
-                    },
-                    chars: String::new(),
-                    details: crate::event::KeyEventDetails::default(),
-                    is_composing: false,
-                });
-            }
-            SoftKeyboardInput::KeyboardDismissed => {
-                // The keyboard was dismissed (user tapped elsewhere or pressed "Done").
-                // Refocus the canvas to restore interactivity.
-                log::debug!("Soft keyboard was dismissed, refocusing canvas");
-                Self::refocus_canvas();
-            }
-            SoftKeyboardInput::KeyDown(key) => {
-                // Map special key names to their control characters (e.g., Enter → "\r")
-                // so the terminal's key_down handler can process them.
-                let chars = match key.to_lowercase().as_str() {
-                    "enter" => "\r".to_string(),
-                    _ => String::new(),
-                };
-                window_callbacks.dispatch_event(crate::Event::KeyDown {
-                    keystroke: crate::keymap::Keystroke {
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                        cmd: false,
-                        meta: false,
-                        key: key.to_lowercase(),
-                    },
-                    chars,
-                    details: crate::event::KeyEventDetails::default(),
-                    is_composing: false,
-                });
-            }
-        }
-    }
-
-    /// Resizes container when visual viewport changes (e.g., soft keyboard appears).
-    #[cfg(target_family = "wasm")]
-    fn handle_visual_viewport_resize(&mut self, _width: f32, height: f32) {
-        log::debug!("Visual viewport resized, height = {}px", height);
-
-        if let Some(container) = gloo::utils::document().get_element_by_id("wasm-container") {
-            if let Some(html_element) = container.dyn_ref::<web_sys::HtmlElement>() {
-                let _ = html_element
-                    .style()
-                    .set_property("height", &format!("{}px", height));
-            }
-        }
     }
 }
 

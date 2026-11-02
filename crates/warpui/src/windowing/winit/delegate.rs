@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-#[cfg(not(target_family = "wasm"))]
 mod global_hotkey;
 
 use std::mem::ManuallyDrop;
@@ -46,18 +45,7 @@ use crate::{
 
 use super::{notifications, CustomEvent};
 
-#[cfg(not(target_family = "wasm"))]
 use self::global_hotkey::GlobalHotKeyHandler;
-
-// No-op on WASM since the browser cannot provide this functionality.
-#[cfg(target_family = "wasm")]
-struct GlobalHotKeyHandler {}
-
-#[cfg(target_family = "wasm")]
-impl GlobalHotKeyHandler {
-    fn register(&self, _: keymap::Keystroke) {}
-    fn unregister(&self, _: &keymap::Keystroke) {}
-}
 
 /// Stores the ID of the application's main thread, which we can reference
 /// to determine if a given thread is the main thread or not.
@@ -65,25 +53,6 @@ static MAIN_THREAD_ID: OnceLock<thread::ThreadId> = OnceLock::new();
 
 /// Open a URL using the platform's default handler.
 pub fn open_url_in_system(url: &str) {
-    #[cfg(target_family = "wasm")]
-    if let Some(window) = web_sys::window() {
-        match crate::browser::safe_browser_open_url(url) {
-            Some(safe_url) => {
-                // Try to open the URL in a new tab. `noopener,noreferrer` stops the opened
-                // page from getting a `window.opener` handle back to this one (reverse
-                // tabnabbing).
-                let _ = window.open_with_url_and_target_and_features(
-                    &safe_url,
-                    "_blank",
-                    "noopener,noreferrer",
-                );
-            }
-            None => {
-                log::warn!("Skipping browser URL open for invalid or unsafe URL");
-            }
-        }
-    }
-
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         // Opening in WSL is complicated for a few reasons
@@ -224,19 +193,13 @@ pub struct AppDelegate {
 
 impl AppDelegate {
     pub fn new(event_loop_proxy: EventLoopProxy<super::CustomEvent>) -> Result<Self> {
-        cfg_if::cfg_if! {
-            if #[cfg(target_family = "wasm")] {
-                let global_hotkey_handler = None;
-            } else {
-                let global_hotkey_handler = match GlobalHotKeyHandler::new(event_loop_proxy.clone()) {
-                    Ok(handler) => Some(handler),
-                    Err(err) => {
-                        log::error!("Error creating global hotkey handler: {err:?}");
-                        None
-                    }
-                };
+        let global_hotkey_handler = match GlobalHotKeyHandler::new(event_loop_proxy.clone()) {
+            Ok(handler) => Some(handler),
+            Err(err) => {
+                log::error!("Error creating global hotkey handler: {err:?}");
+                None
             }
-        }
+        };
         Ok(Self {
             event_loop_proxy,
             clipboard: Box::<InMemoryClipboard>::default(),
@@ -251,9 +214,7 @@ impl AppDelegate {
     /// matching against the display server raw handle.
     pub fn use_platform_clipboard(&mut self) {
         cfg_if::cfg_if! {
-            if #[cfg(target_family = "wasm")] {
-                self.clipboard = Box::new(super::wasm::WebClipboard::new());
-            } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+            if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
                 match super::linux::LinuxClipboard::new() {
                     Ok(clipboard) => self.clipboard = Box::new(clipboard),
                     Err(err) => {
@@ -288,7 +249,6 @@ impl platform::Delegate for AppDelegate {
         self.clipboard.as_mut()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn system_theme(&self) -> platform::SystemTheme {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         match super::linux::get_system_theme() {
@@ -313,21 +273,6 @@ impl platform::Delegate for AppDelegate {
         platform::SystemTheme::Light
     }
 
-    #[cfg(target_family = "wasm")]
-    fn system_theme(&self) -> platform::SystemTheme {
-        // To determine dark mode versus light mode, we check the CSS media query string "prefers-color-scheme". According
-        // to StackOverflow, this is the current consensus solution.
-        // See https://stackoverflow.com/questions/56393880/how-do-i-detect-dark-mode-using-javascript.
-        if let Ok(Some(media_query_list)) =
-            gloo::utils::window().match_media("(prefers-color-scheme: dark)")
-        {
-            if media_query_list.matches() {
-                return platform::SystemTheme::Dark;
-            }
-        }
-        platform::SystemTheme::Light
-    }
-
     fn open_url(&self, url: &str) {
         open_url_in_system(url);
     }
@@ -342,18 +287,6 @@ impl platform::Delegate for AppDelegate {
                     // Reap the child so it doesn't linger as a zombie (#830).
                     command::blocking::reap_in_background(child);
                 }
-            } else if #[cfg(target_family = "wasm")] {
-                if let Some(window) = web_sys::window() {
-                    if let Some(path) = path.to_str() {
-                        // Try to open the path via a file:// URL.
-                        let url = format!("file://{path}");
-                        let _ = window.open_with_url_and_target_and_features(
-                            &url,
-                            "_blank",
-                            "noopener,noreferrer",
-                        );
-                    }
-                }
             } else if #[cfg(windows)] {
                 if let Err(e) = open::that_detached(path) {
                     log::warn!("Unable to open path {e:?}");
@@ -367,10 +300,6 @@ impl platform::Delegate for AppDelegate {
         callback: FilePickerCallback,
         file_picker_config: FilePickerConfiguration,
     ) {
-        // TODO(wasm): Investigate implementing this by creating a <input> element
-        // and calling `click` on it.
-
-        #[cfg(not(target_family = "wasm"))]
         {
             // This callback is called either on the “File Picker” background thread or, if starting
             // that thread fails, on this thread. Wrap this type in order to make ownership work.
@@ -463,7 +392,6 @@ impl platform::Delegate for AppDelegate {
         callback: SaveFilePickerCallback,
         config: SaveFilePickerConfiguration,
     ) {
-        #[cfg(not(target_family = "wasm"))]
         {
             let event_loop_proxy = self.event_loop_proxy.clone();
             std::thread::Builder::new()
@@ -540,22 +468,15 @@ impl platform::Delegate for AppDelegate {
             .send_event(CustomEvent::SetCursorShape(cursor));
     }
 
-    fn close_ime_async(&self, _window_id: WindowId) {
-        // TODO(wasm): implement this.
-    }
+    fn close_ime_async(&self, _window_id: WindowId) {}
 
     fn is_ime_open(&self) -> bool {
-        // TODO(wasm): implement this.
         false
     }
 
-    fn open_character_palette(&self) {
-        // TODO(wasm): Implement this.
-    }
+    fn open_character_palette(&self) {}
 
-    fn set_accessibility_contents(&self, content: accessibility::AccessibilityContent) {
-        // TODO(wasm): Implement this.
-    }
+    fn set_accessibility_contents(&self, content: accessibility::AccessibilityContent) {}
 
     fn register_global_shortcut(&self, shortcut: keymap::Keystroke) {
         if let Some(handler) = &self.global_hotkey_handler {
@@ -575,7 +496,6 @@ impl platform::Delegate for AppDelegate {
     }
 
     fn is_screen_reader_enabled(&self) -> Option<bool> {
-        // TODO(wasm): Implement this.
         None
     }
 

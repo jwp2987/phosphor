@@ -23,7 +23,6 @@ pub const QUIT_GIVE_UP: Duration = Duration::from_secs(15);
 /// Arms the quit give-up: if the process is still alive [`QUIT_GIVE_UP`] after this call, logs the
 /// step that was running (see [`current_step`]) and ends the process. Call once, when the quit
 /// sequence starts. The thread dies with the process on a normal exit.
-#[cfg(not(target_family = "wasm"))]
 pub fn arm_quit_give_up() {
     use super::termination_signals::{hard_exit, spawn_deadline_watchdog};
     if let Err(error) = spawn_deadline_watchdog(QUIT_GIVE_UP, 0, hard_exit) {
@@ -51,7 +50,6 @@ pub fn current_step() -> &'static str {
 mod tests {
     use super::*;
 
-    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn quit_give_up_is_longer_than_the_signal_deadline() {
         assert!(QUIT_GIVE_UP > crate::platform::termination_signals::SHUTDOWN_DEADLINE);

@@ -69,10 +69,7 @@ impl App {
         // usual. `event_loop::run` itself does not make this call (see its doc
         // comment): it returns to this, its caller, before the exit status is
         // decided (jwp2987/phosphor#717).
-        #[cfg(not(target_family = "wasm"))]
         platform::termination_signals::exit_after_signal_shutdown_for(terminating_signal);
-        #[cfg(target_family = "wasm")]
-        let _ = terminating_signal;
 
         result
     }

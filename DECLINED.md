@@ -1798,7 +1798,8 @@ upstream's behavior is actually a defect rather than a preference.
   `app/src/uri/link_policy.rs`, its natural home, so the three `app`-crate call
   sites that depended on it (`lib.rs`, `terminal/view/link_detection.rs`,
   `uri/link_policy.rs` itself) consume one definition. `crates/warpui`'s
-  wasm-only `browser::safe_browser_open_url` and its winit WSL-open guard could
+  wasm-only `browser::safe_browser_open_url` (since removed with the rest of the
+  wasm code, #1467) and its winit WSL-open guard could
   **not** be folded into that same definition — `warpui`/`warpui_core` sit below
   `warp_core`/`app` in the crate graph and cannot name `ChannelState` or anything
   under `app::uri` — so they remain separately-maintained, narrower backstops,
