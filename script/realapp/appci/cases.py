@@ -102,6 +102,7 @@ class Ctx:
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
+        self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
         try:
@@ -590,8 +591,9 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
 
 @case("fast_typing", order=10)
 def c_fast(ctx, r):
-    for gap in (0.0, 0.25):
-        effect_run(ctx, r, "ft%d" % int(gap * 100), ctx.count(30), gap, attribute=lambda g: (run_enter_control(ctx, r, ctx.count(30)) or {}).get(g) or None)
+    for gap in ctx.opts.get("ft_gaps", (0.0, 0.25)):
+        attr = (lambda g: (run_enter_control(ctx, r, ctx.count(30)) or {}).get(g) or None) if ctx.opts.get("ref", True) else None
+        effect_run(ctx, r, "ft%d" % int(gap * 100), ctx.count(30), gap, attribute=attr)
 
 
 @case("rollover", order=11)
@@ -831,9 +833,10 @@ def c_ctrl(ctx, r):
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
     # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
     rs, ref = [], None
+    short = ctx.opts.get("cc_short", False)
     if lat_ms:
         ctx.reset()
-        ref = ref_terminal(ctx)
+        ref = None if short else ref_terminal(ctx)
         if ref:
             try:
                 time.sleep(2.5)
@@ -844,14 +847,17 @@ def c_ctrl(ctx, r):
             time.sleep(1.0)
             r.metric("reference_ctrl_c_ms", stats(rs))
             r.metric("reference", ref.name)
-        else:
+        elif not short:
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
-        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
-                           remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+        if short:
+            r.note("fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode")
+        rec = None if short else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+                           remeasure=None if short else (lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]), ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
-        r.metrics.setdefault("lat", {})["ctrl_c"] = rec
-        lat_checks(r, rec, "Ctrl-C")
+        if rec:
+            r.metrics.setdefault("lat", {})["ctrl_c"] = rec
+            lat_checks(r, rec, "Ctrl-C")
     why = ""
     ig, igr = ctx.cc_integrity.get("cc.txt"), ctx.cc_integrity.get("cc_ref.txt")
     if ig:

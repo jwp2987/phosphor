@@ -11,7 +11,7 @@
 import argparse, json, os, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import backend, cases, profile, sshd, app as appmod  # noqa: E402
+import backend, cases, profile, sshd, winmap, app as appmod  # noqa: E402
 
 
 def skip_status(r, why):
@@ -70,6 +70,20 @@ def self_test():
     assert [c for _, c in pr.commands()] == ["ref cmd"], "while the reference is the target its OWN log is read"
     pr.ref_active = False
     shutil.rmtree(d)
+    # the Windows fix tier table: case counts per pass (smoke) and the full tier is untouched
+    smoke = cases.SMOKE
+    n = {}
+    for mode in ("terminal", "agent"):
+        for pane in ("powershell", "gitbash"):
+            names, o = winmap.tier_plan("windows", "smoke", mode, pane, smoke)
+            ran = [x for x in names if mode in [c for c in cases.CASES if c["name"] == x][0]["modes"] and not winmap.skip_reason(x, pane)]
+            n[(mode, pane)] = len(ran)
+            assert all(x in smoke for x in names), "a fix-tier case outside SMOKE"
+            assert {"ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "fast_typing", "ctrl_c_d"} <= set(names), (mode, pane)
+            assert ("key_loss_control" in names) == (mode == "terminal" and pane == "gitbash"), (mode, pane)
+            assert (not o["ref"]) == (mode == "agent") and (len(o["ft_gaps"]) == 1) == (mode == "agent")
+    assert winmap.tier_plan("windows", None, "agent", "gitbash", smoke)[0] is None and winmap.tier_plan("windows", "full", "agent", "gitbash", smoke)[1]["ref"]
+    print("fix-tier cases that run per pass (smoke):", {"%s/%s" % k: v for k, v in n.items()})
     print("self-test ok")
     return 0
 
@@ -137,6 +151,7 @@ def main():
             for m in a.modes.split(","):
                 emit(dict(name="preflight", mode=m, status="fail", detail=problems, seconds=0))
             return finish(run, a, 2)
+    explicit_cases = bool(a.cases)
     if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
         a.cases = ",".join(cases.SMOKE)
     sel = [c for c in cases.CASES if (not a.cases or c["name"] in a.cases.split(",")) and c["name"] not in a.skip.split(",")]
@@ -184,6 +199,9 @@ def main():
                 if a.backend in ("mac", "windows"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
             ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane)
+            tier_names = None
+            if win and not explicit_cases:       # the Windows fix tier is a table (winmap.FIX_TIER); an explicit --cases list always wins, the full tier is untouched
+                tier_names, ctx.opts = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)
             if not sim:
                 up = await_shell(ctx, app, prof, win, a.startup_timeout)
                 if not up:
@@ -207,6 +225,8 @@ def main():
             proved = not win
             for c in sel:
                 if mode not in c["modes"]:
+                    continue
+                if tier_names is not None and c["name"] not in tier_names:
                     continue
                 if win:
                     why = winmap.skip_reason(c["name"], pane)
