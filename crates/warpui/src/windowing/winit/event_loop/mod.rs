@@ -40,7 +40,6 @@ use crate::platform::{
     TerminationMode, WindowContext,
 };
 use crate::r#async::Timer;
-use crate::rendering::wgpu::renderer;
 use crate::windowing::winit::app::RequestPermissionsCallback;
 use crate::windowing::winit::window::MIN_WINDOW_SIZE;
 use crate::Event::{ClearMarkedText, SetMarkedText, TypedCharacters};
