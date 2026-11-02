@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use super::EntryId;
+use super::{EntryId, SignalKind};
 
 /// What a gate waits for. Each variant names the legacy buffer it will replace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -191,6 +191,60 @@ impl GateKind {
             // only guards a step that never runs (logged when it fires).
             GateKind::EditorDisplayMap => Some(Duration::from_secs(1)),
         }
+    }
+}
+
+/// What a signal does at a gate, per signal (#1424, OD-1): the plan depends on the signal as well
+/// as on the gate, because the tty flushes pending input on INTR, QUIT and SUSP but not on EOF.
+/// The legacy [`SignalPlan`] is per gate only and stays what `InputQueue::apply_signal` runs; this
+/// is the table's form, with the cases the legacy code handles outside the queue (the hand-off's
+/// deferred Enter, the subshell bootstrap stash, the held keys' void) named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateSignalPlan {
+    /// The paste is cancelled, the keys typed before the signal are delivered, then the signal.
+    CancelPasteThenFlush,
+    /// Everything held is delivered in typed order, then the signal goes last.
+    FlushThenSignal,
+    /// Everything held is discarded, then the signal goes.
+    DiscardThenSignal,
+    /// The signal goes first; the gate is released and the held entries follow it.
+    SignalThenRelease,
+    /// The signal goes first; the held entries stay held until the gate's own event.
+    SignalThenKeepGate,
+    /// The deferred Enter is cancelled first (`cancel_deferred_enter`), the keys held behind it
+    /// are dropped, then the signal goes (the HandoffReport gate for INTR, SUSP, QUIT).
+    CancelDeferredEnterThenSignal,
+    /// The signal waits behind the gate like a key, in typed order (^D behind a deferred Enter:
+    /// EOF is not flushed by the tty, so it must go out after the keys before it).
+    WaitInOrder,
+    /// The keys held at a prompt hold are void (the tty flushes them), then the signal goes.
+    VoidHeldThenSignal,
+    /// The signal is stashed (`pending_aborts`) and sent after the last bootstrap line: it must
+    /// not cut a half-run script.
+    StashUntilBootstrapDone,
+}
+
+/// The plan for `signal` meeting `gate` (the table's [`GateKind::signal_plan`], per signal).
+/// Interrupt and Eof are what the legacy code does; the Suspend and Quit columns are the deliberate
+/// OD-1 change (^Z and ^\ jump the queue like ^C). The ssh setup window is NOT a case of this
+/// function: inside it the table's P1a row holds the signal instead (OD-5).
+pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
+    let eof = signal == SignalKind::Eof;
+    match gate {
+        GateKind::PasteReading | GateKind::CliSubmit => GateSignalPlan::CancelPasteThenFlush,
+        GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::SshConnect => {
+            GateSignalPlan::DiscardThenSignal
+        }
+        GateKind::HandoffReport if eof => GateSignalPlan::WaitInOrder,
+        GateKind::HandoffReport => GateSignalPlan::CancelDeferredEnterThenSignal,
+        GateKind::PromptSeen | GateKind::LineEditorActive if eof => GateSignalPlan::FlushThenSignal,
+        GateKind::PromptSeen | GateKind::LineEditorActive => GateSignalPlan::VoidHeldThenSignal,
+        GateKind::PtyRouteSettling | GateKind::EditorFocusPending | GateKind::EditorDisplayMap => {
+            GateSignalPlan::FlushThenSignal
+        }
+        GateKind::SubshellSetup => GateSignalPlan::SignalThenRelease,
+        GateKind::SubshellBootstrapWrite => GateSignalPlan::StashUntilBootstrapDone,
+        GateKind::PowershellSetup => GateSignalPlan::SignalThenKeepGate,
     }
 }
 

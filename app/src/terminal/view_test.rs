@@ -23273,3 +23273,124 @@ fn programmatic_submits_wait_for_a_waiting_enter() {
         });
     })
 }
+
+// ---- RouteFacts (#1424, steps 1 and 2: facts only, nothing decides on them yet) ----------------
+
+/// Building the facts never waits for the pty reader and never takes the key path's model lock,
+/// whatever triggered the decision: inside a key, outside any key (a give-up cap, the ssh
+/// hand-over, a mailbox flush), and with the model busy. The test thread holds the model's lock
+/// (the parser inside); a build that locked it would hang (the harness timeout fails it), and
+/// the key-path lock counter must not move.
+#[test]
+fn route_facts_build_takes_no_blocking_model_lock_in_or_out_of_a_key() {
+    use crate::terminal::input_queue::QueueFacts;
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            let parser_inside = view.model.lock();
+
+            // Outside any key.
+            assert!(!view.in_key_path());
+            let outside = view.build_route_facts(QueueFacts::default(), ctx);
+
+            // Inside a key.
+            let inside = {
+                let _scope = KeyPathScope::enter(&view.key_path_depth);
+                assert!(view.in_key_path());
+                view.build_route_facts(QueueFacts::default(), ctx)
+            };
+            // The model was busy both times: the published copy answered, and said so.
+            assert!(!outside.agent_in_control_exact && !inside.agent_in_control_exact);
+            assert_eq!(outside.facts_gen, inside.facts_gen);
+            assert!(outside.model_consistent, "nothing was publishing");
+            drop(parser_inside);
+
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                before,
+                "fact-building took the key path's blocking model lock"
+            );
+            // Free again: the exact state answers.
+            assert!(
+                view.build_route_facts(QueueFacts::default(), ctx)
+                    .agent_in_control_exact
+            );
+        });
+    });
+}
+
+/// The pane's stamp reads the gen the two published cells agree on, with no model lock: it moves
+/// when the model publishes and not when a reader refreshes the cells from the exact state.
+#[test]
+fn the_panes_stamp_follows_the_models_publication_gen() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            view.model.lock().publish_key_facts();
+            let published = view.model.lock().facts_gen();
+            assert!(published > 0);
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published);
+
+            // A refresh from the exact state stores the gen it read: the stamp does not move.
+            let _ = view.model_facts_nonblocking();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published);
+
+            view.model.lock().publish_key_facts();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published + 1);
+
+            // While the parser is inside the model the stamp is still readable (no lock).
+            let parser_inside = view.model.lock();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published + 1);
+            drop(parser_inside);
+        });
+    });
+}
+
+/// The phases are derived read-only from the legacy fields, and building does not touch them.
+#[test]
+fn route_facts_derive_the_phases_from_the_legacy_fields_without_changing_them() {
+    use crate::terminal::input_queue::{PsPhase, QueueFacts, SshPhase, SubshellPhase};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let idle = view.build_route_facts(QueueFacts::default(), ctx);
+            assert_eq!(idle.ssh, SshPhase::Idle);
+            assert_eq!(idle.subshell, SubshellPhase::Idle);
+            assert_eq!(idle.ps, PsPhase::Off);
+            assert!(!idle.ssh_hold_exists);
+
+            view.ssh_typeahead_holding = true;
+            view.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation: 1 };
+            let queue = QueueFacts {
+                gates: crate::terminal::input_queue::GateMask::of(&[
+                    crate::terminal::input_queue::GateKind::SubshellBootstrapWrite,
+                    crate::terminal::input_queue::GateKind::SshConnect,
+                ]),
+                queued: true,
+                queued_only_pty: true,
+            };
+            let busy = view.build_route_facts(queue, ctx);
+            assert_eq!(busy.ssh, SshPhase::Holding);
+            assert!(busy.ssh_hold_exists && busy.queue_has_ssh_gate);
+            assert_eq!(busy.ps, PsPhase::LineRunning);
+            assert!(busy.ps.holds_keys());
+            assert_eq!(busy.subshell, SubshellPhase::BootstrapWriting);
+            assert!(busy.agent_write_gate_closed);
+            // The fields the facts were derived from are what they were.
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::LineRunning { generation: 1 }
+            );
+            // The phases are published to the pane for the producers that cannot build facts.
+            let state = view.paste_queue.queue.route_state();
+            assert_eq!(state.ssh(), SshPhase::Holding);
+            assert_eq!(state.ps(), PsPhase::LineRunning);
+        });
+    });
+}

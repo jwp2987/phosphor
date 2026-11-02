@@ -607,6 +607,7 @@ impl TerminalView {
             queue.defer(Deferred::Offer {
                 kind,
                 origin: Origin::Keyboard,
+                stamp: queue.stamp_now(),
             });
             return Some(false);
         };
@@ -1576,6 +1577,7 @@ impl TerminalView {
                         takes_over_agent_control,
                     },
                     origin: Origin::Keyboard,
+                    stamp: queue.stamp_now(),
                 });
                 return;
             };
@@ -1849,6 +1851,7 @@ impl TerminalView {
                 queue.defer(Deferred::Offer {
                     kind: EntryKind::Signal(signal),
                     origin: Origin::Keyboard,
+                    stamp: queue.stamp_now(),
                 });
                 continue;
             };
@@ -1919,12 +1922,21 @@ impl TerminalView {
     ) -> Result<(), Deferred> {
         let queue = self.paste_queue.queue.clone();
         match op {
-            Deferred::Offer { kind, origin } => {
+            Deferred::Offer {
+                kind,
+                origin,
+                stamp,
+            } => {
                 let Some(mut guard) = queue.try_lock() else {
-                    return Err(Deferred::Offer { kind, origin });
+                    return Err(Deferred::Offer {
+                        kind,
+                        origin,
+                        stamp,
+                    });
                 };
                 let mut host = PtyQueueHost::new(self, ctx);
-                guard.offer_with_origin(&mut host, kind, origin);
+                // The stamp from when the key was typed, not the pane's state now.
+                guard.offer_stamped(&mut host, kind, origin, stamp);
             }
             Deferred::OfferGated { kind, spec } => {
                 let Some(mut guard) = queue.try_lock() else {

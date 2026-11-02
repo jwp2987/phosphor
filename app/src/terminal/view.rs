@@ -4493,6 +4493,11 @@ impl TerminalView {
                 model.model_inbox(),
             )
         };
+        // #1424: every stamp of this pane reads the gen the two published cells agree on.
+        paste_queue
+            .queue
+            .route_state()
+            .set_gen_source(key_facts.clone(), key_model.clone());
         {
             let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
             // Operations that find the queue busy wake the same receiver (the mailbox, #1416 ff).
@@ -11694,14 +11699,20 @@ impl TerminalView {
     /// is pending bootstrap (no pending session, a subshell -- see #960 -- or already
     /// bootstrapped). Otherwise the pure route for an interrupt key.
     fn ssh_bootstrap_interrupt_route(&self) -> Option<SshBootstrapInterruptRoute> {
-        let (pending, is_subshell, bootstrapped) = {
-            let facts = self.model_facts();
-            (
-                facts.pending_session_id,
-                facts.has_pending_subshell,
-                facts.active_block_bootstrapped,
-            )
-        };
+        self.ssh_bootstrap_interrupt_route_in(&self.model_facts())
+    }
+
+    /// [`Self::ssh_bootstrap_interrupt_route`] against facts already read (the route facts read
+    /// them without waiting for the pty reader, #1424).
+    fn ssh_bootstrap_interrupt_route_in(
+        &self,
+        facts: &KeyModelSnapshot,
+    ) -> Option<SshBootstrapInterruptRoute> {
+        let (pending, is_subshell, bootstrapped) = (
+            facts.pending_session_id,
+            facts.has_pending_subshell,
+            facts.active_block_bootstrapped,
+        );
         if is_subshell || bootstrapped {
             return None;
         }
@@ -11883,6 +11894,11 @@ impl TerminalView {
             }
             _ => return PaneKeyOutcome::NotMine,
         };
+        // #1424: the stamp of this key. The model gen is read by every stamp taken (the pane's
+        // `PaneRouteState` reads the gen the two published cells agree on, no model lock); the
+        // focus chain is only known here, so it is noted now. Nothing decides on it yet.
+        let focus_snap = self.pane_focus_snap(key_ctx, ctx);
+        self.paste_queue.queue.route_state().note_focus(focus_snap);
         let facts = self.pane_focus_facts(key_ctx, ctx);
         let target = pane_key::key_target(class, &facts);
         warpui::input_order::log_key_hop("kh_pane_key", || {
@@ -36920,9 +36936,16 @@ impl SshConnectGate {
     /// post-block bootstrap wait, and from the end of the remote bootstrap to its first prompt
     /// (#1085). Full-screen programs never hold.
     fn drops_keys(&self, alt_screen: bool) -> bool {
+        self.drops_keys_with(alt_screen, self.output_seen)
+    }
+
+    /// [`Self::drops_keys`] with `output_seen` given: the read-only form the route facts use
+    /// (#1424), where the sticky "visible text seen" comes from the published snapshot instead of
+    /// a scan of the grid under the model's lock.
+    fn drops_keys_with(&self, alt_screen: bool, output_seen: bool) -> bool {
         !alt_screen
             && !self.failed
-            && (self.block_done || !self.output_seen || self.bootstrap_done_at.is_some())
+            && (self.block_done || !output_seen || self.bootstrap_done_at.is_some())
     }
 }
 
@@ -37287,6 +37310,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 }
 
 mod paste_queue;
+mod route_facts;
 mod ssh_queue;
 mod ssh_typeahead;
 

@@ -133,3 +133,106 @@ fn model_arc_is_the_checkers() {
         assert_eq!(a.load(), KeyFacts::default());
     });
 }
+
+// ---- the two-cell gen and the stamp (#1424) -----------------------------------------------
+
+/// What `TerminalModel::publish_key_facts` does, in its order: the snapshot first, then the facts,
+/// both under the new gen. The content is chosen so a mixed read is visible: the facts say
+/// `alt_screen` exactly for gen 2, the snapshot says `active_block_started` exactly for gen 2.
+fn publish(facts: &KeyFactsCell, model: &KeyModelCell, generation: u64, unterminated: bool) {
+    model.store(KeyModelSnapshot {
+        facts_gen: generation,
+        active_block_started: generation == 2,
+        unterminated_since_gen: unterminated.then_some(generation),
+        ..KeyModelSnapshot::default()
+    });
+    facts.store_with_gen(
+        KeyFacts {
+            alt_screen: generation == 2,
+            ..KeyFacts::default()
+        },
+        generation,
+    );
+}
+
+/// A reader that races two publications never combines the facts of one with the snapshot of
+/// another when it reports a consistent read, and a torn read reports the older gen.
+#[test]
+fn model_the_reader_retry_never_combines_gens() {
+    check(|| {
+        let facts = KeyFactsCell::default();
+        let model = KeyModelCell::default();
+        let publisher = {
+            let (facts, model) = (facts.clone(), model.clone());
+            thread::spawn(move || {
+                publish(&facts, &model, 1, false);
+                publish(&facts, &model, 2, false);
+            })
+        };
+        let read = load_consistent_with(&facts, &model, 2);
+        if read.consistent {
+            assert_eq!(
+                read.facts.alt_screen, read.snapshot.active_block_started,
+                "facts of one publication under the snapshot of another: {read:?}"
+            );
+            assert_eq!(read.snapshot.facts_gen == 2, read.facts.alt_screen);
+            assert_eq!(read.facts_gen, read.snapshot.facts_gen);
+        } else {
+            assert_eq!(read.facts_gen, read.snapshot.facts_gen.saturating_sub(1));
+        }
+        publisher.join().unwrap();
+    });
+}
+
+/// The gen a reader reports is monotonic across loads, and never newer than the gen loaded after
+/// it: a stamp is never from the future.
+#[test]
+fn model_the_gen_is_monotonic_across_loads() {
+    check(|| {
+        let facts = KeyFactsCell::default();
+        let model = KeyModelCell::default();
+        let publisher = {
+            let (facts, model) = (facts.clone(), model.clone());
+            thread::spawn(move || {
+                publish(&facts, &model, 1, false);
+                publish(&facts, &model, 2, false);
+            })
+        };
+        let (first, _) = load_gen_consistent_with(&facts, &model, 2);
+        let (second, _) = load_gen_consistent_with(&facts, &model, 2);
+        assert!(second >= first, "gen went back: {first} then {second}");
+        // Whatever it stamped has been published (the cell's own gen is at least as new).
+        assert!(first <= model.facts_gen());
+        publisher.join().unwrap();
+    });
+}
+
+/// Stamp versus publish (H4, OD-7): a key whose stamp is taken AFTER the reader has seen the
+/// prompt in a consistent read is never classed before the prompt, in any interleaving; a key
+/// stamped before may be (it was typed before the prompt existed).
+#[test]
+fn model_a_stamp_taken_after_seeing_the_prompt_is_not_before_it() {
+    check(|| {
+        let facts = KeyFactsCell::default();
+        let model = KeyModelCell::default();
+        let publisher = {
+            let (facts, model) = (facts.clone(), model.clone());
+            thread::spawn(move || {
+                publish(&facts, &model, 1, false);
+                // The prompt text appears in this publication.
+                publish(&facts, &model, 2, true);
+            })
+        };
+        let (early_stamp, _) = load_gen_consistent_with(&facts, &model, 2);
+        let seen = load_consistent_with(&facts, &model, 2);
+        if let (true, Some(prompt_gen)) = (seen.consistent, seen.snapshot.unterminated_since_gen) {
+            let (late_stamp, _) = load_gen_consistent_with(&facts, &model, 2);
+            assert!(
+                late_stamp >= prompt_gen,
+                "a key stamped after the prompt was seen was classed before it: {late_stamp} < {prompt_gen}"
+            );
+            assert!(early_stamp <= late_stamp);
+        }
+        publisher.join().unwrap();
+    });
+}

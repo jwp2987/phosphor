@@ -467,6 +467,12 @@ impl PaneHandoff {
         self.0.read_recursive()
     }
 
+    /// Shared access, or `None` while the model's parse holds the write lock. For the route facts
+    /// (#1424), which never wait for another thread.
+    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, TypeaheadHandoff>> {
+        self.0.try_read_recursive()
+    }
+
     /// Exclusive access. Never call while a guard of this handle is alive on the same thread.
     pub fn write(&self) -> RwLockWriteGuard<'_, TypeaheadHandoff> {
         self.0.write()
@@ -1759,6 +1765,50 @@ impl TypeaheadHandoff {
         self.route_user_bytes_unheld(bytes, reaches_shell_line)
     }
 
+    /// What [`Self::on_user_bytes`] would answer for `bytes` right now, WITHOUT doing any of what it
+    /// does (#1424): no hold is started or dropped, nothing is counted, no id moves. For the
+    /// destination table's shadow mode and its tests; the pty reader thread advances this state,
+    /// so a peek can differ from the commit that follows it, and the shadow counts the cases.
+    /// `now` is given, never read.
+    pub fn peek_user_bytes_route(
+        &self,
+        bytes: &[u8],
+        reaches_shell_line: bool,
+        now: Instant,
+    ) -> UserBytesRoute {
+        if bytes.iter().any(is_signal_byte) {
+            return self.peek_user_bytes_unheld();
+        }
+        // `drop_stale_hold`: a queued young hold only lives in these two states.
+        let state_keeps_hold = matches!(
+            self.state,
+            HandoffState::PtyOwned { .. } | HandoffState::AwaitingReport
+        );
+        if (self.young_hold_queued && state_keeps_hold)
+            || self.prompt_hold_queued
+            || self.should_hold_for_prompt(reaches_shell_line, now)
+            || self
+                .should_hold_young_enter(bytes, reaches_shell_line, now)
+                .is_some()
+        {
+            return UserBytesRoute::Held;
+        }
+        self.peek_user_bytes_unheld()
+    }
+
+    /// The answer of `route_user_bytes_unheld`, without its bookkeeping.
+    fn peek_user_bytes_unheld(&self) -> UserBytesRoute {
+        match &self.state {
+            HandoffState::PtyOwned { .. } => UserBytesRoute::WriteCounted,
+            HandoffState::HoldAfterEnter { .. } if self.deferred_gate.is_some() => {
+                UserBytesRoute::Held
+            }
+            HandoffState::HoldAfterEnter { .. }
+            | HandoffState::EditorOwned
+            | HandoffState::AwaitingReport => UserBytesRoute::Write,
+        }
+    }
+
     /// A hold only lives in `PtyOwned` and `AwaitingReport`; any other state has run, flushed
     /// or dropped it.
     fn drop_stale_hold(&mut self) {
@@ -2220,6 +2270,13 @@ impl TypeaheadHandoff {
             return false;
         }
         true
+    }
+
+    /// Whether the takeover window is open, read-only and clockless (#1424): the route facts
+    /// cannot close the window (that is `editor_takeover_open`'s job, with its give-up net), so
+    /// this reports "the editor owns input and took over at some point".
+    pub fn editor_takeover_would_be_open(&self) -> bool {
+        self.editor_owns_input() && self.editor_took_over_at.is_some()
     }
 
     /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the

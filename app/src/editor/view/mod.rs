@@ -3222,6 +3222,7 @@ impl EditorView {
                     None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
                         kind,
                         origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
                     }),
                 }
                 self.flush_held_replay_now(ctx);
@@ -3269,6 +3270,7 @@ impl EditorView {
                     None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
                         kind,
                         origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
                     }),
                 }
                 return true;
@@ -3293,6 +3295,7 @@ impl EditorView {
             None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind,
                 origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
             }),
         }
         true
@@ -3361,6 +3364,7 @@ impl EditorView {
             None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind,
                 origin: Origin::Editor,
+                stamp: queue.stamp_now(),
             }),
         }
         warpui::input_order::log_key_hop("kh_editor_held", || {
