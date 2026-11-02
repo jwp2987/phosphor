@@ -1155,7 +1155,7 @@ impl SettingsWidget for KeybindingsWidget {
         &self,
         view: &Self::View,
         appearance: &Appearance,
-        app: &AppContext,
+        _app: &AppContext,
     ) -> Box<dyn Element> {
         let subheader = render_sub_header(
             appearance,

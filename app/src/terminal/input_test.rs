@@ -6220,6 +6220,14 @@ fn test_voice_input_toggle_preserves_lock_state() {
         .await;
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
 
+        // This test is about the input mode, not the microphone: with voice input enabled (the
+        // default) the toggle would open the machine's real audio device, which blocks on a
+        // headless box (the 60 s hang on the runner) and records on a developer's. Disabled, the
+        // editor's toggle returns before any audio code while the input still enters AI mode.
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings.voice_input_enabled_internal.set_value(false, ctx);
+        });
+
         // Start in shell mode with input locked
         input.update(&mut app, |input, ctx| {
             input.ai_input_model().update(ctx, |ai_input, ctx| {

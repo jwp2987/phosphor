@@ -18264,7 +18264,20 @@ fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
+            // A registered session whose first Precmd was processed: without it the shell
+            // refuses the command (HistoryNotAppendable, #1332) and the buffer stays.
+            register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
             view.input.update(ctx, |input, ctx| {
                 input.arm_ssh_handover_enter_guard("echo HELDLINE".into());
                 input.replace_buffer_content("", ctx);
@@ -18272,12 +18285,25 @@ fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
             });
             editor_key(view, EditorAction::Enter, ctx);
         });
+        // The Enter's submit continues through events and the executor: let it run until the
+        // line is executed or waits at its gate for the input-type verdict.
+        for _ in 0..64 {
+            let settled = terminal.read(&app, |view, ctx| {
+                executed.borrow().as_slice() == ["echo NEXT >> hb.txt".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+            });
+            if settled {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
         terminal.update(&mut app, |view, ctx| {
             assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
-            assert_ne!(
-                view.input.as_ref(ctx).buffer_text(ctx),
-                "echo NEXT >> hb.txt",
-                "the new line was submitted, not swallowed"
+            assert!(
+                executed.borrow().as_slice() == ["echo NEXT >> hb.txt".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
+                "the new line was submitted, not swallowed: executed {:?}",
+                executed.borrow()
             );
         });
     })
@@ -22742,7 +22768,9 @@ fn an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order() {
             view.input.update(ctx, |input, ctx| {
                 input.offer_answered_paste(ClipboardContent::plain_text("P".to_owned()), ctx)
             });
-            view.keydown_on_terminal("\r", ctx);
+            // The Enter the focused editor receives (the terminal's own key path does not take
+            // an Enter when no command runs): it must join the queue behind the paste.
+            editor_key(view, EditorAction::Enter, ctx);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
                 "",

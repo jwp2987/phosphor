@@ -94,7 +94,8 @@ impl ScriptingSettingsPageView {
         let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             vec![Box::new(LocalControlModeWidget)];
 
-        let this = Self {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut this = Self {
             page: PageType::new_uncategorized(widgets, Some("Scripting")),
             local_only_icon_tooltip_states: RefCell::new(HashMap::new()),
             local_control_mode_dropdown,

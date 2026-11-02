@@ -1,12 +1,15 @@
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
+    panic::AssertUnwindSafe,
     sync::Arc,
+    time::Duration,
 };
 
 use bytes::Bytes;
 use warpui::{
     AppContext, SingletonEntity,
     assets::asset_cache::{AssetCache, AssetSource, AssetState, AsyncAssetId, AsyncAssetType},
+    r#async::FutureExt as _,
     image_cache::ImageType,
     units::{IntoPixels, Pixels},
 };
@@ -18,6 +21,17 @@ use crate::render::{
 
 const DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER: f32 = 10.0;
 const FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER: f32 = 2.0;
+
+/// The largest diagram source we hand to the renderer. Real diagrams are a few KB.
+const MAX_MERMAID_SOURCE_BYTES: usize = 256 * 1024;
+/// The longest line we hand to the renderer. The renderer wraps a label by re-measuring its whole
+/// remaining text once per output line, so one unbroken 100k-character token costs minutes of CPU
+/// (the hang found by the `hostile_sources_never_panic` corpus test, #1477).
+const MAX_MERMAID_LINE_CHARS: usize = 4_000;
+/// How long a render may take before the diagram falls back to showing its source. Event-driven
+/// give-up for anything the size limits above did not anticipate; the abandoned render thread
+/// finishes (or not) on its own and its result is dropped.
+const MERMAID_RENDER_TIMEOUT: Duration = Duration::from_secs(8);
 
 struct MermaidDiagramAsset;
 
@@ -34,12 +48,57 @@ pub fn mermaid_asset_source(source: &str) -> AssetSource {
         id: AsyncAssetId::new::<MermaidDiagramAsset>(id),
         fetch: Arc::new(move || {
             let source = fetch_source.clone();
-            Box::pin(async move {
-                mermaid_to_svg::render_mermaid_to_svg(&source, None)
-                    .map(|svg| Bytes::from(svg.into_bytes()))
-                    .map_err(Into::into)
-            })
+            Box::pin(render_bounded(source, MERMAID_RENDER_TIMEOUT))
         }),
+    }
+}
+
+/// Rejects sources the renderer cannot handle in bounded time. An `Err` takes the app's normal
+/// failed-diagram path (the plain-source fallback).
+fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
+    if source.len() > MAX_MERMAID_SOURCE_BYTES {
+        anyhow::bail!(
+            "diagram source is too large to render ({} bytes, limit {MAX_MERMAID_SOURCE_BYTES})",
+            source.len()
+        );
+    }
+    if let Some(line) = source
+        .lines()
+        .find(|line| line.chars().count() > MAX_MERMAID_LINE_CHARS)
+    {
+        anyhow::bail!(
+            "diagram has a line too long to render ({} characters, limit {MAX_MERMAID_LINE_CHARS})",
+            line.chars().count()
+        );
+    }
+    Ok(())
+}
+
+/// Renders on a worker thread so a runaway render neither blocks the caller past `timeout` nor
+/// takes the caller down with a panic. Both end as an `Err`, never a hang or a crash.
+async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Bytes> {
+    check_render_limits(&source)?;
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("mermaid-render".into())
+        .spawn(move || {
+            let rendered = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                mermaid_to_svg::render_mermaid_to_svg(&source, None)
+            }));
+            let _ = tx.send_blocking(rendered);
+        })
+        .map_err(|e| anyhow::anyhow!("could not start the diagram renderer: {e}"))?;
+    match rx.recv().with_timeout(timeout).await {
+        Ok(Ok(Ok(Ok(svg)))) => Ok(Bytes::from(svg.into_bytes())),
+        Ok(Ok(Ok(Err(e)))) => Err(e.into()),
+        Ok(Ok(Err(_))) => Err(anyhow::anyhow!("the diagram renderer panicked")),
+        Ok(Err(_)) => Err(anyhow::anyhow!("the diagram renderer stopped unexpectedly")),
+        Err(_) => {
+            log::warn!("mermaid render exceeded {timeout:?}; showing the source instead");
+            Err(anyhow::anyhow!(
+                "rendering the diagram took longer than {timeout:?}"
+            ))
+        }
     }
 }
 
@@ -120,3 +179,52 @@ fn mermaid_diagram_size(
 #[cfg(test)]
 #[path = "mermaid_diagram_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod render_limit_tests {
+    use super::*;
+
+    fn render(source: &str, timeout: Duration) -> anyhow::Result<Bytes> {
+        futures_lite::future::block_on(render_bounded(source.to_string(), timeout))
+    }
+
+    /// #1477: one unbroken 100k-character token made the renderer spin for minutes. It is
+    /// refused up front, in well under a second, and takes the failed-diagram path.
+    #[test]
+    fn a_huge_unbroken_token_is_refused_not_rendered() {
+        let started = std::time::Instant::now();
+        let err = render(
+            &format!("graph TD\n{}", "A".repeat(100_000)),
+            MERMAID_RENDER_TIMEOUT,
+        )
+        .expect_err("a 100k-character line must not render");
+        assert!(err.to_string().contains("too long"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_oversized_source_is_refused() {
+        let source = "graph TD\n".to_string() + &"A --> B\n".repeat(MAX_MERMAID_SOURCE_BYTES / 8);
+        let err = render(&source, MERMAID_RENDER_TIMEOUT).expect_err("too large");
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn a_normal_diagram_still_renders() {
+        let svg = render("graph TD\nA[Start] --> B[End]\n", MERMAID_RENDER_TIMEOUT)
+            .expect("a small flowchart renders");
+        assert!(String::from_utf8_lossy(&svg).contains("<svg"));
+    }
+
+    /// A render that outlasts its budget ends as an error at the budget, not a hang: a 300-node
+    /// flowchart cannot lay out in a millisecond.
+    #[test]
+    fn a_render_over_its_budget_ends_as_an_error() {
+        let mut source = String::from("graph TD\n");
+        for i in 1..300 {
+            source.push_str(&format!("N{} --> N{}\n", (i - 1) / 2, i));
+        }
+        let err = render(&source, Duration::from_millis(1)).expect_err("budget of 1 ms");
+        assert!(err.to_string().contains("took longer"), "{err}");
+    }
+}
