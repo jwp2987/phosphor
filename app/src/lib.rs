@@ -3536,8 +3536,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ContextWindowUsageV2,
         #[cfg(feature = "global_search")]
         FeatureFlag::GlobalSearch,
-        #[cfg(feature = "embedded_code_review_comments")]
-        FeatureFlag::EmbeddedCodeReviewComments,
         #[cfg(feature = "file_and_diff_set_comments")]
         FeatureFlag::FileAndDiffSetComments,
         #[cfg(feature = "revert_to_checkpoints")]

@@ -438,11 +438,6 @@ impl TextStyleOperation {
         self
     }
 
-    pub fn clear_background_color(mut self) -> Self {
-        self.background_color = StyleOperation::Clear;
-        self
-    }
-
     pub fn set_error_underline_color(mut self, error_underline_color: ColorU) -> Self {
         self.error_underline_color = StyleOperation::Style {
             color: error_underline_color,
@@ -1308,6 +1303,7 @@ impl Buffer {
     }
 
     /// Get an iterator of subword starting points forward from the given offset
+    #[cfg(test)]
     pub fn subword_starts_from_offset<T: BufferIndex>(
         &self,
         position: T,

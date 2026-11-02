@@ -466,14 +466,11 @@ impl GlobalBufferModel {
     ) {
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
-            #[cfg(not(target_family = "wasm"))]
             if trim {
                 ctx.background_executor()
                     .spawn(async { crate::alloc::trim_free_memory() })
                     .detach();
             }
-            #[cfg(target_family = "wasm")]
-            let _ = trim;
         });
     }
 
@@ -2205,11 +2202,13 @@ impl GlobalBufferModel {
             return false;
         }
 
-        sync_clock.client_version = new_client_version;
-
         let Some(buffer) = state.buffer.upgrade(ctx) else {
             return false;
         };
+
+        // Only advance the client version once the edit can actually be applied;
+        // a dropped buffer rejects the edit, so the clock must stay untouched.
+        sync_clock.client_version = new_client_version;
 
         // Wire offsets are 1-indexed (matching CharOffset), so no conversion needed.
         // Apply each edit sequentially: the offsets are in sequential

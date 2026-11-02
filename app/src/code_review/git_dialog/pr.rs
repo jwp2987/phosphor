@@ -103,7 +103,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     me.set_loading(loading_label_for(), ctx);
 
     // Remote repos create the PR on the daemon over RPC (#116).
-    #[cfg(not(target_family = "wasm"))]
     if let Some(remote) = me.remote().cloned() {
         let branch = me.branch_name().to_string();
         start_confirm_remote(remote, branch, ctx);
@@ -135,7 +134,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 /// Sends the create-PR request to the remote host's daemon and surfaces the
 /// same toast as the local path. The daemon runs `gh pr create --fill` (BYOP:
 /// no daemon-side autogen, #116).
-#[cfg(not(target_family = "wasm"))]
 fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
     use crate::code_review::git_dialog::remote_client_for;
     use crate::remote_server::proto;
@@ -181,13 +179,11 @@ fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContex
 /// files. (Deriving it from the loaded diff state instead would show whichever
 /// file set the *current diff mode* holds, which is a different set whenever
 /// the mode isn't branch-vs-main.)
-#[cfg_attr(target_family = "wasm", allow(unused_variables))]
 fn spawn_load_file_changes(
     repo_path: &Path,
     remote: Option<&RemotePath>,
     ctx: &mut ViewContext<GitDialog>,
 ) {
-    #[cfg(not(target_family = "wasm"))]
     if let Some(remote) = remote {
         spawn_load_remote_file_changes(remote.clone(), ctx);
         return;
@@ -214,7 +210,6 @@ fn spawn_load_file_changes(
 
 /// Remote arm of [`spawn_load_file_changes`]: the working tree lives on the
 /// daemon, so the committed branch file list comes over RPC.
-#[cfg(not(target_family = "wasm"))]
 fn spawn_load_remote_file_changes(remote: RemotePath, ctx: &mut ViewContext<GitDialog>) {
     use crate::code_review::git_dialog::remote_client_for;
     use crate::remote_server::diff_state_proto::proto_to_file_change_entry;

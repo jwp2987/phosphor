@@ -352,7 +352,7 @@ fn refresh_always_env() -> bool {
 
 /// Whether the command names a VCS tool, i.e. could change git state in a way that must not wait
 /// for (or depend on) the file watcher. Plain file edits and build output are the watcher's job.
-#[cfg(feature = "local_fs")]
+#[cfg(all(test, feature = "local_fs"))]
 pub(super) fn command_may_change_git_state(command: &str) -> bool {
     const VCS: &[&str] = &[
         "git", "gh", "gt", "hub", "jj", "hg", "sl", "svn", "stg", "lazygit", "pijul",

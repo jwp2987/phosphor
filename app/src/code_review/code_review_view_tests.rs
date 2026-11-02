@@ -144,36 +144,6 @@ fn create_editor_with_content(app: &mut App, content: &str) -> ViewHandle<LocalC
     local_editor
 }
 
-/// Creates a LocalCodeEditorView with base and current content for diff testing
-#[allow(dead_code)]
-fn create_editor_with_diff(
-    app: &mut App,
-    base_content: &str,
-    current_content: &str,
-) -> ViewHandle<LocalCodeEditorView> {
-    let current = current_content.to_string();
-    let base = base_content.to_string();
-    let (_, local_editor) = app.add_window(WindowStyle::NotStealFocus, move |ctx| {
-        let code_editor_view = ctx.add_typed_action_view(|ctx| {
-            CodeEditorView::new(
-                None,
-                None,
-                CodeEditorRenderOptions::new(VerticalExpansionBehavior::GrowToMaxHeight),
-                ctx,
-            )
-        });
-
-        code_editor_view.update(ctx, |editor, ctx| {
-            editor.reset(InitialBufferState::plain_text(&current), ctx);
-            editor.set_base(&base, true, ctx);
-        });
-
-        LocalCodeEditorView::new(code_editor_view, None, false, None, ctx)
-    });
-
-    local_editor
-}
-
 /// Creates an attached review comment with a Line target
 fn create_line_comment(
     file_path: impl Into<PathBuf>,

@@ -3407,6 +3407,7 @@ impl EditorView {
         }
     }
 
+    #[cfg(test)]
     pub fn set_shell_family(&mut self, shell_family: ShellFamily) {
         self.shell_dialect = Some(shell_family.into());
     }
@@ -4176,10 +4177,6 @@ impl EditorView {
         self.placeholder_texts = Arc::new(HashMap::new());
     }
 
-    pub fn is_single_line(&self) -> bool {
-        self.single_line
-    }
-
     pub fn is_focused(&self) -> bool {
         self.focused
     }
@@ -4216,13 +4213,6 @@ impl EditorView {
         propagate_vertical_navigation_keys: PropagateAndNoOpNavigationKeys,
     ) {
         self.propagate_vertical_navigation_keys = propagate_vertical_navigation_keys;
-    }
-
-    pub fn set_propagate_horizontal_navigation_keys(
-        &mut self,
-        propagate_horizontal_navigation_keys: PropagateHorizontalNavigationKeys,
-    ) {
-        self.propagate_horizontal_navigation_keys = propagate_horizontal_navigation_keys;
     }
 
     pub fn can_edit<C: ModelAsRef>(&self, ctx: &C) -> bool {
@@ -4307,6 +4297,7 @@ impl EditorView {
         self.handle_action(&EditorAction::ClearMarkedText, ctx);
     }
 
+    #[cfg(test)]
     pub fn set_autocomplete_symbols_allowed(&mut self, enable: bool) {
         self.autocomplete_symbols_allowed = enable;
     }
@@ -4908,7 +4899,6 @@ impl EditorView {
 
         // The primary selection's owner can stall a read for seconds, so an editor whose owner
         // reads the clipboard off the UI thread (the terminal input) gets a request, not a read.
-        #[cfg(not(target_family = "wasm"))]
         if self.delegate_paste_handling {
             ctx.emit(Event::MiddleClickPasteRequested);
             ctx.focus_self();
@@ -7455,25 +7445,6 @@ impl EditorView {
             }
         } else {
             false
-        }
-    }
-
-    /// Returns the line number where the single cursor exists. If there's more than one selection
-    /// or the selection is more than just a cursor, returns None.
-    pub fn single_cursor_line_index(&self, ctx: &AppContext) -> Option<u32> {
-        let model = self.editor_model.as_ref(ctx);
-        if model.selections(ctx).len() == 1 {
-            let selection = model.first_selection(ctx);
-            let buffer = model.buffer(ctx);
-            selection.is_cursor_only(buffer).then(|| {
-                let cursor = selection.end();
-                cursor
-                    .to_point(buffer)
-                    .expect("cursor should convert to point")
-                    .row
-            })
-        } else {
-            None
         }
     }
 

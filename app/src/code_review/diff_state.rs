@@ -22,7 +22,6 @@ cfg_if::cfg_if! {
         use std::future::Future;
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
 use warpui::AppContext;
 use warpui::{r#async::SpawnedFutureHandle, ModelContext};
 
@@ -38,7 +37,6 @@ use crate::util::git::{
 use super::diff_size_limits::{MAX_DIFF_SIZE, UnrenderableReason, compute_diff_size};
 
 use crate::code_review::CodeReviewTelemetryEvent;
-#[cfg(not(target_family = "wasm"))]
 use warp_core::channel::ChannelState;
 use warp_core::{safe_warn, send_telemetry_from_ctx};
 
@@ -630,14 +628,6 @@ impl DiffStats {
     }
 }
 
-/// Comprehensive git diff information including uncommitted changes, main branch comparison, and main branch name
-#[derive(Debug, Clone)]
-pub struct GitDiffInfo {
-    pub uncommitted_stats: Option<DiffStats>,
-    pub main_branch_stats: Option<DiffStats>,
-    pub main_branch_name: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct GitNumStatMetadata {
     lines_added: usize,
@@ -740,35 +730,12 @@ impl LocalDiffStateModel {
             .map(|metadata| metadata.against_head.aggregate_stats)
     }
 
-    pub fn get_main_branch_stats(&self) -> Option<DiffStats> {
-        self.metadata.as_ref().and_then(|metadata| {
-            metadata
-                .against_base_branch
-                .as_ref()
-                .map(|base| base.aggregate_stats)
-        })
-    }
-
     /// Get the name of the main branch being used for comparison
     pub fn get_main_branch_name(&self) -> Option<String> {
         self.metadata
             .as_ref()
             .map(|metadata| metadata.main_branch_name.clone())
             .filter(|name| !name.is_empty())
-    }
-
-    /// Converts an optional base branch name into a `DiffMode`.
-    /// Falls back to `DiffMode::MainBranch` when no branch is specified.
-    pub fn diff_mode_for_base_branch(&self, base_branch: Option<&str>) -> DiffMode {
-        match base_branch {
-            Some(branch) => {
-                let main_branch = self
-                    .get_main_branch_name()
-                    .and_then(|main_branch| main_branch.strip_prefix("origin/").map(String::from));
-                DiffMode::from_branch(branch, main_branch.as_deref())
-            }
-            None => DiffMode::MainBranch,
-        }
     }
 
     /// Get the name of the current checked-out branch or commit.
@@ -842,15 +809,6 @@ impl LocalDiffStateModel {
     pub fn is_git_operation_blocked(&self, _app: &warpui::AppContext) -> bool {
         false
     }
-    /// Get comprehensive git diff information including uncommitted stats, main branch stats, and main branch name
-    /// This is a utility function that combines all diff-related information in a single call
-    pub fn get_diff_stats(&self) -> GitDiffInfo {
-        GitDiffInfo {
-            uncommitted_stats: self.get_uncommitted_stats(),
-            main_branch_stats: self.get_main_branch_stats(),
-            main_branch_name: self.get_main_branch_name(),
-        }
-    }
 
     pub fn get_stats_for_current_mode(&self) -> Option<DiffStats> {
         self.get_stats_for_mode(self.mode.clone())
@@ -894,16 +852,6 @@ impl LocalDiffStateModel {
     #[cfg(not(feature = "local_fs"))]
     pub fn active_repository_path(&self, _app: &warpui::AppContext) -> Option<PathBuf> {
         None
-    }
-
-    pub fn is_inside_repository(&self) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "local_fs")] {
-                self.repository.is_some()
-            } else {
-                false
-            }
-        }
     }
 
     pub fn set_diff_mode(
@@ -1584,28 +1532,6 @@ impl LocalDiffStateModel {
                 });
             }
         }
-    }
-
-    #[cfg(feature = "local_fs")]
-    pub fn remove_active_repo(&mut self, ctx: &mut ModelContext<Self>) {
-        let Some(repository) = &self.repository else {
-            return;
-        };
-
-        // Unsubscribe from the repository watcher before releasing the handle.
-        if let Some(subscriber_id) = self.subscriber_id.take() {
-            repository.update(ctx, |repo, ctx| {
-                repo.stop_watching(subscriber_id, ctx);
-            });
-        }
-
-        let repository = self.repository.take().unwrap();
-        ctx.unsubscribe_from_model(&repository);
-        self.state = InternalDiffState::NotInRepository;
-        ctx.emit(DiffStateModelEvent::RepositoryChanged);
-        ctx.emit(DiffStateModelEvent::DiffMetadataChanged(
-            InvalidationBehavior::All(InvalidationSource::MetadataChange),
-        ));
     }
 
     /// Gets the merge base between HEAD and the specified branch
@@ -3664,7 +3590,6 @@ impl warpui::Entity for LocalDiffStateModel {
 pub enum DiffStateModel {
     Local(ModelHandle<LocalDiffStateModel>),
     /// Remote (SSH) backend. Native-only — it talks to the RemoteServerManager.
-    #[cfg(not(target_family = "wasm"))]
     Remote(ModelHandle<crate::code_review::diff_state_remote::RemoteDiffStateModel>),
 }
 
@@ -3685,7 +3610,6 @@ impl DiffStateModel {
     /// Creates a remote-backed `DiffStateModel` for a repository on an SSH host.
     /// Subscribes to the inner remote model to forward its events, mirroring
     /// `new`. The caller must ensure a session for the host is connected.
-    #[cfg(not(target_family = "wasm"))]
     pub fn new_remote(
         remote_path: crate::code::buffer_location::RemotePath,
         mode: DiffMode,
@@ -3742,7 +3666,6 @@ impl DiffStateModel {
     pub fn get(&self, ctx: &AppContext) -> DiffState {
         match self {
             Self::Local(m) => m.as_ref(ctx).get(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).get(),
         }
     }
@@ -3750,7 +3673,6 @@ impl DiffStateModel {
     pub fn diff_mode(&self, ctx: &AppContext) -> DiffMode {
         match self {
             Self::Local(m) => m.as_ref(ctx).diff_mode(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).diff_mode(),
         }
     }
@@ -3758,7 +3680,6 @@ impl DiffStateModel {
     pub fn get_uncommitted_stats(&self, ctx: &AppContext) -> Option<DiffStats> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_uncommitted_stats(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).get_uncommitted_stats(),
         }
     }
@@ -3766,7 +3687,6 @@ impl DiffStateModel {
     pub fn get_stats_for_current_mode(&self, ctx: &AppContext) -> Option<DiffStats> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_stats_for_current_mode(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).get_stats_for_current_mode(),
         }
     }
@@ -3774,7 +3694,6 @@ impl DiffStateModel {
     pub fn get_main_branch_name(&self, ctx: &AppContext) -> Option<String> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_main_branch_name(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).get_main_branch_name(),
         }
     }
@@ -3782,7 +3701,6 @@ impl DiffStateModel {
     pub fn get_current_branch_name(&self, ctx: &AppContext) -> Option<String> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_current_branch_name(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).get_current_branch_name(),
         }
     }
@@ -3790,7 +3708,6 @@ impl DiffStateModel {
     pub fn is_on_main_branch(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_on_main_branch(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).is_on_main_branch(),
         }
     }
@@ -3798,7 +3715,6 @@ impl DiffStateModel {
     pub fn unpushed_commits<'a>(&self, ctx: &'a AppContext) -> &'a [Commit] {
         match self {
             Self::Local(m) => m.as_ref(ctx).unpushed_commits(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).unpushed_commits(),
         }
     }
@@ -3806,7 +3722,6 @@ impl DiffStateModel {
     pub fn upstream_ref<'a>(&self, ctx: &'a AppContext) -> Option<&'a str> {
         match self {
             Self::Local(m) => m.as_ref(ctx).upstream_ref(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).upstream_ref(),
         }
     }
@@ -3814,7 +3729,6 @@ impl DiffStateModel {
     pub fn upstream_differs_from_main(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).upstream_differs_from_main(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).upstream_differs_from_main(),
         }
     }
@@ -3822,7 +3736,6 @@ impl DiffStateModel {
     pub fn pr_info<'a>(&self, ctx: &'a AppContext) -> Option<&'a PrInfo> {
         match self {
             Self::Local(m) => m.as_ref(ctx).pr_info(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).pr_info(),
         }
     }
@@ -3831,7 +3744,6 @@ impl DiffStateModel {
     pub fn is_pr_info_refreshing(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_pr_info_refreshing(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).is_pr_info_refreshing(),
         }
     }
@@ -3839,7 +3751,6 @@ impl DiffStateModel {
     pub fn is_git_operation_blocked(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_git_operation_blocked(ctx),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).is_git_operation_blocked(ctx),
         }
     }
@@ -3847,7 +3758,6 @@ impl DiffStateModel {
     pub fn has_head(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).has_head(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).has_head(),
         }
     }
@@ -3855,7 +3765,6 @@ impl DiffStateModel {
     pub fn active_repository_path(&self, ctx: &AppContext) -> Option<PathBuf> {
         match self {
             Self::Local(m) => m.as_ref(ctx).active_repository_path(ctx),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).active_repository_path(ctx),
         }
     }
@@ -3866,11 +3775,10 @@ impl DiffStateModel {
     /// against a (nonexistent) local path.
     pub fn remote_target(
         &self,
-        #[cfg_attr(target_family = "wasm", allow(unused_variables))] ctx: &AppContext,
+        ctx: &AppContext,
     ) -> Option<crate::code::buffer_location::RemotePath> {
         match self {
             Self::Local(_) => None,
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => Some(m.as_ref(ctx).remote_path().clone()),
         }
     }
@@ -3913,7 +3821,6 @@ impl DiffStateModel {
     ///
     /// Remote-only: the local backend recomputes this state from the working
     /// tree after the operation, so it has no delta to fold in.
-    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     pub fn apply_git_op_delta(
         &mut self,
         unpushed_commits: Vec<Commit>,
@@ -3922,7 +3829,6 @@ impl DiffStateModel {
     ) {
         match self {
             Self::Local(_) => {}
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |remote, ctx| {
                 remote.apply_git_op_delta(unpushed_commits, upstream_ref, ctx)
             }),
@@ -3939,7 +3845,6 @@ impl DiffStateModel {
             Self::Local(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
             }
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
             }
@@ -3951,7 +3856,6 @@ impl DiffStateModel {
             Self::Local(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
             }
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
             }
@@ -3967,7 +3871,6 @@ impl DiffStateModel {
             Self::Local(m) => {
                 m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
             }
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => {
                 m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
             }
@@ -3985,7 +3888,6 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| {
                 local.discard_files(file_infos, should_stash, branch_name, ctx)
             }),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| {
                 local.discard_files(file_infos, should_stash, branch_name, ctx)
             }),
@@ -3998,7 +3900,6 @@ impl DiffStateModel {
     pub fn stage_changes(&mut self, request: StageRequest, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.stage_changes(request, ctx)),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |remote, ctx| remote.stage_changes(request, ctx)),
         }
     }
@@ -4012,7 +3913,6 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| {
                 local.set_code_review_metadata_refresh_enabled(enabled, ctx)
             }),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| {
                 local.set_code_review_metadata_refresh_enabled(enabled, ctx)
             }),
@@ -4028,7 +3928,6 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| {
                 local.refresh_diff_metadata_for_current_repo(invalidation_behavior, ctx)
             }),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| {
                 local.refresh_diff_metadata_for_current_repo(invalidation_behavior, ctx)
             }),
@@ -4038,7 +3937,6 @@ impl DiffStateModel {
     pub fn stop_active_watcher(&mut self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.stop_active_watcher(ctx)),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| local.stop_active_watcher(ctx)),
         }
     }
@@ -4046,7 +3944,6 @@ impl DiffStateModel {
     pub fn refresh_pr_info(&mut self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
         }
     }
@@ -4058,7 +3955,6 @@ impl DiffStateModel {
     pub fn fetch_branches(&mut self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.fetch_branches(ctx)),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |remote, ctx| remote.fetch_branches(ctx)),
         }
     }

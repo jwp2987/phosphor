@@ -478,9 +478,6 @@ pub enum FeatureFlag {
     /// Enables global search
     GlobalSearch,
 
-    /// Enables embedded code review comments.
-    EmbeddedCodeReviewComments,
-
     /// Enables the revert to checkpoints feature.
     RevertToCheckpoints,
 
@@ -551,9 +548,6 @@ pub enum FeatureFlag {
     ///
     /// If disabled, the server will send None as the SkillsContext.
     ListSkills,
-
-    /// When enabled, we expose LSP as a tool to the agent.
-    LSPAsATool,
 
     /// Enables conversation artifacts.
     ConversationArtifacts,

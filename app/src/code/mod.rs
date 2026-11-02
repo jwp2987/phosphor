@@ -12,21 +12,15 @@ pub mod editor;
 pub mod editor_management;
 pub mod global_buffer_model;
 pub mod inline_diff;
-#[cfg(not(target_family = "wasm"))]
 pub mod find_references_view;
-#[cfg(not(target_family = "wasm"))]
 pub mod language_server_extension;
 #[cfg(feature = "local_fs")]
 pub mod language_server_shutdown_manager;
-#[cfg(not(target_family = "wasm"))]
 pub mod lsp_logs;
 pub mod lsp_telemetry;
-#[cfg_attr(not(target_family = "wasm"), path = "local_code_editor.rs")]
-#[cfg_attr(target_family = "wasm", path = "local_code_editor_wasm.rs")]
 pub mod local_code_editor;
 
 #[derive(Debug, thiserror::Error)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum ImmediateSaveError {
     #[error("No FileId")]
     NoFileId,
@@ -80,7 +74,6 @@ impl ShowFindReferencesCardProvider for NoopFindReferencesCardProvider {
     }
 }
 
-#[cfg_attr(target_family = "wasm", expect(dead_code))]
 #[derive(Debug)]
 pub enum SaveStatus {
     /// Save completed immediately and successfully.
@@ -92,7 +85,6 @@ pub enum SaveStatus {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[cfg_attr(target_family = "wasm", expect(dead_code))]
 pub enum SaveOutcome {
     Canceled,
     Failed,
@@ -107,14 +99,11 @@ pub mod active_file;
 pub mod opened_files;
 pub use icon::icon_from_file_path;
 
-#[cfg_attr(not(target_family = "wasm"), path = "view.rs")]
-#[cfg_attr(target_family = "wasm", path = "wasm.rs")]
 pub mod view;
 
 pub fn init(app: &mut AppContext) {
     self::view::init(app);
     self::file_tree::init(app);
-    #[cfg(not(target_family = "wasm"))]
     self::find_references_view::init(app);
 }
 
@@ -144,7 +133,6 @@ impl AddAssign<&DiffResult> for DiffResult {
 }
 
 #[derive(Debug)]
-#[cfg_attr(target_family = "wasm", expect(dead_code))]
 pub struct EditorTabBarDropTargetData {
     index: usize,
 }

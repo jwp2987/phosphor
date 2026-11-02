@@ -101,7 +101,6 @@ pub(super) fn interactive_path_future(
 /// Looks up the connected remote-server client for `remote`'s host, or `None`
 /// when no session is connected. Used by the git-dialog modes to address git
 /// write-op RPCs to the daemon when the code-review repo is remote (#116).
-#[cfg(not(target_family = "wasm"))]
 pub(super) fn remote_client_for(
     remote: &RemotePath,
     ctx: &AppContext,
@@ -738,7 +737,6 @@ impl GitDialog {
     /// The remote host + path when the code-review repo lives on an SSH host;
     /// `None` for a local repo. Git write-ops target the daemon over this
     /// instead of running against `repo_path` on the local FS (#116).
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn remote(&self) -> Option<&RemotePath> {
         self.remote.as_ref()
     }
@@ -751,7 +749,6 @@ impl GitDialog {
     /// Called on the success path *before* `GitDialogEvent::Completed`, so the
     /// parent view's post-completion refresh cannot race it (mirrors Warp,
     /// which applies the delta before emitting completion).
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(super) fn apply_git_op_delta(
         &self,
         delta: Option<crate::remote_server::proto::GitOpDelta>,

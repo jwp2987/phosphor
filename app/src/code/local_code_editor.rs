@@ -101,7 +101,7 @@ use crate::{
     code::{
         footer::{CodeFooterView, CodeFooterViewEvent},
         global_buffer_model::{BufferState, GlobalBufferModel},
-        SaveOutcome, ShowFindReferencesCardProvider,
+        SaveOutcome,
     },
     settings::AISettings,
     terminal::TerminalView,
@@ -832,20 +832,6 @@ impl LocalCodeEditorView {
         self
     }
 
-    /// Adds the TabConfig footer to the editor view if the file is a tab config TOML.
-    /// Since LSP was removed, normal source files no longer render a footer.
-    /// Sets the find references card provider on the underlying editor.
-    pub(crate) fn with_find_references_provider(
-        self,
-        provider: impl ShowFindReferencesCardProvider,
-        ctx: &mut ViewContext<Self>,
-    ) -> Self {
-        self.editor.update(ctx, |editor, _ctx| {
-            editor.set_show_find_references_provider(provider);
-        });
-        self
-    }
-
     /// Adds the LSP status footer to the editor view.
     pub(crate) fn add_footer(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(path) = self.file_path() {
@@ -879,10 +865,6 @@ impl LocalCodeEditorView {
                         let _ = server.manual_start(ctx);
                     });
                 }
-                CodeFooterViewEvent::RestartAllServers { .. }
-                | CodeFooterViewEvent::StopAllServers { .. }
-                | CodeFooterViewEvent::StartAllServers { .. }
-                | CodeFooterViewEvent::ManageServers => {}
             });
 
             // Subscribe to PersistedWorkspace events for LSP installation completion
@@ -1347,7 +1329,6 @@ impl LocalCodeEditorView {
         });
         // Don't notify here - the card should only show on cmd-click
     }
-
 
     /// Helper function to compute card positioning for overlays at a given offset.
     /// Positions the card above the offset if there's space, otherwise below.
@@ -2604,14 +2585,4 @@ pub fn render_unsaved_circle_with_tooltip(
         }
     })
     .finish()
-}
-
-/// Provider for determining find references card visibility based on scroll state.
-#[derive(Debug)]
-pub struct ShowFindReferencesCard {
-    pub editor_window_id: WindowId,
-    /// Optional: position ID of parent scrollable container (e.g., code review list).
-    /// If None, card is in standalone LocalCodeEditorView - visibility is determined
-    /// by whether the anchor gutter element is rendered (cached position exists).
-    pub parent_scrollable_position_id: Option<String>,
 }

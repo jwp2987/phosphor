@@ -1,6 +1,3 @@
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
-// Adding this file level gate as some of the code around editability is not used in WASM yet.
-
 use crate::code::editor::{
     comment_editor::{CommentEditor, CommentEditorEvent},
     comments::PendingComment,
@@ -257,14 +254,6 @@ impl CodeEditorRenderOptions {
         comment_editor_provider: impl ShowCommentEditorProvider,
     ) -> Self {
         self.show_comment_editor_provider = Box::new(comment_editor_provider);
-        self
-    }
-
-    pub fn with_show_find_references_provider(
-        mut self,
-        find_references_provider: impl ShowFindReferencesCardProvider,
-    ) -> Self {
-        self.show_find_references_provider = Box::new(find_references_provider);
         self
     }
 }
@@ -880,13 +869,6 @@ impl CodeEditorView {
 
     pub fn set_horizontal_scrollbar_appearance(&mut self, appearance: ScrollableAppearance) {
         self.display_options.horizontal_scrollbar_appearance = appearance;
-    }
-
-    pub fn set_show_find_references_provider(
-        &mut self,
-        provider: impl ShowFindReferencesCardProvider,
-    ) {
-        self.show_find_references_provider = Box::new(provider);
     }
 
     pub fn set_find_highlights(
@@ -1703,18 +1685,6 @@ impl CodeEditorView {
         });
     }
 
-    /// Identifies which line (current or removed) is at the given content-space
-    /// vertical offset. Delegates to [`CodeEditorModel::line_at_vertical_offset`].
-    #[allow(dead_code)]
-    pub fn line_at_vertical_offset(
-        &self,
-        offset: Pixels,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<(StableEditorLine, Pixels)> {
-        self.model
-            .update(ctx, |model, ctx| model.line_at_vertical_offset(offset, ctx))
-    }
-
     /// Returns the content-space vertical offset of the top of the given line.
     /// Delegates to [`CodeEditorModel::line_top`].
     pub fn line_top(&self, line: &StableEditorLine, ctx: &AppContext) -> Option<Pixels> {
@@ -2522,42 +2492,40 @@ impl View for CodeEditorView {
             stack.add_overlay_child(dialog);
         }
 
-        if !FeatureFlag::EmbeddedCodeReviewComments.is_enabled() {
-            // Render the open comment editor.
-            if let PendingComment::Open { line, .. } = pending_comment {
-                let render_state_ref = render_state.as_ref(app);
-                let vertical_offset = render_state_ref
-                    .vertical_offset_at_render_location(line.clone().into_render_line_location())
-                    .unwrap_or_default()
-                    + render_state_ref.styles().base_line_height();
+        // Render the open comment editor.
+        if let PendingComment::Open { line, .. } = pending_comment {
+            let render_state_ref = render_state.as_ref(app);
+            let vertical_offset = render_state_ref
+                .vertical_offset_at_render_location(line.clone().into_render_line_location())
+                .unwrap_or_default()
+                + render_state_ref.styles().base_line_height();
 
-                let line_location = app.element_position_by_id_at_last_frame(
-                    self.window_id,
-                    &self.comment_save_position_id,
+            let line_location = app.element_position_by_id_at_last_frame(
+                self.window_id,
+                &self.comment_save_position_id,
+            );
+
+            let should_render_comment_editor = match line_location {
+                Some(line_location) => self
+                    .show_comment_editor_provider
+                    .should_show_comment_editor(line_location, app),
+                None => true,
+            };
+
+            if let Some(active_comment_editor) = self
+                .active_comment_editor
+                .as_ref()
+                .filter(|_| should_render_comment_editor)
+            {
+                stack.add_positioned_child(
+                    ChildView::new(active_comment_editor).finish(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., vertical_offset.as_f32()),
+                        ParentOffsetBounds::ParentByPosition,
+                        ParentAnchor::TopLeft,
+                        ChildAnchor::TopLeft,
+                    ),
                 );
-
-                let should_render_comment_editor = match line_location {
-                    Some(line_location) => self
-                        .show_comment_editor_provider
-                        .should_show_comment_editor(line_location, app),
-                    None => true,
-                };
-
-                if let Some(active_comment_editor) = self
-                    .active_comment_editor
-                    .as_ref()
-                    .filter(|_| should_render_comment_editor)
-                {
-                    stack.add_positioned_child(
-                        ChildView::new(active_comment_editor).finish(),
-                        OffsetPositioning::offset_from_parent(
-                            vec2f(0., vertical_offset.as_f32()),
-                            ParentOffsetBounds::ParentByPosition,
-                            ParentAnchor::TopLeft,
-                            ChildAnchor::TopLeft,
-                        ),
-                    );
-                }
             }
         }
         stack.finish()
