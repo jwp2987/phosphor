@@ -466,7 +466,13 @@ impl Host for PtyQueueHost<'_, '_> {
                 }
             }
             // ^C / ^D cancelled it: silent, as before.
-            DiscardReason::PasteCancelled => {}
+            DiscardReason::PasteCancelled => {
+                // A pending command that waited for this paste goes now (#1435).
+                self.view
+                    .paste_queue
+                    .queue
+                    .defer(Deferred::FlushProgrammaticEdits);
+            }
             other => log::warn!("input queue: pty entry discarded: {other:?}"),
         }
     }
@@ -1518,6 +1524,8 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.on_paste_read(&mut host, id, if ok { Ok(Vec::new()) } else { Err(()) });
         }
+        // A pending command waits for a paste being read (#1435); it goes now.
+        self.execute_pending_command((), ctx);
         // A result that arrived after its paste was cancelled or given up has no entry to claim it.
         // A paste that is still queued (its own gate is closed but another gate, such as the
         // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
@@ -2002,6 +2010,11 @@ impl TerminalView {
                 }
                 let held = self.ssh_drop_detached(gate, &paste_ids);
                 self.finish_dropped_ssh_gate(held, then, ctx);
+            }
+            Deferred::FlushProgrammaticEdits => {
+                self.input.update(ctx, |input, ctx| {
+                    input.flush_deferred_programmatic_edits(ctx)
+                });
             }
             Deferred::Poke => {
                 let Some(mut guard) = queue.try_lock() else {

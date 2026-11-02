@@ -73,6 +73,10 @@ pub enum Deferred {
     ApplyYoungHoldEnds,
     /// A drain stopped at an entry only the view can deliver, and the view was busy.
     Poke,
+    /// Programmatic editor edits (and the pending command waiting behind them) that waited for
+    /// an Enter's gate: apply them, in order, now that the gate operation ahead of this one ran
+    /// (#1434, #1435).
+    FlushProgrammaticEdits,
     /// Operations that RETURN what they take out of the queue (#1446): the caller could not get
     /// the bytes (the queue was busy), so the take and the caller's continuation (`then`) are one
     /// deferred operation, run in order once the queue is free. Nothing is returned empty.

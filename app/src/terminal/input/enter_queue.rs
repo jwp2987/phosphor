@@ -34,7 +34,8 @@ use warpui::{AppContext, ViewContext};
 
 use super::paste_queue::InputQueueHost;
 use super::{AfterEnterInput, Event, Input};
-use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, PaneQueue};
+use crate::editor::HeldPasteKey;
+use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, GateKind, GateSpec, PaneQueue};
 
 /// The longest an Enter gate may stay closed whatever happens: a net for a bug that would leave
 /// it open, far beyond every real hold (the hold backstops are 250 / 500 ms, the route-settle
@@ -56,7 +57,131 @@ pub(super) struct EnterGate {
     pub(super) route_cap_armed: bool,
 }
 
+/// A programmatic edit of the editor's buffer that waits for the Enter in front of it (#1434).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum DeferredEdit {
+    /// Insert at the cursor ([`Input::system_insert`]).
+    Insert(String),
+    /// Replace the whole buffer ([`Input::replace_buffer_content`]).
+    Replace(String),
+    /// Put the text in the buffer and submit it (an accepted inline-history entry).
+    ReplaceAndSubmit(String),
+    /// [`Input::resubmit_locked_to_shell`] (misroute recovery).
+    ResubmitToShell(String),
+    /// [`Input::send_text_to_agent`] (misroute recovery).
+    SendToAgent(String),
+}
+
 impl Input {
+    /// #1434: a programmatic edit (a command producer's `set_pending_command`, the local-control
+    /// IPC, a slash command) is not a key and has no place in the ordering of keys, but it edits
+    /// the buffer the queued keys and the waiting Enter are about:
+    ///
+    /// * while an Enter waits for its verdict (or a completion), the edit is kept and applied when
+    ///   that Enter's gate closes. Applied at once it voided the Enter (`reconcile_verdict_wait`)
+    ///   or was taken for keys typed behind it and replayed, as typeahead, to the pty;
+    /// * while an editor paste is being read, an insert joins the keys queued behind the paste
+    ///   (applied as typed text, in order); a replacement waits for the same Enter-style flush
+    ///   since it has no key form, so it is applied right after the paste lands.
+    ///
+    /// Returns whether the edit was taken (the caller does nothing more). False when nothing is
+    /// held, and while the queue is delivering (the edit is part of that delivery).
+    pub(super) fn defer_programmatic_edit(
+        &mut self,
+        edit: DeferredEdit,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        // The waiting Enter's own submit (and what it triggers) is not "behind" it.
+        if self.running_deferred_enter {
+            return false;
+        }
+        if self.enter_queue_holds_keys(ctx) {
+            log::info!("programmatic edit deferred behind a waiting Enter (#1434)");
+            self.deferred_programmatic_edits.push(edit);
+            return true;
+        }
+        let paste_reading = self
+            .enter_queue_handle(ctx)
+            .try_peek()
+            .is_some_and(|queue| queue.has_editor_paste_reading());
+        if !paste_reading {
+            // Nothing holds the editor. Edits deferred earlier whose gate vanished without a
+            // release (the leak net) go first, in order.
+            if !self.deferred_programmatic_edits.is_empty() {
+                self.flush_deferred_programmatic_edits(ctx);
+            }
+            return false;
+        }
+        match edit {
+            DeferredEdit::Insert(text) => {
+                let queue = self.enter_queue_handle(ctx);
+                let Some(mut queue) = queue.try_lock() else {
+                    return false;
+                };
+                log::info!("programmatic insert queued behind an editor paste (#1434)");
+                let mut host = InputQueueHost::new(self, ctx);
+                queue.offer(
+                    &mut host,
+                    EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Text(text))),
+                );
+                true
+            }
+            other => {
+                self.deferred_programmatic_edits.push(other);
+                true
+            }
+        }
+    }
+
+    /// Puts `text` in the buffer and submits it, behind a waiting Enter or a paste being read
+    /// (#1434).
+    pub(super) fn accept_history_text_and_submit(
+        &mut self,
+        text: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.defer_programmatic_edit(DeferredEdit::ReplaceAndSubmit(text.to_owned()), ctx) {
+            return;
+        }
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(text, ctx);
+        });
+        self.input_enter(ctx);
+    }
+
+    /// Applies the deferred programmatic edits in order, then retries the pending command that
+    /// was waiting behind them (#1434 / #1435).
+    pub(crate) fn flush_deferred_programmatic_edits(&mut self, ctx: &mut ViewContext<Self>) {
+        for edit in std::mem::take(&mut self.deferred_programmatic_edits) {
+            match edit {
+                DeferredEdit::Insert(text) => {
+                    self.system_insert(&text, ctx);
+                }
+                DeferredEdit::Replace(text) => self.replace_buffer_content(&text, ctx),
+                DeferredEdit::ReplaceAndSubmit(text) => {
+                    self.accept_history_text_and_submit(&text, ctx)
+                }
+                DeferredEdit::ResubmitToShell(text) => self.resubmit_locked_to_shell(&text, ctx),
+                DeferredEdit::SendToAgent(text) => self.send_text_to_agent(&text, ctx),
+            }
+        }
+        if self.has_pending_command {
+            self.execute_pending_command(ctx);
+        }
+    }
+
+    /// Whether the pending command must wait: an Enter waits for its verdict, or a paste is being
+    /// read for the editor or the pty (#1435).
+    pub(super) fn pending_command_must_wait_for_queue(&self, ctx: &AppContext) -> bool {
+        self.enter_queue_holds_keys(ctx)
+            || self
+                .enter_queue_handle(ctx)
+                .try_peek()
+                .is_some_and(|queue| {
+                    queue.has_editor_paste_reading() || queue.has_pty_paste_reading()
+                })
+    }
+
     fn enter_queue_handle(&self, ctx: &AppContext) -> PaneQueue {
         self.editor.as_ref(ctx).paste_hold().queue()
     }
@@ -243,17 +368,22 @@ impl Input {
                 kind: gate.kind,
                 key: gate.key,
             });
+            queue.defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
             return String::new();
         };
         let mut host = InputQueueHost::new(self, ctx);
-        guard
+        let typed_behind: String = guard
             .close_gate_taking(&mut host, gate.kind, gate.key)
             .into_iter()
             .filter_map(|entry| match entry.kind {
                 EntryKind::Text(text) => Some(text),
                 _ => None,
             })
-            .collect()
+            .collect();
+        drop(guard);
+        // The Enter is void: the programmatic edits that waited behind it apply now (#1434).
+        self.flush_deferred_programmatic_edits(ctx);
+        typed_behind
     }
 
     /// Test seam for [`Self::void_enter_gate`].
@@ -293,10 +423,15 @@ impl Input {
                 kind: gate.kind,
                 key: gate.key,
             });
+            queue.defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
         guard.on_gate_event(&mut host, gate.kind, gate.key);
+        drop(guard);
+        // The Enter ran and its gate is closed: the programmatic edits that waited behind it
+        // apply now, and the pending command they were holding back is retried (#1434, #1435).
+        self.flush_deferred_programmatic_edits(ctx);
     }
 
     /// The route-settle give-up of gate `key` fired: the event that should have opened it (the pty

@@ -164,7 +164,16 @@ impl Host for InputQueueHost<'_, '_> {
                     });
                 }
             }
-            DiscardReason::PasteCancelled => {}
+            DiscardReason::PasteCancelled => {
+                // A pending command / programmatic edits that waited for this paste go now
+                // (#1435): run by the view once the queue is free.
+                self.input
+                    .editor
+                    .as_ref(self.ctx)
+                    .paste_hold()
+                    .queue()
+                    .defer(crate::terminal::input_queue::Deferred::FlushProgrammaticEdits);
+            }
             // ^C met the Enter's gate: the keys typed behind that Enter are dropped with it.
             DiscardReason::SignalDiscard(GateKind::EnterVerdict | GateKind::TabCompletion) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
@@ -310,6 +319,8 @@ impl Input {
             held_behind: 0,
         };
         guard.give_up(&mut host, token);
+        drop(guard);
+        self.flush_deferred_programmatic_edits(ctx);
     }
 
     /// Offers a paste whose text is already read (a platform that reads inline, #1405) to the
@@ -475,6 +486,9 @@ impl Input {
         drop(guard);
         self.paste_payloads.remove(&id);
         self.paste_refused.remove(&id);
+        // The paste landed: programmatic edits and a pending command that waited behind it go
+        // now (#1434, #1435).
+        self.flush_deferred_programmatic_edits(ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
