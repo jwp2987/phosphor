@@ -3343,6 +3343,90 @@ fn test_shell_lock_respected_when_slash_command_typed() {
     });
 }
 
+// #1459: in terminal mode the slash menu opens for a typed single-segment `/word` and, with no
+// row answering the text, used to swallow the Enter. A line that starts with '/' is a path or
+// command there: it must run. Covers both the settled `/zzqx-nosuchcmd` (menu open, no rows) and
+// the raced `/usr/bin/env` whose last edit had not been handled when Enter arrived.
+#[test]
+fn test_terminal_mode_slash_path_enter_runs_the_line_1459() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if let super::Event::ExecuteCommand(event) = event {
+                    sink.borrow_mut().push(event.command.clone());
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_terminal(true, ctx);
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("/zzqx-nosuchcmd", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            // Force the menu open as it is while the keystroke is still being handled.
+            input.open_slash_commands_menu(ctx);
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_slash_commands());
+            assert!(!input.ai_input_model.as_ref(ctx).is_ai_input_enabled());
+            input.input_enter(ctx);
+        });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["/zzqx-nosuchcmd".to_owned()],
+            "the Enter was swallowed by the slash menu"
+        );
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("/usr/bin/env", ctx);
+            input.open_slash_commands_menu(ctx);
+            input.input_enter(ctx);
+        });
+        assert_eq!(
+            executed.borrow().last().map(String::as_str),
+            Some("/usr/bin/env")
+        );
+    });
+}
+
+// #1459 control: in agent mode the menu still owns Enter (slash commands are the point there).
+#[test]
+fn test_agent_mode_slash_menu_still_takes_enter_1459() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.set_input_mode_natural_language_detection(ctx);
+            input.user_insert("/", ctx);
+        });
+        input.update(&mut app, |input, ctx| {
+            assert!(input.suggestions_mode_model.as_ref(ctx).is_slash_commands());
+            assert!(input.ai_input_model.as_ref(ctx).is_ai_input_enabled());
+            input.input_enter(ctx);
+            // The guard did not fire: slash parsing was not disabled for the line.
+            assert!(!input.slash_command_model.as_ref(ctx).state().is_disabled());
+        });
+    });
+}
+
 #[test]
 fn model_selector_keybinding_ignores_closed_selector_window() {
     App::test((), |mut app| async move {
