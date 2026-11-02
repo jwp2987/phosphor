@@ -41,9 +41,14 @@ def left_open_note():
 def note_launched(run):
     """after the reference launch: if Terminal.app was not running at harness start, record its PID as `terminal <pid>` in <run>/pids
     (teardown.sh then handles a cancelled job). Never records a Terminal that was already running."""
-    if _state["was_running"] or _state["pid"]:
+    if _state["pid"]:
         return
     pids = terminal_pids()
+    if _state["was_running"]:
+        if _state["pre_pid"] in pids:
+            return
+        # the Terminal that was running at harness start is gone (quit during the run): the one running now was launched by this run
+        _state["was_running"] = False
     if len(pids) == 1:
         _state["pid"] = pids[0]
         with open(os.path.join(run, "pids"), "a") as f:
