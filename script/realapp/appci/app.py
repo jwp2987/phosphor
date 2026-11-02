@@ -85,34 +85,31 @@ class App:
 
 
 class MacApp:
-    """macOS: `open -n` the extracted .app (a proper GUI launch, so it can become frontmost), with the scratch zsh rc
-    passed through the environment. The settings file lives in the runner user's own ~/.phosphor (path overridable with
-    APPCI_MAC_SETTINGS); the previous file is backed up with a sha256 and restored by stop(). Only the exact PID found
-    from the bundle's executable path is ever signalled."""
+    """macOS: `open -n` the extracted .app (a proper GUI launch, so it can become frontmost) with a PRIVATE HOME
+    (`open --env HOME=...`, the method the hand-run round-18 harness proved): the app derives every path from it, so the
+    settings file is <home>/.phosphor/settings.toml (warp_core::paths::config_local_dir, Channel::Oss on macOS), the log is
+    <home>/Library/Logs/phosphor.log, and the runner user's real ~/.phosphor, Library and Keychain-free state are never read
+    or written. Nothing to back up or restore. Only the exact PID found from the bundle's executable path is ever signalled."""
 
     def __init__(self, run, home, app_bundle, binary, display=None):
         self.run, self.home, self.bundle, self.bin = run, home, app_bundle, binary
-        self.settings = os.environ.get("APPCI_MAC_SETTINGS", os.path.expanduser("~/.phosphor/settings.toml"))
+        self.settings = os.path.join(home, ".phosphor", "settings.toml")
         self._pid = None
-        self.bak = None
+        self.log_path = os.path.join(home, "Library", "Logs", "phosphor.log")
 
     def _install_settings(self):
-        import hashlib, shutil
-        src = os.path.join(self.home, ".config/phosphor/settings.toml")
+        import shutil
+        src = os.path.join(self.home, ".config/phosphor/settings.toml")     # written by profile.py (same schema on every OS)
         os.makedirs(os.path.dirname(self.settings), exist_ok=True)
-        if self.bak is None and os.path.exists(self.settings):
-            self.bak = os.path.join(self.run, "settings.toml.bak")
-            shutil.copy2(self.settings, self.bak)
-            self.bak_sha = hashlib.sha256(open(self.bak, "rb").read()).hexdigest()
-            self.had = True
-        elif self.bak is None:
-            self.bak, self.had = "", False
         shutil.copy2(src, self.settings)
+        os.chmod(self.settings, 0o600)
 
     def start(self):
         self._install_settings()
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         env_args = []
-        for k, v in (("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"), ("PA_CTL", self.home + "/../ctl"),
+        for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
+                     ("PA_CTL", os.path.join(self.run, "ctl")),
                      ("RUST_LOG", "warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
@@ -123,7 +120,15 @@ class MacApp:
             time.sleep(0.5)
         with open(os.path.join(self.run, "pids"), "a") as f:
             f.write("app %s\n" % self._pid)
+        self.focus()
         return self._pid
+
+    def focus(self):
+        p = self.pid()
+        if p:       # System Events frontmost for that exact PID; sends no keys
+            subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of (first process whose unix id is %d) to true' % p],
+                           capture_output=True, timeout=30)
+            time.sleep(1.0)
 
     def pid(self):
         out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
@@ -139,7 +144,6 @@ class MacApp:
         return self.pid() is not None
 
     def stop(self):
-        import hashlib, shutil
         p = self.pid()
         if p:
             for sig, wait in ((signal.SIGTERM, 6), (signal.SIGKILL, 3)):
@@ -152,13 +156,6 @@ class MacApp:
                     time.sleep(0.3)
                 if not self.pid():
                     break
-        if self.bak is not None:
-            if self.had:
-                shutil.copy2(self.bak, self.settings)
-                assert hashlib.sha256(open(self.settings, "rb").read()).hexdigest() == self.bak_sha, "settings restore mismatch"
-            elif os.path.exists(self.settings):
-                os.remove(self.settings)
-            self.bak = None
 
     def cpu_ticks(self):
         p = self.pid()

@@ -1,6 +1,6 @@
 # appci/backend.py: input / screenshot / clipboard backends for the CI real-app harness.
 # Backends: wayland (wtype + grim + wl-clipboard, for headless sway; also used for apps under XWayland),
-#           x11 (xdotool + xsel + ffmpeg x11grab, private Xvfb), mac (cliclick + osascript + screencapture),
+#           x11 (xdotool + xsel + ffmpeg x11grab, private Xvfb), mac (htype2 + kl3 CGEvent tools + osascript + screencapture),
 #           sim (a bash in a pty: no GUI, exercises the case logic only; `run.py --backend sim`).
 # Every backend exposes the same methods; keys are written as 'ctrl+shift+t', 'Return', 'Tab', 'Left', 'a'.
 # Prereqs per backend are checked by Backend.preflight(), which returns a list of problems (empty = ok).
@@ -264,20 +264,39 @@ class X11Backend(Backend):
 
 
 class MacBackend(Backend):
-    """cliclick types (t:), osascript sends Return / chords (cliclick kp:return does not deliver).
-    Needs the runner's process chain to hold Accessibility and Screen Recording; guard() refuses
-    to type unless Phosphor is the frontmost app (a locked screen / wrong app takes keys otherwise)."""
+    """Keys are injected by htype2 (CGEvent posting with real key codes at an exact cadence; source in
+    script/realapp/mac/tools, compiled by the job), key->paint latency by kl3 (ScreenCaptureKit). cliclick is no longer
+    used for typing (a process spawn per call: 62 ms median gap for a requested 15 ms in the first CI run).
+    Safety (docs/testing.md 3.3): guard() runs before EVERY injection and checks the frontmost app name AND that its PID is
+    the Phosphor PID the harness started; on a mismatch it tries once to focus that exact PID (no keys) and otherwise raises.
+    Cmd-Q/W/Tab/Space/H/M, any Ctrl+Cmd chord, Globe/Fn are refused structurally. Ctrl-D is only ever sent through key(), i.e.
+    behind the guard, so it reaches Phosphor's window only."""
     name = "mac"
     APP = os.environ.get("APPCI_MAC_PROCESS", "phosphor-oss")
-    KC = {"Return": 36, "Tab": 48, "Escape": 53, "BackSpace": 51, "Left": 123, "Right": 124, "Down": 125, "Up": 126, "Home": 115, "End": 119}
-    FORBIDDEN = ("ctrl+cmd", "cmd+q", "cmd+w", "cmd+tab", "cmd+space")  # incident rules in docs/testing.md 3.3
+    TOOLS = os.environ.get("APPCI_MAC_TOOLS", "")
+    SPECIAL = {"return": 36, "enter": 36, "tab": 48, "escape": 53, "backspace": 51, "delete": 51, "left": 123, "right": 124,
+               "down": 125, "up": 126, "home": 115, "end": 119, "space": 49}
+    LETTERS = {"a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14,
+               "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27,
+               "8": 28, "0": 29, "]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40,
+               ";": 41, "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47}
+    MODBIT = {"shift": 1, "ctrl": 2, "alt": 4, "logo": 8}
+    NEVER_CMD = ("q", "w", "tab", "space", "h", "m")
+    pid_fn = None            # set by run.py: returns the PID of the Phosphor instance under test
+
+    def __init__(self):
+        self.guard_override = None
+        self._kl = None
+        self.outf = os.path.join(os.environ.get("TMPDIR", "/tmp"), "appci_ht_%d.txt" % os.getpid())
+
+    def _tool(self, n):
+        return os.path.join(self.TOOLS, n)
 
     def preflight(self):
         p = []
-        cl = shutil.which("cliclick", path="/opt/homebrew/bin:" + os.environ.get("PATH", ""))
-        if not cl:
-            p.append("missing tool: cliclick")
-        self.cliclick = cl
+        for t in ("htype2", "kl3"):
+            if not os.access(self._tool(t), os.X_OK):
+                p.append("missing compiled tool %s (APPCI_MAC_TOOLS=%r; app_test.sh compiles script/realapp/mac/tools/*.swift)" % (t, self.TOOLS))
         t = "/tmp/appci_pf_%d.png" % os.getpid()
         _run(["screencapture", "-x", t])
         if not os.path.exists(t) or os.path.getsize(t) < 5000:
@@ -290,60 +309,96 @@ class MacBackend(Backend):
         return p
 
     def _front(self):
-        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to get name of first process whose frontmost is true'], capture_output=True)
-        return r.stdout.decode().strip()
+        """(name, pid) of the frontmost process"""
+        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to set p to first process whose frontmost is true\nreturn (name of p) & "|" & (unix id of p)'],
+                           capture_output=True, timeout=30)
+        o = r.stdout.decode().strip()
+        name, _, pid = o.rpartition("|")
+        return name, int(pid) if pid.isdigit() else None
+
+    def _focus_pid(self, pid):
+        subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of (first process whose unix id is %d) to true' % pid],
+                       capture_output=True, timeout=30)
+        time.sleep(0.6)
 
     def guard(self):
-        f = self._front()
-        want = getattr(self, "guard_override", None)      # set while the Terminal.app reference window is being driven
+        name, pid = self._front()
+        if name.lower() == "loginwindow":
+            raise RuntimeError("loginwindow is frontmost (locked screen?): refusing to send keys")
+        want = self.guard_override
         if want:
-            if want.lower() not in f.lower():
-                raise RuntimeError("frontmost app is %r, not %s: refusing to send keys" % (f, want))
-        elif self.APP.lower() not in f.lower() and "phosphor" not in f.lower():
-            raise RuntimeError("frontmost app is %r, not Phosphor: refusing to send keys" % f)
+            if want.lower() not in name.lower():
+                raise RuntimeError("frontmost app is %r, not %s: refusing to send keys" % (name, want))
+            return
+        ph = self.pid_fn() if self.pid_fn else None
+        if ph is None:
+            raise RuntimeError("Phosphor PID unknown (app not running?): refusing to send keys")
+        if pid == ph:
+            return
+        self._focus_pid(ph)
+        name2, pid2 = self._front()
+        if pid2 != ph:
+            raise RuntimeError("frontmost is %r (pid %s), not Phosphor (pid %s): refusing to send keys" % (name2, pid2, ph))
 
     def refocus(self):
         """bring Phosphor back to the front after the reference window closed (System Events frontmost; no keys sent)"""
-        subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of first process whose name is "%s" to true' % self.APP],
-                       capture_output=True, timeout=30)
-        time.sleep(0.5)
+        ph = self.pid_fn() if self.pid_fn else None
+        if ph:
+            self._focus_pid(ph)
+
+    def _ht(self, ops, guard=True):
+        if guard:
+            self.guard()
+        _run([self._tool("htype2"), "0", "0", "0", "0", self.outf] + ops, timeout=120)
 
     def type(self, text, delay_ms=15, enter=False):
-        self.guard()
-        _run([self.cliclick, "-w", str(int(delay_ms)), "t:" + text])
-        if enter:
-            self.key("Return")
+        d = int(delay_ms)
+        self._ht(["t:%s:%d:%d" % (text, d, d)] + (["e:0"] if enter else []))
+
+    def _kspec(self, spec):
+        """'ctrl+u' / 'Return' / 'a' -> htype2 op"""
+        low = spec.lower()
+        parts = low.split("+") if low != "+" else ["+"]
+        mods, k = parts[:-1], parts[-1]
+        bits = 0
+        for m in mods:
+            m = {"control": "ctrl", "super": "logo", "cmd": "logo", "meta": "logo", "option": "alt"}.get(m, m)
+            if m not in self.MODBIT:
+                raise ValueError("unknown modifier in " + spec)
+            bits |= self.MODBIT[m]
+        if k in ("globe", "fn") or (bits & 2 and bits & 8) or (bits & 8 and k in self.NEVER_CMD):
+            raise ValueError("refusing forbidden chord " + spec)
+        code = self.SPECIAL.get(k, self.LETTERS.get(k))
+        if code is None:
+            raise ValueError("no key code for " + spec)
+        return "k:%d:%d:%d"
 
     def key(self, spec, repeat=1, delay_ms=15):
-        self.guard()
-        low = spec.lower()
-        if any(f in low for f in self.FORBIDDEN):
-            raise ValueError("refusing forbidden chord " + spec)
-        mods, k = split_key(spec)
-        using = {"ctrl": "control down", "shift": "shift down", "alt": "option down", "logo": "command down"}
-        mm = ", ".join(using[m] for m in mods)
-        for _ in range(repeat):
-            if k in self.KC:
-                code = 'key code %d' % self.KC[k]
-            else:
-                code = 'keystroke "%s"' % k
-            _run(["osascript", "-e", 'tell application "System Events" to %s%s' % (code, (" using {%s}" % mm) if mm else "")])
-            time.sleep(delay_ms / 1000)
+        self.keys([spec] * repeat, delay_ms=delay_ms)
 
     def keys(self, specs, delay_ms=15):
+        ops = []
         for s in specs:
-            self.key(s, delay_ms=delay_ms)
+            fmt = self._kspec(s)
+            low = s.lower().split("+")
+            bits = 0
+            for m in low[:-1]:
+                bits |= self.MODBIT[{"control": "ctrl", "super": "logo", "cmd": "logo", "meta": "logo", "option": "alt"}.get(m, m)]
+            code = self.SPECIAL.get(low[-1], self.LETTERS.get(low[-1]))
+            ops.append(fmt % (code, bits, int(delay_ms)))
+        self._ht(ops)
 
     def roll(self, text, overlap_ms=10, enter=True):
-        self.type(text, delay_ms=max(5, overlap_ms), enter=enter)  # no key overlap through cliclick
+        if ":" in text:                                   # the r: op cannot carry ':'
+            return self.type(text, delay_ms=max(5, overlap_ms), enter=enter)
+        self._ht(["r:%s:%d" % (text, int(overlap_ms))] + (["e:%d" % int(overlap_ms)] if enter else []))
 
     def paste(self, enter=False):
-        self.key("cmd+v")
-        if enter:
-            self.key("Return")
+        self.keys(["cmd+v"] + (["Return"] if enter else []), delay_ms=0)
 
     def noop(self):
-        _run(["osascript", "-e", "return 1"])
+        """one input-tool invocation with nothing to send: the harness floor (process start only)"""
+        self._ht([], guard=False)
 
     def clip_set(self, data):
         if isinstance(data, str):
@@ -356,6 +411,39 @@ class MacBackend(Backend):
     def shot(self, path):
         _run(["screencapture", "-x", path], timeout=30)
         return os.path.exists(path) and os.path.getsize(path) > 5000
+
+    def window_rect(self):
+        """(x, y, w, h) of Phosphor's first window in points, or None"""
+        ph = self.pid_fn() if self.pid_fn else None
+        if not ph:
+            return None
+        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to set w to window 1 of (first process whose unix id is %d)\nreturn (item 1 of (position of w)) & "," & (item 2 of (position of w)) & "," & (item 1 of (size of w)) & "," & (item 2 of (size of w))' % ph],
+                           capture_output=True, timeout=30)
+        try:
+            return tuple(float(x) for x in r.stdout.decode().strip().split(","))
+        except ValueError:
+            return None
+
+    def kl_start(self, rect):
+        self.kl_stop()
+        self._kl = subprocess.Popen([self._tool("kl3")] + [str(int(v)) for v in rect], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1, env=dict(os.environ, KSETTLE="350"))
+        return self._kl
+
+    def kl(self, line):
+        """one kl3 command (guarded); returns its output line"""
+        self.guard()
+        self._kl.stdin.write(line + "\n")
+        self._kl.stdin.flush()
+        return self._kl.stdout.readline().strip()
+
+    def kl_stop(self):
+        p, self._kl = self._kl, None
+        if p and p.poll() is None:
+            try:
+                p.stdin.write("Q\n"); p.stdin.flush(); p.wait(3)
+            except Exception:
+                p.kill()
 
 
 class SimBackend(Backend):

@@ -10,7 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log")
+SMOKE = ("mode_proof", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -163,33 +163,47 @@ class Ctx:
             return ""
 
     def ocr(self, tag):
-        if not shutil.which("tesseract"):
+        mac_ocr = os.path.join(getattr(self.be, "TOOLS", "") or "", "ocr") if self.be.name == "mac" else ""
+        if not shutil.which("tesseract") and not (mac_ocr and os.access(mac_ocr, os.X_OK)):
             return None
         p = self.shot(tag)
         if not p:
             return None
-        r = subprocess.run(["tesseract", p, "-"], capture_output=True, timeout=60)
+        if shutil.which("tesseract"):
+            r = subprocess.run(["tesseract", p, "-"], capture_output=True, timeout=60)
+        else:
+            r = subprocess.run([mac_ocr, p], capture_output=True, timeout=60)      # Apple Vision (mac/tools/ocr.swift)
         return r.stdout.decode(errors="replace")
 
 
 # ---------------------------------------------------------------- mode proof
 @case("mode_proof", order=1, gui=True)
 def c_mode_proof(ctx, r):
-    """screenshot proof of the session mode before any key is typed; OCR checks it when tesseract exists"""
+    """screenshot proof of the session mode before any key is typed (shots/<mode>_proof.png is the evidence), plus OCR when an engine exists.
+    Agent mode = header 'New Phosphor Agent conversation' + 'Ask anything' placeholder (+ model chip with the CI model).
+    The hint 'new /agent conversation' under a prompt means a TERMINAL session: it must not count as an agent marker."""
+    ctx.shot("proof_prekey")           # taken before ANY key is sent
     ctx.be.key("Escape")
     time.sleep(0.8)
     txt = ctx.ocr("proof")
     if txt is None:
-        r.note("no tesseract: screenshot only (shots/%s_proof.png), mode not machine-verified" % ctx.mode)
+        r.note("no OCR engine: screenshot only (shots/%s_proof.png), mode not machine-verified" % ctx.mode)
         return
-    low = txt.lower()
-    agent_markers = ("ask anything", "new phosphor agent", "agent conversation")
-    is_agent = any(m in low for m in agent_markers) and "/agent to start" not in low
+    low = " ".join(txt.lower().split())
+    hint = "/agent" in low and "conversation" in low                       # terminal-mode hint line
+    header = "new phosphor agent conversation" in low
+    placeholder = "ask anything" in low
+    is_agent = (header or placeholder) and not (hint and not header)
     r.metric("ocr_agent_markers", is_agent)
+    r.metric("ocr_terminal_hint", hint)
     if ctx.mode == "agent":
-        r.check(is_agent, "agent mode expected but the screen shows no agent markers ('Ask anything' / 'New Phosphor Agent conversation')")
+        r.check(is_agent, "agent mode expected but the screen shows no agent markers ('New Phosphor Agent conversation' / 'Ask anything'); terminal hint present: %s" % hint)
+        if ctx.ollama:
+            chip = "gpt-oss" in low
+            r.metric("ocr_model_chip_gpt_oss", chip)
+            r.check(chip, "model chip 'gpt-oss:20b' not visible before any key was typed (the CI Ollama model is not the active one)")
     else:
-        r.check(not is_agent, "terminal mode expected but the screen shows agent markers")
+        r.check(not is_agent, "terminal mode expected but the screen shows agent markers ('New Phosphor Agent conversation' / 'Ask anything')")
 
 
 # ---------------------------------------------------------------- cadence
@@ -394,7 +408,8 @@ def ctrlc_samples(ctx, n, fname):
     ctx.rm(fname)
     lat_ms = []
     for i in range(n):
-        ctx.be.type("bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname), 10, enter=True)
+        now = "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD date has no %N; ~/bin/now is written by profile.py
+        ctx.be.type("bash -c 'trap \"" + now + " >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname), 10, enter=True)
         time.sleep(1.2)
         t0 = time.time()
         ctx.be.key("ctrl+c")
@@ -739,12 +754,44 @@ def c_lat_key(ctx, r):
     ctx.reset()
 
 
+@case("latency_paint", order=43, gui=True)
+def c_lat_paint(ctx, r):
+    """key -> first changed pixel in Phosphor's window, measured with kl3 (ScreenCaptureKit, 240 Hz frame times; macOS only).
+    Alternates 'm' and Delete so every key changes the screen. Reported as metrics with sanity bounds only: the verdict budgets
+    live in the latency tooling (lat.py / baselines)."""
+    if ctx.be.name != "mac" or not hasattr(ctx.be, "kl_start"):
+        r.skip("kl3 (ScreenCaptureKit) is macOS only")
+    rect = ctx.be.window_rect()
+    if not rect or rect[2] < 100:
+        r.skip("no Phosphor window rect from System Events")
+    ctx.be.guard()
+    ctx.be.kl_start(rect)
+    ds = []
+    try:
+        for i in range(ctx.count(30)):
+            out = ctx.be.kl("K 400 %s" % ("m" if i % 2 == 0 else "DEL"))
+            m0 = re.search(r"post0=([\d.]+)", out)
+            ch = [float(x.split(":")[0]) for x in (re.search(r"ch=(\S*)", out).group(1) if re.search(r"ch=(\S*)", out) else "").split(",") if x]
+            if m0 and ch:
+                t0 = float(m0.group(1))
+                after = [c for c in ch if c >= t0 - 1]
+                if after:
+                    ds.append(min(after) - t0)
+    finally:
+        ctx.be.kl_stop()
+    ctx.reset()
+    r.metric("key_to_paint_ms", stats(ds))
+    r.check(len(ds) >= 20, "only %d key->paint samples from kl3 (capture region or Screen Recording permission wrong)" % len(ds))
+    if ds:
+        r.check(statistics.median(ds) <= 120, "key->paint median %.1f ms > 120 ms sanity bound" % statistics.median(ds))
+
+
 # ---------------------------------------------------------------- agent
 @case("approval_card_pause", modes=("agent",), order=45, gui=True)
 def c_approval(ctx, r):
     """Enter pressed >1 s after an approval card appears must NOT approve it (#1350/#1362). Needs a provider."""
     if not ctx.ollama:
-        r.skip("no provider: set APPCI_OLLAMA_URL (a CI variable) to run agent cases that need a model")
+        r.skip("no provider: configure APPCI_OLLAMA_URL (env or the machine-local ~/.config/phosphor-ci/ci.env) to run agent cases that need a model")
     if not shutil.which("tesseract"):
         r.skip("tesseract missing: cannot detect the approval card on screen")
     ctx.rm("ap.txt")

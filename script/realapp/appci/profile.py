@@ -1,7 +1,7 @@
 # appci/profile.py: builds the scratch HOME (owner-like config, NO credentials), the shell logging rc files
 # and the test tree. Never reads the owner's real config: CI has none. The owner-like settings are the ones in
 # docs/testing.md 3.1 (agent mode default, autodetect + natural-language detection on, vertical tabs are not
-# set because they do not affect input), plus a provider ONLY when APPCI_OLLAMA_URL is set (CI variable).
+# set because they do not affect input), plus a provider ONLY when the endpoint is configured (ci_env.py: env or ~/.config/phosphor-ci/ci.env).
 import os, random, shutil
 
 BASHRC = r'''# appci scratch rc: logs every prompt and the exact command line the shell received.
@@ -79,6 +79,8 @@ class Profile:
         for f in ("rec.log", "prompt.log"):
             open(os.path.join(self.ctl, f), "w").close()
             open(os.path.join(self.rctl, f), "w").close()
+        open(h + "/bin/now", "w").write("#!/bin/sh\nexec python3 -c 'import time;print(\"%.9f\" % time.time())'\n")
+        os.chmod(h + "/bin/now", 0o755)
         open(h + "/.bashrc", "w").write(BASHRC % {"ctl": self.ctl})
         open(h + "/.bash_profile", "w").write(BASH_PROFILE)
         open(h + "/.zshrc", "w").write(ZSHRC % {"ctl": self.ctl})
@@ -106,16 +108,48 @@ class Profile:
                 % (ssh_port, os.environ.get("USER", "runner"), ssh_ident, h))
         return h
 
+    OWNER_SEED = os.path.join(os.path.expanduser("~"), ".config", "phosphor-ci", "owner-settings.toml")
+    owner_note = None       # "sha256 <12>" or "not found (bare profile)": reported in results.json meta / summary.md
+
+    def owner_seed(self):
+        return os.environ.get("APPCI_OWNER_SETTINGS") or self.OWNER_SEED
+
     def write_settings(self, mode, ollama_url=None, ollama_model="gpt-oss:20b"):
+        """Start from the owner's real settings.toml (machine-local seed, never modified, never printed or uploaded) and apply ONLY
+        the per-pass overrides textually (toml_text.py). No seed: the minimal bare profile below, and owner_note says so."""
+        import hashlib
+        import toml_text as T
         cfg = self.home + "/.config/phosphor"
         os.makedirs(cfg, exist_ok=True)
+        seed = self.owner_seed()
+        m = "agent" if mode == "agent" else "terminal"
+        if os.path.isfile(seed):
+            raw = open(seed, "rb").read()
+            Profile.owner_note = "sha256 " + hashlib.sha256(raw).hexdigest()[:12]
+            t = raw.decode("utf-8", "replace").replace("\r\n", "\n")
+            t = T.set_key(t, "general", "default_session_mode", '"%s"' % m)
+            t = T.set_key(t, "general", "restore_session", "false")                # no saved tabs/sessions
+            t = T.set_key(t, "warpify.ssh", "ssh_extension_install_mode", '"never_install"')
+            for k in ("startup_shell_override", "new_session_shell_override"):     # the scratch rc logging needs the login shell
+                t = T.del_key(t, "session", k)
+            if mode == "agent":
+                t = T.set_key(t, "agents.warp_agent.input", "ai_auto_detection_enabled", "true")
+                t = T.set_key(t, "agents.warp_agent.input", "nld_in_terminal_enabled", "true")
+            if ollama_url:      # the owner's list also names a laptop-only proxy: the CI provider list is the Ollama endpoint alone, and it is the ACTIVE model
+                t = T.set_key(t, "agents.warp_agent", "providers", '[ { id = "appci-ollama", name = "CI Ollama", api_type = "ollama", base_url = "%s", models = [ { name = "%s", id = "%s" } ] } ]' % (ollama_url, ollama_model, ollama_model))
+                t = T.set_key(t, "agents.byop", "last_used_model_id", '"byop:appci-ollama:%s"' % ollama_model)
+            open(cfg + "/settings.toml", "w").write(t)
+            os.chmod(cfg + "/settings.toml", 0o600)
+            return
+        Profile.owner_note = "not found (bare profile)"
         lines = ['[warpify.ssh]', 'ssh_extension_install_mode = "never_install"', '',
-                 '[general]', 'default_session_mode = "%s"' % ("agent" if mode == "agent" else "terminal"), '']
+                 '[general]', 'default_session_mode = "%s"' % m, 'restore_session = false', '']
         if mode == "agent":
             lines += ['[agents.warp_agent.input]', 'ai_auto_detection_enabled = true', 'nld_in_terminal_enabled = true', '']
         if ollama_url:
             lines += ['[[agents.warp_agent.providers]]', 'id = "appci-ollama"', 'name = "CI Ollama"', 'api_type = "ollama"',
                       'base_url = "%s"' % ollama_url, 'models = [{ name = "%s", id = "%s" }]' % (ollama_model, ollama_model), '']
+            lines += ['[agents.byop]', 'last_used_model_id = "byop:appci-ollama:%s"' % ollama_model, '']
         open(cfg + "/settings.toml", "w").write("\n".join(lines))
 
     def read(self, which, remote=False):

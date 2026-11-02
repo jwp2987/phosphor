@@ -72,12 +72,22 @@ function Wf($path, $n, $timeout = 15) {
   if (Test-Path $path) { @(Get-Content $path -ErrorAction SilentlyContinue) } else { @() }
 }
 function Tok { "T" + $rng.Next(100000, 999999) + "x" + $rng.Next(1000, 9999) }
+# machine-local CI settings (the owner's Ollama endpoint is NOT in the repo or GitLab): environment wins, else
+# %USERPROFILE%\.config\phosphor-ci\ci.env (KEY=VALUE, # comments, CRLF ok). The value is never printed or written to an artifact.
+function CiEnv($key) {
+  $v = [Environment]::GetEnvironmentVariable($key); if ($v) { return $v }
+  $f = Join-Path $env:USERPROFILE ".config\phosphor-ci\ci.env"
+  if (Test-Path $f) { foreach ($l in (Get-Content $f)) { $l = $l.Trim(); if ($l -and -not $l.StartsWith("#") -and $l.Contains("=")) { $k, $x = $l.Split("=", 2); if ($k.Trim() -eq $key) { return $x.Trim().Trim('"') } } } }
+  return $null
+}
+$OllamaUrl = CiEnv "APPCI_OLLAMA_URL"; $OllamaModel = CiEnv "APPCI_OLLAMA_MODEL"; if (-not $OllamaModel) { $OllamaModel = "gpt-oss:20b" }
+if ($OllamaUrl) { "ollama: configured from ci.env/environment" } else { "ollama: not configured - agent provider cases skip" }
 function WriteSettings($mode) {
   $d = "$env:LOCALAPPDATA\phosphor\Phosphor\config"; New-Item -ItemType Directory -Force $d | Out-Null
   $m = if ($mode -eq "agent") { "agent" } else { "terminal" }
   $t = "[general]`r`ndefault_session_mode = `"$m`"`r`n`r`n[warpify.ssh]`r`nssh_extension_install_mode = `"never_install`"`r`n"
   if ($mode -eq "agent") { $t += "`r`n[agents.warp_agent.input]`r`nai_auto_detection_enabled = true`r`nnld_in_terminal_enabled = true`r`n" }
-  if ($env:APPCI_OLLAMA_URL) { $t += "`r`n[[agents.warp_agent.providers]]`r`nid = `"appci-ollama`"`r`nname = `"CI Ollama`"`r`napi_type = `"ollama`"`r`nbase_url = `"$($env:APPCI_OLLAMA_URL)`"`r`nmodels = [{ name = `"gpt-oss:20b`", id = `"gpt-oss:20b`" }]`r`n" }
+  if ($OllamaUrl) { $t += "`r`n[[agents.warp_agent.providers]]`r`nid = `"appci-ollama`"`r`nname = `"CI Ollama`"`r`napi_type = `"ollama`"`r`nbase_url = `"$OllamaUrl`"`r`nmodels = [{ name = `"$OllamaModel`", id = `"$OllamaModel`" }]`r`n`r`n[agents.byop]`r`nlast_used_model_id = `"byop:appci-ollama:$OllamaModel`"`r`n" }
   Set-Content "$d\settings.toml" $t -Encoding ascii
 }
 function StartApp {
