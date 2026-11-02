@@ -1348,7 +1348,7 @@ impl TerminalModel {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
     ) -> Self {
-        let mut me = Self::new_for_shared_session_viewer_internal(
+        Self::new_for_shared_session_viewer_internal(
             sizes,
             colors,
             event_proxy,
@@ -1358,12 +1358,7 @@ impl TerminalModel {
             is_inverted,
             obfuscate_secrets,
             true,
-        );
-        if false {
-            me.block_list_mut()
-                .set_is_executing_oz_environment_startup_commands(true);
-        }
-        me
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
