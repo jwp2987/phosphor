@@ -3482,3 +3482,6 @@ workflow-enum-variants = 变体
 quit-warning-dont-save = 不保存
 quit-warning-show-running-processes = 显示运行中的进程
 quit-warning-save-changes-title = 保存更改？
+
+# Secret redaction (#1471: matches the English meaning from #1469)
+settings-privacy-secret-redaction-description = 启用此设置后,Phosphor 会扫描终端块、资料库对象的内容和智能体提示词中可能存在的敏感信息,并阻止保存或发送这些数据。发送给你所配置的模型提供方的所有内容都会先经过脱敏,包括提示词、对话历史、命令输出、文件和项目上下文、工具结果、一次性请求以及嵌入向量。图片和工具 schema 不会被扫描。你可以通过正则表达式自定义此列表。

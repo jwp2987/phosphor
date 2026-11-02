@@ -1195,6 +1195,21 @@ fn evict_size_keeps_the_bookkeeping_consistent() {
     assert_eq!(total, image_cache.total_bytes.get());
 }
 
+/// #1473: sizes dropped by the per-asset cap leave no bookkeeping behind, so memory stays bounded.
+#[test]
+fn cap_evictions_leave_consistent_bookkeeping() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    for side in 300..(300 + 2 * MAX_RENDERED_SIZES_PER_ASSET as i32) {
+        wait_for_deferred_big_svg(&image_cache, &asset_cache, side);
+    }
+    let cached: usize = image_cache.images.read().values().map(|m| m.len()).sum();
+    assert_eq!(cached, MAX_RENDERED_SIZES_PER_ASSET);
+    assert_eq!(image_cache.used.borrow().len(), cached);
+    let total: usize = image_cache.used.borrow().values().map(|e| e.bytes).sum();
+    assert_eq!(total, image_cache.total_bytes.get());
+}
+
 #[test]
 fn large_bitmap_scaling_is_deferred() {
     let asset_cache = new_asset_cache();
