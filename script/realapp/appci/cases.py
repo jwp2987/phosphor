@@ -1323,6 +1323,26 @@ def ref_terminal_windows(ctx):
     return RefTerm(name, close=close)
 
 
+def pane_shell(ctx):
+    """The shell program running in Phosphor's pane (e.g. '/bin/zsh'), asked of the pane once per session: `ps -o comm= -p $$`
+    typed into it. None if it cannot be learned (the caller falls back). Cached on ctx."""
+    if getattr(ctx, "_pane_shell", None) is not None:
+        return ctx._pane_shell or None
+    f = os.path.join(ctx.W, ".appci_shell")
+    try:
+        if os.path.exists(f):
+            os.remove(f)
+        ctx.be.guard()
+        ctx.be.type("ps -o comm= -p $$ > .appci_shell", 12, enter=True)
+        ctx.until(lambda: os.path.exists(f) and os.path.getsize(f) > 1, 5)
+        name = open(f, errors="replace").read().strip().lstrip("-")
+    except Exception:
+        name = ""
+    path = {"zsh": "/bin/zsh", "bash": "/bin/bash"}.get(os.path.basename(name), name if name.startswith("/") else "")
+    ctx._pane_shell = path
+    return path or None
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
@@ -1339,12 +1359,9 @@ def ref_terminal(ctx):
         refterm_mac.snapshot(ctx.run)   # normally already done at harness start; idempotent
         cmdf = os.path.join(ctx.prof.home, "ref_terminal.command")
         with open(cmdf, "w") as f:
-            # the SAME shell as Phosphor's pane: the login shell (r18cz: the pane ran /bin/bash 3.2 while this reference ran zsh, so the
-            # Enter overhead compared two different shells). Same HOME, so the same harness rc (~/.bashrc / ~/.zshrc) and hooks.
-            # The app inherits this process's environment (app.py env()), and Phosphor starts $SHELL (on the Mac runner: /bin/bash, while the
-            # account's login shell is zsh).
-            import pwd
-            login = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/zsh"
+            # The SAME shell as Phosphor's pane, asked of the pane itself (r18cz: I assumed bash from $SHELL, but the app's log shows the pane
+            # ran /bin/zsh; guessing either way can compare two different shells). Unknown -> zsh, as before 736a0f9e0.
+            login = pane_shell(ctx) or "/bin/zsh"
             if os.path.basename(login) == "bash":
                 # its OWN rc + ctl dir (#1550, as Linux #1500): the reference logs to refctl/rec.log, never the app pane's ctl/rec.log
                 f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' --rcfile '%s' -i\n" % (ctx.W, home, ctx.prof.refctl, login, ctx.prof.ref_rc))
