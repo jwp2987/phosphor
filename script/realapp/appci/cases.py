@@ -1277,7 +1277,17 @@ def ref_terminal(ctx):
         refterm_mac.snapshot(ctx.run)   # normally already done at harness start; idempotent
         cmdf = os.path.join(ctx.prof.home, "ref_terminal.command")
         with open(cmdf, "w") as f:
-            f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+            # the SAME shell as Phosphor's pane: the login shell (r18cz: the pane ran /bin/bash 3.2 while this reference ran zsh, so the
+            # Enter overhead compared two different shells). Same HOME, so the same harness rc (~/.bashrc / ~/.zshrc) and hooks.
+            # The app inherits this process's environment (app.py env()), and Phosphor starts $SHELL (on the Mac runner: /bin/bash, while the
+            # account's login shell is zsh).
+            import pwd
+            login = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/zsh"
+            if os.path.basename(login) == "bash":
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' -i\n" % (ctx.W, home, ctx.prof.ctl, login))
+            else:
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+            ctx.ref_shell = login
         os.chmod(cmdf, 0o755)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
         rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
