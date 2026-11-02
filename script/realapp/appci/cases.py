@@ -129,23 +129,55 @@ class Ctx:
     def prompts(self):
         return self.prof.prompts()
 
-    def shell_gone(self, off):
-        """True when the app log (from offset `off`) shows the LOCAL shell process ended: typing more would reach the agent, not a shell"""
-        return bool(re.search(r"shell process (exited|terminated)", self.log_since(off), re.I))
+    SHELLS = ("bash", "zsh", "fish", "nu", "sh", "dash")
 
-    def leave_remote(self, r, label, rfile, tok, log_off, timeout=10):
-        """Type `exit` ONLY if the remote shell is provably in front (tok reached the REMOTE file rfile). Otherwise `exit` would end the
+    def shell_count(self):
+        """number of shells (bash/zsh/fish/nu/sh) among the descendants of the Phosphor process, from `ps` (no pgrep/pkill, no name matching of
+        the app); None when the app PID or ps is unavailable. The app logs nothing when the local shell exits, so the process tree is the evidence."""
+        try:
+            root = self.app.pid() if self.app else None
+            if not root:
+                return None
+            out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            return None
+        kids, comm = {}, {}
+        for l in out.splitlines():
+            f = l.split(None, 2)
+            if len(f) == 3 and f[0].isdigit() and f[1].isdigit():
+                kids.setdefault(int(f[1]), []).append(int(f[0]))
+                comm[int(f[0])] = os.path.basename(f[2].strip()).lstrip("-")
+        n, todo, seen = 0, [int(root)], set()
+        while todo:
+            x = todo.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            todo += kids.get(x, [])
+            if x != int(root) and comm.get(x) in self.SHELLS:
+                n += 1
+        return n
+
+    def shell_gone(self, base):
+        """True when fewer shells run under the app than at `base` (a shell_count() taken at case start): the LOCAL shell exited"""
+        now = self.shell_count()
+        return base is not None and now is not None and now < base
+
+    def leave_remote(self, r, label, rfile, tok, base, timeout=10, level=False):
+        """Type `exit` ONLY if a remote shell is provably in front (tok reached the REMOTE file rfile). Otherwise `exit` would end the
         LOCAL shell and every later key would go to the agent (#1481): record the miss, reset the pane, and return False so the caller stops
-        its trial loop. Returns True after a clean exit back to the local prompt."""
+        its trials. level=True leaves one level of a nested ssh (waits for a REMOTE prompt). Fails fast when the shell count under the app
+        dropped below `base`. Returns True after a clean exit."""
         if tok not in self.lines(rfile, remote=True):
-            r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping the trials (sshd.log, phosphor.log)" % (label, tok))
+            r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)" % (label, tok))
             self.reset()
             return False
-        before = self.prompts()
+        count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
+        before = count()
         self.be.type("exit", 12, enter=True)
-        self.until(lambda: self.prompts() > before, timeout)
-        if self.shell_gone(log_off):
-            r.check(False, "%s: the LOCAL shell exited (app log) after `exit`; stopping the trials" % label)
+        self.until(lambda: count() > before, timeout)
+        if self.shell_gone(base):
+            r.check(False, "%s: the LOCAL shell exited after `exit` (fewer shells under the app than at case start); stopping" % label)
             return False
         time.sleep(0.5)
         return True
@@ -579,7 +611,7 @@ def c_ssh(ctx, r):
             os.remove(os.path.join(ctx.prof.rhome, f))
         except FileNotFoundError:
             pass
-    exp, miss, off, stop = [], 0, ctx.log_size(), False
+    exp, miss, base, stop = [], 0, ctx.shell_count(), False
     for gap in (0.0, 0.1, 0.2, 0.3):
         for i in range(trials):
             tok = ctx.tok(6)
@@ -589,7 +621,7 @@ def c_ssh(ctx, r):
             ctx.be.type("echo %s >> ~/rl.txt" % tok, 15, enter=True)
             if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
                 miss += 1
-            if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, off):
+            if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, base):
                 stop = True
                 break
         if stop:
@@ -617,14 +649,14 @@ def c_ssh_enter_immediate(ctx, r):
     except FileNotFoundError:
         pass
     ctx.rm("rh.txt")
-    exp, off = [], ctx.log_size()
+    exp, base = [], ctx.shell_count()
     for _ in range(trials):
         tok = ctx.tok(6)
         exp.append(tok)
         ctx.be.type("ssh fake", 12, enter=True)
         ctx.be.type("echo %s >> ~/rh.txt" % tok, 12, enter=True)
         ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
-        if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, off):
+        if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, base):
             break
     got = ctx.lines("rh.txt", remote=True)
     r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
@@ -644,6 +676,7 @@ def c_ssh_nested(ctx, r):
     except FileNotFoundError:
         pass
     ctx.rm("rn.txt")
+    base = ctx.shell_count()
     tok = ctx.tok(6)
     ctx.be.type("ssh fake", 12, enter=True)
     ctx.be.type("ssh fake", 12, enter=True)
@@ -653,6 +686,9 @@ def c_ssh_nested(ctx, r):
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
     r.check(not ctx.lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.lines("rn.txt"))
+    # leave both ssh levels, each `exit` only while the remote proof holds (a missing proof means no `exit`, so the local shell survives)
+    if ctx.leave_remote(r, "ssh_nested_typeahead (inner)", "rn.txt", tok, base, level=True):
+        ctx.leave_remote(r, "ssh_nested_typeahead (outer)", "rn.txt", tok, base)
     ctx.reset()
 
 
