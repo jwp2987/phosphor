@@ -241,6 +241,8 @@ build-macos-arm64:
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
       (cd dist && shasum -a 256 * | tee SHA256SUMS)
+    # Keep this build on THIS machine for app-test-macos-reuse (no download); see script/ci/cache_build.sh.
+    - script/ci/cache_build.sh macos
   artifacts:
     name: phosphor-macos-arm64
     paths: [dist/]
@@ -286,6 +288,8 @@ build-linux-x86_64:
         b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
       done
       (cd dist && sha256sum * | tee SHA256SUMS)
+    # Keep this build on THIS machine for app-test-linux-*-reuse (no download); see script/ci/cache_build.sh.
+    - script/ci/cache_build.sh linux
   artifacts:
     name: phosphor-linux-x86_64
     paths: [dist/]
@@ -372,6 +376,9 @@ build-windows-x86_64:
       New-Item -ItemType Directory -Force dist | Out-Null
       Copy-Item $installer dist\
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
+    # Keep this build on THIS machine for app-test-windows-reuse (no download); see script/ci/cache_build.ps1.
+    - .\script\ci\cache_build.ps1
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   artifacts:
     name: phosphor-windows-x86_64
     paths: [dist/]
