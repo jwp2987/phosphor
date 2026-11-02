@@ -13,7 +13,7 @@ use super::schema::{
     code_review_panes, codebase_index_embeddings, codebase_index_node_summaries,
     codebase_index_nodes, commands,
     current_user_information, env_var_collection_panes, folders, generic_string_objects,
-    ignored_suggestions, mcp_environment_variables, mcp_server_installations, mcp_server_panes,
+    ignored_suggestions, mcp_environment_variables, mcp_server_installations,
     notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
     pane_leaves, pane_nodes, panels, project_rules, projects, queued_prompts, server_experiments,
     settings_panes, tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
@@ -222,22 +222,6 @@ pub struct NewWorkspaceMetadata {
     pub queried_ts: Option<NaiveDateTime>,
 }
 
-/// One intermediate merkle node of a codebase index, with its child list.
-///
-/// New in this fork: at the pin the node registry lived on Warp's server and
-/// arrived over GraphQL, so there was no local table. `embedding_space` is
-/// `EmbeddingConfig::storage_key()`; `child_hashes` is a JSON array of hex
-/// hashes.
-#[derive(Clone, Debug, Identifiable, Queryable, AsChangeset)]
-#[diesel(table_name = codebase_index_nodes)]
-pub struct CodebaseIndexNode {
-    pub id: i32,
-    pub embedding_space: String,
-    pub node_hash: String,
-    pub child_hashes: String,
-    pub last_modified_at: NaiveDateTime,
-}
-
 #[derive(Clone, Debug, Insertable, AsChangeset)]
 #[diesel(table_name = codebase_index_nodes)]
 pub struct NewCodebaseIndexNode {
@@ -269,27 +253,6 @@ pub struct NewCodebaseIndexEmbedding {
     pub content_hash: String,
     pub dimensions: i32,
     pub vector: Vec<u8>,
-}
-
-/// One merkle node's summary in embedding space: the search index that lets a
-/// query skip a subtree instead of scoring every fragment under it.
-///
-/// New in this fork. `mean` is the unnormalized mean of every embedded leaf
-/// beneath the node, in the same little-endian f32 encoding as
-/// `CodebaseIndexEmbedding::vector`; `radius` is the angle in radians that
-/// covers all of them. Keyed by node hash, which in a merkle tree covers the
-/// whole subtree — so a row is either correct or absent, never stale.
-#[derive(Clone, Debug, Identifiable, Queryable, AsChangeset)]
-#[diesel(table_name = codebase_index_node_summaries)]
-pub struct CodebaseIndexNodeSummary {
-    pub id: i32,
-    pub embedding_space: String,
-    pub node_hash: String,
-    pub leaf_count: i32,
-    pub radius: f32,
-    pub dimensions: i32,
-    pub mean: Vec<u8>,
-    pub last_modified_at: NaiveDateTime,
 }
 
 #[derive(Clone, Debug, Insertable, AsChangeset)]
@@ -790,12 +753,6 @@ pub struct NewSettingsPane {
 #[derive(Insertable)]
 #[diesel(table_name = ai_memory_panes)]
 pub struct NewAIFactPane {
-    pub id: i32,
-}
-
-#[derive(Insertable)]
-#[diesel(table_name = mcp_server_panes)]
-pub struct NewMCPServerPane {
     pub id: i32,
 }
 
@@ -1439,14 +1396,6 @@ impl ModelTokenUsage {
         ))
     }
 
-    pub fn to_proto_warp_usage(&self) -> Option<(String, stream_finished::ModelTokenUsage)> {
-        self.to_proto_usage(self.warp_tokens, &self.warp_token_usage_by_category)
-    }
-
-    pub fn to_proto_byok_usage(&self) -> Option<(String, stream_finished::ModelTokenUsage)> {
-        self.to_proto_usage(self.byok_tokens, &self.byok_token_usage_by_category)
-    }
-
     pub fn to_proto_custom_endpoint_usage(
         &self,
     ) -> Option<(String, stream_finished::ModelTokenUsage)> {
@@ -1456,22 +1405,6 @@ impl ModelTokenUsage {
         )
     }
 
-    #[allow(deprecated)]
-    pub fn to_proto_combined(&self) -> stream_finished::ModelTokenUsage {
-        stream_finished::ModelTokenUsage {
-            model_id: self.model_id.clone(),
-            total_tokens: self.warp_tokens + self.byok_tokens + self.custom_endpoint_tokens,
-            token_usage_by_category: self
-                .warp_token_usage_by_category
-                .iter()
-                .chain(self.byok_token_usage_by_category.iter())
-                .chain(self.custom_endpoint_token_usage_by_category.iter())
-                .fold(HashMap::new(), |mut acc, (cat, tokens)| {
-                    *acc.entry(cat.clone()).or_insert(0) += tokens;
-                    acc
-                }),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
