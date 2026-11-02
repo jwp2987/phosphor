@@ -426,10 +426,33 @@ class Ctx:
         except Exception:
             return ""
 
+    def log_view_mode(self):
+        """'agent' | 'terminal' | None from the LATEST `hop=view_mode mode=... pane=...` line of the app log (#1568): the app logs it when a pane
+        is first shown and on every agent-view enter/exit, so no OCR is needed on any platform. Rotated chunks are read too (newest last).
+        None when there is no log or no such line (a build older than #1568)."""
+        import glob
+        src = self.log_path
+        if not src:
+            return None
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        last = None
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for m in re.finditer(r"hop=view_mode mode=(agent|terminal)\b", txt):
+                last = m.group(1)
+        return last
+
     def mode_now(self, tag):
-        """'agent' | 'terminal' | None (no OCR engine, or the screen says neither), read from a screenshot. Agent view: its header
+        """'agent' | 'terminal' | None. The app's own `hop=view_mode` log line first (#1568, works without OCR, e.g. on Windows); only when the
+        log has none (older build) it falls back to OCR of a screenshot. Agent view: its header
         'New Phosphor Agent conversation', the 'ESC for terminal' bar, or the 'Ask anything' placeholder. Terminal session: the
         'new /agent conversation' hint or 'New terminal session' (r18cx: the agent pass had silently become a terminal session)."""
+        logged = self.log_view_mode()
+        if logged:
+            return logged
         txt = self.ocr(tag)
         if txt is None:
             return None
@@ -470,13 +493,21 @@ def c_mode_proof(ctx, r):
         if d:
             raise ctx.be.needs_owner(d)
     txt = ctx.ocr("proof_prekey")      # taken before ANY key is sent
+    logged = ctx.log_view_mode()       # #1568: the app's own view-mode log line, read before any key too (None on a build without it)
+    if logged is not None:
+        r.metric("log_view_mode", logged)
     if ctx.mode != "agent":
         # r18cx (macOS): this Escape is the agent view's own "esc: go back to terminal", so in the agent pass it left agent mode and every
         # "agent" case after it ran in a terminal session (owner photo). Only the terminal pass sends it.
         ctx.be.key("Escape")
         time.sleep(0.8)
     ctx.shot("proof")
+    if logged is not None:
+        r.check(logged == ctx.mode, "%s mode expected but the app's log says hop=view_mode mode=%s before any key was typed" % (ctx.mode, logged))
     if txt is None:
+        if logged is not None:
+            r.note("mode machine-verified from the app log (hop=view_mode mode=%s); no OCR engine" % logged)
+            return
         r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.label)
         return
     low = " ".join(txt.lower().split())

@@ -706,6 +706,16 @@ Scripts are in `script/realapp/` (index: `script/realapp/README.md`); the latenc
 (`script/realapp/config.example.sh` shows the variables). Prefer real-app tests on a build over
 code-refuter agents.
 
+### 3.0 View-mode signal (#1568)
+
+The app logs `input_order hop=view_mode mode=agent|terminal pane=<terminal view id> t=<ms>` (debug level, the `input_order`
+target) when a pane's agent-view controller is created (once per pane) and on every agent-view enter/exit
+(`app/src/ai/blocklist/agent_view/controller.rs`). It carries ids and a fixed word only, never user text. The appci harness
+(`Ctx.log_view_mode`, `Ctx.mode_now`, `mode_proof`) reads the latest such line from the app log (rotated
+`phosphor.log.in_session.N` chunks included), so the agent-vs-terminal proof and the per-case "still in agent view" check (#1563)
+work on Linux, macOS and Windows without OCR. `mode_proof` FAILS in the agent pass if the log says `terminal`. OCR is only the
+fallback for builds that predate the line.
+
 ### 3.1 Rules that apply to every real-app run
 
 - **Setup = the owner's, not a bare profile.** Test HOMEs are scratch COPIES of the owner's real config

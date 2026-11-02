@@ -415,6 +415,7 @@ impl AgentViewController {
         ephemeral_message_model: ModelHandle<EphemeralMessageModel>,
         _ctx: &mut ModelContext<Self>,
     ) -> Self {
+        log_view_mode(false, terminal_view_id);
         Self {
             terminal_model,
             terminal_view_id,
@@ -910,6 +911,7 @@ impl AgentViewController {
             });
         }
 
+        log_view_mode(true, self.terminal_view_id);
         ctx.emit(AgentViewControllerEvent::EnteredAgentView {
             conversation_id,
             is_new: exchange_count == 0,
@@ -1052,6 +1054,7 @@ impl AgentViewController {
             .map(|conversation| conversation.exchange_count())
             .unwrap_or(0);
 
+        log_view_mode(false, self.terminal_view_id);
         ctx.emit(AgentViewControllerEvent::ExitedAgentView {
             conversation_id,
             origin,
@@ -1148,4 +1151,32 @@ fn new_conversation_keybinding_confirmation_message(
         MessageItem::text(crate::t!("agent-message-bar-again-start-new-conversation")),
     ])
     .with_text_color(appearance.theme().ansi_fg_magenta())
+}
+
+/// The `hop=view_mode` log line (#1568): `mode=agent|terminal pane=<terminal view id>`. The real-app harness reads the latest one to
+/// know the pane's view mode on every platform without OCR. Ids and a fixed word only, never user text.
+fn view_mode_detail(agent: bool, pane: EntityId) -> String {
+    format!(
+        "mode={} pane={}",
+        if agent { "agent" } else { "terminal" },
+        pane
+    )
+}
+
+/// Logs the view mode once when a pane's controller is created and again on every enter/exit (only on change; free when debug logging is off).
+fn log_view_mode(agent: bool, pane: EntityId) {
+    warpui::input_order::log_hop("view_mode", || view_mode_detail(agent, pane));
+}
+
+#[cfg(test)]
+mod view_mode_log_tests {
+    use super::*;
+
+    #[test]
+    fn view_mode_detail_names_mode_and_pane() {
+        let d = view_mode_detail(true, EntityId::new());
+        assert!(d.starts_with("mode=agent pane="), "{d}");
+        let d = view_mode_detail(false, EntityId::new());
+        assert!(d.starts_with("mode=terminal pane="), "{d}");
+    }
 }
