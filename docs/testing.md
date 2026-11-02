@@ -574,7 +574,8 @@ WARNING and fall back to downloading the GitLab artifacts: `GET $CI_API_V4_URL/p
 refused, or a zip without `dist/`), plus `APPCI_BUILD_PIPELINE_ID`, `APPCI_BUILD_SHA`, `APPCI_BUILD_JOB_NAME` (recorded). On the fallback, a masked CI
 variable `APPCI_API_TOKEN` (read_api) is used as `PRIVATE-TOKEN` if the job token is refused. The tested build is written to
 `appci-out/reused_build.json`, to `reused_build` in every `results.json` and to the
-first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`). The job-token fetch itself could not be
+first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`).
+**Identity is verified before anything is stamped (#1501).** A cached copy's `meta.json` (job id, commit, and for `--this-pipeline` also the pipeline) must equal what `ci_seq.py` asked for (`APPCI_BUILD_JOB_ID` / `APPCI_BUILD_SHA`), else exit 2. A downloaded build is checked against GitLab's own record of the job (commit, name, status `success`; the by-ref fallback must also be the latest successful pipeline's job of that name) via `script/ci/verify_build_identity.py` / the `fetch_build.ps1` equivalent; that needs `read_api` (`CI_JOB_TOKEN` or `APPCI_API_TOKEN`), and a build that cannot be verified is refused, never tested. `APPCI_BUILD_SHA` is required. The job-token fetch itself could not be
 exercised outside a running job when this was written: the first real reuse run is its test.
 
 ### 2.9 Test tiers (what a push costs)

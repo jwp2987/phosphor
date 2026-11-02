@@ -3,7 +3,10 @@
 # instead of rebuilding. FIRST choice: the copy the build job left in this machine's cache ($HOME/.cache/phosphor-ci/builds/
 # <platform>/<job id>/, script/ci/cache_build.sh); each platform's app test runs on the machine that built it, so no download.
 # Only if that copy is missing does it fall back to downloading the GitLab artifacts (below), and it says so loudly. Inputs (play-time variables from script/ci/ci_seq.py):
-#   APPCI_BUILD_JOB_ID (required), APPCI_BUILD_PIPELINE_ID, APPCI_BUILD_SHA, APPCI_BUILD_JOB_NAME (recorded only).
+#   APPCI_BUILD_JOB_ID (required), APPCI_BUILD_SHA (required, verified), APPCI_BUILD_PIPELINE_ID, APPCI_BUILD_JOB_NAME, APPCI_BUILD_REF.
+# IDENTITY (#1501): a cached copy's meta.json (job id, sha) must equal what ci_seq asked for; a downloaded build is checked against GitLab's own
+# record of the job (script/ci/verify_build_identity.py, needs read_api: CI_JOB_TOKEN or APPCI_API_TOKEN). A mismatch or an unverifiable build
+# is exit 2; reused_build.json only ever carries a verified sha.
 # Fails loudly (exit 2) on a missing variable, a failed fetch or a zip without dist/: it never tests "something else".
 # Auth: CI_JOB_TOKEN (JOB-TOKEN header, same project). If GitLab refuses it and APPCI_API_TOKEN is set, that PRIVATE-TOKEN is tried.
 #
@@ -20,6 +23,7 @@ if [ "${1:-}" = --this-pipeline ]; then
   id=$(cat "$ptr"); src="$ROOT/$id"
   [ -f "$src/SHA256SUMS" ] || die "local build $src is missing or pruned; re-run the build job"
   echo "fetch_build: using this pipeline's build job $id from this machine: $src (no download)"
+  python3 "$(dirname "$0")/verify_build_identity.py" meta-pipeline "$src" || die "the local build is not this pipeline's build (identity check above)"
   rm -rf dist; mkdir dist; cp -R "$src"/. dist/; rm -f dist/meta.json
   (cd dist && { sha256sum -c SHA256SUMS 2>/dev/null || shasum -a 256 -c SHA256SUMS; }) || die "dist/SHA256SUMS check failed"
   exit 0
@@ -37,6 +41,7 @@ J
 }
 if [ -f "$LOCAL/SHA256SUMS" ]; then
   echo "fetch_build: using the build job $APPCI_BUILD_JOB_ID already on this machine: $LOCAL (no download)"
+  python3 "$(dirname "$0")/verify_build_identity.py" meta "$LOCAL" || die "the cached build is not the one ci_seq asked for (identity check above)"
   rm -rf dist; mkdir dist; cp -R "$LOCAL"/. dist/; rm -f dist/meta.json
   write_record "local cache ($LOCAL)"
   exit 0
@@ -68,4 +73,6 @@ if [ "$code" != 200 ]; then
 fi
 rm -rf dist; unzip -q -o "$Z" || die "downloaded file is not a valid artifacts zip"
 [ -d dist ] && [ -n "$(ls -A dist)" ] || die "artifacts of job $APPCI_BUILD_JOB_ID contain no dist/"
+# identity BEFORE anything is stamped: GitLab's record of the job (commit, name, status), and for the by-ref download that it IS the latest one
+APPCI_VERIFY_LATEST="${BY_REF:+1}" python3 "$(dirname "$0")/verify_build_identity.py" api || die "the downloaded build could not be verified as job $APPCI_BUILD_JOB_ID at commit ${APPCI_BUILD_SHA:-?}; refusing to test it"
 write_record "GitLab download (local copy missing): ${BY_REF:+by-ref latest successful on $APPCI_BUILD_REF}${BY_REF:-by job id}"

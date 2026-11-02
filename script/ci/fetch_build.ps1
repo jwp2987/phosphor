@@ -25,6 +25,18 @@ if ($Record) {
     exit 0
 }
 function Die($msg) { Write-Error "ERROR fetch_build: $msg"; exit 2 }
+# Identity (#1501): the cached copy's meta.json (written by cache_build.ps1) must say the job and commit that were asked for. Dies on a mismatch
+# or a missing meta.json; reused_build.json is only ever written for a verified build.
+function Test-Meta($dir, $wantJob, $wantSha, $wantPipeline) {
+    $mp = Join-Path $dir "meta.json"
+    if (-not (Test-Path $mp)) { Die "$mp is missing: a build without a recorded identity cannot be verified" }
+    try { $m = Get-Content $mp -Raw | ConvertFrom-Json } catch { Die "$mp is unreadable: $_" }
+    if ("$($m.job_id)" -ne "$wantJob") { Die "cached build $dir is job $($m.job_id), but job $wantJob was asked for" }
+    if (-not $wantSha) { Die "no expected commit to compare with (APPCI_BUILD_SHA / CI_COMMIT_SHA empty)" }
+    if ("$($m.sha)" -ne "$wantSha") { Die "cached build $dir was built from commit $($m.sha), but $wantSha was asked for" }
+    if ($wantPipeline -and "$($m.pipeline_id)" -ne "$wantPipeline") { Die "cached build $dir belongs to pipeline $($m.pipeline_id), not $wantPipeline" }
+    Write-Output "fetch_build: identity verified from ${mp}: job $($m.job_id), commit $("$($m.sha)".Substring(0, 10))"
+}
 function Copy-Checked($src) {
     if (Test-Path dist) { Remove-Item -Recurse -Force dist }
     New-Item -ItemType Directory dist | Out-Null
@@ -43,6 +55,7 @@ if ($ThisPipeline) {
     $bid = (Get-Content $ptr -Raw).Trim(); $src = Join-Path $root $bid
     if (-not (Test-Path (Join-Path $src "SHA256SUMS"))) { Die "local build $src is missing or pruned; re-run the build job" }
     Write-Output "fetch_build: using this pipeline's build job $bid from this machine: $src (no download)"
+    Test-Meta $src $bid $env:CI_COMMIT_SHA $env:CI_PIPELINE_ID
     Copy-Checked $src
     exit 0
 }
@@ -59,6 +72,7 @@ function Write-Record($how) {
 }
 if (Test-Path (Join-Path $local "SHA256SUMS")) {
     Write-Output "fetch_build: using the build job $id already on this machine: $local (no download)"
+    Test-Meta $local $id $env:APPCI_BUILD_SHA $null
     if (Test-Path dist) { Remove-Item -Recurse -Force dist }
     New-Item -ItemType Directory dist | Out-Null
     Copy-Item "$local\*" dist -Recurse -Force
@@ -88,4 +102,16 @@ if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 Expand-Archive -Path $zip -DestinationPath . -Force
 Remove-Item $zip -Force
 if (-not (Test-Path dist) -or -not (Get-ChildItem dist)) { Die "artifacts of job $id contain no dist/" }
+# identity BEFORE anything is stamped: GitLab's own record of the job must match the commit and name that were asked for
+if (-not $env:APPCI_BUILD_SHA) { Die "APPCI_BUILD_SHA is empty: nothing to verify the downloaded build against" }
+$jj = $null; $why = ""
+foreach ($h in @(@{ "JOB-TOKEN" = $env:CI_JOB_TOKEN }, @{ "PRIVATE-TOKEN" = $env:APPCI_API_TOKEN })) {
+    if (-not ($h.Values | Select-Object -First 1)) { continue }
+    try { $jj = Invoke-RestMethod -Uri "$env:CI_API_V4_URL/projects/$env:CI_PROJECT_ID/jobs/$id" -Headers $h -UseBasicParsing; break } catch { $why = "$_" }
+}
+if (-not $jj) { Die "cannot read job $id from the GitLab API to verify the downloaded build ($why); set a masked APPCI_API_TOKEN with read_api, or build instead" }
+if ($jj.commit.id -ne $env:APPCI_BUILD_SHA) { Die "job $id was built from commit $($jj.commit.id), but $env:APPCI_BUILD_SHA was asked for" }
+if ($env:APPCI_BUILD_JOB_NAME -and $jj.name -ne $env:APPCI_BUILD_JOB_NAME) { Die "job $id is '$($jj.name)', but '$env:APPCI_BUILD_JOB_NAME' was asked for" }
+if ($jj.status -ne "success") { Die "job $id status is '$($jj.status)', not success" }
+Write-Output "fetch_build: identity verified from the GitLab API: job $id, commit $($env:APPCI_BUILD_SHA.Substring(0, 10)), $($jj.name), success"
 Write-Record "GitLab download (local copy missing)"
