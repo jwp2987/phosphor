@@ -274,7 +274,8 @@ fn invalid_diagram_outcomes_are_snapshotted() {
     insta::assert_snapshot!("invalid_outcomes", out);
 }
 
-/// Hostile sources: arbitrary bytes-as-text, huge labels, deep nesting. No panic is the only claim.
+/// Hostile sources: arbitrary bytes-as-text, huge labels, deep nesting. No panic and no hang (the
+/// app's render is bounded by size limits and a time budget, #1477) is the claim.
 #[test]
 fn hostile_sources_never_panic() {
     let mut sources = vec![
