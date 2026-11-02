@@ -265,11 +265,18 @@ def main():
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
-                if win and (status == "fail" or c["name"] == "ctrl_c_d") and not ctx.pane_responsive():
+                alive = ctx.pane_responsive() if (win and (status == "fail" or c["name"] in ("ctrl_c_d", "cadence"))) else 0
+                if alive == 1:
+                    # typing took effect only after the retry's Ctrl-C x3: not wedged, but the NEXT case would have typed into a pane that eats Enter (r18co Git Bash
+                    # pane after cadence: keys written to the pty, Enter taken by the empty input editor, fast_typing 0/30). Visible row, not a failure here.
+                    emit(dict(name="pane_needed_ctrl_c_after_" + c["name"], mode=label, status="pass", seconds=0,
+                              detail=["the first marker command after %s had no effect; it worked after Ctrl-C x3 (candidate APP finding: input focus/Enter routing after a long-running command, see docs/testing.md Windows triage)" % c["name"]]))
+                if alive is None:
                     # a wedged pane makes every later case fail for a reason that is not theirs (r18cj: PowerShell pane stuck after ctrl_c_d, so ssh_* and
-                    # latency_enter measured nothing). Say so in its own row, relaunch the app, and prove the keys again.
+                    # latency_enter measured nothing). Wedged = a marker command typed twice (the second after Ctrl-C x3) had NO EFFECT (no marker file). Say so in its own
+                    # row, relaunch the app, and prove the keys again.
                     emit(dict(name="pane_wedged_after_" + c["name"], mode=label, status="fail", seconds=0, shots=[ctx.shot("wedged_after_" + c["name"]) or ""],
-                              detail=["the %s pane did not run a marker command after %s (no prompt came back): the app is relaunched so the remaining cases measure something" % (pane or "default", c["name"])]))
+                              detail=["the %s pane did not run a marker command (no effect file) after %s, twice: the app is relaunched so the remaining cases measure something" % (pane or "default", c["name"])]))
                     exit_fail = True
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
                     instance += 1
@@ -370,6 +377,29 @@ def await_shell(ctx, app, prof, win, timeout):
     return app.alive()
 
 
+def set_ps_pane_state(ctx, be):
+    """PowerShell pane, once per app launch, after the key proof: cd into the case dir (cases write RELATIVE effect files there) and, when there is an ssh
+    test host, define `ssh` as a function that adds `-F <home>/.ssh/config` (the pane has no rc, so no <home>/bin wrapper and System32 ssh.exe reads the real
+    user's config: r18co showed `ssh: Could not resolve hostname fake` in every PowerShell ssh case). Returns None, or the reason it could not be set.
+    r18co: the first Set-Location was typed while the proof's Add-Content was still returning to the prompt, so the pane took Ctrl-U as text
+    (`^USet-Location` -> 'not recognized'), stayed in the real home, and EVERY later PowerShell effect file landed outside the case dir (all PowerShell
+    cases failed, then the wedge probe failed too). So: settle, type, and verify by an effect (a relative marker file must appear in the case dir); retry."""
+    wd = ctx.W.replace("\\", "/")
+    for attempt in range(3):
+        time.sleep(1.5 + attempt)
+        for _ in range(attempt + 1):
+            be.key("ctrl+c")
+            time.sleep(0.8)
+        be.key("ctrl+u")
+        tok = ctx.tok(8).lower()
+        fn = ("; " + ctx.prof.ps_ssh_function()) if (ctx.ssh and ctx.prof.ps_ssh_function()) else ""
+        be.type("Set-Location -LiteralPath '%s'%s; Add-Content cwd_%s.txt %s" % (wd, fn, tok, tok), 8, enter=True)
+        if ctx.until(lambda: tok in ctx.lines("cwd_%s.txt" % tok), 10 + 5 * attempt):
+            time.sleep(0.8)
+            return None
+    return "the PowerShell pane could not be put in the case dir (Set-Location typed 3 times, the relative marker file never appeared in %s): every PowerShell effect file would land elsewhere" % ctx.W
+
+
 def prove_keys(ctx, be, pane, label):
     """Windows key-delivery proof (Prove-Keys of the PowerShell harness): type a marker command with an ABSOLUTE path and confirm the file got it,
     with SendInput virtual keys first, then KEYEVENTF_UNICODE packets. None on success (be.key_method is the method that worked; a PowerShell pane is
@@ -396,9 +426,9 @@ def prove_keys(ctx, be, pane, label):
             continue
         if ctx.until(lambda: tok in ctx.lines(os.path.basename(f)), 8):
             if pane == "powershell":
-                be.key("ctrl+u")
-                be.type("Set-Location -LiteralPath '%s'" % ctx.W.replace("\\", "/"), 8, enter=True)
-                time.sleep(0.8)
+                bad = set_ps_pane_state(ctx, be)
+                if bad:
+                    return bad
             print("keys: delivered via SendInput %s" % method, flush=True)
             return None
         log.append("%s: marker not in the file" % method)

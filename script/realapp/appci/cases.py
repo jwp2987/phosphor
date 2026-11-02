@@ -256,12 +256,15 @@ class Ctx:
         return True
 
     def pane_responsive(self, first=8, second=40):
-        """True when the pane's shell runs a marker command. A wedged pane (a command that ignores Ctrl-C, a prompt that never came back) fails
-        every later case for a reason that is not theirs, so run.py checks after a failing case and relaunches the app (r18cj: the PowerShell
-        pane stayed stuck after ctrl_c_d and ssh_* / latency_enter measured nothing)."""
+        """The pane's liveness by an EFFECT: type a marker command that appends to a file and look for the file. Returns 0 when the first try worked, 1 when
+        only the retry did (the pane needed Ctrl-C x3 to take typing again: r18co, Git Bash pane after cadence), None when no marker ever appeared (wedged).
+        A wedged pane (a command that ignores Ctrl-C) fails every later case for a reason that is not theirs, so run.py checks after a failing case and
+        relaunches the app. NOT judged by a prompt: the PowerShell pane has no prompt hook (the app starts it with -NoProfile), r18co's 'no prompt came back'
+        wording was wrong, and the probe's file went to the real home because the pane was not in the case dir (local_lines also looks there)."""
         for tries, wait in ((0, first), (1, second)):
             tok = self.tok(8).lower()
             fname = "alive_%s.txt" % tok
+            mark = self.cmd_mark()
             try:
                 if tries:
                     for _ in range(3):
@@ -273,10 +276,14 @@ class Ctx:
                 self.be.key("ctrl+u")
                 self.be.type(self.append_cmd(self.pane_shell(), tok, fname), 12, enter=True)
             except Exception:
-                return False
-            if self.until(lambda: tok in self.lines(fname), wait):
-                return True
-        return False
+                return None
+            if self.until(lambda: tok in self.local_lines(fname), wait):
+                # the shell's own rec.log (Git Bash pane) logs the command AFTER it ran: wait for that line, or it lands in the NEXT case's cmds_since(mark)
+                # (r18co: paste_instant_enter 'first mismatch' was this probe's `echo t147... >> alive_...`)
+                if self.prof.commands():
+                    self.until(lambda: any(tok in c for _, c in self.prof.commands()[mark:]), 5)
+                return tries
+        return None
 
     def app_log_chars(self, t0):
         """the characters the APP logged as typed since wall time t0, in order (`input_order typed_characters text="x"`; needs
@@ -346,6 +353,8 @@ class Ctx:
             except OSError:
                 continue
             out.append("%s: %s" % (name, " | ".join(tail) if tail else "(empty)"))
+        if getattr(self.prof, "ssh_hint", None):
+            out.append("PROBE: " + self.prof.ssh_hint)
         return "; ".join(out) or "no ssh server log"
 
     def reset(self):
@@ -650,7 +659,7 @@ def c_paste_enter(ctx, r):
         # compare the DIGEST: Git for Windows' md5sum prints "<hash> *-" (binary marker), GNU coreutils "<hash>  -" (r18cj: 0/6 in both Git Bash panes while the
         # shell's own rec.log showed all six pasted lines arrived byte-exact, 10/500/5000-character pads)
         got = [l.split()[0] if l.split() else l for l in got]
-        recv = ctx.cmds_since(mark) if (ctx.win and ctx.prof.commands()) else None
+        recv = [c for c in ctx.cmds_since(mark) if "alive_" not in c] if (ctx.win and ctx.prof.commands()) else None     # a wedge probe's line can be logged late (r18co)
         if recv is not None:
             r.check(recv == sent, "pasted lines reached the shell exactly: %d/%d byte-exact (first mismatch: %r)" % (
                 sum(a == b for a, b in zip(sent, recv)), len(sent), next(((b[:60], len(b)) for a, b in zip(sent, recv) if a != b), "count %d vs %d" % (len(recv), len(sent)))))
