@@ -483,6 +483,15 @@ pub mod internal_colors {
             .blend(&warp_theme.foreground().with_opacity(40))
     }
 
+    /// Pressed state for UI elements like buttons
+    /// to which we want to call attention.
+    /// Allows gradients so shouldn't be used for small elements.
+    pub fn accent_pressed(warp_theme: &WarpTheme) -> Fill {
+        warp_theme
+            .accent()
+            .blend(&warp_theme.background().with_opacity(30))
+    }
+
     /// The color of most text throughout the UI.
     pub fn text_main(warp_theme: &WarpTheme, background: impl Into<ColorU>) -> ColorU {
         coloru_with_opacity(font_color(warp_theme, background), 90)

@@ -211,8 +211,8 @@ impl TerminalView {
         self.input.update(ctx, |input, _| {
             input.set_shared_session_presence_manager(presence_manager);
         });
-        let share_source = self.pending_share_source.take();
-        let is_remote_control = matches!(share_source, Some(SharedSessionActionSource::FooterChip));
+        // `pending_share_source` was never assigned (always None), so this is never remote control.
+        let is_remote_control = false;
         self.insert_shared_session_started_banner(
             scrollback_type,
             is_remote_control,
