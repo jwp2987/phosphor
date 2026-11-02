@@ -40,7 +40,6 @@ use crate::{
     cloud_object::model::persistence::ObjectStoreModel,
     cloud_object::update_manager::UpdateManager,
     context_chips::prompt::Prompt,
-    experiments,
     network::NetworkStatus,
     search::files::model::FileSearchModel,
     settings::PrivacySettings,
@@ -135,7 +134,6 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     // and `add_singleton_model` panics on a second registration rather than ignoring it.
     // Tests that need it register it at their own call site.
 
-    app.update(experiments::init);
 }
 
 /// Creates a window in `app` with a [`TerminalView`] as the root view.

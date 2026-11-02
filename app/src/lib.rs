@@ -262,7 +262,6 @@ use crate::notebooks::manager::NotebookManager;
 use crate::palette::PaletteMode;
 use crate::persistence::PersistenceWriter;
 use crate::projects::ProjectManagementModel;
-use crate::server::experiments::ServerExperiments;
 use crate::session_management::{RunningSessionSummary, SessionNavigationData};
 use crate::settings::manager::SettingsManager;
 use crate::settings::{AccessibilitySettings, ScrollSettings, SelectionSettings};
@@ -310,7 +309,6 @@ use self::features::FeatureFlag;
 use crate::app_state::AppState;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::drive::ObjectTypeAndId;
-use crate::experiments::ImprovedPaletteSearch;
 pub use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 use crate::notification::NotificationContext;
 use crate::root_view::{
@@ -1329,9 +1327,9 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             pre_init_errors,
         );
 
-        if ImprovedPaletteSearch::improved_search_enabled(ctx) {
-            FeatureFlag::UseTantivySearch.set_enabled(true);
-        }
+        // The improved-search experiment was allocated 100% to its treatment, so Tantivy search
+        // is unconditionally on.
+        FeatureFlag::UseTantivySearch.set_enabled(true);
 
         // The TUI front-end reuses the full `initialize_app` bootstrap above (so
         // Appearance, settings, MCP, etc. exist), then mounts the TUI (via
@@ -1483,7 +1481,7 @@ fn initialize_app(
         restored_user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        experiments,
+        _experiments,
         ai_queries,
         nld_prompts,
         persisted_workspaces,
@@ -1546,11 +1544,6 @@ fn initialize_app(
                 Default::default(),
             )
         });
-
-    // Initialize a global model to track server-side experiment state.
-    // This depends on the [`GlobalResourceHandlesProvider`] and so it must
-    // be initialized after it.
-    ctx.add_singleton_model(|ctx| ServerExperiments::new_from_cache(experiments, ctx));
 
     ctx.add_singleton_model(AIRequestUsageModel::new);
 
@@ -1647,8 +1640,6 @@ fn initialize_app(
             })
             .detach();
     }
-
-    experiments::init(ctx);
 
     // Initialize timestamp for session id and last active event
     App::record_last_active_timestamp();
