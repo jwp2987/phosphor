@@ -75,7 +75,10 @@ def start(prof, run):
             ak.write(open(os.path.join(d, "pwkey.pub")).read())
         os.chmod(os.path.join(d, "authorized_keys"), 0o600)
         force = os.path.join(d, "force.sh")
-        open(force, "w").write('#!/bin/bash\nexport HOME="%s"\ncd "$HOME"\nif [ -n "$SSH_ORIGINAL_COMMAND" ]; then exec bash -c "$SSH_ORIGINAL_COMMAND"; else exec bash -l -i; fi\n' % prof.rhome)
+        # Behave like sshd for a user whose login shell is bash (the remote home is set up for bash): sshd sets SHELL to the login
+        # shell and runs a command with `$SHELL -c`. Without SHELL=/bin/bash the Mac's gitrunner SHELL (/bin/zsh) leaked through, so
+        # Phosphor's ssh wrapper sent its zsh bootstrap, which this script ran under bash ("local: can only be used in a function").
+        open(force, "w").write('#!/bin/bash\nexport HOME="%s" SHELL=/bin/bash\ncd "$HOME"\nif [ -n "$SSH_ORIGINAL_COMMAND" ]; then exec "$SHELL" -c "$SSH_ORIGINAL_COMMAND"; else exec "$SHELL" -l -i; fi\n' % prof.rhome)
         os.chmod(force, 0o755)
         conf = os.path.join(d, "sshd_config")
         open(conf, "w").write("\n".join([

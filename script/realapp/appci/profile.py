@@ -159,6 +159,12 @@ class Profile:
                     "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
                     % (ssh_port, os.environ.get("USER", "runner"), pw, h))
             self.write_ssh_wrappers()
+            # the remote side (rhome, same machine) needs the same host entries and wrappers, or a NESTED `ssh fake` typed in the
+            # remote shell cannot resolve (ssh_nested_typeahead, r18ck 2026-11-02)
+            os.makedirs(self.rhome + "/.ssh", mode=0o700, exist_ok=True)
+            shutil.copyfile(h + "/.ssh/config", self.rhome + "/.ssh/config")
+            os.chmod(self.rhome + "/.ssh/config", 0o600)
+            self.write_ssh_wrappers(self.rhome)
         return h
 
     TOOLS = ("ssh", "scp", "sftp")
@@ -188,11 +194,12 @@ class Profile:
                 with open(os.path.join(h, "bin", t + ".cmd"), "w", newline="\r\n") as f:
                     f.write('@echo off\n"%s" -F "%s" %%*\n' % (real, cfg.replace("/", "\\")))
 
-    def write_ssh_wrappers(self):
+    def write_ssh_wrappers(self, home=None):
         """OpenSSH reads ~/.ssh/config from the PASSWD home, not $HOME (#1481): on a runner whose passwd home differs from the scratch HOME,
         `ssh fake` does not resolve. <home>/bin is first on PATH in the shell rc files, so ssh/scp/sftp wrappers there add `-F $HOME/.ssh/config`
         and exec the REAL binary (absolute path resolved now, from a PATH without the wrapper dir, so the wrapper can never exec itself)."""
-        bindir = os.path.join(self.home, "bin")
+        bindir = os.path.join(home or self.home, "bin")
+        os.makedirs(bindir, exist_ok=True)
         clean = os.pathsep.join(d for d in os.environ.get("PATH", os.defpath).split(os.pathsep) if os.path.abspath(d or ".") != os.path.abspath(bindir))
         for t in self.TOOLS:
             real = shutil.which(t, path=clean)
