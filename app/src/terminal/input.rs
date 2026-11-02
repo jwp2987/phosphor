@@ -13571,6 +13571,22 @@ impl Input {
             self.close_ai_context_menu(ctx);
         }
 
+        // In terminal mode a slash menu that does not answer the typed text (no rows, still
+        // loading, or listing older text because Enter beat the last keystroke's edit) must never
+        // swallow Enter: close it, stop slash parsing for this line and submit it, so a fast
+        // `/usr/bin/env` or `/tmp/x.sh` runs in the shell (#1459).
+        if self.suggestions_mode_model.as_ref(ctx).is_slash_commands()
+            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && !self
+                .inline_slash_commands_view
+                .as_ref(ctx)
+                .answers_current_buffer(ctx)
+        {
+            self.slash_command_model
+                .update(ctx, |model, ctx| model.disable(ctx));
+            self.close_slash_commands_menu(ctx);
+        }
+
         if self.should_insert_newline_on_enter(ctx) {
             self.editor.update(ctx, |editor, ctx| {
                 editor.user_initiated_insert("\n", PlainTextEditorViewAction::NewLine, ctx)
