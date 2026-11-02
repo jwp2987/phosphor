@@ -14,7 +14,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backend, cases, profile, sshd, app as appmod  # noqa: E402
 
 
+def skip_status(r, why):
+    """Status for a case that raised Skip. A failed check recorded before the Skip is NEVER downgraded: the FAIL stands and says it was also skipped (#1498)."""
+    if r.fails:
+        r.notes.insert(0, "ALSO SKIPPED after the failed check(s) above: %s" % why)
+        return "fail"
+    r.notes.insert(0, str(why))
+    return "skip"
+
+
+def self_test():
+    """`run.py --self-test`: harness-level checks that need no app, display or backend."""
+    r = cases.Result("t", "terminal")
+    assert skip_status(r, "no card") == "skip" and r.notes == ["no card"], (r.notes, r.fails)
+    r = cases.Result("t", "terminal")
+    r.check(False, "approve half lost the command")
+    assert skip_status(r, "no card within 120 s") == "fail", "a Skip after a failed check must stay FAIL"
+    assert r.fails == ["approve half lost the command"] and "ALSO SKIPPED" in r.notes[0], (r.fails, r.notes)
+    r = cases.Result("t", "terminal")
+    r.check(True, "fine")
+    assert skip_status(r, "x") == "skip"
+    print("self-test ok")
+    return 0
+
+
 def main():
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--bin", default="")
@@ -176,8 +202,7 @@ def main():
                 except backend.NeedsOwner:
                     raise
                 except cases.Skip as e:
-                    status = "skip"
-                    r.notes.insert(0, str(e))
+                    status = skip_status(r, e)
                 except Exception as e:
                     status = "fail"
                     r.fails.append("harness exception: %r" % e)

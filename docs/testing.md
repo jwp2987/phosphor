@@ -135,7 +135,7 @@ Hard rules:
 ### 2.4 Shell-script harnesses (`script/test_*`, no cargo; run by `precheck`)
 
 They run the REAL bundled bootstrap text (cut out of `app/assets/bundled/bootstrap/*`) in real shells and
-pin protocol behaviour. Skips are reported as SKIPPED, never silent.
+pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip raised AFTER a failed check keeps the FAIL (noted "ALSO SKIPPED"); `python3 script/realapp/appci/run.py --self-test` covers that rule.
 
 | script | checks |
 |---|---|
