@@ -284,7 +284,35 @@ limit), private `HOME` per mode with an owner-like scratch config and **no crede
 server on 127.0.0.1 (system `sshd` as the CI user with a `ForceCommand` into a scratch remote home; else `fakesshd.py` when paramiko
 exists; else the ssh cases SKIP). Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
 Scratch config: `general.default_session_mode` = `terminal` or `agent`; agent mode adds autodetect + natural-language detection; a
-provider is configured only when the CI variable `APPCI_OLLAMA_URL` is set (then `approval_card_pause` runs; otherwise it skips).
+provider is configured only when the endpoint is known (then `approval_card_pause` runs; otherwise it skips).
+
+**Machine-local CI inputs (owner-provided, per machine, never in the repo or in GitLab variables).** Directory `~/.config/phosphor-ci/`
+(Windows `%USERPROFILE%\.config\phosphor-ci\`), files mode 600, seeded by the owner on the box (`gitlab-runner`), the Mac (`gitrunner`)
+and the Windows VM:
+- `ci.env`: `KEY=VALUE` lines, `#` comments. Keys `APPCI_OLLAMA_URL` (the owner's Ollama endpoint) and `APPCI_OLLAMA_MODEL` (default
+  `gpt-oss:20b`). The environment wins over the file. `appci/ci_env.py` (and `app_test.ps1`) read it; the job log says only `ollama:
+  configured` or `not configured - agent provider cases skip`, the app log copied into artifacts has the endpoint redacted, and the value
+  is never written to results.json/summary.md.
+- `owner-settings.toml`: an exact copy of the owner's `settings.toml` (layout, vertical tabs, theme, fonts, footer bar, agent/autodetect,
+  ssh). `profile.py` copies it into the job's private profile (the seed is never modified) and edits ONLY these keys textually
+  (`appci/toml_text.py`; the file's multi-line inline tables defeat `tomllib`): `general.default_session_mode` (per pass),
+  `general.restore_session=false`, `warpify.ssh.ssh_extension_install_mode="never_install"`, removal of `session.startup_shell_override` /
+  `new_session_shell_override`, autodetect + NLD on in the agent pass, and, when Ollama is configured, `agents.warp_agent.providers` (the CI
+  Ollama provider replaces the owner's list, which names a laptop-only proxy) and `agents.byop.last_used_model_id =
+  "byop:appci-ollama:<model>"` so the Ollama model is the active one. Without the file the minimal bare profile is used and
+  results.json/summary.md say `owner_settings=not found (bare profile)`; with it they say `owner_settings=sha256 <first 12>` (contents
+  are never printed or uploaded).
+
+**macOS specifics (`app-test-macos`).** Typing is `htype2` (CGEvent posting, exact cadence), key to paint is `kl3` (ScreenCaptureKit),
+OCR is `ocr` (Apple Vision); all three are compiled from `script/realapp/mac/tools/*.swift` by `swiftc` at job start and cached by
+source hash in `~/.cache/phosphor-appci-tools` (no binaries in git). cliclick is no longer used. The app is launched with a PRIVATE HOME
+(`open --env HOME=<job>/run/home`): on macOS the settings file is `$HOME/.phosphor/settings.toml` (`warp_core::paths::config_local_dir`,
+OSS channel) and the log is `$HOME/Library/Logs/phosphor.log`, so the runner user's real profile is never touched and nothing needs
+restoring. Before every injection the guard checks the frontmost app name AND that its PID is the Phosphor PID the harness started; it
+refuses Cmd-Q/W/Tab/Space/H/M, Ctrl+Cmd chords and Globe. The job cleans up by exact, command-line-verified PID (Phosphor, sshd,
+caffeinate, python runner) in a trap that also fires on SIGTERM from a cancelled job. Mode proof: `shots/<mode>_proof_prekey.png` before
+any key and `<mode>_proof.png` after Escape, OCR-checked: agent = header `New Phosphor Agent conversation` or placeholder `Ask anything`
+(and, with Ollama configured, the `gpt-oss` model chip); the terminal hint `new /agent conversation` is NOT an agent marker.
 
 Machine-checkable output (`appci-out/<mode>/run/`): `results.json` (summary + one object per case: name, mode, status
 pass/fail/skip, detail, metrics, shots), `junit.xml` (GitLab test report), `summary.md`, `shots/*.png`, `logs/<mode>/` (app log with
