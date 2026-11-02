@@ -31,6 +31,7 @@ app/src/terminal/view.rs:release_held_keys	releases keys the hand-off held, in t
 app/src/terminal/view.rs:handle_terminal_event	OSC 52 clipboard-read reply: the terminal's answer to a program query
 app/src/terminal/view.rs:write_init_subshell_bytes_to_pty	subshell bootstrap first line: the setup that opens the SubshellSetup gate
 app/src/terminal/view.rs:write_subshell_bootstrap_line	subshell bootstrap lines, paced under the SubshellBootstrapWrite gate
+app/src/terminal/view.rs:hand_held_ssh_typeahead_to_unbootstrapped_remote	ssh bootstrap failed (#1494): ' stty sane' restores the remote line discipline the lost bootstrap left raw; a setup line that must reach the remote ahead of the held typeahead, which then drains through the queue
 app/src/terminal/view.rs:ctrl_c_during_powershell_setup	PowerShell StopProfiles ^C: must reach the console ahead of the PowerShell gate's held keys
 app/src/terminal/writeable_pty/terminal_manager_util.rs:*	the PtyIntent dispatcher: PtyIntent::CtrlD from the queue-aware view
 app/src/terminal/writeable_pty/pty_controller.rs:*	the controller owns the pty writer (the door's definition)
