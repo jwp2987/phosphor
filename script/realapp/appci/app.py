@@ -217,3 +217,112 @@ class MacApp:
         parts = out[0].replace(".", ":").split(":")
         secs = sum(float(x) * m for x, m in zip(reversed(parts), (0.01, 1, 60, 3600)))
         return int(secs * os.sysconf("SC_CLK_TCK")) if hasattr(os, "sysconf") and "SC_CLK_TCK" in os.sysconf_names else int(secs * 100), int(out[1])
+
+
+class WindowsApp:
+    """Windows: the side-by-side TEST build (installed into <Out>\\app by windows/ci/app_test.ps1; its exe path is --bin) started directly
+    from this process, so the PID is the one we started and the only one ever stopped (taskkill /PID <pid> /T /F, never by name). The app keeps
+    its data under %LOCALAPPDATA%\\phosphor and %APPDATA%\\phosphor (known folders, NOT HOME-relative), which is why app_test.ps1 backs both up
+    with md5 and restores them: prepare() wipes them once per (mode, pane) exactly like the PowerShell harness did, start() installs the
+    profile's settings.toml at %LOCALAPPDATA%\\phosphor\\Phosphor\\config. The pane shell is PowerShell (the app default; no rc hook is possible
+    because the app starts it with -NoProfile) or Git Bash (session.startup_shell_override; HOME = the scratch home, so ~/.bashrc logs rec.log)."""
+
+    DATA = ("LOCALAPPDATA", "APPDATA")
+
+    def __init__(self, run, home, binary, pane="powershell", ctl=None):
+        self.run, self.home, self.bin, self.pane = run, home, binary, pane
+        self.ctl = ctl or os.path.join(run, "ctl")
+        self.proc = None
+        self.exit_code = None
+        self.config = os.path.join(os.environ["LOCALAPPDATA"], "phosphor", "Phosphor", "config")
+
+    def prepare(self):
+        import shutil
+        for v in self.DATA:
+            shutil.rmtree(os.path.join(os.environ[v], "phosphor"), ignore_errors=True)
+
+    def _install_settings(self):
+        import shutil
+        src = os.path.join(self.home, ".config", "phosphor", "settings.toml")
+        os.makedirs(self.config, exist_ok=True)
+        shutil.copy2(src, os.path.join(self.config, "settings.toml"))
+
+    def env(self):
+        import winapi
+        e = {k: v for k, v in os.environ.items() if not (k.startswith("CI_JOB_JWT") or k in ("CI_JOB_TOKEN", "CI_REGISTRY_PASSWORD", "CI_DEPLOY_PASSWORD"))}
+        fwd = lambda p: p.replace("\\", "/")           # noqa: E731  (msys bash takes C:/... paths; backslashes inside variables survive unchanged)
+        e["RUST_LOG"] = "warn,warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"
+        e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
+        e["PA_CTL"] = fwd(self.ctl)
+        e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
+        tail = os.pathsep.join(winapi.git_dirs())
+        e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
+        if self.pane == "gitbash":
+            e["HOME"] = self.home
+            e["SHELL"] = "/usr/bin/bash"
+            e["CHERE_INVOKING"] = "1"
+        return e
+
+    def start(self):
+        self._install_settings()
+        os.makedirs(os.path.join(self.home, "w"), exist_ok=True)
+        out = open(os.path.join(self.run, "app.stdout"), "ab")
+        self.exit_code = None
+        self.proc = subprocess.Popen([self.bin], cwd=os.path.join(self.home, "w"), env=self.env(), stdout=out, stderr=subprocess.STDOUT)
+        with open(os.path.join(self.run, "pids"), "a") as f:
+            f.write("app %d\n" % self.proc.pid)
+        return self.proc.pid
+
+    def wait_window(self, timeout=60):
+        import winapi
+        t = time.time()
+        while time.time() - t < timeout:
+            if self.proc.poll() is not None:
+                return False
+            if winapi.main_window(self.proc.pid):
+                return True
+            time.sleep(0.5)
+        return False
+
+    def pid(self):
+        return self.proc.pid if self.proc and self.proc.poll() is None else None
+
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def death(self):
+        if self.proc is None or self.proc.poll() is None:
+            return None
+        self.exit_code = self.proc.returncode
+        return "APP DIED: pid %d exited with code %s (crash): see logs/app.stdout" % (self.proc.pid, self.proc.returncode)
+
+    def stop(self):
+        p, self.proc = self.proc, None
+        if not p:
+            return
+        if p.poll() is None:
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30)
+            try:
+                p.wait(10)
+            except Exception:
+                pass
+
+    def clk_tck(self):
+        return 10_000_000          # FILETIME units (100 ns)
+
+    def cpu_ticks(self):
+        import winapi
+        return winapi.process_times(self.proc.pid)
+
+    def find_log(self):
+        """newest phosphor*.log under the app's data dirs (the location is not HOME-relative on Windows), or None"""
+        best = None
+        for v in self.DATA:
+            base = os.path.join(os.environ[v], "phosphor")
+            for d, _, fs in os.walk(base):
+                for f in fs:
+                    if f.lower().startswith("phosphor") and f.lower().endswith(".log"):
+                        p = os.path.join(d, f)
+                        if best is None or os.path.getmtime(p) > os.path.getmtime(best):
+                            best = p
+        return best
