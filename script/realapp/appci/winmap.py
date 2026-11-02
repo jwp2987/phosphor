@@ -81,3 +81,34 @@ def skip_reason(name, pane):
 
 def unclassified(names):
     return [n for n in names if n not in BOTH and n not in GITBASH_ONLY and n not in PS_ONLY and n not in NOT_WINDOWS]
+
+
+# ---------------------------------------------------------------- the Windows fix tier (APPCI_TIER=smoke), as data
+# r18co: the unified smoke list took 70 min on Windows (2 modes x 2 panes). The mode-independent reference measurements (conhost enter control, Ctrl-C
+# reference + remeasure) say nothing new in agent mode, so only TERMINAL mode takes them; agent mode keeps the input path (typing, paste, Tab+Enter, a short
+# Ctrl-C) and the ssh hand-over cases (#1349), once per pane. The full tier (APPCI_TIER empty / full) is NOT touched by this table.
+# cases: None = the shared SMOKE list; else the subset (a case outside SMOKE is never added). Options, read by the cases through ctx.opts:
+#   ref        run the reference terminal measurements (enter control for fast_typing attribution, Ctrl-C reference + remeasure)
+#   ft_gaps    fast_typing burst gaps in seconds
+#   cc_short   ctrl_c_d without reference or remeasure
+FIX_TIER = {
+    "windows": {
+        "terminal": dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False),
+        "agent": dict(cases=("mode_proof", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d",
+                             "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead"),
+                      ref=False, ft_gaps=(0.0,), cc_short=True),
+    },
+}
+# a case that exists only in one mode/pane of the fix tier (key_loss_control: Git Bash terminal only; it is also GITBASH_ONLY above)
+FIX_ONLY_IN = {"key_loss_control": (("terminal", "gitbash"),), "enter_loss_control": (("terminal", "powershell"), ("terminal", "gitbash"))}
+FULL_OPTS = dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False)
+
+
+def tier_plan(platform, tier, mode, pane, smoke):
+    """-> (case names or None for 'all of the full tier', options dict) for one pass. smoke = the shared SMOKE tuple."""
+    if tier != "smoke":
+        return None, dict(FULL_OPTS)
+    o = dict(FIX_TIER[platform][mode])
+    names = [n for n in smoke if o["cases"] is None or n in o["cases"]]
+    names = [n for n in names if n not in FIX_ONLY_IN or (mode, pane) in FIX_ONLY_IN[n]]
+    return names, o
