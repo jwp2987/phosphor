@@ -14742,7 +14742,7 @@ impl Input {
     /// chosen that route explicitly (so it is recorded as locked and never offered a recovery of
     /// its own). The buffer must be empty. If nothing was submitted (the submit was refused), the
     /// previous input config is restored exactly, including its lock flag.
-    fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
         // #1434: not while an Enter waits for its verdict or an editor paste is read.
         if self.defer_programmatic_edit(enter_queue::DeferredEdit::ResubmitToShell(text.to_owned()), ctx) {
             return;
@@ -14778,7 +14778,7 @@ impl Input {
     /// input to AI, so `input_enter` would see Shell and run the text in the shell again (#907).
     /// Whatever the buffer holds when the submit is refused is cleared, since the buffer was
     /// empty before.
-    fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
         // #1434: not while an Enter waits for its verdict or an editor paste is read.
         if self.defer_programmatic_edit(enter_queue::DeferredEdit::SendToAgent(text.to_owned()), ctx) {
             return;
