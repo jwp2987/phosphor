@@ -619,11 +619,8 @@ impl ParkedBuilder {
         self.text_ends.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.text_ends.is_empty()
-    }
-
     /// Whether `paragraph` is parkable at all (independent of the current chunk).
+    #[cfg(test)]
     pub fn is_parkable(paragraph: &Paragraph) -> bool {
         parkable(paragraph).is_some()
     }

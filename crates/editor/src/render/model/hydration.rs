@@ -910,3 +910,7 @@ mod tests {
         assert_eq!(unwrapped.lazy_paragraphs_enabled(), !eager_layout_forced());
     }
 }
+
+#[cfg(test)]
+#[path = "parked_tests.rs"]
+mod parked_tests;
