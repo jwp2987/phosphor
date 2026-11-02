@@ -21494,7 +21494,7 @@ fn ssh_queue_overflow_drops_the_whole_run() {
 /// drains, everything lands once, in typed order.
 #[test]
 fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
-    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         assert!(ssh_gate_open(view));
@@ -21547,7 +21547,7 @@ fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
 /// answer is pasted nowhere.
 #[test]
 fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
-    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
         submit_command(view, "ssh host", ctx);
         view.typed_characters_on_terminal("a", ctx);
         let id = view
@@ -21771,7 +21771,7 @@ fn keys_behind_a_prompt_hold_take_no_model_lock() {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view, true);
+            conpty_prompt_hold_setup(view);
             view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
             assert!(prompt_gate_open(view));
             let before = crate::terminal::model_lock_trace::key_path_lock_count();
@@ -21965,7 +21965,7 @@ fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view, true);
+            conpty_prompt_hold_setup(view);
             view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
             view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
             let token = view.paste_queue.queue.borrow().gates()[0].token;
@@ -21993,7 +21993,7 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view, true);
+            conpty_prompt_hold_setup(view);
             // Another gate (a paste being read) holds the keys first; the hold starts when a key
             // is delivered from the queue, which is borrowed then.
             let queue = view.paste_queue.queue.clone();
@@ -22039,7 +22039,7 @@ fn editor_keys_taken_out_of_a_prompt_hold_are_applied_backspace_included() {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view, true);
+            conpty_prompt_hold_setup(view);
             let queue = view.paste_queue.queue.clone();
             {
                 let mut host = paste_queue::PtyQueueHost::new(view, ctx);
@@ -22081,7 +22081,7 @@ fn a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys(
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
-                conpty_prompt_hold_setup(view, true);
+                conpty_prompt_hold_setup(view);
                 view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
                 view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
                 let queue = view.paste_queue.queue.clone();
@@ -22602,7 +22602,7 @@ fn queued_texts(view: &TerminalView) -> Vec<String> {
 /// the queue cannot take a new entry: it used to log "a key was not held" and drop the text.
 #[test]
 fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
-    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
         // `ls` waits behind the Enter's gate; the Enter's command is `ssh host`.
         hold_text_behind_test_gate(view, "ls", ctx);
         submit_command(view, "ssh host", ctx);
