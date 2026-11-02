@@ -31,6 +31,9 @@ def main():
     resf = os.path.join(run, "results.jsonl")
     open(resf, "w").close()
     prof = profile.Profile(run)
+    if a.backend == "mac":
+        import refterm_mac
+        refterm_mac.snapshot(run)       # #1485: was Terminal.app already running? (if not, a reference launch is quit by PID at exit)
     import ci_env
     ollama_url, ollama_model = ci_env.ollama()      # env, else ~/.config/phosphor-ci/ci.env; the value is never printed
     sim = a.backend == "sim"

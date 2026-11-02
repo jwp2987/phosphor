@@ -777,17 +777,20 @@ def ref_terminal(ctx):
     home = ctx.prof.home
     if ctx.be.name == "mac":
         # NO Apple Events: `tell application "Terminal" ... do script` needs an Automation grant (a TCC prompt nobody answers in CI; it hung
-        # 30 s per sample in run 3015802940). A .command file opened with LaunchServices needs none. Driven by htype2 under the frontmost guard.
+        # 30 s per sample in run 3015802940). A .terminal window-settings document opened with LaunchServices needs none, and carries
+        # shellExitAction=close so the window goes away with its shell (#1485: bare .command windows piled up as "[Process completed]").
+        # Driven by htype2 under the frontmost guard.
+        import refterm_mac
         ctx.ref_reason = None
-        cmdf = os.path.join(ctx.prof.home, "ref_terminal.command")
-        with open(cmdf, "w") as f:
-            f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
-        os.chmod(cmdf, 0o755)
+        refterm_mac.snapshot(ctx.run)   # normally already done at harness start; idempotent
+        cmdf = os.path.join(ctx.prof.home, "ref_terminal.terminal")
+        refterm_mac.write_settings(cmdf, "phosphor-ref-%d" % os.getpid(), ctx.W, home, ctx.prof.ctl)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
         rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
         if rr.returncode != 0:
             ctx.ref_reason = "open -a Terminal failed: %s" % rr.stderr.decode().strip()[:120]
             return None
+        refterm_mac.note_launched(ctx.run)
         for _ in range(16):             # <= 8 s for Terminal to become frontmost
             if ctx.be._front()[0].lower() == "terminal":
                 break
@@ -802,7 +805,8 @@ def ref_terminal(ctx):
         ctx.be.guard_override = "Terminal"
 
         def close():
-            # never Cmd-W/Q: the shell exits cleanly, and Terminal's default profile closes the window of a cleanly exited shell
+            # never Cmd-W/Q: typing `exit` ends the shell and the .terminal document's shellExitAction closes the window. If the exit were
+            # lost the shell stays live; a Terminal.app this run launched is quit by exact PID at the end of the run (refterm_mac)
             try:
                 ctx.be.type("exit", 12, enter=True)
             except Exception:
@@ -810,7 +814,7 @@ def ref_terminal(ctx):
             time.sleep(0.8)
             ctx.be.guard_override = None
             ctx.be.refocus()
-        return RefTerm("Terminal.app (.command via open)", close=close)
+        return RefTerm("Terminal.app (.terminal via open)", close=close)
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
     env = dict(os.environ, HOME=home)
     if wl and shutil.which("foot") and ctx.be.name == "wayland":
