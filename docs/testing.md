@@ -281,7 +281,7 @@ agent). Code: `script/realapp/appci/` (Python: `run.py` driver, `cases.py`, `bac
 Each also has a `-reuse` twin that tests an earlier app-identical build (2.9). Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
 `script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
 `APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty (candidate, release; everything below). Smoke = the cases
-`mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `latency_enter`, `latency_key_log` in both
+`mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `latency_enter`, `latency_key_log`, `md_viewer` in both
 modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux only the `wayland` run (the `xwayland` pass and
 `app-test-linux-x11` exit at once); on Windows `fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter` (its names differ; `tab_enter`
 and `ssh_connect_typing` have no Windows equivalent). Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
@@ -466,6 +466,39 @@ real number in `mutants.out/outcomes.json`). `mutants-warpui-core` mutates the c
 warpui_core's tests only: estimated 25-40 mutants, under an hour. Widen by playing `mutants` with `MUTANTS_FILES` (space separated) and
 `MUTANTS_TEST_FILTER` set, and split a wide run with `MUTANTS_SHARD=k/n` over several jobs; `cargo mutants --list --file ...` counts
 mutants without running them.
+
+### 2.10 Markdown and Mermaid readers (#1460)
+
+What is covered, where, and how to update it. Nothing here runs cargo on the laptop; the box does (section 1).
+
+| layer | where | what it checks |
+|---|---|---|
+| parser unit tests (pre-existing, ~142) | `crates/markdown_parser/src/*_test.rs` | individual constructs, incremental tail parse |
+| markdown corpus + insta snapshots | `crates/markdown_parser/tests/corpus.rs`, fixtures `tests/fixtures/*.md`, snapshots `tests/snapshots/` | every fixture (headings, nested lists, task lists, tables, fenced code, inline, links/images, block quotes, HTML blocks, footnotes, unicode/RTL, CRLF, malformed, control chars, empty) parsed with and without GFM tables; the `FormattedText` document model is the snapshot. Also: no panic, deterministic, CRLF reads like LF, 600 KB single lines, deep nesting, streamed tail parse equals full parse. Tables: `parse_markdown_with_gfm_tables` is the runtime switch (no cargo feature) |
+| mermaid corpus | `crates/editor/tests/mermaid_corpus.rs`, fixtures `tests/fixtures/mermaid/*.mmd`, snapshots `tests/snapshots/` | 14 valid diagrams (flowchart TD/LR, sequence, class, state, ER, gantt, pie, mindmap, journey, timeline, frontmatter theme, unicode labels, CRLF) rendered through `mermaid_asset_source`'s fetch, the exact app path: expected labels present, deterministic, normalized summary snapshot (rounded size, element counts, text labels; never the raw SVG). 9 `invalid_*` files: must return the app's error (which becomes `FailedToLoad` and the source fallback in `render_mermaid_diagram_section`) or a non-blank SVG, never panic. Hostile sources for every diagram kind, 300-node flowchart and 400-message sequence bound |
+| render-time bench | `crates/editor/benches/mermaid_render_bench.rs` | criterion; budgets 50 ms per small diagram, 2 s for 300 nodes / 400 messages; `MERMAID_BENCH_ENFORCE=1` makes a blown budget fail |
+| cargo-fuzz | `fuzz/fuzz_targets/markdown_parser.rs`, `mermaid_render.rs`; seeds `fuzz/corpus/{markdown_parser,mermaid_render}` | run by `fuzz-smoke` (180 s each) |
+| real-app CI cases | `script/realapp/appci/cases.py`: `md_viewer` (smoke + full, both modes), `md_viewer_big` (full only), `md_viewer_ai_answer` (agent, needs the CI Ollama model) | opens a `.md` with a table and a mermaid flowchart in the running app through a `file://` URL (Linux: second invocation forwarded over the app's D-Bus; macOS: `open -a <bundle>`), screenshot, OCR (tesseract on Linux, Apple Vision on Mac; no engine = screenshot only and a note) of the table text and the diagram node labels; 2 MB file: time to first heading and RSS growth (first-guess budgets 90 s / 3000 MB, tighten after the first numbers). The AI answer part is a note/metric only (model output is nondeterministic); no fake-model path exists. Windows: not covered (`app_test.ps1` has no OCR) |
+
+**Updating snapshots** (first run after adding a fixture, or an intended parser/renderer change). On the box through the runner or
+`script/agent-cargo <name>`:
+
+```
+INSTA_UPDATE=always script/agent-cargo <name> nextest run -p markdown_parser --test corpus
+INSTA_UPDATE=always script/agent-cargo <name> nextest run -p warp_editor --test mermaid_corpus
+cargo insta review          # or just read `git diff -- '*.snap'`; commit the .snap files
+```
+
+A missing snapshot FAILS the test in CI (insta never writes there); the first box run of a new fixture therefore needs the
+`INSTA_UPDATE=always` pass above. Review every diff: a snapshot change is a changed reading of the document, not noise. Do not
+accept a diff to make a red test green without understanding it (`AGENTS.md` 5.6).
+
+**Fuzzing**: `cd fuzz && cp ../Cargo.lock Cargo.lock && cargo +nightly fuzz run markdown_parser -- -max_total_time=120` (same for
+`mermaid_render`); `docs/dev-tooling.md` has the rest. A crash artifact goes to `fuzz/artifacts/`; file an issue, add the input as a
+fixture/seed, fix the code.
+
+**Not covered yet**: pixel-level rendering of the diagram block (`crates/editor/src/render/element/mermaid.rs`), the notebook
+`mermaid_render_offsets`, `render_mermaid_diagram_section` and the `ai_document` view beyond the real-app OCR check above.
 
 ## 3. Real-app testing
 

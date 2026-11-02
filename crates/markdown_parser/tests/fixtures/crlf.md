@@ -1,0 +1,15 @@
+line one
+
+# CRLF heading
+
+- item a
+- item b
+  - nested
+
+```rust
+let x = 1;
+```
+
+| a | b |
+|---|---|
+| 1 | 2 |

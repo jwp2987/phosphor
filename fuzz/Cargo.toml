@@ -19,6 +19,10 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.9"
 warp = { path = "../app", features = ["dev-support"] }
+# Renamed so the extern crate name does not collide with the `markdown_parser` fuzz binary.
+md = { package = "markdown_parser", path = "../crates/markdown_parser" }
+# Same pin as the root workspace (Cargo.toml `mermaid_to_svg`).
+mermaid_to_svg = { git = "https://github.com/warpdotdev/mermaid-to-svg.git", rev = "8d3f789c2eb49335d7bf247a06bb649f59b6d4ed" }
 
 [workspace]
 members = ["."]
@@ -40,6 +44,20 @@ bench = false
 [[bin]]
 name = "input_queue"
 path = "fuzz_targets/input_queue.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown_parser"
+path = "fuzz_targets/markdown_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mermaid_render"
+path = "fuzz_targets/mermaid_render.rs"
 test = false
 doc = false
 bench = false

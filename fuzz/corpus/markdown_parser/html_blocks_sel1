@@ -1,0 +1,18 @@
+<div align="center">
+  <b>centered</b>
+</div>
+
+<details>
+<summary>Click</summary>
+
+Hidden **content**.
+
+</details>
+
+<!-- a comment -->
+
+Inline <kbd>Ctrl</kbd>+<kbd>C</kbd> and <br> break.
+
+<script>alert(1)</script>
+
+<img src="https://example.com/x.png" width="100">
