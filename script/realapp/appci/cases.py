@@ -1184,3 +1184,4 @@ import cases_caseagent  # noqa: E402,F401  (#1463: agent_stream_cancel, agent_ap
 import cases_ui  # noqa: E402,F401  (#1462: completions/history, mouse/panes/resize, startup + live settings cases)
 import cases_robust  # noqa: E402,F401  (#1468: session restore, quit with 24 tabs, floods, soak, code editor)
 import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh + per-shell variants)
+import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)

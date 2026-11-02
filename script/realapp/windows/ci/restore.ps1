@@ -49,6 +49,26 @@ foreach ($l in $meta.lnks) {
   Step "shortcut$n" { if (Test-Path "$Bak\lnk$n.lnk") { Copy-Item "$Bak\lnk$n.lnk" $lnk -Force -ErrorAction Stop; "restored" } elseif (Test-Path $lnk) { Remove-Item $lnk -Force -ErrorAction Stop; "removed (not there before)" } else { "absent, as before" } }
   $i++
 }
+Step "keyboard-layout" {
+  # cases_caseintl.ps1 switches only the Phosphor window to a German layout (WM_INPUTLANGCHANGEREQUEST) and writes kbd_pre.json first; this step proves the
+  # user's language list and HKCU\Keyboard Layout\Preload are what they were, and repairs them when a layout load persisted
+  $f = "$Bak\kbd_pre.json"
+  if (-not (Test-Path $f)) { "no keyboard snapshot (international-input cases did not run)" } else {
+    $pre = Get-Content $f -Raw | ConvertFrom-Json; $fix = @()
+    $cur = @{}; try { $k = Get-ItemProperty "HKCU:\Keyboard Layout\Preload" -ErrorAction Stop; foreach ($p in $k.PSObject.Properties) { if ($p.Name -notlike "PS*") { $cur[$p.Name] = [string]$p.Value } } } catch {}
+    $want = @{}; if ($pre.preload) { foreach ($p in $pre.preload.PSObject.Properties) { $want[$p.Name] = [string]$p.Value } }
+    $same = ($cur.Count -eq $want.Count); foreach ($n in $want.Keys) { if ($cur[$n] -ne $want[$n]) { $same = $false } }
+    if (-not $same) {
+      foreach ($n in @($cur.Keys)) { Remove-ItemProperty "HKCU:\Keyboard Layout\Preload" -Name $n -ErrorAction SilentlyContinue }
+      foreach ($n in $want.Keys) { Set-ItemProperty "HKCU:\Keyboard Layout\Preload" -Name $n -Value $want[$n] }
+      $fix += "Preload restored"
+    }
+    try {
+      $tags = @($pre.langs | ForEach-Object { $_.tag }); $nowTags = @(Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag })
+      if ($tags.Count -and (($tags -join ",") -ne ($nowTags -join ","))) { Set-WinUserLanguageList -LanguageList $tags -Force; $fix += "language list restored ($($nowTags -join ',') -> $($tags -join ','))" }
+    } catch { $fix += "FAIL: language list check threw $($_.Exception.Message)" }
+    if ($fix -match "^FAIL") { $fix -join "; " } elseif ($fix.Count) { "repaired: " + ($fix -join "; ") } else { "language list and Preload identical to the snapshot" }
+  } }
 Step "verify-data" {
   $pre = @(Get-Content "$Bak\md5_pre.txt" -ErrorAction Stop | Where-Object { $_ }); $post = @(Md5List $meta.dirs); $post | Set-Content "$Bak\md5_post.txt"
   $d = @(Compare-Object $pre $post).Count; if ($d) { "FAIL: app data md5 differs after restore ($d entries)" } else { "data md5 identical" } }

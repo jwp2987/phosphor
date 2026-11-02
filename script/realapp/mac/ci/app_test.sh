@@ -43,7 +43,7 @@ command -v swiftc >/dev/null || fail3 "swiftc is missing for user $(whoami) (xco
 # compile the injection / latency / OCR tools from source (script/realapp/mac/tools/*.swift; NO binaries in git). Cached by source hash
 # in the runner's own dir, so a build only happens when a source changed.
 TSRC="$HERE/../tools"; TCACHE="$HOME/.cache/phosphor-appci-tools"; mkdir -p "$TCACHE"; TOOLS="$OUT/tools"; mkdir -p "$TOOLS"
-for t in htype2 kl3 ocr winrect; do
+for t in htype2 kl3 ocr winrect tis; do
   h=$(shasum -a 256 "$TSRC/$t.swift" | cut -c1-16); b="$TCACHE/$t-$h"
   if [ ! -x "$b" ]; then swiftc -O "$TSRC/$t.swift" -o "$b.tmp.$$" 2> "$OUT/swiftc-$t.log" && mv "$b.tmp.$$" "$b" || { rm -f "$b.tmp.$$"; fail3 "swiftc failed for $t.swift (see swiftc-$t.log in the job artifacts)"; }; fi
   cp "$b" "$TOOLS/$t"
