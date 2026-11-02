@@ -20,6 +20,7 @@ __pa_rec() {
     # (a restored/relaunched shell would otherwise log it as a command and look like a session-restore re-run)
     if [ -n "$__pa_first" ]; then __pa_n=$n
     elif [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\t%%s\t%%s\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
+    if [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\\t%%s\\t%%s\\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
   fi
   __pa_first=
   printf 'P\t%%s\n' "$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
@@ -47,6 +48,8 @@ if [[ -n $APPCI_W ]]; then cd $APPCI_W; elif [[ $PWD == $HOME ]]; then cd $HOME/
 FISH = '''# appci scratch config (fish)
 set -gx PA_CTL "%(ctl)s"
 function fish_prompt; echo -n "fish> "; end
+# fish_postexec marker: the exact line fish executed, in its own log (fish_rec.log) so the bash rec.log counts stay untouched
+function __pa_postexec --on-event fish_postexec; printf 'C\\t%%s\\t%%s\\n' (date +%%s) "$argv[1]" >> $PA_CTL/fish_rec.log; end
 '''
 
 
@@ -91,6 +94,9 @@ class Profile:
         open(h + "/.zshrc", "w").write(ZSHRC % {"ctl": self.ctl})
         os.makedirs(h + "/.config/fish", exist_ok=True)
         open(h + "/.config/fish/config.fish", "w").write(FISH % {"ctl": self.ctl})
+        os.makedirs(h + "/.config/nushell", exist_ok=True)       # empty configs: nu's first-run "create config files?" question never appears
+        for nf in ("config.nu", "env.nu"):
+            open(h + "/.config/nushell/" + nf, "a").close()
         hist = history_lines()
         open(h + "/.bash_history", "w").write("\n".join(hist) + "\n")
         open(h + "/.zsh_history", "w").write("\n".join(hist) + "\n")
@@ -111,6 +117,12 @@ class Profile:
                 "Host fake\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                 "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode yes\n  LogLevel ERROR\n"
                 % (ssh_port, os.environ.get("USER", "runner"), ssh_ident, h))
+            pw = os.path.join(os.path.dirname(ssh_ident), "pwkey")      # sshd.py: passphrase-protected key (openssh kind only)
+            if os.path.exists(pw):
+                open(h + "/.ssh/config", "a").write(
+                    "\nHost fakepw\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
+                    "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
+                    % (ssh_port, os.environ.get("USER", "runner"), pw, h))
         return h
 
     OWNER_SEED = os.path.join(os.path.expanduser("~"), ".config", "phosphor-ci", "owner-settings.toml")
