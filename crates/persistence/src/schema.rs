@@ -390,12 +390,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    server_experiments (experiment) {
-        experiment -> Text,
-    }
-}
-
-diesel::table! {
     settings_panes (id) {
         id -> Integer,
         kind -> Text,

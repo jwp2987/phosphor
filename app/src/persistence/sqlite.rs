@@ -45,7 +45,7 @@ use super::block_list::{
 };
 use super::model::{
     self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
-    NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTabGroup, NewTeam,
+    NewApp, NewCommand, NewFolder, NewNotebook, NewTab, NewTabGroup, NewTeam,
     NewWindow, NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata,
     ObjectPermissions, Project, Tab, TabGroup, Window,
     WorkspaceMetadata as WorkspaceMetadataModel,
@@ -99,7 +99,6 @@ use crate::persistence::model::{
     NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
     ProjectRules, UserProfile, CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND,
 };
-use crate::server::experiments::ServerExperiment;
 use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
 use crate::server::telemetry::TelemetryEvent;
 use crate::server_time::ServerTimestamp;
@@ -2954,9 +2953,6 @@ fn handle_model_event_unsettled(
             actions_to_sync: objects_to_sync,
         } => {
             sync_object_actions(connection, objects_to_sync).context("error syncing object actions")
-        }
-        ModelEvent::SaveExperiments { experiments } => {
-            save_experiments(connection, experiments).context("error saving experiments")
         }
         ModelEvent::UpsertAIQuery { query } => {
             upsert_ai_query(connection, query).context("error upserting AI query")
@@ -5921,16 +5917,6 @@ fn read_sqlite_data_counting(
     .filter_map(|action| action.try_into().ok())
         .collect();
 
-    let server_experiments = collect_rows(
-        schema::server_experiments::dsl::server_experiments
-            .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?,
-    )?
-    .into_iter()
-    .filter_map(|server_experiment| {
-            ServerExperiment::from_string(server_experiment.experiment).ok()
-        })
-        .collect();
-
     let restored_blocks = get_all_restored_blocks(conn)?;
 
     // Load active MCP servers from database
@@ -5996,7 +5982,6 @@ fn read_sqlite_data_counting(
         user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        experiments: server_experiments,
         ai_queries,
         nld_prompts,
         codebase_indices,
@@ -6256,27 +6241,6 @@ fn upsert_user_profiles(
                 .values(new_user_profile)
                 .execute(conn)?;
         }
-        Ok(())
-    })
-}
-
-fn save_experiments(
-    conn: &mut SqliteConnection,
-    experiments: Vec<ServerExperiment>,
-) -> Result<(), Error> {
-    conn.transaction::<(), Error, _>(|conn| {
-        diesel::delete(schema::server_experiments::dsl::server_experiments).execute(conn)?;
-
-        let new_experiments = experiments
-            .into_iter()
-            .map(|experiment| NewServerExperiment {
-                experiment: experiment.to_string(),
-            })
-            .collect_vec();
-
-        diesel::insert_into(schema::server_experiments::dsl::server_experiments)
-            .values(new_experiments)
-            .execute(conn)?;
         Ok(())
     })
 }

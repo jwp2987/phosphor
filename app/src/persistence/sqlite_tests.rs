@@ -3733,3 +3733,69 @@ fn writer_commits_an_event_whose_commit_was_blocked() {
         .expect("terminate event should send");
     writer.handle.join().expect("writer should terminate");
 }
+
+/// Whether `server_experiments` exists in `conn`.
+fn server_experiments_table_exists(conn: &mut diesel::sqlite::SqliteConnection) -> bool {
+    use diesel::{RunQueryDsl as _, sql_types::BigInt};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let count = diesel::sql_query(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'server_experiments'",
+    )
+    .get_result::<Count>(conn)
+    .expect("sqlite_master query");
+    count.n > 0
+}
+
+const DROP_SERVER_EXPERIMENTS_UP_SQL: &str = include_str!(
+    "../../../crates/persistence/migrations/2026-11-02-000000_drop_server_experiments/up.sql"
+);
+
+/// A fresh database (all migrations applied, so the table was created and then dropped)
+/// ends up without `server_experiments`, and the drop is a no-op when re-applied to a
+/// database that no longer (or never) had the table.
+#[test]
+fn drop_server_experiments_migration_on_a_fresh_database() {
+    use diesel::{Connection as _, RunQueryDsl as _, sqlite::SqliteConnection};
+    use diesel_migrations::MigrationHarness as _;
+
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory connection");
+    conn.run_pending_migrations(::persistence::MIGRATIONS)
+        .expect("migrations should run");
+    assert!(!server_experiments_table_exists(&mut conn));
+
+    // Never had the table: the statement must still succeed.
+    diesel::sql_query(DROP_SERVER_EXPERIMENTS_UP_SQL)
+        .execute(&mut conn)
+        .expect("dropping an absent table must not fail");
+    assert!(!server_experiments_table_exists(&mut conn));
+}
+
+/// A database that still has a populated `server_experiments` table loses it, and nothing
+/// else.
+#[test]
+fn drop_server_experiments_migration_on_a_database_with_the_table() {
+    use diesel::{Connection as _, RunQueryDsl as _, sqlite::SqliteConnection};
+    use diesel_migrations::MigrationHarness as _;
+
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory connection");
+    conn.run_pending_migrations(::persistence::MIGRATIONS)
+        .expect("migrations should run");
+
+    diesel::sql_query("CREATE TABLE server_experiments (experiment TEXT PRIMARY KEY NOT NULL)")
+        .execute(&mut conn)
+        .expect("recreate the legacy table");
+    diesel::sql_query("INSERT INTO server_experiments VALUES ('WINDOWS_LAUNCH_EXPERIMENT')")
+        .execute(&mut conn)
+        .expect("legacy row");
+    assert!(server_experiments_table_exists(&mut conn));
+
+    diesel::sql_query(DROP_SERVER_EXPERIMENTS_UP_SQL)
+        .execute(&mut conn)
+        .expect("migration SQL should apply");
+    assert!(!server_experiments_table_exists(&mut conn));
+}

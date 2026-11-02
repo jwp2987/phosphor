@@ -1444,7 +1444,6 @@ fn initialize_app(
         restored_user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        _experiments,
         ai_queries,
         nld_prompts,
         persisted_workspaces,
@@ -1467,7 +1466,6 @@ fn initialize_app(
                 sqlite_data.user_profiles,
                 sqlite_data.time_of_next_force_object_refresh,
                 sqlite_data.object_actions,
-                sqlite_data.experiments,
                 sqlite_data.ai_queries,
                 sqlite_data.nld_prompts,
                 sqlite_data.codebase_indices,
@@ -1485,7 +1483,6 @@ fn initialize_app(
             // One `Default::default()` per binding above; adding a field to `PersistedData`
             // means adding one here too, or the tuple arms stop agreeing on arity.
             (
-                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
