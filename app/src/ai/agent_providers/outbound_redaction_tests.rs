@@ -113,14 +113,14 @@ fn embeddings_and_rerank_inputs_are_redacted_when_on_and_untouched_when_off() {
         let _armed = Armed::on();
         let texts = prepare_embedding_input(vec![format!("const K = \"{SECRET}\";")]);
         assert!(!texts.concat().contains(SECRET));
-        let (q, docs) =
-            prepare_rerank_input(&format!("where is {SECRET}"), vec![format!("k={SECRET}")]);
+        let query = format!("where is {SECRET}");
+        let (q, docs) = prepare_rerank_input(&query, vec![format!("k={SECRET}")]);
         assert!(!q.contains(SECRET) && !docs.concat().contains(SECRET));
     }
     let _off = Armed::off();
     let texts = prepare_embedding_input(vec![format!("const K = \"{SECRET}\";")]);
     assert!(texts.concat().contains(SECRET));
-    let (q, docs) =
-        prepare_rerank_input(&format!("where is {SECRET}"), vec![format!("k={SECRET}")]);
+    let query = format!("where is {SECRET}");
+    let (q, docs) = prepare_rerank_input(&query, vec![format!("k={SECRET}")]);
     assert!(q.contains(SECRET) && docs.concat().contains(SECRET));
 }

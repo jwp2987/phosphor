@@ -2734,7 +2734,7 @@ fn test_enter_behind_an_unhandled_edit_does_not_accept_the_stale_as_you_type_men
                 ctx,
             );
         });
-        input.read(&app, |input, ctx| {
+        input.update(&mut app, |input, ctx| {
             // The menu answers the buffer it was opened for: not stale.
             assert!(!input.as_you_type_menu_lags_buffer(ctx));
         });
@@ -2744,7 +2744,7 @@ fn test_enter_behind_an_unhandled_edit_does_not_accept_the_stale_as_you_type_men
             input.user_insert("z", ctx);
             input.completion_menu_stale = false;
         });
-        input.read(&app, |input, ctx| {
+        input.update(&mut app, |input, ctx| {
             assert!(
                 input.as_you_type_menu_lags_buffer(ctx),
                 "the menu lists results for 'open-file ', the buffer is 'open-file z'"
