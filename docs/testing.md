@@ -582,7 +582,10 @@ exercised outside a running job when this was written: the first real reuse run 
 One driver, three sizes: `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
 [--tests '<nextest filterset>'] [--skip job ...] [--no-reuse] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
 It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
-play API, and ends with a table of job, status and minutes. Heavy jobs stay manual: the script is how you start them, after asking.
+play API, and ends with a table of job, status, VERDICT (PASS / FAIL / SKIPPED / INFO) and minutes, plus an `overall:` line. The exit code is non-zero when ANY
+played job fails, app tests included (they are `allow_failure` in GitLab, so the pipeline is green regardless; the ci_seq verdict is the one that is not). An app
+test that never ran because its build failed counts as FAIL. `skipped by tier` (smoke tier x11) is the only neutral status; the x11 job itself exits 77
+(allowed failure code) in smoke so it can never be recorded as a success that tested nothing. bench/mutants/fuzz are INFO. Heavy jobs stay manual: the script is how you start them, after asking.
 
 | tier | runs | target | when |
 |---|---|---|---|
@@ -604,7 +607,7 @@ is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs
 prepare_*}` and any new unlisted path rebuild (fail safe). Each platform prints its decision (`macos: reusing build job N from pipeline P
 (commit C), app unchanged` or `macos: building, app changed in: <paths>`); `--no-reuse` forces builds. `candidate` and `release` NEVER reuse.
 Reused platforms start their app test right after `check-linux` (no build to wait for); the smoke tier does not play `app-test-linux-x11-reuse` (it
-would only exit).
+would only exit; the summary shows it as `skipped by tier`).
 
 **Fix-tier filter derivation.** Without `--tests`, `ci_seq.py` runs `git diff --name-only <base>..<ref>` (base = merge-base with the
 newest other `build/*` ref, else `origin/main`; `--base` overrides) and maps paths: `crates/<name>/` -> `package(<name>)` (`warpui_core`

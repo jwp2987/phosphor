@@ -346,7 +346,8 @@ def main():
             if n in SKIP or n + "-reuse" not in jobs():
                 continue
             if n == "app-test-linux-x11":
-                print("%s: smoke tier skips the x11 pass; not played" % n); continue
+                print("%s: smoke tier skips the x11 pass; not played" % n)
+                timeline[n + "-reuse"] = (TIER_SKIP, None); continue
             if play(n + "-reuse", rv):
                 reuse_started.append(n + "-reuse")
     for n in builds:
@@ -357,10 +358,14 @@ def main():
     started, lock = [], threading.Lock()
 
     def after_build(b):
-        if wait(b) != "success":
+        bs = wait(b)
+        if bs != "success":
+            for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
+                timeline[n] = ("not run (%s %s)" % (b, bs), None)   # a build that failed leaves its app tests unrun: that is a failure, not a pass
             return
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if tier == "fix" and n == "app-test-linux-x11":
+                timeline[n] = (TIER_SKIP, None)
                 continue
             if play(n, appvars):
                 print("%s: %s succeeded, started %s" % (time.strftime("%H:%M"), b, n), flush=True)
@@ -389,7 +394,7 @@ def main():
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     summary(timeline, t_start)
     collect_hint(pid, a.collect)
-    return 0 if all(v[0] == "success" for k, v in timeline.items() if not k.startswith(("app-test", "bench", "mutants", "fuzz"))) else 1
+    return 0 if all(verdict(k, v[0]) != "FAIL" for k, v in timeline.items()) else 1
 
 
 def collect_hint(pid, auto):
@@ -404,10 +409,28 @@ def collect_hint(pid, auto):
         print("\nto archive these results (the coordinator commits; CI never pushes):\n  " + cmd, flush=True)
 
 
+TIER_SKIP = "skipped by tier"
+
+
+def verdict(name, status):
+    """Per-job verdict. Every job in the timeline counts, app tests included (they are allow_failure in GitLab, so the
+    pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral; bench,
+    mutants and fuzz are informational (not gating) and keep their status. Anything else that is not success fails."""
+    if status == TIER_SKIP:
+        return "SKIPPED"
+    if status == "success":
+        return "PASS"
+    if name.startswith(("bench", "mutants", "fuzz")):
+        return "INFO"
+    return "FAIL"
+
+
 def summary(timeline, t0):
-    print("\n%-28s %-10s %s" % ("job", "status", "minutes"))
+    print("\n%-28s %-18s %-8s %s" % ("job", "status", "verdict", "minutes"))
     for k, (s, d) in timeline.items():
-        print("%-28s %-10s %s" % (k, s, "%.1f" % (d / 60) if d else "-"))
+        print("%-28s %-18s %-8s %s" % (k, s, verdict(k, s), "%.1f" % (d / 60) if d else "-"))
+    bad = [k for k, (s, _) in timeline.items() if verdict(k, s) == "FAIL"]
+    print("overall: %s" % ("FAIL (%s)" % ", ".join(bad) if bad else "PASS"))
     print("wall clock: %.1f min" % ((time.time() - t0) / 60), flush=True)
 
 
