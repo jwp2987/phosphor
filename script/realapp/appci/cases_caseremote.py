@@ -358,7 +358,7 @@ SHELLS = {
     "zsh": ("zsh", "zsh (apt install zsh)", 2.5, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
     "fish": ("fish", "fish (apt install fish)", 3.0, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
     "nu": ("nu", "nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell)", 4.0,
-           lambda t, f: '"%s" | save --append %s' % (t, f), "sleep 30sec", "exit"),
+           lambda t, f: '"%s\\n" | save --append %s' % (t, f), "sleep 30sec", "exit"),
     "pwsh": ("pwsh", "PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell)", 7.0,
              lambda t, f: "Add-Content %s %s" % (f, t), "Start-Sleep 30", "exit"),
 }
@@ -455,7 +455,7 @@ def make_shell_case(key):
                 r.note("fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)")
         if key == "nu":
             t1 = ctx.tok(8).lower()
-            ctx.be.type("nu -c '\"%s\" | save --append %s'" % (t1, x), 12, enter=True)
+            ctx.be.type("nu -c '\"%s\\n\" | save --append %s'" % (t1, x), 12, enter=True)
             ctx.until(lambda: ctx.lines(x), 8)
             exact(r, "nu: nested `nu -c`", [t1], ctx.lines(x))
             ctx.be.type("nu", 12, enter=True)             # nested nushell
