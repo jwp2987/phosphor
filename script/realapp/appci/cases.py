@@ -13,7 +13,9 @@ CASES = []
 # ONE list for Linux, macOS and Windows (#1488): a case that cannot run on a platform / pane shell SKIPS there with a reason (winmap.py), never silently.
 # The two ssh hand-over cases are in it for the ConPTY / hand-over release blocker (#1349).
 SMOKE = ("mode_proof", "key_loss_control", "enter_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing",
-         "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
+         "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer",
+         # owner 2026-11-02 ("still not doing agent?"): the agent pass must also send REAL prompts, not only shell lines typed into the agent view
+         "routing_table", "agent_stream_cancel")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):

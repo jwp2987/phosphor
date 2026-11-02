@@ -95,7 +95,7 @@ FIX_TIER = {
     "windows": {
         "terminal": dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False),
         "agent": dict(cases=("mode_proof", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d",
-                             "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead"),
+                             "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "routing_table", "agent_stream_cancel"),
                       ref=False, ft_gaps=(0.0,), cc_short=True),
     },
 }
