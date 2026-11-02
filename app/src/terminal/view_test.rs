@@ -23347,3 +23347,84 @@ fn route_facts_derive_the_phases_from_the_legacy_fields_without_changing_them() 
         });
     });
 }
+
+// ---- the shadow comparison (#1424, step 3) ------------------------------------------------------
+
+/// Shadow mode changes no destination: typed text at an idle prompt lands in the editor exactly as
+/// in legacy, and the table, asked next to the legacy chain with the facts of the same moment,
+/// agrees, so nothing is logged.
+#[test]
+fn shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow;
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(shadow::take_recorded(), Vec::<String>::new());
+        });
+    });
+}
+
+/// A legacy leaf that differs from the table's plan is reported through the view's hooks, with the
+/// row, both classes and the facts, and no content.
+#[test]
+fn shadow_reports_a_legacy_table_disagreement_through_the_views_hooks() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow::{self, DestClass};
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            // At an idle prompt the table puts typed text in the editor (D7). Pretend legacy wrote
+            // it to the pty.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            assert!(pending.is_some(), "the comparison runs in shadow mode");
+            shadow::note_leaf(DestClass::Pty);
+            view.shadow_end(pending);
+            let lines = shadow::take_recorded();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].starts_with("row=D7 legacy=pty table=editor flags="),
+                "{}",
+                lines[0]
+            );
+            // Agreement logs nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            shadow::note_leaf(DestClass::Editor);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+            // A leaf nobody noted compares nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+        });
+    });
+}
+
+/// Without `shadow` mode and a listener, the hooks do not even build the facts.
+#[test]
+fn the_shadow_hooks_cost_nothing_unless_wanted() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+                let _mode = set_destination_mode_for_test(mode);
+                assert!(
+                    view.shadow_begin(Class::Typed, ctx).is_none(),
+                    "{mode:?}: no comparison"
+                );
+            }
+        });
+    });
+}

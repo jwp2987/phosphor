@@ -38,8 +38,8 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
-//! DESTINATION TABLE (#1424, steps 1 and 2 of the approved design; NOT LIVE). Where an input goes
-//! is still decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
+//! DESTINATION TABLE (#1424, steps 1-3 of the approved design). Where an input goes is still
+//! decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
 //! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
 //! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
 //! (`table.rs`: every hold row H1-H10, destination row D1-D13, signal row P1-P2 and origin row, the
@@ -55,19 +55,28 @@
 //!    and follow-ups, so a key judged later still has the classification it had when typed (the ssh
 //!    password rule, H4). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
 //!    from the legacy fields; no refresher moved off the key path.
-//!  - PURE, NOT CALLED: `table.rs` (`decide`, the predicates, `gate_holds`, `destination_for_fixed`
-//!    which fixes B12, the inverted hidden-input branch of `destination_for`), the `Origin` rows
-//!    (Synced, Viewer, CliSubmit, ReleasedFrom), `TypeaheadHandoff::peek_user_bytes_route`, the
-//!    `HELD_SIGNAL` held class (declared, no producer or executor).
+//!  - SHADOW (step 3, `shadow.rs`, `view/dest_table.rs`): in `shadow` mode the legacy entry points
+//!    (`typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal`, the
+//!    replayed Enter / held key) ask the table what it would decide, with the stamp and the facts
+//!    of the same moment, BEFORE the legacy chain runs; the chain notes the destination class it
+//!    reached at its leaf; a difference is logged as `kh_dest_disagree row=.. legacy=.. table=..
+//!    flags=..` (`input_order` target, debug, counts and flags only, never text), tagged
+//!    `expected=OD1|OD5|OD7|B3|B7|B13` where the cause is a known bug or a deliberate change.
+//!    Shadow proves DESTINATIONS only and changes no behaviour. It runs when the mode is `shadow`
+//!    and `RUST_LOG=warp::input_order=debug` is on.
+//!  - PURE, NOT CALLED: `destination_for_fixed` (fixes B12, the inverted hidden-input branch of
+//!    `destination_for`), the `Origin` rows Synced / Viewer / CliSubmit / ReleasedFrom (no producer
+//!    yet), `TypeaheadHandoff::peek_user_bytes_route`, the `HELD_SIGNAL` held class (declared, no
+//!    producer or executor).
 //!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
-//!    `PHOSPHOR_PANE_KEY`). Default `legacy`. Nothing reads `shadow` or `table` yet.
+//!    `PHOSPHOR_PANE_KEY`). Default `legacy`.
 //!  - DELIBERATE CHANGES encoded in the table but not yet effective (the owner's decisions OD-1,
 //!    OD-5, OD-7): ^Z and ^\ jump the queue like ^C with a per-gate plan; a signal typed during the
 //!    ssh setup window is HELD and delivered to the REMOTE side, never to the local shell; a key
 //!    stamped before the ssh prompt was published is dropped even if it is processed later.
-//!  - NEXT (design steps 3-8): the shadow comparison (`kh_dest_disagree`), delivery through the
-//!    table (the #1415 fix), arrival of terminal keys, editor arrival and paste, the edge-driven
-//!    `SshPhase`, then `table` as the default and the deletion of `delivering`/`requeue_request`.
+//!  - NEXT (design steps 4-8): delivery through the table (the #1415 fix), arrival of terminal
+//!    keys, editor arrival and paste, the edge-driven `SshPhase`, then `table` as the default and
+//!    the deletion of `delivering`/`requeue_request`.
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
@@ -93,12 +102,10 @@
 //! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
 mod destination;
-// #1424 steps 1-2 (facts + the pure table) are not called yet: step 3 (shadow) wires them in, then remove these allows.
-#[allow(dead_code)]
 pub mod facts;
 mod gates;
 mod pane;
-#[allow(dead_code)]
+pub mod shadow;
 pub mod table;
 pub mod trace;
 

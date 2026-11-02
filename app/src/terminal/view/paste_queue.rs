@@ -45,7 +45,7 @@ use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
     GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner,
-    PowershellKeysThen, SignalKind, is_pty_entry, trace,
+    PowershellKeysThen, SignalKind, Stamp, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -98,6 +98,13 @@ pub(super) struct PasteQueueState {
     /// be offered to the queue (the drain owns it): it is recorded in `requeue_request` and the
     /// host puts it back under its gate when the delivery returns, whatever the entry was.
     pub(super) delivering: bool,
+    /// The stamp the entry being delivered got at its sink (#1424): the shadow comparison and the
+    /// table judge a delivered entry by it. Meaningful only while `delivering`.
+    pub(super) delivering_stamp: Stamp,
+    /// The origin the entry being delivered is judged with (#1424): `Held` for an ssh-held input,
+    /// `Replay` for text / an Enter typed behind an Enter that waited, else the entry's own.
+    /// Meaningful only while `delivering`.
+    pub(super) delivering_origin: Origin,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
@@ -160,6 +167,8 @@ impl PasteQueueState {
             next_cli_submit_key: 0,
             requeueable_delivery: false,
             delivering: false,
+            delivering_stamp: Stamp::UNSTAMPED,
+            delivering_origin: Origin::Keyboard,
             requeue_request: None,
             requeue_replacement: None,
             line_stamp: None,
@@ -414,6 +423,12 @@ impl Host for PtyQueueHost<'_, '_> {
         // command it submitted, #1418): the key goes back under its gate when this returns, never
         // "as typed" because the queue is held by this very drain.
         self.view.paste_queue.delivering = true;
+        self.view.paste_queue.delivering_stamp = entry.stamp;
+        self.view.paste_queue.delivering_origin = match &entry.kind {
+            EntryKind::Held { .. } => Origin::Held,
+            EntryKind::Text(_) | EntryKind::Enter => Origin::Replay(entry.id),
+            _ => entry.origin,
+        };
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
         outcome
