@@ -38,7 +38,7 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
-//! DESTINATION TABLE (#1424, steps 1-4 of the approved design). Where an input goes is still
+//! DESTINATION TABLE (#1424, steps 1-6 of the approved design). Where an input goes is still
 //! decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
 //! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
 //! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
@@ -61,7 +61,7 @@
 //!    of the same moment, BEFORE the legacy chain runs; the chain notes the destination class it
 //!    reached at its leaf; a difference is logged as `kh_dest_disagree row=.. legacy=.. table=..
 //!    flags=..` (`input_order` target, debug, counts and flags only, never text), tagged
-//!    `expected=OD1|OD5|OD7|B3|B7|B13` where the cause is a known bug or a deliberate change.
+//!    `expected=OD1|OD5|OD7|B3|B7|B13|B14` where the cause is a known bug or a deliberate change.
 //!    Shadow proves DESTINATIONS only and changes no behaviour. It runs when the mode is `shadow`
 //!    and `RUST_LOG=warp::input_order=debug` is on.
 //!  - DELIVERY THROUGH THE TABLE (step 4, the #1415 fix, `view/dest_table.rs`, ONLY in `table`
@@ -74,23 +74,42 @@
 //!    executes the plan with the leaf writers legacy ended in (`write_user_bytes_to_pty_after_paste_
 //!    stage`, the editor's insert / Enter, a requeue under the `SshConnect` gate for a hold).
 //!    A `HELD_SIGNAL` entry is executed (the signal goes to the pty through the leaf, after the
-//!    keys typed before it); the H4 drop is carried (`kh_table_drop`). Live keys, the editor's
-//!    keys, paste reads and the idle path still decide with the legacy chain (steps 5-8).
+//!    keys typed before it); the H4 drop is carried (`kh_table_drop`).
+//!  - ARRIVAL OF TERMINAL KEYS (step 5, `view/dest_table.rs`, ONLY in `table` mode): the three
+//!    entry points a live key arrives at (`typed_characters_on_terminal`, `keydown_on_terminal`,
+//!    `control_sequence_on_terminal`) hand the input to `TerminalView::arrive_via_table`. It takes
+//!    the stamp first, runs the legacy refreshers, builds the facts WITH the queue's (open gates,
+//!    queued entries, the mailbox), decides once and executes the plan with the same leaf writers.
+//!    The idle path is the plan `Pty` executed at once; a key a gate holds (H5-H8) is offered as
+//!    destination-neutral content (`Text`, `Enter`, a `Held` key) that the queue's delivery decides
+//!    again when the gate opens; the keys behind the hand-off's gates and the PowerShell setup are
+//!    written through the legacy writer, which holds them as bytes (those gates give bytes back).
+//!    ^Z and ^\ are signals for the queue (`paste_queue::queue_signal_of`), and a signal in the ssh
+//!    setup window is held as a `HELD_SIGNAL` entry (`ssh_hold_push_signal`). The H8 matrix
+//!    (`table::gate_holds`) has its editor column (`InputQueue::editor_key_passes_gates_by_table`,
+//!    used by the editor's hold decision in `table` mode and compared with it in `shadow`).
+//!  - ORIGIN ROWS AND PASTE (step 6, `table` mode, compared in `shadow`): synced input
+//!    (`O-synced`: judged as synced input, refused for a pane with no running command), the paced
+//!    CLI-agent submit (`O-cli-submit`) and the shared-session viewer decide at their writers
+//!    (`begin_origin_row` / `end_origin_row`); the agent's write consults row D13 at its writer;
+//!    a terminal paste is routed by the destination rows (`paste_routing_via_table`) instead of
+//!    `paste_routing`'s blocking model lock; the navigation keys of the key bindings are compared
+//!    in `shadow` (`nav_key_goes_to_pty`). `view/dest_table.rs` audits every pty write call site
+//!    (routed or not, and why).
 //!  - PURE, NOT CALLED: `destination_for_fixed` (fixes B12, the inverted hidden-input branch of
-//!    `destination_for`), the `Origin` rows Synced / Viewer / CliSubmit / ReleasedFrom (no producer
-//!    yet), `TypeaheadHandoff::peek_user_bytes_route`; `HELD_SIGNAL` has an executor and no
-//!    producer.
+//!    `destination_for`), the `ReleasedFrom` origin (no producer yet),
+//!    `TypeaheadHandoff::peek_user_bytes_route`.
 //!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
 //!    `PHOSPHOR_PANE_KEY`). Default `shadow` (since step 4): legacy behaviour plus the comparison
 //!    log; `legacy` turns the table off entirely; `table` is opt-in until step 8.
 //!  - DELIBERATE CHANGES encoded in the table, effective in `table` mode for the paths above (the
 //!    owner's decisions OD-1, OD-5, OD-7): a key stamped before the ssh prompt was published is
 //!    dropped even if it is processed later (H4); a held signal is delivered to the REMOTE shell.
-//!    The ARRIVAL side (^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup window is
-//!    held instead of dropped) is step 5.
-//!  - NEXT (design steps 5-8): arrival of terminal keys, editor arrival and paste, the
-//!    edge-driven `SshPhase`, then `table` as the default and the deletion of
-//!    `delivering`/`requeue_request`.
+//!    The ARRIVAL side (step 5): ^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup
+//!    window is held instead of dropped.
+//!  - NEXT (design steps 7-8): the edge-driven `SshPhase` (and the key path's ssh refresh leaving
+//!    it), then `table` as the default and the deletion of the legacy fields
+//!    (`delivering`/`requeue_request`).
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
@@ -332,8 +351,8 @@ pub const HELD_SEQ: u8 = 3;
 /// the keys, carried as the byte, and delivered to the REMOTE side at the hand-over by the
 /// table's `Origin::Held` + signal row. Never delivered locally: when the connect ends without a
 /// remote shell the held signal is discarded (logged, count only: `ssh_drop_detached`). Executed
-/// by the delivery in `table` mode (step 4, `view/dest_table.rs`); nothing PRODUCES it until
-/// step 5 (arrival of terminal keys) moves the ssh interrupt window onto the table.
+/// by the delivery in `table` mode (step 4, `view/dest_table.rs`) and produced by the arrival of a
+/// signal in the ssh setup window (step 5, `ssh_hold_push_signal`).
 pub const HELD_SIGNAL: u8 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -718,6 +737,32 @@ impl InputQueue {
                 .entries
                 .iter()
                 .all(|entry| matches!(entry.kind, EntryKind::PtyBytes { .. }))
+    }
+
+    /// [`Self::editor_keys_pass_gates`] decided by the H8 matrix of the destination table (#1424,
+    /// `table::gate_holds`) for an editor key of `class` ([`table::Class::EditKey`] for an editing
+    /// key, `Enter` for one that submits, `Control` for one that completes): whether the open
+    /// gates let it act at once. The legacy answer needs the caller to exclude the keys that
+    /// submit or complete (`key_submits_or_completes`); the matrix has that as its class column.
+    /// Like the legacy function it is false with no gate open, and false with only the ssh gate
+    /// open (the ssh hold takes the editor's keys itself before this question is asked).
+    pub fn editor_key_passes_gates_by_table(&self, class: table::Class) -> bool {
+        if self.gates.is_empty()
+            || self
+                .gates
+                .iter()
+                .all(|gate| gate.kind == GateKind::SshConnect)
+        {
+            return false;
+        }
+        let queue = self.queue_facts();
+        let facts = RouteFacts {
+            gates: queue.gates,
+            queued: queue.queued,
+            queued_only_pty: queue.queued_only_pty,
+            ..RouteFacts::default()
+        };
+        !table::gate_holds(&facts, class, Origin::Editor)
     }
 
     /// What the destination table needs to know about the queue itself (#1424): the open gate

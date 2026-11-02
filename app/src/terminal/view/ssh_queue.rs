@@ -41,10 +41,10 @@
 use warpui::ViewContext;
 
 use super::TerminalView;
-use super::paste_queue::PtyQueueHost;
+use super::paste_queue::{PtyQueueHost, signal_bytes};
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
 use crate::terminal::input_queue::{
-    Deferred, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SshDropThen, trace,
+    Deferred, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SignalKind, SshDropThen, trace,
 };
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
@@ -151,6 +151,41 @@ impl TerminalView {
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let kind = EntryKind::Held { class, text };
+        let Some(mut guard) = queue.try_lock() else {
+            // Held in order by the next operation (never dropped, never written as typed).
+            queue.defer(Deferred::Offer {
+                kind,
+                origin: Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            });
+            return SshTypeaheadPush::Held;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.offer(&mut host, kind);
+        SshTypeaheadPush::Held
+    }
+
+    /// Holds a signal typed in the ssh setup window behind the connect, in typed order with the
+    /// keys (`HELD_SIGNAL`, #1424 OD-5): it is delivered to the REMOTE shell at the hand-over, after
+    /// the keys typed before it, and discarded when the connect ends without a remote shell
+    /// (`ssh_drop_detached`). Never written locally. Only `table` mode produces it.
+    pub(super) fn ssh_hold_push_signal(
+        &mut self,
+        signal: SignalKind,
+        ctx: &mut ViewContext<Self>,
+    ) -> SshTypeaheadPush {
+        if self.ssh_iq.overflowed {
+            return SshTypeaheadPush::Ignored;
+        }
+        // Opens the gate if none is (a busy queue records the opening for the next operation).
+        self.ssh_hold_ensure_gate(ctx);
+        let queue = self.paste_queue.queue.clone();
+        let text = String::from_utf8_lossy(signal_bytes(signal)).into_owned();
+        trace::hold(trace::legacy::SSH, text.len());
+        let kind = EntryKind::Held {
+            class: HELD_SIGNAL,
+            text,
+        };
         let Some(mut guard) = queue.try_lock() else {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {

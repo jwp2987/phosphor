@@ -80,3 +80,33 @@ fn a_stored_layout_bumps_the_generation_and_wakes_the_waiter() {
     assert_eq!(state.generation(), 1);
     assert!(rx.try_recv().is_ok(), "the waiter is told a layout landed");
 }
+
+/// The matrix class of an editor key is the legacy split: what submits or completes is not an
+/// editing key (#1423, #1424).
+#[test]
+fn the_matrix_class_of_an_editor_key_is_the_legacy_submit_or_complete_split() {
+    use crate::terminal::input_queue::table::Class;
+    for action in [
+        EditorAction::Enter,
+        EditorAction::CmdEnter,
+        EditorAction::CtrlEnter,
+        EditorAction::ShiftEnter,
+        EditorAction::AltEnter,
+        EditorAction::Newline,
+        EditorAction::Tab,
+        EditorAction::ShiftTab,
+        EditorAction::Backspace,
+        EditorAction::Left,
+        EditorAction::Up,
+        EditorAction::DeleteAllLeft,
+        EditorAction::UserInsert(warp_util::user_input::UserInput::new("q")),
+    ] {
+        assert_eq!(
+            editor_key_class(&action) == Class::EditKey,
+            !key_submits_or_completes(&action),
+            "{action:?}"
+        );
+    }
+    assert_eq!(editor_key_class(&EditorAction::Enter), Class::Enter);
+    assert_eq!(editor_key_class(&EditorAction::Tab), Class::Control);
+}

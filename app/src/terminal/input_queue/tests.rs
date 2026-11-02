@@ -1689,6 +1689,43 @@ fn editor_keys_pass_only_setup_gates_with_no_editor_entry_queued() {
     assert!(!q.editor_keys_pass_gates());
 }
 
+/// #1424: the H8 matrix of the destination table (`table::gate_holds`, with its editor column)
+/// says exactly what the editor's own hold decision (#1423) says, for EVERY set of open gates and
+/// with and without an editor-bound entry queued. A key that submits (`Enter`) or completes
+/// (`Control`) never passes a gate.
+#[test]
+fn the_h8_matrix_agrees_with_the_editors_hold_decision_for_every_gate_set() {
+    use table::Class;
+    for mask in 0u32..(1u32 << GateKind::ALL.len()) {
+        for editor_entry_queued in [false, true] {
+            let mut q = InputQueue::new();
+            let mut h = MockHost::new();
+            for (n, kind) in GateKind::ALL.iter().enumerate() {
+                if (mask >> n) & 1 == 1 {
+                    q.open_gate(&mut h, GateSpec::new(*kind, n as u64).with_cap(None));
+                }
+            }
+            if mask != 0 {
+                q.offer(&mut h, pty_bytes(b"p"));
+                if editor_entry_queued {
+                    q.offer(&mut h, EntryKind::Text("t".into()));
+                }
+            }
+            assert_eq!(
+                q.editor_key_passes_gates_by_table(Class::EditKey),
+                q.editor_keys_pass_gates(),
+                "gates {mask:#x}, editor entry queued: {editor_entry_queued}"
+            );
+            for class in [Class::Enter, Class::Control] {
+                assert!(
+                    !q.editor_key_passes_gates_by_table(class),
+                    "{class:?} passed gates {mask:#x}"
+                );
+            }
+        }
+    }
+}
+
 // ---- stamps (#1424) ---------------------------------------------------------------------------
 
 fn stamp(facts_gen: u64) -> Stamp {

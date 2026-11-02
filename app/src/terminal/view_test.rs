@@ -23863,3 +23863,806 @@ fn table_mode_facts_never_wait_on_the_handoff_lock() {
         });
     });
 }
+
+// ---- arrival of terminal keys through the table (#1424, steps 5 and 6) ---------------------------
+//
+// These force the destination mode per thread (`set_destination_mode_for_test`, never
+// `std::env::set_var`). `dest_table::table_arrivals()` tells a live input the table decided from
+// one the legacy chain decided. Most of them run one scenario in `legacy` and in `table` and
+// compare what reached the pty and the editor: the same destinations, decided by the table. The
+// deliberate changes of the owner's decisions (OD-1, OD-5, B14) have tests of their own.
+
+type DestMode = crate::terminal::input_queue::DestinationMode;
+
+fn force_dest_mode(mode: DestMode) -> crate::terminal::input_queue::facts::DestinationModeGuard {
+    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode)
+}
+
+/// What a scenario left behind: every write to the pty, the input editor's text, and the bytes the
+/// PowerShell setup's gate still holds.
+type ArrivalOutcome = (Vec<Vec<u8>>, String, Vec<Vec<u8>>);
+
+type Scenario = fn(&mut TerminalView, &mut ViewContext<TerminalView>);
+
+/// Runs `scenario` on a fresh pane that has a session, with the destination mode forced.
+fn run_arrival_scenario(mode: DestMode, scenario: Scenario) -> ArrivalOutcome {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            scenario(view, ctx);
+        });
+        let buffer = terminal.read(&app, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx));
+        let held = terminal.read(&app, |view, _| powershell_held(view));
+        let writes = pty_writes.borrow().clone();
+        (writes, buffer, held)
+    })
+}
+
+/// Runs `scenario` in `shadow` mode and returns the disagreement lines it reported.
+fn run_shadow_scenario(scenario: Scenario) -> Vec<String> {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _ = crate::terminal::input_queue::shadow::take_recorded();
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            scenario(view, ctx);
+        });
+        crate::terminal::input_queue::shadow::take_recorded()
+    })
+}
+
+fn scenario_running_command_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.model
+        .lock()
+        .simulate_long_running_block("sleep 100", "");
+    view.typed_characters_on_terminal("ls", ctx);
+    view.keydown_on_terminal("\u{7f}", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.keydown_on_terminal("\u{3}", ctx);
+}
+
+/// Between an Enter and the shell's preexec the block has started and no command runs yet: the
+/// pty takes typed text (B11 a) but not a control key or a control sequence.
+fn scenario_block_started_not_yet_long_running(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.model
+        .lock()
+        .block_list_mut()
+        .active_block_mut()
+        .start();
+    view.typed_characters_on_terminal("x", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+}
+
+fn scenario_idle_prompt_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.typed_characters_on_terminal("ls", ctx);
+    // Nothing runs: a Backspace and an arrow key have no pty (D10), the editor has its own.
+    view.keydown_on_terminal("\u{7f}", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+    view.typed_characters_on_terminal("x", ctx);
+}
+
+fn scenario_ssh_connect_and_interrupt(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    submit_command(view, "ssh host", ctx);
+    view.typed_characters_on_terminal("abc", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[D", ctx);
+    release_ssh_gate_for_test(view);
+    // The interrupt passes and ends the hold; the text after it is live again.
+    view.keydown_on_terminal("\u{3}", ctx);
+    view.typed_characters_on_terminal("ls", ctx);
+}
+
+fn scenario_powershell_setup_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    announce_powershell_setup(view);
+    view.typed_characters_on_terminal("q", ctx);
+    view.keydown_on_terminal("\r", ctx);
+}
+
+fn scenario_written_by_other_origins(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.model.lock().simulate_long_running_block("claude", "");
+    view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+    view.write_viewer_bytes_to_pty(b"v".to_vec(), ctx);
+    view.write_cli_submit_bytes(b"c".to_vec(), ctx);
+}
+
+fn scenario_agent_writes(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+    announce_powershell_setup(view);
+    view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+}
+
+/// The navigation keys of the key bindings, in a running command and at an idle prompt.
+fn scenario_navigation_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.terminal_up(ctx);
+    view.page_up(ctx);
+    view.move_home(ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("sleep 100", "");
+    view.terminal_up(ctx);
+    view.terminal_down(ctx);
+    view.page_up(ctx);
+    view.page_down(ctx);
+    view.move_home(ctx);
+    view.move_end(ctx);
+}
+
+fn scenario_text_behind_a_cli_submit_gate(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.begin_cli_submit_gate(ctx);
+    view.typed_characters_on_terminal("x", ctx);
+    view.end_cli_submit_gate(ctx);
+}
+
+/// What the table decided for live keys reaches the same places legacy sent them: the idle path
+/// of a running command (text, Backspace, an arrow, Enter, ^C), an idle prompt, an ssh connect with
+/// its interrupt, a PowerShell setup's hold.
+#[test]
+fn table_mode_arrivals_reach_the_same_destinations_as_legacy() {
+    let scenarios: [(&str, Scenario); 5] = [
+        ("running command", scenario_running_command_keys),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+        ("idle prompt", scenario_idle_prompt_keys),
+        (
+            "ssh connect and interrupt",
+            scenario_ssh_connect_and_interrupt,
+        ),
+        ("powershell setup", scenario_powershell_setup_keys),
+    ];
+    for (name, scenario) in scenarios {
+        let legacy = run_arrival_scenario(DestMode::Legacy, scenario);
+        let table = run_arrival_scenario(DestMode::Table, scenario);
+        assert_eq!(
+            table, legacy,
+            "{name}: table-mode arrivals differ from legacy"
+        );
+    }
+    // The running command's keys did reach the pty, so the comparison is not of two empty runs.
+    let (writes, _, _) = run_arrival_scenario(DestMode::Table, scenario_running_command_keys);
+    assert!(
+        writes.iter().any(|write| write.as_slice() == b"ls"),
+        "{writes:?}"
+    );
+}
+
+/// Without a table decision there is nothing to compare: a live key in `table` mode IS decided by
+/// the table (and not by the legacy chain), in `legacy` and `shadow` mode it is not.
+#[test]
+fn only_table_mode_decides_live_keys_with_the_table() {
+    for (mode, decides) in [
+        (DestMode::Legacy, false),
+        (DestMode::Shadow, false),
+        (DestMode::Table, true),
+    ] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let before = dest_table::table_arrivals();
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.control_sequence_on_terminal(b"\x1b[A", ctx);
+                assert_eq!(
+                    dest_table::table_arrivals() - before,
+                    if decides { 3 } else { 0 },
+                    "{mode:?}"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls", "{mode:?}");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            });
+        });
+    }
+}
+
+/// #1179 in all three modes: text typed while the agent drives its command is steer text for the
+/// input, never bytes for the command's pty (D2).
+fn typing_during_an_agent_driven_command_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("a", ctx);
+            view.typed_characters_on_terminal("bc", ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "abc", "{mode:?}");
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Legacy);
+}
+
+#[test]
+fn shadow_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Shadow);
+}
+
+#[test]
+fn table_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Table);
+}
+
+/// Owner decision 2 (OD-2, rows D2c/D10): a LIVE terminal Enter while the agent owns the pty is
+/// dropped (logged), reaching neither the command nor the agent's input. Legacy ends the same way
+/// (the keydown path's control-key predicate excludes the agent-owned pty), so both modes agree.
+fn live_enter_while_the_agent_owns_the_pty_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: no Enter reaches the agent-driven command"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input().as_ref(ctx).buffer_text(ctx),
+                "",
+                "{mode:?}: nor does it submit or edit the agent's input"
+            );
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_live_enter_while_the_agent_owns_the_pty_is_dropped() {
+    live_enter_while_the_agent_owns_the_pty_in(DestMode::Legacy);
+}
+
+#[test]
+fn table_mode_live_enter_while_the_agent_owns_the_pty_is_dropped() {
+    live_enter_while_the_agent_owns_the_pty_in(DestMode::Table);
+}
+
+/// #1179: once the user takes the command over, typed text reaches the pty again, once.
+#[test]
+fn table_mode_typing_after_the_user_takes_over_an_agent_command_reaches_the_pty_once() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_user_control_with_stop_reason();
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// OD-4 (row D7, B12): text typed when the pty does not take it goes to the editor even with the
+/// input box hidden; it is never dropped for that.
+#[test]
+fn table_mode_text_the_pty_does_not_take_is_kept_in_the_editor_even_when_the_box_is_hidden() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_shared_session_status(
+                crate::terminal::shared_session::SharedSessionStatus::ViewPending,
+            );
+            {
+                let model = view.model.lock();
+                assert!(
+                    !view.is_input_box_visible(&model, ctx),
+                    "precondition: input hidden"
+                );
+            }
+            view.typed_characters_on_terminal("x", ctx);
+        });
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+    })
+}
+
+/// Owner decision 1 (OD-1): ^Z jumps the queue like ^C. Behind a paste still being read it cancels
+/// the paste and goes to the pty at once, in `table` mode; in `legacy` mode it is an ordinary key
+/// and waits behind the paste, as it always did.
+fn ctrl_z_behind_a_paste_being_read_in(mode: DestMode, jumps: bool) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer_gated(
+                    &mut host,
+                    input_queue::EntryKind::Paste {
+                        paste_id: 5,
+                        payload: None,
+                    },
+                    input_queue::GateSpec::new(input_queue::GateKind::PasteReading, 5)
+                        .with_cap(None),
+                );
+            }
+            assert!(
+                view.paste_pending(),
+                "precondition: the paste is being read"
+            );
+            view.keydown_on_terminal("\u{1a}", ctx);
+            assert_eq!(
+                view.paste_pending(),
+                !jumps,
+                "{mode:?}: ^Z {} the paste",
+                if jumps { "cancels" } else { "waits behind" }
+            );
+        });
+        let expected: Vec<Vec<u8>> = if jumps { vec![vec![0x1a]] } else { Vec::new() };
+        assert_eq!(*pty_writes.borrow(), expected, "{mode:?}");
+    })
+}
+
+#[test]
+fn table_mode_ctrl_z_cancels_a_paste_being_read_and_reaches_the_pty_once() {
+    ctrl_z_behind_a_paste_being_read_in(DestMode::Table, true);
+}
+
+#[test]
+fn legacy_mode_ctrl_z_waits_behind_a_paste_being_read() {
+    ctrl_z_behind_a_paste_being_read_in(DestMode::Legacy, false);
+}
+
+/// A guard test for OD-1: in `table` mode ^Z is a signal entry of the queue, never pty bytes.
+#[test]
+fn queue_signal_classification_follows_the_mode() {
+    for (mode, ctrl_z_is_a_signal) in [
+        (DestMode::Legacy, false),
+        (DestMode::Shadow, false),
+        (DestMode::Table, true),
+    ] {
+        let _mode = force_dest_mode(mode);
+        assert_eq!(
+            paste_queue::queue_signal_of(&[0x1a]).is_some(),
+            ctrl_z_is_a_signal,
+            "{mode:?}"
+        );
+        assert_eq!(
+            paste_queue::queue_signal_of(&[0x1c]).is_some(),
+            ctrl_z_is_a_signal,
+            "{mode:?}"
+        );
+        assert!(paste_queue::queue_signal_of(&[0x03]).is_some(), "{mode:?}");
+        assert!(paste_queue::queue_signal_of(&[0x04]).is_some(), "{mode:?}");
+        assert!(paste_queue::queue_signal_of(b"x").is_none(), "{mode:?}");
+        assert_eq!(is_queue_signal_key(&[0x1a]), ctrl_z_is_a_signal, "{mode:?}");
+    }
+}
+
+/// Owner decision 5 (OD-5, row P1a): a Ctrl-C in the ssh setup window is HELD with the keys typed
+/// before it (the toast says so, and now it is true) and reaches the remote shell once at the
+/// hand-over, after them. Legacy dropped it. Nothing is written locally meanwhile.
+#[test]
+fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("abc", ctx);
+            view.ssh_connect_gate.as_mut().unwrap().managed = true;
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(view.ssh_connect_gate.is_some(), "the bootstrap wait holds");
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified, "the notice is shown");
+            assert!(view.ssh_typeahead_holding, "a held ^C ends nothing");
+            assert_eq!(
+                view.ssh_held_count(),
+                2,
+                "the text and the ^C, in typed order"
+            );
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "held, not written: {:?}",
+                pty_writes.borrow()
+            );
+            // The remote shell's first prompt: the hand-over.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+            let writes = pty_writes.borrow();
+            assert_eq!(
+                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+                1,
+                "the held ^C reached the pty exactly once: {writes:?}"
+            );
+        });
+    })
+}
+
+/// The same moment in `legacy` mode: the ^C is dropped (the toast says "held"), only the text is
+/// held. This is the deliberate difference OD-5 makes.
+#[test]
+fn legacy_mode_a_ctrl_c_in_the_ssh_setup_window_is_dropped_with_the_notice() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Legacy);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("abc", ctx);
+            view.ssh_connect_gate.as_mut().unwrap().managed = true;
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified, "the notice is shown");
+            assert_eq!(view.ssh_held_count(), 1, "only the text is held");
+        });
+    })
+}
+
+/// H8, strict FIFO (B14): text for the editor typed while a gate holds the pane's input waits
+/// behind it as a destination-neutral entry, and is routed with the facts of the moment the gate
+/// opens. Legacy put it straight into the editor.
+#[test]
+fn table_mode_text_typed_behind_a_gate_waits_as_a_neutral_entry_and_is_routed_when_it_opens() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.begin_cli_submit_gate(ctx);
+            view.typed_characters_on_terminal("x", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "held behind the submit's gate"
+            );
+            assert_eq!(queued_texts(view), vec!["x".to_owned()]);
+            view.end_cli_submit_gate(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
+            assert!(ssh_queue_is_idle(view));
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_text_typed_behind_a_gate_goes_straight_into_the_editor() {
+    let (writes, buffer, _) =
+        run_arrival_scenario(DestMode::Legacy, scenario_text_behind_a_cli_submit_gate);
+    assert!(writes.is_empty());
+    assert_eq!(buffer, "x");
+}
+
+/// A control key behind a gate waits as a held key and reaches the pty at the gate's event, once.
+#[test]
+fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.begin_cli_submit_gate(ctx);
+            view.keydown_on_terminal("\u{7f}", ctx);
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
+            view.end_cli_submit_gate(ctx);
+            assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
+            assert!(ssh_queue_is_idle(view));
+        });
+    })
+}
+
+/// Shadow mode keeps legacy behaviour and, over the arrival scenarios, reports no disagreement
+/// except the tagged ones (`expected=..`): the equivalence of the table and the legacy chain over
+/// the real view code.
+#[test]
+fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
+    let scenarios: [(&str, Scenario); 9] = [
+        ("running command", scenario_running_command_keys),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+        ("idle prompt", scenario_idle_prompt_keys),
+        (
+            "ssh connect and interrupt",
+            scenario_ssh_connect_and_interrupt,
+        ),
+        ("powershell setup", scenario_powershell_setup_keys),
+        ("other origins", scenario_written_by_other_origins),
+        ("agent writes", scenario_agent_writes),
+        ("navigation keys", scenario_navigation_keys),
+        ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+    ];
+    for (name, scenario) in scenarios {
+        let lines = run_shadow_scenario(scenario);
+        let untagged: Vec<&String> = lines
+            .iter()
+            .filter(|line| !line.contains(" expected="))
+            .collect();
+        assert!(
+            untagged.is_empty(),
+            "{name}: the table and the legacy chain disagree: {untagged:?}"
+        );
+    }
+    // The gate scenario is the tagged B14 difference, so the comparison did run.
+    let lines = run_shadow_scenario(scenario_text_behind_a_cli_submit_gate);
+    assert!(
+        lines.iter().any(|line| line.ends_with(" expected=B14")),
+        "{lines:?}"
+    );
+}
+
+/// The same equivalence for the agent-driven command (D2).
+#[test]
+fn shadow_mode_agrees_on_typing_during_an_agent_driven_command() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (_pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        let _ = crate::terminal::input_queue::shadow::take_recorded();
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("a", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.control_sequence_on_terminal(b"\x1b[A", ctx);
+        });
+        let lines = crate::terminal::input_queue::shadow::take_recorded();
+        let untagged: Vec<&String> = lines
+            .iter()
+            .filter(|line| !line.contains(" expected="))
+            .collect();
+        assert!(untagged.is_empty(), "{untagged:?}");
+    })
+}
+
+/// The origin rows: the synced origin refuses bytes for a pane with no running command (O-synced);
+/// a pane running one takes them. Wired at the writer, in `table` mode.
+#[test]
+fn table_mode_the_synced_origin_row_refuses_a_pane_with_no_running_command() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let idle = view.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+            assert!(idle.refused(), "no command runs");
+            view.end_origin_row(idle, false);
+            view.model.lock().simulate_long_running_block("claude", "");
+            let running = view.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+            assert!(!running.refused(), "a command runs");
+            view.end_origin_row(running, true);
+            // The viewer and the CLI submit are never refused at their origin row.
+            let viewer = view.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
+            assert!(!viewer.refused());
+            view.end_origin_row(viewer, true);
+            let submit = view.begin_origin_row(Class::Raw, input_queue::Origin::CliSubmit, ctx);
+            assert!(!submit.refused());
+            view.end_origin_row(submit, true);
+        });
+    })
+}
+
+/// Synced input in `table` mode is judged as synced input: held behind an open PowerShell setup,
+/// written to a pane running a command, the echo guard consumed (the same as legacy).
+#[test]
+fn table_mode_synced_input_is_written_or_held_as_legacy_does() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("claude", "");
+            view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+            assert_eq!(view.synced_in_flight, 0, "the echo guard is consumed");
+        });
+        assert_eq!(
+            *seen.borrow(),
+            vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
+            "synced input reaches a pane running a command"
+        );
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_to_pty_for_syncing_long_running_commands(b"cd".to_vec(), ctx);
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(powershell_held(view), vec![b"cd".to_vec()]);
+        });
+    })
+}
+
+/// The paced CLI-agent submit in `table` mode: its own writes do not wait behind its gate, the
+/// keys typed meanwhile follow it in order (the origin row O-cli-submit is exempt from the holds).
+#[test]
+fn table_mode_keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_order() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.begin_cli_submit_gate(ctx);
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+        });
+        let before_enter: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(before_enter, b"TEXT".to_vec());
+        terminal.update(&mut app, |view, ctx| {
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            view.end_cli_submit_gate(ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"TEXT\rxy".to_vec());
+    })
+}
+
+/// Paste routing (step 6): the table's destination rows say what the legacy `paste_routing` says,
+/// at an idle prompt and in a running command.
+#[test]
+fn table_mode_paste_routing_agrees_with_the_legacy_routing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "idle prompt");
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "running command");
+            assert!(!legacy.0, "a paste goes to the running command's pty");
+        });
+    })
+}
+
+/// ... and while the agent drives the command: the paste is steer text for the agent's input.
+#[test]
+fn table_mode_paste_routing_sends_a_paste_to_the_agents_input_while_it_drives_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (_pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            assert!(owns);
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "agent-driven");
+            assert!(legacy.0, "a paste is steer text for the agent's input");
+        });
+    })
+}
+
+/// A key that had to wait in the deferred mailbox (the queue was busy) keeps the stamp it got when
+/// it was typed: it is applied later with the classification it had then (H4's premise).
+#[test]
+fn table_mode_a_key_that_waited_in_the_mailbox_keeps_the_stamp_it_had_when_typed() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let typed_at = view.paste_queue.queue.stamp_now();
+            view.begin_cli_submit_gate(ctx);
+            let queue = view.paste_queue.queue.clone();
+            {
+                // Some operation holds the queue: the key can only wait in the mailbox.
+                let _busy = queue.peek();
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(queue.has_deferred(), "the key waits in the mailbox");
+            }
+            // The world moves on before the mailbox is applied.
+            view.model.lock().publish_key_facts();
+            assert!(view.paste_queue.queue.stamp_now().facts_gen > typed_at.facts_gen);
+            view.flush_deferred_queue_ops(ctx);
+            let stamps: Vec<_> = queue.peek().entries().map(|entry| entry.stamp).collect();
+            assert_eq!(stamps.len(), 1, "the key was applied: {stamps:?}");
+            assert_eq!(stamps[0].facts_gen, typed_at.facts_gen);
+        });
+    })
+}
+
+/// The agent origin (row D13) in `table` mode: its write is refused while a setup owns the pty
+/// (here a PowerShell setup) and goes out otherwise, once. The legacy gate is the same rule.
+#[test]
+fn table_mode_the_agents_write_is_refused_during_a_setup_and_goes_out_otherwise() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "refused while the setup owns the pty: {:?}",
+            seen.borrow()
+        );
+    })
+}
