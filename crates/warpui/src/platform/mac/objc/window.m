@@ -532,6 +532,10 @@ void init_warp_nswindow(NSWindow<WarpWindowProtocol> *window, bool testMode, boo
         // proceeds to call keyDown: — running interpretKeyEvents a second time for the same event.
         // See #9709.
         if ([(WarpHostView *)self.contentView hasMarkedText]) {
+            WARP_LOG_ENTER(event, "perform_key_equivalent_marked_text",
+                           @"keycode=%u ts=%.9f key_window=%d has_marked_text=1 -> super",
+                           (unsigned)[event keyCode], (double)[event timestamp],
+                           (int)[self isKeyWindow]);
             return [super performKeyEquivalent:event];
         }
 
@@ -544,17 +548,34 @@ void init_warp_nswindow(NSWindow<WarpWindowProtocol> *window, bool testMode, boo
 
         BOOL triggersCustomAction = warp_app_has_custom_action_for_keystroke(application, event);
 
+        WARP_LOG_ENTER(event, "perform_key_equivalent",
+                       @"keycode=%u ts=%.9f key_window=%d has_marked_text=0 key_bindings_disabled=%d "
+                       @"keystroke_is_assigned=%d triggers_custom_action=%d will_call_key_down_impl=%d",
+                       (unsigned)[event keyCode], (double)[event timestamp], (int)[self isKeyWindow],
+                       (int)keyBindingsDisabled, (int)keystrokeIsAssigned, (int)triggersCustomAction,
+                       (int)(keyBindingsDisabled || (keystrokeIsAssigned && !triggersCustomAction)));
+
         if (keyBindingsDisabled || (keystrokeIsAssigned && !triggersCustomAction)) {
-            if ([self.contentView keyDownImpl:event]) {
+            BOOL keyDownImplHandled = [self.contentView keyDownImpl:event];
+            WARP_LOG_ENTER(event, "perform_key_equivalent_key_down_impl_result",
+                           @"keycode=%u ts=%.9f handled=%d -> %@", (unsigned)[event keyCode],
+                           (double)[event timestamp], (int)keyDownImplHandled,
+                           keyDownImplHandled ? @"return YES" : @"skip_redelivery + super");
+            if (keyDownImplHandled) {
                 return YES;
             }
             // Not handled by Warp, so we fall through to super and AppKit may then call keyDown:
             // for this same event; keyDownImpl already inserted its text, so skip that second pass.
             [(WarpHostView *)self.contentView skipRedeliveryOf:event];
+            WARP_LOG_ENTER(event, "skip_redelivery_armed", @"keycode=%u ts=%.9f",
+                           (unsigned)[event keyCode], (double)[event timestamp]);
         }
     }
 
-    return [super performKeyEquivalent:event];
+    BOOL superHandled = [super performKeyEquivalent:event];
+    WARP_LOG_ENTER(event, "perform_key_equivalent_super_result", @"keycode=%u ts=%.9f handled=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)superHandled);
+    return superHandled;
 }
 
 - (void)closeWindowAsync:(BOOL)forceTermination {

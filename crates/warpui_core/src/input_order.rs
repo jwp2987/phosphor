@@ -139,6 +139,17 @@ fn hop_line(what: &str, detail: &str) -> String {
     format!("{LINE_PREFIX} hop={what} {detail} t={}", now_ms())
 }
 
+/// A line for one layer an Return/Enter key press passes through (#1482): `layer` is `mac_enter`
+/// (the Objective-C view/window/application) or `core_enter` (the keystroke matcher), `stage`
+/// names the point reached, `detail` is flags, counts, times and type names only, never text.
+/// Grep `hop=mac_enter` / `hop=core_enter` to see where a lost Enter stops.
+fn enter_line(layer: &str, stage: &str, detail: &str) -> String {
+    format!(
+        "{LINE_PREFIX} hop={layer} stage={stage} {detail} t={}",
+        now_ms()
+    )
+}
+
 fn pty_read_line(bytes: usize, since_write: Duration) -> String {
     format!(
         "{LINE_PREFIX} pty_read bytes={bytes} since_write_ms={:.1} t={}",
@@ -188,6 +199,13 @@ pub fn log_key_hop(what: &str, detail: impl FnOnce() -> String) {
 pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
     if enabled() {
         log::debug!(target: TARGET, "{}", hop_line(what, &detail()));
+    }
+}
+
+/// Logs one stage of an Enter key press (#1482); see [`enter_line`]. Takes the detail lazily.
+pub fn log_enter(layer: &str, stage: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", enter_line(layer, stage, &detail()));
     }
 }
 
@@ -294,6 +312,22 @@ mod tests {
         let line = hop_line("pty_write_partial", "wrote=1 of=5");
         assert!(
             line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn enter_lines_name_the_layer_and_stage_and_carry_the_detail() {
+        let line = enter_line("mac_enter", "key_down_impl_exit", "handled=false ts=1.5");
+        assert!(
+            line.starts_with(
+                "input_order hop=mac_enter stage=key_down_impl_exit handled=false ts=1.5 t="
+            ),
+            "{line}"
+        );
+        let line = enter_line("core_enter", "match_none", "step=2");
+        assert!(
+            line.starts_with("input_order hop=core_enter stage=match_none step=2 t="),
             "{line}"
         );
     }

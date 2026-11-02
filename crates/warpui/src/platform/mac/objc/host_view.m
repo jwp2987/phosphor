@@ -252,12 +252,21 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
 }
 
 - (void)keyDown:(NSEvent *)event {
+    WARP_LOG_ENTER(event, "key_down",
+                   @"keycode=%u ts=%.9f key_window=%d has_pre_delivered=%d pre_ts=%.9f pre_keycode=%u",
+                   (unsigned)[event keyCode], (double)[event timestamp],
+                   (int)[[self window] isKeyWindow], (int)hasPreDeliveredKeyDown,
+                   (double)preDeliveredTimestamp, (unsigned)preDeliveredKeyCode);
     // performKeyEquivalent: may already have delivered this exact event via keyDownImpl (text
     // inserted, KeyDown dispatched) and then returned NO, making AppKit call keyDown: for it.
     // Delivering it again would type the character twice.
     if (hasPreDeliveredKeyDown) {
         hasPreDeliveredKeyDown = NO;
         if ([event timestamp] == preDeliveredTimestamp && [event keyCode] == preDeliveredKeyCode) {
+            WARP_LOG_ENTER(event, "key_down_skipped_as_redelivery",
+                           @"keycode=%u ts=%.9f pre_ts=%.9f pre_keycode=%u",
+                           (unsigned)[event keyCode], (double)[event timestamp],
+                           (double)preDeliveredTimestamp, (unsigned)preDeliveredKeyCode);
             return;
         }
     }
@@ -282,6 +291,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "keyDown");
 
     BOOL wasComposing = [self hasMarkedText];
+    WARP_LOG_ENTER(event, "key_down_impl_entry",
+                   @"keycode=%u ts=%.9f key_window=%d was_composing=%d ready_for_warp=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp],
+                   (int)[[self window] isKeyWindow], (int)wasComposing, (int)self.readyForWarp);
     [textToInsert setString:@""];
     imeTouchedMarkedTextDuringInterpret = NO;
 
@@ -291,10 +304,18 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
     [self interpretKeyEvents:[NSArray arrayWithObject:event]];
     interpretingKeyEvents = NO;
 
+    WARP_LOG_ENTER(event, "after_interpret_key_events",
+                   @"keycode=%u ts=%.9f has_marked_text=%d text_to_insert_len=%lu",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)[self hasMarkedText],
+                   (unsigned long)[textToInsert length]);
+
     BOOL handled = NO;
     if (self.readyForWarp) {
         handled = warp_handle_view_event(self, event, wasComposing || [self hasMarkedText]);
     }
+    WARP_LOG_ENTER(event, "after_handle_view_event", @"keycode=%u ts=%.9f handled=%d composing=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
+                   (int)(wasComposing || [self hasMarkedText]));
 
     // It's possible to have keybinding conflicts between terminal apps which use the meta key and
     // MacOS "dead keys". Dead keys are used to add diacritical marks to other characters, and they
@@ -323,6 +344,10 @@ void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
         }
     }
 
+    WARP_LOG_ENTER(event, "key_down_impl_exit",
+                   @"keycode=%u ts=%.9f handled=%d text_to_insert_len=%lu has_marked_text=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
+                   (unsigned long)[textToInsert length], (int)[self hasMarkedText]);
     return handled;
 }
 

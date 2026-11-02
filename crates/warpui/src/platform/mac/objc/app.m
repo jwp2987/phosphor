@@ -498,6 +498,20 @@ NSUInteger activeScreenId() {
     warp_app_quit_menu_item_triggered(self);
 }
 
+// Enter-key tracing (#1482): the first place an Enter reaches the app, before AppKit picks a
+// window for it. Logs only; always forwards to super.
+- (void)sendEvent:(NSEvent *)event {
+    if (warpIsEnterKeyDown(event)) {
+        NSWindow *keyWindow = [self keyWindow];
+        WARP_LOG_ENTER(event, "app_send_event",
+                       @"keycode=%u ts=%.9f event_window=%ld key_window=%ld key_window_class=%@",
+                       (unsigned)[event keyCode], (double)[event timestamp],
+                       (long)[event windowNumber], (long)[keyWindow windowNumber],
+                       keyWindow ? NSStringFromClass([keyWindow class]) : @"none");
+    }
+    [super sendEvent:event];
+}
+
 - (void)showModal:(NSAlert *)alert modalId:(NSUInteger)modalId {
     dispatch_async(dispatch_get_main_queue(), ^{
       NSModalResponse response = configureAndRunModal(alert, self);

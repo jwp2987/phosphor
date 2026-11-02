@@ -2395,33 +2395,92 @@ impl AppContext {
         is_composing: bool,
     ) -> Result<bool> {
         bump_key_dispatch_seq();
+        // #1482: an Enter that dies somewhere in the keystroke matcher leaves no `keydown` line, so
+        // every step of its walk is logged.
+        let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
         let mut context_chain = self.contexts_from_responder_chain(window_id, responder_chain)?;
+        if is_enter {
+            crate::input_order::log_enter("core_enter", "dispatch_keystroke", || {
+                format!(
+                    "chain_len={} composing={is_composing} ctrl={} alt={} shift={} cmd={}",
+                    context_chain.len(),
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd
+                )
+            });
+        }
         let mut pending = false;
         for (i, ctx) in context_chain.iter_mut().enumerate().rev() {
             if is_composing {
                 ctx.set.insert("IMEOpen");
             }
-            let handled = match self.keystroke_matcher.push_keystroke(
-                keystroke.clone(),
-                responder_chain[i],
-                ctx,
-            ) {
+            let match_result =
+                self.keystroke_matcher
+                    .push_keystroke(keystroke.clone(), responder_chain[i], ctx);
+            if is_enter {
+                let (result, action) = match &match_result {
+                    MatchResult::None => ("none", String::new()),
+                    MatchResult::Pending => ("pending", String::new()),
+                    MatchResult::Action(action) => ("action", format!("{action:?}")),
+                };
+                crate::input_order::log_enter("core_enter", "match_step", || {
+                    let mut context: Vec<&str> = ctx.set.iter().copied().collect();
+                    context.sort_unstable();
+                    // The context is only worth printing for the steps that matched or went pending.
+                    let context = if result == "none" {
+                        String::new()
+                    } else {
+                        format!(
+                            " ime_open={} context={}",
+                            ctx.set.contains("IMEOpen"),
+                            context.join(",")
+                        )
+                    };
+                    format!(
+                        "step={i} view={:?} result={result} action={action}{context}",
+                        responder_chain[i]
+                    )
+                });
+            }
+            let handled = match match_result {
                 MatchResult::None => false,
                 MatchResult::Pending => {
                     pending = true;
                     false
                 }
-                MatchResult::Action(action) => self.dispatch_typed_action(
-                    window_id,
-                    &responder_chain[0..=i],
-                    action.as_ref(),
-                    log::Level::Debug,
-                ),
+                MatchResult::Action(action) => {
+                    let handled = self.dispatch_typed_action(
+                        window_id,
+                        &responder_chain[0..=i],
+                        action.as_ref(),
+                        log::Level::Debug,
+                    );
+                    if is_enter {
+                        let action_ref: &dyn Action = action.as_ref();
+                        let action_type_name = action_ref.type_name();
+                        crate::input_order::log_enter("core_enter", "action_handled", || {
+                            format!("step={i} action_type={action_type_name} handled={handled}")
+                        });
+                    }
+                    handled
+                }
             };
 
             if handled {
+                if is_enter {
+                    crate::input_order::log_enter("core_enter", "dispatch_result", || {
+                        format!("handled=true pending={pending}")
+                    });
+                }
                 return Ok(true);
             }
+        }
+        if is_enter {
+            crate::input_order::log_enter("core_enter", "dispatch_result", || {
+                format!("handled={pending} pending={pending}")
+            });
         }
         Ok(pending)
     }
@@ -2964,6 +3023,15 @@ impl AppContext {
                 match ctx.presenter(window_id) { Some(presenter) => {
                     ctx.handle_window_event(event, window_id, presenter)
                 } _ => {
+                    if let Event::KeyDown { keystroke, .. } = &event {
+                        if matches!(keystroke.key.as_str(), "enter" | "numpadenter") {
+                            crate::input_order::log_enter(
+                                "core_enter",
+                                "no_presenter",
+                                String::new,
+                            );
+                        }
+                    }
                     crate::windowing::EventDispatchResult::default()
                 }}
             }),
@@ -4207,7 +4275,25 @@ impl AppContext {
         std::mem::swap(&mut event_munger, &mut self.event_munger);
 
         let mut keystroke_handled = false;
-        if self.key_bindings_enabled(window_id) {
+        // #1482: the two silent ways a bound Enter skips the matcher altogether.
+        let enter_event = matches!(
+            &event,
+            Event::KeyDown { keystroke, .. } if matches!(keystroke.key.as_str(), "enter" | "numpadenter")
+        );
+        let key_bindings_enabled = self.key_bindings_enabled(window_id);
+        if enter_event {
+            let focused = self.focused_view_id(window_id);
+            crate::input_order::log_enter("core_enter", "handle_window_event", || {
+                format!(
+                    "key_bindings_enabled={key_bindings_enabled} focused_view={}",
+                    match focused {
+                        Some(id) => format!("{id:?}"),
+                        None => "none".to_string(),
+                    }
+                )
+            });
+        }
+        if key_bindings_enabled {
             // Checks (and possibly dispatches) for actions with a matching keybinding
             if let Event::KeyDown {
                 keystroke,
