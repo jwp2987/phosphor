@@ -699,6 +699,34 @@ code-refuter agents.
     raw-input latency vs running-block size (fresh, 10k, 100k, 1M lines) local and remote.
 11. **Kill switches**: on any failure run the case once with the relevant switch from 2.6 for A/B and record the result.
 
+#### 3.5.1 International input cases (`appci/cases_caseintl.py`, `windows/ci/cases_caseintl.ps1`, #1466)
+
+Full tier only (not in `SMOKE`), both session modes unless noted. Non-ASCII expectations are `\u` escapes in the source; every check
+reads bytes (effect files opened in binary, the shell's own `rec.log`; for the marked-text rule a raw-tty reader,
+`appci/bytes_reader.py`, logs every chunk that reaches the pty with its timestamp).
+
+| case | platforms | proves |
+|---|---|---|
+| `intl_wide_type` | Linux, Mac (sim) | CJK, accented Latin, emoji and a ZWJ family typed at 10-25 ms/key + instant Enter reach the shell as exact UTF-8; screenshot of the rendered wide line |
+| `intl_wide_paste` | Linux, Mac (sim) | the same strings pasted inside a typed command and as a whole pasted command + instant Enter; the harness clipboard round trip is checked first so a mangling clipboard tool is not blamed on the app |
+| `intl_wide_edit` | Linux, Mac (sim) | Left / BackSpace over double-width and astral characters move by whole characters (checked on the received command) |
+| `intl_wide_program` | Linux, Mac | `head -n 1 > f` (a running program, no Ctrl-D) receives typed and pasted wide text exactly |
+| `intl_compose_linux` | Linux wayland (wtype) / x11 (xdotool) | xkb dead keys (`dead_acute`+e, `dead_diaeresis`+u, `dead_tilde`+n) and `Multi_key` sequences: NOTHING reaches the pty before the final key, then exactly the UTF-8 of the composed character; also in the input editor. Skips with the reason when the job locale is not UTF-8 |
+| `intl_ime_japanese` | Mac | Japanese (Romaji, Hiragana) input source selected with `mac/tools/tis.swift` (TISSelectInputSource): `nihon`, `kyou`, `konnnichiha` + Return commit the exact kana in the editor and in a running raw reader; marked text does not leak romaji to the pty; Space conversion yields only non-ASCII text |
+| `intl_ime_pinyin` | Mac | Pinyin - Simplified: `nihao` + Space commits exactly the UTF-8 of the first candidate in a raw reader and in the editor; no letters leak while composing |
+| `intl_deadkey_option` | Mac | ABC layout: Option+e/u/n/i then the letter (e acute, u diaeresis, n tilde, i circumflex, capital with Shift), dead key + non-combining letter and + Space, Option+s/o/c direct characters; nothing reaches the pty before the commit |
+| `intl_wide` | Windows | the same four strings typed (KEYEVENTF_UNICODE) and pasted; PowerShell writes them to a file, read back byte-exact |
+| `intl_altgr_ps`, `intl_altgr_bash` | Windows | German layout (KLID 00000407) loaded for the Phosphor window only: AltGr+Q @, E euro, 7 `{`, 8 `[`, 9 `]`, 0 `}`, sharp s `\`, `<` `|`, `+` `~`, 2/3/M (superscripts, micro) and a plain Y key (must be z) typed into a command that writes them out; the received bytes are read from the file in PowerShell and in Git Bash (started from the pane, `LC_ALL=C.UTF-8`; skips when Git is not installed) |
+
+Input-source rules (Mac): the harness only SELECTS among sources already enabled for `gitrunner`; it never enables or installs one. A
+missing source skips the case with a `NEEDS_OWNER:` message and writes `NEEDS_OWNER_ime.txt` (run dir and artifact root) with the exact
+clicks (System Settings > Keyboard > Text Input > Input Sources > Edit... > +, in the gitrunner session: Japanese - Romaji, Chinese
+Simplified - Pinyin, English - ABC). ASCII (the `echo`, the redirect, the reader command) is always typed on the ABC layout, because
+the injection tool posts unicode events that an active IME would compose; the IME is selected only around the composition, and the
+original source is restored in a `finally` block. Windows: only the Phosphor window's layout changes (`WM_INPUTLANGCHANGEREQUEST`,
+nothing system-wide); `Intl-Snapshot` saves the language list + `HKCU\Keyboard Layout\Preload` to `<backup>\kbd_pre.json` and the
+`keyboard-layout` step of `restore.ps1` verifies and, if a load persisted, repairs them.
+
 ### 3.6 Latency: method, budgets, baselines
 
 Method and protocol live in `script/keylat/README.md` (>=200 keystrokes per case, random 80-180 ms gaps plus the
