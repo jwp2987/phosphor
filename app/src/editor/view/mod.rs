@@ -3260,6 +3260,13 @@ impl EditorView {
         let Some(key) = paste_hold::held_form(action) else {
             return false;
         };
+        // #1423: behind a pty setup gate alone (a subshell or PowerShell warpify setup) nothing
+        // governs the editor's buffer, so an editing key acts at once and the text shows as it
+        // is typed. Keys that submit or complete stay held (they reach the pty or the shell),
+        // and so does every key once an editor-bound entry is queued (order).
+        if !paste_hold::key_submits_or_completes(action) && queue.peek().editor_keys_pass_gates() {
+            return false;
+        }
         let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
         queue
             .lock()

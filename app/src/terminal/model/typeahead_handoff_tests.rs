@@ -611,17 +611,34 @@ fn unanswered_lines_are_tracked_while_the_pty_owns_input() {
 /// turned into a newline, and the next Enter sent the typed shell lines to the agent. Held keys
 /// with an Enter in them are shell lines: they never go to the editor.
 #[test]
-fn the_editor_takeover_window_is_tracked() {
+fn the_editor_takeover_window_ends_on_its_events_not_the_clock() {
+    // #1439: a key 1.5 s after the hand-off, focus still not landed, is still the editor's.
     let start = Instant::now();
-    let window = Duration::from_millis(500);
+    let give_up = Duration::from_secs(10);
     let mut handoff = TypeaheadHandoff::default();
-    assert!(!handoff.editor_took_over_within(window, start));
+    assert!(!handoff.editor_takeover_open(give_up, start));
     handoff.note_editor_took_over(start);
-    assert!(handoff.editor_took_over_within(window, start + Duration::from_millis(200)));
-    assert!(!handoff.editor_took_over_within(window, start + Duration::from_millis(800)));
+    assert!(handoff.editor_takeover_open(give_up, start + Duration::from_millis(200)));
+    assert!(handoff.editor_takeover_open(give_up, start + Duration::from_millis(1500)));
+    // The focus event ends it.
+    handoff.on_editor_focused();
+    assert!(!handoff.editor_takeover_open(give_up, start + Duration::from_millis(1600)));
     // Only while the editor owns input.
+    handoff.note_editor_took_over(start);
     handoff.on_command_written();
-    assert!(!handoff.editor_took_over_within(window, start + Duration::from_millis(200)));
+    assert!(!handoff.editor_takeover_open(give_up, start + Duration::from_millis(200)));
+}
+
+#[test]
+fn the_editor_takeover_window_gives_up_when_focus_never_comes() {
+    let start = Instant::now();
+    let give_up = Duration::from_secs(10);
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_editor_took_over(start);
+    assert!(handoff.editor_takeover_open(give_up, start + Duration::from_secs(9)));
+    assert!(!handoff.editor_takeover_open(give_up, start + Duration::from_secs(11)));
+    // Closed for good: the give-up is not re-evaluated against an earlier clock.
+    assert!(!handoff.editor_takeover_open(give_up, start + Duration::from_secs(1)));
 }
 
 /// B1: the request is outstanding until the report arrives. Nothing gives up on it: the
@@ -684,21 +701,21 @@ fn the_editor_takeover_window_ends_early_on_request() {
     let mut handoff = TypeaheadHandoff::default();
     handoff.note_editor_took_over(start);
     handoff.end_editor_takeover_window();
-    assert!(!handoff.editor_took_over_within(Duration::from_secs(1), start));
+    assert!(!handoff.editor_takeover_open(Duration::from_secs(10), start));
 }
 
 #[test]
 fn the_window_survives_focus_moved_by_a_key_it_applied() {
     let start = Instant::now();
-    let window = Duration::from_secs(1);
+    let window = Duration::from_secs(10);
     let mut handoff = TypeaheadHandoff::default();
     handoff.note_editor_took_over(start);
     handoff.note_focus_moved_by_takeover_key();
     handoff.on_editor_focused();
-    assert!(handoff.editor_took_over_within(window, start));
+    assert!(handoff.editor_takeover_open(window, start));
     // Any other focus change ends it.
     handoff.on_editor_focused();
-    assert!(!handoff.editor_took_over_within(window, start));
+    assert!(!handoff.editor_takeover_open(window, start));
 }
 
 #[test]
@@ -2818,4 +2835,32 @@ fn a_continuation_prompt_answers_one_unanswered_enter_by_event() {
     let mut balanced = after_submit();
     balanced.on_precmd();
     assert!(!balanced.on_continuation_prompt());
+}
+
+#[test]
+fn a_key_reaching_the_hand_off_under_a_live_young_hold_is_held_not_written() {
+    // #1422: the queue and the state disagree (a write bypassed the queue's gate). The state says
+    // a hold is live, so the key is held behind it again, never written ahead of the held Enter.
+    let mut handoff = young_after_submit();
+    assert_eq!(handoff.on_user_bytes(b"frob"), UserBytesRoute::WriteCounted);
+    handoff.on_user_write_flushed();
+    let (id, _) = hold_young_enter(&mut handoff, b"\r");
+    let in_flight = handoff.writes_in_flight();
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert_eq!(
+        handoff.take_young_hold_started(),
+        Some(id),
+        "the view is told to put the key behind the same hold's gate"
+    );
+    assert_eq!(handoff.writes_in_flight(), in_flight, "nothing was written");
+}
+
+#[test]
+fn a_key_reaching_the_hand_off_under_a_live_prompt_hold_is_held_not_written() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"f"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    assert_eq!(handoff.on_user_bytes(b"o"), UserBytesRoute::Held);
+    assert_eq!(handoff.take_prompt_hold_started(), Some(id));
+    assert_eq!(handoff.writes_in_flight(), 0);
 }

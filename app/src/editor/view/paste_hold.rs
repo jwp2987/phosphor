@@ -433,6 +433,22 @@ pub(super) fn needs_fresh_display_map(key: &HeldPasteKey) -> bool {
     }
 }
 
+/// Whether `action` submits the line or asks the shell to complete it: a key whose effect leaves
+/// the editor, which a pty setup gate must keep holding (#1423).
+pub(super) fn key_submits_or_completes(action: &EditorAction) -> bool {
+    matches!(
+        action,
+        EditorAction::Enter
+            | EditorAction::CmdEnter
+            | EditorAction::CtrlEnter
+            | EditorAction::ShiftEnter
+            | EditorAction::AltEnter
+            | EditorAction::Newline
+            | EditorAction::Tab
+            | EditorAction::ShiftTab
+    )
+}
+
 /// The held form of `action`, if it is a key that must wait behind a pending paste. Everything
 /// else (Escape, Ctrl-C, scrolling, mouse selection, copy) acts at once.
 pub(super) fn held_form(action: &EditorAction) -> Option<HeldPasteKey> {

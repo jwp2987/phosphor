@@ -520,6 +520,29 @@ impl InputQueue {
         !self.is_idle()
     }
 
+    /// Whether an editing key typed in the input editor may be applied at once (#1423) instead of
+    /// waiting in the queue. True only when every open gate is a setup gate that governs the
+    /// pty's bytes and never the editor's buffer (`SubshellSetup`, `PowershellSetup`), and
+    /// everything queued is pty bytes: no earlier editor-bound entry (a held key, text, Enter or
+    /// paste) exists that this key would overtake. A key that submits (an Enter) is not decided
+    /// here; the editor keeps those held. `CliSubmit` is deliberately not in the set: the rich
+    /// input the submit reads from is closed or cleared when the submit ends, so a key applied
+    /// meanwhile would be lost with it. Every other gate (hand-off, Enter verdict, ssh, paste,
+    /// display map, ...) holds the editor's keys, as before.
+    pub fn editor_keys_pass_gates(&self) -> bool {
+        !self.gates.is_empty()
+            && self.gates.iter().all(|gate| {
+                matches!(
+                    gate.kind,
+                    GateKind::SubshellSetup | GateKind::PowershellSetup
+                )
+            })
+            && self
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.kind, EntryKind::PtyBytes { .. }))
+    }
+
     /// A paste read for the input editor is pending.
     pub fn has_editor_paste_reading(&self) -> bool {
         self.gates
@@ -672,8 +695,9 @@ impl InputQueue {
     /// Turns the open gate `(kind, key)` into `spec` in place: the same barrier, so everything it
     /// holds stays held with no window in which it is not (a take and a re-offer would have one),
     /// under a new token, so the cap timer armed for the old gate finds nothing. With
-    /// `drop_first_byte` the first byte of the first pty bytes entry the gate holds is removed
-    /// (the Enter of a young hold that now runs in the editor); an entry left empty is removed.
+    /// `drop_first_byte` the Enter that starts the first pty bytes entry the gate holds is removed
+    /// (the Enter of a young hold that now runs in the editor: one byte, or both of a `\r\n`
+    /// pair; the rest of a multi-byte write stays held); an entry left empty is removed.
     /// Returns whether the gate was open.
     pub fn retag_gate<H: Host>(
         &mut self,
@@ -696,7 +720,11 @@ impl InputQueue {
         {
             let emptied = match &mut self.entries[position].kind {
                 EntryKind::PtyBytes { bytes, .. } if !bytes.is_empty() => {
-                    bytes.remove(0);
+                    // One Enter leaves: a `\r\n` pair is a single Enter (#1420), so its `\n`
+                    // does not stay behind as a second one. The rest of the write is typed
+                    // content behind the Enter and stays held, in order.
+                    let enter_len = if bytes.starts_with(b"\r\n") { 2 } else { 1 };
+                    bytes.drain(..enter_len);
                     bytes.is_empty()
                 }
                 _ => false,

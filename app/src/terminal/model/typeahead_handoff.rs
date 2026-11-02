@@ -1714,21 +1714,27 @@ impl TypeaheadHandoff {
         if self.young_hold_queued {
             // The view's queue holds the keys of a young hold and takes every key typed behind it
             // (its pre-key check ends a hold the state has outgrown first), so a key only gets
-            // here if the queue and this state disagree. Never hold it a second time, and never
-            // lose it: it is written as typed.
+            // here if the queue and this state disagree (a write that bypassed the queue while
+            // the gate was open). On disagreement the state is the one that says a hold is live,
+            // so the key is held, never written ahead of the held Enter (#1422): it is reported
+            // as the hold's first key again, and the view puts it behind the hold's gate (joining
+            // the gate if it is open, opening it if it is not).
             log::warn!(
-                "typeahead hand-off: a key reached the hand-off while a queued young hold was live"
+                "typeahead hand-off: a key reached the hand-off while a queued young hold was live; holding it"
             );
-            return self.route_user_bytes_unheld(bytes, reaches_shell_line);
+            self.young_hold_started = true;
+            return UserBytesRoute::Held;
         }
         if self.prompt_hold_queued {
-            // The view's queue holds the keys of a prompt hold and takes every key typed behind
-            // it, so a key only gets here if the queue and this state disagree. Never hold it a
-            // second time, and never lose it: it is written as typed.
+            // The same for a prompt hold: the key is held behind the hold's gate, never written
+            // ahead of the keys the gate holds (#1422).
             log::warn!(
-                "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live"
+                "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live; holding it"
             );
-        } else if self.should_hold_for_prompt(reaches_shell_line, Instant::now()) {
+            self.prompt_hold_started = true;
+            return UserBytesRoute::Held;
+        }
+        if self.should_hold_for_prompt(reaches_shell_line, Instant::now()) {
             // #1353 phase 5: the bytes are not stored here; the view puts this key at the front of
             // its queue behind a `LineEditorActive` gate (one entry per key event, in typed
             // order) and releases them by the line editor's signal.
@@ -2191,12 +2197,29 @@ impl TypeaheadHandoff {
         self.editor_took_over_at = Some(now);
     }
 
-    /// Whether the editor took input over within `window` before `now`.
-    pub fn editor_took_over_within(&self, window: Duration, now: Instant) -> bool {
-        self.editor_owns_input()
-            && self
-                .editor_took_over_at
-                .is_some_and(|at| now.saturating_duration_since(at) <= window)
+    /// Whether the editor took input over and the window it opened is still open (#1439). The
+    /// window ends on its events only: focus reaching the editor, a click or selection on the
+    /// terminal, or the hand-off leaving the editor's ownership; how long focus takes (75-200 ms
+    /// measured, longer on a busy main thread) decides nothing. `give_up` is a net for a focus
+    /// event that never comes: past it the window is closed with a log line, so a key typed on
+    /// the terminal much later keeps its usual meaning.
+    pub fn editor_takeover_open(&mut self, give_up: Duration, now: Instant) -> bool {
+        if !self.editor_owns_input() {
+            return false;
+        }
+        let Some(at) = self.editor_took_over_at else {
+            return false;
+        };
+        let age = now.saturating_duration_since(at);
+        if age > give_up {
+            log::warn!(
+                "typeahead hand-off: the editor never gained focus within {age:?} of taking over; \
+                 closing the takeover window"
+            );
+            self.editor_took_over_at = None;
+            return false;
+        }
+        true
     }
 
     /// A Ctrl-C was written while the pty owned input. The tty discards queued typeahead and the
