@@ -10624,9 +10624,12 @@ impl TerminalView {
             }));
         }
 
-        self.model
-            .lock()
-            .send_write_to_pty_events_for_shared_session(chars);
+        // Never waits for the pty reader (#1403): left in the model's inbox, which applies it
+        // before it parses the next bytes (in typed order); applied now when the model is free.
+        self.model_inbox.post(ModelCommand::SharedSessionWrite(chars));
+        if let Some(mut model) = self.model.try_lock() {
+            model.apply_inbox();
+        }
     }
 
     fn update_scroll_position_locking(
