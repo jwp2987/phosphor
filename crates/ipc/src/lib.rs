@@ -45,10 +45,8 @@ mod server;
 mod service;
 
 // Platform-specific implementations of the underlying transport for both server and client.  For
-// native platforms, this uses the `interprocess` crate. On wasm, we plan to use the WebWorkers
-// MessagePort API, but this is not yet implemented.
-#[cfg_attr(not(target_family = "wasm"), path = "native.rs")]
-#[cfg_attr(target_family = "wasm", path = "wasm.rs")]
+// native platforms, this uses the `interprocess` crate.
+#[path = "native.rs"]
 mod platform;
 
 pub use client::{Client, ClientError};
