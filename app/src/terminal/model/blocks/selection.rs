@@ -359,6 +359,7 @@ impl BlockList {
     /// Returns the start and end points of the current text selection in the block list, if any,
     /// and whether the selection was reversed.
     /// Note that the `start` is always before `end`.
+    #[cfg(test)]
     pub fn text_selection_range(
         &self,
         semantic_selection: &SemanticSelection,

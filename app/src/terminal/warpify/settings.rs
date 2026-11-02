@@ -384,30 +384,6 @@ impl WarpifySettings {
         }
     }
 
-    #[cfg(any(test, feature = "integration_tests"))]
-    #[allow(dead_code)]
-    pub fn new_with_defaults(_ctx: &mut ModelContext<Self>) -> Self {
-        let added_subshell_commands = AddedSubshellCommands::new(None);
-        let subshell_command_denylist = SubshellCommandsDenylist::new(None);
-        let ssh_hosts_denylist = SshHostsDenylist::new(None);
-        Self {
-            parsed_added_subshell_commands: Self::parse_added_subshell_commands(
-                &added_subshell_commands,
-            ),
-            added_subshell_commands,
-            parsed_subshell_command_denylist: Self::parse_subshell_command_denylist(
-                &subshell_command_denylist,
-            ),
-            subshell_command_denylist,
-            parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
-            ssh_hosts_denylist,
-            enable_ssh_warpification: EnableSshWarpification::new(None),
-            enable_ssh_wrapper: EnableSshWrapper::new(None),
-            use_ssh_tmux_wrapper: UseSshTmuxWrapper::new(None),
-            ssh_extension_install_mode: SshExtensionInstallModeSetting::new(None),
-        }
-    }
-
     /// This is different from the typical register method, as it also ensures that
     /// our parsed regexes stay in sync with the underlying data by having the
     /// model subscribe to itself after it's registered.

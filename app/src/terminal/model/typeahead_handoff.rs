@@ -768,6 +768,7 @@ impl TypeaheadHandoff {
     }
 
     /// Whether the line editor's ready signal is still awaited for the current prompt.
+    #[cfg(test)]
     pub fn awaiting_line_editor_signal(&self) -> bool {
         self.awaiting_line_editor_since.is_some()
     }
@@ -895,6 +896,7 @@ impl TypeaheadHandoff {
     }
 
     /// The last Precmd sequence number parsed.
+    #[cfg(test)]
     pub fn last_prompt_seq(&self) -> Option<PromptSeq> {
         self.prompt_seq
     }
@@ -2325,6 +2327,7 @@ impl TypeaheadHandoff {
 
     /// Whether the pty owns input at the prompt with user bytes in the shell's line, so only a
     /// request can hand input to the editor.
+    #[cfg(test)]
     pub fn needs_request_at_prompt(&self) -> bool {
         matches!(
             self.owner(),

@@ -19,8 +19,6 @@ use crate::terminal::TerminalManager;
 use crate::terminal::local_tty::docker_sandbox::resolve_sbx_path_from_user_shell;
 
 use super::TerminalView;
-#[cfg(feature = "remote_tty")]
-use crate::terminal::remote_tty::TerminalManager as RemoteTtyTerminalManager;
 
 /// Default base Docker image used for newly created sandbox shells.
 ///
@@ -40,23 +38,14 @@ fn create_docker_sandbox_view(
     resources: TerminalViewResources,
     initial_size: Vector2F,
     model_event_sender: Option<SyncSender<ModelEvent>>,
-    #[allow(dead_code)] sbx_path: std::path::PathBuf,
+    sbx_path: std::path::PathBuf,
     ctx: &mut ViewContext<TerminalView>,
 ) -> (
     ViewHandle<TerminalView>,
     ModelHandle<Box<dyn TerminalManager>>,
 ) {
     cfg_if::cfg_if! {
-        if #[cfg(feature = "remote_tty")] {
-            let (terminal_view, terminal_manager) = RemoteTtyTerminalManager::create_model(
-                resources,
-                initial_size,
-                model_event_sender,
-                ctx.window_id(),
-                None, /* initial_input_config */
-                ctx,
-            );
-        } else if #[cfg(feature = "local_tty")] {
+        if #[cfg(feature = "local_tty")] {
             let user_default_shell_unsupported_banner_model_handle =
                 ctx.add_model(|_| crate::banner::BannerState::default());
 
@@ -110,7 +99,7 @@ impl TerminalView {
         // spawn and then build the pane in the completion callback.
         //
         // The sbx resolution and sandbox creation are only meaningful on
-        // platforms with a local tty; other builds (e.g. wasm/remote_tty) log
+        // platforms with a local tty; other builds log
         // and bail.
         #[cfg(feature = "local_tty")]
         {

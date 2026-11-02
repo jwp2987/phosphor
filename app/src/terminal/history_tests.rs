@@ -21,7 +21,7 @@ use itertools::Itertools;
 use warp_core::command::ExitCode;
 use warpui::{App, ModelHandle};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;

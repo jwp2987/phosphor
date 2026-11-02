@@ -1591,11 +1591,6 @@ impl<'a> ViewportState<'a> {
             && heights_approx_gt(bottom_of_block_in_lines, bottom_of_viewport_in_lines)
     }
 
-    pub fn max_scroll_top_px(&self) -> Pixels {
-        self.max_scroll_top_in_lines()
-            .to_pixels(self.size_info.cell_height_px)
-    }
-
     /// Returns the max possible value in lines for scroll_top (how far from the top of the
     /// blocklist it's possible to scroll down)
     pub fn max_scroll_top_in_lines(&self) -> Lines {

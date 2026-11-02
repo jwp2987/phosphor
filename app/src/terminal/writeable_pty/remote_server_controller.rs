@@ -46,15 +46,11 @@ enum SshInitState {
         setup_start: Instant,
     },
     /// Stash held, `install_binary` in flight.
-    /// `for_update` is `true` when reinstalling over an existing install
-    /// (auto-update path) and `false` for a fresh install.
     AwaitingInstall {
         session_id: SessionId,
         session_info: SessionInfo,
         transport: SshTransport,
         setup_start: Instant,
-        #[allow(dead_code)]
-        for_update: bool,
     },
     /// `connect_session` in flight. The bootstrap is flushed when the binary check passes
     /// (#1172, `bootstrap_flushed`), or otherwise once `SessionConnected` arrives (or on
@@ -491,7 +487,6 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_info,
                     transport: transport.clone(),
                     setup_start,
-                    for_update: true,
                 };
                 RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                     mgr.install_binary(session_id, transport, true, ctx);
@@ -520,7 +515,6 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                             session_info,
                             transport: transport.clone(),
                             setup_start,
-                            for_update: false,
                         };
                         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                             mgr.install_binary(session_id, transport, false, ctx);
@@ -570,7 +564,6 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             session_info,
             transport: transport.clone(),
             setup_start,
-            for_update: false,
         };
         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
             mgr.install_binary(session_id, transport, false, ctx);

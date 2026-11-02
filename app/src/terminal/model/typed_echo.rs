@@ -351,11 +351,6 @@ impl TypedEcho {
         }
     }
 
-    /// Forgets the runs recorded in `block` (it is gone).
-    pub fn forget_block(&mut self, block: &BlockId) {
-        self.runs.retain(|run| &run.block != block);
-    }
-
     fn take_runs(&mut self, mut pred: impl FnMut(&EchoRun) -> bool) -> Vec<EchoRun> {
         let mut taken = Vec::new();
         let mut kept = VecDeque::with_capacity(self.runs.len());

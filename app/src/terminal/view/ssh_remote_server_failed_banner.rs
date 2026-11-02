@@ -162,6 +162,7 @@ pub fn describe_unsupported_reason(reason: &UnsupportedReason) -> String {
 /// Pure and unit-tested on its own (see `ssh_remote_server_failed_banner_tests.rs`)
 /// so the mapping from [`LegacySshFallbackReason`] to user-facing text can be
 /// checked without constructing any view.
+#[cfg(test)]
 pub fn describe_legacy_fallback_reason(reason: &LegacySshFallbackReason) -> String {
     match reason {
         LegacySshFallbackReason::FeatureDisabled => {

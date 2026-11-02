@@ -79,7 +79,7 @@ use window_footer_bar::render_window_footer_bar;
 use super::CLIAgent;
 use super::cli_agent;
 use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
-use super::paste_sequencer::PasteFailure;
+use super::paste_sequencer::{PasteFailure, paste_backstop};
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
 use crate::ai::ambient_agents::{AmbientAgentTaskId, conversation_output_status_from_conversation};
@@ -172,7 +172,7 @@ pub use action::{
 };
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
 
-use crate::terminal::shared_session::protocol::{SessionEndedReason, SessionSourceType};
+use crate::terminal::shared_session::protocol::SessionEndedReason;
 pub use block_banner::{BLOCK_BANNER_HEIGHT, WithinBlockBanner};
 use block_onboarding::onboarding_agentic_suggestions_block::{
     OnboardingAgenticSuggestionsBlock, OnboardingAgenticSuggestionsBlockEvent, OnboardingChipType,
@@ -311,9 +311,7 @@ use crate::terminal::session_settings::{
     NotificationsMode, NotificationsSettings, SessionSettings,
 };
 use crate::terminal::settings::{TerminalSettings, TerminalSettingsChangedEvent};
-use crate::terminal::shared_session::{
-    SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionStatus,
-};
+use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
@@ -659,8 +657,6 @@ lazy_static! {
     /// See [`TerminalView::resize_alt_screen_redundantly`] for more details.
     static ref ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING: HashSet<&'static str> = HashSet::from(["k9s", "lazygit"]);
 }
-
-pub const AI_CONTROL_PANEL_MARGIN: f32 = 10.;
 
 pub const OVERFLOW_BUTTON_OFFSET_X: f32 = -3.;
 pub const MAX_WAKEUPS_PER_SECOND: u64 = 60;
@@ -1310,10 +1306,6 @@ impl PromptSuggestion {
     pub fn label(&self) -> &String {
         self.label.as_ref().unwrap_or(&self.prompt)
     }
-
-    pub fn is_static_prompt_suggestion(&self) -> bool {
-        self.static_prompt_suggestion_name.is_some()
-    }
 }
 
 /// A unique identifier for an inline banner.
@@ -1325,14 +1317,12 @@ pub enum InlineBannerType {
     NotificationsDiscovery,
     NotificationsError,
     Ssh,
-    PromptSuggestions,
     AliasExpansion,
     SharedSessionStart,
     SharedSessionEnd,
     ShellProcessTerminated,
     OpenInWarp,
     VimMode,
-    AgentModeSetup,
     AwsBedrockLogin,
     AwsCliNotInstalled,
 }
@@ -1343,10 +1333,7 @@ impl InlineBannerType {
     pub fn is_visible_in_agent_view(&self) -> bool {
         match self {
             // Agent-related banners: visible in agent view
-            Self::PromptSuggestions
-            | Self::AgentModeSetup
-            | Self::AwsBedrockLogin
-            | Self::AwsCliNotInstalled => true,
+            Self::AwsBedrockLogin | Self::AwsCliNotInstalled => true,
             // Terminal-context banners: hidden in agent view
             Self::NotificationsDiscovery
             | Self::NotificationsError
@@ -1418,13 +1405,6 @@ impl InlineBannersState {
         let next_id = self.next_banner_id;
         self.next_banner_id += 1;
         next_id
-    }
-
-    /// Returns the ID of the last inline banner inserted.
-    #[allow(dead_code)]
-    fn last_banner_id(&self) -> Option<InlineBannerId> {
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        (self.next_banner_id > 0).then(|| self.next_banner_id - 1)
     }
 }
 
@@ -2058,14 +2038,6 @@ pub enum Event {
         open_code_review: CodeReviewPanelArg,
         comments: Vec<AttachedReviewComment>,
         diff_mode: DiffMode,
-    },
-    StartSharingCurrentSession {
-        scrollback_type: SharedSessionScrollbackType,
-        source_type: SessionSourceType,
-    },
-    FailedToShareSession {
-        reason: String,
-        cause: Option<Arc<anyhow::Error>>,
     },
     StopSharingCurrentSession {
         reason: SessionEndedReason,
@@ -3021,7 +2993,6 @@ pub struct TerminalView {
 
     last_hover_fragment_boundary: Option<WithinModel<FragmentBoundary>>,
 
-    bootstrap_start: Option<Instant>,
     is_login_shell_bootstrapped: bool,
     /// Set when a pending command is submitted to the shell. Cleared on the
     /// next `AfterBlockCompleted`, at which point `Event::PendingCommandCompleted`
@@ -3313,10 +3284,6 @@ pub struct TerminalView {
     // and [`SharedSessionKind::Viewer`] to store some common struct for common fields.
     shared_session: Option<SharedSessionAdapter>,
 
-    /// Stashed source from `attempt_to_share_session` so `on_session_share_started`
-    /// can decide whether to auto-copy the link vs open the sharing dialog.
-    pending_share_source: Option<SharedSessionActionSource>,
-
     /// When true, automatically stop the shared session when the CLI agent session ends.
     /// Set when sharing is started from the remote control entrypoint.
     auto_stop_sharing_on_cli_end: bool,
@@ -3385,11 +3352,6 @@ pub struct TerminalView {
     /// Hover state for the window-footer-bar tooltip above. A single handle is enough:
     /// only one footer bar is ever rendered per `TerminalView`.
     window_footer_bar_tooltip_mouse_state: MouseStateHandle,
-
-    /// The keystroke bound to canceling a command.
-    /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
-    /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
-    cancel_command_keystroke: Option<Keystroke>,
 
     /// Whether the terminal view is currently a drop target for a file. If it is, we render an overlay.
     is_file_drop_target: bool,
@@ -3504,9 +3466,6 @@ pub struct TerminalView {
     is_using_conversation_for_pane_header_title: bool,
 
     ambient_agent_view_model: ModelHandle<ambient_agent::AmbientAgentViewModel>,
-
-    /// Mouse state handle for the ambient agent cancel button in the pane header.
-    ambient_agent_cancel_mouse_state: warpui::elements::MouseStateHandle,
 
     /// Weak handle to the [`PaneStack`] this view is part of, allowing push/pop operations.
     pane_stack: Option<WeakModelHandle<crate::pane_group::pane::PaneStack<Self>>>,
@@ -3806,10 +3765,6 @@ impl TerminalView {
                 ephemeral_message_model.clone(),
                 ctx,
             )
-        });
-
-        ctx.subscribe_to_model(&ambient_agent_view_model, |me, _, event, ctx| {
-            me.handle_ambient_agent_event(event, ctx);
         });
 
         // Prompts queued for a conversation that is then removed, deleted, or cleared come back
@@ -4818,9 +4773,6 @@ impl TerminalView {
             },
         );
         ctx.subscribe_to_model(&KeybindingChangedNotifier::handle(ctx), |me, _, _, ctx| {
-            me.cancel_command_keystroke =
-                keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx);
-
             me.refresh_pane_header(ctx);
             ctx.notify();
         });
@@ -4975,7 +4927,6 @@ impl TerminalView {
             find_link_tx,
             highlighted_link: HighlightedLinkOption::default(),
             last_hover_fragment_boundary: None,
-            bootstrap_start: None,
             is_login_shell_bootstrapped: false,
             awaiting_pending_command_completion: false,
             enter_agent_view_after_pending_commands: false,
@@ -5082,7 +5033,6 @@ impl TerminalView {
             ai_render_context,
             streaming_render_context_signature: None,
             shared_session: None,
-            pending_share_source: None,
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
@@ -5101,7 +5051,6 @@ impl TerminalView {
             window_footer_bar_color: None,
             window_footer_bar_tooltip: None,
             window_footer_bar_tooltip_mouse_state: Default::default(),
-            cancel_command_keystroke: keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx),
             is_file_drop_target: false,
             is_ssh_file_uploader: false,
             ssh_file_upload,
@@ -5139,7 +5088,6 @@ impl TerminalView {
             ambient_agent_view_model,
             selection_copy_seq: 0,
             selection_render_cancel: None,
-            ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
             aws_login_requested: None,
@@ -5622,19 +5570,6 @@ impl TerminalView {
                 controller.exit_agent_view(ctx);
             });
         }
-    }
-
-    /// Schedule a callback to run after the next
-    /// [`BlocklistAIControllerEvent::FinishedReceivingOutput`] received, regardless of whether the
-    /// conversation completed successfully, was cancelled, or encountered an error.
-    /// The callback receives the `FinishReason` to allow different handling based on how the
-    /// conversation ended.
-    pub fn on_next_conversation_finished<F>(&mut self, callback: F)
-    where
-        F: FnOnce(&mut Self, FinishReason, &mut ViewContext<Self>) + 'static,
-    {
-        self.conversation_completed_callbacks
-            .push(Box::new(callback));
     }
 
     #[cfg(feature = "local_fs")]
@@ -8867,16 +8802,6 @@ impl TerminalView {
         })
     }
 
-    /// Returns the active session's launch shell, if it is specified.
-    /// Returns None if there is no active session or if the current session does not
-    /// have a launch shell.
-    pub fn active_session_shell<C: ModelAsRef>(&self, ctx: &C) -> Option<ShellLaunchData> {
-        self.active_block_session_id().and_then(|session_id| {
-            let current_session = self.sessions.as_ref(ctx).get(session_id)?;
-            current_session.launch_data().cloned()
-        })
-    }
-
     /// Returns the active session's WSL distribution information, if it exists.
     /// Returns None if there is no active session or if the current session is
     /// not a WSL session.
@@ -8987,18 +8912,6 @@ impl TerminalView {
 
     pub fn input_config(&self, app: &AppContext) -> InputConfig {
         self.ai_input_model.as_ref(app).input_config()
-    }
-
-    /// Applies an input mode update from an external source (e.g., session sharing).
-    /// This bypasses normal event emission to prevent update loops.
-    pub fn apply_external_input_mode_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.input.update(ctx, |input, ctx| {
-            input.apply_external_input_config_update(config, ctx);
-        });
     }
 
     pub fn ai_controller(&self) -> &ModelHandle<BlocklistAIController> {
@@ -9327,42 +9240,6 @@ impl TerminalView {
             }
         };
         ctx.emit(Event::LongRunningCommandAgentInteractionStateChanged { state });
-    }
-
-    /// Applies a long-running command agent interaction state received from a shared session participant.
-    pub fn apply_long_running_command_agent_interaction_state(
-        &mut self,
-        state: LongRunningCommandAgentInteractionState,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        match state {
-            LongRunningCommandAgentInteractionState::InControl => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.handoff_active_command_control_to_agent(ctx);
-                });
-            }
-            LongRunningCommandAgentInteractionState::TaggedIn => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_in(ctx);
-            }
-            LongRunningCommandAgentInteractionState::NotInteracting => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_out(ctx);
-            }
-        }
-    }
-
-    /// Shows or hides the CLI agent footer from a shared session update.
-    pub fn apply_cli_agent_footer_visibility(&mut self, show: bool, ctx: &mut ViewContext<Self>) {
-        if show {
-            self.refresh_use_agent_footer(ctx);
-        } else {
-            self.suppress_use_agent_footer(ctx);
-        }
     }
 
     pub fn has_active_env_var_block(&self, app: &AppContext) -> bool {
@@ -10784,17 +10661,6 @@ impl TerminalView {
             drop(model);
             self.dismiss_tooltips(ctx);
         }
-    }
-
-    pub fn set_show_pane_accent_border(
-        &mut self,
-        show_accent_border: bool,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.pane_configuration.update(ctx, |pane_config, ctx| {
-            pane_config.set_show_accent_border(show_accent_border, ctx);
-            ctx.notify();
-        });
     }
 
     /// Whether a banner that advertises "Use agent <shortcut>" is on screen: the SSH Warpifying
@@ -12264,6 +12130,7 @@ impl TerminalView {
     /// Observation never delays or drops the write itself, and never arms a
     /// window for a byte that `write_user_bytes_to_pty` rejected (e.g. the
     /// active block is under agent control).
+    #[cfg(test)]
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
         let is_ctrl_c = bytes == [0x03];
         let forwarded = self.write_user_bytes_to_pty(bytes, ctx);
@@ -21909,10 +21776,6 @@ impl TerminalView {
         }
     }
 
-    pub fn set_enter_agent_view_after_ssh_bootstrap(&mut self) {
-        self.enter_agent_view_after_ssh_bootstrap = true;
-    }
-
     #[cfg(not(target_family = "wasm"))]
     pub(super) fn on_pty_spawn_failed(
         &mut self,
@@ -22652,7 +22515,7 @@ impl TerminalView {
             self.paste_queue.ssh_pastes.insert(id);
         }
         #[cfg(not(target_family = "wasm"))]
-        let backstop = Self::paste_backstop();
+        let backstop = paste_backstop();
         #[cfg(target_family = "wasm")]
         let backstop: Option<Duration> = None;
         self.prepare_subshell_gates(&[], ctx);
@@ -22891,22 +22754,9 @@ impl TerminalView {
             reader,
             shell_dialect,
             bracketed,
-            Self::paste_backstop(),
+            paste_backstop(),
             ctx,
         );
-    }
-
-    /// How long the terminal holds typed keys for a clipboard read before giving up on it (#1331).
-    /// The platform readers bound their own wait; this is the backstop for a wedged reader thread.
-    /// `PHOSPHOR_PASTE_BACKSTOP_MS` overrides it (shared with the input editor); `0` turns it off.
-    #[cfg(not(target_family = "wasm"))]
-    fn paste_backstop() -> Option<Duration> {
-        const DEFAULT_MS: u64 = 3_000;
-        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_MS);
-        (ms > 0).then(|| Duration::from_millis(ms))
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -34246,7 +34096,6 @@ impl TypedActionView for TerminalView {
             | OpenConversationsPalette
             | ExitAgentView
             | StartNewAgentConversation
-            | CancelAmbientAgentTask
             | OpenInlineHistoryMenu
             | OpenModelSelector
             | ResolvePromptSuggestion(..)
@@ -35291,12 +35140,6 @@ impl TypedActionView for TerminalView {
             AwsCliNotInstalledBanner(action) => {
                 self.handle_aws_cli_not_installed_banner_action(*action, ctx);
             }
-            CancelAmbientAgentTask => {
-                self.ambient_agent_view_model.update(ctx, |model, ctx| {
-                    model.cancel_task(ctx);
-                });
-                ctx.notify();
-            }
             ToggleUsageFooter => {
                 self.toggle_usage_footer(ctx);
             }
@@ -35596,16 +35439,6 @@ impl View for TerminalView {
 
         if self.is_any_tooltip_open() {
             self.render_grid_tooltip(&mut stack, &model, appearance, app);
-        }
-
-        // Show progress steps while waiting for an ambient agent to start.
-        if self
-            .ambient_agent_view_model
-            .as_ref(app)
-            .agent_progress()
-            .is_some()
-        {
-            stack.add_child(self.render_ambient_agent_progress(appearance, app));
         }
 
         self.maybe_render_onboarding_callout(
@@ -36483,10 +36316,8 @@ impl Drop for TerminalView {
                     "Session abandoned before bootstrap for shell {pending_shell:?} on ssh {has_pending_ssh_session}"
                 );
 
-                let duration_since_start =
-                    self.bootstrap_start.unwrap_or_else(Instant::now).elapsed();
                 log::debug!(
-                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}, duration_since_start={duration_since_start:?}",
+                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}",
                     self.was_ever_visible,
                 );
             }

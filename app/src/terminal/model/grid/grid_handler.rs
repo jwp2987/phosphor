@@ -2102,6 +2102,7 @@ impl GridHandler {
 
     /// Whether a pty edit has changed rows away from the cursor since find last consumed the
     /// dirty range (#822).
+    #[cfg(test)]
     pub fn find_has_unlocalized_change(&self) -> bool {
         self.find_unlocalized_change
     }
@@ -2111,26 +2112,6 @@ impl GridHandler {
         // Initialize the dirty cells range to be the current point of the cursor, since this is
         // where the cursor will be upon the next run of the PTY event loop.
         self.ansi_handler_state.dirty_cells_range = cursor_point_offset..cursor_point_offset;
-    }
-
-    /// Returns `true` if the row has trailing whitespace or empty cells starting from `col`,
-    /// inclusive.
-    #[inline]
-    pub fn row_has_trailing_whitespace(&self, row: usize, col: usize) -> bool {
-        if row >= self.grid.total_rows() {
-            return false;
-        }
-
-        let mut cursor =
-            self.grapheme_cursor_from(Point::new(row, col), grapheme_cursor::Wrap::None);
-        while let Some(item) = cursor.current_item() {
-            if !item.content_char().is_whitespace() {
-                return false;
-            }
-
-            cursor.move_forward()
-        }
-        true
     }
 
     /// Returns the index of the last row in the grid which received any output

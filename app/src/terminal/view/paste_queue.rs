@@ -45,7 +45,7 @@ use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
     GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner,
-    PowershellKeysThen, SignalKind, SshDropThen, is_pty_entry, trace,
+    PowershellKeysThen, SignalKind, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -522,6 +522,7 @@ impl Host for PtyQueueHost<'_, '_> {
 impl TerminalView {
     /// Whether a paste is still being read for this pane. Mid-drain (borrowed) means the paste
     /// that was pending has just been delivered.
+    #[cfg(test)]
     pub(super) fn paste_pending(&self) -> bool {
         self.paste_queue
             .queue

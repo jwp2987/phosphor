@@ -112,20 +112,8 @@ impl ParticipantAvatarView {
         }
     }
 
-    pub fn set_participant_id(&mut self, id: ParticipantId) {
-        self.participant_id = id;
-    }
-
     pub fn set_display_name(&mut self, name: String) {
         self.display_name = name;
-    }
-
-    pub fn set_image_url(&mut self, path: Option<String>) {
-        self.image_url = path;
-    }
-
-    pub fn set_participant_color(&mut self, color: ColorU) {
-        self.participant_color = color;
     }
 
     pub fn set_is_muted(&mut self, is_muted: bool) {

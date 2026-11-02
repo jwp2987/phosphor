@@ -1,21 +1,20 @@
 use byte_unit::Byte;
-use instant::Duration;
 use serde::{Deserialize, Serialize};
-use warpui::{id, keymap::ContextPredicate, AppContext};
+use warpui::AppContext;
 
 use crate::editor::{InteractionState, ReplicaId};
 
 pub mod protocol;
 pub use protocol::ParticipantId;
 
-use protocol::{Role, Scrollback, ScrollbackBlock, SessionSourceType};
+use protocol::{Role, SessionSourceType};
+#[cfg(test)]
+use protocol::{Scrollback, ScrollbackBlock};
 
-use super::{
-    model::{block::SerializedBlock, terminal_model::BlockIndex},
-    GridType, TerminalModel,
-};
+#[cfg(test)]
+use super::model::block::SerializedBlock;
+use super::{model::terminal_model::BlockIndex, GridType, TerminalModel};
 
-pub mod ai_agent;
 pub mod participant_avatar_view;
 pub mod presence_manager;
 pub mod render_util;
@@ -26,15 +25,6 @@ pub mod viewer;
 
 #[cfg(test)]
 pub use tests::MAX_BYTES_SHAREABLE;
-
-/// The toast copy when copying a shared session link.
-pub const COPY_LINK_TEXT: &str = "Sharing link copied";
-
-/// Throttle period for selection updates. We throttle instead of debounce because we want
-/// to send selections even when it updates fast, so it appears live.
-/// Our throttle implementation throttles on the trailing edge (does not drop messages at the end, so the
-/// most up to date will always be sent after some delay)
-const SELECTION_THROTTLE_PERIOD: Duration = Duration::from_millis(20);
 
 /// Whether or not a local session is also being shared.
 /// Since a shared session creator is also the creator of a local session,
@@ -155,10 +145,6 @@ impl SharedSessionStatus {
             Self::ActiveSharer => "SharedSessionStatus_ActiveSharer",
         }
     }
-
-    pub fn active_viewer_keymap_context() -> ContextPredicate {
-        id!(Self::reader().as_keymap_context()) | id!(Self::executor().as_keymap_context())
-    }
 }
 
 /// The scrollback options when starting a shared session.
@@ -188,6 +174,7 @@ impl SharedSessionScrollbackType {
     /// even if they were specified as part of the scrollback type.
     /// For example, if the [`Self::All]` variant is used, restored blocks
     /// _won't_ be included in scrollback.
+    #[cfg(test)]
     fn to_scrollback(self, model: &TerminalModel) -> Scrollback {
         let first_block_index = self.first_block_index(model);
         let blocks = model
@@ -257,24 +244,7 @@ pub fn max_session_size(_ctx: &AppContext) -> Byte {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub enum SharedSessionActionSource {
-    /// From right-click menu in blocklist
-    /// * `block_index`: provided with selected block, none when no blocks selected
-    BlocklistContextMenu {
-        block_index: Option<BlockIndex>,
-    },
-    Tab,
     PaneHeader,
-    /// Includes keybindings.
-    CommandPalette,
-    OnboardingBlock,
-    Closed {
-        is_confirm_close_session: bool,
-    },
-    InactivityModal,
-    /// The user did not initiate this action themselves.
-    NonUser,
-    /// From the session sharing context menu items.
-    RightClickMenu,
     /// From the agent/CLI footer chip.
     FooterChip,
 }
@@ -353,6 +323,7 @@ impl From<&Role> for InteractionState {
 /// Decode scrollback blocks from their JSON wire format into [`SerializedBlock`]s.
 ///
 /// Blocks that fail to deserialize are silently dropped.
+#[cfg(test)]
 pub(crate) fn decode_scrollback(scrollback: &Scrollback) -> Vec<SerializedBlock> {
     scrollback
         .blocks
