@@ -13,9 +13,10 @@
 //! the ssh connect typeahead held (`EntryKind::Held`), stops calling the legacy chain
 //! (`typed_characters_on_terminal` -> `route_typed` -> the hold probes -> `write_user_bytes_to_pty`
 //! ..., which could hold the input AGAIN from inside the delivery and recover through the
-//! `delivering` / `requeue_request` plumbing). [`TerminalView::deliver_via_table`] runs the
-//! refreshers the legacy ssh probes ran (the lazy arming of the connect gate, the prompt
-//! discard), builds the facts of THIS moment, decides ONCE with `table::decide` (the entry's own
+//! `delivering` / `requeue_request` plumbing). [`TerminalView::deliver_via_table`] builds the
+//! facts of THIS moment (since step 7 the ssh refreshers are gone from the key path: the edge-driven
+//! `SshPhase` of `view/ssh_edges.rs` carries the connect state, and a prompt that appeared
+//! discards what was held), decides ONCE with `table::decide` (the entry's own
 //! stamp, no gate behind it: the queue delivered it, so none covers it) and executes the plan with
 //! the same leaf writers legacy ends in. A plan that holds the input behind the ssh connect
 //! requeues it exactly as `ssh_hold_push` always did mid-drain.
@@ -58,15 +59,11 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 
-use instant::Instant;
 use warpui::{TypedActionView as _, ViewContext};
 
 use super::paste_queue::{PtyQueueHost, signal_bytes};
 use super::ssh_typeahead::HeldInput;
-use super::{
-    AfterEnterInput, Event, KeyPathScope, SshKeyEvent, TerminalView, paste_bytes_for_pty,
-    ssh_bootstrap_swallow_active,
-};
+use super::{AfterEnterInput, Event, KeyPathScope, SshKeyEvent, TerminalView, paste_bytes_for_pty};
 use crate::editor::EditorAction;
 use crate::features::FeatureFlag;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
@@ -76,7 +73,7 @@ use crate::terminal::input_queue::table::{
 };
 use crate::terminal::input_queue::{
     Deferred, DestinationMode, EntryKind, GateKind, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_SIGNAL,
-    HELD_TYPED, Origin, QueueFacts, RouteFacts, SignalKind, Stamp, destination_mode,
+    HELD_TYPED, Origin, QueueFacts, RouteFacts, SignalKind, SshPhase, Stamp, destination_mode,
 };
 
 /// What the table decided at the top of a legacy entry point, kept until its leaf is known.
@@ -268,31 +265,6 @@ impl TerminalView {
         self.deliver_via_table(input, Origin::Held, stamp, ctx);
     }
 
-    /// The legacy ssh probes' refreshers, in their order (`hold_input_during_ssh_connect`): the
-    /// lazy arming of the connect gate for an ssh recognised at preexec only, the hand-over of
-    /// what a gate that released since the last event still holds, the bootstrap swallow clock
-    /// and the sticky "visible text seen" bit. They mutate view state and stay on the delivery
-    /// path exactly where they were (design OD-6: they move off it in step 7). The facts the
-    /// table decides on are built AFTER them.
-    fn refresh_ssh_state_for_table(&mut self, ctx: &mut ViewContext<Self>) {
-        let gate_armed = self.refresh_ssh_connect_gate();
-        if !gate_armed && self.ssh_typeahead_holding {
-            self.deliver_ssh_typeahead_if_ready("key", ctx);
-        }
-        let pending_sid = if gate_armed || self.has_pending_ssh_command() {
-            self.model_facts().pending_session_id
-        } else {
-            None
-        };
-        let _ = ssh_bootstrap_swallow_active(
-            pending_sid,
-            self.ssh_bootstrap_failed_session,
-            &mut self.ssh_bootstrap_swallow_started,
-            Instant::now(),
-        );
-        let _ = self.ssh_connect_gate_drops_keys();
-    }
-
     /// The facts of this moment, after the prompt rule of the ssh hold: a host-key / password
     /// prompt appeared while keys were held, so what was typed before it may be a password and is
     /// discarded (the event-time rule, #1113); the keys after it go to the prompt. The facts are
@@ -305,15 +277,12 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> RouteFacts {
         let facts = self.build_route_facts(queue, ctx);
-        let gate_drops = facts.ssh_dialog_up
-            || facts.ssh_setup_in_flight
-            || facts.ssh_bootstrapping
-            || facts.ssh_connecting_silently;
-        if self.ssh_typeahead_holding
-            && !gate_drops
-            && !signal
-            && self.discard_ssh_typeahead_on_prompt(ctx)
-        {
+        // The machine says a prompt is up (a host-key / password prompt before any remote
+        // session): what was held may be a password typed blind. `PromptUp` implies the gate
+        // drops nothing (no pending session, no setup, a seen line of text).
+        let prompt_up = matches!(facts.ssh, SshPhase::PromptUp { .. });
+        if self.ssh_typeahead_holding && prompt_up && !signal {
+            self.discard_held_ssh_typeahead_for_prompt(ctx);
             return self.build_route_facts(queue, ctx);
         }
         facts
@@ -335,10 +304,8 @@ impl TerminalView {
         if matches!(input, Replayed::Typed(_)) {
             self.reprobe_interactive_latch_on_key();
         }
-        // No signal reaches the ssh refreshers: it is delivered where the remote shell is.
-        if !matches!(input, Replayed::Signal(_)) {
-            self.refresh_ssh_state_for_table(ctx);
-        }
+        // Step 7: no ssh refresher runs here. The gate is armed, released and handed over by the
+        // events (`view/ssh_edges.rs`), and the facts carry the edge-driven machine's phase.
         // The entry was delivered by the queue, so no gate covers it: the facts carry none.
         let facts = self.facts_after_prompt_discard(
             QueueFacts::default(),
@@ -433,6 +400,7 @@ impl TerminalView {
                 // puts it back at the front under the connect gate when this delivery returns
                 // (`ssh_hold_push` requeues mid-drain, #1415).
                 if let Some(held) = input.as_held() {
+                    self.ssh_ensure_window_for_hold(ctx);
                     self.set_ssh_typeahead_holding(true);
                     let outcome = self.ssh_hold_push(held, ctx);
                     self.note_ssh_typeahead_outcome(&outcome, ctx);
@@ -795,13 +763,9 @@ impl TerminalView {
         }
         // Operations that found the queue busy come before this key (typed order).
         self.flush_deferred_queue_ops(ctx);
-        if is_signal {
-            // The signal rows read the connect gate; the hand-over of the held keys is not what a
-            // ^C triggers (it discards them).
-            let _ = self.refresh_ssh_connect_gate();
-            let _ = self.ssh_connect_gate_drops_keys();
-        } else {
-            self.refresh_ssh_state_for_table(ctx);
+        // Step 7: no ssh refresher runs on the key path (the connect gate is armed, released and
+        // handed over by the events, `view/ssh_edges.rs`); the facts carry the machine's phase.
+        if !is_signal {
             // A young Enter's hold the hand-off's state has outgrown ends before this key is
             // judged, and the subshell gates the first key opens are open when the facts are read.
             self.settle_stale_young_hold_before_key(ctx);
@@ -1015,6 +979,7 @@ impl TerminalView {
             // In typed order with the keys held there; delivered at the hand-over, never to the
             // local shell.
             self.note_ssh_interrupt_held(ctx);
+            self.ssh_ensure_window_for_hold(ctx);
             self.set_ssh_typeahead_holding(true);
             let pushed = self.ssh_hold_push_signal(signal, ctx);
             self.note_ssh_typeahead_outcome(&pushed, ctx);
@@ -1198,5 +1163,38 @@ impl TerminalView {
         });
         let into_input = matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput);
         (into_input, facts.needs_bracketed_paste)
+    }
+}
+
+// ---- step 7: focus changes and the line pin ---------------------------------------------------
+//
+// Both are `table`-mode behaviour (the default modes keep the queue exactly as it was): the
+// legacy chain's destination for queued text uses the pin, and the table's decision ignores it.
+
+impl TerminalView {
+    /// Focus moved (the terminal view gained or lost it, or the input editor did): the queue's
+    /// focus epoch advances and a head that waited on destination facts is drained. A focus flip
+    /// does NOT clear the line pin (it never splits a line). When the queue is busy the change is
+    /// recorded as a deferred operation, applied in order.
+    pub(super) fn note_queue_focus_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        if destination_mode() != DestinationMode::Table {
+            return;
+        }
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::FocusChanged);
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.on_focus_changed(&mut host);
+    }
+
+    /// An owner-change edge (the ssh phase moved, the ssh hand-back, the hand-off's owner changed,
+    /// the block changed): the line pinned to a destination is over. The queue clears the pin at
+    /// its next lock, so an edge in the middle of a delivery records no mailbox operation.
+    pub(super) fn request_queue_pin_clear(&self) {
+        if destination_mode() == DestinationMode::Table {
+            self.paste_queue.queue.route_state().request_pin_clear();
+        }
     }
 }

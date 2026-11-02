@@ -13,9 +13,9 @@
 //! * [`Stamp`]: what was true when a key reached the pane's sink. It travels with the entry
 //!   (`InputEntry::stamp`, `Deferred::Offer`), so a key that waited in the mailbox keeps the
 //!   classification it had when the user pressed it (the password rule, H4).
-//! * [`SshPhase`], [`SubshellPhase`], [`PsPhase`]: DERIVED, read-only, from the legacy fields after
-//!   the legacy refreshers ran (`refresh_ssh_connect_gate` and friends stay on the key path until
-//!   the edge-driven machine exists, step 7 of the design).
+//! * [`SshPhase`], [`SubshellPhase`], [`PsPhase`]: DERIVED, read-only, from the legacy fields. The
+//!   ssh phase has a second source since step 7, the edge-driven machine (`ssh_phase.rs`), which
+//!   the facts carry in `table` mode (no ssh refresher runs on the key path).
 //!
 //! `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`]) is the kill switch.
 //! The default is `shadow` (since step 4): legacy behaviour plus the comparison log. `shadow`
@@ -375,6 +375,10 @@ pub struct PaneRouteState {
     ps: Cell<PsPhase>,
     /// The last hand-off `routes_keys_to_pty` the view read.
     handoff_routes: Cell<bool>,
+    /// An owner-change edge asked for the queue's line pin to be cleared; the next lock of the
+    /// queue does it (`PaneQueue::try_lock`), so an edge that fires mid-delivery never records a
+    /// mailbox operation (that would change what a key sees as queued ahead of it).
+    pin_clear: Cell<bool>,
 }
 
 impl PaneRouteState {
@@ -474,6 +478,16 @@ impl PaneRouteState {
 
     pub fn handoff_routes(&self) -> bool {
         self.handoff_routes.get()
+    }
+
+    /// An owner-change edge: the line pin is to be cleared at the queue's next lock.
+    pub fn request_pin_clear(&self) {
+        self.pin_clear.set(true);
+    }
+
+    /// Whether a pin clear was requested; taking it resets the request.
+    pub fn take_pin_clear(&self) -> bool {
+        self.pin_clear.replace(false)
     }
 }
 

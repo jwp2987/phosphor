@@ -26,8 +26,6 @@ pub enum GateKind {
     CliSubmit,
     /// The hand-off asked the shell for its line (`ESC i`) and waits for the report (Q3a).
     HandoffReport,
-    /// An Enter just ran as a shell command and the hand-off route is still settling (Q2).
-    PtyRouteSettling,
     /// An Enter arrived while the last command may already have finished (Q3b); phase 5b keeps the
     /// held Enter and the keys behind it here (`view/paste_queue.rs`), keyed by the hand-off's hold
     /// id and ended by the hand-off's decision (a command, the report, a signal), never a timer.
@@ -43,8 +41,6 @@ pub enum GateKind {
     SubshellBootstrapWrite,
     /// An `ssh` connect is in flight until the remote shell's first prompt (Q7, Q5).
     SshConnect,
-    /// The editor took focus from the pty and has not been focused yet.
-    EditorFocusPending,
     /// A held editor key that reads the display map (cursor motion, deletion by display position)
     /// is waiting for the map to catch up with the edits applied before it in the same update
     /// (#1389). Replaces the editor's separate replay list on the shared queue: every key behind
@@ -70,20 +66,18 @@ pub enum SignalPlan {
 }
 
 impl GateKind {
-    pub const ALL: [GateKind; 14] = [
+    pub const ALL: [GateKind; 12] = [
         GateKind::PasteReading,
         GateKind::EnterVerdict,
         GateKind::TabCompletion,
         GateKind::CliSubmit,
         GateKind::HandoffReport,
-        GateKind::PtyRouteSettling,
         GateKind::PromptSeen,
         GateKind::LineEditorActive,
         GateKind::SubshellSetup,
         GateKind::PowershellSetup,
         GateKind::SubshellBootstrapWrite,
         GateKind::SshConnect,
-        GateKind::EditorFocusPending,
         GateKind::EditorDisplayMap,
     ];
 
@@ -94,14 +88,12 @@ impl GateKind {
             GateKind::TabCompletion => "tab_completion",
             GateKind::CliSubmit => "cli_submit",
             GateKind::HandoffReport => "handoff_report",
-            GateKind::PtyRouteSettling => "pty_route_settling",
             GateKind::PromptSeen => "prompt_seen",
             GateKind::LineEditorActive => "line_editor_active",
             GateKind::SubshellSetup => "subshell_setup",
             GateKind::PowershellSetup => "powershell_setup",
             GateKind::SubshellBootstrapWrite => "subshell_bootstrap_write",
             GateKind::SshConnect => "ssh_connect",
-            GateKind::EditorFocusPending => "editor_focus_pending",
             GateKind::EditorDisplayMap => "editor_display_map",
         }
     }
@@ -114,14 +106,12 @@ impl GateKind {
             GateKind::TabCompletion => "enter_during_tab_completion",
             GateKind::CliSubmit => "cli_submit_started",
             GateKind::HandoffReport => "handoff_report_requested",
-            GateKind::PtyRouteSettling => "enter_ran_as_shell_command",
             GateKind::PromptSeen => "young_enter",
             GateKind::LineEditorActive => "precmd_on_conpty",
             GateKind::SubshellSetup => "subshell_setup_announced",
             GateKind::PowershellSetup => "powershell_setup_announced",
             GateKind::SubshellBootstrapWrite => "bootstrap_write_started",
             GateKind::SshConnect => "ssh_connect_started",
-            GateKind::EditorFocusPending => "editor_took_over",
             GateKind::EditorDisplayMap => "editor_key_needs_fresh_display_map",
         }
     }
@@ -135,14 +125,12 @@ impl GateKind {
             GateKind::TabCompletion => "tab_completion_done_or_give_up_submit",
             GateKind::CliSubmit => "cli_submit_written",
             GateKind::HandoffReport => "report_received",
-            GateKind::PtyRouteSettling => "handoff_engaged_or_pty_owned",
             GateKind::PromptSeen => "precmd_parsed_or_command_running",
             GateKind::LineEditorActive => "line_editor_active",
             GateKind::SubshellSetup => "bootstrapped_then_precmd_or_abandoned",
             GateKind::PowershellSetup => "powershell_prompt_ready",
             GateKind::SubshellBootstrapWrite => "last_bootstrap_line_written",
             GateKind::SshConnect => "gate_released_and_first_remote_precmd",
-            GateKind::EditorFocusPending => "editor_focused_or_pointer_down",
             GateKind::EditorDisplayMap => "replay_step_dispatched",
         }
     }
@@ -158,10 +146,8 @@ impl GateKind {
                 SignalPlan::DiscardThenSignal
             }
             GateKind::HandoffReport
-            | GateKind::PtyRouteSettling
             | GateKind::PromptSeen
             | GateKind::LineEditorActive
-            | GateKind::EditorFocusPending
             | GateKind::EditorDisplayMap => SignalPlan::FlushThenSignal,
             GateKind::SubshellSetup | GateKind::SubshellBootstrapWrite => {
                 SignalPlan::SignalThenRelease
@@ -179,14 +165,12 @@ impl GateKind {
             // The opener supplies the net (a submit is a few hundred ms to a few seconds).
             GateKind::CliSubmit => Some(Duration::from_secs(20)),
             GateKind::HandoffReport => Some(Duration::from_secs(3)),
-            GateKind::PtyRouteSettling => Some(Duration::from_millis(300)),
             GateKind::PromptSeen => Some(Duration::from_millis(600)),
             // The hand-off's give-up cap since #1349 (the line editor's own signal opens it).
             GateKind::LineEditorActive => Some(Duration::from_millis(1500)),
             GateKind::SubshellSetup | GateKind::PowershellSetup => Some(Duration::from_secs(90)),
             GateKind::SubshellBootstrapWrite => None,
             GateKind::SshConnect => Some(Duration::from_secs(5)),
-            GateKind::EditorFocusPending => Some(Duration::from_secs(1)),
             // The deferred replay step runs as soon as this update's effects have flushed; this
             // only guards a step that never runs (logged when it fires).
             GateKind::EditorDisplayMap => Some(Duration::from_secs(1)),
@@ -239,9 +223,7 @@ pub fn signal_plan(gate: GateKind, signal: SignalKind) -> GateSignalPlan {
         GateKind::HandoffReport => GateSignalPlan::CancelDeferredEnterThenSignal,
         GateKind::PromptSeen | GateKind::LineEditorActive if eof => GateSignalPlan::FlushThenSignal,
         GateKind::PromptSeen | GateKind::LineEditorActive => GateSignalPlan::VoidHeldThenSignal,
-        GateKind::PtyRouteSettling | GateKind::EditorFocusPending | GateKind::EditorDisplayMap => {
-            GateSignalPlan::FlushThenSignal
-        }
+        GateKind::EditorDisplayMap => GateSignalPlan::FlushThenSignal,
         GateKind::SubshellSetup => GateSignalPlan::SignalThenRelease,
         GateKind::SubshellBootstrapWrite => GateSignalPlan::StashUntilBootstrapDone,
         GateKind::PowershellSetup => GateSignalPlan::SignalThenKeepGate,

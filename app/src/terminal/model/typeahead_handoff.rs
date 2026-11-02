@@ -238,9 +238,40 @@ pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
 pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
 
-/// Whether the ConPTY prompt hold is on by default: it is, unless the kill switch says `0`.
-pub fn conpty_prompt_hold_env_enabled() -> bool {
-    std::env::var(CONPTY_PROMPT_HOLD_ENV).map_or(true, |value| value.trim() != "0")
+/// Environment variable for the ENTER WINDOW of the ConPTY prompt hold (#1490, #1349): `1` turns it
+/// on, `0` off; unset, it follows `PHOSPHOR_QUEUE_DESTINATION=table`, which is the
+/// default mode (`legacy` and `shadow` leave the window off).
+///
+/// The prompt hold covers the keys typed between a prompt's precmd and its line editor becoming
+/// ready. The enter window extends it BACKWARDS over the stretch before the precmd: from the moment
+/// an Enter (a command, or a line the user typed) is written to a shell that was at its line
+/// editor until the line editor is ready again. Keys typed in that stretch used to be written raw
+/// to ConPTY, which loses or reorders them while the shell switches its tty between cooked and
+/// raw mode around the command (#1490: `7echo ...`, `>echo ...`, `bash -c 'tap ...`). They are
+/// held and released in typed order by the same signal that releases the prompt hold.
+///
+/// Typeahead for a program is still delivered: the window ends, releasing the held keys to the
+/// running program in order, when the command becomes interactive (the model's latch event, see
+/// [`TypeaheadHandoff::release_enter_window_for_program`]). It only opens when the shell was at its
+/// line editor (a running program's own Enter never opens it).
+pub const CONPTY_ENTER_HOLD_ENV: &str = "PHOSPHOR_CONPTY_ENTER_HOLD";
+
+/// Whether the enter window is on: the environment says so, else the `table` destination mode.
+pub fn conpty_enter_hold_enabled() -> bool {
+    conpty_enter_hold_from(
+        std::env::var(CONPTY_ENTER_HOLD_ENV).ok().as_deref(),
+        crate::terminal::input_queue::destination_mode()
+            == crate::terminal::input_queue::DestinationMode::Table,
+    )
+}
+
+/// [`conpty_enter_hold_enabled`] on given inputs: `1` is on, any other value is off, unset follows
+/// the `table` mode.
+pub fn conpty_enter_hold_from(env: Option<&str>, table_mode: bool) -> bool {
+    match env {
+        Some(value) => value.trim() == "1",
+        None => table_mode,
+    }
 }
 
 /// Milliseconds on a process-wide monotonic clock, never 0 (0 means "never" in a stamp). Used only
@@ -566,6 +597,13 @@ pub struct TypeaheadHandoff {
     /// When the last precmd arrived, until the shell's line editor is active (or a command
     /// starts): keys typed in between are held.
     awaiting_line_editor_since: Option<Instant>,
+    /// Whether the enter window is on (see [`CONPTY_ENTER_HOLD_ENV`]); it also needs the prompt
+    /// hold to be armed, so no other platform is ever affected.
+    enter_window_enabled: bool,
+    /// When an Enter was last written to a shell that was at its line editor, until the shell's
+    /// next precmd (which starts the wait above) or the command becoming interactive: keys typed
+    /// in between are held (#1490).
+    enter_window_since: Option<Instant>,
     /// Whether the session's shell is known to signal its line editor being ready (#1349): a
     /// readline, zle or fish prompt enables bracketed paste as it starts reading. A shell that
     /// is not known to (PowerShell 5.1, cmd, an unknown WSL shell) is never held for: with no
@@ -689,6 +727,12 @@ impl TypeaheadHandoff {
         self.prompt_hold_enabled = enabled;
     }
 
+    /// Turns the enter window of the prompt hold on or off (#1490). Only has an effect on a
+    /// ConPTY session whose prompt hold is armed.
+    pub fn set_conpty_enter_window_hold(&mut self, enabled: bool) {
+        self.enter_window_enabled = enabled;
+    }
+
     /// Declares whether the session's shell signals its line editor being ready with a
     /// bracketed-paste enable (#1349). Without that capability no hold is ever started.
     pub fn set_conpty_prompt_hold_shell_signals(&mut self, signals: bool) {
@@ -763,9 +807,33 @@ impl TypeaheadHandoff {
         self.prompt_hold_armed()
             && reaches_shell_line
             && matches!(self.state, HandoffState::PtyOwned { .. })
-            && self
+            && (self
                 .awaiting_line_editor_since
                 .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_GIVE_UP)
+                || self.enter_window_open(now))
+    }
+
+    /// Whether the enter window is open (#1490): an Enter went to a shell that was at its line
+    /// editor, and neither the command's prompt nor the command becoming interactive ended it. The
+    /// give-up cap only covers the instant before the view's give-up timer runs.
+    fn enter_window_open(&self, now: Instant) -> bool {
+        self.enter_window_enabled
+            && self
+                .enter_window_since
+                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_GIVE_UP)
+    }
+
+    /// Whether an Enter written now submits a line at the shell's line editor, so the enter window
+    /// opens: the window is on, the prompt hold is armed, no ready signal is awaited (a precmd's
+    /// wait holds the keys itself), and the shell was last seen at a prompt or reading a line.
+    fn enter_window_may_open(&self) -> bool {
+        self.enter_window_enabled
+            && self.prompt_hold_armed()
+            && self.awaiting_line_editor_since.is_none()
+            && matches!(
+                self.shell_activity,
+                ShellActivity::Prompt | ShellActivity::Reading
+            )
     }
 
     /// The give-up cap the view arms a timer for when a hold starts.
@@ -832,6 +900,19 @@ impl TypeaheadHandoff {
         self.prompt_hold_queued.then_some(self.prompt_hold_id)
     }
 
+    /// The command the Enter submitted became interactive (the model's latch event: a full-screen
+    /// program, a raw-mode reader, or the no-probe fallback): the keys typed since are typeahead
+    /// for that program, not for the shell's line editor, so the enter window ends and the view
+    /// releases them in order (#1490). Returns the hold's id when keys are held. Nothing happens
+    /// when no window is open (the prompt's precmd already took over, or the window never opened).
+    pub fn release_enter_window_for_program(&mut self) -> Option<u64> {
+        self.enter_window_since.take()?;
+        warpui::input_order::log_hop("enter_window_program", || {
+            format!("queued={}", self.prompt_hold_queued)
+        });
+        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+    }
+
     /// The give-up cap of the queued prompt hold `id` ran out with no line editor signal
     /// (#1349): returns whether that hold is live, so the view writes its keys anyway and the
     /// hold is off for the rest of the session. `false` when it is gone already.
@@ -840,6 +921,7 @@ impl TypeaheadHandoff {
             return false;
         }
         self.awaiting_line_editor_since = None;
+        self.enter_window_since = None;
         self.prompt_hold_gave_up = true;
         log::warn!(
             "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt; \
@@ -858,6 +940,7 @@ impl TypeaheadHandoff {
             return None;
         }
         self.awaiting_line_editor_since = None;
+        self.enter_window_since = None;
         mem::take(&mut self.prompt_hold_queued).then_some(self.prompt_hold_id)
     }
 
@@ -1066,6 +1149,7 @@ impl TypeaheadHandoff {
         self.command_written_at = None;
         // A new shell may signal where the last one did not.
         self.prompt_hold_gave_up = false;
+        self.enter_window_since = None;
         // ... and may predate the sequence numbers (an older remote bootstrap): it earns the
         // prompt-sequence path again with its first number.
         self.prompt_seq = None;
@@ -1412,6 +1496,9 @@ impl TypeaheadHandoff {
             HandoffState::EditorOwned | HandoffState::AwaitingReport => (0, 0),
         };
         let now = Instant::now();
+        if self.enter_window_may_open() {
+            self.enter_window_since = Some(now);
+        }
         self.last_activity_at = Some(now);
         self.command_written_at = Some(now);
         self.state = HandoffState::PtyOwned {
@@ -1466,6 +1553,9 @@ impl TypeaheadHandoff {
     /// precmd does not make lines the user queued ahead of it look answered. Its kill prefix and
     /// Enter end whatever line it lands on.
     pub fn on_uncounted_command_written(&mut self) {
+        if self.enter_window_may_open() {
+            self.enter_window_since = Some(Instant::now());
+        }
         self.forget_untracked_line_bytes();
         // Its kill prefix ends the line a held Enter belongs to.
         self.drop_young_hold();
@@ -1518,6 +1608,8 @@ impl TypeaheadHandoff {
         if self.prompt_hold_armed() {
             self.awaiting_line_editor_since = Some(now);
         }
+        // The command's prompt: the wait above holds the keys from here (#1490).
+        self.enter_window_since = None;
         warpui::input_order::log_hop("precmd_seen", String::new);
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
@@ -2024,6 +2116,10 @@ impl TypeaheadHandoff {
     ) -> UserBytesRoute {
         // Whether this key begins a line typed before the app could know the shell was at its
         // prompt (#933); sampled before the state is borrowed.
+        let opens_enter_window = reaches_shell_line
+            && bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+            && matches!(self.state, HandoffState::PtyOwned { .. })
+            && self.enter_window_may_open();
         let first_byte_young = reaches_shell_line
             && !matches!(bytes.first(), Some(b'\r' | b'\n'))
             && matches!(
@@ -2058,6 +2154,11 @@ impl TypeaheadHandoff {
                 // armed could otherwise land in the editor).
                 if wrote_an_enter {
                     self.activity_generation = self.activity_generation.wrapping_add(1);
+                    // #1490: an Enter at the shell's line editor opens the window in which the
+                    // shell is not reading; keys typed now are held until it is again.
+                    if opens_enter_window {
+                        self.enter_window_since = Some(Instant::now());
+                    }
                 }
                 self.writes_in_flight = self.writes_in_flight.saturating_add(1);
                 UserBytesRoute::WriteCounted

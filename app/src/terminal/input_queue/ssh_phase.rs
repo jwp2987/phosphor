@@ -241,6 +241,8 @@ impl SshPhaseMachine {
         self.armed
     }
 
+    // Read by the tests and the log until step 8 reads it from the queue.
+    #[allow(dead_code)]
     pub fn holding(&self) -> bool {
         self.holding
     }
@@ -251,6 +253,7 @@ impl SshPhaseMachine {
         self.bootstrap_done
     }
 
+    #[allow(dead_code)]
     pub fn last_release(&self) -> Option<SshRelease> {
         self.last_release
     }

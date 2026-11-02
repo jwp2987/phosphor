@@ -13,8 +13,10 @@
 //! * It reads the legacy ssh / subshell / PowerShell fields as they stand and DERIVES the phases
 //!   ([`SshPhase`], [`SubshellPhase`], [`PsPhase`]) from them. It does not run the legacy
 //!   refreshers (`refresh_ssh_connect_gate`, `ssh_connect_gate_drops_keys`, ...): those mutate
-//!   view state, and they stay on the key path exactly where they are until the edge-driven
-//!   machine exists (design step 7). Each has a read-only, non-blocking counterpart here.
+//!   view state. Each has a read-only, non-blocking counterpart here. The ssh phase has a second
+//!   source since design step 7, the edge-driven machine (`view/ssh_edges.rs`): in `table` mode
+//!   the facts carry the machine's phase and the key path runs no ssh refresher at all; in
+//!   `shadow` mode the derivation is carried and a difference is reported.
 //! * It mutates nothing but the idempotent cell refresh above.
 //!
 //! The tests (`view_test.rs`, `route_facts_*`) hold the model's lock on the test thread while
@@ -29,18 +31,17 @@ use warpui::pane_key::PaneKeyContext;
 use super::{
     PowerShellSetupHold, SSH_BOOTSTRAP_SWALLOW_CEILING, SUBSHELL_BOOTSTRAP_STALL_CEILING,
     SUBSHELL_SETUP_TYPED_HOLD_LIMIT, SshBootstrapInterruptRoute, SshConnectGate, TerminalView,
-    choice_block_owns_input, ssh_pre_init_abort_bytes, subshell_bootstrap_key_forwarded,
+    ssh_pre_init_abort_bytes, subshell_bootstrap_key_forwarded,
 };
 use crate::features::FeatureFlag;
 use crate::terminal::input_queue::facts::QueueFacts;
 use crate::terminal::input_queue::{
-    FocusSnap, GateKind, PsPhase, RouteFacts, SshPhase, SubshellPhase,
+    FocusSnap, GateKind, PsPhase, RouteFacts, SshObservation, SshPhase, SubshellPhase,
 };
 use crate::terminal::model::key_facts::{
     ConsistentRead, KeyFacts, KeyModelSnapshot, load_consistent,
 };
 use crate::terminal::model::session::SessionId;
-use crate::terminal::view::rich_content::RichContentMetadata;
 
 /// [`super::ssh_bootstrap_swallow_active`] without the side effect on the tracked start: whether
 /// typing would still be dropped for the pending ssh bootstrap. A session not tracked yet counts
@@ -241,24 +242,8 @@ impl TerminalView {
             now,
         );
         let ssh_connecting_silently = pending_now.is_none() && drops_keys;
-        let ssh_dialog_up = choice_block_owns_input(
-            self.rich_content_views
-                .iter()
-                .filter_map(|view| match view.metadata() {
-                    Some(RichContentMetadata::SshRemoteServerChoiceBlock { handle }) => {
-                        Some(handle.as_ref(ctx).session_id())
-                    }
-                    _ => None,
-                }),
-            pending_now,
-        );
-        let ssh_setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
-            && pending_now.is_some_and(|sid| {
-                self.sessions
-                    .as_ref(ctx)
-                    .remote_server_setup_state(sid)
-                    .is_some_and(|state| state.is_in_progress())
-            });
+        let ssh_dialog_up = self.ssh_dialog_up_in(pending_now, ctx);
+        let ssh_setup_in_flight = self.ssh_setup_in_flight_in(pending_now, ctx);
         let route = self.ssh_bootstrap_interrupt_route_in(snapshot);
         let unterminated = snapshot.unterminated_since_gen;
         let setup_echo_mid_line = self.setup_echo_mid_line_at_last_look.get();
@@ -281,11 +266,26 @@ impl TerminalView {
         // `hold_input_during_ssh_connect` holds on `gate_drops || holding`; the dialog swallows
         // instead (row H2 comes first, so it never reaches the hold).
         let gate_drops = ssh_setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        let ssh = match unterminated {
+        let derived_ssh = match unterminated {
             Some(prompt_gen) if prompt_up => SshPhase::PromptUp { prompt_gen },
             _ if self.ssh_typeahead_holding || (!ssh_dialog_up && gate_drops) => SshPhase::Holding,
             _ => SshPhase::Idle,
         };
+        // #1424 step 7: `table` mode carries the edge-driven machine's phase; `shadow` carries
+        // the derivation above and reports a difference (`kh_ssh_phase_disagree`).
+        let ssh = self.ssh_phase_for_facts(
+            derived_ssh,
+            alt_screen,
+            self.ssh_window_would_arm(snapshot),
+            SshObservation {
+                pending_session: pending_now.is_some(),
+                hook_seen: snapshot.has_pending_ssh_session,
+                visible_text: snapshot.visible_text_seen,
+                unterminated_since: snapshot.unterminated_since_gen,
+                dialog_up: ssh_dialog_up,
+                setup_in_flight: ssh_setup_in_flight,
+            },
+        );
 
         // ---- focus, cards, editor ----
         let focus = self.live_focus_snap(ctx);
