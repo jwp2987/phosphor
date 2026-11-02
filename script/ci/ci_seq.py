@@ -310,7 +310,12 @@ def main():
         return True
 
     print("pipeline", pid, "tier", tier, flush=True)
-    s = wait("check-linux"); print("check-linux", s, flush=True)
+    if reuse and all(p in reuse for p in plats):
+        # every platform tests an app-identical earlier build: that commit's compile check already passed, so do not queue
+        # the app tests behind a check-linux that waits for the box
+        s = "success"; print("check-linux: not waited for (no app change; every platform reuses a build)", flush=True)
+    else:
+        s = wait("check-linux"); print("check-linux", s, flush=True)
     if s != "success":
         summary(timeline, t_start); collect_hint(pid, a.collect); return 1
 
