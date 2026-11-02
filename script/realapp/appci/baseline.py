@@ -32,7 +32,7 @@ def promote(res, platform):
 
 def compare(a, b):
     A, B = load(a), load(b)
-    print("| measurement | old median/p95 | new median/p95 | delta ms | delta %% | verdict |\n|---|---|---|---|---|---|")
+    print("| measurement | old median/p95 | new median/p95 | delta ms | delta % | verdict |\n|---|---|---|---|---|---|")
     for k in sorted(set(A) | set(B)):
         o, n = A.get(k), B.get(k)
         if o and n:

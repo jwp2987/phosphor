@@ -278,15 +278,47 @@ up), `expert_fuzz` (seeded typos fixed with BackSpace / Left+insert / Ctrl-W), `
 `big_paste` (`APPCI_BIG_MB`, default 1, byte-exact), `tab_enter` (gaps 0/50/150 ms, no stray uncompleted file), `ctrl_c_d` (Ctrl-C
 delivery latency, Ctrl-D in `cat` and in a nested bash), `read_x`, `subshells` (bash twice incl. typing during setup, zsh, fish, nu where
 installed), `alt_screen` (less, vim), `ssh_connect_typing` (0/100/200/300 ms after Enter, `APPCI_SSH_TRIALS` per gap, exact remote
-command, nothing local), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs xterm in the same session when installed),
+command, nothing local), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs a reference terminal in the same session),
 `latency_key_log` (key to first frame from the app's own `input_order` log), `approval_card_pause` (agent, needs a provider),
 `tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
 
-Budgets: these jobs check CI-sized bounds, not the owner's absolute budgets of 3.6 (software or headless GPU, input tool spawn cost in the
-numbers): Enter to start must be no more than 5 ms worse than xterm in the same session (80 ms absolute without a reference), key to frame
-p50 <= 20 ms / p99 <= 60 ms, Ctrl-C median <= 40 ms over the measured tool floor, idle CPU <= `APPCI_IDLE_CPU_MAX` (15 %) of one core.
-Every number is in `metrics` for trend comparison; the owner budgets still need the real-GPU runs of 3.2-3.4.
+#### Latency budgets and regression checks (`latency_enter`, `latency_key_log`, `ctrl_c_d`; Windows `latency_enter`)
+
+The latency cases are pass/fail on the owner's budgets (3.6, `perf-budgets`), not CI-sized bounds. Every record is in
+`results.json` under `metrics.lat` and in the `summary.md` latency table (case, Phosphor median/p95, reference median/p95, overhead,
+budget, previous build, baseline, verdict, n).
+
+- **Budgets.** Phosphor *overhead* = Phosphor median minus the reference terminal's median, measured in the same session with the
+  same keys, cadence and timestamp command: Enter to command start <= 2 ms (`APPCI_ENTER_BUDGET_MS`), key to paint <= 2 ms
+  (`APPCI_KEY_BUDGET_MS`). Ctrl-C <= 20 ms after subtracting the input-tool floor (`APPCI_CTRLC_MAX_MS`); the CI case is a plain
+  `sleep`, not the output flood of 3.6. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
+  while typing and `WARN` means >= 16 ms (a dropped frame); the 4 ms line itself cannot be seen from the log.
+- **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
+  `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
+  reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.
+- **Reference terminal** (same session, Phosphor measured first, reference second, same rc and cwd): Linux Wayland = `foot` if installed,
+  else `xterm` through XWayland (recorded in the `reference` name); Linux X11 = `xterm`; macOS = Terminal.app, driven through the same
+  cliclick/osascript path under the frontmost-app guard (the guard is retargeted to Terminal while its window is driven, no
+  Cmd-Q/W/Tab/Space, the window is closed by id and focus returned to Phosphor); Windows = `powershell.exe` in conhost, same SendKeys path.
+- **Samples.** n >= 30 per measurement (`ctx.count`, so `APPCI_SCALE` smoke runs are marked "indicative only"), the first
+  `APPCI_WARMUP` (3) samples discarded, median and p95 reported.
+- **Regression rule.** The Phosphor median is compared with (a) the previous successful run of the same job on a `build/*` ref
+  (fetched by `appci/prev.py` / `app_test.ps1` from the GitLab jobs API with `CI_JOB_TOKEN`, artifact `appci-out/<x>/run/results.json`) and
+  (b) the committed `script/realapp/appci/baselines/<platform>.json` (`linux-wayland`, `linux-x11`, `macos`, `windows`). `FAIL` when the
+  median is worse by more than `APPCI_REGRESS_PCT` (5 %) **and** `APPCI_REGRESS_MS` (0.5 ms); `WARN` between `APPCI_WARN_PCT` (2 %) and
+  5 %. A suspected regression is re-measured once; if the second measurement is still regressed it stays `FAIL`, if it is clean it
+  becomes `WARN`; both measurements are always kept in the record and the table. A missing previous run or a `pending` baseline is
+  shown as such and checks nothing.
+- **Promote a baseline** (coordinator, from a run on the build the owner judged good):
+  `python3 script/realapp/appci/baseline.py promote <results.json> <platform>` then commit the file; `baseline.py compare <old> <new>`
+  prints a delta table for two results/baseline files. The seeded files are `"status": "pending"`.
+- **Caveat.** Headless-GPU (llvmpipe, software D3D12) numbers and the input-tool spawn cost make absolute values
+  incomparable with the hand-measured baselines in `latency-baselines-r18`; the CI numbers compare builds to each other (and to the
+  reference terminal in the same session), not to those baselines.
+
+Other CI bounds: idle CPU <= `APPCI_IDLE_CPU_MAX` (15 %) of one core; with no reference terminal Enter to start must be <= 80 ms. The
+owner budgets still need the real-GPU runs of 3.2-3.4.
 
 Not covered by these jobs (still manual, section 3): the owner's real-config copy (CI has none, by design), reference-terminal
 comparison beyond Enter latency, mouse selection/copy cases, Install-vs-"continue without installing" ssh flows, 24-tab soak, kill-switch A/B.

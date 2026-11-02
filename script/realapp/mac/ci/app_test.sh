@@ -44,6 +44,9 @@ import backend
 p=backend.make('mac').preflight(); print('\n'.join(p))")
 [ -z "$PROBE" ] || fail3 "$PROBE. Grant Accessibility and Screen Recording (System Settings > Privacy & Security) to the runner's process chain (gitlab-runner binary, /bin/bash, python3, cliclick, osascript, screencapture) for user $(whoami), and keep the session unlocked."
 
+# latency: run.py fetches the previous successful app-test-macos results.json (build/* refs) and compares against appci/baselines/macos.json;
+# the reference terminal is Terminal.app (cases.ref_terminal), driven by the same cliclick/osascript path under the frontmost-app guard.
+export APPCI_PREV_ARTIFACT="appci-out/macos/run/results.json"
 export APPCI_MAC_BUNDLE="$OUT/Phosphor.app" APPCI_MAC_PROCESS="$(basename "$BIN")"
 python3 "$APPCI/run.py" --run "$OUT/run" --bin "$BIN" --backend mac --modes "${APPCI_MODES:-terminal,agent}" \
   --cases "${APPCI_CASES:-}" --skip "${APPCI_SKIP:-}" --platform macos --startup-timeout 120
