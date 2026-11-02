@@ -1493,6 +1493,27 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
     }
 }
 
+/// Logs one stage of a Return/Enter key press as seen by the Objective-C layer (#1482), as
+/// `input_order hop=mac_enter stage=<stage> <detail>`. `detail` is flags, counts and times only,
+/// never typed text. Called only for key codes 36 and 76.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_log_enter(
+    stage: *const std::ffi::c_char,
+    detail: *const std::ffi::c_char,
+) {
+    let to_string = |ptr: *const std::ffi::c_char| -> String {
+        if ptr.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the caller passes a NUL-terminated C string that outlives this call.
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    warpui_core::input_order::log_enter("mac_enter", &to_string(stage), || to_string(detail));
+}
+
 /// Returns whether this event was handled.
 #[unsafe(no_mangle)]
 extern "C-unwind" fn warp_handle_view_event(

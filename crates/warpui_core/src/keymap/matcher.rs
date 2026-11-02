@@ -301,15 +301,27 @@ impl Matcher {
         view_id: EntityId,
         ctx: &Context,
     ) -> MatchResult {
+        // #1482: an Enter that is consumed into, or clears, a pending chord never reaches its
+        // action, so say so in the input-order log.
+        let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
         let pending = self.pending.entry(view_id).or_default();
 
         if let Some(pending_ctx) = pending.context.as_ref() {
             if pending_ctx != ctx {
+                if is_enter && !pending.keystrokes.is_empty() {
+                    let dropped = pending.keystrokes.len();
+                    crate::input_order::log_enter("core_enter", "matcher_pending_cleared", || {
+                        format!(
+                            "view={view_id:?} dropped_chord_keystrokes={dropped} reason=context_changed"
+                        )
+                    });
+                }
                 pending.keystrokes.clear();
             }
         }
 
         pending.keystrokes.push(keystroke);
+        let chord_len = pending.keystrokes.len();
 
         let mut retain_pending = false;
         // Only bindings whose trigger begins with the first pending keystroke can match, so look
@@ -320,6 +332,13 @@ impl Matcher {
                     && binding.context_predicate.eval(ctx)
                 {
                     if keystrokes.len() == pending.keystrokes.len() {
+                        if is_enter && chord_len > 1 {
+                            crate::input_order::log_enter(
+                                "core_enter",
+                                "matcher_chord_enter",
+                                || format!("view={view_id:?} chord_len={chord_len} outcome=action"),
+                            );
+                        }
                         self.pending.remove(&view_id);
                         return MatchResult::Action(binding.action.clone());
                     } else {
@@ -330,6 +349,17 @@ impl Matcher {
             }
         }
 
+        if is_enter && chord_len > 1 {
+            // The Enter was appended to a chord begun by an earlier keystroke.
+            let outcome = if retain_pending {
+                "pending"
+            } else {
+                "no_match_chord_dropped"
+            };
+            crate::input_order::log_enter("core_enter", "matcher_chord_enter", || {
+                format!("view={view_id:?} chord_len={chord_len} outcome={outcome}")
+            });
+        }
         if retain_pending {
             MatchResult::Pending
         } else {
