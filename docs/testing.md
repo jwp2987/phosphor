@@ -161,9 +161,9 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 |---|---|---|---|
 | `guards` | test | automatic | oracle pin fetch + all guards of 2.3 + `macos/test_create_warpctrl_wrapper` + `test_warpctrl_early_dispatch` |
 | `check-linux` | test | automatic (~10 min warm) | `cargo check -p warp --features gui --lib --tests`, feature-unified multi-package check, `--features tui`, `-p warp_tui` |
-| `test-linux` | test | manual (auto on tags) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui` |
-| `test-warpui-core` | test | manual (auto on tags) | `check_test_failures -p warpui_core --features tui` |
-| `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation |
+| `test-linux` | test | manual (auto on tags) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
+| `test-warpui-core` | test | manual (auto on tags) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
+| `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
 | `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci` |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
@@ -177,8 +177,8 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 
 Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status -b build/<name>` or
 `glab api "projects/88085499/pipelines?ref=build/<name>&per_page=1"`; play a manual job with
-`glab api -X POST projects/88085499/jobs/<id>/play`. `script/ci/ci_seq.py build/<name> [skip...]` plays
-check-linux, then the macOS/Windows builds, the Linux tests and the Linux build in order, then the `app-test-*` jobs of every build that succeeded. Heavy suites are
+`glab api -X POST projects/88085499/jobs/<id>/play`. `script/ci/ci_seq.py build/<name> --tier fix|candidate|release`
+plays the jobs of a test tier (section 2.9), then the `app-test-*` jobs of every build that succeeded. Heavy suites are
 long: ask first. Cancelling a running build can orphan cargo processes under `gitlab-runner`.
 
 ### 2.6 Environment switches (kill switches and test knobs)
@@ -250,7 +250,13 @@ The release-test matrix of 3.5 is automated against the BUILT artifact, per plat
 agent). Code: `script/realapp/appci/` (Python: `run.py` driver, `cases.py`, `backend.py`, `profile.py`, `app.py`, `sshd.py`,
 `report.py`), entry points `script/realapp/linux/wayland_session.sh`, `mac/ci/app_test.sh`, `windows/ci/app_test.ps1`.
 Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
-`script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them.
+`script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
+`APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty (candidate, release; everything below). Smoke = the cases
+`mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `latency_enter`, `latency_key_log` in both
+modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux only the `wayland` run (the `xwayland` pass and
+`app-test-linux-x11` exit at once); on Windows `fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter` (its names differ; `tab_enter`
+and `ssh_connect_typing` have no Windows equivalent). Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
+either).
 
 | job | runner | session | input / screenshots |
 |---|---|---|---|
@@ -292,6 +298,44 @@ Not covered by these jobs (still manual, section 3): the owner's real-config cop
 comparison beyond Enter latency, mouse selection/copy cases, Install-vs-"continue without installing" ssh flows, 24-tab soak, kill-switch A/B.
 `APPCI_SCALE` (e.g. 0.3) shortens counts for a smoke run; `run.py --backend sim` runs the case logic against a bash in a pty (no GUI) to
 test the harness itself.
+
+### 2.9 Test tiers (what a push costs)
+
+One driver, three sizes: `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
+[--tests '<nextest filterset>'] [--skip job ...] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
+It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
+play API, and ends with a table of job, status and minutes. Heavy jobs stay manual: the script is how you start them, after asking.
+
+| tier | runs | target | when |
+|---|---|---|---|
+| `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` / `test-workspace-rest` only if their crates changed; builds for the chosen platforms only; app tests in SMOKE mode on those platforms | ~1 h | every push of a fix |
+| `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes) | ~2.5-3 h | a batch of fixes is ready; nothing is "done" until a candidate passes |
+| `release` | candidate + `test-shuttle-loom`, `fuzz-smoke`, `bench`, `mutants`, `mutants-warpui-core` | ~8 h | before a numbered release (then also the manual checklist of section 5) |
+
+Measured durations (box and Macs, warm caches): `check-linux` 7-9 min, `test-linux` ~50 min, `test-warpui-core` ~2, `test-workspace-rest` ~4,
+`build-macos-arm64` ~21, `build-windows-x86_64` ~38. Linux build, app tests (smoke and full), shuttle/loom, fuzz, bench and mutants are not
+timed yet; the tier targets above are estimates built from the numbers that are. Builds and the box suites overlap (the macOS and
+Windows runners are separate machines), so a fix push is bounded by `check-linux` + the filtered `test-linux`/builds + smoke.
+
+**Fix-tier filter derivation.** Without `--tests`, `ci_seq.py` runs `git diff --name-only <base>..<ref>` (base = merge-base with the
+newest other `build/*` ref, else `origin/main`; `--base` overrides) and maps paths: `crates/<name>/` -> `package(<name>)` (`warpui_core`
+also runs its own suite and counts as a change to all of `warp`); `crates/warp_tui` -> `package(warp_tui)`; `app/src/<a>/<b>/x.rs` ->
+`package(warp) & test(/<a>::<b>/)` (the last two path segments, `_test(s)` suffixes and `tests/` directories stripped, `mod.rs` = its
+directory); non-Rust app files -> all of `warp`; workspace `Cargo.toml`/`Cargo.lock`/toolchain/`.cargo/config` -> nothing filtered, all
+suites. Docs-only and CI-only diffs run nothing but `check-linux`. The derived filter, the reasons and the platforms are printed
+before anything is played (`--dry-run` stops there): read it, and override with `--tests` when the mapping is too narrow (a change in
+shared code that other modules' tests exercise) or too wide. Dependents of a changed non-app crate inside `warp` are not added
+automatically. Platforms: a diff of only Windows (or macOS, Linux) paths builds only that platform; any shared code builds all three;
+`--platforms` overrides. A filtered `check_test_failures` run still fails on any new failure but does not judge listed known failures
+that did not run (that stale-entry rule needs a full run, which candidate does).
+
+**Scoped mutation testing (release tier).** `.cargo/mutants.toml` + the `mutants` job: `pane_key.rs`, `model/key_facts.rs`,
+`input_queue/gates.rs`, `input_queue/destination.rs` (about 900 lines, an estimated 80-110 mutants) with the tests limited to those modules
+(`MUTANTS_TEST_FILTER`), each mutant costing one incremental `warp` rebuild: estimated 3-6 h, UNMEASURED (the first run records the
+real number in `mutants.out/outcomes.json`). `mutants-warpui-core` mutates the clipboard (`clipboard.rs`, `clipboard_utils.rs`) against
+warpui_core's tests only: estimated 25-40 mutants, under an hour. Widen by playing `mutants` with `MUTANTS_FILES` (space separated) and
+`MUTANTS_TEST_FILTER` set, and split a wide run with `MUTANTS_SHARD=k/n` over several jobs; `cargo mutants --list --file ...` counts
+mutants without running them.
 
 ## 3. Real-app testing
 

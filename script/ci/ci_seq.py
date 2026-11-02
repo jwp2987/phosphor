@@ -1,37 +1,261 @@
-# script/ci/ci_seq.py: drive one GitLab pipeline for a build/* ref in order (check-linux, then plays the manual build/test jobs and waits).
-# Real-app tests (app-test-*) are played after each platform build succeeds, so every numbered build runs them (docs/testing.md 2.8); skip any by name.
-# Prereqs: glab authenticated (run 'glab api user' first). Usage: python3 script/ci/ci_seq.py build/<name> [job-to-skip ...]. Never re-plays a job that already ran. Heavy jobs: ask the owner first.
-import json,subprocess,sys,time
-ref=sys.argv[1]
-SKIP=sys.argv[2:]
-def api(p,m="GET"):
-    a=["glab","api",p] + (["-X",m] if m!="GET" else [])
-    return json.loads(subprocess.run(a,capture_output=True,text=True).stdout or "null")
-pid=None
-while not pid:
-    for p in api("projects/88085499/pipelines?ref="+ref.replace("/","%2F")) or []: pid=p["id"]; break
-    time.sleep(20)
-def jobs(): return {j["name"]:j for j in api(f"projects/88085499/pipelines/{pid}/jobs?per_page=100")}
-def wait(name):
-    while True:
-        s=jobs()[name]["status"]
-        if s in("success","failed","canceled"): return s
-        time.sleep(60)
-def play(name):
-    if jobs()[name]["status"]!="manual": return  # already played/run: never re-run
-    api(f"projects/88085499/jobs/{jobs()[name]['id']}/play","POST")
-print("pipeline",pid,flush=True)
-s=wait("check-linux"); print("check-linux",s,flush=True)
-if s!="success": sys.exit(1)
-for n in [x for x in ["build-macos-arm64","build-windows-x86_64"] if x not in SKIP]: play(n)
-for n in [x for x in ["test-linux","test-warpui-core","test-workspace-rest","build-linux-x86_64"] if x not in SKIP]:
-    play(n); print(n,wait(n),flush=True)
-for n in [x for x in ["build-macos-arm64","build-windows-x86_64"] if x not in SKIP]: print(n,wait(n),flush=True)
-# Real-app tests: manual, GUI-driving; each needs its platform build's artifacts. Linux ones share one compositor/GPU (resource_group), so they run one after the other.
-APP_TESTS=[("build-linux-x86_64",["app-test-linux-wayland","app-test-linux-x11"]),("build-macos-arm64",["app-test-macos"]),("build-windows-x86_64",["app-test-windows"])]
-started=[]
-for build,tests in APP_TESTS:
-    if build in SKIP or jobs().get(build,{}).get("status")!="success": continue
-    for n in [t for t in tests if t not in SKIP and t in jobs()]:
-        play(n); started.append(n)
-for n in started: print(n,wait(n),flush=True)
+#!/usr/bin/env python3
+# script/ci/ci_seq.py: drive one GitLab pipeline for a build/* ref through a TEST TIER (docs/testing.md "Test tiers").
+#
+#   python3 script/ci/ci_seq.py build/<ref> [--tier fix|candidate|release] [--platforms linux,macos,windows]
+#                               [--tests '<nextest filterset>'] [--base <git ref>] [--skip job ...] [--dry-run]
+#   (legacy positional job names after the ref still mean --skip)
+#
+#   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
+#                      test-warpui-core / test-workspace-rest only when their crates changed; builds for --platforms
+#                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke).
+#   candidate (~3 h)   check-linux; all three test suites unfiltered; all three builds; the FULL app matrix everywhere.
+#   release   (~8 h)   candidate + test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core.
+#
+# Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
+# Per-job variables (TEST_FILTER, APPCI_TIER) go through the play API's job_variables_attributes.
+import argparse, json, re, subprocess, sys, time
+
+PROJECT = "88085499"
+LINUX, MAC, WIN = "linux", "macos", "windows"
+BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
+APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
+APP_CORE_FILES = re.compile(r"^(app/|crates/|Cargo\.(toml|lock)|\.cargo/|script/ci/|\.gitlab-ci\.yml|\.config/)")
+WIN_ONLY = re.compile(r"(^|/)(windows|win)(/|_|\.)|_windows\.rs$|^script/realapp/windows/|^script/windows/|\.ps1$|^wix/|^installer/windows")
+MAC_ONLY = re.compile(r"(^|/)(macos|mac)(/|_|\.)|_macos\.rs$|^script/realapp/mac/|^script/mac/|^app/macos|\.plist$|\.entitlements$")
+LINUX_ONLY = re.compile(r"(^|/)linux(/|_|\.)|_linux\.rs$|^script/realapp/linux/|^script/linux/|\.desktop$")
+DOC_ONLY = re.compile(r"^(docs/|.*\.md$|TODO|issues\.md|DECLINED|ORACLE)")
+
+
+def sh(*a, check=False):
+    r = subprocess.run(list(a), capture_output=True, text=True)
+    if check and r.returncode:
+        sys.exit("%s failed: %s" % (" ".join(a), r.stderr.strip()))
+    return r.stdout.strip()
+
+
+def changed_files(base, ref):
+    return [l for l in sh("git", "diff", "--name-only", "%s..%s" % (base, ref)).splitlines() if l]
+
+
+def resolve_base(ref, explicit):
+    """merge-base of ref with the previous build/* ref (newest other build/* branch that is an ancestor), else origin/main."""
+    if explicit:
+        return sh("git", "merge-base", explicit, ref) or explicit
+    for cand in sh("git", "for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/remotes/*/build/*", "refs/heads/build/*").splitlines():
+        if cand.endswith("/" + ref) or cand == ref:
+            continue
+        mb = sh("git", "merge-base", cand, ref)
+        if mb and mb != sh("git", "rev-parse", ref):
+            return mb
+    return sh("git", "merge-base", "origin/main", ref) or "origin/main"
+
+
+def crate_names():
+    """crates/<dir> -> cargo package name (dir name and package name can differ)."""
+    out = {}
+    for d in sh("git", "ls-files", "crates/*/Cargo.toml", "lib/*/Cargo.toml").splitlines():
+        m = re.search(r'^name\s*=\s*"([^"]+)"', open(d).read(), re.M) if _exists(d) else None
+        if m:
+            out[d.rsplit("/", 1)[0]] = m.group(1)
+    return out
+
+
+def _exists(p):
+    import os
+    return os.path.exists(p)
+
+
+def derive(files):
+    """-> (test-linux filterset or '', set of suites to run among {'linux','core','rest'}, reasons).
+    Only test-linux (the ~50 min suite) is filtered; warpui-core (~2 min) and workspace-rest (~4 min) run whole, but only when touched."""
+    names = crate_names()
+    app_tests, linux_pk, suites, why = set(), set(), set(), []
+    whole_warp = root_change = False
+    for f in files:
+        if DOC_ONLY.match(f):
+            continue
+        m = re.match(r"^((?:crates|lib)/[^/]+)/", f)
+        if m:
+            p = names.get(m.group(1), m.group(1).split("/")[1])
+            if p == "warpui_core":
+                suites.add("core"); suites.add("linux"); whole_warp = True
+                why.append("%s -> warpui_core suite + whole warp (it is a dependency of the app)" % f)
+            elif p == "warp_tui":
+                suites.add("linux"); linux_pk.add(p); why.append("%s -> package(warp_tui)" % f)
+            else:
+                suites.add("rest"); why.append("%s -> package(%s): workspace-rest suite (dependents inside warp are NOT filtered in; pass --tests to add them)" % (f, p))
+            continue
+        if f.startswith("app/"):
+            suites.add("linux")
+            m = re.match(r"^app/src/(.+)$", f)
+            segs = m.group(1).split("/") if m else []
+            if segs and segs[0] in ("benches",) or f.startswith("app/benches/"):
+                continue                                   # benches are not tests
+            if not f.endswith(".rs"):
+                whole_warp = True; why.append("%s -> whole warp package (non-Rust app file)" % f); continue
+            segs = [re.sub(r"\.rs$", "", x) for x in segs]
+            if "tests" in segs[:-1]:
+                segs = segs[:segs.index("tests")]          # input_queue/tests/ops.rs -> input_queue
+            if segs and segs[-1] in ("mod", "tests", "lib", "main"):
+                segs = segs[:-1]
+            segs = [re.sub(r"_(snapshot|model)$", "", re.sub(r"_tests?$", "", x)) for x in segs]
+            if len(segs) >= 2 and segs[0] != "":
+                name = "::".join(segs[-2:]) if len(segs) > 2 else "::".join(segs)
+                app_tests.add(name); why.append("%s -> test(/%s/)" % (f, name))
+            elif len(segs) == 1:
+                app_tests.add(segs[0]); why.append("%s -> test(/%s/)" % (f, segs[0]))
+            else:
+                whole_warp = True; why.append("%s -> whole warp package" % f)
+            continue
+        if re.match(r"^(Cargo\.(toml|lock)|rust-toolchain|\.cargo/config|\.config/)", f):
+            root_change = True; why.append("%s -> workspace-wide (nothing filtered)" % f)
+    if root_change:
+        return "", {"linux", "core", "rest"}, why
+    parts = []
+    if whole_warp:
+        parts.append("package(warp) | package(warp_tui)")
+    elif app_tests:
+        parts.append("(package(warp) & (%s))" % " | ".join("test(/%s/)" % t for t in sorted(app_tests)))
+    # dependents of changed non-app crates: run their own tests inside the warp suite too only by package name
+    parts += ["package(%s)" % p for p in sorted(linux_pk) if not whole_warp]
+    return " | ".join(parts), suites, why
+
+
+def platforms_from(files):
+    code = [f for f in files if not DOC_ONLY.match(f) and not re.match(r"^(script/ci/|\.gitlab-ci\.yml|script/(check|precheck|state|test_))", f)]
+    if not code:
+        return [LINUX]
+    if all(WIN_ONLY.search(f) for f in code):
+        return [WIN]
+    if all(MAC_ONLY.search(f) for f in code):
+        return [MAC]
+    if all(LINUX_ONLY.search(f) for f in code):
+        return [LINUX]
+    if all(re.match(r"^(script|docs|\.gitlab)", f) and not APP_CORE_FILES.match(f) or WIN_ONLY.search(f) or MAC_ONLY.search(f) or LINUX_ONLY.search(f) for f in code):
+        return sorted({p for f in code for p, rx in ((WIN, WIN_ONLY), (MAC, MAC_ONLY), (LINUX, LINUX_ONLY)) if rx.search(f)} or {LINUX})
+    return [LINUX, MAC, WIN]
+
+
+def api(path, method="GET", variables=None):
+    a = ["glab", "api", path] + (["-X", method] if method != "GET" else [])
+    body = None
+    if variables:   # play API: job_variables_attributes must arrive as a JSON array of {key,value}
+        a += ["--header", "Content-Type: application/json", "--input", "-"]
+        body = json.dumps({"job_variables_attributes": [{"key": k, "value": v} for k, v in variables.items()]})
+    r = subprocess.run(a, input=body, capture_output=True, text=True)
+    try:
+        return json.loads(r.stdout or "null")
+    except ValueError:
+        return None
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Drive a GitLab pipeline through a test tier; see the header of script/ci/ci_seq.py and docs/testing.md")
+    ap.add_argument("ref")
+    ap.add_argument("skip_pos", nargs="*", help="legacy: job names to skip")
+    ap.add_argument("--tier", choices=["fix", "candidate", "release"], default="fix")
+    ap.add_argument("--platforms", default="")
+    ap.add_argument("--tests", default="")
+    ap.add_argument("--base", default="")
+    ap.add_argument("--skip", nargs="*", default=[])
+    ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
+    a = ap.parse_args()
+    ref, tier = a.ref, a.tier
+    SKIP = set(a.skip_pos) | set(a.skip)
+
+    base = resolve_base(ref, a.base)
+    files = changed_files(base, ref) if tier == "fix" or a.dry_run else []
+    filt, suites, plats = "", {"linux", "core", "rest"}, [LINUX, MAC, WIN]
+    if tier == "fix":
+        filt, suites, why = derive(files)
+        plats = [p for p in a.platforms.split(",") if p] or platforms_from(files)
+        if a.tests:
+            filt = a.tests; suites = set(suites) | {"linux"}
+        print("base %s..%s: %d files changed" % (base[:10], ref, len(files)))
+        for w in why[:15]:
+            print("  ", w)
+        print("TEST_FILTER for test-linux (override with --tests):", filt or "(none: nothing in test-linux's scope changed)")
+        print("suites:", sorted(suites) or "none", " platforms:", plats, flush=True)
+        if "linux" in suites and not filt:
+            print("note: test-linux requested but no filter derived; it would run the FULL ~50 min suite. Pass --tests to narrow it.", flush=True)
+    elif a.platforms:
+        plats = [p for p in a.platforms.split(",") if p]
+    if a.dry_run:
+        return 0
+    fvars = {"TEST_FILTER": filt} if (tier == "fix" and filt) else None
+    appvars = {"APPCI_TIER": "smoke" if tier == "fix" else "full"}
+
+    pid = None
+    while not pid:
+        for p in api("projects/%s/pipelines?ref=%s" % (PROJECT, ref.replace("/", "%2F"))) or []:
+            pid = p["id"]; break
+        if not pid:
+            time.sleep(20)
+    t_start = time.time()
+    timeline = {}
+
+    def jobs():
+        return {j["name"]: j for j in (api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, pid)) or [])}
+
+    def wait(name):
+        while True:
+            s = jobs().get(name, {}).get("status", "missing")
+            if s in ("success", "failed", "canceled", "missing", "skipped"):
+                j = jobs().get(name, {})
+                timeline[name] = (s, j.get("duration"))
+                return s
+            time.sleep(60)
+
+    def play(name, variables=None):
+        j = jobs().get(name)
+        if not j or j["status"] != "manual":
+            return False                                   # already played/run or absent: never re-run
+        api("projects/%s/jobs/%d/play" % (PROJECT, j["id"]), "POST", variables)
+        return True
+
+    print("pipeline", pid, "tier", tier, flush=True)
+    s = wait("check-linux"); print("check-linux", s, flush=True)
+    if s != "success":
+        summary(timeline, t_start); return 1
+
+    # builds first (they are the long pole: macos ~21 min, windows ~38 min), tests alongside on the box
+    builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP]
+    for n in builds:
+        play(n)
+    if tier == "fix":
+        box = [(n, v) for n, k, v in (("test-linux", "linux", fvars), ("test-warpui-core", "core", None), ("test-workspace-rest", "rest", None)) if k in suites]
+    else:
+        box = [("test-linux", None), ("test-warpui-core", None), ("test-workspace-rest", None)]
+    for n, v in box:
+        if n in SKIP: continue
+        play(n, v); print(n, wait(n), flush=True)
+    if tier == "release":
+        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+            if n not in SKIP: play(n)
+    for n in builds:
+        print(n, wait(n), flush=True)
+    started = []
+    p_of = {BUILD[p]: p for p in plats}
+    for b in builds:
+        if jobs().get(b, {}).get("status") != "success":
+            continue
+        for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
+            if play(n, appvars):
+                started.append(n)
+    for n in started: print(n, wait(n), flush=True)
+    if tier == "release":
+        for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
+            if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
+    summary(timeline, t_start)
+    return 0 if all(v[0] == "success" for k, v in timeline.items() if not k.startswith(("app-test", "bench", "mutants", "fuzz"))) else 1
+
+
+def summary(timeline, t0):
+    print("\n%-28s %-10s %s" % ("job", "status", "minutes"))
+    for k, (s, d) in timeline.items():
+        print("%-28s %-10s %s" % (k, s, "%.1f" % (d / 60) if d else "-"))
+    print("wall clock: %.1f min" % ((time.time() - t0) / 60), flush=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -3,14 +3,18 @@
 #   cargo install cargo-mutants cargo-nextest
 #   cargo mutants -p warp --file app/src/terminal/pane_key.rs --file app/src/terminal/model/key_facts.rs
 #
-# A full-crate run is hours long: always narrow with --file / --re, or --in-diff <patch>. The
-# CI job `mutants` (manual) runs a chosen subset; see docs/dev-tooling.md.
+# A full-crate run is hours long: always narrow with --file / --re, or --in-diff <patch>. CI scope
+# (release tier, docs/testing.md "Test tiers"): job `mutants` = pane_key, key_facts, input_queue/{gates,destination}
+# in `warp` with a test filter (MUTANTS_FILES / MUTANTS_TEST_FILTER / MUTANTS_SHARD widen or split it), and job
+# `mutants-warpui-core` = the warpui_core clipboard with its own tests.
 
 # The app's tests are only meaningful as `-p warp -p warp_tui --lib --features warp/gui`
 # (`-p warp_tui` alone fails to compile). cargo-mutants adds the package it mutates; the rest
-# goes in as extra test args.
+# goes in as extra test args. They are NOT set here (a config-file list would also apply to
+# warpui_core): pass them per target, as the CI jobs do:
+#   --cargo-test-arg=-p --cargo-test-arg=warp_tui --cargo-test-arg=--lib --cargo-test-arg=--features --cargo-test-arg=warp/gui
+#   (warpui_core: --cargo-test-arg=--features --cargo-test-arg=tui)
 test_tool = "nextest"
-additional_cargo_test_args = ["-p", "warp_tui", "--lib", "--features", "warp/gui"]
 
 # A mutant that makes the code loop forever is caught by the timeout; the suite is slow to start
 # (large link), so allow generous multiples of the unmutated run.

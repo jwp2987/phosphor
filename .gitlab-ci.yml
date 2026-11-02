@@ -569,7 +569,7 @@ test-linux:
   extends: [.box_job, .heavy_rules]
   timeout: 3h
   script:
-    - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
+    - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # warpui_core with --features tui. The flag is NOT optional: elements/tui/ is
 # cfg(feature = "tui"), so without it those ~259 tests do not exist, and the run
@@ -578,7 +578,7 @@ test-warpui-core:
   extends: [.box_job, .heavy_rules]
   timeout: 90m
   script:
-    - ./script/check_test_failures -p warpui_core --features tui
+    - ./script/check_test_failures -p warpui_core --features tui ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # The rest of the workspace: one invocation listing every package, exactly as
 # script/precheck does. Do not split it: check_test_failures treats a known failure
@@ -599,7 +599,7 @@ test-workspace-rest:
           -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
           -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \
           -p warp_completer -p warpui -p warpui_extras -p ai -p remote_server \
-          -p usage_suite -p warp_editor -p warp_cli
+          -p usage_suite -p warp_editor -p warp_cli ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # ~300 GUI-driving scenarios (crates/integration) that need a display: xvfb-run
 # supplies one, mesa-vulkan-drivers the software renderer. MANUAL and non-blocking:
@@ -697,9 +697,14 @@ fuzz-smoke:
     paths:
       - fuzz/artifacts/
 
-# cargo-mutants on a chosen subset (MUTANTS_FILES, space separated, default the pure pane-key
-# and key-facts modules). A full-crate run is hours: always name files. Misses are reported, not
-# failed on; `mutants.out/` is kept as the artifact.
+# cargo-mutants, SCOPED (release tier). Default scope = the pure, self-contained input-path logic:
+# app/src/terminal/{pane_key.rs, model/key_facts.rs, input_queue/gates.rs, input_queue/destination.rs}
+# (~900 lines, estimated 80-110 mutants) with the test run restricted to their modules via
+# MUTANTS_TEST_FILTER, so each mutant costs one incremental `warp` rebuild plus a few seconds of tests
+# (estimate 3-5 min each, so 3-6 h; UNMEASURED - the first run records it). Widen by setting
+# MUTANTS_FILES / MUTANTS_TEST_FILTER as play-time variables, or split a wide run with
+# MUTANTS_SHARD=k/n; see docs/testing.md "Test tiers". Misses are reported, not failed on;
+# `mutants.out/` is kept as the artifact.
 mutants:
   extends: .box_job
   timeout: 5h
@@ -707,14 +712,34 @@ mutants:
   allow_failure: true
   variables:
     MUTANTS_PACKAGE: "warp"
-    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs"
+    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs app/src/terminal/input_queue/gates.rs app/src/terminal/input_queue/destination.rs"
+    MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/)"
+    MUTANTS_SHARD: ""
   script:
     - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
     - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
     - |
       FILE_ARGS=""
       for f in $MUTANTS_FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
-      ./script/agent-cargo ci-mutants mutants -p "$MUTANTS_PACKAGE" --no-shuffle $FILE_ARGS || echo "cargo-mutants exited $? (missed mutants are reported in mutants.out/)"
+      ./script/agent-cargo ci-mutants mutants -p "$MUTANTS_PACKAGE" --no-shuffle $FILE_ARGS --cargo-test-arg=-p --cargo-test-arg=warp_tui --cargo-test-arg=--lib --cargo-test-arg=--features --cargo-test-arg=warp/gui ${MUTANTS_SHARD:+--shard "$MUTANTS_SHARD"} ${MUTANTS_TEST_FILTER:+--cargo-test-arg=-E --cargo-test-arg="$MUTANTS_TEST_FILTER"} || echo "cargo-mutants exited $? (missed mutants are reported in mutants.out/)"
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - mutants.out/
+
+# The second scoped target: the warpui_core clipboard (clipboard.rs + clipboard_utils.rs), tested by warpui_core's
+# own tests only, so no `warp` rebuild per mutant. Estimate 25-40
+# mutants, ~1 min each (unmeasured).
+mutants-warpui-core:
+  extends: .box_job
+  timeout: 90m
+  when: manual
+  allow_failure: true
+  script:
+    - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
+    - command -v cargo-mutants >/dev/null || cargo binstall --force -y cargo-mutants
+    - ./script/agent-cargo ci-mutants-core mutants -p warpui_core --no-shuffle --cargo-test-arg=--features --cargo-test-arg=tui --file crates/warpui_core/src/clipboard.rs --file crates/warpui_core/src/clipboard_utils.rs || echo "cargo-mutants exited $? (missed mutants are reported in mutants.out/)"
   artifacts:
     when: always
     expire_in: 14 days
@@ -800,6 +825,8 @@ usage-test-macos:
     reports:
       junit: appci-out/*/run/junit.xml
 
+# APPCI_TIER (play-time variable from ci_seq.py): smoke = the input-path subset (appci/cases.py SMOKE; Windows: fast_typing, paste_instant_enter,
+# ctrl_c, latency_enter), wayland only on Linux; full or empty = every case, as before.
 # Headless sway on the box GPU (Intel UHD 630, /dev/dri/renderD128; pixman fallback), native Wayland client; then the
 # same build once more under XWayland for X11 parity (reduced case set).
 app-test-linux-wayland:
@@ -810,6 +837,7 @@ app-test-linux-wayland:
   script:
     - rc=0
     - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland" || rc=$?
+    - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: skipping the xwayland pass"; exit $rc; fi'
     - script/realapp/linux/wayland_session.sh --mode xwayland --dist dist --out "$CI_PROJECT_DIR/appci-out/xwayland" --cases fast_typing,paste_instant_enter,tab_enter,ctrl_c_d,latency_enter || { r=$?; [ $r -gt $rc ] && rc=$r; }
     - exit $rc
 
@@ -820,6 +848,7 @@ app-test-linux-x11:
     - job: build-linux-x86_64
       artifacts: true
   script:
+    - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: the x11 pass is not part of the fix tier"; exit 0; fi'
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
