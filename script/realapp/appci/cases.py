@@ -5,6 +5,9 @@
 # r.metric(k, v) numbers, r.skip(msg) a skip. Typing is at the owner's stress rate: 10-25 ms/key, Enter in the same call.
 import hashlib, json, os, random, re, shutil, statistics, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lat  # noqa: E402
+
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
 SMOKE = ("mode_proof", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log")
@@ -49,6 +52,33 @@ def pct(xs, p):
 def stats(xs):
     return {"n": len(xs), "p50": round(statistics.median(xs), 2) if xs else None, "p95": round(pct(xs, 0.95), 2) if xs else None,
             "max": round(max(xs), 2) if xs else None}
+
+
+def plat():
+    return os.environ.get("APPCI_PLATFORM", "linux")
+
+
+def lat_checks(r, rec, label):
+    """turn a latency record's verdicts into case failures (FAIL only; warn/no-reference stay visible in the table + notes)"""
+    if rec["budget_verdict"] == "fail":
+        if rec["budget_kind"] == "overhead":
+            r.check(False, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["reference_name"], rec["budget_ms"]))
+        else:
+            r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
+    for tag in ("prev", "baseline"):
+        x = rec.get(tag) or {}
+        if x.get("verdict") in ("fail", "warn") and x.get("delta_ms") is not None:
+            msg = "%s: median %s vs %s build %+.2f ms (%+.1f%%)" % (label, rec["phosphor"]["p50"], tag, x["delta_ms"], x["delta_pct"])
+            if rec.get("remeasure"):
+                msg += "; re-measured once: median %s (%s)" % (rec["remeasure"]["phosphor"]["p50"], rec["remeasure"][tag]["verdict"])
+            if x["verdict"] == "fail":
+                r.check(False, "REGRESSION " + msg)
+            else:
+                r.note("WARN " + msg)
+    if rec["verdict"] == "no-reference":
+        r.note("%s: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)" % label)
+    for n_ in rec.get("notes", []):
+        r.note("%s: %s" % (label, n_))
 
 
 class Ctx:
@@ -359,30 +389,40 @@ def c_tab(ctx, r):
     r.check(not stray, "Tab+Enter ran the UNCOMPLETED line, stray files: %s" % stray)
 
 
-@case("ctrl_c_d", order=17)
-def c_ctrl(ctx, r):
-    ctx.rm("cc.txt", "cd.txt", "cd2.txt")
-    lat, n = [], ctx.count(6)
+def ctrlc_samples(ctx, n, fname):
+    """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
+    ctx.rm(fname)
+    lat_ms = []
     for i in range(n):
-        ctx.be.type("bash -c 'trap \"date +%%s.%%N >> cc.txt; exit\" INT; sleep 30'; echo AFTER%d >> cc.txt" % i, 10, enter=True)
+        ctx.be.type("bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname), 10, enter=True)
         time.sleep(1.2)
         t0 = time.time()
         ctx.be.key("ctrl+c")
-        ctx.until(lambda: sum(1 for l in ctx.lines("cc.txt") if l.startswith("AFTER")) > i, 5)
+        ctx.until(lambda: sum(1 for l in ctx.lines(fname) if l.startswith("AFTER")) > i, 5)
         time.sleep(0.2)
-        ts = [float(l) for l in ctx.lines("cc.txt") if re.fullmatch(r"\d+\.\d+", l)]
-        if len(ts) > len(lat):
-            lat.append((ts[len(lat)] - t0) * 1000)
-    r.metric("ctrl_c_ms", stats(lat))
+        ts = [float(l) for l in ctx.lines(fname) if re.fullmatch(r"\d+\.\d+", l)]
+        if len(ts) > len(lat_ms):
+            lat_ms.append((ts[len(lat_ms)] - t0) * 1000)
+    after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
+    return lat_ms, len(lat_ms) == n and len(after) == n
+
+
+@case("ctrl_c_d", order=17)
+def c_ctrl(ctx, r):
+    ctx.rm("cd.txt", "cd2.txt")
+    n, warm = ctx.count(30), lat.warmup()
+    lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt")
+    lat_ms = lat_ms[warm:]
+    r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
-    r.check(len(lat) == n, "Ctrl-C delivered %d/%d times" % (len(lat), n))
-    after = [l for l in ctx.lines("cc.txt") if l.startswith("AFTER")]
-    r.check(len(after) == n, "command after Ctrl-C ran %d/%d times" % (len(after), n))
-    if lat:
-        # owner budget: Ctrl-C <= 20 ms under flood; the measurement includes the input tool's own spawn (the floor)
-        over = statistics.median(lat) - ctx.be.key_floor_ms
-        r.metric("ctrl_c_median_minus_floor_ms", over)
-        r.check(over <= 40, "Ctrl-C median %.1f ms over the harness floor exceeds 40 ms (owner budget 20 ms + 20 ms CI slack)" % over)
+    r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times" % (n + warm))
+    if lat_ms:
+        # owner budget: Ctrl-C <= 20 ms; the measurement includes the input tool's own spawn, which is subtracted (the harness floor).
+        # Absolute budget (no reference terminal), so it is judged on the number: pass/fail, not 'no-reference'.
+        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.mode, lat_ms, None, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "absolute", plat(),
+                           remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], floor=ctx.be.key_floor_ms)
+        r.metrics.setdefault("lat", {})["ctrl_c"] = rec
+        lat_checks(r, rec, "Ctrl-C")
     # Ctrl-D: ends `cat` input, and exits a nested bash back to the outer shell
     ctx.be.type("cat > cd.txt", 12, enter=True)
     time.sleep(1)
@@ -537,13 +577,50 @@ def c_idle(ctx, r):
     r.check(pct_ <= limit, "idle CPU %.1f%% of one core exceeds CI limit %.0f%% (compositor/GPU path differs from a desktop: compare trends)" % (pct_, limit))
 
 
+class RefTerm:
+    """A reference terminal running the same scratch rc, for same-session comparison. name says how it was reached (XWayland etc.)."""
+    def __init__(self, name, proc=None, close=None):
+        self.name, self.proc, self._close = name, proc, close
+
+    def close(self):
+        if self._close:
+            self._close()
+        elif self.proc:
+            try:
+                os.killpg(self.proc.pid, 15)
+            except Exception:
+                pass
+
+
 def ref_terminal(ctx):
-    """optional reference terminal (xterm via XWayland / Xvfb) with the same rc, for same-session comparison"""
-    if not shutil.which("xterm") or not os.environ.get("DISPLAY"):
+    """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
+    macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
+    home = ctx.prof.home
+    if ctx.be.name == "mac":
+        sh = "cd '%s'; exec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i" % (ctx.W, home, home, ctx.prof.ctl)
+        scr = 'tell application "Terminal"\nactivate\ndo script "%s"\nreturn id of front window\nend tell' % sh.replace('"', '\\"')
+        rr = subprocess.run(["osascript", "-e", scr], capture_output=True, timeout=30)
+        wid = rr.stdout.decode().strip()
+        if rr.returncode != 0 or not wid:
+            return None
+        ctx.be.guard_override = "Terminal"
+
+        def close():
+            # never Cmd-W/Q: close exactly our window by id; the shell is a plain zsh so Terminal does not prompt
+            subprocess.run(["osascript", "-e", 'tell application "Terminal" to close (every window whose id is %s) saving no' % wid], capture_output=True, timeout=30)
+            ctx.be.guard_override = None
+            ctx.be.refocus()
+        return RefTerm("Terminal.app", close=close)
+    disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
+    env = dict(os.environ, HOME=home)
+    if wl and shutil.which("foot") and ctx.be.name == "wayland":
+        argv, name = ["foot", "-e", "bash", "--rcfile", home + "/.bashrc", "-i"], "foot"
+    elif shutil.which("xterm") and disp:
+        argv = ["xterm", "-geometry", "120x30+0+0", "-e", "bash", "--rcfile", home + "/.bashrc", "-i"]
+        name = "xterm (via XWayland)" if wl and ctx.be.name == "wayland" else "xterm"
+    else:
         return None
-    return subprocess.Popen(["xterm", "-geometry", "120x30+0+0", "-e", "bash", "--rcfile", ctx.prof.home + "/.bashrc", "-i"],
-                            env=dict(os.environ, HOME=ctx.prof.home), start_new_session=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return RefTerm(name, proc=subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
 
 
 def enter_to_start(ctx, n):
@@ -552,7 +629,8 @@ def enter_to_start(ctx, n):
         f = os.path.join(ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
-        ctx.be.type("date +%%s.%%N > lat_%d" % i, 12)
+        stamp = "print -r -- $EPOCHREALTIME > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"   # BSD date has no %N
+        ctx.be.type(stamp % i, 12)
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
@@ -567,34 +645,37 @@ def enter_to_start(ctx, n):
 
 @case("latency_enter", order=41, gui=True)
 def c_lat_enter(ctx, r):
-    """Enter -> command start. Owner budget 2 ms for Phosphor's own work, FAIL > 5 ms worse than the reference;
-    raw numbers include one input-tool spawn (harness_floor_ms), so the verdict is relative to the reference terminal
-    when one is available, else an absolute CI sanity bound."""
-    n = ctx.count(30)
-    ds = enter_to_start(ctx, n)
+    """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
+    Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
+    which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
+    n, warm = ctx.count(30), lat.warmup()
+    ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
     ctx.reset()
-    ref = ref_terminal(ctx)
+    rs, ref = [], ref_terminal(ctx)
     if ref:
         try:
             time.sleep(2.5)
-            rs = enter_to_start(ctx, n)
-            r.metric("reference_xterm_enter_to_start_ms", stats(rs))
-            if ds and rs:
-                d = statistics.median(ds) - statistics.median(rs)
-                r.metric("phosphor_minus_reference_median_ms", d)
-                r.check(d <= 5, "Enter to command start is %.1f ms worse than xterm in the same session (budget FAIL > 5 ms)" % d)
+            rs = enter_to_start(ctx, n + warm)[warm:]
+            ctx.reset()
         finally:
-            try:
-                os.killpg(ref.pid, 15)
-            except Exception:
-                pass
+            ref.close()
+        time.sleep(1.0)   # focus returns to Phosphor before any re-measure
+        r.metric("reference_enter_to_start_ms", stats(rs))
+        r.metric("reference", ref.name)
     else:
-        r.note("no xterm/DISPLAY: no reference terminal; absolute bound only")
-        if ds:
+        r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)")
+    if ds:
+        rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.mode, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
+                           remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+                           notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
+        r.metrics.setdefault("lat", {})["enter_to_start"] = rec
+        lat_checks(r, rec, "Enter to command start")
+        if not rs and ds:
             r.check(statistics.median(ds) <= 80, "Enter to command start median %.1f ms > 80 ms CI sanity bound" % statistics.median(ds))
+    ctx.reset()
 
 
 def parse_t(line):
@@ -608,29 +689,50 @@ def c_lat_key(ctx, r):
     needs RUST_LOG input_order (set by the launcher). Phosphor-side only: no paint-readback through Wayland."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.skip("no app log at %s (set APPCI_APP_LOG)" % ctx.log_path)
-    off = ctx.log_size()
-    n = ctx.count(60)
-    for i in range(n):
-        ctx.be.type("m", 10)
-        time.sleep(ctx.rng.uniform(0.08, 0.18))
-        if i % 10 == 9:
-            ctx.be.key("ctrl+u")
-            time.sleep(0.2)
-    time.sleep(1)
-    txt = ctx.log_since(off)
-    ds, kd = [], None
-    for l in txt.splitlines():
-        if "input_order keydown" in l and "ctrl=false" in l:
-            kd = parse_t(l)
-        elif "input_order frame" in l and kd is not None:
-            t = parse_t(l)
-            if t is not None:
-                ds.append(t - kd)
-            kd = None
+    n, warm = ctx.count(60), lat.warmup()
+    SLOW = re.compile(r"slow ([\w .:/-]+?): (\d+) ms")
+
+    def run_keys(count):
+        off = ctx.log_size()
+        for i in range(count):
+            ctx.be.type("m", 10)
+            time.sleep(ctx.rng.uniform(0.08, 0.18))
+            if i % 10 == 9:
+                ctx.be.key("ctrl+u")
+                time.sleep(0.2)
+        time.sleep(1)
+        txt = ctx.log_since(off)
+        ds, kd = [], None
+        for l in txt.splitlines():
+            if "input_order keydown" in l and "ctrl=false" in l:
+                kd = parse_t(l)
+            elif "input_order frame" in l and kd is not None:
+                t = parse_t(l)
+                if t is not None:
+                    ds.append(t - kd)
+                kd = None
+        return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
+
+    ds, slow = run_keys(n + warm)
     r.metric("key_to_frame_ms", stats(ds))
     if len(ds) < n * 0.5:
         r.check(False, "only %d key->frame pairs in the app log (expected ~%d); input_order logging not on or the log path is wrong (%s)" % (len(ds), n, ctx.log_path))
         return
+    # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
+    # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
+    rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.mode, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+                       remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"])
+    r.metrics.setdefault("lat", {})["key_to_frame"] = rec
+    lat_checks(r, rec, "key to frame")
+    # UI work: the app's slow-operation log (#1146) only emits >= 8 ms, so 'pass' means "nothing >= 8 ms"; >= 16 ms is a dropped frame (WARN)
+    worst_ms = max([m for _, m in slow], default=0)
+    r.metric("ui_slow_ops", dict(count=len(slow), worst_ms=worst_ms, ops=sorted({w for w, _ in slow})[:8]))
+    uiv = "warn" if worst_ms >= 16 else "pass"
+    r.metrics["lat"]["ui_work"] = dict(phosphor=dict(n=len(slow), p50=None, p95=None, max=float(worst_ms)), reference=None, budget_ms=4, budget_kind="slow-log",
+                                       overhead_ms=None, prev=None, baseline={"status": "n/a"}, budget_verdict=uiv, verdict=uiv,
+                                       notes=["slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"])
+    if worst_ms >= 16:
+        r.note("WARN UI work: slow op(s) up to %d ms during typing: %s" % (worst_ms, ", ".join(sorted({w for w, _ in slow})[:5])))
     p50, p99 = statistics.median(ds), pct(ds, 0.99)
     r.check(p50 <= 20, "key->frame p50 %.1f ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)" % p50)
     r.check(p99 <= 60, "key->frame p99 %.1f ms > 60 ms CI bound" % p99)

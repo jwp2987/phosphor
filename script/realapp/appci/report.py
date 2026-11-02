@@ -38,6 +38,42 @@ m = ["# App test results (%s)" % ", ".join("%s=%s" % kv for kv in meta.items()),
      "| mode | case | status | detail |", "|---|---|---|---|"]
 for r in rows:
     m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper(), "; ".join(r.get("detail", []))[:160].replace("|", "/")))
+def f(x, nd=1):
+    return "-" if x is None else ("%.*f" % (nd, x))
+
+
+def cell(x):
+    return "-" if not x or x.get("p50") is None else "%s / %s" % (f(x["p50"]), f(x.get("p95")))
+
+
+def dcell(x):
+    if not x or x.get("delta_ms") is None:
+        return (x or {}).get("status", "-") if x and x.get("status") in ("pending", "missing") else "-"
+    return "%s (%+.2f ms, %+.1f%%) %s" % (f(x.get("p50")), x["delta_ms"], x["delta_pct"], x["verdict"].upper())
+
+
+lat_rows = []
+for r in rows:
+    for k, rec in ((r.get("metrics") or {}).get("lat") or {}).items():
+        b = "-"
+        if rec.get("budget_kind") == "overhead":
+            b = "overhead <= %g ms" % rec["budget_ms"]
+        elif rec.get("budget_kind") == "absolute":
+            b = "<= %g ms over floor" % rec["budget_ms"]
+        elif rec.get("budget_kind") == "slow-log":
+            b = "<= 4 ms (warn 16)"
+        ref = rec.get("reference")
+        lat_rows.append("| %s | %s/%s | %s | %s%s | %s | %s | %s | %s | %s | %s |" % (
+            r.get("mode", ""), r["name"], k, cell(rec.get("phosphor")) if rec.get("budget_kind") != "slow-log" else "worst %s ms" % f(rec["phosphor"].get("max"), 0),
+            cell(ref), (" (%s)" % rec["reference_name"]) if ref and rec.get("reference_name") else "",
+            f(rec.get("overhead_ms"), 2), b, dcell(rec.get("prev")), dcell(rec.get("baseline")), rec["verdict"].upper(),
+            "n=%s" % (rec["phosphor"].get("n"))))
+        if rec.get("remeasure"):
+            lat_rows.append("| | re-measure | %s | | | | | | | |" % cell(rec["remeasure"]["phosphor"]))
+if lat_rows:
+    m += ["", "## Latency (%s): median / p95 ms, warm-up discarded" % meta.get("platform", "?"), "",
+          "| mode | case/measure | Phosphor | reference | overhead ms | budget | previous build | baseline | verdict | n |",
+          "|---|---|---|---|---|---|---|---|---|---|"] + lat_rows
 open(os.path.join(run, "summary.md"), "w").write("\n".join(m) + "\n")
 print("\n".join(m))
 sys.exit(1 if cnt["fail"] else 0)

@@ -38,7 +38,7 @@ $rng = New-Object Random 1
 
 function Emit($name, $mode, $status, $detail, $secs = 0, $metrics = @{}, $shots = @()) {
   $o = [ordered]@{ name = $name; mode = $mode; status = $status; seconds = [math]::Round($secs, 1); detail = @($detail); metrics = $metrics; shots = @($shots) }
-  ($o | ConvertTo-Json -Compress -Depth 5) | Add-Content $ResF -Encoding ascii
+  ($o | ConvertTo-Json -Compress -Depth 10) | Add-Content $ResF -Encoding ascii
   "[{0}] {1,-24} {2} {3}" -f $mode, $name, $status.ToUpper(), (@($detail) -join "; ")
   if ($status -eq "fail") { $script:Fail++ }
 }
@@ -48,7 +48,11 @@ function Shot($name) {
   $g = [Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
   $p = Join-Path $Shots "$name.png"; $bmp.Save($p, [Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose(); "shots\$name.png"
 }
-function IsPho { $fg = [AW]::GetForegroundWindow(); $p = 0; [void][AW]::GetWindowThreadProcessId($fg, [ref]$p); ($script:AppProc -and $p -eq $script:AppProc.Id) }
+function IsPho {
+  $fg = [AW]::GetForegroundWindow(); $p = 0; [void][AW]::GetWindowThreadProcessId($fg, [ref]$p)
+  if ($script:RefProc) { $n = (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName; return ($n -in "conhost", "powershell", "OpenConsole") }
+  ($script:AppProc -and $p -eq $script:AppProc.Id)
+}
 function Focus {
   $script:AppProc.Refresh(); $h = $script:AppProc.MainWindowHandle
   if ($h -eq [IntPtr]::Zero) { throw "no Phosphor window" }
@@ -107,16 +111,108 @@ function C-CtrlC($mode) {
   $med = if ($lat.Count) { ($lat | Sort-Object)[[int]($lat.Count / 2)] } else { $null }
   if ($lat.Count -eq 5) { @("pass", @(), @{ ctrl_c_ms_median = $med; note = "includes SendKeys cost" }) } else { @("fail", @("Ctrl-C delivered $($lat.Count)/5 times"), @{}) }
 }
-function C-EnterLatency($mode) {
+# ---- latency policy (same rules as script/realapp/appci/lat.py; docs/testing.md "Latency budgets") ----
+$Warm = if ($env:APPCI_WARMUP) { [int]$env:APPCI_WARMUP } else { 3 }
+$RegPct = if ($env:APPCI_REGRESS_PCT) { [double]$env:APPCI_REGRESS_PCT } else { 5 }; $RegMs = if ($env:APPCI_REGRESS_MS) { [double]$env:APPCI_REGRESS_MS } else { 0.5 }
+$WarnPct = if ($env:APPCI_WARN_PCT) { [double]$env:APPCI_WARN_PCT } else { 2 }
+$EnterBudget = if ($env:APPCI_ENTER_BUDGET_MS) { [double]$env:APPCI_ENTER_BUDGET_MS } else { 2 }
+function Stat($xs) {
+  $s = @($xs | Sort-Object); if (-not $s.Count) { return @{ n = 0; p50 = $null; p95 = $null; max = $null } }
+  $m = if ($s.Count % 2) { $s[[int](($s.Count - 1) / 2)] } else { ($s[$s.Count / 2 - 1] + $s[$s.Count / 2]) / 2 }
+  @{ n = $s.Count; p50 = [math]::Round($m, 2); p95 = [math]::Round($s[[math]::Min($s.Count - 1, [int][math]::Floor($s.Count * 0.95))], 2); max = [math]::Round($s[-1], 2) }
+}
+function Regress($cur, $old) {
+  if ($null -eq $cur -or $null -eq $old) { return @{ v = "none"; dm = $null; dp = $null } }
+  $d = $cur - $old; $p = if ($old) { $d / $old * 100 } else { 0 }
+  $v = if ($d -gt $RegMs -and $p -gt $RegPct) { "fail" } elseif ($d -gt $RegMs -and $p -gt $WarnPct) { "warn" } else { "pass" }
+  @{ v = $v; dm = [math]::Round($d, 2); dp = [math]::Round($p, 1) }
+}
+$RankOf = @{ pass = 0; none = 0; pending = 1; "no-reference" = 1; warn = 2; fail = 3 }
+function Worst($vs) { ($vs | Sort-Object { $RankOf[$_] } | Select-Object -Last 1) }
+# previous successful run of this job on a build/* ref (GitLab API with CI_JOB_TOKEN); $null when not in CI or none found
+function Get-Prev {
+  if (-not ($env:CI_API_V4_URL -and $env:CI_PROJECT_ID -and $env:CI_JOB_NAME -and $env:CI_JOB_TOKEN)) { "latency: not in CI, no previous-build comparison"; return $null }
+  try {
+    $h = @{ "JOB-TOKEN" = $env:CI_JOB_TOKEN }
+    foreach ($pg in 1..4) {
+      $jobs = Invoke-RestMethod -Headers $h -Uri "$($env:CI_API_V4_URL)/projects/$($env:CI_PROJECT_ID)/jobs?scope[]=success&per_page=100&page=$pg" -TimeoutSec 30
+      if (-not $jobs) { break }
+      foreach ($j in $jobs) {
+        if ($j.name -eq $env:CI_JOB_NAME -and "$($j.id)" -ne $env:CI_JOB_ID -and "$($j.ref)".StartsWith("build/")) {
+          $r = Invoke-RestMethod -Headers $h -Uri "$($env:CI_API_V4_URL)/projects/$($env:CI_PROJECT_ID)/jobs/$($j.id)/artifacts/appci-out/windows/run/results.json" -TimeoutSec 60
+          if ($r -is [string]) { $r = $r | ConvertFrom-Json }
+          "latency: previous build = job $($j.id) on $($j.ref)"; return $r }
+      } }
+    "latency: no earlier successful $($env:CI_JOB_NAME) job on a build/* ref"; return $null
+  } catch { "latency: previous-build fetch failed ($($_.Exception.Message))"; return $null }
+}
+$gp = @(Get-Prev); $script:PrevMsg = $gp[0]; $script:PrevDoc = if ($gp.Count -gt 1 -and $gp[1] -isnot [string]) { $gp[1] } else { $null }; Write-Host $script:PrevMsg
+$BaseFile = Join-Path $PSScriptRoot "..\..\appci\baselines\windows.json"
+$script:Base = if (Test-Path $BaseFile) { Get-Content $BaseFile -Raw | ConvertFrom-Json } else { $null }
+function Find-Lat($doc, $mode, $case, $key) {
+  if (-not $doc) { return $null }
+  foreach ($c in @($doc.cases)) { if ($c.name -eq $case -and $c.mode -eq $mode -and $c.metrics -and $c.metrics.lat -and $c.metrics.lat.$key) { return $c.metrics.lat.$key.phosphor } }
+  $null
+}
+function Lat-Rec($mode, $case, $key, $phos, $ref, $refName, $budget, $kind, [scriptblock]$remeasure) {
+  $ps = Stat $phos; $rec = [ordered]@{ phosphor = $ps; reference = $null; reference_name = $refName; budget_ms = $budget; budget_kind = $kind; notes = @("Windows: SendKeys + software D3D12 VM; numbers compare builds, not absolute vs hand-measured baselines") }
+  if ($ps.n -lt 30) { $rec.notes += "n=$($ps.n) < 30 samples: indicative only" }
+  $bv = "pass"
+  if ($ref -and @($ref).Count) { $rs = Stat $ref; $rec.reference = $rs; $rec.overhead_ms = [math]::Round($ps.p50 - $rs.p50, 2); $bv = if ($rec.overhead_ms -le $budget) { "pass" } else { "fail" } }
+  else { $rec.overhead_ms = $null; $bv = "no-reference" }
+  $rec.budget_verdict = $bv
+  $pv = "none"; $bsv = "none"; $rec.prev = $null; $rec.baseline = @{ status = "missing" }
+  $po = Find-Lat $script:PrevDoc $mode $case $key
+  if ($po -and $null -ne $po.p50) { $g = Regress $ps.p50 $po.p50; $pv = $g.v; $rec.prev = @{ p50 = $po.p50; p95 = $po.p95; delta_ms = $g.dm; delta_pct = $g.dp; verdict = $pv } }
+  if ($script:Base) {
+    if ($script:Base.status -ne "ok") { $rec.baseline = @{ status = "pending" }; $bsv = "pending" }
+    else { $bo = $script:Base.metrics."$mode/$case/$key"; $rec.baseline = @{ status = "ok" }
+      if ($bo -and $null -ne $bo.p50) { $g = Regress $ps.p50 $bo.p50; $bsv = $g.v; $rec.baseline = @{ status = "ok"; p50 = $bo.p50; p95 = $bo.p95; delta_ms = $g.dm; delta_pct = $g.dp; verdict = $bsv } } }
+  }
+  if ($remeasure -and ($pv -eq "fail" -or $bsv -eq "fail")) {
+    $again = Stat (& $remeasure); $rec.remeasure = @{ phosphor = $again }
+    if ($pv -eq "fail") { $g = Regress $again.p50 $po.p50; $pv = if ($g.v -in "fail", "warn") { "fail" } else { "warn" }; $rec.prev.verdict = $pv }
+    if ($bsv -eq "fail") { $g = Regress $again.p50 $bo.p50; $bsv = if ($g.v -in "fail", "warn") { "fail" } else { "warn" }; $rec.baseline.verdict = $bsv }
+  }
+  $rec.verdict = Worst @($bv, $pv, $(if ($bsv -eq "pending") { "pass" } else { $bsv }))
+  $rec
+}
+function Lat-Fails($rec, $label) {
+  $f = @()
+  if ($rec.budget_verdict -eq "fail") { $f += "$label`: Phosphor overhead $($rec.overhead_ms) ms over $($rec.reference_name) exceeds the $($rec.budget_ms) ms budget" }
+  foreach ($t in "prev", "baseline") { $x = $rec[$t]; if ($x -and $x.verdict -eq "fail") { $f += "REGRESSION $label`: median $($rec.phosphor.p50) vs $t build $($x.delta_ms) ms ($($x.delta_pct)%)" + $(if ($rec.remeasure) { "; re-measured once: median $($rec.remeasure.phosphor.p50)" } else { "" }) } }
+  $f
+}
+# reference terminal: powershell.exe in conhost, driven with the same SendKeys path. IsPho accepts it while $script:RefProc is set.
+$script:RefProc = $null
+function Start-Ref {
+  $env:PATH | Out-Null
+  $script:RefProc = Start-Process powershell.exe -ArgumentList "-NoLogo" -WorkingDirectory $Work -PassThru
+  $t = Get-Date; while (((Get-Date) - $t).TotalSeconds -lt 20) { $script:RefProc.Refresh(); if ($script:RefProc.MainWindowHandle -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 300 }
+  Start-Sleep 4; $h = $script:RefProc.MainWindowHandle
+  if ($h -eq [IntPtr]::Zero) { Stop-Ref; return $false }
+  [void][AW]::SetForegroundWindow($h); Start-Sleep -Milliseconds 400; $true
+}
+function Stop-Ref { if ($script:RefProc -and -not $script:RefProc.HasExited) { & taskkill /PID $script:RefProc.Id /T /F | Out-Null }; $script:RefProc = $null; Start-Sleep 1; Focus }
+function Enter-Samples($count) {
   $ds = @()
-  for ($i = 0; $i -lt 25; $i++) {
+  for ($i = 0; $i -lt $count; $i++) {
     $f = "$Work\lat_$i.txt"; Remove-Item $f -ErrorAction SilentlyContinue
     TypeText "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_$i.txt -Encoding ascii" 10 25; Start-Sleep -Milliseconds 300
     $t0 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); Keys "{ENTER}"
     $g = Wf $f 1 4; if ($g.Count) { $ds += ([int64]$g[0] - $t0) }; Start-Sleep -Milliseconds 200 }
-  $s = $ds | Sort-Object; $m = if ($s) { $s[[int]($s.Count / 2)] } else { $null }
-  $res = @{ enter_to_start_ms_median = $m; n = $ds.Count; note = "PowerShell cmdlet start + SendKeys; compare with the v0.1.16 baseline (368 ms Enter to last paint)" }
-  if ($ds.Count -ge 20) { @("pass", @(), $res) } else { @("fail", @("only $($ds.Count)/25 Enter timings"), $res) }
+  @($ds | Select-Object -Skip $Warm)
+}
+function C-EnterLatency($mode) {
+  $n = 30; $ds = Enter-Samples ($n + $Warm)
+  $rs = @(); $refName = $null
+  if (Start-Ref) {
+    try { $refName = "conhost (powershell.exe)"; $rs = Enter-Samples ($n + $Warm) } finally { Stop-Ref }
+  }
+  $rec = Lat-Rec $mode "latency_enter" "enter_to_start" $ds $rs $refName $EnterBudget "overhead" { Enter-Samples ($n + $Warm) }
+  $res = @{ lat = @{ enter_to_start = $rec }; enter_to_start_ms_median = $rec.phosphor.p50; n = $ds.Count }
+  $fails = @(Lat-Fails $rec "Enter to command start"); if ($ds.Count -lt 24) { $fails += "only $($ds.Count)/$n Enter timings" }
+  if ($fails.Count) { @("fail", $fails, $res) } else { @("pass", $(if ($rec.verdict -eq "no-reference") { @("no reference terminal: verdict no-reference") } else { @() }), $res) }
 }
 function C-Idle($mode) {
   Start-Sleep 3; $p = $script:AppProc; $p.Refresh(); $c0 = $p.TotalProcessorTime.TotalSeconds; $w0 = Get-Date; Start-Sleep 20
@@ -209,7 +305,15 @@ finally {
   foreach ($r in $rows) { $d = [Security.SecurityElement]::Escape((@($r.detail) -join "; ")); [void]$x.AppendLine("<testcase classname=`"$($r.mode)`" name=`"$($r.name)`" time=`"$($r.seconds)`">")
     if ($r.status -eq "fail") { [void]$x.AppendLine("<failure message=`"$d`"/>") } elseif ($r.status -eq "skip") { [void]$x.AppendLine("<skipped message=`"$d`"/>") }; [void]$x.AppendLine("</testcase>") }
   [void]$x.AppendLine("</testsuite>"); Set-Content "$Run\junit.xml" $x.ToString() -Encoding utf8
-  $rows | ForEach-Object { "| {0} | {1} | {2} | {3} |" -f $_.mode, $_.name, $_.status.ToUpper(), (@($_.detail) -join "; ") } | Set-Content "$Run\summary.md" -Encoding utf8
+  $sm = @("# App test results (platform=windows)", "", "pass=$($cnt.pass) fail=$($cnt.fail) skip=$($cnt.skip)", "", "| mode | case | status | detail |", "|---|---|---|---|")
+  $sm += $rows | ForEach-Object { "| {0} | {1} | {2} | {3} |" -f $_.mode, $_.name, $_.status.ToUpper(), (@($_.detail) -join "; ") }
+  $cl = { param($x) if ($x -and $null -ne $x.p50) { "{0} / {1}" -f $x.p50, $x.p95 } else { "-" } }
+  $dl = { param($x) if ($x -and $null -ne $x.delta_ms) { "{0} ({1:+0.00;-0.00} ms, {2:+0.0;-0.0}%) {3}" -f $x.p50, $x.delta_ms, $x.delta_pct, ([string]$x.verdict).ToUpper() } elseif ($x -and $x.status) { [string]$x.status } else { "-" } }
+  $lr = @(); foreach ($r in $rows) { if ($r.metrics -and $r.metrics.lat) { foreach ($k in $r.metrics.lat.PSObject.Properties.Name) { $l = $r.metrics.lat.$k
+    $lr += "| {0} | {1}/{2} | {3} | {4} {5} | {6} | overhead <= {7} ms | {8} | {9} | {10} | n={11} |" -f $r.mode, $r.name, $k, (& $cl $l.phosphor), (& $cl $l.reference), $l.reference_name, $l.overhead_ms, $l.budget_ms, (& $dl $l.prev), (& $dl $l.baseline), ([string]$l.verdict).ToUpper(), $l.phosphor.n
+    if ($l.remeasure) { $lr += "| | re-measure | {0} | | | | | | | |" -f (& $cl $l.remeasure.phosphor) } } } }
+  if ($lr.Count) { $sm += @("", "## Latency (windows): median / p95 ms, warm-up discarded", "", "| mode | case/measure | Phosphor | reference | overhead ms | budget | previous build | baseline | verdict | n |", "|---|---|---|---|---|---|---|---|---|---|") + $lr }
+  $sm | Set-Content "$Run\summary.md" -Encoding utf8
   "pass=$($cnt.pass) fail=$($cnt.fail) skip=$($cnt.skip)"
 }
 if ($cnt.fail -gt 0) { exit 1 } else { exit 0 }

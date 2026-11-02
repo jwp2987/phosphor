@@ -31,6 +31,16 @@ def main():
     prof = profile.Profile(run)
     ollama_url = os.environ.get("APPCI_OLLAMA_URL") or None
     sim = a.backend == "sim"
+    os.environ["APPCI_PLATFORM"] = a.platform      # linux-wayland | linux-x11 | macos | windows (baselines/<platform>.json)
+    if not os.environ.get("APPCI_PREV_RESULTS"):
+        import prev
+        pf = os.path.join(run, "prev_results.json")
+        msg = prev.fetch(pf, os.environ.get("APPCI_PREV_ARTIFACT") or "appci-out/%s/run/results.json" % a.platform.replace("linux-", ""))
+        print("[latency] " + msg, flush=True)
+        if os.path.exists(pf):
+            os.environ["APPCI_PREV_RESULTS"] = pf
+    elif not os.path.exists(os.environ["APPCI_PREV_RESULTS"]):
+        print("[latency] APPCI_PREV_RESULTS=%s does not exist: no previous-build comparison" % os.environ["APPCI_PREV_RESULTS"], flush=True)
 
     def emit(row):
         with open(resf, "a") as f:
