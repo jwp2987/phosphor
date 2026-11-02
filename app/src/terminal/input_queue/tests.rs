@@ -1573,7 +1573,14 @@ fn a_full_queue_still_takes_a_signal() {
     }
     assert_eq!(q.overflow_dropped(), 1);
     q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
-    assert_eq!(q.overflow_dropped(), 1, "the signal was not refused");
+    // The signal is handled (it may end the episode: the queue can go idle, which restarts the
+    // drop count), but it is never reported as refused.
+    assert_eq!(
+        h.overflows.len(),
+        1,
+        "the signal was not refused: {:?}",
+        h.overflows
+    );
 }
 
 /// The episode ends when the queue goes idle: the next overflow is `first` again (the user is told

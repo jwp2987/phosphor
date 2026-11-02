@@ -18247,8 +18247,10 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
             });
         });
         terminal.update(&mut app, |view, ctx| {
-            // A registered session: without one the submit has nowhere to go.
+            // A registered session whose first Precmd was processed: without it the submit has
+            // nowhere to go (the shell refuses a command until its history is appendable, #1332).
             register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
             view.input.update(ctx, |input, _| {
                 input.arm_ssh_handover_enter_guard("echo old".into())
             });
@@ -22360,7 +22362,9 @@ fn an_ssh_gate_drop_under_a_busy_queue_is_not_lost() {
                 let queue = view.paste_queue.queue.clone();
                 assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
                 {
-                    let _peek = queue.peek();
+                    // Busy the way a delivery makes it: the queue is locked (draining), so
+                    // neither a peek nor a lock is available to the hold.
+                    let _busy = queue.try_lock().expect("the queue is free");
                     if hand_back {
                         view.ssh_hold_hand_back_unexecuted_text(ctx);
                     } else {
@@ -22842,11 +22846,16 @@ fn key_path_helpers_do_not_wait_for_the_parser() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
+            let expected_box;
             {
-                // Application cursor keys set, and published, before the parse begins.
+                // A running full-screen program turned application cursor keys on (a prompt's
+                // mode lands in the header grid, which the key facts do not read); published
+                // before the parse begins.
                 let mut model = view.model.lock();
+                model.simulate_long_running_block("vim", "");
                 ansi::Handler::set_mode(&mut *model, ansi::Mode::CursorKeys);
                 model.publish_key_facts();
+                expected_box = view.is_input_box_visible(&model, ctx);
             }
             let model = view.model.clone();
             let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
@@ -22896,7 +22905,10 @@ fn key_path_helpers_do_not_wait_for_the_parser() {
                 b"\x1bOA".to_vec(),
                 "application cursor mode came from the published snapshot"
             );
-            assert!(box_visible, "an idle prompt shows the input box");
+            assert_eq!(
+                box_visible, expected_box,
+                "the input box answer came from the published snapshot"
+            );
 
             // The parse is over: the wakeup applies what the keys left, and nothing is left.
             view.flush_deferred_scroll_updates(ctx);
@@ -23026,28 +23038,34 @@ fn synced_input_is_held_not_written_into_an_open_hand_over_gate() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let seen = record_pty_door_events(&mut app, &terminal);
+        // The view's events reach the recorder when the update returns: each step is its own
+        // update and the event assertions read after it.
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             view.model.lock().simulate_long_running_block("claude", "");
             // Control: no gate, the synced bytes are written and the echo guard is consumed.
             view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
             assert_eq!(
-                *seen.borrow(),
-                vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
-                "synced input reaches a pane running a command"
-            );
-            assert_eq!(
                 view.synced_in_flight, 0,
                 "synced bytes are not reported back as typed (that would echo between panes)"
             );
-            seen.borrow_mut().clear();
+        });
+        assert_eq!(
+            *seen.borrow(),
+            vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
+            "synced input reaches a pane running a command"
+        );
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
             announce_powershell_setup(view);
             view.write_to_pty_for_syncing_long_running_commands(b"cd".to_vec(), ctx);
-            assert!(
-                seen.borrow().is_empty(),
-                "nothing synced is written while a PowerShell setup is open: {:?}",
-                seen.borrow()
-            );
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "nothing synced is written while a PowerShell setup is open: {:?}",
+            seen.borrow()
+        );
+        terminal.update(&mut app, |view, _| {
             assert_eq!(
                 powershell_held(view),
                 vec![b"cd".to_vec()],
@@ -23065,18 +23083,22 @@ fn agent_pty_writes_are_refused_during_a_subshell_setup() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let seen = record_pty_door_events(&mut app, &terminal);
+        // The view's events reach the recorder when the update returns, so each step is its own
+        // update and the assertions read after it.
         terminal.update(&mut app, |view, ctx| {
             view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
-            assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
-            seen.borrow_mut().clear();
+        });
+        assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
             announce_powershell_setup(view);
             view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
-            assert!(
-                seen.borrow().is_empty(),
-                "refused while the setup owns the pty: {:?}",
-                seen.borrow()
-            );
         });
+        assert!(
+            seen.borrow().is_empty(),
+            "refused while the setup owns the pty: {:?}",
+            seen.borrow()
+        );
     })
 }
 
@@ -23183,7 +23205,7 @@ fn programmatic_insert_waits_for_a_waiting_enter() {
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
             view.input.update(ctx, |input, ctx| {
-                input.open_submitted_enter_gate_for_test(Vec::new(), false, ctx);
+                input.open_waiting_enter_gate_for_test(ctx);
                 assert!(input.enter_queue_holds_keys(ctx));
                 assert!(input.system_insert("echo hi", ctx));
                 assert_eq!(
@@ -23238,7 +23260,7 @@ fn programmatic_submits_wait_for_a_waiting_enter() {
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
             view.input.update(ctx, |input, ctx| {
-                input.open_submitted_enter_gate_for_test(Vec::new(), false, ctx);
+                input.open_waiting_enter_gate_for_test(ctx);
                 input.accept_history_text_and_submit("ls -la", ctx);
                 input.resubmit_locked_to_shell("pwd", ctx);
                 input.send_text_to_agent("explain", ctx);
