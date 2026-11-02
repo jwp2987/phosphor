@@ -26,7 +26,7 @@
 use std::borrow::Cow;
 
 use instant::Instant;
-use warpui::ViewContext;
+use warpui::{TypedActionView as _, ViewContext};
 
 use super::paste_queue::signal_bytes;
 use super::ssh_typeahead::HeldInput;
