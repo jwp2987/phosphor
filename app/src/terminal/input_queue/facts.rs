@@ -559,3 +559,8 @@ mod tests {
         );
     }
 }
+
+// Enumerated totality of `table::decide` (#1531 review item 3).
+#[cfg(test)]
+#[path = "table_enum_tests.rs"]
+mod table_enum_tests;

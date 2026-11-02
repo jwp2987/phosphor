@@ -736,7 +736,10 @@ integration-linux-pwsh:
 # ---------------------------------------------------------------------------
 
 # shuttle (random schedules) and loom (every schedule) interleaving tests of the clipboard
-# primitives and the key-path cells. `--cfg shuttle` / `--cfg loom` rebuild every crate, so
+# primitives, the key-path cells and the input pipeline (pane queue drain vs the deferred mailbox,
+# the ssh hand-over, the hand-off holds, the stamp-then-decide gen order: #1512, #1531; they live in
+# `app/src/terminal/model/pipeline_model_tests.rs`, whose module name ends in `model_tests` so the
+# filter below selects them). `--cfg shuttle` / `--cfg loom` rebuild every crate, so
 # each gets its own agent-cargo target dir; RUSTFLAGS replaces .cargo/config.toml's flags, which
 # only matters for linking on macOS. The `model_tests::` filter selects the model tests (the
 # rest of the suite uses real primitives outside a model).
@@ -771,7 +774,7 @@ fuzz-smoke:
     # The fuzz crate has its own lockfile; start from the app's so versions match.
     - cp Cargo.lock fuzz/Cargo.lock
     - |
-      for target in ansi_parser hook_parsers input_queue markdown_parser mermaid_render; do
+      for target in ansi_parser hook_parsers input_queue key_facts_cell markdown_parser mermaid_render route_decide typeahead_handoff; do
         ./script/agent-cargo ci-fuzz fuzz run --fuzz-dir fuzz "$target" -- -max_total_time="$FUZZ_SECONDS" -timeout=20
       done
   artifacts:

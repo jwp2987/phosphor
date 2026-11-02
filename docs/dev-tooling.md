@@ -84,6 +84,9 @@ cargo test -p warp --test real_shell_markers
 | `markdown_parser` | the markdown reader (full parse, raw text, inline, streamed tail == full parse), GFM tables on/off; seeds = `crates/markdown_parser/tests/fixtures` |
 | `mermaid_render` | `mermaid_to_svg::render_mermaid_to_svg` on arbitrary text: Ok is an SVG and deterministic, never a panic; seeds = `crates/editor/tests/fixtures/mermaid` |
 | `input_queue` | `Vec<Op>` (`arbitrary`) through `warp::dev_support::run_ops`: the proptest model's reference model and invariants |
+| `route_decide` | arbitrary `RouteFacts` / `Intent` / pin (read with `Unstructured`) through `table::decide`: never panics, deterministic, the table's properties hold |
+| `key_facts_cell` | operation sequences on `KeyFactsCell` / `KeyModelCell` against a reference model (gen kept by a refresh, consistent-read rule) |
+| `typeahead_handoff` | event sequences on `TypeaheadHandoff` (hooks, keys, editor commands, reports, session end): no panic, `Held` has a live hold, signals never held, holds that start/end are reported |
 
 ```
 cd fuzz
@@ -91,6 +94,9 @@ cp ../Cargo.lock Cargo.lock        # first time: reuse the app's pinned versions
 cargo +nightly fuzz run ansi_parser -- -max_total_time=120
 cargo +nightly fuzz run hook_parsers -- -max_total_time=120
 cargo +nightly fuzz run input_queue -- -max_total_time=120
+cargo +nightly fuzz run route_decide -- -max_total_time=120
+cargo +nightly fuzz run key_facts_cell -- -max_total_time=120
+cargo +nightly fuzz run typeahead_handoff -- -max_total_time=120
 ```
 
 Seed corpora are committed in `fuzz/corpus/<target>/`: the `ansi_parser` seeds are the small

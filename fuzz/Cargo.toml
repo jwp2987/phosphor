@@ -61,3 +61,24 @@ path = "fuzz_targets/mermaid_render.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "route_decide"
+path = "fuzz_targets/route_decide.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "key_facts_cell"
+path = "fuzz_targets/key_facts_cell.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "typeahead_handoff"
+path = "fuzz_targets/typeahead_handoff.rs"
+test = false
+doc = false
+bench = false
