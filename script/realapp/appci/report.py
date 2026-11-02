@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # appci/report.py: turns results.jsonl (one JSON object per case, appended as cases finish) into
-# results.json, junit.xml (GitLab test report) and summary.md. Exit 1 when any case failed.
+# results.json, junit.xml (GitLab test report) and summary.md. Exit 1 when any case failed or none was judged (#1508).
 # usage: report.py RUN_DIR [--meta key=value ...]
 import json, sys, os, time
 from xml.sax.saxutils import escape, quoteattr
@@ -92,4 +92,8 @@ if ec:
             m.append("| %s | %s | %s | %s | %s |" % (md, d.get("reference"), g, v["bad"], v["n"]))
 open(os.path.join(run, "summary.md"), "w").write("\n".join(m) + "\n")
 print("\n".join(m))
-sys.exit(1 if cnt["fail"] else 0)
+# #1508: a run that judged nothing is not a pass: zero rows, or nothing but skips, exits 1
+empty = not rows or not (cnt["pass"] or cnt["noref"] or cnt["fail"])
+if empty:
+    print("RUN JUDGED NOTHING: %d rows, no pass/fail/no-reference row (a misspelled --cases, an all-skip selection or a crash before the first case)" % len(rows))
+sys.exit(1 if (cnt["fail"] or empty) else 0)

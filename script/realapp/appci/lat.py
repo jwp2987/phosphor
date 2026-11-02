@@ -3,7 +3,7 @@
 #   * budget verdicts (owner budgets, docs/testing.md "Latency budgets"): with a reference terminal measured the same way in the same
 #     session the verdict is PASS/FAIL on OVERHEAD (Phosphor median - reference median); without one it is "no-reference" (never pass);
 #     budget_kind "absolute" (Ctrl-C <= 20 ms over the harness floor, UI work) is judged on the number itself.
-#   * regression verdicts compare the Phosphor median against the previous successful run and against baselines/<platform>.json:
+#   * regression verdicts compare the Phosphor median against the previous finished run (success or failed, #1513) and against baselines/<platform>.json:
 #     FAIL when worse by > APPCI_REGRESS_PCT (5) % AND > APPCI_REGRESS_MS (0.5) ms; WARN when worse by 2..5 % AND > 0.5 ms.
 #     A suspected regression is re-measured once; a failure is never dismissed (both measurements stay in the record), a clean
 #     re-measure downgrades it to WARN, not pass.

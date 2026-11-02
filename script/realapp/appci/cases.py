@@ -611,6 +611,18 @@ def line_evidence(ctx, want, have, t0, ctrl=None):
     return "; ".join(parts)
 
 
+MAX_FORGIVEN_LOST = 1       # #1514: Phosphor may lose at most this many lines of a burst when the reference lost lines too
+
+
+def forgiven_by_reference(n, got_lines, ctrl):
+    """A Phosphor burst failure is forgiven as an injector/OS loss only when the reference terminal lost lines in the same session AND Phosphor
+    lost no more than the reference and no more than MAX_FORGIVEN_LOST (#1514: it used to forgive ANY loss once the reference lost one)."""
+    if not ctrl or not (ctrl.get("bad", 0) > 0 or (ctrl.get("exact_bad") or 0) > 0):
+        return False
+    lost = max(0, n - got_lines)
+    return lost <= max(ctrl.get("bad", 0), 0) + (1 if (ctrl.get("exact_bad") or 0) > 0 and not ctrl.get("bad") else 0) and lost <= MAX_FORGIVEN_LOST
+
+
 def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
     Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
@@ -654,12 +666,15 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
         ctrl = attribute(gap)
         if ctrl is None:
             verdict = " (no reference terminal: lost Enter not attributable)"
-        elif ctrl["bad"] > 0 or (ctrl.get("exact_bad") or 0) > 0:
+        elif forgiven_by_reference(n, len(got), ctrl):
             r.note("%s: injector/OS lost Enter (reference too): reference %s merged/lost %d/%d lines with the same burst%s; Phosphor file has %d/%d lines" % (
                 tag, ctrl["ref"], ctrl["bad"], ctrl["n"], ev, len(got), n))
             r.metric("injector_lost_enter_" + tag, dict(reference_bad=ctrl["bad"], n=ctrl["n"], phosphor_lines=len(got)))
             ok = True
             verdict = "skip"
+        elif ctrl["bad"] > 0 or (ctrl.get("exact_bad") or 0) > 0:
+            verdict = " -- the reference also lost %d/%d lines, but Phosphor lost %d: more than the reference or more than %d (#1514), so NOT forgiven" % (
+                ctrl["bad"], ctrl["n"], max(0, n - len(got)), MAX_FORGIVEN_LOST)
         else:
             verdict = " -- the reference kept every line exactly in the same session (%d/%d lines): Phosphor-side (#1482)" % (ctrl["n"] - ctrl["bad"], ctrl["n"])
     if verdict != "skip":
@@ -1331,9 +1346,10 @@ def ref_terminal(ctx):
             import pwd
             login = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/zsh"
             if os.path.basename(login) == "bash":
-                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' -i\n" % (ctx.W, home, ctx.prof.ctl, login))
+                # its OWN rc + ctl dir (#1550, as Linux #1500): the reference logs to refctl/rec.log, never the app pane's ctl/rec.log
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' --rcfile '%s' -i\n" % (ctx.W, home, ctx.prof.refctl, login, ctx.prof.ref_rc))
             else:
-                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, ctx.prof.ref_zdot, ctx.prof.refctl))
             ctx.ref_shell = login
         os.chmod(cmdf, 0o755)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
@@ -1354,8 +1370,10 @@ def ref_terminal(ctx):
             raise ctx.be.needs_owner(d)
         time.sleep(1.5)
         ctx.be.guard_override = "Terminal"
+        ctx.prof.ref_active = True          # commands()/read() now read refctl (#1550)
 
         def close():
+            ctx.prof.ref_active = False
             # never Cmd-W/Q: `exit` ends the shell; the window itself goes when a Terminal.app this run launched is quit by exact PID at
             # the end of the run (refterm_mac), which also removes a shell whose exit was lost
             try:

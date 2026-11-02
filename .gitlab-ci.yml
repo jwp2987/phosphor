@@ -101,6 +101,8 @@ guards:
     # reported as SKIPPED, never as a pass (check_pwsh_parse itself fails when CI is set and pwsh is missing).
     - 'if command -v pwsh >/dev/null; then ./script/check_pwsh_parse; else echo "SKIPPED check_pwsh_parse: no pwsh on this runner (it runs in script/precheck)"; fi'
     - ./script/check_test_results
+    # #1522: the real-app harness's offline self-test (parsers, registries, report exit codes); pure Python, no app or display.
+    - python3 script/realapp/appci/selftest.py
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
     # branch. The commit message stands in for the PR body: it is where a

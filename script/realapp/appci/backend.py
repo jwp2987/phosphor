@@ -105,8 +105,22 @@ def focus_matches(want, got):
     return (got.get("app_id") or got.get("class") or "").lower() in want.get("names", ())
 
 
+INJECT_TIMEOUT_S = 120      # a wedged wtype/xdotool must not hang the case (#1508)
+
+
+def is_injector(argv):
+    """True for a command that injects keys: wtype, and xdotool type/key/keyup (not windowfocus etc.)"""
+    return bool(argv) and (argv[0] == "wtype" or (argv[0] == "xdotool" and len(argv) > 1 and argv[1] in ("type", "key", "keyup")))
+
+
 def _run(argv, **kw):
-    return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+    inj = is_injector(argv)
+    if inj:
+        kw.setdefault("timeout", INJECT_TIMEOUT_S)
+    r = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+    if inj and r.returncode != 0:      # was discarded: a failed injection made the case judge keys that were never typed (#1508)
+        raise RuntimeError("key injector failed: %s exit %d" % (argv[0], r.returncode))
+    return r
 
 
 class WaylandBackend(Backend):

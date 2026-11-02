@@ -23,6 +23,33 @@ def skip_status(r, why):
     return "skip"
 
 
+def unknown_case_names(requested, registry_names):
+    """names in a comma list (--cases / --skip) that no registered case has (#1508: a misspelling used to select nothing and exit 0)"""
+    return [n for n in (requested or "").split(",") if n and n not in registry_names]
+
+
+class CaseTimeout(Exception):
+    pass
+
+
+def arm_case_timeout(seconds):
+    """per-case wall-clock limit (POSIX SIGALRM; a hung case used to run to the 90 min job timeout with nothing written, #1508).
+    Returns a disarm function. No-op where SIGALRM does not exist (Windows)."""
+    import signal
+    if not hasattr(signal, "SIGALRM") or seconds <= 0:
+        return lambda: None
+
+    def boom(*_):
+        raise CaseTimeout("case exceeded the %ds per-case limit (APPCI_CASE_TIMEOUT)" % seconds)
+    old = signal.signal(signal.SIGALRM, boom)
+    signal.alarm(int(seconds))
+
+    def disarm():
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    return disarm
+
+
 def self_test():
     """`run.py --self-test`: harness-level checks that need no app, display or backend."""
     r = cases.Result("t", "terminal")
@@ -84,6 +111,9 @@ def self_test():
             assert (not o["ref"]) == (mode == "agent") and (len(o["ft_gaps"]) == 1) == (mode == "agent")
     assert winmap.tier_plan("windows", None, "agent", "gitbash", smoke)[0] is None and winmap.tier_plan("windows", "full", "agent", "gitbash", smoke)[1]["ref"]
     print("fix-tier cases that run per pass (smoke):", {"%s/%s" % k: v for k, v in n.items()})
+    import selftest      # #1522: the offline parser / registry checks
+    if selftest.main():
+        return 1
     print("self-test ok")
     return 0
 
@@ -141,9 +171,12 @@ def main():
     elif not os.path.exists(os.environ["APPCI_PREV_RESULTS"]):
         print("[latency] APPCI_PREV_RESULTS=%s does not exist: no previous-build comparison" % os.environ["APPCI_PREV_RESULTS"], flush=True)
 
+    emitted = set()          # (label, case name) of every row emitted: a selected case with no row never ran (#1508)
+
     def emit(row):
         with open(resf, "a") as f:
             f.write(json.dumps(row) + "\n")
+        emitted.add((row["mode"], row["name"]))
         print("[%s] %-24s %s %s" % (row["mode"], row["name"], row["status"].upper(), "; ".join(row["detail"])[:200]), flush=True)
 
     be = None if sim else backend.make(a.backend)
@@ -156,9 +189,17 @@ def main():
     explicit_cases = bool(a.cases)
     if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
         a.cases = ",".join(cases.SMOKE)
+    reg = {c["name"] for c in cases.CASES}
+    bad_names = unknown_case_names(a.cases, reg) + unknown_case_names(a.skip, reg)
+    if bad_names:       # #1508: an unknown name is an error, never an empty (green) selection
+        for m in a.modes.split(","):
+            emit(dict(name="case_selection", mode=m, status="fail", seconds=0, detail=["unknown case name(s) %s (not in the registry: renamed or misspelled?)" % ", ".join(bad_names)]))
+        return finish(run, a, 2)
     sel = [c for c in cases.CASES if (not a.cases or c["name"] in a.cases.split(",")) and c["name"] not in a.skip.split(",")]
     sel.sort(key=lambda c: c["order"])
     exit_fail = False
+    crashed_exit = None
+    case_timeout = float(os.environ.get("APPCI_CASE_TIMEOUT", "1500"))
     passes = [(m, p) for m in a.modes.split(",") for p in panes]
     for mode, pane in passes:
         # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)
@@ -248,6 +289,7 @@ def main():
                 t0 = time.time()
                 ctx.t_case0 = t0
                 status = "pass"
+                disarm = arm_case_timeout(case_timeout)
                 try:
                     if sim and c["gui"]:
                         raise cases.Skip("needs a GUI backend")
@@ -265,6 +307,8 @@ def main():
                     status = "fail"
                     r.fails.append("harness exception: %r" % e)
                     traceback.print_exc()
+                finally:
+                    disarm()
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
@@ -364,6 +408,14 @@ def main():
                 app.stop()
             sshd.stop(ssh_info)
             return finish(run, a, 3)
+        except (Exception, SystemExit) as e:
+            # prof.build / app.start / be.calibrate / a relaunch raising used to abort with no results.json (#1508): a visible FAIL row, the
+            # remaining passes still run (a cancelled job, SystemExit, ends the loop after its row)
+            traceback.print_exc()
+            emit(dict(name="harness_crash", mode=label, status="fail", seconds=0, detail=["the %s pass crashed outside a case: %r" % (label, e)]))
+            exit_fail = True
+            if isinstance(e, SystemExit):
+                crashed_exit = e.code if e.code is not None else 143
         finally:
             if app:
                 app.stop()
@@ -387,6 +439,17 @@ def main():
                     open(os.path.join(logs, dst), "w").write(t)
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
+        if crashed_exit is not None:
+            break
+        if not win and not exit_fail:
+            # #1508: every selected case that applies to this mode must have a row (pass, fail or skip), else the run did less than asked
+            missing = [c["name"] for c in sel if mode in c["modes"] and (label, c["name"]) not in emitted]
+            if missing:
+                emit(dict(name="cases_not_run", mode=label, status="fail", seconds=0, detail=["selected case(s) produced no row: %s" % ", ".join(missing[:12])]))
+                exit_fail = True
+    if crashed_exit is not None:
+        finish(run, a, 143)
+        raise SystemExit(crashed_exit)
     return finish(run, a, 1 if exit_fail else 0)
 
 

@@ -513,6 +513,7 @@ def main():
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     network_jobs(jobs, wait, timeline)
+    check_app_results(jobs, timeline)
     summary(timeline, t_start)
     collect_hint(pid, a.collect)
     return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
@@ -564,6 +565,33 @@ def classify_network_job(job_id):
     if FINDING_RX.search(trace):
         return "failed"
     return NETWORK_FAIL if NETWORK_RX.search(trace) else "failed"
+
+
+APP_RESULT_DIR = {"app-test-linux-wayland": "wayland", "app-test-linux-x11": "x11", "app-test-macos": "macos", "app-test-windows": "windows"}
+
+
+def judged_nothing(doc):
+    """#1508: True when an app run's results.json judged no case: no rows, or nothing but skips (the app jobs are allow_failure, so a green
+    job with an empty run must still be a FAIL here). doc = parsed results.json."""
+    s = (doc or {}).get("summary") or {}
+    return not (s.get("pass") or s.get("fail") or s.get("noref"))
+
+
+def check_app_results(jobs, timeline):
+    """Second line of defence behind run.py's own non-zero exit: a successful app job whose results.json judged nothing becomes a failure."""
+    for n, d in APP_RESULT_DIR.items():
+        j = jobs().get(n)
+        if not j or timeline.get(n, ("",))[0] != "success" or not j.get("id"):
+            continue
+        r = subprocess.run(["glab", "api", "projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d)], capture_output=True, text=True)
+        try:
+            doc = json.loads(r.stdout)
+        except ValueError:
+            print("%s: results.json unreadable (%s): cannot confirm the run judged anything" % (n, d), flush=True)
+            continue
+        if judged_nothing(doc):
+            timeline[n] = ("success but its run judged NOTHING", timeline[n][1])
+            print("%s: green job, but results.json has no pass/fail row: FAIL (#1508)" % n, flush=True)
 
 
 def verdict(name, status):
