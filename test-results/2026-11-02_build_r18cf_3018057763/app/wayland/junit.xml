@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="27" failures="6" skipped="2">
+<testcase classname="terminal" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.80">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="54.70">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="17.40">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="99.80">
+<failure message="Ctrl-C: 39.48 ms over the harness floor exceeds the 20 ms budget">Ctrl-C: 39.48 ms over the harness floor exceeds the 20 ms budget</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="20.40">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="31.00">
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="13.80">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 213 input_">only 0 key-&gt;frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 213 input_order keydown lines (213 with ctrl=false) and 16 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.70">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="99.30">
+<failure message="nu: 12 typed lines: expected ['t148_x2qddukigh', 't149_pn66zhny7i', 't150_ahmy48orck', 't151_0r0zr5gil9', 't152_3c5nz8vpge', 't153_12ml6m6y7x', 't154_oxevd3cljs', 't155_c6ezfz6tzr', 't156_4d94b1tuj9',">nu: 12 typed lines: expected ['t148_x2qddukigh', 't149_pn66zhny7i', 't150_ahmy48orck', 't151_0r0zr5gil9', 't152_3c5nz8vpge', 't153_12ml6m6y7x', 't154_oxevd3cljs', 't155_c6ezfz6tzr', 't156_4d94b1tuj9', 't157_ex0z7bhc7a', 't158_vvx9cxe5f8', 't159_v68akuxnjj'], got ['t148_x2qddukight149_pn66zhny7it150_ahmy48orckt151_0r0zr5gil9t152_3c5nz8vpget153_12ml6m6y7xt154_oxevd3cljst155_c6ezfz6tzrt156_4d94b1tuj9t157_ex0z7bhc7at158_vvx9cxe5f8t159_v68akuxnjj']
+nu: pasted lines + instant Enter: expected ['t160_zu60xvqxce', 't161_pqz9sfekr0', 't162_fis9qpngr4', 't163_d6tn8e9uvs'], got ['t160_zu60xvqxcet161_pqz9sfekr0t162_fis9qpngr4t163_d6tn8e9uvs']
+nu: nested nu, exit to the outer nu, next line: expected ['t164_7ic2xcbu', 't165_0k9c71lm', 't166_ohi6hr3m'], got ['t164_7ic2xcbut165_0k9c71lmt166_ohi6hr3m']
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.40">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.10">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="56.70">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="17.20">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="99.50">
+<failure message="Ctrl-C: 39.34 ms over the harness floor exceeds the 20 ms budget">Ctrl-C: 39.34 ms over the harness floor exceeds the 20 ms budget</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="19.80">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="31.00">
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="14.10">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 6553 input">only 0 key-&gt;frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 6553 input_order keydown lines (6551 with ctrl=false) and 449 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="30.40">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="98.70">
+<failure message="nu: 12 typed lines: expected ['t112_iiqof8dlho', 't113_6t1uabtofo', 't114_vr7ybhvwih', 't115_jcwefgtupr', 't116_xbfizxpgvr', 't117_6uhwirzf74', 't118_8ztot9id6h', 't119_pn1r8bq8r7', 't120_4izgxe8x89',">nu: 12 typed lines: expected ['t112_iiqof8dlho', 't113_6t1uabtofo', 't114_vr7ybhvwih', 't115_jcwefgtupr', 't116_xbfizxpgvr', 't117_6uhwirzf74', 't118_8ztot9id6h', 't119_pn1r8bq8r7', 't120_4izgxe8x89', 't121_t2ijejn4vx', 't122_kjy2zhjrsa', 't123_iy9g3b11rx'], got ['t112_iiqof8dlhot113_6t1uabtofot114_vr7ybhvwiht115_jcwefgtuprt116_xbfizxpgvrt117_6uhwirzf74t118_8ztot9id6ht119_pn1r8bq8r7t120_4izgxe8x89t121_t2ijejn4vxt122_kjy2zhjrsat123_iy9g3b11rx']
+nu: pasted lines + instant Enter: expected ['t124_z3dg4cachi', 't125_76w9rw4ppg', 't126_9wkhcu1wqd', 't127_10ywsv2p7j'], got ['t124_z3dg4cachit125_76w9rw4ppgt126_9wkhcu1wqdt127_10ywsv2p7j']
+nu: nested nu, exit to the outer nu, next line: expected ['t128_dvh6l85v', 't129_hb4nylzo', 't130_gpvvp34x'], got ['t128_dvh6l85vt129_hb4nylzot130_gpvvp34x']
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.40">
+</testcase>
+</testsuite>
