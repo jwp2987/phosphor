@@ -1002,20 +1002,34 @@ comparison.
 - After a fix: a test that fails on the old code (Warp-mirrored where one exists), a kill switch for risky changes, then
   verify on a real build and post a pass/fail note with numbers on the issue; do not close it yourself.
 
-## 7. Known gaps (no automated coverage today)
+## 7. Known gaps
 
-- The real-app layer is entirely manual/agent-driven; none of `script/realapp/` runs in CI, and the Mac typing tool
-  (`htype2`) and Linux `kseq`/`rec` binaries are not built by any job.
-- No automated key-latency regression gate on any platform (keylat is manual, not built by CI).
-- `integration-linux` has no required-status gate in CI (it is a hard gate only in `precheck`); macOS and Windows have no
-  nextest job (only `cargo check` and, for the Mac, `usage-test --surface tui`).
-- Wayland input is untested; X11 only. GPU-backed rendering is untested on CI (llvmpipe only).
-- The release pipeline has never run end to end; Windows and macOS Intel/Linux aarch64 are partial or dropped.
-- `check_workspace_clean` is not wired anywhere.
-- Windows and Mac real shells beyond what `real_shells` covers (nushell, pwsh 7, Windows PowerShell 5.1) are covered only by the
-  bootstrap equivalence scripts, which skip when the shell is absent.
-- Authenticated ssh from the Windows VM, and agent-mode tests against a cloud provider, are not covered.
-- The "being added" tools in 2.7 are unverified until merged.
+What is automated today (details in 2.8 and 2.9): the real-app layer runs in CI through ONE Python harness
+(`script/realapp/appci/run.py`) on Linux (`app-test-linux-wayland`, `app-test-linux-x11`), macOS (`app-test-macos`) and Windows
+(`app-test-windows`), each in both session modes, plus a `-reuse` twin of each (`app-test-*-reuse`) that tests an earlier
+app-identical build. They are manual jobs played by `script/ci/ci_seq.py` in the fix (smoke), candidate and release (full) tiers.
+Latency is judged on overhead over a reference terminal in the same session (foot/xterm, Terminal.app, conhost/Windows Terminal), and
+`key_loss_control` is kept as a permanent control. On the Mac `ktap` + `enter_route.py` record where every Return went (#1482); the
+Mac injection and latency tools (`htype2`, `kl3`, `ktap`, ...) are compiled from `script/realapp/mac/tools/*.swift` at job start.
+
+Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp/`):
+
+- Every `app-test-*` and heavy job is `when: manual`; nothing runs the real-app layer on a plain push or on a schedule, so a
+  regression is found only when someone plays a tier. The Linux `kseq`/`rec` torture tools (`script/realapp/linux/torture/`) are
+  built by hand and by no CI job.
+- `latency_paint` (key to paint) needs read-back and is skipped on Linux and Windows (Mac only, via `kl3`). The latency budgets
+  are judged on overhead over the reference; when no reference can be measured the verdict is `NO-REFERENCE`, not pass.
+- `integration-linux` is manual and `allow_failure: true` in CI (a hard gate only in `precheck`); macOS and Windows have no
+  nextest job (`check-macos`/`check-windows` are `cargo check`; the Mac also runs `usage-test-macos`).
+- Wayland input is tested with a headless sway only (X11 and XWayland as reduced passes); GPU-backed rendering is untested on CI
+  (llvmpipe/pixman only, or the box's render node).
+- The release pipeline has never run end to end; macOS Intel and Linux aarch64 are partial or dropped.
+- `check_workspace_clean` is deliberately not wired anywhere (see the comment in `script/precheck`).
+- Windows and Mac shells beyond those the harness drives (bash, zsh, fish, nushell, pwsh 7, Windows PowerShell 5.1) are covered
+  only by the bootstrap equivalence scripts, which skip when the shell is absent.
+- Authenticated ssh from the Windows VM (the harness uses `fakesshd_win.py`), and agent-mode tests against a cloud provider, are
+  not covered.
+- Durations of the Linux build, app tests (smoke and full), shuttle/loom, fuzz, bench and mutants are not timed yet (2.9).
 
 ## 8. Test results history
 
