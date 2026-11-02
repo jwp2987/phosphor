@@ -441,8 +441,6 @@ app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::ToServ
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::Space
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::update_manager::UpdateManager
-app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
-app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/integration_testing/notebook/assertion.rs crate::server::ids::SyncId
 app/src/integration_testing/notebook/step.rs crate::cloud_object::Space
 app/src/integration_testing/notebook/step.rs crate::cloud_object::StoredObjectEventEntrypoint
@@ -601,7 +599,6 @@ app/src/persistence/mod.rs crate::cloud_object::StoredObject
 app/src/persistence/mod.rs crate::cloud_object::StoredObjectMetadata
 app/src/persistence/mod.rs crate::cloud_object::model::actions::ObjectAction
 app/src/persistence/mod.rs crate::cloud_object::model::generic_string_model::StoredStringObject
-app/src/persistence/mod.rs crate::server::experiments::ServerExperiment
 app/src/persistence/mod.rs crate::server::ids::SyncId
 app/src/persistence/sqlite.rs crate::cloud_object::GENERIC_STRING_OBJECT_PREFIX
 app/src/persistence/sqlite.rs crate::cloud_object::JSON_OBJECT_PREFIX
@@ -620,7 +617,6 @@ app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectAction
 app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectActionSubtype
 app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
 app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::StoredStringObject
-app/src/persistence/sqlite.rs crate::server::experiments::ServerExperiment
 app/src/persistence/sqlite.rs crate::server::ids::ClientId
 app/src/persistence/sqlite.rs crate::server::ids::HashableId
 app/src/persistence/sqlite.rs crate::server::ids::ServerId
