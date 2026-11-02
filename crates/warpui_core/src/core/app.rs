@@ -2152,6 +2152,7 @@ impl AppContext {
     ///
     /// This will return all editable bindings, regardless of whether or not they have
     /// associated key bindings
+    #[cfg(test)]
     pub fn editable_bindings_for_view(
         &self,
         window_id: WindowId,
@@ -2753,6 +2754,7 @@ impl AppContext {
         self.platform_delegate.clipboard()
     }
 
+    #[cfg(test)]
     pub fn set_last_mouse_move_event(&mut self, window_id: WindowId, event: Event) {
         match event {
             Event::MouseMoved { .. } => {

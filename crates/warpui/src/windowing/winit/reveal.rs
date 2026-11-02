@@ -68,6 +68,7 @@ pub(super) fn file_manager_uri(path: &Path) -> Option<String> {
 }
 
 /// The single raw argument for `explorer.exe`: `/select,"<path>"` with backslash separators.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn explorer_select_arg(path: &Path) -> OsString {
     let mut arg = OsString::from("/select,\"");
     let lossy = path.to_string_lossy().replace('/', "\\");

@@ -54,7 +54,6 @@ pub fn is_mobile_device() -> bool {
 
 /// A trait for accessing internal per-platform concrete implementations
 /// through a wrapper type.
-#[allow(dead_code)]
 trait AsInnerMut<Inner: ?Sized> {
     fn as_inner_mut(&mut self) -> &mut Inner;
 }

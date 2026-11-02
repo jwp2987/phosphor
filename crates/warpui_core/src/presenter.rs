@@ -451,6 +451,7 @@ impl Presenter {
     }
 
     /// Whether the last layout pass visited `view_id`. See issue #805.
+    #[cfg(test)]
     pub(crate) fn is_view_mounted(&self, view_id: EntityId) -> bool {
         self.mounted_views.contains(&view_id)
     }
