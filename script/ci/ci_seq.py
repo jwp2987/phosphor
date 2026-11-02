@@ -236,6 +236,8 @@ def main():
     ap.add_argument("--tests", default="")
     ap.add_argument("--base", default="")
     ap.add_argument("--skip", nargs="*", default=[])
+    ap.add_argument("--reuse-job", action="append", default=[], metavar="PLATFORM=JOB_ID",
+                    help="harness-only rounds: test this earlier build job of PLATFORM even though the app changed since (recorded as reused)")
     ap.add_argument("--no-reuse", action="store_true", help="fix tier: always build, never reuse an earlier app-identical build")
     ap.add_argument("--collect", action="store_true", help="at the end run script/ci/collect_results.py for this pipeline (writes test-results/; you commit it)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
@@ -268,7 +270,16 @@ def main():
         else:
             head = sh("git", "rev-parse", gitref(ref) + "^{commit}", check=True)
             cur = (api("projects/%s/pipelines?ref=%s&per_page=1" % (PROJECT, ref.replace("/", "%2F"))) or [{}])[0].get("id")
+            forced = dict(x.split("=", 1) for x in a.reuse_job)
             for p in plats:
+                if p in forced:
+                    jb = api("projects/%s/jobs/%s" % (PROJECT, forced[p])) or {}
+                    if jb.get("name") != BUILD[p] or jb.get("status") != "success":
+                        print("%s: --reuse-job %s is not a successful %s (got %r/%r)" % (p, forced[p], BUILD[p], jb.get("name"), jb.get("status"))); return 2
+                    print("%s: FORCED reuse of build job %s (pipeline %s, commit %s): the app may differ from this ref; harness-only round" % (
+                        p, jb["id"], jb["pipeline"]["id"], jb["commit"]["id"][:10]), flush=True)
+                    reuse[p] = {"job": jb["id"], "pipeline": jb["pipeline"]["id"], "sha": jb["commit"]["id"], "ref": jb.get("ref", "")}
+                    continue
                 # a skipped build job still allows reuse: --skip build-* means "never build", not "never test"
                 msg, r = find_reusable(p, head, cur)
                 print(msg, flush=True)

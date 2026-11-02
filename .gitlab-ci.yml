@@ -944,6 +944,8 @@ app-test-windows:
   script:
     - .\script\realapp\windows\ci\app_test.ps1 -Dist dist -Out appci-out\windows
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  after_script:
+    - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
   artifacts:
     name: appci-windows
     when: always
@@ -1003,6 +1005,7 @@ app-test-windows-reuse:
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   after_script:
     - .\script\ci\fetch_build.ps1 -Record
+    - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).
