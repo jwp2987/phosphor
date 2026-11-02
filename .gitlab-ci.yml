@@ -858,8 +858,8 @@ usage-test-macos:
     reports:
       junit: appci-out/*/run/junit.xml
 
-# APPCI_TIER (play-time variable from ci_seq.py): smoke = the input-path subset (appci/cases.py SMOKE; Windows: fast_typing, paste_instant_enter,
-# ctrl_c, latency_enter), wayland only on Linux; full or empty = every case, as before.
+# APPCI_TIER (play-time variable from ci_seq.py): smoke = the input-path subset (appci/cases.py SMOKE, ONE list for Linux, macOS and Windows; a case a
+# platform / Windows pane shell cannot run is reported as a SKIP with its reason), wayland only on Linux; full or empty = every case, as before.
 # Headless sway on the box GPU (Intel UHD 630, /dev/dri/renderD128; pixman fallback), native Wayland client; then the
 # same build once more under XWayland for X11 parity (reduced case set).
 app-test-linux-wayland:
@@ -953,6 +953,7 @@ app-test-windows:
       - appci-out/windows/run/summary.md
       - appci-out/windows/run/junit.xml
       - appci-out/windows/run/shots/
+      - appci-out/windows/run/logs/
       - appci-out/windows/install.log
       - appci-out/reused_build.json
     reports:
