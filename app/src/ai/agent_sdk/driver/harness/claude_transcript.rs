@@ -93,6 +93,7 @@ pub(super) fn home_dir_for_claude_config() -> Option<PathBuf> {
 ///
 /// If the main JSONL does not exist yet (e.g. during an early periodic save)
 /// the envelope is returned with an empty `entries` list rather than an error.
+#[cfg(test)]
 pub(crate) fn read_envelope(
     session_uuid: Uuid,
     cwd: &Path,
@@ -218,6 +219,7 @@ pub(crate) fn write_envelope(
 }
 
 /// Filename of Claude's global session index.
+#[cfg(test)]
 const SESSIONS_INDEX_FILENAME: &str = "sessions-index.json";
 
 /// Upsert an entry for `session_uuid` into `<config_root>/sessions-index.json` so Claude's`
@@ -231,6 +233,7 @@ const SESSIONS_INDEX_FILENAME: &str = "sessions-index.json";
 /// Best-effort: callers should log a warning on failure rather than aborting the run — if the
 /// index is missing or wrong, `--resume` simply falls back to "No conversation found" and the
 /// resumed run surfaces the expected resume-failure error.
+#[cfg(test)]
 pub(crate) fn write_session_index_entry(
     session_uuid: Uuid,
     cwd: &Path,
