@@ -3521,6 +3521,10 @@ pub struct TerminalView {
     /// converted to `pending_cloud_cli_login: Option<CloudProvider>` where CloudProvider
     /// is an enum with variants like Aws, Gcp, Azure.
     is_pending_aws_login: bool,
+    /// The AWS login command that was requested and has not started yet (#1450): it becomes
+    /// `is_pending_aws_login` only when that command is what starts, so a 'command not found'
+    /// from a program running meanwhile is not taken for the login's.
+    aws_login_requested: Option<String>,
     /// Bytes of input synced from another pane (#1430) that were accepted for this pty and have
     /// not yet reached the point where a typed key is reported to the other synced panes. The
     /// report is skipped for exactly these bytes, or two synced panes would echo them to each
@@ -5138,6 +5142,7 @@ impl TerminalView {
             ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
+            aws_login_requested: None,
             synced_in_flight: 0,
             manual_pty_shutdown_requested: false,
             pane_stack: None,
@@ -15413,9 +15418,10 @@ impl TerminalView {
             return;
         }
 
-        // Track that we're running an AWS login command so we can detect
-        // "command not found" if AWS CLI isn't installed
-        self.is_pending_aws_login = true;
+        // Track the AWS login command so we can detect "command not found" if AWS CLI isn't
+        // installed. Only once it starts (#1450): it may wait as the pending command behind a
+        // running program.
+        self.aws_login_requested = Some(login_command.clone());
 
         // Run it as a command, not as raw bytes (#1429): written raw (line clear + text + CR) it
         // ran in whatever owned the pty -- a program, an ssh connect, a subshell bootstrap, a
@@ -21770,6 +21776,9 @@ impl TerminalView {
     /// Executes a command that was submitted by the user and not yet sent to the shell.
     pub fn execute_pending_command(&mut self, _: (), ctx: &mut ViewContext<Self>) {
         let had_pending = self.input.read(ctx, |input, _| input.has_pending_command());
+        let pending_text = self
+            .input
+            .read(ctx, |input, _| input.pending_command_text().map(str::to_owned));
         self.input.update(ctx, |input, ctx| {
             input.execute_pending_command(ctx);
         });
@@ -21777,6 +21786,12 @@ impl TerminalView {
         // for the resulting block to complete.
         if had_pending && !self.input.read(ctx, |input, _| input.has_pending_command()) {
             self.awaiting_pending_command_completion = true;
+            // #1450: the pending command started. If it is the AWS login, its block is the one
+            // whose 'command not found' means the CLI is missing; if another pending command
+            // replaced the login, the request is stale.
+            if let Some(requested) = self.aws_login_requested.take() {
+                self.is_pending_aws_login = pending_text.as_deref() == Some(requested.as_str());
+            }
         }
     }
 

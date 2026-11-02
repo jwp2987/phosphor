@@ -22922,6 +22922,10 @@ fn aws_login_is_a_command_that_waits_for_the_running_program() {
                 view.input.as_ref(ctx).has_pending_command(),
                 "the login command is held as the pending command while a program runs"
             );
+            // #1450: requested, not started: a 'command not found' from the running program
+            // must not be taken for the login's.
+            assert!(!view.is_pending_aws_login);
+            assert!(view.aws_login_requested.is_some());
         });
         assert!(
             seen.borrow().is_empty(),
