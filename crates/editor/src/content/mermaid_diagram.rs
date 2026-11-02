@@ -39,6 +39,14 @@ const MAX_MERMAID_TOKEN_CHARS: usize = 1_000;
 /// outlives its budget keeps its core until it finishes; capping the live threads bounds how many
 /// cores abandoned renders can hold (#1479). Further renders fail to the source fallback.
 const MAX_CONCURRENT_RENDERS: usize = 8;
+/// The deepest block nesting (subgraphs, composite states, `block`s, loop/alt groups, indentation)
+/// and bracket nesting within one line we hand to the renderer. The parser and layout recurse per
+/// level, and a stack overflow is an abort, not a panic: neither `catch_unwind` nor the time budget
+/// can contain it (#1493). Real diagrams nest a handful of levels.
+const MAX_MERMAID_NESTING: usize = 32;
+/// Stack for the render thread: far more than the 2 MiB default, as defence in depth behind the
+/// nesting limit. Address space only; pages are committed as they are touched.
+const MERMAID_RENDER_STACK_BYTES: usize = 64 * 1024 * 1024;
 /// Live `mermaid-render` threads.
 static LIVE_RENDERS: AtomicUsize = AtomicUsize::new(0);
 
@@ -105,6 +113,12 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
             line.chars().count()
         );
     }
+    let nesting = max_nesting(source);
+    if nesting > MAX_MERMAID_NESTING {
+        anyhow::bail!(
+            "diagram is nested too deeply to render ({nesting} levels, limit {MAX_MERMAID_NESTING})"
+        );
+    }
     if let Some(token) = source
         .split_whitespace()
         .find(|token| token.chars().count() > MAX_MERMAID_TOKEN_CHARS)
@@ -117,6 +131,44 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// The deepest nesting in `source`: open block keywords (closed by `end` or `}`), leading
+/// indentation (tabs count as 4 columns, 2 columns per level), and brackets within a line.
+fn max_nesting(source: &str) -> usize {
+    const OPENERS: &str = "subgraph block loop alt opt par critical break rect box namespace";
+    let mut blocks = 0usize;
+    let mut deepest = 0usize;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let columns: usize = line[..line.len() - trimmed.len()]
+            .chars()
+            .map(|c| if c == '\t' { 4 } else { 1 })
+            .sum();
+        deepest = deepest.max(columns / 2);
+        let first = trimmed.split_whitespace().next().unwrap_or("");
+        let word = first.trim_end_matches([':', '{']);
+        let opens_block = OPENERS.split(' ').any(|o| o == word)
+            || ((word == "state" || word == "class") && trimmed.trim_end().ends_with('{'));
+        if opens_block {
+            blocks += 1;
+        } else if (first == "end" || first == "}") && blocks > 0 {
+            blocks -= 1;
+        }
+        deepest = deepest.max(blocks);
+        let mut brackets = 0usize;
+        for c in line.chars() {
+            match c {
+                '(' | '[' | '{' => {
+                    brackets += 1;
+                    deepest = deepest.max(brackets);
+                }
+                ')' | ']' | '}' => brackets = brackets.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    deepest
+}
+
 /// Renders on a worker thread so a runaway render neither blocks the caller past `timeout` nor
 /// takes the caller down with a panic. Both end as an `Err`, never a hang or a crash.
 async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Bytes> {
@@ -127,6 +179,7 @@ async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Byt
     let (tx, rx) = async_channel::bounded(1);
     std::thread::Builder::new()
         .name("mermaid-render".into())
+        .stack_size(MERMAID_RENDER_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
             let rendered = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -290,6 +343,27 @@ mod render_limit_tests {
             RenderSlot::acquire(&LIVE, 2).is_some(),
             "slot freed by drop"
         );
+    }
+
+    /// #1493: the hostile corpus's 200 nested subgraphs overflowed the render thread's stack
+    /// (SIGABRT). Deep nesting is refused before parsing and takes the source fallback.
+    #[test]
+    fn deeply_nested_subgraphs_fall_back_instead_of_overflowing_the_stack() {
+        let source = "graph TD\n".to_string()
+            + &"subgraph s\n".repeat(200)
+            + "A --> B\n"
+            + &"end\n".repeat(200);
+        let err = render(&source, MERMAID_RENDER_TIMEOUT).expect_err("200 levels must not render");
+        assert!(err.to_string().contains("nested too deeply"), "{err}");
+    }
+
+    #[test]
+    fn nesting_measure_ignores_normal_diagrams() {
+        assert!(max_nesting("graph TD\nsubgraph a\nsubgraph b\nA[(db)] --> B\nend\nend\n") <= 4);
+        let parens = format!("graph TD\nA{}x{}\n", "(".repeat(100), ")".repeat(100));
+        assert!(max_nesting(&parens) > MAX_MERMAID_NESTING);
+        assert!(max_nesting(&format!("mindmap\n{}x\n", " ".repeat(200))) > MAX_MERMAID_NESTING);
+        assert!(max_nesting("stateDiagram-v2\nstate a {\nstate b {\n}\n}\n") == 2);
     }
 
     #[test]
