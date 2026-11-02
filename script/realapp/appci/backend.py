@@ -4,6 +4,7 @@
 #           sim (a bash in a pty: no GUI, exercises the case logic only; `run.py --backend sim`).
 # Every backend exposes the same methods; keys are written as 'ctrl+shift+t', 'Return', 'Tab', 'Left', 'a'.
 # Prereqs per backend are checked by Backend.preflight(), which returns a list of problems (empty = ok).
+import re
 import json, os, shutil, subprocess, sys, time
 
 ENVNAME = {" ": "space", ">": "greater", "<": "less", "_": "underscore", "-": "minus", ".": "period",
@@ -309,12 +310,18 @@ class MacBackend(Backend):
         return p
 
     def _front(self):
-        """(name, pid) of the frontmost process"""
-        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to set p to first process whose frontmost is true\nreturn (name of p) & "|" & (unix id of p)'],
-                           capture_output=True, timeout=30)
-        o = r.stdout.decode().strip()
-        name, _, pid = o.rpartition("|")
-        return name, int(pid) if pid.isdigit() else None
+        """(name, pid) of the frontmost process. lsappinfo asks LaunchServices directly: no Apple Events, no TCC
+        prompt. (The previous AppleScript put `unix id of p` outside the System Events `tell`, a syntax error that
+        returned nothing, so the guard refused every key: first CI run, job 17650494835.)"""
+        r = subprocess.run(["lsappinfo", "front"], capture_output=True, timeout=10)
+        asn = r.stdout.decode().strip()
+        if r.returncode != 0 or not asn:
+            return "", None
+        r = subprocess.run(["lsappinfo", "info", "-only", "pid", "-only", "name", asn], capture_output=True, timeout=10)
+        o = r.stdout.decode()
+        m_pid = re.search(r'"pid"\s*=\s*(\d+)', o)
+        m_name = re.search(r'"(?:LSDisplayName|name)"\s*=\s*"([^"]*)"', o)
+        return (m_name.group(1) if m_name else ""), (int(m_pid.group(1)) if m_pid else None)
 
     def _focus_pid(self, pid):
         subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of (first process whose unix id is %d) to true' % pid],
