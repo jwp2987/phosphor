@@ -4,8 +4,6 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use settings::Setting as _;
 use std::{sync::Arc, time::Duration};
-use url::Url;
-use warp_core::context_flag::ContextFlag;
 
 use warp_editor::{
     editor::NavigationKey,
@@ -73,7 +71,6 @@ use crate::{
         telemetry::{NotebookActionEvent, NotebookTelemetryMetadata, TelemetryEvent},
     },
     settings::{
-        app_installation_detection::{UserAppInstallDetectionSettings, UserAppInstallStatus},
         decrease_notebook_font_size, increase_notebook_font_size, FontSettings,
         FontSettingsChangedEvent, NotebookFontSize,
     },
@@ -278,7 +275,6 @@ pub enum NotebookAction {
     CopyToPersonal,
     CopyToClipboard,
     CopyLink(String),
-    OpenLinkOnDesktop(Url),
     Export,
     AttachPlanAsContext(AIDocumentId),
 }
@@ -1356,25 +1352,6 @@ impl NotebookView {
             );
         }
 
-        if !warpui::platform::is_mobile_device()
-            && !ContextFlag::HideOpenOnDesktopButton.is_enabled()
-            && *UserAppInstallDetectionSettings::as_ref(ctx)
-                .user_app_installation_detected
-                .value()
-                == UserAppInstallStatus::Detected
-        {
-            if let Some(link) = self.notebook_link(ctx) {
-                if let Ok(url) = Url::parse(&link) {
-                    menu_items.push(
-                        MenuItemFields::new(crate::t!("object-menu-open-on-desktop"))
-                            .with_on_select_action(NotebookAction::OpenLinkOnDesktop(url))
-                            .with_icon(icons::Icon::Laptop)
-                            .into_item(),
-                    );
-                }
-            }
-        }
-
         // Add "Duplicate" to menu
         if active_notebook_data.space(ctx) != Some(Space::Shared) {
             menu_items.push(
@@ -2265,9 +2242,6 @@ impl TypedActionView for NotebookView {
                 object_type_and_id,
                 new_space,
             } => self.move_to_team_owner(*object_type_and_id, *new_space, ctx),
-            NotebookAction::OpenLinkOnDesktop(_) => {
-                // Handled by the web build only; a no-op on native.
-            }
             NotebookAction::Export => self.export(ctx),
             NotebookAction::AttachPlanAsContext(id) => {
                 ctx.emit(NotebookEvent::AttachPlanAsContext(*id))
