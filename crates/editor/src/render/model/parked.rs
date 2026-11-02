@@ -242,6 +242,11 @@ impl ParkedLines {
         self.0.first_line_height
     }
 
+    /// Height of the text of one line (the metrics height), without minimum-height padding.
+    pub fn text_height(&self) -> Pixels {
+        self.0.line_height
+    }
+
     /// Height of one line's content, as `BlockItem::content_height` computes it for a paragraph.
     pub fn line_content_height(&self) -> Pixels {
         let mut height = self.0.line_height;

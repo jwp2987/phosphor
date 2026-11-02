@@ -125,6 +125,7 @@ impl Describe for BlockItem {
             BlockItem::TrailingNewLine(_) => f.write_str("Trailing Newline")?,
             BlockItem::Embedded(_) => f.write_str("Embedded Item")?,
             BlockItem::Hidden { .. } => f.write_str("Hidden")?,
+            BlockItem::ParkedLines(chunk) => write!(f, "Parked Lines x{}", chunk.len())?,
         }
 
         write!(

@@ -215,6 +215,25 @@ impl<'a> Positioned<'a, BlockItem> {
                     link,
                 }
             }
+            BlockItem::ParkedLines(chunk) => {
+                // A parked chunk has no glyphs: y picks the line and x clamps to its start (what
+                // a dehydrated paragraph answers). Hit testing happens on rows that the
+                // hydration pass has already expanded, so this is a far-fallback.
+                super::hydration::report_dehydrated_lines();
+                let stride = chunk.stride().as_f32().max(f32::EPSILON);
+                let index = (((y.as_f32() - self.start_y_offset.as_f32()) / stride)
+                    .floor()
+                    .max(0.) as usize)
+                    .min(chunk.len().saturating_sub(1));
+                let line_start = self.start_char_offset + chunk.line_start(index);
+                Location::Text {
+                    char_offset: line_start,
+                    clamped: true,
+                    wrap_direction: WrapDirection::Down,
+                    block_start: line_start,
+                    link: None,
+                }
+            }
             BlockItem::HorizontalRule { .. }
             | BlockItem::Image { .. }
             | BlockItem::TrailingNewLine(_)
