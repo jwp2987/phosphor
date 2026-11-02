@@ -849,7 +849,7 @@ four are configured in Settings → Privacy.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `privacy.secret_redaction.enabled` | boolean | `false` | Master switch. Detects secrets in terminal output and obscures them, and blocks saving an MCP server config that contains one. Group `SafeModeSettings`. |
+| `privacy.secret_redaction.enabled` | boolean | `false` | Master switch. Detects secrets in terminal output and obscures them, and blocks saving an MCP server config that contains one. When on, also redacts everything sent to any configured model provider (chat, history, tool results, one-shots, embeddings; see Troubleshooting > Secret redaction). Group `SafeModeSettings`. |
 | `privacy.secret_redaction.secret_display_mode_setting` | `"asterisks"` \| `"strikethrough"` \| `"always_show"` | `"strikethrough"` | How a detected secret is drawn. `always_show` still detects and redacts it, but applies no visual treatment. Group `SafeModeSettings`. |
 | `privacy.secret_redaction.hide_secrets_in_block_list` | boolean | `false` | **Legacy.** Superseded by `secret_display_mode_setting` and kept only for backward compatibility: it is consulted *only* when the display mode is still at its `strikethrough` default, in which case `true` upgrades it to `asterisks`. Setting the display mode explicitly makes this key inert. Group `SafeModeSettings`. |
 | `privacy.custom_secret_regex_list` | array of tables | `[]` | Your own regex patterns for detecting and redacting secrets before they reach a model. Group `PrivacySettings`. |

@@ -153,6 +153,22 @@ fn build_oneshot_request(
     (chat_req, chat_opts)
 }
 
+/// #1469: the request both completion fns put on the wire: built, then redacted when secret
+/// redaction is on. Every one-shot (title, next command, explain, commit message, active AI)
+/// passes through here.
+fn build_wire_oneshot_request(
+    cfg: &OneshotConfig,
+    system: &str,
+    user: &str,
+    opts: &OneshotOptions,
+) -> (ChatRequest, ChatOptions) {
+    let (mut chat_req, chat_opts) = build_oneshot_request(cfg, system, user, opts);
+    if super::outbound_redaction::is_enabled() {
+        super::outbound_redaction::redact_chat_request(&mut chat_req);
+    }
+    (chat_req, chat_opts)
+}
+
 /// Send one BYOP non-streaming chat completion and return the model reply's plain text.
 ///
 /// Whether to swallow errors is up to the caller — this only propagates
@@ -165,7 +181,7 @@ pub async fn byop_oneshot_completion(
 ) -> anyhow::Result<String> {
     let api_key = cfg.effective_api_key().await?;
     let client = chat_stream::build_client(cfg.api_type, &cfg.base_url, api_key);
-    let (chat_req, chat_opts) = build_oneshot_request(cfg, system, user, opts);
+    let (chat_req, chat_opts) = build_wire_oneshot_request(cfg, system, user, opts);
 
     wire_capture_out(cfg, system, &chat_req, opts);
 
@@ -242,7 +258,7 @@ pub async fn byop_oneshot_streaming_completion(
 ) -> anyhow::Result<String> {
     let api_key = cfg.effective_api_key().await?;
     let client = chat_stream::build_client(cfg.api_type, &cfg.base_url, api_key);
-    let (chat_req, chat_opts) = build_oneshot_request(cfg, system, user, opts);
+    let (chat_req, chat_opts) = build_wire_oneshot_request(cfg, system, user, opts);
     wire_capture_out(cfg, system, &chat_req, opts);
     let mut resp = client
         .exec_chat_stream(&cfg.model_id, chat_req, Some(&chat_opts))
@@ -416,6 +432,26 @@ mod tests {
             extra_headers,
             pending_key: None,
         }
+    }
+
+    /// #1469: a secret in the system prompt or the user content never reaches a one-shot
+    /// request when redaction is on, and is untouched when it is off.
+    #[test]
+    #[serial_test::serial]
+    fn oneshot_requests_are_redacted_when_on_and_untouched_when_off() {
+        use super::super::outbound_redaction_tests::{Armed, SECRET};
+        let cfg = a_config(vec![]);
+        let (system, user) = (format!("sys {SECRET}"), format!("explain `curl {SECRET}`"));
+        let wire = |req: &ChatRequest| serde_json::to_string(req).unwrap();
+        {
+            let _on = Armed::on();
+            let (req, _) =
+                build_wire_oneshot_request(&cfg, &system, &user, &OneshotOptions::default());
+            assert!(!wire(&req).contains(SECRET), "{}", wire(&req));
+        }
+        let _off = Armed::off();
+        let (req, _) = build_wire_oneshot_request(&cfg, &system, &user, &OneshotOptions::default());
+        assert!(wire(&req).matches(SECRET).count() == 2);
     }
 
     // The bug this closes: `TitleGenInput`/`OneshotConfig` used to have no

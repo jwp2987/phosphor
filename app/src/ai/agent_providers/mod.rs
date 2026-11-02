@@ -23,6 +23,9 @@ pub mod llm_id;
 pub mod models_dev;
 pub mod oneshot;
 pub mod openai_compatible;
+pub mod outbound_redaction;
+#[cfg(test)]
+pub(crate) mod outbound_redaction_tests;
 pub mod prompt_renderer;
 pub mod reasoning;
 pub mod secrets;

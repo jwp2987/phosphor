@@ -2170,6 +2170,28 @@ fn build_chat_request_for_model(
     attachment_caps: attachment_caps::AttachmentCaps,
     model_limit: byop_compaction::overflow::ModelLimit,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
+    let mut req = build_chat_request_unredacted(
+        params,
+        force_echo_reasoning,
+        api_type,
+        attachment_caps,
+        model_limit,
+    )?;
+    // #1469: the one choke point for the agent chat/summarize/title stream. Everything that
+    // reaches the wire (and the diagnostic logs below) is built from this value.
+    if params.should_redact_secrets || super::outbound_redaction::is_enabled() {
+        super::outbound_redaction::redact_chat_request(&mut req);
+    }
+    Ok(req)
+}
+
+fn build_chat_request_unredacted(
+    params: &RequestParams,
+    force_echo_reasoning: bool,
+    api_type: AgentProviderApiType,
+    attachment_caps: attachment_caps::AttachmentCaps,
+    model_limit: byop_compaction::overflow::ModelLimit,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
     // #892 / #905 (cwd and git branch staleness): a user query carries a fresh context
@@ -17872,5 +17894,105 @@ mod duplicate_call_id_tests {
         let out = unique_call_ids([call("x", "1"), call("x#2", "2"), call("x", "3")]);
         let ids: HashSet<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
         assert_eq!(ids.len(), 3);
+    }
+}
+
+/// #1469: the agent chat/summarize stream redacts the whole request at its one builder.
+#[cfg(test)]
+mod outbound_redaction_chat_tests {
+    use super::*;
+    use crate::ai::agent_providers::outbound_redaction_tests::{Armed, SECRET};
+
+    fn params_with_secret_in_every_kind() -> RequestParams {
+        let history = vec![
+            make_user_query_message("task-1", "req-0", format!("earlier I pasted {SECRET}"), &[]),
+            make_tool_call_carrier_message(
+                "task-1",
+                "req-0",
+                "call-1",
+                "run_shell_command",
+                &format!("{{\"command\":\"echo {SECRET}\"}}"),
+            ),
+            make_tool_call_result_message(
+                "task-1",
+                "req-0",
+                "call-1".to_owned(),
+                format!("{{\"output\":\"{SECRET}\"}}"),
+            ),
+            make_agent_output_message("task-1", "req-0", format!("compacted summary {SECRET}")),
+        ];
+        let input = AIAgentInput::UserQuery {
+            query: format!("now use {SECRET}"),
+            context: Arc::<[AIAgentContext]>::from([AIAgentContext::SelectedText(format!(
+                "selected {SECRET}"
+            ))]),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: UserQueryMode::default(),
+            running_command: None,
+            intended_agent: None,
+        };
+        RequestParams::new_for_test(
+            vec![input],
+            vec![api::Task {
+                id: "task-1".to_owned(),
+                messages: history,
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+        )
+    }
+
+    fn wire(params: &RequestParams) -> String {
+        let req = build_chat_request_for_test(params).expect("request builds");
+        serde_json::to_string(&req).expect("serializes")
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_secret_in_any_content_kind_is_redacted_when_the_request_says_so() {
+        let _armed = Armed::on();
+        crate::ai::agent_providers::outbound_redaction::set_enabled(false);
+        let mut params = params_with_secret_in_every_kind();
+        let unredacted = wire(&params);
+        assert!(
+            unredacted.matches(SECRET).count() >= 5,
+            "fixture must carry the secret in query, selected text, call args, result and \
+             history: {unredacted}"
+        );
+        params.should_redact_secrets = true;
+        let redacted = wire(&params);
+        assert!(!redacted.contains(SECRET), "secret reached the wire: {redacted}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_global_switch_alone_also_redacts_the_chat_request() {
+        let _armed = Armed::on();
+        let params = params_with_secret_in_every_kind();
+        assert!(!wire(&params).contains(SECRET));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn nothing_is_touched_when_redaction_is_off() {
+        let _armed = Armed::off();
+        let params = params_with_secret_in_every_kind();
+        assert!(wire(&params).matches(SECRET).count() >= 5);
+    }
+
+    /// A summarize (compaction) request goes through the same builder.
+    #[test]
+    #[serial_test::serial]
+    fn a_summarize_request_is_redacted_too() {
+        let _armed = Armed::on();
+        let mut params = params_with_secret_in_every_kind();
+        params.input = vec![AIAgentInput::SummarizeConversation {
+            prompt: Some(format!("summarize, keep {SECRET}")),
+            overflow: false,
+        }];
+        assert!(!wire(&params).contains(SECRET));
     }
 }

@@ -605,6 +605,7 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
             return Ok(Vec::new());
         }
 
+        let texts = prepare_embedding_input(texts);
         let endpoint = self.endpoint(embedding_config)?;
         let expected = texts.len();
         let dimensions = embedding_config.dimensions();
@@ -790,6 +791,31 @@ struct RerankRequest<'a> {
     documents: Vec<String>,
 }
 
+/// #1469: `texts` are the user's source chunks; redacted (when secret redaction is on) before
+/// they are serialized into the request body.
+pub(super) fn prepare_embedding_input(mut texts: Vec<String>) -> Vec<String> {
+    if super::outbound_redaction::is_enabled() {
+        super::outbound_redaction::redact_texts(&mut texts);
+    }
+    texts
+}
+
+/// #1469: both the query and the matched code fragments are user content.
+pub(super) fn prepare_rerank_input(
+    query: &str,
+    mut documents: Vec<String>,
+) -> (std::borrow::Cow<'_, str>, Vec<String>) {
+    if super::outbound_redaction::is_enabled() {
+        super::outbound_redaction::redact_texts(&mut documents);
+        (
+            std::borrow::Cow::Owned(super::outbound_redaction::redact_str(query)),
+            documents,
+        )
+    } else {
+        (std::borrow::Cow::Borrowed(query), documents)
+    }
+}
+
 /// One provider's opinion of one document.
 #[derive(Deserialize)]
 struct RerankDatum {
@@ -821,9 +847,10 @@ impl RerankProvider for HttpRerankProvider {
         }
 
         let expected = documents.len();
+        let (query, documents) = prepare_rerank_input(query, documents);
         let body = RerankRequest {
             model: self.model_id,
-            query,
+            query: &query,
             documents,
         };
 
