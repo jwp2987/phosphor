@@ -623,6 +623,17 @@ code-refuter agents.
 - Build under test: manual `build-windows-x86_64` (unsigned Inno installer artifact) or `build-windows-profiling`.
 - CI runner: runs on the console (interactive desktop), not as a session-0 service, so `app-test-windows` launches the app,
   sends keys and takes screenshots from the job itself; the `indesk.ps1` indirection is only for hand-run work over ssh.
+  `app_test.ps1` (#1413): the backup lives in `%USERPROFILE%\appci-bak\<CI_JOB_ID>` (OUTSIDE the job dir so a later git clean
+  cannot delete it; newest 3 kept; `meta.json`, `md5_pre.txt`, data dirs, `uninstall.reg`, `handler.reg`, `path_pre.txt`,
+  shortcuts). The finally block calls `windows/ci/restore.ps1`, whose steps (data dirs, uninstall key, handler key, user PATH,
+  shortcuts, md5 + version verify) each run in their own try/catch with `ErrorActionPreference=Continue`; native `reg.exe` is
+  judged by `$LASTEXITCODE`, never by stderr (a "successful" stderr line aborted the first run's restore). Results, junit and
+  summary are written regardless. If a job's restore is marked failed: `powershell -File script\realapp\windows\ci\restore.ps1
+  [-Bak <dir>]` finishes it by hand (default newest backup; log in `<Bak>\restore.log`). Before any case, a **key-delivery
+  proof** types a marker command (absolute path) and checks it arrived, trying `SendKeys`, then `SendInput` unicode, then
+  `SendInput` virtual keys; if none lands the mode stops with `keys not delivered: <reason>` (job/explorer/app session ids,
+  foreground window) and runs no further cases. Latency verdicts need >= 24 samples (Phosphor and reference); fewer gives
+  `no-data` / `no-reference`, never a computed overhead.
 
 ### 3.5 Case matrix (run on each platform; EVERY case in both modes)
 
