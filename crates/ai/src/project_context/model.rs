@@ -1442,20 +1442,6 @@ impl ProjectContextModel {
         })
     }
 
-    /// Returns the rule file paths associated with a specific workspace root path.
-    pub fn rules_for_workspace(&self, workspace_path: &Path) -> Vec<PathBuf> {
-        self.path_to_rules
-            .get(workspace_path)
-            .into_iter()
-            .flat_map(|rules| {
-                rules.rules.iter().filter_map(|rule| {
-                    rule.respected_rule()
-                        .map(|project_rule| project_rule.path.clone())
-                })
-            })
-            .collect()
-    }
-
     /// Index all configured global rule sources (e.g. `~/.agents/AGENTS.md`).
     ///
     /// `ProjectContextModel` remains the public rule-context facade; the
@@ -1481,6 +1467,7 @@ impl ProjectContextModel {
 
     /// Absolute locations of every indexed global rule file (e.g.
     /// `~/.agents/AGENTS.md`), without their content. #575.
+    #[cfg(test)]
     pub fn global_rule_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.global_rules.paths()
     }

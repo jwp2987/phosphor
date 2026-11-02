@@ -8,12 +8,9 @@ use std::fmt::Debug;
 use vec1::Vec1;
 use warp_terminal::model::grid::cell;
 
-use crate::terminal::model::ansi::CursorShape;
-use crate::terminal::model::cell::Flags;
 use crate::terminal::model::grid::grid_handler::GridHandler;
 use crate::terminal::model::grid::Dimensions;
 use crate::terminal::model::index::{Point, Side};
-use crate::terminal::model::GridStorage;
 use crate::terminal::Vector2F;
 use std::cmp::{max, min};
 use std::mem;
@@ -161,48 +158,6 @@ impl SelectionRange {
             && self.end.row >= point.row
             && (self.start.col <= point.col || (self.start.row != point.row))
             && (self.end.col >= point.col || (self.end.row != point.row))
-    }
-}
-
-impl SelectionRange {
-    /// Check if the cell at a point is part of the selection.
-    pub fn contains_cell(
-        &self,
-        grid: &GridStorage,
-        point: Point,
-        cursor_point: Point,
-        cursor_shape: CursorShape,
-    ) -> bool {
-        // Do not invert block cursor at selection boundaries.
-        if cursor_shape == CursorShape::Block
-            && cursor_point == point
-            && (self.start == point || self.end == point)
-        {
-            return false;
-        }
-
-        // Point itself is selected.
-        if self.contains(point) {
-            return true;
-        }
-
-        let num_cols = grid.columns();
-
-        let cell = &grid[point];
-
-        // Check if wide char's spacers are selected.
-        if cell.flags().contains(Flags::WIDE_CHAR) {
-            let prev = point.wrapping_sub(num_cols, 1);
-            let next = point.wrapping_add(num_cols, 1);
-
-            // Check trailing spacer.
-            self.contains(next)
-                // Check line-wrapping, leading spacer.
-                || (grid[prev].flags().contains(Flags::LEADING_WIDE_CHAR_SPACER)
-                && self.contains(prev))
-        } else {
-            false
-        }
     }
 }
 

@@ -368,7 +368,7 @@ impl SecretMap {
     pub fn set_truncated_rows(
         &mut self,
         truncated_rows: usize,
-        num_columns: usize,
+        _num_columns: usize,
     ) -> Vec<(SecretHandle, Secret)> {
         let previous = self.truncated_rows.swap(truncated_rows, Ordering::Relaxed);
         let mut dropped = Vec::new();

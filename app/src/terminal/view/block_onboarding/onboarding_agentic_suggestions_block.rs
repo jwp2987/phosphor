@@ -47,7 +47,6 @@ const INTERIOR_BLOCK_SPACING: f32 = 7.;
 const PADDING_INTERIOR: f32 = 16.;
 const PADDING_VERTICAL: f32 = 24.;
 const PADDING_HORIZONTAL: f32 = 18.;
-const TOOL_PATTERNS: [&str; 5] = ["aws", "gcloud", "az", "kubectl", "docker"];
 
 lazy_static! {
     static ref PATH_REGEX: Regex =
@@ -367,31 +366,6 @@ impl OnboardingAgenticSuggestionsBlock {
         .rfind(|s| *s != ".." && *s != "." && !s.is_empty())
         .unwrap_or_default()
         .to_string()
-    }
-
-    pub fn find_most_used_cloud_tool(
-        session_id: SessionId,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<String> {
-        History::as_ref(ctx)
-            .commands(session_id)
-            .and_then(|commands| {
-                commands
-                    .iter()
-                    .fold(std::collections::HashMap::new(), |mut counts, entry| {
-                        for tool in TOOL_PATTERNS {
-                            if entry.command.starts_with(format!("{tool} ").as_str())
-                                || entry.command == tool
-                            {
-                                *counts.entry(tool.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                        counts
-                    })
-                    .into_iter()
-                    .max_by_key(|(_, count)| *count)
-                    .map(|(tool, _)| tool)
-            })
     }
 
     pub fn handle_key_pressed(&mut self, key: i32, ctx: &mut ViewContext<Self>) {

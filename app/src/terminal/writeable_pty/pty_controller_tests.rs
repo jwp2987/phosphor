@@ -2916,7 +2916,7 @@ fn nu_rc_file_bootstrap_sources_the_file_with_a_space_led_line_and_cr() {
 fn ctrl_c_discards_queued_input_before_the_interrupt_is_written() {
     App::test((), |mut app| async move {
         let model = terminal_model();
-        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
         let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
         let sessions = app.add_model(|_| Sessions::new_for_test());
         let model_events =

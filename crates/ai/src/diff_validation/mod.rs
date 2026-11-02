@@ -723,6 +723,7 @@ pub struct Match {
 
 /// Find similar sections in the target file using Jaro-Winkler similarity
 /// These lines are 1-indexed to match the line numbers in the search string.
+#[cfg(test)]
 pub fn find_similar_sections(
     search_text: &str,
     target_lines: &[&str],

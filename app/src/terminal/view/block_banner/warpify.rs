@@ -49,10 +49,6 @@ impl WarpificationMode {
         }
     }
 
-    pub fn has_host(&self) -> bool {
-        matches!(self, Self::Ssh { host: Some(_), .. })
-    }
-
     pub fn subshell(command: String) -> Self {
         Self::Subshell { command }
     }

@@ -661,39 +661,6 @@ impl LLMPreferences {
         self.get_preferred_base_model(app, terminal_view_id)
     }
 
-    /// Sets the active execution profile's base model to `preferred_llm_id`, clearing any
-    /// context-window override. Returns whether the change was persisted.
-    pub fn update_active_profile_base_model(
-        &self,
-        preferred_llm_id: &LLMId,
-        terminal_view_id: Option<EntityId>,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        let profiles = AIExecutionProfilesModel::handle(ctx);
-        let profile_id = *profiles.as_ref(ctx).active_profile(terminal_view_id, ctx).id();
-        let (persisted, changed) = profiles.update(ctx, |profiles, ctx| {
-            let profile = profiles
-                .get_profile_by_id(profile_id, ctx)
-                .expect("active execution profile should exist");
-            if profile.data().base_model.as_ref() == Some(preferred_llm_id) {
-                return (true, false);
-            }
-            profiles.set_base_model(profile_id, Some(preferred_llm_id.clone()), ctx);
-            profiles.set_context_window_limit(profile_id, None, ctx);
-            let persisted = profiles
-                .get_profile_by_id(profile_id, ctx)
-                .is_some_and(|profile| {
-                    profile.data().base_model.as_ref() == Some(preferred_llm_id)
-                        && profile.data().context_window_limit.is_none()
-                });
-            (persisted, persisted)
-        });
-        if changed {
-            ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
-        }
-        persisted
-    }
-
     /// Returns `LLMInfo` for the currently selected LLM to be used for Agent Mode.
     ///
     /// Priority: terminal-view override > AISettings.byop_last_used_model_id
@@ -856,36 +823,6 @@ impl LLMPreferences {
         self.get_preferred_coding_model(app, terminal_view_id)
     }
 
-    /// Returns the LLM currently used for "conversation title generation".
-    ///
-    /// Priority: the profile's explicitly-set `title_model` → otherwise falls back
-    /// to `base_model` (active). The candidate set reuses
-    /// `get_base_llm_choices_for_agent_mode()`.
-    pub fn get_active_title_model<'a>(
-        &'a self,
-        app: &'a AppContext,
-        terminal_view_id: Option<EntityId>,
-    ) -> &'a LLMInfo {
-        let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
-
-        if let Some(id) = profile.data().title_model.clone() {
-            if let Some(info) = self.models_by_feature.agent_mode.info_for_id(&id) {
-                return info;
-            }
-        }
-
-        self.get_preferred_base_model(app, terminal_view_id)
-    }
-
-    /// Default title model — used when there's no independent setting, matching the base model.
-    pub fn get_default_title_model<'a>(
-        &'a self,
-        app: &'a AppContext,
-        terminal_view_id: Option<EntityId>,
-    ) -> &'a LLMInfo {
-        self.get_preferred_base_model(app, terminal_view_id)
-    }
-
     /// Returns the LLM currently used for "active AI" (prompt suggestions / NLD / relevant files).
     ///
     /// Priority: the profile's explicitly-set `active_ai_model` → otherwise falls
@@ -907,15 +844,6 @@ impl LLMPreferences {
         self.get_preferred_base_model(app, terminal_view_id)
     }
 
-    /// Default active AI model — used when there's no independent setting, matching the base model.
-    pub fn get_default_active_ai_model<'a>(
-        &'a self,
-        app: &'a AppContext,
-        terminal_view_id: Option<EntityId>,
-    ) -> &'a LLMInfo {
-        self.get_preferred_base_model(app, terminal_view_id)
-    }
-
     /// Returns the LLM currently used for "Next Command" (grayed-out completions / zero-state suggestions).
     ///
     /// Priority: the profile's explicitly-set `next_command_model` → otherwise falls back to `base_model` (active).
@@ -932,15 +860,6 @@ impl LLMPreferences {
             }
         }
 
-        self.get_preferred_base_model(app, terminal_view_id)
-    }
-
-    /// Default next command model — used when there's no independent setting, matching the base model.
-    pub fn get_default_next_command_model<'a>(
-        &'a self,
-        app: &'a AppContext,
-        terminal_view_id: Option<EntityId>,
-    ) -> &'a LLMInfo {
         self.get_preferred_base_model(app, terminal_view_id)
     }
 
@@ -1011,11 +930,6 @@ impl LLMPreferences {
         // subagent's chip defaulted to "Ollama / gpt-oss:20b" even when Base was
         // explicitly on a different, already-configured BYOP provider.
         self.get_preferred_base_model(app, terminal_view_id)
-    }
-
-    /// Returns the default CLI agent model as a fallback.
-    pub fn get_default_cli_agent_model(&self) -> &LLMInfo {
-        self.get_cli_agent_available().default_llm_info()
     }
 
     /// Helper to get the AvailableLLMs for cli_agent, falling back to agent_mode.
@@ -1318,6 +1232,7 @@ impl LLMPreferences {
         }
     }
 
+    #[cfg(test)]
     pub fn update_feature_model_choices(
         &mut self,
         choices_result: Result<ModelsByFeature, anyhow::Error>,

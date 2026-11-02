@@ -493,34 +493,6 @@ impl BlocklistAIActionModel {
         self.is_view_only = is_view_only;
     }
 
-    /// Marks an action as remotely executing on the viewer side.
-    /// This is called when a viewer receives a CommandExecutionStarted event from the sharer,
-    /// allowing the viewer's UI to show the action as running even though it's not executing locally.
-    pub fn mark_action_as_remotely_executing(
-        &mut self,
-        action_id: &AIAgentActionId,
-        conversation_id: AIConversationId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        // Only applicable for viewers
-        if !self.is_view_only {
-            return;
-        }
-
-        // Remove the action from pending_actions for the specific conversation
-        // so that we can correctly show the command as running.
-        if let Some(pending_actions) = self.pending_actions.get_mut(&conversation_id) {
-            pending_actions.retain(|a| &a.id != action_id);
-        }
-
-        self.add_running_action(
-            conversation_id,
-            action_id.clone(),
-            RunningActionPhase::Serial,
-        );
-        ctx.emit(BlocklistAIActionEvent::ExecutingAction(action_id.clone()));
-    }
-
     /// Returns true if the action model is operating in view-only mode (used for shared-session viewers).
     pub fn is_view_only(&self) -> bool {
         self.is_view_only

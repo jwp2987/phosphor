@@ -63,8 +63,6 @@ mod notifications;
 mod palette;
 mod persistence;
 mod platform;
-#[cfg(feature = "plugin_host")]
-mod plugin;
 mod prefix;
 #[cfg(target_os = "macos")]
 mod preview_config_migration;
@@ -218,8 +216,6 @@ use ::settings::{Setting, ToggleableSetting};
 pub(crate) use settings_write_failure::report_settings_write_error;
 pub use warp_core::errors::{report_error, report_if_error};
 
-#[cfg(feature = "plugin_host")]
-pub use plugin::{PLUGIN_HOST_FLAG, run_plugin_host};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 use warpui::platform::app::ApproveTerminateResult;
@@ -858,8 +854,6 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             crate::terminal::local_tty::server::run_terminal_server(args);
             Ok(())
         }
-        #[cfg(feature = "plugin_host")]
-        warp_cli::WorkerCommand::PluginHost { .. } => crate::run_plugin_host(),
         #[cfg(feature = "local_tty")]
         warp_cli::WorkerCommand::MinidumpServer { socket_name } => {
             cfg_if::cfg_if! {
@@ -896,11 +890,7 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             .map_err(|err| anyhow!(err.to_string()))?;
             Ok(())
         }
-        #[cfg(not(any(
-            feature = "local_tty",
-            feature = "plugin_host",
-            not(target_family = "wasm")
-        )))]
+        #[cfg(not(any(feature = "local_tty", not(target_family = "wasm"))))]
         worker => {
             // On wasm, specifically, we should fail spectacularly if we get here.
             #[cfg(target_family = "wasm")]
@@ -1293,10 +1283,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         #[cfg(enable_crash_recovery)]
         ctx.add_singleton_model(move |_ctx| crash_recovery);
 
-        #[cfg(feature = "plugin_host")]
-        ctx.add_singleton_model(move |ctx| {
-            plugin::PluginHost::new(ctx).expect("Could not instantiate PluginHost")
-        });
         let app_state = initialize_app(
             &launch_mode,
             timer,
@@ -1622,10 +1608,7 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ExecutionProfileEditorManager::default());
     ctx.add_singleton_model(|_| pricing::PricingInfoModel::new());
     ctx.add_singleton_model(|_| {
-        ManagedSecretManager::new(
-            Arc::new(local_managed_secrets::DisabledManagedSecretsClient),
-            auth_state.clone(),
-        )
+        ManagedSecretManager::new(Arc::new(local_managed_secrets::DisabledManagedSecretsClient))
     });
 
     #[cfg(target_os = "macos")]
@@ -2379,13 +2362,12 @@ fn initialize_app(
         aliases.connect(ctx);
     });
 
-    // When running natively, add the http server singleton to the application.
+    // The local HTTP server only hosts the heap-profiling endpoint, so it is only started in
+    // builds that have one. (It used to also serve an unauthenticated `/install_detection`
+    // route with `*.warp.dev` CORS for the web NUX; that was removed.)
+    #[cfg(all(not(target_family = "wasm"), feature = "jemalloc_pprof"))]
     ctx.add_singleton_model(move |ctx| {
-        let routers = vec![
-            app_installation_detection::make_router(),
-            profiling::make_router(),
-        ];
-        http_server::HttpServer::new(routers, ctx)
+        http_server::HttpServer::new(vec![profiling::make_router()], ctx)
     });
 
     #[cfg(feature = "local_fs")]
@@ -3760,9 +3742,8 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // The six flags below gate live, shipped code but sat in `DOGFOOD_FLAGS` with
     // no reader: upstream's channel binaries pass that list to
     // `with_additional_features`, and this fork's equivalents
-    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compile --
-    // `autobins = false`, one declared `[[bin]]`, and they import a crate absent
-    // from the workspace. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
+    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compiled and have been
+    // removed. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
     // code was unreachable in every binary this repo actually builds, including
     // the entire `warpctrl` local-control surface and its bundled skill.
     //

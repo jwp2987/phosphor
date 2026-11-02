@@ -109,7 +109,6 @@ pub struct TerminalManager<S> {
 
     /// The manager is responsible for managing the lifetime
     /// of the PTY controller.
-    #[allow(dead_code)]
     pty_controller: ModelHandle<PtyController>,
 
     /// The manager is responsible for managing the lifetime of the remote server controller.

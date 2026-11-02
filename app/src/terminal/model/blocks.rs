@@ -2175,6 +2175,7 @@ impl BlockList {
     /// Startup commands are hidden while they run. Without this, they stay hidden
     /// forever once the harness block is reached -- the blocks exist, occupy no
     /// height, and never come back (#423).
+    #[cfg(test)]
     pub fn finish_oz_environment_startup_commands_at_block(
         &mut self,
         block_id: &BlockId,
@@ -2205,6 +2206,7 @@ impl BlockList {
     /// effects mirror those in [`set_agent_view_state`](Self::set_agent_view_state).
     /// An inline conversation keeps `Terminal` scope -- it renders in the
     /// terminal transcript, not a conversation-scoped one.
+    #[cfg(test)]
     pub fn enter_conversation_context(&mut self, conversation_id: AIConversationId, is_inline: bool) {
         if !self.active_block().finished() {
             if is_inline {
@@ -2302,6 +2304,7 @@ impl BlockList {
         Some(block)
     }
 
+    #[cfg(test)]
     pub fn clear_user_executed_command_blocks_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
@@ -2612,8 +2615,6 @@ impl BlockList {
         self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
     }
 
-    pub fn refresh_block_heights_for_passive_code_diff(&mut self) {}
-
     /// Associates the given blocks with a conversation, making them visible in that conversation's agent view.
     /// Returns a Vec of (block_id, visibility) for blocks that were found.
     pub fn associate_blocks_with_conversation<'a>(
@@ -2884,13 +2885,6 @@ impl BlockList {
                     .is_some_and(|action_id| action_id == id)
             })
         })
-    }
-
-    /// Scans the block at `block_index` for secrets.
-    pub fn scan_block_for_secrets(&mut self, block_index: BlockIndex) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
-            block.scan_full_block_for_secrets();
-        }
     }
 
     pub fn block_heights(&self) -> &SumTree<BlockHeightItem> {
@@ -3250,6 +3244,7 @@ impl BlockList {
     }
 
     /// Whether any block is still waiting for its deferred reflow. O(1) when nothing is pending.
+    #[cfg(test)]
     pub fn has_stale_reflow(&self) -> bool {
         self.stale_reflow_pending && self.blocks.iter().any(|b| b.is_reflow_stale())
     }
@@ -3991,27 +3986,6 @@ impl BlockList {
         self.active_block_mut()
             .set_obfuscate_secrets(obfuscate_secrets);
         for block in self.blocks.iter_mut() {
-            block.set_obfuscate_secrets(obfuscate_secrets);
-        }
-    }
-
-    /// Sets whether subsequent blocks (including the active block) have their grids obfuscated.
-    pub(super) fn set_obfuscate_secrets_for_subsequent_blocks(
-        &mut self,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        self.obfuscate_secrets = obfuscate_secrets;
-        self.active_block_mut()
-            .set_obfuscate_secrets(obfuscate_secrets);
-    }
-
-    /// Sets whether the grids of the specified block should be obfuscated.
-    pub fn set_obfuscate_secrets_for_block(
-        &mut self,
-        block_index: BlockIndex,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
             block.set_obfuscate_secrets(obfuscate_secrets);
         }
     }

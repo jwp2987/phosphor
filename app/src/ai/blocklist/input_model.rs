@@ -28,16 +28,15 @@ pub use input_classifier::InputType;
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
 use super::compute_clock::ComputeClock;
 use super::context_model::BlocklistAIContextModel;
-use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
+use super::conversation_selection::ConversationSelectionEvent;
 use super::history_model::BlocklistAIHistoryModel;
 use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 #[cfg(any(test, feature = "test-util"))]
-use super::conversation_selection::MockConversationSelection;
+use super::conversation_selection::{ConversationSelection, MockConversationSelection};
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
 };
-use crate::PrivacySettings;
 use warp_completer::completer::CompletionContext;
 use warp_terminal::shell::ShellType;
 
@@ -53,8 +52,6 @@ use crate::{
     },
     TelemetryEvent,
 };
-
-use super::telemetry_banner::should_collect_ai_ugc_telemetry;
 
 /// Cutoff score for deciding an user input matches a history command entry.
 const HISTORY_ENTRY_MATCH_CUTOFF: f32 = 0.9;
@@ -1869,14 +1866,9 @@ impl BlocklistAIInputModel {
                     me.settle_detection(&other_buffer_cloned, ctx);
                     if current_input_type != new_input_type {
                         let buffer_length = other_buffer_cloned.len();
-                        let input_buffer_text_for_telemetry = should_collect_ai_ugc_telemetry(
-                            ctx,
-                            PrivacySettings::as_ref(ctx).is_telemetry_enabled,
-                        )
-                        .then_some(other_buffer_cloned);
                         send_telemetry_from_ctx!(
                             TelemetryEvent::AgentModeChangedInputType {
-                                input: input_buffer_text_for_telemetry,
+                                input: None,
                                 buffer_length,
                                 is_manually_changed: false,
                                 new_input_type,

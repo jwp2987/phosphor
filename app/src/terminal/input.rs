@@ -101,6 +101,7 @@ use crate::terminal::input::user_query::{UserQueryMenuEvent, UserQueryMenuView};
 use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::package_installers::command_at_cursor_has_common_package_installer_prefix;
+use crate::terminal::paste_sequencer::paste_backstop;
 use crate::terminal::prompt_render_helper::should_render_ps1_prompt;
 use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::CodeDiffAction;
@@ -116,8 +117,6 @@ use crate::ASSETS;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 
-use crate::ai::ambient_agents::AttachmentInput;
-use crate::ai::attachment_utils::MAX_ATTACHMENT_SIZE_BYTES;
 use crate::ai::block_context::BlockContext;
 use crate::ai::blocklist::AttachmentType;
 use crate::ai::mcp::TemplatableMCPServerManager;
@@ -241,7 +240,6 @@ use crate::{
 
 use crate::terminal::shared_session::protocol::ParticipantId;
 use ai::skills::SkillReference;
-use base64::Engine as _;
 #[cfg(feature = "local_fs")]
 use diesel::SqliteConnection;
 use futures::FutureExt as _;
@@ -357,7 +355,6 @@ use super::{
 use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController,
 };
-use crate::terminal::view::ambient_agent::{HarnessSelector, HostSelector, NakedHeaderButtonTheme};
 use crate::terminal::view::queued_prompts_panel::{QueuedPromptsPanelEvent, QueuedPromptsPanelView};
 use async_channel::Sender;
 
@@ -433,7 +430,6 @@ pub fn get_input_box_top_border_width() -> f32 {
     }
 }
 
-pub const COMPLETIONS_MENU_WIDTH: f32 = 330.;
 pub const OPEN_COMPLETIONS_KEYBINDING_NAME: &str = "input:open_completion_suggestions";
 pub const INPUT_A11Y_LABEL_KEY: &str = "terminal-input-a11y-label";
 pub const INPUT_A11Y_HELPER_KEY: &str = "terminal-input-a11y-helper";
@@ -1066,6 +1062,7 @@ impl CommandExecutionSource {
     }
 
     /// Whether this execution should leave the user's in-progress editor draft alone.
+    #[cfg(test)]
     pub fn should_preserve_input(&self) -> bool {
         matches!(
             self,
@@ -1981,10 +1978,6 @@ pub struct Input {
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
     ai_input_model: ModelHandle<BlocklistAIInputModel>,
     ai_action_model: ModelHandle<BlocklistAIActionModel>,
-    /// The input is responsible for managing the lifetime
-    /// of this mouse state handle.
-    #[allow(dead_code)]
-    ai_follow_up_icon_mouse_state: MouseStateHandle,
 
     /// To ensure we only have one run of completions-as-you-type at any given time,
     /// we keep an abort handle of the current run. If we have reason to start a new run
@@ -2107,10 +2100,6 @@ pub struct Input {
     terminal_input_message_bar: ViewHandle<TerminalInputMessageBar>,
 
     agent_input_footer: ViewHandle<AgentInputFooter>,
-
-    harness_selector: ViewHandle<HarnessSelector>,
-
-    host_selector: Option<ViewHandle<HostSelector>>,
 
     prompt_suggestions_view: ViewHandle<PromptSuggestionsView>,
 
@@ -2785,26 +2774,6 @@ impl Input {
                 ctx,
             )
         });
-
-        let harness_selector = ctx.add_typed_action_view(|ctx| {
-            HarnessSelector::new(
-                menu_positioning_provider.clone(),
-                ambient_agent_view_model.clone(),
-                ctx,
-            )
-        });
-
-        let host_selector = if false {
-            let view = ctx.add_typed_action_view(|ctx| {
-                HostSelector::new(menu_positioning_provider.clone(), ctx)
-            });
-            harness_selector.update(ctx, |selector, ctx| {
-                selector.set_button_theme(NakedHeaderButtonTheme, ctx);
-            });
-            Some(view)
-        } else {
-            None
-        };
 
         ctx.subscribe_to_view(&agent_input_footer, |me, _, event, ctx| {
             match event {
@@ -3926,7 +3895,6 @@ impl Input {
             ai_context_model,
             ai_input_model,
             ai_action_model,
-            ai_follow_up_icon_mouse_state: MouseStateHandle::default(),
             enable_autosuggestions_setting: *editor_settings_handle
                 .as_ref(ctx)
                 .enable_autosuggestions,
@@ -3990,8 +3958,6 @@ impl Input {
             agent_status_view,
             agent_view_controller,
             agent_input_footer,
-            harness_selector,
-            host_selector,
             agent_shortcut_view_model,
             ambient_agent_view_model,
             slash_command_data_source,
@@ -5855,10 +5821,6 @@ impl Input {
         self.editor.as_ref(ctx).buffer_text(ctx)
     }
 
-    pub fn buffer_text_number_of_lines(&self, ctx: &AppContext) -> usize {
-        self.buffer_text(ctx).lines().count()
-    }
-
     #[cfg(feature = "integration_tests")]
     pub fn input_suggestions(&self) -> &ViewHandle<InputSuggestions> {
         &self.input_suggestions
@@ -7063,63 +7025,6 @@ impl Input {
         did_execute
     }
 
-    /// We locked the viewer's input when they attempted to execute a command.
-    /// On failure, we must restore the editor to its original state before the attempt.
-    pub fn on_execute_command_for_shared_session_participant_failure(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(shared_session_input_state) = self.shared_session_input_state.as_mut() else {
-            return;
-        };
-        let Some(ViewerCommandExecutionRequest { original_buffer }) = shared_session_input_state
-            .pending_command_execution_request
-            .as_ref()
-        else {
-            return;
-        };
-
-        // Unfreeze the editor
-        if let SharedSessionStatus::ActiveViewer { role } =
-            self.model.lock().shared_session_status()
-        {
-            self.editor.update(ctx, |editor, ctx| {
-                // Restore the original buffer and interaction state based on the viewer's role.
-                editor.set_buffer_text(original_buffer, ctx);
-                editor.set_interaction_state(role.into(), ctx);
-
-                // Set the text colors back to normal.
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
-        shared_session_input_state.pending_command_execution_request = None;
-    }
-
-    /// This clears the loading state and input buffer for both the sharer and viewer
-    /// once an agent request is in flight or cancelled.
-    pub fn unfreeze_and_clear_agent_input(&mut self, ctx: &mut ViewContext<Self>) {
-        if matches!(
-            self.model.lock().shared_session_status(),
-            SharedSessionStatus::ActiveViewer { .. } | SharedSessionStatus::ActiveSharer
-        ) {
-            self.editor.update(ctx, |editor, ctx| {
-                // Reinitialize the buffer to properly clear it
-                editor.reinitialize_buffer(None, ctx);
-
-                if let SharedSessionStatus::ActiveViewer { role } =
-                    self.model.lock().shared_session_status()
-                {
-                    // reinstate role for viewers
-                    editor.set_interaction_state(role.into(), ctx);
-                }
-
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
-    }
-
     /// Restores the frozen/loading visual state of the agent input for both the sharer
     /// and viewer without touching the buffer contents.
     ///
@@ -7138,6 +7043,7 @@ impl Input {
     /// ephemeral overlay, so there is no ephemeral state to exit and no display-only
     /// overlay to show. `is_shared_session_viewer_prompt_inflight` is therefore currently
     /// unused here; kept in the signature for call-site parity with the pin.
+    #[cfg(test)]
     pub fn unfreeze_agent_input(
         &mut self,
         is_shared_session_viewer_prompt_inflight: bool,
@@ -8375,21 +8281,6 @@ impl Input {
         self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {
             view.set_buffer_text(content, ctx);
-        });
-    }
-
-    // Fill the input buffer with the provided text and auto-select all of the text
-    // (so that it's easy to delete).
-    pub fn prefill_buffer_and_select_all(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
-        let content = content.trim();
-        if content.is_empty() {
-            return;
-        }
-
-        self.editor.update(ctx, |editor, ctx| {
-            editor.clear_autosuggestion(ctx);
-            editor.set_buffer_text_ignoring_undo(content, ctx);
-            editor.handle_action(&EditorAction::SelectAll, ctx);
         });
     }
 
@@ -11141,21 +11032,7 @@ impl Input {
         reader: warpui::clipboard::BackgroundTextReader,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.start_background_paste_with_backstop(reader, Self::paste_backstop(), ctx);
-    }
-
-    /// How long the editor holds typed keys for a clipboard read before giving up on it (#1331).
-    /// The platform readers bound their own wait; this is the backstop for one that does not (a
-    /// wedged reader thread), so the held keys are ALWAYS applied. `PHOSPHOR_PASTE_BACKSTOP_MS`
-    /// overrides it; `0` turns the backstop off (the old behaviour: wait for the reader).
-    #[cfg(not(target_family = "wasm"))]
-    fn paste_backstop() -> Option<Duration> {
-        const DEFAULT_MS: u64 = 3_000;
-        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_MS);
-        (ms > 0).then(|| Duration::from_millis(ms))
+        self.start_background_paste_with_backstop(reader, paste_backstop(), ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -11178,7 +11055,7 @@ impl Input {
         source: PasteSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.start_background_read(reader, Self::paste_backstop(), source, ctx);
+        self.start_background_read(reader, paste_backstop(), source, ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -13730,95 +13607,6 @@ impl Input {
                 );
             }
 
-            // Check if we're configuring an ambient agent and spawn it instead of submitting a regular AI query.
-            if self
-                .ambient_agent_view_model
-                .as_ref(ctx)
-                .is_configuring_ambient_agent()
-            {
-                let prompt = command.trim().to_owned();
-                if prompt.is_empty() {
-                    return;
-                }
-
-                // Collect pending files for the spawn request. Cloud mode image attachments are disabled in Zap.
-                let attachments: Vec<AttachmentInput> = if false {
-                    let mut inputs: Vec<AttachmentInput> = self
-                        .ai_context_model
-                        .as_ref(ctx)
-                        .pending_images()
-                        .iter()
-                        .map(|image| AttachmentInput {
-                            file_name: image.file_name.clone(),
-                            mime_type: image.mime_type.clone(),
-                            data: image.data.clone(),
-                        })
-                        .collect();
-
-                    let mut skipped_files: Vec<String> = Vec::new();
-                    for file in self.ai_context_model.as_ref(ctx).pending_files() {
-                        match std::fs::read(&file.file_path) {
-                            Ok(bytes) => {
-                                if bytes.len() > MAX_ATTACHMENT_SIZE_BYTES {
-                                    skipped_files.push(file.file_name.clone());
-                                    continue;
-                                }
-                                inputs.push(AttachmentInput {
-                                    file_name: file.file_name.clone(),
-                                    mime_type: file.mime_type.clone(),
-                                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                                });
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to read file {}: {e}",
-                                    file.file_path.display()
-                                );
-                            }
-                        }
-                    }
-
-                    if !skipped_files.is_empty() {
-                        let window_id = ctx.window_id();
-                        let message = if skipped_files.len() == 1 {
-                            format!(
-                                "{} was not attached — exceeds 10MB limit.",
-                                skipped_files[0]
-                            )
-                        } else {
-                            format!(
-                                "{} files were not attached — exceed 10MB limit.",
-                                skipped_files.len()
-                            )
-                        };
-                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                            ts.add_ephemeral_toast(
-                                DismissibleToast::error(message),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                    }
-
-                    inputs
-                } else {
-                    vec![]
-                };
-
-                // Clear the buffer and pending attachments after collecting them.
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.clear_buffer(ctx);
-                });
-                self.ai_context_model.update(ctx, |context_model, ctx| {
-                    context_model.clear_pending_attachments(ctx);
-                });
-
-                self.ambient_agent_view_model.update(ctx, |state, ctx| {
-                    state.spawn_agent(prompt, attachments, ctx);
-                });
-                return;
-            }
-
             self.submit_ai_query(None, ctx);
         } else {
             // If we're submitting a shell command, we want to send telemetry for the input type.
@@ -15106,7 +14894,6 @@ impl Input {
                         .cloned()
                 };
 
-
                 if let Some(command) = cmd_enter_slash_command {
                     self.select_slash_command(&command, SlashCommandTrigger::keybinding(), ctx);
                     return;
@@ -15394,13 +15181,11 @@ impl Input {
     }
 
     /// The queued prompts panel, when [`FeatureFlag::QueueSlashCommand`] is enabled.
-    #[allow(dead_code)] // consumed by the panel render + focus wiring in a follow-up increment
     pub(crate) fn queued_prompts_panel(&self) -> Option<&ViewHandle<QueuedPromptsPanelView>> {
         self.queued_prompts_panel.as_ref()
     }
 
     /// Whether this input's queued-prompt inline editor is currently focused.
-    #[allow(dead_code)] // consumed by the focus wiring in a follow-up increment
     pub(crate) fn is_queued_prompt_inline_editor_focused(&self, ctx: &AppContext) -> bool {
         self.queued_prompts_panel
             .as_ref()
@@ -16041,23 +15826,6 @@ impl Input {
         }
     }
 
-    /// Applies an input config update from an external source (e.g., session sharing).
-    pub fn apply_external_input_config_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // do nothing if the config is the same as the current config
-        if config == self.ai_input_model.as_ref(ctx).input_config() {
-            return;
-        }
-
-        let is_input_buffer_empty = self.editor.as_ref(ctx).buffer_text(ctx).is_empty();
-        self.ai_input_model.update(ctx, |model, ctx| {
-            model.set_input_config(config, is_input_buffer_empty, ctx);
-        });
-    }
-
     /// Returns true if the input is locked in shell mode
     fn is_locked_in_shell_mode(&self, ctx: &ViewContext<Self>) -> bool {
         let ai_input_model = self.ai_input_model.as_ref(ctx);
@@ -16145,33 +15913,6 @@ impl Input {
     /// Returns the operations for any edits made to the latest buffer.
     pub fn latest_buffer_operations(&self) -> impl Iterator<Item = &CrdtOperation> {
         self.latest_buffer_operations.iter()
-    }
-
-    /// Applies the `operations` if the block ID of this buffer
-    /// is equal to `block_id`. Otherwise, queues up these operations
-    /// to be processed eventually when the block IDs are equal.
-    pub fn process_remote_edits(
-        &mut self,
-        block_id: &BlockId,
-        operations: Vec<CrdtOperation>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // We check the `block_id` against the cached latest block ID
-        // rather than the latest terminal model state because the terminal
-        // model can be updated off of the main thread. This can cause
-        // scenarios where the terminal model has a new active block ID but
-        // we haven't processed block completed events yet.
-        //
-        // Although we're checking against a potentially old block ID here,
-        // we'll flush the right ops when we handle the block completed events.
-        if block_id == &self.deferred_remote_operations.latest_block_id {
-            self.editor.update(ctx, |editor, ctx| {
-                editor.apply_remote_operations(operations, ctx);
-            });
-        } else {
-            self.deferred_remote_operations
-                .defer(block_id.clone(), operations);
-        }
     }
 
     /// Updates the latest block ID to be equal to the latest block ID known to the terminal model
@@ -17776,15 +17517,6 @@ impl Input {
         self.agent_input_footer
             .as_ref(app)
             .displayed_chip_kinds(app)
-    }
-
-    pub fn cli_footer_chip_kinds(
-        &self,
-        app: &AppContext,
-    ) -> Vec<crate::context_chips::ContextChipKind> {
-        self.agent_input_footer
-            .as_ref(app)
-            .cli_display_chip_kinds(app)
     }
 }
 

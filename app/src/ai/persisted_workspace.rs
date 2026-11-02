@@ -648,14 +648,10 @@ impl PersistedWorkspace {
         }
     }
 
-    /// INDEXING SEAM (handler, fully restored — currently has no caller).
+    /// INDEXING SEAM (handler; subscribed in [`Self::new`] when the
+    /// `FullSourceCodeEmbedding` feature flag is on).
     ///
-    /// At the pin this is driven by
-    /// `CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event }`,
-    /// registered in [`Self::new`]. The body is restored verbatim so that
-    /// re-subscribing is the only work required; `WorkspaceMetadataEvent` lives
-    /// in `ai::workspace` and is restored alongside it.
-    #[allow(dead_code)]
+    /// Driven by `CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event }`.
     fn handle_index_metadata_event(&mut self, root_path: &PathBuf, event: WorkspaceMetadataEvent) {
         match event {
             WorkspaceMetadataEvent::Queried => {
@@ -731,7 +727,6 @@ impl PersistedWorkspace {
     /// startup `inner_join`, making enabled servers look disabled. That arm must
     /// come back at the same time as the LSP leg — deleting it and the table
     /// together is safe, restoring one without the other is not.
-    #[allow(dead_code)]
     fn clean_up_expired_metadata(
         &self,
         indices_to_remove: Arc<Vec<PathBuf>>,

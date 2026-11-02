@@ -243,6 +243,6 @@ fn split_flag_eq_token_at_cursor(token: Spanned<String>, pos: ByteOffset) -> Spa
     }
 }
 
-#[cfg(all(test, not(feature = "v2")))]
+#[cfg(test)]
 #[path = "describe_test.rs"]
 mod tests;

@@ -41,7 +41,6 @@ exclude_globs = [
   "**/*.generated.rs",
   "**/generated/**",
   "app/src/settings/schema_generation.rs",
-  "crates/command-signatures-v2/**",
   # platform-only files (the Linux box cannot run their tests)
   "**/windows/**",
   "**/*_windows.rs",
@@ -52,8 +51,6 @@ exclude_globs = [
   "app/src/app_menus.rs",
   # vendored crates and the wasm helpers
   "lib/**",
-  "crates/serve-wasm/**",
-  "crates/warp_js/**",
   "crates/warp_web_event_bus/**",
 ]
 

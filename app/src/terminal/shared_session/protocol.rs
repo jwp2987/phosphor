@@ -14,12 +14,6 @@ impl Role {
     pub fn can_execute(&self) -> bool {
         matches!(self, Role::Executor | Role::Full)
     }
-
-    pub fn downgrade_full(&mut self) {
-        if *self == Role::Full {
-            *self = Role::Executor;
-        }
-    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -176,17 +170,6 @@ pub enum Selection {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum PresenceUpdate {
-    Selection(Selection),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ParticipantPresenceUpdate {
-    pub participant_id: ParticipantId,
-    pub update: PresenceUpdate,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProfileData {
     pub user_uid: String,
@@ -248,23 +231,6 @@ pub struct ParticipantList {
     pub pending_guests: Vec<PendingGuest>,
 }
 
-impl ParticipantList {
-    pub fn downgrade_full_roles(&mut self) {
-        for viewer in &mut self.viewers {
-            viewer.role.downgrade_full();
-        }
-        for viewer in &mut self.present_viewers {
-            viewer.max_acl.downgrade_full();
-        }
-        for guest in &mut self.guests {
-            guest.direct_acl.downgrade_full();
-        }
-        for guest in &mut self.pending_guests {
-            guest.direct_acl.downgrade_full();
-        }
-    }
-}
-
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Scrollback {
     pub blocks: Vec<ScrollbackBlock>,
@@ -278,10 +244,6 @@ impl Scrollback {
             .map(|b| b.num_bytes().as_u64())
             .fold(0, u64::saturating_add)
             .into()
-    }
-
-    pub fn exceeds_size_bytes(&self, size_bytes: Byte) -> bool {
-        self.num_bytes() > size_bytes
     }
 }
 
@@ -398,10 +360,6 @@ impl SharedConversationToken {
 
     pub fn from_uuid(uuid: Uuid) -> Self {
         Self(uuid)
-    }
-
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
     }
 }
 
@@ -523,79 +481,6 @@ pub struct UniversalDeveloperInputContextUpdate {
     pub cli_agent_session: Option<CLIAgentSessionState>,
 }
 
-impl UniversalDeveloperInputContextUpdate {
-    pub fn changes_cached_context(&self, cached: &UniversalDeveloperInputContext) -> bool {
-        let UniversalDeveloperInputContextUpdate {
-            selected_model: updated_selected_model,
-            input_mode: updated_input_mode,
-            selected_conversation: updated_selected_conversation,
-            auto_approve_agent_actions: updated_auto_approve_agent_actions,
-            long_running_command_agent_interaction_state:
-                updated_long_running_command_agent_interaction_state,
-            cli_agent_session: updated_cli_agent_session,
-        } = self;
-        let UniversalDeveloperInputContext {
-            selected_model: cached_selected_model,
-            input_mode: cached_input_mode,
-            selected_conversation: cached_selected_conversation,
-            auto_approve_agent_actions: cached_auto_approve_agent_actions,
-            long_running_command_agent_interaction_state:
-                cached_long_running_command_agent_interaction_state,
-            cli_agent_session: cached_cli_agent_session,
-        } = cached;
-
-        (updated_selected_model.is_some()
-            && updated_selected_model.as_ref() != cached_selected_model.as_ref())
-            || (updated_input_mode.is_some()
-                && updated_input_mode.as_ref() != cached_input_mode.as_ref())
-            || (updated_selected_conversation.is_some()
-                && updated_selected_conversation != cached_selected_conversation)
-            || (updated_auto_approve_agent_actions.is_some()
-                && updated_auto_approve_agent_actions != cached_auto_approve_agent_actions)
-            || (updated_long_running_command_agent_interaction_state.is_some()
-                && updated_long_running_command_agent_interaction_state
-                    != cached_long_running_command_agent_interaction_state)
-            || (updated_cli_agent_session.is_some()
-                && updated_cli_agent_session.as_ref() != Some(cached_cli_agent_session))
-    }
-
-    pub fn merge_into(
-        self,
-        current: UniversalDeveloperInputContext,
-    ) -> UniversalDeveloperInputContext {
-        let UniversalDeveloperInputContextUpdate {
-            selected_model: updated_selected_model,
-            input_mode: updated_input_mode,
-            selected_conversation: updated_selected_conversation,
-            auto_approve_agent_actions: updated_auto_approve_agent_actions,
-            long_running_command_agent_interaction_state:
-                updated_long_running_command_agent_interaction_state,
-            cli_agent_session: updated_cli_agent_session,
-        } = self;
-        let UniversalDeveloperInputContext {
-            selected_model: current_selected_model,
-            input_mode: current_input_mode,
-            selected_conversation: current_selected_conversation,
-            auto_approve_agent_actions: current_auto_approve_agent_actions,
-            long_running_command_agent_interaction_state:
-                current_long_running_command_agent_interaction_state,
-            cli_agent_session: current_cli_agent_session,
-        } = current;
-
-        UniversalDeveloperInputContext {
-            selected_model: updated_selected_model.or(current_selected_model),
-            input_mode: updated_input_mode.or(current_input_mode),
-            selected_conversation: updated_selected_conversation.or(current_selected_conversation),
-            auto_approve_agent_actions: updated_auto_approve_agent_actions
-                .or(current_auto_approve_agent_actions),
-            long_running_command_agent_interaction_state:
-                updated_long_running_command_agent_interaction_state
-                    .or(current_long_running_command_agent_interaction_state),
-            cli_agent_session: updated_cli_agent_session.unwrap_or(current_cli_agent_session),
-        }
-    }
-}
-
 impl From<UniversalDeveloperInputContext> for UniversalDeveloperInputContextUpdate {
     fn from(context: UniversalDeveloperInputContext) -> Self {
         Self {
@@ -614,7 +499,6 @@ impl From<UniversalDeveloperInputContext> for UniversalDeveloperInputContextUpda
 pub enum SessionEndedReason {
     EndedBySharer,
     InactivityLimitReached,
-    ExceededSizeLimit,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Copy)]

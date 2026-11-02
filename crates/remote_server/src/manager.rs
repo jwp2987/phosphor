@@ -2755,24 +2755,6 @@ impl RemoteServerManager {
         )
     }
 
-    /// Sends an incremental `ResyncCodebase` to the daemon owning `repo_path`.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn trigger_codebase_incremental_sync(
-        &mut self,
-        host_id: HostId,
-        repo_path: String,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        self.mutate_codebase_index(
-            host_id,
-            repo_path,
-            RemoteCodebaseIndexUpdateOperation::Sync {
-                is_full_sync: false,
-            },
-            ctx,
-        )
-    }
-
     /// Drops the daemon's index for `repo_path`.
     #[cfg(not(target_family = "wasm"))]
     pub fn drop_codebase_index(
@@ -3250,7 +3232,7 @@ pub(crate) struct BinaryCheckProbes {
 /// platform (or when detection failed), exactly as if it had never run. SSH-level failures
 /// are logged and surfaced as `None`, which the controller treats as inconclusive (fail
 /// open).
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(test, not(target_family = "wasm")))]
 pub(crate) async fn run_binary_check_probes<T>(
     transport: &T,
     session_id: SessionId,

@@ -20,11 +20,6 @@ use warpui::{AppContext, Element, EventContext, PaintContext, SingletonEntity as
 use super::settings::WarpifySettings;
 use super::SubshellSource;
 
-/// The flag font size varies with the monospace font width, but if it gets too big it will start
-/// to overlap with the prompt grid. This should eventually be fixed by growing the block height to
-/// fit the flag, but for now we can limit the flag font size to this maximum value.
-pub const MAXIMUM_FLAG_FONT_SIZE: f32 = 13.;
-
 const SUBSHELL_FLAG_HORIZONTAL_PADDING: f32 = 8.;
 const SUBSHELL_FLAG_VERTICAL_PADDING: f32 = 1.;
 

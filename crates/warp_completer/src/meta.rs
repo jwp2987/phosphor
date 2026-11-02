@@ -39,13 +39,6 @@ impl Span {
         Span::new(0, 0)
     }
 
-    pub fn for_char(pos: usize) -> Span {
-        Span {
-            start: pos,
-            end: pos + 1,
-        }
-    }
-
     pub fn until(&self, other: impl Into<Span>) -> Span {
         let other = other.into();
 

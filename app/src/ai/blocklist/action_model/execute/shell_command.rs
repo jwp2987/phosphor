@@ -37,6 +37,7 @@ use crate::terminal::model::block::{
 use crate::terminal::model::session::command_executor::{
     POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
 };
+#[cfg(test)]
 use crate::terminal::shell::ShellType;
 use crate::terminal::ssh::util::parse_interactive_ssh_command;
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
@@ -913,18 +914,15 @@ impl ShellCommandExecutor {
                     return ActionResult::Cancelled;
                 };
                 let mut tracker = StallTracker::default();
-                let mut observe = true;
                 loop {
-                    if observe {
-                        observe = false;
-                        let fingerprint = {
-                            let model = terminal_model.lock();
-                            stall_fingerprint(&model, &block_selector)
-                        };
-                        let now = instant::Instant::now();
-                        if tracker.observe(fingerprint, now) >= STALL_SNAPSHOT_AFTER {
-                            break WakeReason::Stalled;
-                        }
+                    // Every wake-up (output, quiet timer, or the first pass) re-judges the screen.
+                    let fingerprint = {
+                        let model = terminal_model.lock();
+                        stall_fingerprint(&model, &block_selector)
+                    };
+                    let now = instant::Instant::now();
+                    if tracker.observe(fingerprint, now) >= STALL_SNAPSHOT_AFTER {
+                        break WakeReason::Stalled;
                     }
                     let quiet_for =
                         tracker.time_until_stalled(STALL_SNAPSHOT_AFTER, instant::Instant::now());
@@ -951,12 +949,12 @@ impl ShellCommandExecutor {
                         },
                         _ = deadline.as_mut() => break WakeReason::Timeout,
                         val = output => match val {
-                            Ok(()) => observe = true,
+                            Ok(()) => {}
                             // The executor dropped the watcher: the action was cancelled.
                             Err(_) => return ActionResult::Cancelled,
                         },
                         // Re-judge the screen once when the quiet period is up.
-                        _ = quiet_timer => observe = true,
+                        _ = quiet_timer => {}
                     }
                 }
             } else if let Some(timeout_duration) = timeout_duration {

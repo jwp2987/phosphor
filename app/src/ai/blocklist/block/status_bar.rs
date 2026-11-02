@@ -348,7 +348,7 @@ impl BlocklistAIStatusBar {
             | BlocklistAIActionEvent::FinishedAction { .. } => ctx.notify(),
             _ => (),
         });
-        ctx.subscribe_to_model(model_event_dispatcher, |me, _, event, ctx| match event {
+        ctx.subscribe_to_model(model_event_dispatcher, |_, _, event, ctx| match event {
             // #1373: re-evaluate when the running command becomes interactive (a program owns the
             // terminal) instead of after a fixed delay from the block's start.
             ModelEvent::CommandBecameInteractive { .. } => {

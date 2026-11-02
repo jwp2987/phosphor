@@ -557,7 +557,6 @@ count reported as missing.
 | `crates/local_control/src/protocol_tests.rs` | B | 11 | 11 | 0 |
 | `crates/local_control/src/selection_tests.rs` | B | 3 | 3 | 0 |
 | `crates/managed_secrets/src/envelope_tests.rs` | B | 4 | 4 | 0 |
-| `crates/managed_secrets_wasm/src/lib_tests.rs` | B | 5 | 5 | 0 |
 | `crates/markdown_parser/src/html_parser_tests.rs` | B | 14 | 14 | 0 |
 | `crates/markdown_parser/src/markdown_parser_tests.rs` | B | 134 | 134 | 0 |
 | `crates/remote_server/src/setup/glibc_tests.rs` | B | 9 | 9 | 0 |

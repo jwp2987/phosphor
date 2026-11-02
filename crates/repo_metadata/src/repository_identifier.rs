@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use warp_core::HostId;
 use warp_util::standardized_path::StandardizedPath;
@@ -29,15 +29,6 @@ impl RepositoryIdentifier {
     pub fn local_path(&self) -> Option<&StandardizedPath> {
         match self {
             Self::Local(path) => Some(path),
-            Self::Remote(_) => None,
-        }
-    }
-
-    /// Returns the local path as a `PathBuf` if this is a `Local` variant
-    /// and the encoding matches the current OS.
-    pub fn local_path_buf(&self) -> Option<PathBuf> {
-        match self {
-            Self::Local(path) => path.to_local_path(),
             Self::Remote(_) => None,
         }
     }

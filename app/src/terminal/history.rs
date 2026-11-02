@@ -470,6 +470,7 @@ impl HistoryEntry {
         }
     }
 
+    #[cfg(test)]
     pub fn command_at_time(
         command: String,
         start_ts: DateTime<Local>,

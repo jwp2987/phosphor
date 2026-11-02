@@ -18,6 +18,19 @@ pub(crate) fn paste_too_large_message(bytes: usize) -> String {
     )
 }
 
+/// How long typed keys are held for a clipboard read before giving up on it (#1331). The platform
+/// readers bound their own wait; this is the backstop for a wedged reader thread, so the held keys
+/// are ALWAYS applied. Shared by the terminal and the input editor. `PHOSPHOR_PASTE_BACKSTOP_MS`
+/// overrides it; `0` turns the backstop off (wait for the reader).
+pub(crate) fn paste_backstop() -> Option<std::time::Duration> {
+    const DEFAULT_MS: u64 = 3_000;
+    let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MS);
+    (ms > 0).then(|| std::time::Duration::from_millis(ms))
+}
+
 /// Why a pty-bound background paste produced no bytes.
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,19 +41,8 @@ pub(crate) enum PasteFailure {
     TooLarge(usize),
 }
 
-/// What the caller does with a key typed while a paste may be pending.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum KeyDisposition {
-    /// No paste is pending: write the key now.
-    PassThrough,
-    /// A paste is pending and has taken the key: it is released behind the paste.
-    Held,
-    /// An abort key cancelled the pending paste. Write these held keys in order, then the abort.
-    CancelledPaste(Vec<Vec<u8>>),
-}
-
-/// `K` is what is held behind the paste: raw pty bytes for the terminal (the default), editor keys
-/// for the input editor (#1300).
+/// `K` is what is held behind the paste: editor keys for the input editor and the plain editors
+/// (#1300). The pty paste itself moved onto the input queue (`view/paste_queue.rs`).
 #[derive(Debug)]
 pub(crate) struct PasteSequencer<K = Vec<u8>> {
     next_id: u64,
@@ -114,22 +116,6 @@ impl<K> PasteSequencer<K> {
             return None;
         }
         self.pending.take().map(|pending| pending.held)
-    }
-}
-
-impl PasteSequencer<Vec<u8>> {
-    /// Routes a key typed now. `is_abort` is true for Ctrl-C / Ctrl-D.
-    pub(crate) fn on_key(&mut self, bytes: &[u8], is_abort: bool) -> KeyDisposition {
-        let Some(pending) = self.pending.as_mut() else {
-            return KeyDisposition::PassThrough;
-        };
-        if is_abort {
-            let held = std::mem::take(&mut pending.held);
-            self.pending = None;
-            return KeyDisposition::CancelledPaste(held);
-        }
-        pending.held.push(bytes.to_vec());
-        KeyDisposition::Held
     }
 }
 

@@ -52,8 +52,7 @@ pub fn default_max_file_size_bytes(frontend: LogFrontend) -> Option<u64> {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), path = "native.rs")]
-#[cfg_attr(target_family = "wasm", path = "wasm.rs")]
+#[path = "native.rs"]
 mod imp;
 
 #[cfg(not(target_family = "wasm"))]

@@ -3,9 +3,10 @@ use std::{
     iter,
 };
 
+#[cfg(test)]
+use crate::terminal::shared_session::protocol::Viewer;
 use crate::terminal::shared_session::protocol::{
-    InputReplicaId, ParticipantInfo, ParticipantList, ParticipantPresenceUpdate, PresenceUpdate,
-    Role, RoleRequestId, Selection, Viewer,
+    InputReplicaId, ParticipantInfo, ParticipantList, Role, RoleRequestId, Selection,
 };
 use futures::future::BoxFuture;
 use futures_util::future::join_all;
@@ -324,17 +325,6 @@ impl PresenceManager {
         self.role
     }
 
-    /// Returns the viewer's role, if the viewer is known to us.
-    pub fn viewer_role(&self, viewer_id: &ParticipantId) -> Option<Role> {
-        self.present_viewers.get(viewer_id).and_then(|v| v.role)
-    }
-
-    /// Returns a viewer's role request id given their participant id,
-    /// `None` if the viewer does not have a pending request.
-    pub fn get_role_request(&self, participant_id: &ParticipantId) -> Option<&RoleRequestId> {
-        self.role_requests.get(participant_id)
-    }
-
     /// Returns the number of present viewers (not including ourselves).
     pub(crate) fn present_viewer_count(&self) -> usize {
         self.present_viewers.len()
@@ -538,30 +528,6 @@ impl PresenceManager {
         }
     }
 
-    pub fn update_participant_presence(
-        &mut self,
-        update: ParticipantPresenceUpdate,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-        let participant = if self.sharer_id == update.participant_id {
-            self.sharer.as_mut()
-        } else {
-            self.present_viewers.get_mut(&update.participant_id)
-        };
-
-        let Some(participant) = participant else {
-            if self.id != update.participant_id {
-                log::warn!("Received shared session participant presence update for participant that doesn't exist");
-            }
-            return;
-        };
-        let PresenceUpdate::Selection(selection) = update.update;
-
-        // Selection info is needed for rendering remote cursors in input
-        participant.info.selection = selection;
-        self.refresh_block_id_to_participants_selected();
-    }
-
     pub fn update_participant_role(
         &mut self,
         participant_id: &ParticipantId,
@@ -583,59 +549,6 @@ impl PresenceManager {
         for viewer in self.present_viewers.values_mut() {
             viewer.role = Some(Role::Reader);
         }
-    }
-
-    /// Called when the sharer is notified of a role request from a viewer.
-    pub fn on_role_requested(
-        &mut self,
-        participant_id: ParticipantId,
-        role_request_id: RoleRequestId,
-        role: Role,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-        // TODO: handle pending role requests on reconnection
-        // Ensure only the sharer can update its role requests
-        if self.sharer_id != self.id {
-            return;
-        }
-
-        // Ensure viewer doesn't already have requested role
-        if let Some(old_role) = self.viewer_role(&participant_id) {
-            if role == old_role {
-                return;
-            }
-        }
-
-        self.role_requests
-            .insert(participant_id.clone(), role_request_id.clone());
-    }
-
-    /// Called when the sharer is notified of a cancelled role request
-    pub fn on_role_request_cancelled(
-        &mut self,
-        participant_id: ParticipantId,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-        // Ensure only the sharer can remove its role requests
-        if self.sharer_id != self.id {
-            return;
-        }
-
-        self.role_requests.remove(&participant_id);
-    }
-
-    /// Called as the sharer responds to a role request
-    pub fn on_role_request_responded_to(
-        &mut self,
-        participant_id: ParticipantId,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-        // Ensure only the sharer can remove its role requests
-        if self.sharer_id != self.id {
-            return;
-        }
-
-        self.role_requests.remove(&participant_id);
     }
 
     pub fn set_is_reconnecting(
@@ -733,48 +646,11 @@ impl PresenceManager {
         self.absent_viewers.values()
     }
 
-    /// Returns a viewer's legacy user uid, if the viewer is known to us.
-    pub fn viewer_user_uid(&self, viewer_id: &ParticipantId) -> Option<UserUid> {
-        if *viewer_id == self.id {
-            return Some(self.user_uid);
-        }
-
-        self.present_viewers
-            .get(viewer_id)
-            .map(|v| v.info.profile_data.user_uid.as_str())
-            .or_else(|| {
-                self.absent_viewers
-                    .get(viewer_id)
-                    .map(|v| v.participant_info.profile_data.user_uid.as_str())
-            })
-            .map(UserUid::new)
-    }
-
-    /// Returns all present viewer IDs associated with the given legacy user UID,
-    /// including ourselves if applicable.
-    pub fn present_viewer_ids_for_uid(
-        &self,
-        viewer_uid: UserUid,
-    ) -> impl Iterator<Item = &ParticipantId> + '_ {
-        let is_viewer_self = self.user_uid == viewer_uid;
-        let viewer_ids = self
-            .present_viewers
-            .values()
-            .filter(move |v| viewer_uid.as_string() == v.info.profile_data.user_uid)
-            .map(|v| &v.info.id);
-        viewer_ids.chain(is_viewer_self.then_some(&self.id))
-    }
-
-    /// Returns a participant ID for a participant associated with the given
-    /// user UID.
-    pub fn present_viewer_id_for_uid(&self, viewer_uid: UserUid) -> Option<&ParticipantId> {
-        self.present_viewer_ids_for_uid(viewer_uid).next()
-    }
-
     /// Returns the user UID shared by every *present* viewer in `viewers`, or
     /// `None` if there are zero present viewers or more than one distinct
     /// present-viewer UID (a single user can appear more than once, e.g. with
     /// multiple tabs open onto the shared session).
+    #[cfg(test)]
     pub(crate) fn single_distinct_present_viewer_uid_from_viewers<'a>(
         viewers: impl Iterator<Item = &'a Viewer>,
     ) -> Option<&'a str> {

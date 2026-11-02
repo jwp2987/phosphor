@@ -61,9 +61,6 @@
 //!    variant, and the view's state (the ssh gate key) is detached at once.
 //! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
-// Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
-#![allow(dead_code)]
-
 mod destination;
 mod gates;
 mod pane;
@@ -88,7 +85,7 @@ pub use destination::{
 };
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
 pub use pane::{
-    Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, QueueGuard, SshDropThen,
+    Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
 
@@ -279,8 +276,6 @@ pub enum Origin {
     Editor,
     /// Re-offered by a delivery follow-up.
     Replay(EntryId),
-    /// Synthesized (mouse report, wheel to arrow).
-    Synthesized,
 }
 
 #[derive(Clone, Debug)]
@@ -365,6 +360,7 @@ impl FollowUps {
     }
 
     /// A gate-closing event that happened while delivering.
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn gate_event(&mut self, kind: GateKind, key: u64) {
         self.items.push(Follow::GateEvent(kind, key));
     }
@@ -508,6 +504,7 @@ impl InputQueue {
     // ---- inspection -------------------------------------------------------------------------
 
     /// Lowers (or raises) the cap on queued entries; for tests of the overflow behaviour.
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn set_max_entries(&mut self, max_entries: usize) {
         self.max_entries = max_entries;
     }
@@ -517,10 +514,12 @@ impl InputQueue {
         self.overflow_dropped
     }
 
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn queued_len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn queued_ids(&self) -> impl Iterator<Item = EntryId> + '_ {
         self.entries.iter().map(|entry| entry.id)
     }
@@ -550,11 +549,13 @@ impl InputQueue {
     }
 
     /// The id the next arrival will get.
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn peek_next_id(&self) -> EntryId {
         EntryId(self.next_id)
     }
 
     /// Number of caps that fired for a gate that was still open.
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn give_up_count(&self) -> u64 {
         self.give_ups
     }
@@ -709,6 +710,7 @@ impl InputQueue {
 
     /// Whether the head entry waits behind a gate. Invariant: a non-empty queue always has a
     /// blocked head (otherwise the last drain would have delivered it).
+    #[cfg(any(test, feature = "dev-support"))]
     pub fn head_blocked(&self) -> bool {
         self.entries
             .front()

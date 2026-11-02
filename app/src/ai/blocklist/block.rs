@@ -16,8 +16,6 @@ pub mod view_impl;
 pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockEvent};
 
 #[cfg(feature = "agent_mode_debug")]
-use self::code_diff_view::FileDiff;
-use crate::ai::agent::redaction::redact_secrets;
 use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
@@ -104,7 +102,6 @@ use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::Appearance;
-use crate::LLMPreferences;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use pathfinder_geometry::vector::vec2f;
@@ -205,7 +202,6 @@ use crate::code_review::comments::{
     CommentId, CommentOrigin,
 };
 use crate::code_review::CodeReviewTelemetryEvent;
-use crate::PrivacySettings;
 use crate::{
     ai::agent::{AIAgentInput, ServerOutputId},
     send_telemetry_from_ctx,
@@ -221,7 +217,6 @@ use super::{
     inline_action::code_diff_view::{CodeDiffState, CodeDiffView, CodeDiffViewEvent},
     inline_action::requested_command_attribution::is_command_copied_from_document,
     permissions::is_agent_mode_autonomy_allowed,
-    telemetry_banner::should_collect_ai_ugc_telemetry,
     BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, BlocklistAIPermissions,
 };
@@ -1816,10 +1811,6 @@ impl AIBlock {
         self.spawn_link_detection(ctx);
 
         ctx.notify();
-    }
-
-    pub fn contains_actions(&self) -> bool {
-        !self.requested_action_ids.is_empty()
     }
 
     pub fn contains_action(&self, action_id: &AIAgentActionId) -> bool {
@@ -3794,16 +3785,6 @@ impl AIBlock {
         }
     }
 
-    fn calculate_renderable_action_index(
-        &self,
-        target_action_id: &AIAgentActionId,
-        app: &AppContext,
-    ) -> Option<usize> {
-        let output = self.model.status(app).output_to_render()?;
-        let output = output.get();
-        output.calculate_action_index(target_action_id)
-    }
-
     fn handle_web_search_messages(
         &mut self,
         messages: &[AIAgentOutputMessage],
@@ -4003,21 +3984,12 @@ impl AIBlock {
         });
 
         let identifiers = view.as_ref(ctx).identifiers().clone();
-        let query = view.as_ref(ctx).query().unwrap_or_default();
 
-        let should_collect_ugc =
-            should_collect_ai_ugc_telemetry(ctx, PrivacySettings::as_ref(ctx).is_telemetry_enabled);
-        let redacted_query = if should_collect_ugc {
-            let mut redacted_query = query.clone();
-            redact_secrets(&mut redacted_query);
-            Some(redacted_query)
-        } else {
-            None
-        };
+        // The query text is never attached to telemetry (no UGC collection).
         send_telemetry_from_ctx!(
             TelemetryEvent::UnitTestSuggestionAccepted {
                 identifiers,
-                query: redacted_query,
+                query: None,
                 interaction_source,
             },
             ctx
@@ -4288,13 +4260,6 @@ impl AIBlock {
             },
         };
         Some(rich_content_link)
-    }
-
-    /// `true` if the AI output in the block finished streaming.
-    /// Note that this is different from `is_finished` since user could still have pending
-    /// actions to execute.
-    pub fn is_ai_output_complete(&self, app: &AppContext) -> bool {
-        self.model.status(app).is_complete()
     }
 
     /// Returns `true` if the block contains any actions that are blocked on user confirmation.
@@ -5326,35 +5291,8 @@ impl AIBlock {
             .find(|view| !view.as_ref(app).is_hidden())
     }
 
-    /// Inspects the state of the AI output stream and determines if we are currently at a point where
-    /// we should render the floating AI control panel. This is purely a UX decision.
-    pub fn should_show_ai_control_panel(&self, app: &AppContext) -> bool {
-        // Returns true if we're not blocked on user input at this moment.
-        // A stream of regular text output is not blocking. Generating a command is not blocking. Generating a code
-        // diff is not blocking. In those cases, we return true. Waiting for a user to accept a requested command
-        // is blocking. So is waiting for them to accept a file read. In those cases, we return false since the action
-        // takes responsiblity for showing a cancel option.
-        self.model
-            .status(app)
-            .output_to_render()
-            .is_none_or(|output| {
-                output.get().actions().last().is_none_or(|action| {
-                    let is_streaming = self.model.status(app).is_streaming();
-                    let status = self.action_model.as_ref(app).get_action_status(&action.id);
-                    is_streaming || status.is_some_and(|status| status.is_running())
-                })
-            })
-    }
-
     pub fn saved_position_id(&self) -> String {
         get_rich_content_position_id(&self.view_id)
-    }
-
-    pub fn get_pending_action_type(&self, app: &AppContext) -> Option<AIAgentActionType> {
-        self.action_model
-            .as_ref(app)
-            .get_pending_action(app)
-            .map(|action| action.action.clone())
     }
 
     pub fn status(&self, app: &AppContext) -> AIBlockOutputStatus {
@@ -5371,42 +5309,6 @@ impl AIBlock {
                     .is_some_and(|status| status.is_running())
                     && requested_command.view.as_ref(app).is_header_expanded()
             })
-    }
-
-    pub fn output_model_display_name(&self, app: &AppContext) -> String {
-        let Some(base_model_id) = self.model.base_model(app) else {
-            log::warn!("No base model found for output model display name");
-            return String::default();
-        };
-
-        // Get the model name from the input metadata.
-        let mut model_name = LLMPreferences::as_ref(app)
-            .get_llm_info(base_model_id)
-            .map(|info| info.display_name.clone())
-            .unwrap_or_default();
-
-        // If the input model is "auto", always display that, otherwise use the actual output model if available.
-        if model_name != "auto" {
-            let model_id = self.model.model_id(app);
-            if let Some(model_id) = model_id {
-                if let Some(output_model_name) = LLMPreferences::as_ref(app)
-                    .get_llm_info(&model_id)
-                    .map(|info| info.display_name.clone())
-                {
-                    model_name = output_model_name;
-                }
-            }
-        }
-        model_name
-    }
-
-    #[cfg(feature = "agent_mode_debug")]
-    pub fn set_diffs(&self, diffs: Vec<FileDiff>, ctx: &mut ViewContext<Self>) {
-        if let Some(edit) = self.requested_edits.values().next() {
-            edit.view.update(ctx, |view, ctx| {
-                view.set_candidate_diffs(diffs, ctx);
-            });
-        }
     }
 
     /// Gets the prompt text for copying

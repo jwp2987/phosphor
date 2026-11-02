@@ -108,6 +108,7 @@ impl TaskStore {
     /// Returns an exchange by its ID, using the index for an O(1) average-case
     /// lookup. Falls back to a linear scan across tasks for exchanges not (yet)
     /// reflected in the index, e.g. a subtask exchange added between rebuilds.
+    #[cfg(test)]
     pub fn exchange_by_id(&self, exchange_id: AIAgentExchangeId) -> Option<&AIAgentExchange> {
         if let Some(exchange) = self
             .exchanges

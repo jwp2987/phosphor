@@ -50,17 +50,6 @@ impl From<&RemoteCodebaseIndexStatus> for proto::CodebaseIndexStatus {
     }
 }
 
-pub fn statuses_to_snapshot_proto<'a>(
-    statuses: impl IntoIterator<Item = &'a RemoteCodebaseIndexStatus>,
-) -> proto::CodebaseIndexStatusesSnapshot {
-    proto::CodebaseIndexStatusesSnapshot {
-        statuses: statuses
-            .into_iter()
-            .map(proto::CodebaseIndexStatus::from)
-            .collect(),
-    }
-}
-
 fn proto_state(state: RemoteCodebaseIndexState) -> proto::CodebaseIndexStatusState {
     match state {
         RemoteCodebaseIndexState::NotEnabled => proto::CodebaseIndexStatusState::NotEnabled,

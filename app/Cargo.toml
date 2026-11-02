@@ -79,7 +79,6 @@ chrono.workspace = true
 clap.workspace = true
 command = { workspace = true }
 command-corrections.workspace = true
-command-signatures-v2 = { workspace = true, optional = true }
 computer_use.workspace = true
 crc.workspace = true
 content_inspector = "0.2.4"
@@ -236,7 +235,6 @@ warp-workflows.workspace = true
 warp_completer.workspace = true
 warp_core.workspace = true
 warp_editor.workspace = true
-warp_js = { workspace = true, optional = true }
 warp_util.workspace = true
 warpui = { workspace = true, features = ["schema_gen", "settings_value"] }
 warpui_core.workspace = true
@@ -304,7 +302,6 @@ winit = { workspace = true }
 wgpu.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-app-installation-detection.workspace = true
 async-io.workspace = true
 axum.workspace = true
 comfy-table = "7.1.4"
@@ -355,7 +352,6 @@ rmcp = { workspace = true, features = [
 # 0.2.6 floor: `SseStream::from_bytes_stream` (used here and by rmcp 2.x) needs >= 0.2.2.
 sse-stream = "0.2.6"
 notify-debouncer-full.workspace = true
-rquickjs = { workspace = true, optional = true }
 rustls.workspace = true
 syntect = "5.0"
 sysinfo.workspace = true
@@ -539,11 +535,6 @@ changelog = []
 clear_autosuggestion_on_escape = []
 command_predictor = []
 context_line_review_comments = []
-completions_v2 = [
-    "plugin_host",
-    "warp_completer/v2",
-    "dep:command-signatures-v2",
-]
 crash_reporting = [
     "dep:minidumper",
     "dep:crash-handler",
@@ -846,8 +837,6 @@ mcp_server = []
 mcp_oauth = []
 mcp_debugging_ids = []
 notebook_parameter = []
-# Remote-backed tty that connects to a PTY-like interface via a server.
-remote_tty = []
 # Fix for cursor reflow bug during window resize, from Alacritty resizing logic.
 resize_fix = []
 pluggable_notifications = []
@@ -856,7 +845,6 @@ read_image_files = []
 # This feature enables plugin support in Warp. Note that its typically checked
 # directly, rather than via the `FeatureFlag` enum, because its value is
 # required early in the app lifecycle prior to `FeatureFlag` initialization.
-plugin_host = ["dep:rquickjs", "dep:warp_js", "warp_cli/plugin_host"]
 # Enable this feature to automatically perform CPU profiling via pprof.  The
 # generated profile will be written to profile.pb in the current directory.
 # NOTE: This may slow down program execution.

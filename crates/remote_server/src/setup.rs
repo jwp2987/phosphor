@@ -54,13 +54,6 @@ impl RemoteServerSetupState {
             Self::Checking | Self::Installing { .. } | Self::Updating | Self::Initializing
         )
     }
-
-    pub fn is_connecting(&self) -> bool {
-        matches!(
-            self,
-            Self::Installing { .. } | Self::Updating | Self::Initializing
-        )
-    }
 }
 
 /// Outcome of [`crate::transport::RemoteTransport::run_preinstall_check`].

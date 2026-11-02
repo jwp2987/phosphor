@@ -2,7 +2,6 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
-use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::event::{
     BootstrappedEvent, Event, ExecutedExecutorCommandEvent, InitSshEvent, InitSubshellEvent,
@@ -17,7 +16,7 @@ use crate::terminal::model::completions::{
 use crate::terminal::model::escape_sequences::ModeProvider;
 use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};
-use crate::terminal::shared_session::{ai_agent::encode_agent_response_event, SharedSessionStatus};
+use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::ssh::util::{InteractiveSshCommand, SshLoginState};
 use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
 use crate::terminal::{color, ssh, BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason};
@@ -56,7 +55,7 @@ use super::lifecycle::{
 };
 use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
-use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
+use super::session::{InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
 use super::reply_ledger::SharedReplyLedger;
@@ -80,7 +79,6 @@ use crate::terminal::shell::{ShellName, ShellType};
 use crate::terminal::model::secrets::ObfuscateSecrets;
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use warp_core::command::ExitCode;
-use warp_core::report_error;
 
 use crate::terminal::shared_session::protocol::{
     AICommandMetadata, OrderedTerminalEventType, ParticipantId,
@@ -297,10 +295,6 @@ impl<T> WithinBlock<T> {
             grid: self.grid,
         }
     }
-
-    pub fn is_within_this_block(&self, index: BlockIndex) -> bool {
-        self.block_index == index
-    }
 }
 
 impl<T: Copy> WithinBlock<RangeInclusive<T>> {
@@ -384,22 +378,6 @@ enum IsReceivingKittyActionData {
 enum IsReceivingHook {
     Yes { pending_hook: Box<PendingHook> },
     No,
-}
-
-/// Information needed to render a warpify "success" block upon successful subshell bootstrap.
-#[derive(Debug, Clone)]
-pub struct SubshellSuccessBlockInfo {
-    /// The ID of the newly bootstrapped subshell session.
-    /// This ID is needed in order to associate the success block with the subshell session (and
-    /// include it in the subshell "context" UI, with the flag and block border).
-    pub subshell_session_id: SessionId,
-
-    /// The command which spawned the subshell.
-    pub spawning_command: String,
-
-    pub shell_type: ShellType,
-
-    pub session_type: BootstrapSessionType,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
@@ -1359,6 +1337,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a ambient-agent pane before it has connected to a shared session.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_ambient_agent_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1369,7 +1348,7 @@ impl TerminalModel {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
     ) -> Self {
-        let mut me = Self::new_for_shared_session_viewer_internal(
+        Self::new_for_shared_session_viewer_internal(
             sizes,
             colors,
             event_proxy,
@@ -1379,12 +1358,7 @@ impl TerminalModel {
             is_inverted,
             obfuscate_secrets,
             true,
-        );
-        if false {
-            me.block_list_mut()
-                .set_is_executing_oz_environment_startup_commands(true);
-        }
-        me
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1426,6 +1400,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a terminal session that is being viewed.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1449,6 +1424,7 @@ impl TerminalModel {
         )
     }
 
+    #[cfg(test)]
     pub fn set_ordered_terminal_events_for_shared_session_tx(
         &mut self,
         tx: Sender<OrderedTerminalEventType>,
@@ -1471,10 +1447,6 @@ impl TerminalModel {
         }
     }
 
-    pub fn set_write_to_pty_events_for_shared_session_tx(&mut self, tx: Sender<Vec<u8>>) {
-        self.write_to_pty_events_for_shared_session_tx = Some(tx);
-    }
-
     pub fn send_write_to_pty_events_for_shared_session(&mut self, bytes: Vec<u8>) {
         if !self.shared_session_status().is_executor() {
             return;
@@ -1487,80 +1459,10 @@ impl TerminalModel {
         }
     }
 
-    pub fn clear_write_to_pty_events_for_shared_session_tx(&mut self) {
-        self.write_to_pty_events_for_shared_session_tx = None;
-    }
-
-    /// Sends an Agent ResponseEvent to viewers if this session is shared.
-    /// The participant_id should be the ID of the participant who initiated the query.
-    /// The forked_from_conversation_token is used for forked conversations to help viewers
-    /// link the new server-assigned token to an existing conversation from historical replay.
-    pub fn send_agent_response_for_shared_session(
-        &mut self,
-        response: &warp_multi_agent_api::ResponseEvent,
-        response_initiator: Option<ParticipantId>,
-        forked_from_conversation_token: Option<String>,
-    ) {
-        // We should always have a response initiator for shared sessions,
-        // but if we don't we should still send the response event to the viewers
-        // (as opposed to completely failing and skipping the send).
-        if response_initiator.is_none() {
-            report_error!(anyhow::anyhow!(
-                "No response initiator tracked for agent response event."
-            ));
-        }
-
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                let encoded = encode_agent_response_event(response);
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentResponseEvent {
-                    response_initiator,
-                    response_event: encoded,
-                    forked_from_conversation_token,
-                }) {
-                    log::warn!("Failed to send OrderedTerminalEventType::AgentResponseEvent: {e}");
-                }
-            }
-        } else {
-            log::debug!("Not sharing this session; ignoring agent response event");
-        }
-    }
-
-    pub fn send_agent_conversation_replay_started_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) =
-                    tx.try_send(OrderedTerminalEventType::AgentConversationReplayStarted)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayStarted: {e}"
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn send_agent_conversation_replay_ended_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentConversationReplayEnded)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayEnded: {e}"
-                    );
-                }
-            }
-        }
-    }
-
     /// Whether the session sharing server is currently replaying
     /// conversation events (for conversation reconstruction).
     pub fn is_receiving_agent_conversation_replay(&self) -> bool {
         self.is_receiving_agent_conversation_replay
-    }
-
-    pub fn set_is_receiving_agent_conversation_replay(&mut self, value: bool) {
-        self.is_receiving_agent_conversation_replay = value;
     }
 
     pub fn set_shared_session_source_type(
@@ -2232,6 +2134,7 @@ impl TerminalModel {
 
     // Starts active block as a background block. Used in Alacritty integration tests to
     // work with the output grid directly.
+    #[cfg(test)]
     pub fn start_active_block_as_background_block(&mut self) {
         self.block_list.active_block_mut().start_background(None);
     }
@@ -2466,6 +2369,7 @@ impl TerminalModel {
         self.colors = colors;
     }
 
+    #[cfg(test)]
     pub fn raw_grid_for_ref_tests(&self) -> &GridHandler {
         if self.alt_screen_active {
             self.alt_screen.grid_handler()
@@ -2515,17 +2419,6 @@ impl TerminalModel {
             return self.alt_screen().is_mode_set(mode);
         }
         self.block_list().active_block().is_mode_set(mode)
-    }
-
-    pub fn get_shell(&self) -> Option<AvailableShell> {
-        match &self.shell_launch_state {
-            ShellLaunchState::DeterminingShell {
-                available_shell, ..
-            } => available_shell.clone(),
-            ShellLaunchState::ShellSpawned {
-                available_shell, ..
-            } => available_shell.clone(),
-        }
     }
 
     pub fn shared_session_status(&self) -> &SharedSessionStatus {
@@ -2704,38 +2597,6 @@ impl TerminalModel {
         self.block_list.set_obfuscate_secrets(obfuscate_secrets);
     }
 
-    /// Disables secret obfuscation for shared session creators only.
-    /// Specifically, secret obfuscation is disabled starting
-    /// from the `first_scrollback_block_index` onwards.
-    pub fn disable_secret_obfuscation_for_shared_sesson_creator(
-        &mut self,
-        first_scrollback_block_index: BlockIndex,
-    ) {
-        if !self.shared_session_status.is_sharer() {
-            log::warn!(
-                "Tried to disable secret obfuscation without being a shared session creator."
-            );
-            return;
-        }
-
-        let setting = ObfuscateSecrets::No;
-        self.obfuscate_secrets = setting;
-
-        // Disable obfuscation in the alt-screen.
-        self.alt_screen.set_obfuscate_secrets(setting);
-
-        // Ensure that all scrollback blocks and any subsequent blocks don't have their secrets obfuscated.
-        let active_block_index = self.block_list.active_block_index();
-        for block_index in
-            BlockIndex::range_as_iter(first_scrollback_block_index..active_block_index)
-        {
-            self.block_list
-                .set_obfuscate_secrets_for_block(block_index, setting);
-        }
-        self.block_list
-            .set_obfuscate_secrets_for_subsequent_blocks(setting);
-    }
-
     fn restored_block_commands(&self) -> Vec<HistoryEntry> {
         let mut commands = Vec::new();
         for block in self.block_list.blocks() {
@@ -2771,6 +2632,7 @@ impl TerminalModel {
         self.event_proxy.send_terminal_event(title_event);
     }
 
+    #[cfg(test)]
     pub fn set_custom_title(&mut self, custom_title: Option<String>) {
         self.custom_title.clone_from(&custom_title);
         // If the custom title set by the user is None, we "reset" to whatever the title was set by
@@ -2981,10 +2843,6 @@ impl TerminalModel {
 
     pub fn tmux_control_mode_active(&self) -> bool {
         self.tmux_control_mode_context.is_some()
-    }
-
-    pub fn is_pending_warp_initiated_control_mode(&self) -> bool {
-        self.pending_warp_initiated_control_mode.is_some()
     }
 
     pub fn is_warpified_ssh(&self) -> bool {
@@ -3365,8 +3223,8 @@ impl ansi::Handler for TerminalModel {
     /// The flip was gated on one thing: every emitter of a `requires_registered_session()` hook
     /// must quote an ID this client minted and registered before the emitting process could
     /// write anything back. That now holds for all of them:
-    /// * Local / remote-tty / subshell spawn bake an ID into the launch and register it
-    ///   (`local_tty/terminal_manager.rs`, `remote_tty/event_loop.rs`, `view.rs`).
+    /// * Local / subshell spawn bake an ID into the launch and register it
+    ///   (`local_tty/terminal_manager.rs`, `view.rs`).
     /// * The bootstrap scripts quote `$WARP_SESSION_ID` on `Preexec`, `CommandFinished`,
     ///   `InputBuffer`, `Clear`, `FinishUpdate`, `PreInteractiveSSHSession` and `Bootstrapped`
     ///   (`bash_body.sh` / `zsh_body.sh` / `fish.sh`), matching the pin.

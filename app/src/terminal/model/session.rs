@@ -306,17 +306,6 @@ impl Sessions {
         }
     }
 
-    pub fn is_any_session_remote(&self) -> bool {
-        self.sessions.values().any(|session| !session.is_local())
-    }
-
-    pub fn is_session_remote(&self, session_id: SessionId) -> bool {
-        self.sessions
-            .get(&session_id)
-            .map(|session| !session.is_local())
-            .unwrap_or(false)
-    }
-
     #[cfg(any(test, feature = "test-util"))]
     pub fn new_for_test() -> Self {
         let (executor_command_tx, _executor_command_rx) = async_channel::unbounded();
@@ -862,7 +851,6 @@ impl SessionInfo {
         }
     }
 
-    #[cfg(not(feature = "remote_tty"))]
     fn determine_session_type(
         init_shell_value: &InitShellValue,
         is_warpified_ssh_session: bool,
@@ -884,15 +872,6 @@ impl SessionInfo {
                 BootstrapSessionType::Local
             }
         }
-    }
-
-    #[cfg(feature = "remote_tty")]
-    fn determine_session_type(
-        _init_shell_value: &InitShellValue,
-        _is_warpified_ssh_session: bool,
-    ) -> BootstrapSessionType {
-        // When the `remote_tty` feature is enabled--the session is always considered remote.
-        BootstrapSessionType::WarpifiedRemote
     }
 
     /// Returns a fully populated [`SessionInfo`] containing data derived from the given
@@ -1394,16 +1373,6 @@ impl Session {
             self.info.session_id
         );
         true
-    }
-
-    /// Returns true if the session is employing in-band command execution to run generators.
-    pub fn is_using_in_band_command_execution(&self) -> bool {
-        self.command_executor
-            .read()
-            .as_ref()
-            .as_any()
-            .downcast_ref::<InBandCommandExecutor>()
-            .is_some()
     }
 
     /// Returns `true` if already attempted to load external commands for the `Session`.
@@ -2428,11 +2397,6 @@ pub mod testing {
             self
         }
 
-        pub fn with_history_sqlite(mut self, history_sqlite: Option<String>) -> Self {
-            self.history_sqlite = history_sqlite;
-            self
-        }
-
         pub fn with_user(mut self, user: String) -> Self {
             self.user = user;
             self
@@ -2583,16 +2547,6 @@ pub mod testing {
             }
         }
 
-        pub fn set_shell_options(&mut self, options: Option<HashSet<String>>) {
-            self.info.shell = Shell::new(
-                self.info.shell.shell_type(),
-                self.info.shell.version().clone(),
-                options,
-                self.info.shell.plugins().clone(),
-                self.info.shell.shell_path().clone(),
-            );
-        }
-
         pub fn set_external_commands(&self, commands: impl IntoIterator<Item = impl AsRef<str>>) {
             if self
                 .external_commands
@@ -2601,14 +2555,6 @@ pub mod testing {
             {
                 log::warn!("Ignored call to set_external_commands, as external commands had already been set!");
             };
-        }
-
-        pub fn set_environment_variables(
-            &mut self,
-            env_vars: impl IntoIterator<Item = impl Into<SmolStr>>,
-        ) {
-            self.info.environment_variable_names =
-                HashSet::from_iter(env_vars.into_iter().map(Into::into));
         }
 
         pub fn with_shell_launch_data(mut self, launch_data: ShellLaunchData) -> Self {

@@ -693,13 +693,8 @@ impl AgentInputFooter {
             me.update_display_chips(&model, ctx);
         });
 
-        let v2_model_selector = if false {
-            Some(ctx.add_typed_action_view(|ctx| {
-                ModelSelector::new(menu_positioning_provider.clone(), terminal_view_id, ctx)
-            }))
-        } else {
-            None
-        };
+        // The V2 (ambient-agent) model selector is never constructed.
+        let v2_model_selector = None;
 
         let mut me = Self {
             terminal_view_id,
@@ -2340,14 +2335,7 @@ impl ActionButtonTheme for AgentInputButtonTheme {
     }
 
     fn font_properties(&self) -> Option<warpui::fonts::Properties> {
-        if false {
-            Some(warpui::fonts::Properties {
-                weight: warpui::fonts::Weight::Semibold,
-                ..Default::default()
-            })
-        } else {
-            None
-        }
+        None
     }
 }
 

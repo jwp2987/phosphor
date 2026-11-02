@@ -412,8 +412,6 @@ pub enum TerminalAction {
     ToggleHideCliResponses,
     ExitAgentView,
     StartNewAgentConversation,
-    /// Cancel the ambient agent task while it's loading
-    CancelAmbientAgentTask,
     OpenInlineHistoryMenu,
     OpenModelSelector,
     ResolvePromptSuggestion(PromptSuggestionResolution),
@@ -731,7 +729,6 @@ impl fmt::Debug for TerminalAction {
             ToggleHideCliResponses => write!(f, "ToggleHideCliResponses"),
             ExitAgentView => write!(f, "ExitAgentView"),
             StartNewAgentConversation => write!(f, "StartNewAgentConversation"),
-            CancelAmbientAgentTask => write!(f, "CancelAmbientAgentTask"),
             OpenInlineHistoryMenu => write!(f, "OpenInlineHistoryMenu"),
             OpenModelSelector => write!(f, "OpenModelSelector"),
             ResolvePromptSuggestion(..) => write!(f, "ResolvePromptSuggestion"),
