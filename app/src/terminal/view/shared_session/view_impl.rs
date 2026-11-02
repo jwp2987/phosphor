@@ -2,20 +2,17 @@
 
 use crate::context_chips::ContextChipKind;
 use crate::editor::{InteractionState, ReplicaId};
-use crate::settings::InputModeSettings;
 use crate::terminal::TerminalModel;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
 use crate::terminal::model::blocks::BlockListPoint;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinBlock;
-use crate::terminal::shared_session::protocol::RoleUpdatedReason;
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use crate::terminal::shared_session::protocol::{ParticipantId, Role, SessionId, WindowSize};
 use crate::terminal::shared_session::protocol::{RoleUpdateReason, SessionEndedReason};
 use crate::terminal::shared_session::settings::SharedSessionSettings;
 use crate::terminal::shared_session::{
     SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionStatus,
-    selections::point_to_session_sharing,
 };
 use crate::terminal::view::{
     ContextMenuAction, Event, InlineBannerItem, InlineBannerType, RichContentInsertionPosition,
@@ -31,7 +28,6 @@ use itertools::Itertools;
 use warpui::r#async::Timer;
 
 use settings::Setting as _;
-use warp_core::semantic_selection::SemanticSelection;
 use warpui::SingletonEntity;
 use warpui::units::IntoLines;
 use warpui::{ModelHandle, ViewContext};
@@ -40,9 +36,6 @@ use crate::terminal::shared_session::participant_avatar_view::ParticipantAvatarE
 use crate::terminal::shared_session::participant_avatar_view::ParticipantAvatarView;
 
 use crate::terminal::shared_session::protocol::ParticipantList;
-use crate::terminal::shared_session::protocol::ParticipantPresenceUpdate;
-
-use warpui::AppContext;
 
 use super::ConversationEndedTombstoneView;
 use super::adapter::{Adapter, Kind, Participant};
@@ -80,10 +73,6 @@ impl TerminalView {
     // TODO (suraj): do we actually need to expose this? It's a bit of a smell.
     pub fn shared_session_presence_manager(&self) -> Option<ModelHandle<PresenceManager>> {
         Some(self.shared_session.as_ref()?.presence_manager().clone())
-    }
-
-    pub fn shared_session_id(&self) -> Option<&SessionId> {
-        Some(self.shared_session.as_ref()?.session_id())
     }
 
     fn shared_session_source_type(&self) -> Option<&SessionSourceType> {
@@ -126,19 +115,6 @@ impl TerminalView {
         self.update_shared_session_pane_header(ctx);
     }
 
-    pub fn update_role(
-        &mut self,
-        participant_id: ParticipantId,
-        role: Role,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.on_participant_role_changed(&participant_id, role, ctx);
-        ctx.emit(Event::UpdateRole {
-            participant_id,
-            role,
-        });
-    }
-
     fn refresh_input_data_for_participants(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(shared_session) = &self.shared_session else {
             return;
@@ -169,26 +145,7 @@ impl TerminalView {
         // still runs; it just doesn't surface a "share" button in the header.
     }
 
-    // Zap: the Share Session path has been cut; the two methods below keep their
-    // signatures but are now no-ops — they no longer emit
-    // `Event::OpenShareSessionModal{,DeniedModal}` and no longer reach the cloud
-    // collaborative-session service.
-    pub fn open_share_session_modal(
-        &mut self,
-        _open_source: SharedSessionActionSource,
-        _ctx: &mut ViewContext<Self>,
-    ) {
-    }
-
     pub fn open_share_session_denied_modal(&mut self, _ctx: &mut ViewContext<Self>) {}
-
-    /// Focuses the view by telling the parent view to focus this session.
-    /// For example, in the common case, the parent pane group would consume
-    /// this event and focus the pane that this session lives in.
-    pub fn focus_shared_session(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.windows().show_window_and_focus_app(ctx.window_id());
-        ctx.emit(Event::FocusSession);
-    }
 
     /// The entrypoint to start a shared session: all attempts to start a shared session must
     /// go through this API! This is important to guarantee that the right session is being shared.
@@ -544,58 +501,6 @@ impl TerminalView {
         sharer.inactivity_timer_abort_handle = Some(timer_handler);
     }
 
-    pub fn get_shared_session_presence_selection(
-        &self,
-        ctx: &AppContext,
-    ) -> crate::terminal::shared_session::protocol::Selection {
-        let model_lock = self.model.lock();
-        let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
-        let semantic_selection = SemanticSelection::as_ref(ctx);
-
-        // First check if we have any selected blocks.
-        let selected_block_ids = self
-            .selected_blocks
-            .to_block_ids(model_lock.block_list())
-            .map(|id| id.to_string().into())
-            .collect_vec();
-        if !selected_block_ids.is_empty() {
-            return crate::terminal::shared_session::protocol::Selection::Blocks {
-                block_ids: selected_block_ids,
-            };
-        }
-
-        // Then check if we have selected text in the alt screen or block list.
-        if model_lock.is_alt_screen_active() {
-            if let Some(selection_range) =
-                model_lock.alt_screen().selection_range(semantic_selection)
-            {
-                return crate::terminal::shared_session::protocol::Selection::AltScreenText {
-                    start: point_to_session_sharing(*selection_range.start()),
-                    end: point_to_session_sharing(*selection_range.end()),
-                    is_reversed: selection_range.is_reversed(),
-                };
-            }
-        } else if let Some((start, end, is_reversed)) = model_lock
-            .block_list()
-            .text_selection_range(semantic_selection, input_mode.is_inverted_blocklist())
-        {
-            let Some(start) = start.to_session_sharing_block_point(model_lock.block_list()) else {
-                log::error!("Failed convert start of selection range to BlockPoint");
-                return crate::terminal::shared_session::protocol::Selection::None;
-            };
-            let Some(end) = end.to_session_sharing_block_point(model_lock.block_list()) else {
-                log::error!("Failed convert end of selection range to BlockPoint");
-                return crate::terminal::shared_session::protocol::Selection::None;
-            };
-            return crate::terminal::shared_session::protocol::Selection::BlockText {
-                start,
-                end,
-                is_reversed,
-            };
-        }
-        crate::terminal::shared_session::protocol::Selection::None
-    }
-
     pub fn handle_presence_manager_event(
         &mut self,
         event: &PresenceManagerEvent,
@@ -879,108 +784,6 @@ impl TerminalView {
         ctx.notify();
     }
 
-    pub fn on_participant_presence_updated(
-        &mut self,
-        update: &ParticipantPresenceUpdate,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(presence_manager) = &self.shared_session_presence_manager() else {
-            return;
-        };
-        let input_data = presence_manager.update(ctx, |manager, ctx| {
-            manager.update_participant_presence(update.to_owned(), ctx);
-            manager
-                .get_participant(&update.participant_id)
-                .map(|participant| manager.input_data_for_participant(participant))
-        });
-
-        if let Some((input_replica_id, cursor_data)) = input_data {
-            let replica_id = ReplicaId::from(input_replica_id);
-            self.input.update(ctx, |input, ctx| {
-                input.editor().update(ctx, |editor, ctx| {
-                    editor.set_remote_peer_selection_data(&replica_id, cursor_data, ctx);
-                });
-            });
-        }
-        ctx.notify();
-    }
-
-    /// Only show toast if role is new and reason is valid.
-    pub fn maybe_show_role_changed_toast(
-        &mut self,
-        participant_id: &ParticipantId,
-        reason: RoleUpdatedReason,
-        new_role: Role,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(presence_manager) = self.shared_session_presence_manager() else {
-            return;
-        };
-        let is_self_role_updated = participant_id == &presence_manager.as_ref(ctx).id();
-        let is_new_role_reader = match presence_manager.as_ref(ctx).role() {
-            Some(old_role) => old_role.can_execute() && matches!(new_role, Role::Reader),
-            None => false,
-        };
-
-        if is_self_role_updated
-            && is_new_role_reader
-            && matches!(reason, RoleUpdatedReason::InactivityLimitReached)
-        {
-            self.show_persistent_toast(
-                "Editing permissions were revoked because the sharer is idle".to_owned(),
-                ToastFlavor::Error,
-                ctx,
-            );
-        }
-    }
-
-    // Called by both sharer and viewer when a participant's role has changed.
-    pub fn on_participant_role_changed(
-        &mut self,
-        participant_id: &ParticipantId,
-        new_role: Role,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if let Some(shared_session) = self.shared_session.as_mut() {
-            shared_session.update_participant_role(participant_id, new_role, ctx);
-
-            let is_self = *participant_id == shared_session.presence_manager().as_ref(ctx).id();
-            if is_self {
-                self.on_self_role_updated(new_role, ctx);
-            }
-        }
-        self.update_shared_session_pane_header(ctx);
-    }
-
-    pub fn on_self_role_maybe_changed(
-        &mut self,
-        participant_list: &ParticipantList,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(shared_session) = self.shared_session.as_ref() else {
-            return;
-        };
-        let presence_manager = shared_session.presence_manager().as_ref(ctx);
-        let self_id = presence_manager.id();
-        let Some(existing_role) = presence_manager.role() else {
-            return;
-        };
-
-        let Some(new_role) = participant_list
-            .present_viewers
-            .iter()
-            .find(|v| v.info.id == self_id)
-            .map(|v| v.max_acl)
-        else {
-            log::warn!("Could not find new role for viewer {self_id:?} in participant list");
-            return;
-        };
-
-        if existing_role != new_role {
-            self.on_self_role_updated(new_role, ctx);
-        }
-    }
-
     pub fn insert_shared_session_ended_banner(&mut self, ctx: &mut ViewContext<Self>) {
         let banner_id = self.inline_banners_state.next_banner_id();
         let banner = InlineBannerItem::new(banner_id, InlineBannerType::SharedSessionEnd);
@@ -1155,21 +958,6 @@ impl TerminalView {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restore_pty_to_sharer_size(&mut self, ctx: &mut ViewContext<Self>) {
         self.active_viewer_driven_size = None;
-        self.refresh_size(ctx);
-    }
-
-    /// Forces a fresh viewer-size report to the sharer by clearing the dedup cache and
-    /// refreshing size. No-op when not an active viewer or when viewer-driven sizing is
-    /// not eligible. Used when a new process (e.g. the harness CLI starting for a non-oz
-    /// ambient-agent run) needs the sharer to resize its PTY so the new process picks up
-    /// correct terminal dimensions at startup.
-    pub(in crate::terminal::view) fn force_report_viewer_terminal_size(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if let Some(viewer) = self.shared_session_viewer_mut() {
-            viewer.last_reported_natural_size = None;
-        }
         self.refresh_size(ctx);
     }
 

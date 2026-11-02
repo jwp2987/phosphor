@@ -1,7 +1,7 @@
 use byte_unit::Byte;
 use instant::Duration;
 use serde::{Deserialize, Serialize};
-use warpui::{id, keymap::ContextPredicate, AppContext};
+use warpui::AppContext;
 
 use crate::editor::{InteractionState, ReplicaId};
 
@@ -154,10 +154,6 @@ impl SharedSessionStatus {
             Self::SharePending => "SharedSessionStatus_SharePending",
             Self::ActiveSharer => "SharedSessionStatus_ActiveSharer",
         }
-    }
-
-    pub fn active_viewer_keymap_context() -> ContextPredicate {
-        id!(Self::reader().as_keymap_context()) | id!(Self::executor().as_keymap_context())
     }
 }
 
