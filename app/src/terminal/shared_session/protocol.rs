@@ -175,12 +175,6 @@ pub enum PresenceUpdate {
     Selection(Selection),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ParticipantPresenceUpdate {
-    pub participant_id: ParticipantId,
-    pub update: PresenceUpdate,
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProfileData {
     pub user_uid: String,
@@ -510,7 +504,6 @@ impl From<UniversalDeveloperInputContext> for UniversalDeveloperInputContextUpda
 pub enum SessionEndedReason {
     EndedBySharer,
     InactivityLimitReached,
-    ExceededSizeLimit,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Copy)]

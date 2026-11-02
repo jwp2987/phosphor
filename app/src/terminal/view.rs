@@ -172,7 +172,7 @@ pub use action::{
 };
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
 
-use crate::terminal::shared_session::protocol::{SessionEndedReason, SessionSourceType};
+use crate::terminal::shared_session::protocol::SessionEndedReason;
 pub use block_banner::{BLOCK_BANNER_HEIGHT, WithinBlockBanner};
 use block_onboarding::onboarding_agentic_suggestions_block::{
     OnboardingAgenticSuggestionsBlock, OnboardingAgenticSuggestionsBlockEvent, OnboardingChipType,
@@ -2047,14 +2047,6 @@ pub enum Event {
         open_code_review: CodeReviewPanelArg,
         comments: Vec<AttachedReviewComment>,
         diff_mode: DiffMode,
-    },
-    StartSharingCurrentSession {
-        scrollback_type: SharedSessionScrollbackType,
-        source_type: SessionSourceType,
-    },
-    FailedToShareSession {
-        reason: String,
-        cause: Option<Arc<anyhow::Error>>,
     },
     StopSharingCurrentSession {
         reason: SessionEndedReason,
