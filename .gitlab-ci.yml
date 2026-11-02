@@ -822,6 +822,7 @@ usage-test-macos:
       - appci-out/*/run/logs/
       - appci-out/*/session.log
       - appci-out/*/results.jsonl
+      - appci-out/reused_build.json
     reports:
       junit: appci-out/*/run/junit.xml
 
@@ -876,6 +877,7 @@ app-test-macos:
       - appci-out/macos/run/shots/
       - appci-out/macos/run/logs/
       - appci-out/macos/NEEDS_OWNER.txt
+      - appci-out/reused_build.json
     reports:
       junit: appci-out/macos/run/junit.xml
 
@@ -904,8 +906,51 @@ app-test-windows:
       - appci-out/windows/run/junit.xml
       - appci-out/windows/run/shots/
       - appci-out/windows/install.log
+      - appci-out/reused_build.json
     reports:
       junit: appci-out/windows/run/junit.xml
+
+# ---------------------------------------------------------------------------
+# Reuse variants (app-test-*-reuse): test an EARLIER pipeline's build of an app-identical commit instead of rebuilding
+# (script/ci/ci_seq.py decides; fix tier only). They have NO `needs` on the build job: `needs:pipeline:job` takes a
+# pipeline id fixed when the pipeline is created, not at play time, so the artifact is fetched in the job through the
+# jobs API with CI_JOB_TOKEN (script/ci/fetch_build.{sh,ps1}). Required play-time variable APPCI_BUILD_JOB_ID; the job
+# fails loudly without it or when the fetch fails (expired artifacts, 403), and records the tested build in results.json.
+# ---------------------------------------------------------------------------
+app-test-linux-wayland-reuse:
+  extends: app-test-linux-wayland
+  needs: []
+  before_script:
+    - script/ci/fetch_build.sh
+  after_script:
+    - python3 script/ci/record_reuse.py
+
+app-test-linux-x11-reuse:
+  extends: app-test-linux-x11
+  needs: []
+  before_script:
+    - script/ci/fetch_build.sh
+  after_script:
+    - python3 script/ci/record_reuse.py
+
+app-test-macos-reuse:
+  extends: app-test-macos
+  needs: []
+  before_script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    - script/ci/fetch_build.sh
+  after_script:
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
+
+app-test-windows-reuse:
+  extends: app-test-windows
+  needs: []
+  before_script:
+    - !reference [.windows_job, before_script]
+    - .\script\ci\fetch_build.ps1
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  after_script:
+    - .\script\ci\fetch_build.ps1 -Record
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).

@@ -187,6 +187,7 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
 | `build-{linux,macos,windows}-profiling` | build | manual | unstripped `profiling` profile binary (`docs/profiling.md`) |
 | `app-test-linux-wayland`, `app-test-linux-x11`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
+| `app-test-{linux-wayland,linux-x11,macos,windows}-reuse` | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; artifacts fetched by job id), section 2.9 |
 | `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms |
 
 Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status -b build/<name>` or
@@ -263,7 +264,7 @@ All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-too
 The release-test matrix of 3.5 is automated against the BUILT artifact, per platform, in BOTH session modes (terminal and
 agent). Code: `script/realapp/appci/` (Python: `run.py` driver, `cases.py`, `backend.py`, `profile.py`, `app.py`, `sshd.py`,
 `report.py`), entry points `script/realapp/linux/wayland_session.sh`, `mac/ci/app_test.sh`, `windows/ci/app_test.ps1`.
-Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
+Each also has a `-reuse` twin that tests an earlier app-identical build (2.9). Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
 `script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
 `APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty (candidate, release; everything below). Smoke = the cases
 `mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `latency_enter`, `latency_key_log` in both
@@ -373,10 +374,21 @@ comparison beyond Enter latency, mouse selection/copy cases, Install-vs-"continu
 `APPCI_SCALE` (e.g. 0.3) shortens counts for a smoke run; `run.py --backend sim` runs the case logic against a bash in a pty (no GUI) to
 test the harness itself.
 
+**Reusing a build (`app-test-*-reuse`).** When a fix round touches nothing that goes into the app, rebuilding (Mac ~20 min, Windows ~38,
+Linux ~30) tests the same bytes. The `-reuse` jobs extend the plain ones with `needs: []`; their `before_script`
+(`script/ci/fetch_build.sh` / `.ps1`) downloads `GET $CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$APPCI_BUILD_JOB_ID/artifacts` with the
+`CI_JOB_TOKEN` header into `dist/` and checks `SHA256SUMS`. Why not `needs:pipeline:job`: it takes a pipeline id fixed when the pipeline is
+created, not a play-time value. Play-time variables: `APPCI_BUILD_JOB_ID` (required; the job fails with a clear message without it, on 404
+= artifacts expired after 3 days, on 401/403 = token refused, or if the zip has no `dist/`), plus `APPCI_BUILD_PIPELINE_ID`,
+`APPCI_BUILD_SHA`, `APPCI_BUILD_JOB_NAME` (recorded). If GitLab refuses the job token, a masked CI variable `APPCI_API_TOKEN` (read_api) is
+used as `PRIVATE-TOKEN`. The tested build is written to `appci-out/reused_build.json`, to `reused_build` in every `results.json` and to the
+first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`). The job-token fetch itself could not be
+exercised outside a running job when this was written: the first real reuse run is its test.
+
 ### 2.9 Test tiers (what a push costs)
 
 One driver, three sizes: `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
-[--tests '<nextest filterset>'] [--skip job ...] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
+[--tests '<nextest filterset>'] [--skip job ...] [--no-reuse] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
 It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
 play API, and ends with a table of job, status and minutes. Heavy jobs stay manual: the script is how you start them, after asking.
 
@@ -390,6 +402,17 @@ Measured durations (box and Macs, warm caches): `check-linux` 7-9 min, `test-lin
 `build-macos-arm64` ~21, `build-windows-x86_64` ~38. Linux build, app tests (smoke and full), shuttle/loom, fuzz, bench and mutants are not
 timed yet; the tier targets above are estimates built from the numbers that are. Builds and the box suites overlap (the macOS and
 Windows runners are separate machines), so a fix push is bounded by `check-linux` + the filtered `test-linux`/builds + smoke.
+
+**Build reuse in the fix tier.** Before playing `build-X`, `ci_seq.py` looks at the newest `build/*` pipelines (at most 6 with a succeeded
+`build-X`) and reuses one when its artifacts are unexpired and `git diff --name-only <its commit> HEAD` is empty over the app-affecting
+path set AND the `build-X` job block (plus `.shim_github_env` / `.windows_job`) in `.gitlab-ci.yml` is textually identical. App-affecting
+is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs/`, `*.md`, `.gitlab*`, `specs/`, `fuzz/`, `script/ci/`,
+`script/realapp/`, `script/check_*`, `script/test_*`, `precheck`/`presubmit`/`state`, agent/editor files. So `app/`, `crates/`, `lib/`,
+`Cargo.*`, toolchain, `.cargo/`, `assets/`, `resources/`, `themes/`, `command-signatures-v2/`, `script/{bundle,linux,macos,windows,install_*,
+prepare_*}` and any new unlisted path rebuild (fail safe). Each platform prints its decision (`macos: reusing build job N from pipeline P
+(commit C), app unchanged` or `macos: building, app changed in: <paths>`); `--no-reuse` forces builds. `candidate` and `release` NEVER reuse.
+Reused platforms start their app test right after `check-linux` (no build to wait for); the smoke tier does not play `app-test-linux-x11-reuse` (it
+would only exit).
 
 **Fix-tier filter derivation.** Without `--tests`, `ci_seq.py` runs `git diff --name-only <base>..<ref>` (base = merge-base with the
 newest other `build/*` ref, else `origin/main`; `--base` overrides) and maps paths: `crates/<name>/` -> `package(<name>)` (`warpui_core`
