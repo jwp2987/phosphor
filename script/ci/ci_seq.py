@@ -220,7 +220,14 @@ def api(path, method="GET", variables=None):
     if variables:   # play API: job_variables_attributes must arrive as a JSON array of {key,value}
         a += ["--header", "Content-Type: application/json", "--input", "-"]
         body = json.dumps({"job_variables_attributes": [{"key": k, "value": v} for k, v in variables.items()]})
-    r = subprocess.run(a, input=body, capture_output=True, text=True)
+    # GitLab rate limits (HTTP 429) and transient 5xx must never read as "no such job" (that ended a run early on 2026-11-02):
+    # retry with backoff, and only give up (None) after ~5 minutes
+    for attempt in range(10):
+        r = subprocess.run(a, input=body, capture_output=True, text=True)
+        transient = r.returncode != 0 and any(x in (r.stderr or "") for x in ("429", "502", "503", "504", "timeout", "Timeout"))
+        if not transient:
+            break
+        time.sleep(min(60, 5 * (attempt + 1)))
     try:
         return json.loads(r.stdout or "null")
     except ValueError:
