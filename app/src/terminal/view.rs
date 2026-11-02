@@ -11016,7 +11016,10 @@ impl TerminalView {
         // queue behind it, in order, and it is routed when it drains (#1405). An empty answer
         // holds nothing.
         if self.paste_queue.queue.try_peek().is_none() {
-            log::warn!("ssh hold: input queue busy, a paste was not held");
+            // A drain is running on this queue: the paste is taken up again once it returns,
+            // never dropped (#1437).
+            log::info!("ssh hold: input queue busy, the paste is held on the next update");
+            ctx.spawn(async {}, move |me, _, ctx| me.paste(middle_click, ctx));
             return;
         }
         self.ssh_hold_ensure_gate(ctx);
@@ -25948,9 +25951,16 @@ impl TerminalView {
         outcome: warpui::clipboard::ReadOutcome,
         ctx: &mut ViewContext<Self>,
     ) {
-        let clipboard_text = outcome.into_content().plain_text;
+        // An entry of the pane queue, not a direct insert: with a clipboard read still pending
+        // (or an Enter that waits) the text takes its place behind it (#1437).
+        let content =
+            warpui::clipboard::ClipboardContent::plain_text(outcome.into_content().plain_text);
         self.input.update(ctx, |input, ctx| {
-            input.paste_insert(clipboard_text.as_str(), ctx);
+            input.offer_ready_paste(
+                content,
+                crate::terminal::input::PasteSource::PlainTextPaste,
+                ctx,
+            );
             ctx.focus_self();
         });
     }

@@ -22,6 +22,14 @@
 //! The only timer left is the give-up deadline of `schedule_ssh_typeahead_give_up` (its deadline
 //! depends on the connect gate's state, so the queue gate itself carries no cap).
 //!
+//! A key that must join the hold while the queue is mid-delivery (text replayed behind an Enter
+//! whose command opened the connect, a held input judged at a hand-over for the next connect)
+//! cannot be offered: `ssh_hold_requeue` asks the host to put it back at the front under an
+//! `SshConnect` gate when the delivery returns, as the hand-off's holds do (#1415). The hand-over
+//! stops its drain after each held Enter (`Host::yield_after`) and continues on the next turn, so
+//! the connect gate armed by a command that Enter submitted is in place before the next held input
+//! is judged (#1421).
+//!
 //! The 64 KiB bound still drops the WHOLE run and ignores the rest of that connect.
 
 use warpui::ViewContext;
@@ -29,13 +37,13 @@ use warpui::ViewContext;
 use super::TerminalView;
 use super::paste_queue::PtyQueueHost;
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
-use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, GateToken, trace};
+use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, trace};
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
 /// from the queue (entries of both origins).
 pub(super) struct SshQueueState {
-    /// The open `SshConnect` gate: its token and its key (the connection counter).
-    gate: Option<(GateToken, u64)>,
+    /// The key (the connection counter) of the open `SshConnect` gate.
+    gate: Option<u64>,
     next_conn: u64,
     /// The 64 KiB bound was passed: the run was dropped and the rest of this connect is ignored.
     overflowed: bool,
@@ -75,7 +83,7 @@ impl TerminalView {
     /// offer to a queue with no gate, it would be delivered at once, mid-connect.
     pub(super) fn ssh_hold_ensure_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
-        let gate_alive = self.ssh_iq.gate.is_some_and(|(_, key)| {
+        let gate_alive = self.ssh_iq.gate.is_some_and(|key| {
             queue
                 .try_peek()
                 .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
@@ -86,11 +94,11 @@ impl TerminalView {
         self.ssh_iq.next_conn += 1;
         let key = self.ssh_iq.next_conn;
         let mut host = PtyQueueHost::new(self, ctx);
-        let token = queue.lock().open_gate(
+        queue.lock().open_gate(
             &mut host,
             GateSpec::new(GateKind::SshConnect, key).with_cap(None),
         );
-        self.ssh_iq.gate = Some((token, key));
+        self.ssh_iq.gate = Some(key);
     }
 
     /// Holds one input behind the connect, in typed order.
@@ -99,13 +107,19 @@ impl TerminalView {
         input: HeldInput,
         ctx: &mut ViewContext<Self>,
     ) -> SshTypeaheadPush {
-        if self.paste_queue.queue.try_peek().is_none() {
-            // Mid-delivery: a key held then cannot take a new entry. Not reachable from a user
-            // key (the hold is closed before the hand-over drain writes anything).
-            log::warn!("ssh hold: input queue busy, a key was not held");
+        if self.ssh_iq.overflowed {
             return SshTypeaheadPush::Ignored;
         }
-        if self.ssh_iq.overflowed {
+        if self.paste_queue.queue.try_peek().is_none() {
+            // Mid-delivery: the drain that is running owns the queue, so the input cannot be
+            // offered. It goes back to the front of the queue under an `SshConnect` gate when
+            // the delivery returns, the way the hand-off's holds do (#1415): a key replayed
+            // behind an Enter whose command opened a connect, or one held at the hand-over for
+            // the next connect, is held, never dropped.
+            if self.paste_queue.delivering {
+                return self.ssh_hold_requeue(input);
+            }
+            log::warn!("ssh hold: input queue busy outside a delivery, a key was not held");
             return SshTypeaheadPush::Ignored;
         }
         let len = input.byte_len();
@@ -120,6 +134,32 @@ impl TerminalView {
         queue
             .lock()
             .offer(&mut host, EntryKind::Held { class, text });
+        SshTypeaheadPush::Held
+    }
+
+    /// Holds `input`, the key the running delivery routed here, by asking the host to put it
+    /// back at the front of the queue under the connect gate (the same `Requeue` the hand-off's
+    /// holds use). The gate is the open one when there is one (its key is closed together with
+    /// every gate of that key at the hand-over), else a new connection's.
+    fn ssh_hold_requeue(&mut self, input: HeldInput) -> SshTypeaheadPush {
+        let key = match self.ssh_iq.gate {
+            Some(key) => key,
+            None => {
+                self.ssh_iq.next_conn += 1;
+                let key = self.ssh_iq.next_conn;
+                self.ssh_iq.gate = Some(key);
+                key
+            }
+        };
+        let (class, text) = input.into_parts();
+        trace::hold(trace::legacy::SSH, text.len());
+        if !self.paste_queue.request_requeue_held(
+            GateSpec::new(GateKind::SshConnect, key).with_cap(None),
+            EntryKind::Held { class, text },
+        ) {
+            log::error!("ssh hold: a second input was held by one delivery; it was not kept");
+            return SshTypeaheadPush::Ignored;
+        }
         SshTypeaheadPush::Held
     }
 
@@ -147,7 +187,7 @@ impl TerminalView {
         let mut removed = Vec::new();
         match self.paste_queue.queue.try_lock() {
             Some(mut queue) => {
-                if let Some((_, key)) = gate {
+                if let Some(key) = gate {
                     removed.extend(queue.drop_gate(GateKind::SshConnect, key));
                 }
                 for id in &paste_ids {
@@ -219,7 +259,7 @@ impl TerminalView {
     /// The hand-over: closes the gate, which is the delivery. The queue's one drain writes the
     /// held inputs in typed order, each routed from the facts of its own delivery.
     pub(super) fn ssh_hold_deliver(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some((_, key)) = self.ssh_iq.gate.take() else {
+        let Some(key) = self.ssh_iq.gate.take() else {
             return;
         };
         let (items, bytes) = self.ssh_held_stats();

@@ -301,6 +301,34 @@ impl Input {
         queue.lock().give_up(&mut host, token);
     }
 
+    /// Offers a paste whose text is already read (a platform that reads inline, #1405) to the
+    /// pane queue as a ready entry. It is inserted at once when nothing is held, and otherwise
+    /// takes its place behind what is: a clipboard read still pending, an Enter that waits, so
+    /// it never lands ahead of text typed before it (#1437).
+    pub(crate) fn offer_ready_paste(
+        &mut self,
+        content: warpui::clipboard::ClipboardContent,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let hold = self.editor.as_ref(ctx).paste_hold();
+        let id = hold.next_queue_paste_id();
+        self.paste_payloads.insert(id, (source, content));
+        let queue = hold.queue();
+        let mut host = InputQueueHost {
+            input: self,
+            ctx,
+            held_behind: 0,
+        };
+        queue.lock().offer(
+            &mut host,
+            EntryKind::Paste {
+                paste_id: id,
+                payload: Some(Vec::new()),
+            },
+        );
+    }
+
     /// Starts an editor-bound clipboard read on the queue.
     #[cfg(not(target_family = "wasm"))]
     pub(super) fn start_queued_read(
