@@ -332,24 +332,24 @@ pub(crate) fn revert_file_diffs(
     async move { futures::future::join_all(outcome_futures).await }.boxed()
 }
 
-/// Completion of the most recently dispatched revert write, so that the next one
-/// waits for it instead of racing it.
-///
-/// Reverts are dispatched newest-first, and the caller depends on that order:
-/// repeated edits to one file unwind through each intermediate state back to the
-/// original. `FileModel`'s guarded writes run on spawned tasks, though, so
-/// dispatch order is not execution order — two reverts of the same file
-/// otherwise both probe the disk before either writes, and the older one finds
-/// the newer edit's content instead of the state it expects. Unguarded that was
-/// a silent coin-flip between the original content and an intermediate one;
-/// guarded it would be a near-certain spurious refusal. Chaining each dispatch
-/// onto its predecessor's completion makes the sequence the caller already
-/// assumes actually hold.
-///
-/// The chain is a plain `Receiver` rather than a shared future because it is
-/// linear: each tail is awaited by exactly one successor. A cancelled sender
-/// resolves it immediately, which is the right answer — a write whose task went
-/// away has had its turn.
+// Completion of the most recently dispatched revert write, so that the next one
+// waits for it instead of racing it.
+//
+// Reverts are dispatched newest-first, and the caller depends on that order:
+// repeated edits to one file unwind through each intermediate state back to the
+// original. `FileModel`'s guarded writes run on spawned tasks, though, so
+// dispatch order is not execution order — two reverts of the same file
+// otherwise both probe the disk before either writes, and the older one finds
+// the newer edit's content instead of the state it expects. Unguarded that was
+// a silent coin-flip between the original content and an intermediate one;
+// guarded it would be a near-certain spurious refusal. Chaining each dispatch
+// onto its predecessor's completion makes the sequence the caller already
+// assumes actually hold.
+//
+// The chain is a plain `Receiver` rather than a shared future because it is
+// linear: each tail is awaited by exactly one successor. A cancelled sender
+// resolves it immediately, which is the right answer — a write whose task went
+// away has had its turn.
 thread_local! {
     static REVERT_CHAIN_TAIL: RefCell<Option<oneshot::Receiver<()>>> =
         const { RefCell::new(None) };
