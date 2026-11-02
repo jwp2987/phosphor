@@ -18044,6 +18044,71 @@ fn ssh_bootstrap_timer_racing_the_bootstrap_precmd_does_not_fail_the_session() {
     }
 }
 
+/// #1566 follow-up (r18cz Linux): a give-up timer armed for an earlier connect expired ~1 s into
+/// the next one and failed it. Connect A arms, connect B (a new pending session) starts
+/// bootstrapping with keys held, A's timer fires: it is a no-op -- nothing written, keys still
+/// held, no `stty sane` -- and B then completes normally with the keys reaching the pty once.
+/// Legacy and Table.
+#[test]
+fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let remote_session = SessionId::from(167303092612202);
+            terminal.update(&mut app, |view, ctx| {
+                // Connect A: its give-up timer is armed (the identity it carries is captured).
+                let stale_arm = BootstrapTimerArm {
+                    generation: view.bootstrap_timer_generation,
+                    session: Some(SessionId::from(167303092612201)),
+                };
+                // Connect B: a different pending session, keys held.
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                assert!(view.ssh_typeahead_holding && !view.ssh_held_is_empty());
+                // A's timer expires while B bootstraps.
+                view.on_bootstrap_timer_fired(stale_arm, ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: a stale timer must not act on a later connect"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: no stty sane, no keys: {:?}",
+                    pty_writes.borrow()
+                );
+                // B completes normally.
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                view.model.lock().bootstrapped(BootstrappedValue {
+                    shell: "bash".to_owned(),
+                    ..Default::default()
+                });
+                view.handle_terminal_event(
+                    &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                        session_id: remote_session,
+                        is_subshell: false,
+                    }),
+                    ctx,
+                );
+                view.model.lock().simulate_long_running_block("sleep 5", "");
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert_eq!(
+                text.matches("echo hi").count(),
+                1,
+                "{mode:?}: once: {text:?}"
+            );
+            assert!(!text.contains("stty sane"), "{mode:?}: {text:?}");
+        })
+    }
+}
+
 /// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
 /// second expiry runs the #1494 path (held text delivered after `stty sane`, once).
 #[test]

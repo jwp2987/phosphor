@@ -895,6 +895,13 @@ enum SelectionCopyText {
 
 const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
+/// Identity of an armed bootstrap give-up timer (#1566).
+#[derive(Clone, Copy, Debug)]
+struct BootstrapTimerArm {
+    generation: u64,
+    session: Option<SessionId>,
+}
+
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
@@ -3160,6 +3167,11 @@ pub struct TerminalView {
     /// The pending session the bootstrap give-up timer already deferred once (#1566), so the
     /// second expiry is final.
     bootstrap_grace_used_session: Option<SessionId>,
+    /// #1566: generation of the newest armed bootstrap give-up timer; a timer carrying an older
+    /// one was superseded by a later arm and is a no-op.
+    bootstrap_timer_generation: u64,
+    /// The arm of the timer callback currently running, so the grace re-arm keeps its identity.
+    bootstrap_timer_arm_in_flight: Option<BootstrapTimerArm>,
     /// First time input was swallowed for a pending ssh session, to bound the swallow window
     /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
     ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
@@ -5006,6 +5018,8 @@ impl TerminalView {
             ssh_bootstrap_failed_session: None,
             bootstrap_precmd_seen_session: None,
             bootstrap_grace_used_session: None,
+            bootstrap_timer_generation: 0,
+            bootstrap_timer_arm_in_flight: None,
             ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
@@ -22057,7 +22071,7 @@ impl TerminalView {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    pub(super) fn on_shell_determined(&self, ctx: &mut ViewContext<Self>) {
+    pub(super) fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.model.lock().shared_session_status().is_viewer() {
             // Start a timer for the initial session bootstrapping, so that we can log and show a
             // banner to the user if the bootstrapping takes too long
@@ -22146,14 +22160,54 @@ impl TerminalView {
         ctx.notify();
     }
 
-    /// Start a timer so that we can detect when a session does not bootstrap in a timely manner
-    fn start_bootstrap_timer(&self, duration: Duration, ctx: &mut ViewContext<Self>) {
+    /// Start a timer so that we can detect when a session does not bootstrap in a timely manner.
+    /// #1566: the timer carries the identity of what armed it (a generation, plus the pending
+    /// session when one is known), so a timer left over from an earlier connect never acts on a
+    /// later one. A new arm supersedes every earlier timer.
+    fn start_bootstrap_timer(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {
+        self.bootstrap_timer_generation = self.bootstrap_timer_generation.wrapping_add(1);
+        let arm = BootstrapTimerArm {
+            generation: self.bootstrap_timer_generation,
+            session: self.model.lock().pending_session_id(),
+        };
+        self.spawn_bootstrap_timer(duration, arm, ctx);
+    }
+
+    /// Re-arm for the same identity (the #1566 grace), without superseding anything.
+    fn spawn_bootstrap_timer(
+        &self,
+        duration: Duration,
+        arm: BootstrapTimerArm,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(duration).await;
+                arm
             },
-            Self::on_bootstrap_failed_timer_complete,
+            Self::on_bootstrap_timer_fired,
         );
+    }
+
+    /// The give-up timer's callback: a no-op (logged) when it was superseded by a later arm or
+    /// was armed for a pending session that is no longer the pending one (#1566).
+    fn on_bootstrap_timer_fired(&mut self, arm: BootstrapTimerArm, ctx: &mut ViewContext<Self>) {
+        let pending = self.model.lock().pending_session_id();
+        let superseded = arm.generation != self.bootstrap_timer_generation;
+        let other_session = arm.session.is_some() && arm.session != pending;
+        if superseded || other_session {
+            log::debug!(
+                "bootstrap give-up timer ignored: stale (armed gen {} for {:?}; now gen {},                  pending {:?}) (#1566)",
+                arm.generation,
+                arm.session,
+                self.bootstrap_timer_generation,
+                pending
+            );
+            return;
+        }
+        self.bootstrap_timer_arm_in_flight = Some(arm);
+        self.on_bootstrap_failed_timer_complete((), ctx);
+        self.bootstrap_timer_arm_in_flight = None;
     }
 
     /// Timer callback for [`SUBSHELL_BOOTSTRAP_STALL_CEILING`] after a subshell's `InitShell`
@@ -22301,7 +22355,13 @@ impl TerminalView {
                  prompt; waiting {:?} more for Bootstrapped instead of failing it (#1566)",
                 BOOTSTRAP_PROGRESS_GRACE
             );
-            self.start_bootstrap_timer(BOOTSTRAP_PROGRESS_GRACE, ctx);
+            let arm = self
+                .bootstrap_timer_arm_in_flight
+                .unwrap_or(BootstrapTimerArm {
+                    generation: self.bootstrap_timer_generation,
+                    session: Some(sid),
+                });
+            self.spawn_bootstrap_timer(BOOTSTRAP_PROGRESS_GRACE, arm, ctx);
             return;
         }
 
