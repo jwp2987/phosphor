@@ -432,7 +432,16 @@ impl<'a> RenderContentTreeRef<'a> {
         }
         let mut cursor = self.0.cursor::<LineCount, LayoutSummary>();
         cursor.seek_clamped(&line, SeekBias::Right);
-        (cursor.start().height as f32).into_pixels()
+        let mut height = cursor.start().height;
+        if let Some(BlockItem::ParkedLines(chunk)) = cursor.item() {
+            // The line is inside a parked chunk: every line of it is one stride tall.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(cursor.start().lines.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            height += into_chunk as f64 * f64::from(chunk.stride().as_f32());
+        }
+        (height as f32).into_pixels()
     }
 }
 
@@ -2357,7 +2366,19 @@ impl RenderState {
 
         Self::move_cursor_to_location(&mut cursor, location);
 
-        Some(cursor.positioned_item()?.start_y_offset - self.viewport().scroll_top())
+        let positioned = cursor.positioned_item()?;
+        let mut y_offset = positioned.start_y_offset;
+        if let (BlockItem::ParkedLines(chunk), RenderLineLocation::Current(line)) =
+            (positioned.item, location)
+        {
+            // A line inside a parked chunk: offset by whole strides from the chunk start.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(positioned.start_line.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            y_offset += (into_chunk as f32 * chunk.stride().as_f32()).into_pixels();
+        }
+        Some(y_offset - self.viewport().scroll_top())
     }
 
     fn move_cursor_to_location<'a>(

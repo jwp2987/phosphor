@@ -119,6 +119,7 @@ pub(crate) fn estimate_paragraph_metrics(
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
@@ -128,7 +129,11 @@ use sum_tree::{SeekBias, SumTree};
 use warpui::AppContext;
 use warpui::text_layout::TextFrame;
 
-use super::{BlockItem, Height, LayoutMode, LayoutSummary, LineSource, RenderState, WidthSetting};
+use super::parked::{MIN_REPARK_RUN, Parker};
+use super::{
+    BlockItem, Height, LayoutMode, LayoutSummary, LineSource, RenderLineLocation, RenderState,
+    WidthSetting,
+};
 use crate::render::layout::eager_layout_forced;
 
 /// Per-editor hydration bookkeeping.
@@ -256,7 +261,20 @@ impl RenderState {
             start: (top - HYDRATE_MARGIN_SCREENS * window).max(0.),
             end: top + (1. + HYDRATE_MARGIN_SCREENS) * window,
         };
-        let pinned = self.pinned_ranges(&self.selection_offsets());
+        // Parked chunks (#1340 P5) hold the lines nobody is looking at. Expand the ones holding
+        // a selection first so the pinned rows below are measured on real paragraphs, then the
+        // ones overlapping the pinned rows, the visible rows and the margin. No shaping.
+        let selections = self.selection_offsets();
+        let mut unparked = self.unpark_offsets(&selections);
+        let pinned = self.pinned_ranges(&selections);
+        let mut near = vec![visible, margin];
+        near.extend(pinned.iter().copied());
+        unparked += self.unpark_ranges(&near);
+        if unparked > 0 {
+            self.hydration
+                .hydrated_since_sweep
+                .set(self.hydration.hydrated_since_sweep.get() + unparked);
+        }
 
         // Visible rows and pinned rows are mandatory; the margin is budgeted.
         let mut wanted: BTreeMap<usize, ()> = BTreeMap::new();
@@ -290,6 +308,7 @@ impl RenderState {
                 end: top + (1. + EVICT_MARGIN_SCREENS) * window,
             };
             self.evict_outside(&keep_window, &pinned);
+            self.repark_outside(&keep_window, &pinned);
             self.hydration.hydrated_since_sweep.set(0);
         }
     }
@@ -303,7 +322,9 @@ impl RenderState {
         }
         let mut all = self.selection_offsets();
         all.extend_from_slice(offsets);
+        self.unpark_offsets(&all);
         let ranges = self.pinned_ranges(&all);
+        self.unpark_ranges(&ranges);
         let wanted: Vec<usize> = {
             let content = self.content.borrow();
             let mut set: BTreeMap<usize, ()> = BTreeMap::new();
@@ -330,12 +351,13 @@ impl RenderState {
         if !self.lazy_paragraphs_enabled() {
             return;
         }
+        let all = YRange {
+            start: 0.,
+            end: f32::MAX,
+        };
+        self.unpark_ranges(&[all]);
         let wanted: Vec<usize> = {
             let content = self.content.borrow();
-            let all = YRange {
-                start: 0.,
-                end: f32::MAX,
-            };
             dehydrated_in(&content, &all, usize::MAX)
         };
         if !wanted.is_empty() {
@@ -367,6 +389,152 @@ impl RenderState {
             }
         }
         ranges
+    }
+
+    /// Hydrates the rows of the lines in `line_range` (a lens onto a region that may be far from
+    /// the viewport, such as a code-review comment's context). Expands parked chunks first.
+    pub fn hydrate_line_range(&self, line_range: &Range<RenderLineLocation>, app: &AppContext) {
+        if !self.lazy_paragraphs_enabled() {
+            return;
+        }
+        let first = line_range.start.line_count();
+        let last = line_range.end.line_count() + 1;
+        let (start, end) = {
+            let content = self.content();
+            (
+                content.y_offset_at_line(first).as_f32(),
+                content.y_offset_at_line(last).as_f32(),
+            )
+        };
+        let range = YRange {
+            start,
+            end: end.max(start) + 1.,
+        };
+        self.unpark_ranges(&[range]);
+        let wanted: Vec<usize> = {
+            let content = self.content.borrow();
+            dehydrated_in(&content, &range, usize::MAX)
+        };
+        if !wanted.is_empty() {
+            self.hydrate_items(wanted, app);
+        }
+    }
+
+    /// Expands the parked chunks that overlap any of `ranges` into ordinary dehydrated
+    /// paragraphs. Returns the number of lines expanded.
+    fn unpark_ranges(&self, ranges: &[YRange]) -> usize {
+        let indices: Vec<usize> = {
+            let content = self.content.borrow();
+            let mut indices: Vec<usize> = ranges
+                .iter()
+                .flat_map(|range| parked_in(&content, range))
+                .collect();
+            indices.sort_unstable();
+            indices.dedup();
+            indices
+        };
+        self.unpark_items(indices)
+    }
+
+    /// Expands the parked chunks that contain any of the content `offsets`. Returns the number of
+    /// lines expanded.
+    fn unpark_offsets(&self, offsets: &[CharOffset]) -> usize {
+        let indices: Vec<usize> = {
+            let content = self.content.borrow();
+            let mut indices: Vec<usize> = offsets
+                .iter()
+                .filter_map(|offset| {
+                    let mut cursor = content.cursor::<CharOffset, LayoutSummary>();
+                    cursor.seek(offset, SeekBias::Right);
+                    match cursor.item() {
+                        Some(BlockItem::ParkedLines(_)) => Some(cursor.start().item_count),
+                        _ => None,
+                    }
+                })
+                .collect();
+            indices.sort_unstable();
+            indices.dedup();
+            indices
+        };
+        self.unpark_items(indices)
+    }
+
+    /// Replaces the parked chunks at the item `indices` (ascending, unique) with the dehydrated
+    /// paragraphs they stand for. Heights, lengths and line counts are unchanged, so no sizing
+    /// is invalidated.
+    fn unpark_items(&self, indices: Vec<usize>) -> usize {
+        if indices.is_empty() {
+            return 0;
+        }
+        let mut lines = 0;
+        let new_tree = {
+            let content = self.content.borrow();
+            let mut new_tree = SumTree::new();
+            let mut cursor = content.cursor::<ItemIndex, ()>();
+            for index in indices {
+                new_tree.push_tree(cursor.slice(&ItemIndex(index), SeekBias::Right));
+                let Some(item) = cursor.item() else {
+                    break;
+                };
+                match item {
+                    BlockItem::ParkedLines(chunk) => {
+                        lines += chunk.len();
+                        new_tree
+                            .extend(chunk.to_paragraphs().into_iter().map(BlockItem::Paragraph));
+                    }
+                    other => new_tree.push(other.clone()),
+                }
+                cursor.next();
+            }
+            new_tree.push_tree(cursor.suffix());
+            new_tree
+        };
+        *self.content.borrow_mut() = new_tree;
+        lines
+    }
+
+    /// Groups the dehydrated paragraphs outside `keep` and the pinned ranges back into parked
+    /// chunks (and merges adjacent small chunks), so memory returns to the compact form after
+    /// the viewport has moved on. Runs with the eviction sweep.
+    fn repark_outside(&self, keep: &YRange, pinned: &[YRange]) {
+        if !self.parking_enabled() {
+            return;
+        }
+        let regrouped = {
+            let content = self.content.borrow();
+            let mut parker = Parker::new(MIN_REPARK_RUN);
+            let mut cursor = content.cursor::<(), LayoutSummary>();
+            cursor.descend_to_first_item(&content, |_| true);
+            while let Some(item) = cursor.item() {
+                let start = cursor.start().height as f32;
+                let row = YRange {
+                    start,
+                    end: start + item.height().as_f32(),
+                };
+                let protected =
+                    row.overlaps(keep) || pinned.iter().any(|range| row.overlaps(range));
+                match item {
+                    BlockItem::Paragraph(_) if protected => parker.push_unparked(item.clone()),
+                    other => parker.push(other.clone()),
+                }
+                cursor.next();
+            }
+            if parker.changed() {
+                Some(parker.finish())
+            } else {
+                None
+            }
+        };
+        if let Some(items) = regrouped {
+            let mut new_tree = SumTree::new();
+            new_tree.extend(items);
+            *self.content.borrow_mut() = new_tree;
+        }
+    }
+
+    /// Whether this editor groups dehydrated lines into parked chunks.
+    pub(super) fn parking_enabled(&self) -> bool {
+        self.lazy_paragraphs_enabled() && super::parked::p5_enabled()
     }
 
     /// Shapes the paragraphs at `indices` (in parallel) and installs the frames.
@@ -487,6 +655,27 @@ fn dehydrated_in(content: &SumTree<BlockItem>, range: &YRange, limit: usize) -> 
             if !paragraph.is_hydrated() && paragraph.line_source().is_some() {
                 out.push(cursor.start().item_count);
             }
+        }
+        cursor.next();
+    }
+    out
+}
+
+/// Indices of the parked chunks overlapping `range`.
+fn parked_in(content: &SumTree<BlockItem>, range: &YRange) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut cursor = content.cursor::<Height, LayoutSummary>();
+    cursor.seek(
+        &Height(OrderedFloat(f64::from(range.start))),
+        SeekBias::Right,
+    );
+    while let Some(item) = cursor.item() {
+        let start = cursor.start().height as f32;
+        if start >= range.end {
+            break;
+        }
+        if matches!(item, BlockItem::ParkedLines(_)) {
+            out.push(cursor.start().item_count);
         }
         cursor.next();
     }

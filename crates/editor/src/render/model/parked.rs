@@ -866,6 +866,8 @@ pub struct Parker {
     builder: ParkedBuilder,
     pending: Vec<BlockItem>,
     min_run: usize,
+    /// Whether any paragraphs were grouped into a chunk or any chunks merged.
+    changed: bool,
 }
 
 impl Parker {
@@ -875,7 +877,19 @@ impl Parker {
             builder: ParkedBuilder::new(),
             pending: Vec::new(),
             min_run: min_run.max(1),
+            changed: false,
         }
+    }
+
+    /// Whether the output differs from the input (something was grouped or merged).
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// Passes `item` through unchanged (used for paragraphs that must stay individual).
+    pub fn push_unparked(&mut self, item: BlockItem) {
+        self.flush();
+        self.out.push(item);
     }
 
     pub fn push(&mut self, item: BlockItem) {
@@ -909,6 +923,7 @@ impl Parker {
             && previous.can_merge(&chunk)
         {
             *previous = previous.merged(&chunk);
+            self.changed = true;
             return;
         }
         self.out.push(BlockItem::ParkedLines(chunk));
@@ -919,6 +934,7 @@ impl Parker {
         let pending = std::mem::take(&mut self.pending);
         if pending.len() >= self.min_run {
             if let Some(chunk) = builder.finish() {
+                self.changed = true;
                 self.push_chunk(chunk);
             }
         } else {
