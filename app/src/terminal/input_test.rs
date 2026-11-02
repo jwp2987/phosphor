@@ -14018,6 +14018,7 @@ fn deferred_enter_on_unready_shell(
 ) -> (Vec<String>, Vec<String>, bool) {
     use crate::ai::blocklist::InputConfig;
     let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+    let typed_behind = typed_behind.to_owned();
     let result = Rc::new(RefCell::new(None));
     let sink = result.clone();
     App::test((), |mut app| async move {
