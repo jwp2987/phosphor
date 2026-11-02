@@ -327,7 +327,6 @@ impl DisplayMap {
             .anchor_before(point.to_buffer_point(self, bias, app)?)
     }
 
-    #[allow(dead_code)]
     pub fn anchor_after(
         &self,
         point: DisplayPoint,
