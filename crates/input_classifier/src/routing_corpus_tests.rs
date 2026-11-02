@@ -542,6 +542,7 @@ fn every_rule_names_itself() {
         Rule::RequestShape,
         Rule::SentenceShape,
         Rule::OneOffWord,
+        Rule::ShellStructureUnknownHead,
         Rule::RanBefore,
         Rule::NoEvidenceInConversation,
         Rule::UnknownHeadInConversation,
@@ -554,5 +555,97 @@ fn every_rule_names_itself() {
         Rule::Model,
     ] {
         assert!(!rule.to_string().is_empty(), "{rule:?}");
+    }
+}
+
+/// Lines with clear shell structure and a head the session does not know (#1560, owner decision):
+/// the shell runs them (and says `command not found`), on the plain terminal and inside an agent
+/// conversation, at the keystroke and at Enter, in every shell family that writes them this way.
+const SHELL_STRUCTURE_UNKNOWN_HEAD_LINES: &[&str] = &[
+    "print -r -- $EPOCHREALTIME > lat_0",
+    "foo --bar | grep x",
+    "notacmd $HOME/x",
+    "xyz > out.txt",
+    "frobnicate -r --force",
+    "mytool ${CFG_DIR}/a.toml",
+    "mytool $(pwd)",
+    "mytool 2>&1",
+    "mytool &> all.log",
+    "mytool < in.txt",
+    "FOO=1 mytool >> run_1",
+];
+
+/// Prose that mentions the same characters stays out of the shell: a comparison, a pipe between
+/// two words, a flag in a question, a variable in a sentence, non-English text.
+const PROSE_WITH_SHELL_CHARACTERS: &[&str] = &[
+    "what is 5 > 3",
+    "what's 5 > 3",
+    "compare A | B",
+    "tabs | spaces",
+    "can you show me how to use --verbose?",
+    "explain $PATH to me",
+    "tell me what $HOME means",
+    "list the files > 1GB",
+    "use --verbose",
+    "why does a > b hold",
+    "解释 $PATH",
+    "is x < y",
+];
+
+#[test]
+fn clear_shell_structure_beats_an_unknown_head() {
+    for line in SHELL_STRUCTURE_UNKNOWN_HEAD_LINES {
+        for conversation in [false, true] {
+            for head in [Head::Absent, Head::Unknown] {
+                for shell in [Shell::Posix, Shell::Fish, Shell::Nu] {
+                    let mut case = Case::model(line, "#1560").head(head).shell(shell);
+                    if conversation {
+                        case = case.in_conversation();
+                    }
+                    for at_enter in [false, true] {
+                        let decision = routing::route(
+                            &snapshot(&case, !at_enter),
+                            &routing_context(&case, at_enter),
+                        );
+                        assert_eq!(
+                            decision.route,
+                            Route::Shell,
+                            "{} ({}): {}",
+                            describe(&case),
+                            if at_enter { "Enter" } else { "keystroke" },
+                            decision.rule
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn prose_with_shell_characters_never_takes_the_structure_rule() {
+    for line in PROSE_WITH_SHELL_CHARACTERS {
+        for conversation in [false, true] {
+            for head in [Head::Absent, Head::Unknown] {
+                let mut case = Case::model(line, "#1560").head(head);
+                if conversation {
+                    case = case.in_conversation();
+                }
+                for at_enter in [false, true] {
+                    let decision = routing::route(
+                        &snapshot(&case, !at_enter),
+                        &routing_context(&case, at_enter),
+                    );
+                    assert_ne!(
+                        decision.rule,
+                        routing::Rule::ShellStructureUnknownHead,
+                        "{} ({}): {:?}",
+                        describe(&case),
+                        if at_enter { "Enter" } else { "keystroke" },
+                        decision.route
+                    );
+                }
+            }
+        }
     }
 }

@@ -2541,6 +2541,239 @@ fn is_data_shaped_word(word: &ShellWord) -> bool {
     bare.contains(['.', ':']) && !bare.is_empty()
 }
 
+/// What kind of shell structure one word carries ([`shell_structure_signals`]).
+#[derive(Default)]
+struct StructureSignals {
+    /// An unquoted (or double-quoted) `$NAME`, `${...}` or `$(...)`.
+    variable: bool,
+    /// A redirect with a plausible file target (`> out.txt`, `>> log_1`, `2>&1`, `&> all`, `< in.txt`).
+    redirect: bool,
+    /// A pipe whose right side is a command (a known command word, a path, or a word that takes a
+    /// flag), not just another word (`compare A | B` is not one).
+    pipe: bool,
+    /// A lone `--`, and each short or long flag after the head (`-r`, `-rf`, `--long`, `--k=v`).
+    weak: usize,
+}
+
+fn is_flag_word(text: &str) -> bool {
+    if let Some(long) = text.strip_prefix("--") {
+        let name = long.split('=').next().unwrap_or("");
+        return name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    text.strip_prefix('-').is_some_and(|short| {
+        (1..=6).contains(&short.len())
+            && short.starts_with(|c: char| c.is_ascii_alphabetic())
+            && short.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+fn has_variable_expansion(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1)).any(|i| {
+        bytes[i] == b'$'
+            && (bytes[i + 1].is_ascii_alphabetic() || matches!(bytes[i + 1], b'_' | b'{' | b'('))
+    })
+}
+
+/// A word a redirect could plausibly write to or read from: a path, a `name.ext`, or a bare
+/// name of two or more characters that is neither English nor a number (`lat_0`; not `3`, `B`,
+/// `bar`, `three`).
+fn is_plausible_redirect_target(word: &ShellWord) -> bool {
+    let text = word.text.as_str();
+    if word.quoted
+        || text.is_empty()
+        || !text
+            .starts_with(|c: char| c.is_ascii_alphabetic() || matches!(c, '_' | '.' | '~' | '/'))
+        || !text.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '.' | '/' | '~' | '-' | '+' | '%' | '@' | ':' | '=')
+        })
+        || text.ends_with(['.', ',', ':'])
+    {
+        return false;
+    }
+    is_redirect_target(text)
+        || (text.len() >= 2
+            && !is_prose_word(word)
+            && !is_function_word(word)
+            && !is_ordinary_english_word(text))
+}
+
+/// Counts the shell-structure signals among `words[first_index..]` (the head itself only
+/// contributes operators glued to it: `foo|grep x`).
+fn shell_structure_signals(words: &[ShellWord], first_index: usize) -> StructureSignals {
+    let mut signals = StructureSignals::default();
+    for index in first_index..words.len() {
+        let word = &words[index];
+        let is_head = index == first_index;
+        let text = word.text.as_str();
+        if word.quoted {
+            // `foo "$X"`: prose does not double-quote a variable.
+            if !is_head && text.starts_with('"') && has_variable_expansion(text) {
+                signals.variable = true;
+            }
+            continue;
+        }
+        if !is_head {
+            if text == "--" {
+                signals.weak += 1;
+            } else if is_flag_word(text) {
+                signals.weak += 1;
+            }
+            if has_variable_expansion(text) {
+                signals.variable = true;
+            }
+        }
+        // Redirects: `[N|&]>`, `>>`, `<`, optionally glued to the target; `>&N` duplicates.
+        if let Some(op) = text.find(['>', '<']) {
+            let prefix = &text[..op];
+            if prefix.chars().all(|c| c.is_ascii_digit()) || prefix == "&" {
+                let rest = text[op..].trim_start_matches(['>', '<']);
+                if let Some(fd) = rest.strip_prefix('&') {
+                    if !prefix.is_empty()
+                        && !fd.is_empty()
+                        && fd.chars().all(|c| c.is_ascii_digit() || c == '-')
+                    {
+                        signals.redirect = true;
+                    }
+                } else if !rest.is_empty() {
+                    let glued = ShellWord {
+                        text: rest.to_string(),
+                        quoted: false,
+                    };
+                    if is_plausible_redirect_target(&glued) {
+                        signals.redirect = true;
+                    }
+                } else if words
+                    .get(index + 1)
+                    .is_some_and(is_plausible_redirect_target)
+                {
+                    signals.redirect = true;
+                }
+            }
+        }
+        // Pipes: `|` alone, or glued to either side.
+        if let Some(bar) = text.find('|') {
+            let after = text[bar..].trim_start_matches('|');
+            let left_present = index > first_index || bar > 0;
+            let (right, following) = if after.is_empty() {
+                (words.get(index + 1), words.get(index + 2))
+            } else {
+                (None, words.get(index + 1))
+            };
+            let right_text = right.map_or(after, |word| word.text.as_str());
+            let right_quoted = right.is_some_and(|word| word.quoted);
+            if left_present
+                && !right_quoted
+                && right_text.len() >= 2
+                && right_text
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '~' | '-'))
+                && (is_known_shell_command_word(right_text)
+                    || is_explicit_path_token(right_text)
+                    || following.is_some_and(|word| !word.quoted && is_flag_word(&word.text)))
+            {
+                signals.pipe = true;
+            }
+        }
+    }
+    signals
+}
+
+/// Owner decision on #1560: a line with CLEAR shell structure runs in the shell even when its
+/// first word is no command the session knows; the shell then prints `command not found` where
+/// the user sees it, instead of an agent run starting for a line that is plainly shell syntax
+/// (`print -r -- $EPOCHREALTIME > lat_0`, a zsh builtin typed into bash). The caller applies this
+/// only when the head is NOT known (not installed, not a curated command word, not a path).
+///
+/// True iff all of these hold (precision over recall: a `true` runs the line):
+///
+/// - **Vetoes** (any one makes it `false`): a trailing `?`; quoting bash would reject (an
+///   apostrophe in a word: `what's 5 > 3`); the #696 prose colon shape; a non-ASCII character in
+///   an unquoted word (CJK and other non-English prose, which `nld_in_terminal_enabled` exists
+///   to send to the agent); the head is a question word, request opener, one-off natural-language
+///   word, ambiguous lone head, function word or `please`; any prose function word, article or
+///   sentence comma/period among the arguments ([`has_prose_veto_word`]: `what is 5 > 3`,
+///   `explain $PATH to me`); or an English word among the arguments of the head's own command
+///   (everything before the first operator: `list $HOME contents`).
+/// - **Signals** (unquoted unless noted): `$NAME` / `${..}` / `$(..)` (also inside double
+///   quotes); a redirect (`>`, `>>`, `<`, `2>`, `&>`, `2>&1`) whose target is a path, a
+///   `name.ext` or a bare non-English, non-numeric name of two or more characters (`> lat_0`,
+///   not `> 3`, `> B`, `> bar`); a pipe whose right side is a command (a known command word, a
+///   path, or a word followed by a flag: `| grep x`, not `A | B`); a lone `--`; and flags (`-r`,
+///   `-rf`, `--long`, `--k=v`).
+/// - **Strength:** one of variable, redirect or pipe is enough (each is unambiguous once the
+///   vetoes passed); `--` and flags are weak and need two between them (`foo -r --bar`,
+///   `foo -- -x`), because `use --verbose` is a plausible request.
+pub fn has_clear_shell_structure_for_unknown_head(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty()
+        || text.len() > MAX_PREFILTER_BYTES
+        || text.ends_with('?')
+        || !has_shell_safe_quoting(text)
+        || buffer_has_prose_colon_shape(text)
+    {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    let Some(first) = words.get(first_index) else {
+        return false;
+    };
+    if first.quoted || (words.len() < 2 && first_index == 0) {
+        return false;
+    }
+    if words
+        .iter()
+        .any(|word| !word.quoted && !word.text.is_ascii())
+    {
+        return false;
+    }
+    let head = first
+        .text
+        .split(|c: char| SHELL_WORD_TERMINATORS.contains(&c))
+        .next()
+        .unwrap_or("");
+    let head_lower = head.to_lowercase();
+    if head.is_empty()
+        || !head.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        || !head
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | ':'))
+        || QUESTION_HEADS.contains(&head_lower.as_str())
+        || REQUEST_OPENER_HEADS.contains(&head_lower.as_str())
+        || AMBIGUOUS_LONE_HEADS.contains(&head_lower.as_str())
+        || is_one_off_natural_language_word(&head_lower)
+        || head_lower == "please"
+        || is_function_word(&ShellWord {
+            text: head.to_string(),
+            quoted: false,
+        })
+    {
+        return false;
+    }
+    let remaining = &words[first_index + 1..];
+    if has_prose_veto_word(head, remaining) {
+        return false;
+    }
+    // English among the head's own arguments (up to the first operator).
+    if remaining
+        .iter()
+        .take_while(|word| word.quoted || !word.text.contains(['|', '>', '<', '&', ';']))
+        .any(|word| !word.text.starts_with('-') && !word.text.contains('$') && is_prose_word(word))
+    {
+        return false;
+    }
+    let signals = shell_structure_signals(&words, first_index);
+    signals.variable || signals.redirect || signals.pipe || signals.weak >= 2
+}
+
 #[cfg(test)]
 #[path = "util_tests.rs"]
 mod tests;
