@@ -98,4 +98,9 @@ for op in ops {
 if capture { sl(1500) }
 g.lock.lock(); for c in g.changes { out += "C \(c)\n" }; out += "FRAMES \(g.frames)\n"; g.lock.unlock()
 try! out.write(toFile: outPath, atomically: true, encoding: .utf8)
+// #1482: CGEventPost hands events to the window server asynchronously; exiting right after the last post (the line's Return) dropped
+// ~4% of those Returns before they reached even the annotated session tap (ktap, r18ci 2026-11-02: 17 of 427 posted Returns never
+// seen by macOS, every delivered one reached the app). Give the hand-off time before the process goes away. HTYPE2_DRAIN_MS (default 60).
+let drainMs = Double(ProcessInfo.processInfo.environment["HTYPE2_DRAIN_MS"] ?? "") ?? 60
+if drainMs > 0 { Thread.sleep(forTimeInterval: drainMs / 1000) }
 exit(0)

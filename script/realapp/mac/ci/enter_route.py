@@ -82,6 +82,25 @@ for pid, evs in sorted(elsewhere.items(), key=lambda kv: -len(kv[1])):
     say("  pid %d (%s): %d, first wall=%.3f" % (pid, pname(pid), len(evs), evs[0][1]))
 say("seen by Phosphor but not by the tap (join check, expect 0): %d" % len(unmatched_app))
 
+# injector vs macOS: a Return htype2 posted (run/inject.log ENTER@<wall>) with no Return at the tap within 200 ms never entered macOS's
+# event stream (the r18ci finding: htype2 exited before the hand-off). Wall clocks differ by a few ms between the two tools.
+inj = []
+try:
+    for l in open(os.path.join(run, "inject.log"), errors="replace"):
+        inj += [float(m.group(1)) for m in re.finditer(r"ENTER@([\d.]+)", l)]
+except OSError:
+    say("no run/inject.log: injector-vs-macOS check skipped")
+if inj and tap:
+    tw = sorted(t[2] for t in tap)
+    import bisect
+    def near(w):
+        i = bisect.bisect_left(tw, w)
+        return min((abs(tw[j] - w) for j in (i - 1, i) if 0 <= j < len(tw)), default=99)
+    never = [w for w in inj if near(w) > 0.2]
+    say("injector posted %d Returns; never seen by macOS (no tap event within 200 ms): %d" % (len(inj), len(never)))
+    for w in never[:30]:
+        say("  NEVER-IN-MACOS posted wall=%.3f" % w)
+
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 open(dst, "w").write("\n".join(lines) + "\n")
-print("[enter_route] " + "\n[enter_route] ".join(lines[:8]))
+print("[enter_route] " + "\n[enter_route] ".join(lines[:24]))
