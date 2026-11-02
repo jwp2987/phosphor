@@ -116,7 +116,6 @@ mod workspaces;
 // in the warp::integration_testing::assertions module (or a sub-module).  These
 // functions will allow us to keep types internal to this crate and expose a
 // simpler API for integration tests to consume.
-pub mod ai_assistant;
 pub mod appearance;
 pub mod channel;
 pub mod editor;
@@ -1445,7 +1444,6 @@ fn initialize_app(
         restored_user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        _experiments,
         ai_queries,
         nld_prompts,
         persisted_workspaces,
@@ -1468,7 +1466,6 @@ fn initialize_app(
                 sqlite_data.user_profiles,
                 sqlite_data.time_of_next_force_object_refresh,
                 sqlite_data.object_actions,
-                sqlite_data.experiments,
                 sqlite_data.ai_queries,
                 sqlite_data.nld_prompts,
                 sqlite_data.codebase_indices,
@@ -1486,7 +1483,6 @@ fn initialize_app(
             // One `Default::default()` per binding above; adding a field to `PersistedData`
             // means adding one here too, or the tuple arms stop agreeing on arity.
             (
-                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
@@ -1933,7 +1929,6 @@ fn initialize_app(
     ai::blocklist::init(ctx);
     ai::blocklist::block::status_bar::init(ctx);
     drive::index::init(ctx);
-    ai_assistant::panel::init(ctx);
     // Zap Wave 7-2: `settings_view::update_environment_form::init` was physically removed
     // along with the cloud ambient agent's main subsystem.
     env_vars::env_var_collection_block::init(ctx);

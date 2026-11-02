@@ -534,10 +534,6 @@ fn retained_action_examples() -> Vec<(ActionKind, Vec<&'static str>)> {
             vec!["warpctrl", "surface", "resource-center", "toggle"],
         ),
         (
-            ActionKind::SurfaceAiAssistantToggle,
-            vec!["warpctrl", "surface", "ai-assistant", "toggle"],
-        ),
-        (
             ActionKind::SurfaceCodeReviewOpen,
             vec!["warpctrl", "surface", "code-review", "open"],
         ),
@@ -703,9 +699,6 @@ fn parsed_action_kind(command: &ControlCommand) -> Option<ActionKind> {
             },
             SurfaceCommand::ResourceCenter(command) => match command {
                 SurfaceToggleCommand::Toggle(_) => Some(ActionKind::SurfaceResourceCenterToggle),
-            },
-            SurfaceCommand::AiAssistant(command) => match command {
-                SurfaceToggleCommand::Toggle(_) => Some(ActionKind::SurfaceAiAssistantToggle),
             },
             SurfaceCommand::CodeReview(command) => match command {
                 SurfaceOpenToggleCommand::Open(_) => Some(ActionKind::SurfaceCodeReviewOpen),

@@ -284,8 +284,8 @@ fn environment_context_reports_no_git_when_absent() {
 fn environment_context_is_none_when_nothing_resolvable() {
     assert!(render_environment_context(&[]).is_none());
     let only_shell = vec![AIAgentContext::ExecutionEnvironment(
-        crate::ai_assistant::execution_context::WarpAiExecutionContext {
-            os: crate::ai_assistant::execution_context::WarpAiOsContext {
+        crate::ai::execution_context::WarpAiExecutionContext {
+            os: crate::ai::execution_context::WarpAiOsContext {
                 category: Some("linux".into()),
                 distribution: None,
             },

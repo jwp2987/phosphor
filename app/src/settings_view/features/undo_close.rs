@@ -182,7 +182,6 @@ impl View for UndoCloseView {
                 None,
                 LocalOnlyIconState::for_setting(
                     UndoCloseEnabled::storage_key(),
-                    UndoCloseEnabled::sync_to_cloud(),
                     &mut self.local_only_icon_states.borrow_mut(),
                     app,
                 ),

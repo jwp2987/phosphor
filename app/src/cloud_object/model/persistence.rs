@@ -8,7 +8,6 @@ use crate::env_vars::{EnvVarCollection, EnvVarCollectionObject};
 use crate::notebooks::NotebookObject;
 use crate::persistence::ModelEvent;
 use crate::server::ids::{HashableId, ObjectUid, SyncId, ToServerId};
-use crate::settings::cloud_preferences::{PreferenceObject, PreferenceObjectModel};
 use crate::workflows::workflow::Workflow;
 use crate::workflows::workflow_enum::WorkflowEnumObject;
 use crate::workflows::WorkflowObject;
@@ -25,8 +24,6 @@ use crate::util::sync::Condition;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use warp_core::features::FeatureFlag;
-
-use super::generic_string_model::GenericStringObjectId;
 
 // Equivalent to 24 hours
 const MIN_MINUTES_UNTIL_NEXT_FORCE_REFRESH: i64 = 1440;
@@ -712,26 +709,6 @@ impl ObjectStoreModel {
             .values()
             .filter(move |object| !object.is_trashed(self) && object.permissions().owner == owner)
             .filter_map(|object| object.into())
-    }
-
-    /// Returns a map of PreferenceObject models keyed by their storage key.
-    pub fn get_all_preferences_by_storage_key(&self) -> HashMap<String, &PreferenceObject> {
-        let mut keys: HashSet<String> = HashSet::new();
-        self.get_all_objects_of_type::<GenericStringObjectId, PreferenceObjectModel>()
-            .map(|cloud_prefs| {
-                if keys.contains(&cloud_prefs.model().string_model.storage_key) {
-                    log::warn!(
-                        "Duplicate cloud preference storage key: {}",
-                        cloud_prefs.model().string_model.storage_key
-                    );
-                    keys.insert(cloud_prefs.model().string_model.storage_key.clone());
-                }
-                (
-                    cloud_prefs.model().string_model.storage_key.clone(),
-                    cloud_prefs,
-                )
-            })
-            .collect::<HashMap<_, _>>()
     }
 
     pub fn get_object_of_type<K, M>(&self, object_id: &SyncId) -> Option<&GenericStoredObject<K, M>>

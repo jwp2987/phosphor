@@ -188,8 +188,9 @@ re-pin diff" no longer justifies keeping unreferenced code. Removed in `app/src`
 (`BlockOnboarding` was always `VariantTwo`, `ImprovedPaletteSearch` always `Experiment` so
 `UseTantivySearch` is unconditionally on, `LoginLayer` never assigned anyone — all because
 `anonymous_id()` is the nil UUID, bucket 954/214/654); the `ServerExperiments` model (its cached-row
-replay could flip `FeatureFlag::AgentMode` off; the `ServerExperiment` enum, the `server_experiments`
-table and `ModelEvent::SaveExperiments` remain pending a migration decision); `word_block_editor`,
+replay could flip `FeatureFlag::AgentMode` off; the `ServerExperiment` enum and
+`ModelEvent::SaveExperiments` are gone too, and migration `2026-11-02-000000_drop_server_experiments`
+drops the table — see the owner-approved section below); `word_block_editor`,
 `view_components::{warning_box,clickable_text_input}`, `search::search_results_menu`; every simple
 `cfg(target_family = "wasm")` item and the wasm-only files (no wasm target is built anywhere);
 12 never-referenced `FeatureFlag` variants; and ~200 zero-caller cloud_object / workspaces / team /
@@ -2685,3 +2686,40 @@ verified by word-grep over `app/ crates/ lib/ script/`, no live path, setting or
   NOT removed yet.
 - **`PasteSequencer<Vec<u8>>::on_key` / `KeyDisposition`** — the pty paste lives on the input queue;
   the generic `PasteSequencer<K>` stays for the editors.
+
+## Owner-approved removals, 2026-11-02 (#1467, #1474) — behaviour changes, decided by the owner
+
+These removed user-visible or on-disk surface, so unlike the dead-code rows above they needed a
+decision. The owner approved all four on 2026-11-02. None of them touches Agent Mode.
+
+- **The pre-Agent-Mode "AI Assistant" side panel is gone** (`app/src/ai_assistant/`, ~3,500 lines
+  incl. tests). Removed with it: its per-window construction in `workspace/view.rs`,
+  `WorkspaceAction::{ToggleAIAssistant, ClickedAIAssistantIcon, ShowAIAssistantWarmWelcome,
+  ClickedAIAssistantWarmWelcome, DismissAIAssistantWarmWelcome}`, the legacy tab-bar button and warm
+  welcome, the `AskAIAssistant` event chain (terminal -> pane group -> workspace), the
+  `surface.ai_assistant.toggle` local-control action (`warpctrl surface ai-assistant`; the catalog is
+  now 83 actions), and the `test_ask_warp_ai_keybinding_for_selected_block` integration test. The
+  binding name `workspace:toggle_ai_assistant` is kept for the Agent Mode "new agent pane" binding so
+  custom keybindings survive. Surviving users moved: `AskAIType` and the logo constants to
+  `app/src/ai/ask_ai.rs`, `WarpAiExecutionContext` to `app/src/ai/execution_context.rs`.
+- **The settings-sync badge is gone.** `account.is_settings_sync_enabled` and
+  `app/src/settings/cloud_preferences.rs` (`Preference`, `PreferenceObject`, `Platform`) were removed
+  along with the readers in the settings UI, `SETTINGS_SYNC_FLAG`, `UpdateManagerEvent::PreferencesUpdated`
+  and the sqlite load arm for preference rows (rows written by old builds are ignored). A
+  `settings.toml` that still has `[account] is_settings_sync_enabled = ...` keeps loading: the key is
+  reported by the unknown-key diagnostic like any removed setting (test in
+  `settings_file_diagnostics_tests.rs`). **Not done, listed for a follow-up:** the `sync_to_cloud:`
+  argument on ~480 setting definitions, `Setting::sync_to_cloud`, `current_value_is_syncable`,
+  `set_value_from_cloud_sync` / `from_cloud_sync`, `ChangeEventReason::CloudSync` and the
+  `SettingsEvent::LocalPreferencesUpdated { sync_to_cloud }` payload (a macro-signature change in
+  `crates/settings/src/macros.rs` plus a scripted removal; needs a compiler in the loop), and the dead
+  `LocalOnlyIconState::Visible` rendering plumbing in `settings_view`.
+- **A/B-experiment remnants are gone:** `ServerExperiment`, `ModelEvent::SaveExperiments`, the diesel
+  model/schema entries, and the `server_experiments` table, dropped by migration
+  `2026-11-02-000000_drop_server_experiments` (`DROP TABLE IF EXISTS`, so it is a no-op on a database
+  that never had it; empty `down.sql` per the repo's drop-migration convention). The dev-only
+  `ExperimentOverrides` private pref no longer existed in the tree. `app/src/experiments/mod.rs`
+  (a `#[cfg(test)]` no-op kept for `terminal/input_test.rs`) remains until that test stops calling it.
+- **Notebook "Open on desktop" menu item and `NotebookAction::OpenLinkOnDesktop` are gone** (#1474).
+  The handler was a no-op on native. The workflow and Drive "Open on Desktop" items are separate and
+  untouched.

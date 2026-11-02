@@ -5,7 +5,6 @@ pub mod app_icon;
 pub mod app_installation_detection;
 mod autoupdate;
 mod block_visibility;
-pub mod cloud_preferences;
 mod code;
 mod debug;
 mod editor;
@@ -53,7 +52,6 @@ pub use ai::*;
 pub use alias_expansion::*;
 pub use autoupdate::*;
 pub use block_visibility::*;
-pub use cloud_preferences::*;
 pub use code::*;
 pub use debug::*;
 pub use editor::*;
@@ -212,7 +210,6 @@ use warpui::{
 pub const CHANGELOG_VERSIONS: &str = "ChangelogVersions";
 pub const RESTORE_SESSION: &str = "RestoreSession";
 pub const INPUT_MODE: &str = "InputMode";
-pub const DISMISSED_AI_ASSISTANT_WELCOME_KEY: &str = "DismissedWarpAIWarmWelcome";
 
 pub const QUAKE_WINDOW_AUTOHIDE_SUPPORTED: bool = cfg!(any(target_os = "macos", windows));
 

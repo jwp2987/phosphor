@@ -163,9 +163,10 @@ fn surface_list_rejects_target_selectors() {
 
 #[test]
 fn capabilities_advertises_the_complete_catalog() {
-    // 83, not the oracle's 84: this fork demoted `SurfaceAgentManagementOpen`
-    // to `ActionImplementationStatus::Stub` (see module header comment).
-    assert_eq!(capabilities().len(), 83);
+    // 82, not the oracle's 84: this fork demoted `SurfaceAgentManagementOpen` to
+    // `ActionImplementationStatus::Stub` (see module header comment) and removed
+    // `SurfaceAiAssistantToggle` along with the old AI Assistant panel.
+    assert_eq!(capabilities().len(), 82);
 }
 
 #[test]

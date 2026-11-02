@@ -1136,7 +1136,6 @@ impl SettingsWidget for SecretRedactionWidget {
 
         let local_only_icon_state = LocalOnlyIconState::for_setting(
             SafeModeEnabled::storage_key(),
-            SafeModeEnabled::sync_to_cloud(),
             &mut view.local_only_icon_tooltip_states.borrow_mut(),
             app,
         );
@@ -1205,7 +1204,6 @@ impl SettingsWidget for SecretRedactionWidget {
             // Add the secret display mode dropdown
             let local_only_icon_state = LocalOnlyIconState::for_setting(
                 SecretDisplayModeSetting::storage_key(),
-                SecretDisplayModeSetting::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             );

@@ -4660,7 +4660,6 @@ fn render_ai_setting_toggle<S: Setting>(
             None,
             LocalOnlyIconState::for_setting(
                 S::storage_key(),
-                S::sync_to_cloud(),
                 &mut tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4692,7 +4691,6 @@ fn render_ai_setting_label<S: Setting>(
         None,
         LocalOnlyIconState::for_setting(
             S::storage_key(),
-            S::sync_to_cloud(),
             &mut tooltip_states.borrow_mut(),
             app,
         ),
@@ -6929,7 +6927,6 @@ impl VoiceWidget {
                 None,
                 LocalOnlyIconState::for_setting(
                     VoiceInputToggleKey::storage_key(),
-                    VoiceInputToggleKey::sync_to_cloud(),
                     &mut view.local_only_icon_tooltip_states.borrow_mut(),
                     app,
                 ),
@@ -7187,7 +7184,6 @@ impl SettingsWidget for OtherAIWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ThinkingDisplayMode::storage_key(),
-                ThinkingDisplayMode::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -7208,7 +7204,6 @@ impl SettingsWidget for OtherAIWidget {
                 None,
                 LocalOnlyIconState::for_setting(
                     OpenConversationLayoutPreference::storage_key(),
-                    OpenConversationLayoutPreference::sync_to_cloud(),
                     &mut view.local_only_icon_tooltip_states.borrow_mut(),
                     app,
                 ),
@@ -7416,7 +7411,6 @@ impl SettingsWidget for CLIAgentAutoToggleRichInputWidget {
             }),
             LocalOnlyIconState::for_setting(
                 AutoToggleRichInput::storage_key(),
-                AutoToggleRichInput::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),

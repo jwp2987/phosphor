@@ -189,7 +189,7 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 
 ### 4.3 AI / Agent
 - `ai/` (389) — includes Agent UI, conversation model, Agent management, tools/MCP, Cloud Agent, Plan/Diff views, artifacts, blocklist, execution profiles, etc. **This is the largest subtree in the repo**; before making changes, grep the specific subtopic within this directory first (`agent_*`, `conversation_*`, `cloud_agent_*`, `mcp`, `tool_*`).
-- `ai_assistant/` (9) — legacy AI-assist entry point/adapter.
+- `ai_assistant/` — **removed 2026-11-02** (see `DECLINED.md`); `ai/ask_ai.rs` and `ai/execution_context.rs` hold what survived.
 - `chip_configurator/`, `context_chips/` (22) — Agent context chip selection/construction.
 - `coding_entrypoints/` (5), `coding_panel_enablement_state.rs`
 - `prompt/` (2), `tips/` (3), `voice/` (2), `completer/` (3)

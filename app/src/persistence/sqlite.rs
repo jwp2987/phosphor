@@ -45,7 +45,7 @@ use super::block_list::{
 };
 use super::model::{
     self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
-    NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTabGroup, NewTeam,
+    NewApp, NewCommand, NewFolder, NewNotebook, NewTab, NewTabGroup, NewTeam,
     NewWindow, NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata,
     ObjectPermissions, Project, Tab, TabGroup, Window,
     WorkspaceMetadata as WorkspaceMetadataModel,
@@ -99,11 +99,9 @@ use crate::persistence::model::{
     NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
     ProjectRules, UserProfile, CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND,
 };
-use crate::server::experiments::ServerExperiment;
 use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
 use crate::server::telemetry::TelemetryEvent;
 use crate::server_time::ServerTimestamp;
-use crate::settings::cloud_preferences::{PreferenceObject, PreferenceObjectModel};
 use crate::settings_view::SettingsSection;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::tab::SelectedTabColor;
@@ -2955,9 +2953,6 @@ fn handle_model_event_unsettled(
         } => {
             sync_object_actions(connection, objects_to_sync).context("error syncing object actions")
         }
-        ModelEvent::SaveExperiments { experiments } => {
-            save_experiments(connection, experiments).context("error saving experiments")
-        }
         ModelEvent::UpsertAIQuery { query } => {
             upsert_ai_query(connection, query).context("error upserting AI query")
         }
@@ -5700,19 +5695,9 @@ fn read_sqlite_data_counting(
                             .try_into()
                             .ok()?;
                         object_id.and_then(|server_id| match json_object_type {
-                            JsonObjectType::Preference => {
-                                let model = PreferenceObjectModel::deserialize_owned(&object.data);
-                                model.ok().map(|model| {
-                                    let boxed: Box<dyn StoredObject> =
-                                        Box::new(PreferenceObject::new(
-                                            server_id,
-                                            model,
-                                            to_cloud_object_metadata(metadata),
-                                            cloud_object_permissions,
-                                        ));
-                                    boxed
-                                })
-                            }
+                            // Cloud-synced preference objects no longer exist in this fork; rows
+                            // written by older builds are ignored.
+                            JsonObjectType::Preference => None,
                             JsonObjectType::EnvVarCollection => {
                                 let model =
                                     EnvVarCollectionObjectModel::deserialize_owned(&object.data);
@@ -5921,16 +5906,6 @@ fn read_sqlite_data_counting(
     .filter_map(|action| action.try_into().ok())
         .collect();
 
-    let server_experiments = collect_rows(
-        schema::server_experiments::dsl::server_experiments
-            .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?,
-    )?
-    .into_iter()
-    .filter_map(|server_experiment| {
-            ServerExperiment::from_string(server_experiment.experiment).ok()
-        })
-        .collect();
-
     let restored_blocks = get_all_restored_blocks(conn)?;
 
     // Load active MCP servers from database
@@ -5996,7 +5971,6 @@ fn read_sqlite_data_counting(
         user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        experiments: server_experiments,
         ai_queries,
         nld_prompts,
         codebase_indices,
@@ -6256,27 +6230,6 @@ fn upsert_user_profiles(
                 .values(new_user_profile)
                 .execute(conn)?;
         }
-        Ok(())
-    })
-}
-
-fn save_experiments(
-    conn: &mut SqliteConnection,
-    experiments: Vec<ServerExperiment>,
-) -> Result<(), Error> {
-    conn.transaction::<(), Error, _>(|conn| {
-        diesel::delete(schema::server_experiments::dsl::server_experiments).execute(conn)?;
-
-        let new_experiments = experiments
-            .into_iter()
-            .map(|experiment| NewServerExperiment {
-                experiment: experiment.to_string(),
-            })
-            .collect_vec();
-
-        diesel::insert_into(schema::server_experiments::dsl::server_experiments)
-            .values(new_experiments)
-            .execute(conn)?;
         Ok(())
     })
 }

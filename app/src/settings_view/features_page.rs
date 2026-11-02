@@ -19,7 +19,7 @@ use super::keybindings::KeyBindingModifyingState;
 use super::settings_page::render_sub_sub_header;
 use super::settings_page::{
     add_setting, build_reset_button, render_body_item_label, render_dropdown_item_label,
-    render_local_only_icon, Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget,
+    Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget,
     TOGGLE_BUTTON_RIGHT_PADDING,
 };
 use super::settings_page::{
@@ -48,7 +48,7 @@ use crate::settings::{
     EnableSlashCommandsInTerminal, ErrorUnderliningEnabled, ExtraMetaKeys,
     GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier, PreferLowPowerGPU,
-    PreferencesSettings, PreferredGraphicsBackend, QuakeModeSettings, RightClickBehavior,
+    PreferredGraphicsBackend, QuakeModeSettings, RightClickBehavior,
     RightClickBehaviorSetting, ScrollSettings, SelectionSettings, SelectionSettingsChangedEvent,
     ShowAutosuggestionIgnoreButton, ShowTerminalInputMessageBar, SshSettings,
     SyntaxHighlighting, TabBehavior, VimModeEnabled, VimStatusBar, VimUnnamedSystemClipboard,
@@ -1246,7 +1246,6 @@ impl FeaturesPageAction {
 #[derive(Default)]
 struct MouseStateHandles {
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
-    tab_behavior_local_only_icon: MouseStateHandle,
     activation_hotkey_keybinding_editor: MouseStateHandle,
     activation_hotkey_save: MouseStateHandle,
     activation_hotkey_cancel: MouseStateHandle,
@@ -4502,7 +4501,6 @@ impl SettingsWidget for NativeRedirectWidget {
             }),
             LocalOnlyIconState::for_setting(
                 UserNativeRedirectPreference::storage_key(),
-                UserNativeRedirectPreference::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4572,7 +4570,6 @@ impl SettingsWidget for SessionRestorationWidget {
             }),
             LocalOnlyIconState::for_setting(
                 RestoreSession::storage_key(),
-                RestoreSession::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4659,7 +4656,6 @@ impl SettingsWidget for ConversationPersistenceWidget {
             None,
             LocalOnlyIconState::for_setting(
                 PersistConversations::storage_key(),
-                PersistConversations::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4706,7 +4702,6 @@ impl SettingsWidget for SnackbarHeaderWidget {
             }),
             LocalOnlyIconState::for_setting(
                 SnackbarEnabled::storage_key(),
-                SnackbarEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4752,7 +4747,6 @@ impl SettingsWidget for LinkTooltipWidget {
             None,
             LocalOnlyIconState::for_setting(
                 LinkTooltip::storage_key(),
-                LinkTooltip::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4799,7 +4793,6 @@ impl SettingsWidget for QuitWarningModalWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowWarningBeforeQuitting::storage_key(),
-                ShowWarningBeforeQuitting::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4852,7 +4845,6 @@ impl SettingsWidget for LoginItemWidget {
             None,
             LocalOnlyIconState::for_setting(
                 LoginItem::storage_key(),
-                LoginItem::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4899,7 +4891,6 @@ impl SettingsWidget for QuitWhenAllWindowsClosedWidget {
             None,
             LocalOnlyIconState::for_setting(
                 QuitOnLastWindowClosed::storage_key(),
-                QuitOnLastWindowClosed::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -4990,7 +4981,6 @@ impl SettingsWidget for MouseScrollMultiplierWidget {
             }),
             LocalOnlyIconState::for_setting(
                 MouseScrollMultiplier::storage_key(),
-                MouseScrollMultiplier::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5098,7 +5088,6 @@ impl SettingsWidget for BlockLimitWidget {
             None,
             LocalOnlyIconState::for_setting(
                 MaximumGridSize::storage_key(),
-                MaximumGridSize::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5156,7 +5145,6 @@ impl SettingsWidget for MaxRetainedLinesWidget {
             None,
             LocalOnlyIconState::for_setting(
                 MaxRetainedLines::storage_key(),
-                MaxRetainedLines::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5205,15 +5193,8 @@ impl SettingsWidget for SSHWrapperWidget {
                 },
                 tooltip_override_text: None,
             }),
-            // `EnableSshWrapper` is `WarpifySettings`' declaration since #635; the
-            // deleted `SshSettings` one was `SyncToCloud::Globally(Yes)`. Because
-            // `for_setting` shows the local-only icon iff `sync_to_cloud == Never`,
-            // this row now shows that icon when settings sync is on, where it
-            // previously showed none. That is correct -- the setting really is
-            // local-only -- and it is the only user-visible change from #635.
             LocalOnlyIconState::for_setting(
                 EnableSshWrapper::storage_key(),
-                EnableSshWrapper::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5268,7 +5249,6 @@ impl SettingsWidget for DesktopNotificationsWidget {
             }),
             LocalOnlyIconState::for_setting(
                 Notifications::storage_key(),
-                Notifications::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5451,7 +5431,6 @@ impl SettingsWidget for StartupShellWidget {
                     crate::t!("settings-features-default-shell-header"),
                     Some(LocalOnlyIconState::for_setting(
                         StartupShellOverride::storage_key(),
-                        StartupShellOverride::sync_to_cloud(),
                         &mut view
                             .button_mouse_states
                             .local_only_icon_tooltip_states
@@ -5490,7 +5469,6 @@ impl SettingsWidget for WorkingDirectoryWidget {
                     crate::t!("settings-features-working-directory-header"),
                     Some(LocalOnlyIconState::for_setting(
                         WorkingDirectoryConfig::storage_key(),
-                        WorkingDirectoryConfig::sync_to_cloud(),
                         &mut view
                             .button_mouse_states
                             .local_only_icon_tooltip_states
@@ -5555,7 +5533,6 @@ impl SettingsWidget for ExtraMetaKeysWidget {
                 None,
                 LocalOnlyIconState::for_setting(
                     crate::terminal::keys_settings::ExtraMetaKeys::storage_key(),
-                    crate::terminal::keys_settings::ExtraMetaKeys::sync_to_cloud(),
                     &mut tooltip_states,
                     app,
                 ),
@@ -5576,7 +5553,6 @@ impl SettingsWidget for ExtraMetaKeysWidget {
                 None,
                 LocalOnlyIconState::for_setting(
                     crate::terminal::keys_settings::ExtraMetaKeys::storage_key(),
-                    crate::terminal::keys_settings::ExtraMetaKeys::sync_to_cloud(),
                     &mut tooltip_states,
                     app,
                 ),
@@ -5666,7 +5642,6 @@ impl SettingsWidget for GlobalHotkeyWidget {
                         None,
                         LocalOnlyIconState::for_setting(
                             ActivationHotkeyEnabled::storage_key(),
-                            ActivationHotkeyEnabled::sync_to_cloud(),
                             &mut view
                                 .button_mouse_states
                                 .local_only_icon_tooltip_states
@@ -5772,7 +5747,6 @@ impl SettingsWidget for AutocompleteSymbolsWidget {
             None,
             LocalOnlyIconState::for_setting(
                 AutocompleteSymbols::storage_key(),
-                AutocompleteSymbols::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5818,7 +5792,6 @@ impl SettingsWidget for ErrorUnderliningWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ErrorUnderliningEnabled::storage_key(),
-                ErrorUnderliningEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5864,7 +5837,6 @@ impl SettingsWidget for SyntaxHighlightingWidget {
             None,
             LocalOnlyIconState::for_setting(
                 SyntaxHighlighting::storage_key(),
-                SyntaxHighlighting::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5910,7 +5882,6 @@ impl SettingsWidget for CompletionsMenuWhileTypingWidget {
             None,
             LocalOnlyIconState::for_setting(
                 CompletionsOpenWhileTyping::storage_key(),
-                CompletionsOpenWhileTyping::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -5960,7 +5931,6 @@ impl SettingsWidget for CommandCorrectionsWidget {
             None,
             LocalOnlyIconState::for_setting(
                 CommandCorrections::storage_key(),
-                CommandCorrections::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6007,7 +5977,6 @@ impl SettingsWidget for AliasExpansionWidget {
             None,
             LocalOnlyIconState::for_setting(
                 AliasExpansionEnabled::storage_key(),
-                AliasExpansionEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6067,7 +6036,6 @@ impl SettingsWidget for RightClickBehaviorWidget {
                     None,
                     LocalOnlyIconState::for_setting(
                         RightClickBehaviorSetting::storage_key(),
-                        RightClickBehaviorSetting::sync_to_cloud(),
                         &mut view
                             .button_mouse_states
                             .local_only_icon_tooltip_states
@@ -6108,7 +6076,6 @@ impl SettingsWidget for MiddleClickPasteWidget {
             None,
             LocalOnlyIconState::for_setting(
                 MiddleClickPasteEnabled::storage_key(),
-                MiddleClickPasteEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6160,7 +6127,6 @@ impl SettingsWidget for VimModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 VimModeEnabled::storage_key(),
-                VimModeEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6196,7 +6162,6 @@ impl SettingsWidget for VimModeWidget {
                 appearance,
                 LocalOnlyIconState::for_setting(
                     VimUnnamedSystemClipboard::storage_key(),
-                    VimUnnamedSystemClipboard::sync_to_cloud(),
                     &mut view
                         .button_mouse_states
                         .local_only_icon_tooltip_states
@@ -6220,7 +6185,6 @@ impl SettingsWidget for VimModeWidget {
                 appearance,
                 LocalOnlyIconState::for_setting(
                     VimStatusBar::storage_key(),
-                    VimStatusBar::sync_to_cloud(),
                     &mut view
                         .button_mouse_states
                         .local_only_icon_tooltip_states
@@ -6265,7 +6229,6 @@ impl SettingsWidget for AtContextMenuInTerminalModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 AtContextMenuInTerminalMode::storage_key(),
-                AtContextMenuInTerminalMode::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6321,7 +6284,6 @@ impl SettingsWidget for SlashCommandsInTerminalModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 EnableSlashCommandsInTerminal::storage_key(),
-                EnableSlashCommandsInTerminal::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6373,7 +6335,6 @@ impl SettingsWidget for ShowTerminalInputMessageLineWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowTerminalInputMessageBar::storage_key(),
-                ShowTerminalInputMessageBar::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6426,7 +6387,6 @@ impl SettingsWidget for AutosuggestionKeybindingHintWidget {
             None,
             LocalOnlyIconState::for_setting(
                 AutosuggestionKeybindingHint::storage_key(),
-                AutosuggestionKeybindingHint::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6482,7 +6442,6 @@ impl SettingsWidget for AutosuggestionIgnoreButtonWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowAutosuggestionIgnoreButton::storage_key(),
-                ShowAutosuggestionIgnoreButton::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6608,7 +6567,7 @@ impl SettingsWidget for TabKeyBehaviorWidget {
         appearance: &Appearance,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let mut tab_key_span = Flex::row()
+        let tab_key_span = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_child(
                 appearance
@@ -6621,15 +6580,6 @@ impl SettingsWidget for TabKeyBehaviorWidget {
                     .build()
                     .finish(),
             );
-        if *PreferencesSettings::as_ref(app).settings_sync_enabled {
-            tab_key_span.add_child(render_local_only_icon(
-                appearance,
-                view.button_mouse_states
-                    .tab_behavior_local_only_icon
-                    .clone(),
-                None,
-            ));
-        }
 
         let main_row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -6678,7 +6628,6 @@ impl SettingsWidget for CtrlTabBehaviorWidget {
                     None,
                     LocalOnlyIconState::for_setting(
                         CtrlTabBehaviorSetting::storage_key(),
-                        CtrlTabBehaviorSetting::sync_to_cloud(),
                         &mut view
                             .button_mouse_states
                             .local_only_icon_tooltip_states
@@ -6728,7 +6677,6 @@ impl SettingsWidget for MouseReportingWidget {
             }),
             LocalOnlyIconState::for_setting(
                 MouseReportingEnabled::storage_key(),
-                MouseReportingEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6775,7 +6723,6 @@ impl SettingsWidget for ScrollReportingWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ScrollReportingEnabled::storage_key(),
-                ScrollReportingEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6833,7 +6780,6 @@ impl SettingsWidget for FocusReportingWidget {
             None,
             LocalOnlyIconState::for_setting(
                 FocusReportingEnabled::storage_key(),
-                FocusReportingEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6880,7 +6826,6 @@ impl SettingsWidget for AudibleBellWidget {
             None,
             LocalOnlyIconState::for_setting(
                 UseAudibleBell::storage_key(),
-                UseAudibleBell::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -6992,7 +6937,6 @@ impl SettingsWidget for SmartSelectWidget {
             }),
             LocalOnlyIconState::for_setting(
                 SmartSelectEnabled::storage_key(),
-                SmartSelectEnabled::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7061,7 +7005,6 @@ impl SettingsWidget for ShowTerminalZeroStateBlockWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowTerminalZeroStateBlock::storage_key(),
-                ShowTerminalZeroStateBlock::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7103,7 +7046,6 @@ impl SettingsWidget for CopyOnSelectWidget {
             None,
             LocalOnlyIconState::for_setting(
                 CopyOnSelect::storage_key(),
-                CopyOnSelect::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7155,7 +7097,6 @@ impl SettingsWidget for Osc52ClipboardAccessWidget {
                     None,
                     LocalOnlyIconState::for_setting(
                         Osc52ClipboardAccessSetting::storage_key(),
-                        Osc52ClipboardAccessSetting::sync_to_cloud(),
                         &mut view
                             .button_mouse_states
                             .local_only_icon_tooltip_states
@@ -7194,7 +7135,6 @@ impl SettingsWidget for NewTabPlacementWidget {
             None,
             LocalOnlyIconState::for_setting(
                 NewTabPlacement::storage_key(),
-                NewTabPlacement::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7228,7 +7168,6 @@ impl SettingsWidget for DefaultSessionModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 DefaultSessionMode::storage_key(),
-                DefaultSessionMode::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7289,7 +7228,6 @@ impl SettingsWidget for WorkflowsInCommandSearch {
             }),
             LocalOnlyIconState::for_setting(
                 ShowGlobalWorkflowsInUniversalSearch::storage_key(),
-                ShowGlobalWorkflowsInUniversalSearch::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7344,7 +7282,6 @@ impl SettingsWidget for LinuxSelectionClipboardWidget {
             }),
             LocalOnlyIconState::for_setting(
                 LinuxSelectionClipboard::storage_key(),
-                LinuxSelectionClipboard::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7391,7 +7328,6 @@ impl SettingsWidget for GPUWidget {
             None,
             LocalOnlyIconState::for_setting(
                 PreferLowPowerGPU::storage_key(),
-                PreferLowPowerGPU::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7469,7 +7405,6 @@ impl SettingsWidget for WindowSystemWidget {
             }),
             LocalOnlyIconState::for_setting(
                 ForceX11::storage_key(),
-                ForceX11::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states
@@ -7539,7 +7474,6 @@ impl SettingsWidget for GraphicsBackendWidget {
             None,
             LocalOnlyIconState::for_setting(
                 PreferredGraphicsBackend::storage_key(),
-                PreferredGraphicsBackend::sync_to_cloud(),
                 &mut view
                     .button_mouse_states
                     .local_only_icon_tooltip_states

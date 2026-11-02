@@ -1119,7 +1119,7 @@ fn fallback_system(model_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::agent::AIAgentContext;
-    use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
+    use crate::ai::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
 
     // -- Template hot-reload (ZAP_PROMPT_DIR) --------------------------------
     //

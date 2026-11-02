@@ -49,7 +49,6 @@ use crate::cloud_object::model::generic_string_model::StoredStringObject;
 use crate::cloud_object::{ObjectIdType, StoredObject, StoredObjectMetadata};
 use crate::drive::folders::FolderObject;
 use crate::notebooks::NotebookObject;
-use crate::server::experiments::ServerExperiment;
 use crate::server::ids::SyncId;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::terminal::history::PersistedCommand;
@@ -531,7 +530,6 @@ pub struct PersistedData {
     pub user_profiles: Vec<UserProfileWithUID>,
     pub time_of_next_force_object_refresh: Option<DateTime<Utc>>,
     pub object_actions: Vec<ObjectAction>,
-    pub experiments: Vec<ServerExperiment>,
     pub ai_queries: Vec<PersistedAIInput>,
     /// Prompt text and submission time for NLD prompt-history matching, oldest-first.
     ///
@@ -574,7 +572,6 @@ pub(crate) struct SendablePersistedData {
     user_profiles: Vec<UserProfileWithUID>,
     time_of_next_force_object_refresh: Option<DateTime<Utc>>,
     object_actions: Vec<ObjectAction>,
-    experiments: Vec<ServerExperiment>,
     ai_queries: Vec<PersistedAIInput>,
     nld_prompts: Vec<(String, DateTime<Local>)>,
     codebase_indices: Vec<CodeWorkspaceMetadata>,
@@ -604,7 +601,6 @@ impl SendablePersistedData {
             user_profiles,
             time_of_next_force_object_refresh,
             object_actions,
-            experiments,
             ai_queries,
             nld_prompts,
             codebase_indices,
@@ -628,7 +624,6 @@ impl SendablePersistedData {
             user_profiles,
             time_of_next_force_object_refresh,
             object_actions,
-            experiments,
             ai_queries,
             nld_prompts,
             codebase_indices,
@@ -657,7 +652,6 @@ impl SendablePersistedData {
             user_profiles: self.user_profiles,
             time_of_next_force_object_refresh: self.time_of_next_force_object_refresh,
             object_actions: self.object_actions,
-            experiments: self.experiments,
             ai_queries: self.ai_queries,
             nld_prompts: self.nld_prompts,
             codebase_indices: self.codebase_indices,
@@ -781,9 +775,6 @@ pub enum ModelEvent {
     ClearUserProfiles,
     RecordTimeOfNextRefresh {
         timestamp: DateTime<Utc>,
-    },
-    SaveExperiments {
-        experiments: Vec<ServerExperiment>,
     },
     // `PauseAndRemoveDatabase` and `ReconstructAndResume` are used to pause and resume the writer thread.
     // These are employed as part of Logout v0 to ensure that the writer thread

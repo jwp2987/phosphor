@@ -273,7 +273,6 @@ ai-inline-code-diff-review-changes = 変更をレビュー
 ai-execution-profile-name-placeholder = 例: "YOLO code"
 ai-execution-profile-delete-profile = プロファイルを削除
 ai-notifications-mark-all-as-read = すべて既読にする
-ai-assistant-copy-transcript-tooltip = 文字起こしをクリップボードにコピー
 code-comment = コメント
 code-copy-file-path = ファイルパスをコピー
 code-select-all = すべて選択
@@ -727,7 +726,6 @@ settings-keybindings-press-new-shortcut = 新しいキーボードショート�
 settings-keybindings-description = 既存のアクションに独自のキーバインドを追加できます。
 settings-keybindings-use-prefix = 使用
 settings-keybindings-use-suffix = でいつでもサイドペインからこれらのキーバインドを参照できます。
-settings-keybindings-not-synced-tooltip = キーボードショートカットはローカルに保存されます
 settings-keybindings-subheader = キーボードショートカットを設定
 settings-keybindings-command-column = コマンド
 
@@ -1765,7 +1763,6 @@ keybinding-desc-workspace-install-cli = Phosphor Agent CLI コマンドをイン
 keybinding-desc-workspace-uninstall-cli = Phosphor Agent CLI コマンドをアンインストール
 
 # AI assistant / agents
-keybinding-desc-workspace-toggle-ai-assistant = Phosphor AI を切り替え
 
 # Env vars / prompts
 keybinding-desc-workspace-create-personal-env-vars = 新規個人環境変数を作成
@@ -2026,9 +2023,6 @@ keybinding-desc-welcome-terminal-session = ターミナルセッション
 keybinding-desc-welcome-add-repository = リポジトリを追加
 
 # AI assistant panel binding desc
-keybinding-desc-ai-assistant-close = Phosphor AI を閉じる
-keybinding-desc-ai-assistant-focus-terminal-input = Phosphor AI からターミナル入力にフォーカス
-keybinding-desc-ai-assistant-restart = Phosphor AI を再起動
 
 # Code review binding desc
 keybinding-desc-code-review-save-all = コードレビューの未保存ファイルをすべて保存

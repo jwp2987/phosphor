@@ -137,7 +137,6 @@ pub(crate) enum SurfaceDestination {
     Keybindings,
     WarpDrive,
     ResourceCenter,
-    AiAssistant,
     CodeReview,
     ProjectExplorer,
     GlobalSearch,
@@ -157,7 +156,6 @@ impl SurfaceDestination {
         Self::Keybindings,
         Self::WarpDrive,
         Self::ResourceCenter,
-        Self::AiAssistant,
         Self::CodeReview,
         Self::ProjectExplorer,
         Self::GlobalSearch,
@@ -177,7 +175,6 @@ impl SurfaceDestination {
             Self::Keybindings => "keybindings",
             Self::WarpDrive => "warp_drive",
             Self::ResourceCenter => "resource_center",
-            Self::AiAssistant => "ai_assistant",
             Self::CodeReview => "code_review",
             Self::ProjectExplorer => "project_explorer",
             Self::GlobalSearch => "global_search",
@@ -316,10 +313,6 @@ pub(crate) fn surface_unavailable_reason(
             Some("Library is disabled")
         }
         SurfaceDestination::WarpDrive => None,
-        SurfaceDestination::AiAssistant if !AISettings::as_ref(ctx).is_any_ai_enabled(ctx) => {
-            Some("AI features are disabled")
-        }
-        SurfaceDestination::AiAssistant => None,
         SurfaceDestination::CodeReview | SurfaceDestination::RightPanel
             if !cfg!(feature = "local_fs") =>
         {

@@ -1,6 +1,6 @@
 use crate::ai::api_error::AIApiError;
 use crate::ai::block_context::BlockContext;
-use crate::ai_assistant::execution_context::WarpAiExecutionContext;
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::completer::SessionContext;
 use crate::report_error;
 use crate::settings::AISettings;
