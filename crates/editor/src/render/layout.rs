@@ -143,6 +143,12 @@ impl<'a> TextLayout<'a> {
             .store(on && self.lazy_capable, Ordering::Relaxed);
     }
 
+    /// Whether runs of dehydrated lines may be grouped into parked chunks (#1340 P5; off with
+    /// `PHOSPHOR_EDITOR_P5=0`).
+    pub(crate) fn parking_enabled(&self) -> bool {
+        self.lazy_capable && crate::render::model::parked::p5_enabled()
+    }
+
     /// Whether plain-text paragraphs should currently be built dehydrated.
     pub(crate) fn dehydrate_paragraphs(&self) -> bool {
         self.dehydrate_now.load(Ordering::Relaxed)

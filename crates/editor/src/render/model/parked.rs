@@ -119,7 +119,8 @@ use warpui::text_layout::StyleAndFont;
 use warpui::units::{IntoPixels, Pixels};
 
 use super::{
-    BlockSpacing, LineCount, LineSource, OffsetMap, Paragraph, ParagraphMetrics, ParagraphStyles,
+    BlockItem, BlockSpacing, LineCount, LineSource, OffsetMap, Paragraph, ParagraphMetrics,
+    ParagraphStyles,
 };
 
 /// Maximum lines per parked chunk.
@@ -128,6 +129,9 @@ pub const MAX_PARKED_LINES: usize = 256;
 pub const MAX_PARKED_CHARS: usize = 64 * 1024;
 /// Shortest run of dehydrated paragraphs the eviction sweep bothers to re-park.
 pub const MIN_REPARK_RUN: usize = 32;
+/// Shortest run of dehydrated paragraphs a freshly laid out delta groups into a chunk (a chunk's
+/// fixed arrays cost more than a handful of single paragraphs).
+pub const PARK_MIN_RUN: usize = 8;
 
 /// Whether chunking is enabled (`PHOSPHOR_EDITOR_P5=0` turns it off). Read once.
 pub fn p5_enabled() -> bool {
@@ -704,6 +708,87 @@ impl ParkedBuilder {
         };
         data.recompute_max_item_width();
         Some(ParkedLines(Arc::new(data)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grouping a stream of items into chunks
+// ---------------------------------------------------------------------------------------------
+
+/// Turns a stream of block items into the same items with every run of at least `min_run`
+/// parkable paragraphs replaced by [`ParkedLines`] chunks (adjacent chunks that fit are merged).
+/// Items are moved, never cloned, and at most one chunk's worth of paragraphs is held at a time,
+/// so feeding it a file's worth of paragraphs in laid-out batches keeps the peak small.
+pub struct Parker {
+    out: Vec<BlockItem>,
+    builder: ParkedBuilder,
+    pending: Vec<BlockItem>,
+    min_run: usize,
+}
+
+impl Parker {
+    pub fn new(min_run: usize) -> Self {
+        Self {
+            out: Vec::new(),
+            builder: ParkedBuilder::new(),
+            pending: Vec::new(),
+            min_run: min_run.max(1),
+        }
+    }
+
+    pub fn push(&mut self, item: BlockItem) {
+        match item {
+            BlockItem::Paragraph(paragraph) => {
+                if !self.builder.try_push(&paragraph) {
+                    // Either not parkable at all, or the chunk is full / has other metadata.
+                    self.flush();
+                    if !self.builder.try_push(&paragraph) {
+                        self.out.push(BlockItem::Paragraph(paragraph));
+                        return;
+                    }
+                }
+                self.pending.push(BlockItem::Paragraph(paragraph));
+            }
+            BlockItem::ParkedLines(chunk) => {
+                self.flush();
+                self.push_chunk(chunk);
+            }
+            other => {
+                self.flush();
+                self.out.push(other);
+            }
+        }
+    }
+
+    /// Appends a finished chunk, merging it into the previous item when that is a compatible
+    /// chunk that still has room.
+    fn push_chunk(&mut self, chunk: ParkedLines) {
+        if let Some(BlockItem::ParkedLines(previous)) = self.out.last_mut()
+            && previous.can_merge(&chunk)
+        {
+            *previous = previous.merged(&chunk);
+            return;
+        }
+        self.out.push(BlockItem::ParkedLines(chunk));
+    }
+
+    fn flush(&mut self) {
+        let builder = std::mem::take(&mut self.builder);
+        let pending = std::mem::take(&mut self.pending);
+        if pending.len() >= self.min_run {
+            if let Some(chunk) = builder.finish() {
+                self.push_chunk(chunk);
+            }
+        } else {
+            // Too short to be worth a chunk: the paragraphs go back out unchanged.
+            self.out.extend(pending);
+        }
+    }
+
+    /// The grouped items.
+    pub fn finish(mut self) -> Vec<BlockItem> {
+        self.flush();
+        self.out
     }
 }
 
