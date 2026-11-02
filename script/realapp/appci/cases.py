@@ -1196,11 +1196,12 @@ def paint_samples(ctx, rect, n):
 
 
 def pid_of(name):
-    rr = subprocess.run(["pgrep", "-xn", name], capture_output=True)
-    try:
-        return int(rr.stdout.split()[0])
-    except Exception:
+    """newest exact PID of Terminal.app (the only name used): from `ps` by full executable path, never pgrep (no name matching)"""
+    if name != "Terminal":
         return None
+    import refterm_mac
+    pids = refterm_mac.terminal_pids()
+    return max(pids) if pids else None
 
 
 @case("latency_paint", order=43, gui=True)
