@@ -291,14 +291,43 @@ All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-too
 
 The release-test matrix of 3.5 is automated against the BUILT artifact, per platform, in BOTH session modes (terminal and
 agent). Code: `script/realapp/appci/` (Python: `run.py` driver, `cases.py`, `backend.py`, `profile.py`, `app.py`, `sshd.py`,
-`report.py`), entry points `script/realapp/linux/wayland_session.sh`, `mac/ci/app_test.sh`, `windows/ci/app_test.ps1`.
+`report.py`, `winapi.py`, `winmap.py`, `fakesshd_win.py`), entry points `script/realapp/linux/wayland_session.sh`, `mac/ci/app_test.sh`, `windows/ci/app_test.ps1`.
+**One harness, three platforms (#1488): Linux, macOS and Windows run the same `appci/run.py` and the same case list.** Windows is no longer a separate PowerShell
+case list: `windows/ci/app_test.ps1` is a thin VM wrapper (lock, side-by-side install, md5-verified backup, `restore.ps1`, report regeneration) that runs
+`& %LOCALAPPDATA%\phosphor-ci\python312\python.exe script\realapp\appci\run.py --backend windows --platform windows --bin <test build exe> ...`.
+That Python (3.12.10 + paramiko + Pillow, installed by hand, NOT on PATH, always called by full path) is part of the VM setup; the harness uses ctypes for everything else.
+By hand on the VM: `$py = "$env:LOCALAPPDATA\phosphor-ci\python312\python.exe"; & $py script\realapp\appci\run.py --run C:\tmp\run --bin <...>\phosphor-oss.exe --backend windows --platform windows --cases fast_typing`
+(take WINPUSH.lock and a backup first, 3.4; `app_test.ps1` does all of that).
+
+| | Linux (wayland / x11) | macOS | Windows |
+|---|---|---|---|
+| backend class (`backend.py`) | `WaylandBackend` / `X11Backend` | `MacBackend` | `WindowsBackend` |
+| keys | `wtype` / `xdotool` | `htype2` (CGEvent, real key codes) | `SendInput`: real VK + scancode events (static US-layout table for printable ASCII), `KEYEVENTF_UNICODE` for everything else |
+| focus guard | focus the newest Phosphor window (X11) | frontmost app NAME and PID == the started PID, refuses Cmd-Q/W/Tab/Space/H/M | `GetForegroundWindow` + `GetWindowThreadProcessId` == the started PID before every burst (and every key of a long one); refuses Win-key / Alt-F4 / Alt-Tab chords |
+| screenshots | `grim` / `import` / `ffmpeg` | `screencapture` | `PIL.ImageGrab` |
+| clipboard | `wl-copy` / `xsel` | `pbcopy` | user32 `CF_UNICODETEXT` |
+| injector record (#1482) | none | `htype2` per-call K lines | per call: events asked / accepted by `SendInput`, wall time of each posted Return; `<run>/inject.log` |
+| reference terminal | foot / xterm | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
+| key -> paint (`latency_paint`) | skip (no read-back) | `kl3` ScreenCaptureKit | skip (no read-back) |
+| app launch | `dbus-run-session` | `open -n` bundle, private HOME | the side-by-side test build started by the harness; data under the known folders `%LOCALAPPDATA%\phosphor`, `%APPDATA%\phosphor` (wiped per pass; backed up and restored by `app_test.ps1`) |
+| local ssh server | system `sshd` / `fakesshd.py` | system `sshd` | `fakesshd_win.py` (paramiko) on 127.0.0.1; remote shell = Git Bash in a real ConPTY; no OpenSSH Server service |
+| ssh client | `ssh` + `-F` wrapper | `ssh` + `-F` wrapper | built-in `System32\OpenSSH\ssh.exe` through `<home>\bin\ssh.cmd` (PowerShell pane) / `ssh` (sh, Git Bash pane), both adding `-F <home>/.ssh/config` |
+
+**Windows pane shells.** Each session mode runs once per pane shell (`APPCI_WIN_SHELLS`, default `powershell,gitbash`). The `powershell` pass is the app default; the app starts PowerShell
+with `-NoProfile`, so there is no rc hook: no `prompt.log` / `rec.log`, cases use effect files written in PowerShell syntax (`Add-Content`) and fixed settles instead of prompt waits,
+and Ctrl-D halves are not run. The `gitbash` pass sets `session.startup_shell_override` to Git for Windows' `bash.exe` with `HOME` = the scratch home, so `~/.bashrc` logs exactly as on Linux
+and the POSIX cases run unchanged; its result rows carry the mode label `terminal@gitbash` / `agent@gitbash` (and its latency ids and previous-build comparisons are separate). **`winmap.py`
+classifies every case per pane** (`BOTH`, `GITBASH_ONLY`, `NOT_WINDOWS` with the reason); a case a pane cannot run is a SKIP row with that reason, never an omission, and
+an unclassified case is reported as such. After `mode_proof` (whose pre-key screenshot must come first) a key-delivery proof types a marker command and confirms it arrived (VK events,
+then Unicode packets; `key_delivery` row); if neither lands the pass stops with `keys not delivered: <reason>` and the session / foreground diagnostics.
 Each also has a `-reuse` twin that tests an earlier app-identical build (2.9). Heavy and GUI-driving: all four jobs are **manual, allow_failure**, need the platform's build job (`needs:` + artifacts) and
 `script/ci/ci_seq.py` plays them after each successful build, so every numbered build runs them. The play-time variable
 `APPCI_TIER` selects the size: `smoke` (fix tier) or `full`/empty (candidate, release; everything below). Smoke = the cases
-`mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `latency_enter`, `latency_key_log`, `md_viewer` in both
+`mode_proof`, `cadence`, `fast_typing`, `paste_instant_enter`, `tab_enter`, `ctrl_c_d`, `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `ssh_nested_typeahead`, `latency_enter`, `latency_key_log`, `md_viewer` in both
 modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linux only the `wayland` run (the `xwayland` pass and
-`app-test-linux-x11` exit at once); on Windows `fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter` (its names differ; `tab_enter`
-and `ssh_connect_typing` have no Windows equivalent). Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
+`app-test-linux-x11` exit at once); the SAME list on Windows, where a case that cannot run in a pane shell is a SKIP with its reason
+(winmap.py); it includes `ssh_connect_typing`, `ssh_enter_then_immediate_command` and `ssh_nested_typeahead` on every platform, the hand-over cases behind
+the ConPTY release blocker #1349. Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
 either).
 
 | job | runner | session | input / screenshots |
@@ -306,7 +335,7 @@ either).
 | `app-test-linux-wayland` | box (`little-thing`, resource_group `little-thing-gui`) | headless sway, `WLR_BACKENDS=headless`, gles2 on `/dev/dri/renderD128` (pixman fallback), 1600x1000; full matrix as a native Wayland client, then a reduced set under XWayland (`--mode xwayland`, app forced to X11) | `wtype` (`-d N` = 10-25 ms/key, text + Enter in one call), `grim`, `wl-copy`/`wl-paste` |
 | `app-test-linux-x11` | box | private Xvfb (software GL) | `xdotool`, `xsel`, `import`/`ffmpeg` |
 | `app-test-macos` | `Mac` (user `gitrunner`) | must be the logged-in Aqua session | `cliclick` + `osascript`, `screencapture`, `pbcopy`; frontmost-app guard before every burst; `caffeinate` |
-| `app-test-windows` | `windows` (console desktop, the runner is NOT a session-0 service) | the interactive desktop | `SendKeys` (foreground-guarded), `CopyFromScreen`; side-by-side install; backup + md5-verified restore of app data, uninstall key, PATH, shortcuts, `phosphor://` handler; `WINPUSH.lock`; exact-PID stop |
+| `app-test-windows` | `windows` (console desktop, the runner is NOT a session-0 service) | the interactive desktop | `SendInput` (foreground-PID-guarded), `PIL.ImageGrab`, via the shared Python harness; side-by-side install; backup + md5-verified restore of app data, uninstall key, PATH, shortcuts, `phosphor://` handler; `WINPUSH.lock`; exact-PID stop |
 
 Session handling (Linux): own short `XDG_RUNTIME_DIR` (falls back to `/tmp/pa-*` when the job dir is too long for the 108-byte socket
 limit), private `HOME` per mode with an owner-like scratch config and **no credentials**, app under its own `dbus-run-session`, a local ssh
@@ -378,16 +407,15 @@ lines + instant Enter, Ctrl-C of a 30 s sleep then the next line, `exit` and the
 package: `apt install zsh`, `apt install fish`, PowerShell 7 from the Microsoft apt repo (`packages-microsoft-prod.deb`, then `apt install powershell`),
 nushell is not in the Ubuntu repos (release tarball from github.com/nushell/nushell or `cargo install nu --locked`). The pane's own primary shell is
 still bash (the harness rc files log its `rec.log`); a zsh/fish/nu/pwsh PRIMARY shell would need per-shell logging rc files in `profile.py`.
-Windows adds `gitbash_subshell` (Git for Windows `bash.exe` started from the pane's PowerShell: 20 fast-typed lines, 4 pasted lines of 10-5000 bytes
-with instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell; skips when Git for Windows is absent). Windows runs the PowerShell subset
+`gitbash_subshell` (Windows, PowerShell pane; Git for Windows `bash.exe` started from the pane's PowerShell: 20 fast-typed lines, 4 pasted lines of 10-5000 bytes
+with instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell; skips when Git for Windows is absent, and in the Git Bash pane) and `tabs_streaming` (every platform: 12 tabs each streaming a line every 20 ms, then 10 fast-typed commands in one more tab, exact, app alive) run in the shared harness. Windows runs the shell-neutral subset in the PowerShell pane and the POSIX cases in the Git Bash pane (3 above)
 `editor_memory_7mb` (terminal pass only, #1340 P5: generates a 7 MB plain-text and a 7 MB Rust file, opens each in the code editor through the command palette with the absolute path, records the app's RSS before / after open and after closing the pane and waiting out the 60 s undo-close grace; fails when open costs more than `APPCI_EDITOR_MEM_TXT_MAX_MB` = 100 / `APPCI_EDITOR_MEM_RS_MAX_MB` = 150 MB over the pre-open baseline or more than `APPCI_EDITOR_MEM_CLOSE_MAX_MB` = 60 MB is still held after close; metrics `txt_rss_*_mb`, `rs_rss_*_mb` in `results.json`; `APPCI_KEY_PALETTE` / `APPCI_KEY_CLOSE` override the keys, `APPCI_EDITOR_MEM_STRICT=1` fails instead of skipping when the file never opens, `APPCI_EDITOR_MEM_KINDS=txt` limits it; needs `ps` RSS, so it skips on Windows, and on macOS the close phase is skipped because the frontmost-app guard refuses Cmd-W),
-`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
-(`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
-Windows `ctrl_c` and `latency_enter` (#1487): both read a one-line timestamp file through `Wf`, which returns a bare string for one line, so `$g[0]` was
-its first character and every sample was dropped (`0/30`, `0/5`); the callers now wrap `@(Wf ...)`. Windows `ctrl_c` is 8 samples judged on
-overhead over the same injection into `powershell.exe` in conhost (budget `APPCI_CTRLC_MAX_MS`, 20 ms; no control = `no reference: absolute only`). If Phosphor
-drops Ctrl-C the case tries the other injectors (diagnostic only) and fails as `APP: ...` when the conhost control delivers 8/8 with the same
-injection, or as "harness injection suspect" when the control fails too.
+`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste).
+Windows `ctrl_c_d` / `latency_enter` (#1487 history: the PowerShell harness read a one-line timestamp file through a function that returned a bare string, so every sample was dropped;
+the Python harness reads files with `Ctx.lines`/`stamps`, which cannot have that bug): PowerShell stamps UTC milliseconds (`[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()`),
+bash stamps `date +%s.%N`; both are judged on OVERHEAD over the same typing into the reference console, exactly like Linux/macOS (budget `APPCI_CTRLC_MAX_MS`, 20 ms;
+no reference = `no reference: absolute only`). A Ctrl-C miss in the PowerShell pane is followed by two more Ctrl-C so the next sample is not queued behind a 30 s sleep.
+The old "try the other injectors" diagnostic is now the delivery proof's job (VK then Unicode).
 
 **UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**
 Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case verifies the shell's own `rec.log` and an effect file.
@@ -604,7 +632,7 @@ What is covered, where, and how to update it. Nothing here runs cargo on the lap
 | mermaid corpus | `crates/editor/tests/mermaid_corpus.rs`, fixtures `tests/fixtures/mermaid/*.mmd`, snapshots `tests/snapshots/` | 14 valid diagrams (flowchart TD/LR, sequence, class, state, ER, gantt, pie, mindmap, journey, timeline, frontmatter theme, unicode labels, CRLF) rendered through `mermaid_asset_source`'s fetch, the exact app path: expected labels present, deterministic, normalized summary snapshot (rounded size, element counts, text labels; never the raw SVG). 9 `invalid_*` files: must return the app's error (which becomes `FailedToLoad` and the source fallback in `render_mermaid_diagram_section`) or a non-blank SVG, never panic. Hostile sources for every diagram kind, 300-node flowchart and 400-message sequence bound. The app's fetch is bounded (#1477): sources over 256 KiB or with a line over 4000 characters are refused up front (an unbroken 100k-character token made the renderer spin for minutes), and a render runs on a worker thread with an 8 s budget, ending as the error/source-fallback path; unit tests in `mermaid_diagram.rs` (`render_limit_tests`) |
 | render-time bench | `crates/editor/benches/mermaid_render_bench.rs` | criterion; budgets 50 ms per small diagram, 2 s for 300 nodes / 400 messages; `MERMAID_BENCH_ENFORCE=1` makes a blown budget fail |
 | cargo-fuzz | `fuzz/fuzz_targets/markdown_parser.rs`, `mermaid_render.rs`; seeds `fuzz/corpus/{markdown_parser,mermaid_render}` | run by `fuzz-smoke` (180 s each) |
-| real-app CI cases | `script/realapp/appci/cases.py`: `md_viewer` (smoke + full, both modes), `md_viewer_big` (full only), `md_viewer_ai_answer` (agent, needs the CI Ollama model) | opens a `.md` with a table and a mermaid flowchart in the running app through a `file://` URL (Linux: second invocation forwarded over the app's D-Bus; macOS: `open -a <bundle>`), screenshot, OCR (tesseract on Linux, Apple Vision on Mac; no engine = screenshot only and a note) of the table text and the diagram node labels; 2 MB file: time to first heading and RSS growth (first-guess budgets 90 s / 3000 MB, tighten after the first numbers). The AI answer part is a note/metric only (model output is nondeterministic); no fake-model path exists. Windows: not covered (`app_test.ps1` has no OCR) |
+| real-app CI cases | `script/realapp/appci/cases.py`: `md_viewer` (smoke + full, both modes), `md_viewer_big` (full only), `md_viewer_ai_answer` (agent, needs the CI Ollama model) | opens a `.md` with a table and a mermaid flowchart in the running app through a `file://` URL (Linux: second invocation forwarded over the app's D-Bus; macOS: `open -a <bundle>`), screenshot, OCR (tesseract on Linux, Apple Vision on Mac; no engine = screenshot only and a note) of the table text and the diagram node labels; 2 MB file: time to first heading and RSS growth (first-guess budgets 90 s / 3000 MB, tighten after the first numbers). The AI answer part is a note/metric only (model output is nondeterministic); no fake-model path exists. Windows: SKIPs with the reason (no verified way to hand a `file://` URL to the RUNNING Windows instance; no OCR engine on the VM) |
 
 **Updating snapshots** (first run after adding a fixture, or an intended parser/renderer change). On the box through the runner or
 `script/agent-cargo <name>`:
@@ -800,6 +828,8 @@ code-refuter agents.
   need no lock. Back up the app data dir (md5), uninstall key, PATH, shortcuts and the `phosphor://` handler before
   installing a test build and restore over plain ssh (`lib/bak*.ps1`, `fin*.ps1`, `restore_sys.ps1`); the installed
   release (v0.1.15 at the time) must still report its version afterwards. Leave the GitLab runner alone.
+- Real-app CI harness: ONE Python harness shared with Linux and macOS (`script/realapp/appci/`, 2.8) run by the private Python `%LOCALAPPDATA%\phosphor-ci\python312\python.exe`
+  (3.12.10, paramiko, Pillow; not on PATH). The hand-run scripts below are the older exploratory tooling.
 - Harness `script/realapp/windows/`: `lib/lib.ps1` (foreground-guarded `Keys`/`Cmd` - `IsPho` refuses to type when
   Phosphor is not foreground - `Click`, `Drag`, `Wheel`, `Shot`, `Launch`, `QuitApp`, `KC` combos), `lib2.ps1`,
   `mouse.ps1`, `lat.ps1` (BitBlt region hash, +-16 ms capture resolution), `inst.ps1`/`launch.ps1`, backup/restore set;
@@ -819,10 +849,9 @@ code-refuter agents.
   judged by `$LASTEXITCODE`, never by stderr (a "successful" stderr line aborted the first run's restore). Results, junit and
   summary are written regardless. If a job's restore is marked failed: `powershell -File script\realapp\windows\ci\restore.ps1
   [-Bak <dir>]` finishes it by hand (default newest backup; log in `<Bak>\restore.log`). Before any case, a **key-delivery
-  proof** types a marker command (absolute path) and checks it arrived, trying `SendKeys`, then `SendInput` unicode, then
-  `SendInput` virtual keys; if none lands the mode stops with `keys not delivered: <reason>` (job/explorer/app session ids,
-  foreground window) and runs no further cases. Latency verdicts need >= 24 samples (Phosphor and reference); fewer gives
-  `no-data` / `no-reference`, never a computed overhead.
+  proof** types a marker command (absolute path) and checks it arrived, trying `SendInput` virtual keys, then `SendInput` unicode packets (`SendKeys` is gone: the Python harness has no WinForms); if none lands the mode stops with `keys not delivered: <reason>` (job/explorer/app session ids,
+  foreground window) and runs no further cases. Latency records follow `lat.py` like every platform: fewer than 30 samples is flagged
+  "indicative only", and no reference console gives `no-reference`, never a computed overhead.
 
 ### 3.5 Case matrix (run on each platform; EVERY case in both modes)
 
@@ -862,7 +891,7 @@ code-refuter agents.
     raw-input latency vs running-block size (fresh, 10k, 100k, 1M lines) local and remote.
 11. **Kill switches**: on any failure run the case once with the relevant switch from 2.6 for A/B and record the result.
 
-#### 3.5.1 International input cases (`appci/cases_caseintl.py`, `windows/ci/cases_caseintl.ps1`, #1466)
+#### 3.5.1 International input cases (`appci/cases_caseintl.py`, #1466; the Windows ones moved from `cases_caseintl.ps1` into the shared harness in #1488)
 
 Full tier only (not in `SMOKE`), both session modes unless noted. Non-ASCII expectations are `\u` escapes in the source; every check
 reads bytes (effect files opened in binary, the shell's own `rec.log`; for the marked-text rule a raw-tty reader,
@@ -878,7 +907,7 @@ reads bytes (effect files opened in binary, the shell's own `rec.log`; for the m
 | `intl_ime_japanese` | Mac | Japanese (Romaji, Hiragana) input source selected with `mac/tools/tis.swift` (TISSelectInputSource): `nihon`, `kyou`, `konnnichiha` + Return commit the exact kana in the editor and in a running raw reader; marked text does not leak romaji to the pty; Space conversion yields only non-ASCII text |
 | `intl_ime_pinyin` | Mac | Pinyin - Simplified: `nihao` + Space commits exactly the UTF-8 of the first candidate in a raw reader and in the editor; no letters leak while composing |
 | `intl_deadkey_option` | Mac | ABC layout: Option+e/u/n/i then the letter (e acute, u diaeresis, n tilde, i circumflex, capital with Shift), dead key + non-combining letter and + Space, Option+s/o/c direct characters; nothing reaches the pty before the commit |
-| `intl_wide` | Windows | the same four strings typed (KEYEVENTF_UNICODE) and pasted; PowerShell writes them to a file, read back byte-exact |
+| `intl_wide_type`, `intl_wide_paste`, `intl_wide_edit` | Windows (both panes) | the strings typed (KEYEVENTF_UNICODE) and pasted; the PowerShell pane writes them with `[IO.File]::AppendAllText(..., UTF8Encoding($false))`, the Git Bash pane with `echo`; read back byte-exact (was `intl_wide`) |
 | `intl_altgr_ps`, `intl_altgr_bash` | Windows | German layout (KLID 00000407) loaded for the Phosphor window only: AltGr+Q @, E euro, 7 `{`, 8 `[`, 9 `]`, 0 `}`, sharp s `\`, `<` `|`, `+` `~`, 2/3/M (superscripts, micro) and a plain Y key (must be z) typed into a command that writes them out; the received bytes are read from the file in PowerShell and in Git Bash (started from the pane, `LC_ALL=C.UTF-8`; skips when Git is not installed) |
 
 Input-source rules (Mac): the harness only SELECTS among sources already enabled for `gitrunner`; it never enables or installs one. A

@@ -2,8 +2,20 @@
 # appci/ts_reader.py: run INSIDE the terminal under test (`python3 ts_reader.py OUTFILE N`): puts the tty in raw
 # mode and records the arrival time of each of N characters, so the key cadence the input tool really produced
 # (10-25 ms/key) is measured at the pty and written to OUTFILE as "ord t" lines. Used by the cadence case.
-import sys, time, tty, termios, os
+import sys, time, os
 out, n = sys.argv[1], int(sys.argv[2])
+if os.name == "nt":
+    # Windows: console input through the ConPTY the app hosts us in. perf_counter, not time.time(): CPython 3.12 on Windows ticks at ~15.6 ms,
+    # and only the GAPS between keys matter here
+    import msvcrt
+    rows = []
+    sys.stdout.write("READY\r\n"); sys.stdout.flush()
+    while len(rows) < n:
+        c = msvcrt.getwch()
+        rows.append((ord(c), time.perf_counter()))
+    open(out, "w").write("".join("%d %.6f\n" % r for r in rows))
+    sys.exit(0)
+import tty, termios
 fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
 rows = []
 try:

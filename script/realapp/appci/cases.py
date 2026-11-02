@@ -10,7 +10,10 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "key_loss_control", "enter_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
+# ONE list for Linux, macOS and Windows (#1488): a case that cannot run on a platform / pane shell SKIPS there with a reason (winmap.py), never silently.
+# The two ssh hand-over cases are in it for the ConPTY / hand-over release blocker (#1349).
+SMOKE = ("mode_proof", "key_loss_control", "enter_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing",
+         "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -82,8 +85,14 @@ def lat_checks(r, rec, label):
 
 
 class Ctx:
-    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None):
+    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
+        self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' (None = the POSIX bash/zsh harness)
+        self.win = pane is not None
+        # label = the mode column of results.json / junit and the id prefix of latency records: 'terminal' everywhere except a non-default
+        # Windows pane ('terminal@gitbash'), so the two panes' numbers and previous-build comparisons never mix
+        self.label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
+        self.t_case0 = time.time()
         self.rng = random.Random(seed)
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
@@ -95,6 +104,8 @@ class Ctx:
             pass
         self.n = 0
         self.scale = float(os.environ.get("APPCI_SCALE", "1"))   # <1 shortens counts for smoke runs
+        # the app's own pane has no rc hook (Windows PowerShell): rec.log is empty, prompt.log is empty. Cases already treat an empty rec.log as
+        # "effect file only"; places that WAIT for a local prompt use a fixed settle instead (leave_remote)
 
     def count(self, n):
         return max(2, int(n * self.scale))
@@ -129,7 +140,33 @@ class Ctx:
     def append_cmd(self, shell, tok, fname):
         if shell == "nu":
             return '"%s" | save --append %s' % (tok, fname)
+        if shell == "pwsh":      # PowerShell: `>>` would write UTF-16 in 5.1; Add-Content writes ASCII lines
+            return "Add-Content %s %s" % (fname, tok)
         return "echo %s >> %s" % (tok, fname)
+
+    def pane_shell(self):
+        """the shell name append_cmd() takes for the app's own pane: 'pwsh' in a Windows PowerShell pane, else 'bash'"""
+        return "pwsh" if self.pane == "powershell" else "bash"
+
+    def which(self, name):
+        """shutil.which, on Windows against the PATH the app gets (Git for Windows' bin + usr/bin appended; never WSL's System32 bash.exe)"""
+        if not self.win:
+            return shutil.which(name)
+        import winapi
+        return shutil.which(name, path=os.pathsep.join(winapi.git_dirs()))
+
+    def local_lines(self, name):
+        """lines of a file the LOCAL shell would have written for `echo X >> ~/name` / `>> name`: the case dir, and in a PowerShell pane also
+        the user's real home (PowerShell resolves ~ to USERPROFILE, not the scratch HOME); a home file counts only if created after this case began"""
+        out = self.lines(name)
+        if self.pane == "powershell":
+            hp = os.path.join(os.path.expanduser("~"), name)
+            try:
+                if os.path.getmtime(hp) >= self.t_case0 - 1:
+                    out += open(hp, errors="replace").read().splitlines()
+            except OSError:
+                pass
+        return out
 
     def prompts(self):
         return self.prof.prompts()
@@ -139,6 +176,8 @@ class Ctx:
     def shell_count(self):
         """number of shells (bash/zsh/fish/nu/sh) among the descendants of the Phosphor process, from `ps` (no pgrep/pkill, no name matching of
         the app); None when the app PID or ps is unavailable. The app logs nothing when the local shell exits, so the process tree is the evidence."""
+        if self.win:
+            return None        # no `ps`; a Windows process count would be fooled by the app's own short-lived -NoProfile PowerShell helpers
         try:
             root = self.app.pid() if self.app else None
             if not root:
@@ -180,7 +219,10 @@ class Ctx:
         count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
         before = count()
         self.be.type("exit", 12, enter=True)
-        self.until(lambda: count() > before, timeout)
+        if not level and not self.prof.local_prompts:
+            time.sleep(min(timeout, 2.0))        # no local prompt hook in this pane (Windows PowerShell): fixed settle
+        else:
+            self.until(lambda: count() > before, timeout)
         if self.shell_gone(base):
             r.check(False, "%s: the LOCAL shell exited after `exit` (fewer shells under the app than at case start); stopping" % label)
             return False
@@ -194,7 +236,7 @@ class Ctx:
         time.sleep(0.15)
 
     def shot(self, tag):
-        p = os.path.join(self.prof.shots, "%s_%s.png" % (self.mode, tag))
+        p = os.path.join(self.prof.shots, "%s_%s.png" % (self.label, tag))
         try:
             self.be.shot(p)
         except Exception:
@@ -252,7 +294,7 @@ def c_mode_proof(ctx, r):
     time.sleep(0.8)
     ctx.shot("proof")
     if txt is None:
-        r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.mode)
+        r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.label)
         return
     low = " ".join(txt.lower().split())
     hint = "/agent" in low and "conversation" in low                       # terminal-mode hint line
@@ -278,7 +320,12 @@ def c_cadence(ctx, r):
     out = os.path.join(ctx.W, "cad.txt")
     ctx.rm("cad.txt")
     n = 60
-    ctx.be.type("python3 %s %s %d" % (os.path.join(os.path.dirname(os.path.abspath(__file__)), "ts_reader.py"), "cad.txt", n), 12, enter=True)
+    reader = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ts_reader.py")
+    if ctx.win:      # the private interpreter by full path; msvcrt.getwch() in ts_reader.py reads the keys the ConPTY delivers
+        py, reader = sys.executable.replace("\\", "/"), reader.replace("\\", "/")
+        ctx.be.type(("& '%s' '%s' cad.txt %d" if ctx.pane == "powershell" else '"%s" "%s" cad.txt %d') % (py, reader, n), 12, enter=True)
+    else:
+        ctx.be.type("python3 %s %s %d" % (reader, "cad.txt", n), 12, enter=True)
     time.sleep(2.0)   # python3 start + READY
     delay = 15
     ctx.be.type("".join(chr(97 + i % 26) for i in range(n)), delay)
@@ -299,10 +346,11 @@ def c_cadence(ctx, r):
 
 
 # ---------------------------------------------------------------- typing
-def effect_run(ctx, r, tag, n, gap, rollover=False, shell="bash", attribute=None):
+def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
     Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
     fname = "r_%s.txt" % tag
+    shell = shell or ctx.pane_shell()
     ctx.rm(fname)
     mark = ctx.cmd_mark()
     k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
@@ -417,12 +465,16 @@ def c_paste_enter(ctx, r):
     for i in range(ctx.count(6)):
         tok = ctx.tok(8)
         pad = "w" * ctx.rng.choice([10, 500, 5000])
-        ctx.be.clip_set("echo %s%s | md5sum >> pe.txt" % (tok, pad))
-        exp.append(hashlib.md5((tok + pad + "\n").encode()).hexdigest() + "  -")
+        if ctx.pane == "powershell":     # no md5sum: the pasted line writes tok+pad itself, compared exactly
+            ctx.be.clip_set("Add-Content pe.txt %s%s" % (tok, pad))
+            exp.append(tok + pad)
+        else:
+            ctx.be.clip_set("echo %s%s | md5sum >> pe.txt" % (tok, pad))
+            exp.append(hashlib.md5((tok + pad + "\n").encode()).hexdigest() + "  -")
         ctx.be.paste(enter=True)
         time.sleep(0.8)
     ctx.until(lambda: len(ctx.lines("pe.txt")) >= len(exp), 15)
-    r.check(ctx.lines("pe.txt") == exp, "paste + instant Enter: %d/%d md5 lines exact" % (sum(a == b for a, b in zip(exp, ctx.lines("pe.txt"))), len(exp)))
+    r.check(ctx.lines("pe.txt") == exp, "paste + instant Enter: %d/%d %s lines exact" % (sum(a == b for a, b in zip(exp, ctx.lines("pe.txt"))), len(exp), "exact" if ctx.pane == "powershell" else "md5"))
 
 
 @case("arrows_behind_paste", order=14)
@@ -433,11 +485,18 @@ def c_paste_arrows(ctx, r):
         tok = ctx.tok(6)
         pad = "q" * ctx.rng.choice([100, 3000])
         ctx.be.clip_set(tok + pad)
-        exp.append(hashlib.md5((tok + pad + "xzy\n").encode()).hexdigest() + "  -")
-        ctx.be.type("echo ", 12)
+        if ctx.pane == "powershell":
+            exp.append(tok + pad + "xzy")
+            ctx.be.type("Add-Content pa.txt ", 12)
+        else:
+            exp.append(hashlib.md5((tok + pad + "xzy\n").encode()).hexdigest() + "  -")
+            ctx.be.type("echo ", 12)
         ctx.be.paste()
         ctx.be.keys(["x", "y", "Left", "z", "End"], delay_ms=8)
-        ctx.be.type(" | md5sum >> pa.txt", 8, enter=True)
+        if ctx.pane == "powershell":
+            ctx.be.key("Return")
+        else:
+            ctx.be.type(" | md5sum >> pa.txt", 8, enter=True)
         time.sleep(1.0)
     ctx.until(lambda: len(ctx.lines("pa.txt")) >= len(exp), 15)
     r.check(ctx.lines("pa.txt") == exp, "arrow keys behind a paste: %d/%d exact" % (sum(a == b for a, b in zip(exp, ctx.lines("pa.txt"))), len(exp)))
@@ -487,7 +546,7 @@ def c_tab(ctx, r):
         for i in range(ctx.count(4)):
             tok = ctx.tok(6)
             exp.append(tok)
-            ctx.be.type("echo %s >> tc/zzcompl_alpha_u" % tok, 15)
+            ctx.be.type(("Add-Content -Value %s -Path tc/zzcompl_alpha_u" if ctx.pane == "powershell" else "echo %s >> tc/zzcompl_alpha_u") % tok, 15)
             ctx.be.key("Tab")
             if gap:
                 time.sleep(gap)
@@ -504,6 +563,10 @@ def ctrlc_line(ctx, fname, i):
     """The line typed for one Ctrl-C sample. IDENTICAL in Phosphor and the reference terminal (same command, same timestamp source).
     macOS: zsh's $EPOCHREALTIME in the trap (no process start; the old ~/bin/now helper is a python3 start, ~30 ms of harness cost
     that inflated every absolute number). Linux: `date +%s.%N` (one fork of a tiny binary, the same in both terminals)."""
+    if ctx.pane == "powershell":
+        # Windows PowerShell: the finally block of the interrupted try stamps UTC ms (13 digits; the Windows PowerShell harness of #1487). Ctrl-C stops
+        # the whole line, so there is no AFTER marker: the next sample's typed line proves the shell came back
+        return "try { Start-Sleep 30 } finally { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Add-Content %s }" % fname
     if ctx.be.name == "mac":
         return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
     return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
@@ -513,21 +576,42 @@ def ctrlc_samples(ctx, n, fname, budget_s=None):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
     lat_ms = []
+    pw = ctx.pane == "powershell"
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
         if t_end and time.time() > t_end:
             break
         ctx.be.type(ctrlc_line(ctx, fname, i), 10, enter=True)
-        time.sleep(1.2)
+        time.sleep(1.5 if pw else 1.2)
         t0 = time.time()
         ctx.be.key("ctrl+c")
-        ctx.until(lambda: sum(1 for l in ctx.lines(fname) if l.startswith("AFTER")) > i, 5)
+        if pw:
+            ctx.until(lambda: len(stamps(ctx, fname)) > len(lat_ms), 6)
+        else:
+            ctx.until(lambda: sum(1 for l in ctx.lines(fname) if l.startswith("AFTER")) > i, 5)
         time.sleep(0.2)
-        ts = [float(l) for l in ctx.lines(fname) if re.fullmatch(r"\d+\.\d+", l)]
+        ts = stamps(ctx, fname)
         if len(ts) > len(lat_ms):
             lat_ms.append((ts[len(lat_ms)] - t0) * 1000)
+        elif pw:        # a miss: end the sleep so the next sample's line is not queued behind it for 30 s
+            ctx.be.key("ctrl+c")
+            time.sleep(0.8)
+            ctx.be.key("ctrl+c")
+            time.sleep(2)
     after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
-    return lat_ms, len(lat_ms) == n and len(after) == n
+    return lat_ms, len(lat_ms) == n and (pw or len(after) == n)
+
+
+def stamps(ctx, fname):
+    """epoch seconds written by the trap / finally block: `1699999999.123456789` (date, EPOCHREALTIME) or 13-digit UTC milliseconds (PowerShell)"""
+    out = []
+    for l in ctx.lines(fname):
+        l = l.strip().replace("\x00", "")
+        if re.fullmatch(r"\d+\.\d+", l):
+            out.append(float(l))
+        elif re.fullmatch(r"\d{13}", l):
+            out.append(int(l) / 1000.0)
+    return out
 
 
 @case("ctrl_c_d", order=17)
@@ -557,12 +641,16 @@ def c_ctrl(ctx, r):
             r.metric("reference", ref.name)
         else:
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
-        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.mode, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
                            remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
         r.metrics.setdefault("lat", {})["ctrl_c"] = rec
         lat_checks(r, rec, "Ctrl-C")
+    if ctx.win:
+        r.note("Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran")
+        ctx.reset()
+        return
     # Ctrl-D: ends `cat` input, and exits a nested bash back to the outer shell.
     # SAFETY (#1458): a Ctrl-D that reaches the pane's OWN top-level shell exits it and closes the last window, which quits the app.
     # So a Ctrl-D is sent only after the case has PROVEN the thing it is meant to end is running (cat: its output file exists, i.e. the
@@ -694,7 +782,7 @@ def c_ssh(ctx, r):
     got = ctx.lines("rl.txt", remote=True)
     r.metric("trials", len(exp))
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
-    r.check(not ctx.lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.lines("rl.txt"))
+    r.check(not ctx.local_lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.local_lines("rl.txt"))
     rem = [c for _, c in ctx.prof.commands(remote=True)]
     if rem:
         r.check(all("echo %s >> ~/rl.txt" % t in rem for t in exp), "remote rec.log lacks the exact typed command for some trials")
@@ -725,7 +813,7 @@ def c_ssh_enter_immediate(ctx, r):
             break
     got = ctx.lines("rh.txt", remote=True)
     r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
-    r.check(not ctx.lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.lines("rh.txt"))
+    r.check(not ctx.local_lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.local_lines("rh.txt"))
     ctx.reset()
 
 
@@ -750,7 +838,7 @@ def c_ssh_nested(ctx, r):
     time.sleep(1.0)
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
-    r.check(not ctx.lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.lines("rn.txt"))
+    r.check(not ctx.local_lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.local_lines("rn.txt"))
     # leave both ssh levels, each `exit` only while the remote proof holds (a missing proof means no `exit`, so the local shell survives)
     if ctx.leave_remote(r, "ssh_nested_typeahead (inner)", "rn.txt", tok, base, level=True):
         ctx.leave_remote(r, "ssh_nested_typeahead (outer)", "rn.txt", tok, base)
@@ -762,7 +850,7 @@ def c_ssh_fail(ctx, r):
     ctx.rm("sf.txt")
     ctx.be.type("ssh -o ConnectTimeout=3 -o BatchMode=yes no-such-host.invalid", 12, enter=True)
     time.sleep(0.15)
-    ctx.be.type("echo MUSTNOT >> sf.txt", 15, enter=True)
+    ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "MUSTNOT", "sf.txt"), 15, enter=True)
     time.sleep(8)
     r.check(not ctx.lines("sf.txt"), "line typed behind a FAILING ssh ran locally: %r" % ctx.lines("sf.txt"))
     ctx.reset()
@@ -777,7 +865,8 @@ def c_idle(ctx, r):
     w0 = time.time()
     time.sleep(20)
     t1, rss1 = ctx.app.cpu_ticks()
-    pct_ = (t1 - t0) / os.sysconf("SC_CLK_TCK") / (time.time() - w0) * 100
+    clk = ctx.app.clk_tck() if hasattr(ctx.app, "clk_tck") else os.sysconf("SC_CLK_TCK")      # Windows: FILETIME 100 ns units
+    pct_ = (t1 - t0) / clk / (time.time() - w0) * 100
     r.metric("idle_cpu_pct_of_one_core", pct_)
     r.metric("rss_mb", rss1 / 1024)
     limit = float(os.environ.get("APPCI_IDLE_CPU_MAX", "15"))
@@ -801,16 +890,77 @@ class RefTerm:
 
 def ref_note(ctx, r):
     """#1485: when Terminal.app was already running, its reference windows are left open (never quit someone's Terminal)"""
+    if ctx.win:
+        return
     import refterm_mac
     n = refterm_mac.left_open_note()
     if n:
         r.note(n)
 
 
+def ref_terminal_windows(ctx):
+    """Windows: the SAME shell as the pane in a plain console window (conhost: `powershell.exe -NoLogo`, or Git Bash `--rcfile` for the Git Bash
+    pane), driven through the same SendInput path under a guard that accepts only THAT window (its PID or its hwnd), never the job's own console.
+    APPCI_WIN_REF=wt uses Windows Terminal (wt.exe, when present) instead of conhost. None (with ctx.ref_reason) when the window cannot be identified."""
+    import winapi
+    ctx.ref_reason = None
+    want_wt = os.environ.get("APPCI_WIN_REF", "conhost").lower() == "wt"
+    home = ctx.prof.home
+    env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
+    env["HOME"] = home
+    if ctx.pane == "gitbash":
+        sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
+    else:
+        sh, shname = ["powershell.exe", "-NoLogo"], "powershell.exe"
+    if want_wt:
+        wt_exe = shutil.which("wt.exe") or shutil.which("wt")
+        if not wt_exe:
+            ctx.ref_reason = "APPCI_WIN_REF=wt but wt.exe (Windows Terminal) is not installed"
+            return None
+        argv, name, flags = [wt_exe, "-d", ctx.W, "new-tab"] + sh, "Windows Terminal (%s)" % shname, 0
+    else:
+        argv, name, flags = sh, "conhost (%s)" % shname, 0x00000010           # CREATE_NEW_CONSOLE
+    before = {w[0] for w in winapi.top_windows(None)}
+    proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
+    ctx.ref_proc = proc
+    hwnd, wpid = None, None
+    for _ in range(60):
+        time.sleep(0.4)
+        ws = [w for w in winapi.top_windows(None) if w[0] not in before and w[2][2] > 100 and w[2][3] > 50]
+        mine = [w for w in ws if w[1] == proc.pid] or [w for w in ws if winapi.proc_name(w[1]) in ("conhost.exe", "openconsole.exe", "windowsterminal.exe", "powershell.exe", "bash.exe")]
+        if mine:
+            hwnd, wpid = mine[-1][0], mine[-1][1]
+            break
+    def kill():
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
+    if not hwnd:
+        ctx.ref_reason = "the reference console window (%s) never appeared" % name
+        kill()
+        return None
+    time.sleep(4)          # the shell prints its banner / loads its rc
+    winapi.focus_window(hwnd)
+    time.sleep(0.5)
+    ctx.be.guard_override = dict(pids={proc.pid, wpid}, hwnds={hwnd})
+
+    def close():
+        try:
+            ctx.be.type("exit", 12, enter=True)
+        except Exception:
+            pass
+        time.sleep(1.0)
+        ctx.be.guard_override = None
+        if proc.poll() is None:
+            kill()
+        ctx.be.refocus()
+    return RefTerm(name, close=close)
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
     home = ctx.prof.home
+    if ctx.win:
+        return ref_terminal_windows(ctx)
     if ctx.be.name == "mac":
         # NO Apple Events: `tell application "Terminal" ... do script` needs an Automation grant (a TCC prompt nobody answers in CI; it hung
         # 30 s per sample in run 3015802940). A .command file opened with LaunchServices needs none (and a .terminal document would import
@@ -978,7 +1128,7 @@ def run_enter_control(ctx, r, n):
             for _ in range(n):
                 tok = ctx.tok(10).lower()
                 exp.append(tok)
-                ctx.be.type(ctx.append_cmd("bash", tok, fname), ctx.rng.randint(10, 25), enter=True)
+                ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, fname), ctx.rng.randint(10, 25), enter=True)
                 if gap:
                     time.sleep(gap)
             ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
@@ -1028,13 +1178,16 @@ def enter_to_start(ctx, n, budget_s=None):
         if os.path.exists(f):
             os.remove(f)
         stamp = "print -r -- $EPOCHREALTIME > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"   # BSD date has no %N
+        if ctx.pane == "powershell":
+            stamp = "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
         ctx.be.type(stamp % i, 12)
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
         ctx.until(lambda: os.path.exists(f) and os.path.getsize(f) > 5, 3, step=0.001)
         try:
-            ds.append((float(open(f).read()) - t0) * 1000)
+            v = float(open(f, errors="replace").read().replace("\x00", "").strip())
+            ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
         except Exception:
             pass
         time.sleep(0.2)
@@ -1068,7 +1221,7 @@ def c_lat_enter(ctx, r):
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
-        rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.mode, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
+        rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
                            notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
@@ -1156,7 +1309,7 @@ def c_lat_key(ctx, r):
         return
     # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
     # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
-    rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.mode, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+    rec = lat.evaluate("%s/latency_key_log/key_to_frame" % ctx.label, ds, None, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"])
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
     lat_checks(r, rec, "key to frame")
@@ -1239,7 +1392,7 @@ def c_lat_paint(ctx, r):
     else:
         r.note("no reference: absolute only (key->paint): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
-        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.mode, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
                            notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"])
         r.metrics.setdefault("lat", {})["key_to_paint"] = rec
@@ -1380,6 +1533,100 @@ def c_editor_mem(ctx, r):
     r.check(ctx.app.alive(), "app died during the editor memory case")
 
 
+@case("gitbash_subshell", order=22)
+def c_gitbash_subshell(ctx, r):
+    """Windows (#1464): Git for Windows' bash.exe started from the pane's PowerShell as a subshell: 20 fast-typed lines, 4 pasted lines of 10-5000
+    bytes with an instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell and the next PowerShell command runs there."""
+    if not ctx.win:
+        r.skip("Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)")
+    if ctx.pane != "powershell":
+        r.skip("the pane IS Git Bash in this pass; bash inside bash is covered by ctrl_c_d / subshells")
+    import winapi
+    gb = winapi.git_bash()
+    if not gb:
+        r.skip("Git for Windows not installed (no bash.exe under Program Files\\Git\\bin)")
+    names = ("gb_probe", "gb_ft", "gb_pe", "gb_cc", "gb_back")
+    ctx.rm(*[n + ".txt" for n in names])
+    ctx.be.type("& '%s' --noprofile --norc -i" % gb.replace("\\", "/"), 12, enter=True)
+    time.sleep(4)
+    ready = False
+    for _ in range(4):
+        ctx.be.type("echo probe >> gb_probe.txt", 12, enter=True)
+        if ctx.until(lambda: ctx.lines("gb_probe.txt"), 4):
+            ready = True
+            break
+    ctx.shot("gitbash_started")
+    if not ready:
+        r.check(False, "Git Bash never executed a probe line (cwd %s)" % ctx.W)
+        ctx.reset()
+        return
+    rl = lambda n: [l.rstrip("\r") for l in ctx.lines(n)]       # noqa: E731
+    exp = []
+    for _ in range(20):
+        tok = ctx.tok(8).lower()
+        exp.append(tok)
+        ctx.be.type("echo %s >> gb_ft.txt" % tok, ctx.rng.randint(10, 25), enter=True)
+    ctx.until(lambda: len(rl("gb_ft.txt")) >= 20, 30)
+    r.check(rl("gb_ft.txt") == exp, "Git Bash fast typing: %d/20 lines, exact match false (expected first=%s got first=%s)" % (len(rl("gb_ft.txt")), exp[0], (rl("gb_ft.txt") or [None])[0]))
+    exp = []
+    for i in range(4):
+        tok, pad = ctx.tok(8).lower(), "w" * (10, 500, 5000, 50)[i]
+        exp.append(tok + pad)
+        ctx.be.clip_set("echo %s%s >> gb_pe.txt" % (tok, pad))
+        ctx.be.paste(enter=True)
+        time.sleep(0.9)
+    ctx.until(lambda: len(rl("gb_pe.txt")) >= 4, 20)
+    r.check(rl("gb_pe.txt") == exp, "Git Bash paste + instant Enter: %d/4 exact lines" % sum(a == b for a, b in zip(exp, rl("gb_pe.txt"))))
+    c = 0
+    for i in range(3):
+        ctx.be.type("bash -c 'trap \"echo INT%d >> gb_cc.txt; exit\" INT; sleep 30'; echo AFTER%d >> gb_cc.txt" % (i, i), 12, enter=True)
+        time.sleep(1.8)
+        ctx.be.key("ctrl+c")
+        if ctx.until(lambda: len(rl("gb_cc.txt")) >= 2 * (i + 1), 8):
+            c += 1
+    r.check(c == 3, "Git Bash Ctrl-C: the trap and the next line ran %d/3 times: %s" % (c, ",".join(rl("gb_cc.txt"))))
+    ctx.be.type("exit", 12, enter=True)
+    time.sleep(2)
+    tok = ctx.tok(8).lower()
+    ctx.be.type("Add-Content gb_back.txt %s" % tok, 12, enter=True)
+    ctx.until(lambda: rl("gb_back.txt"), 8)
+    r.check(rl("gb_back.txt") == [tok], "after exiting Git Bash the pane's PowerShell did not run the next command: %s" % rl("gb_back.txt"))
+
+
+def stream_cmd(ctx, i):
+    """a command that prints a line every ~20 ms until Ctrl-C, for the pane's own shell"""
+    if ctx.pane == "powershell":
+        return "while ($true) { 'streaming_%d_line'; Start-Sleep -Milliseconds 20 }" % i
+    return "while :; do echo streaming_%d_line; sleep 0.02; done" % i
+
+
+@case("tabs_streaming", order=91, gui=True)
+def c_tabs_streaming(ctx, r):
+    """12 tabs each streaming a line every 20 ms, then ONE more tab: 10 fast-typed commands in it arrive exactly, in order, and the app survives
+    (the Windows tabs_streaming case of app_test.ps1, now on every platform; tabs_two_windows adds a second window and a paste)"""
+    ntabs = int(os.environ.get("APPCI_TABS", "12"))
+    newtab = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
+    ctx.reset()
+    for i in range(ntabs):
+        ctx.be.key(newtab)
+        time.sleep(0.7)
+        ctx.be.type(stream_cmd(ctx, i), 10, enter=True)
+    ctx.rm("tw_s.txt")
+    ctx.be.key(newtab)
+    time.sleep(1.0)
+    exp = []
+    for _ in range(ctx.count(10)):
+        tok = ctx.tok(8).lower()
+        exp.append(tok)
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, "tw_s.txt"), ctx.rng.randint(10, 25), enter=True)
+    ctx.until(lambda: len(ctx.lines("tw_s.txt")) >= len(exp), 40)
+    time.sleep(0.5)
+    ctx.shot("tabs_streaming")
+    r.check(ctx.app.alive(), "app died with %d streaming tabs" % ntabs)
+    got = ctx.lines("tw_s.txt")
+    r.check(got == exp, "typing under %d streaming tabs: %d/%d exact lines" % (ntabs, len(got), len(exp)))
+
+
 @case("tabs_two_windows", order=90, gui=True)
 def c_tabs(ctx, r):
     ntabs = int(os.environ.get("APPCI_TABS", "12"))
@@ -1389,7 +1636,7 @@ def c_tabs(ctx, r):
     for i in range(ntabs):
         ctx.be.key(newtab)
         time.sleep(0.5)
-        ctx.be.type("while :; do echo streaming_%d_line; sleep 0.02; done" % i, 10, enter=True)
+        ctx.be.type(stream_cmd(ctx, i), 10, enter=True)
         time.sleep(0.2)
     ctx.shot("tabs_open")
     alive = ctx.app.alive()
@@ -1406,8 +1653,8 @@ def c_tabs(ctx, r):
     for i in range(ctx.count(15)):
         tok = ctx.tok(8).lower()
         exp.append(tok)
-        ctx.be.type("echo %s >> tw.txt" % tok, ctx.rng.randint(10, 25), enter=True)
-    ctx.be.clip_set("echo PASTED_%s >> tw.txt" % "ok")
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, "tw.txt"), ctx.rng.randint(10, 25), enter=True)
+    ctx.be.clip_set(ctx.append_cmd(ctx.pane_shell(), "PASTED_ok", "tw.txt"))
     ctx.be.paste(enter=True)
     exp.append("PASTED_ok")
     ctx.until(lambda: len(ctx.lines("tw.txt")) >= len(exp), 30)
@@ -1450,6 +1697,8 @@ def open_file_in_app(ctx, path):
     if ctx.be.name == "mac":
         r = subprocess.run(["open", "-a", ctx.app.bundle, path], capture_output=True, timeout=30)
         return None if r.returncode == 0 else "open -a failed: %s" % r.stderr.decode(errors="replace")[:200]
+    if ctx.win:
+        raise Skip("no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows")
     pid = ctx.app.pid()
     try:
         raw = open("/proc/%d/environ" % pid, "rb").read().split(b"\0")
@@ -1500,7 +1749,7 @@ def c_md_viewer(ctx, r):
     secs, txt = wait_for_text(ctx, "md_small", MD_SMALL_TEXT, 20)
     if txt is None:
         ctx.shot("md_small_noocr")
-        r.note("no OCR engine (tesseract / Apple Vision): screenshot shots/%s_md_small_noocr.png only, table text and diagram labels NOT machine-verified" % ctx.mode)
+        r.note("no OCR engine (tesseract / Apple Vision): screenshot shots/%s_md_small_noocr.png only, table text and diagram labels NOT machine-verified" % ctx.label)
     else:
         r.metric("md_small_text_visible_s", round(secs, 2) if secs is not None else None)
         r.check(secs is not None, "markdown viewer: heading/table text %s not visible within 20 s (OCR saw %r)" % (list(MD_SMALL_TEXT), txt[:300]))

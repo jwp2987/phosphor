@@ -12,10 +12,55 @@ def _free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
+def _start_windows(prof, run, d, port):
+    """Windows: fakesshd_win.py (paramiko + a ConPTY running Git Bash) on 127.0.0.1; the Windows OpenSSH Server service is never used.
+    The scratch keys come from the built-in ssh-keygen.exe (else a paramiko RSA key). None -> the ssh cases SKIP with the reason in Windows_why."""
+    global WHY
+    WHY = None
+    import winapi
+    try:
+        import paramiko  # noqa: F401
+    except ImportError:
+        WHY = "paramiko is not importable by this Python (%s): fakesshd_win.py cannot run" % sys.executable
+        return None
+    bash = winapi.git_bash()
+    if not bash:
+        WHY = "Git for Windows (bash.exe) not found: the fake ssh server's remote shell is Git Bash"
+        return None
+    kg = shutil.which("ssh-keygen", path=os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH")) or shutil.which("ssh-keygen")
+    for k in ("hostkey", "clientkey"):
+        kp = os.path.join(d, k)
+        if os.path.exists(kp):
+            continue
+        if kg:
+            subprocess.run([kg, "-q", "-t", "ed25519", "-N", "", "-f", kp], check=True, stdin=subprocess.DEVNULL)
+        else:
+            paramiko.RSAKey.generate(2048).write_private_key_file(kp)
+    log = os.path.join(d, "sshd.log")
+    p = subprocess.Popen([sys.executable, os.path.join(HERE, "fakesshd_win.py"), str(port), d, prof.rhome, bash, log],
+                         stdout=subprocess.DEVNULL, stderr=open(os.path.join(d, "fakesshd.stderr"), "w"), stdin=subprocess.DEVNULL)
+    for _ in range(50):
+        try:
+            socket.create_connection(("127.0.0.1", port), 0.2).close()
+            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "fakesshd-win", "popen": p}
+        except OSError:
+            if p.poll() is not None:
+                break
+            time.sleep(0.1)
+    p.kill()
+    WHY = "fakesshd_win.py did not listen on 127.0.0.1:%d (see ssh/fakesshd.stderr)" % port
+    return None
+
+
+WHY = None      # why start() returned None on Windows (run.py reports it as the skip reason)
+
+
 def start(prof, run):
     """returns dict(port, ident, kind, popen) or None"""
     d = os.path.join(run, "ssh"); os.makedirs(d, exist_ok=True)
     port = _free_port()
+    if os.name == "nt":
+        return _start_windows(prof, run, d, port)
     sshd = shutil.which("sshd") or ("/usr/sbin/sshd" if os.path.exists("/usr/sbin/sshd") else None)
     kg = shutil.which("ssh-keygen")
     if sshd and kg:
@@ -75,6 +120,8 @@ def start(prof, run):
 
 def stop(info):
     if info and info.get("popen") and info["popen"].poll() is None:
+        if os.name == "nt":      # taskkill /T also ends the ConPTY bash children of the fake server; exact PID only
+            subprocess.run(["taskkill", "/PID", str(info["popen"].pid), "/T", "/F"], capture_output=True, timeout=30)
         info["popen"].terminate()
         try:
             info["popen"].wait(5)

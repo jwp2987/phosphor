@@ -1,6 +1,7 @@
 # appci/backend.py: input / screenshot / clipboard backends for the CI real-app harness.
 # Backends: wayland (wtype + grim + wl-clipboard, for headless sway; also used for apps under XWayland),
 #           x11 (xdotool + xsel + ffmpeg x11grab, private Xvfb), mac (htype2 + kl3 CGEvent tools + osascript + screencapture),
+#           windows (SendInput VK/Unicode events + user32 focus guard + PIL.ImageGrab + user32 clipboard, ctypes only),
 #           sim (a bash in a pty: no GUI, exercises the case logic only; `run.py --backend sim`).
 # Every backend exposes the same methods; keys are written as 'ctrl+shift+t', 'Return', 'Tab', 'Left', 'a'.
 # Prereqs per backend are checked by Backend.preflight(), which returns a list of problems (empty = ok).
@@ -13,6 +14,7 @@ ENVNAME = {" ": "space", ">": "greater", "<": "less", "_": "underscore", "-": "m
            "\\": "backslash", ",": "comma", "*": "asterisk", "#": "numbersign", "%": "percent", "@": "at",
            "!": "exclam", "?": "question", "+": "plus", "[": "bracketleft", "]": "bracketright",
            "{": "braceleft", "}": "braceright", "^": "asciicircum", "`": "grave"}
+REV_ENVNAME = {v: k for k, v in ENVNAME.items()}
 MODS = {"ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt", "super": "logo", "cmd": "logo", "meta": "logo"}
 
 
@@ -592,6 +594,426 @@ class MacBackend(Backend):
                 p.kill()
 
 
+class WindowsBackend(Backend):
+    """Windows 10/11, interactive desktop (the GitLab runner runs on the console). Everything is ctypes, no helper binary:
+      keys        SendInput with real virtual-key codes AND scancodes (MapVirtualKey) for printable ASCII on a US layout (a static table, so the VM's
+                  layout cannot change what is typed); anything else (CJK, accents, emoji: UTF-16 units) as KEYEVENTF_UNICODE packets.
+                  Ctrl-C, Enter, Tab, arrows ... are always real VK events. key_method 'unicode' sends printable characters as packets too
+                  (run.py's delivery proof falls back to it when VK events never arrive).
+      guard       before EVERY burst (and before every key of a long one): GetForegroundWindow + GetWindowThreadProcessId must give the PID of the
+                  Phosphor instance this run started (pid_fn); on a mismatch focus that exact window once (no key is sent to do it), else raise.
+                  guard_override = dict(pids=..., hwnds=...) is set while the reference console is driven: only THAT window, never the job's own console.
+      screenshots PIL.ImageGrab (all monitors).   clipboard: user32 CF_UNICODETEXT.
+      injector    every type()/key()/keys()/roll() call is one record in self.calls (and a line in <run>/inject.log): events asked, events SendInput
+                  accepted, wall time of each Return key-down it posted: the Enter control (#1482) reads it like the Mac htype2 record.
+    time.time() is replaced by GetSystemTimePreciseAsFileTime so the latency cases compare sub-millisecond timestamps."""
+    name = "windows"
+    pid_fn = None
+    guard_override = None
+    UNSUPPORTED_CHORDS = ("alt+f4", "alt+tab", "alt+escape", "ctrl+escape", "ctrl+shift+escape", "ctrl+alt+delete", "ctrl+alt+del")
+    NAMED = {"return": 0x0D, "enter": 0x0D, "tab": 0x09, "escape": 0x1B, "esc": 0x1B, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
+             "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+             "insert": 0x2D, "space": 0x20}
+    EXTENDED = {0x25, 0x26, 0x27, 0x28, 0x24, 0x23, 0x21, 0x22, 0x2D, 0x2E, 0xA5, 0xA3}
+    MODVK = {"ctrl": 0xA2, "shift": 0xA0, "alt": 0xA4}
+    PUNCT = {"`": (0xC0, 0), "~": (0xC0, 1), "-": (0xBD, 0), "_": (0xBD, 1), "=": (0xBB, 0), "+": (0xBB, 1), "[": (0xDB, 0), "{": (0xDB, 1),
+             "]": (0xDD, 0), "}": (0xDD, 1), "\\": (0xDC, 0), "|": (0xDC, 1), ";": (0xBA, 0), ":": (0xBA, 1), "'": (0xDE, 0), '"': (0xDE, 1),
+             ",": (0xBC, 0), "<": (0xBC, 1), ".": (0xBE, 0), ">": (0xBE, 1), "/": (0xBF, 0), "?": (0xBF, 1), " ": (0x20, 0)}
+    SHIFTED_DIGITS = ")!@#$%^&*("
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes as wt
+        import winapi
+        self.w = winapi
+        self.ct = ctypes
+        self.key_method = os.environ.get("APPCI_WIN_KEY_METHOD", "vk")        # vk | unicode
+        self.calls = []
+        self.fails = 0
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()       # physical pixels in window_rect and ImageGrab
+        except Exception:
+            pass
+        time.time = winapi.precise_time
+
+        class KBD(ctypes.Structure):
+            _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+        class MOU(ctypes.Structure):
+            _fields_ = [("dx", wt.LONG), ("dy", wt.LONG), ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+        class UN(ctypes.Union):
+            _fields_ = [("mi", MOU), ("ki", KBD)]
+
+        class INP(ctypes.Structure):
+            _fields_ = [("type", wt.DWORD), ("u", UN)]
+        self._INP = INP
+        winapi.user32.SendInput.argtypes = [wt.UINT, ctypes.POINTER(INP), ctypes.c_int]
+        winapi.user32.SendInput.restype = wt.UINT
+        winapi.user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+        winapi.user32.MapVirtualKeyW.restype = wt.UINT
+        self._cur = None
+        self.outf = None
+
+    # ------------------------------------------------------------ preflight
+    def preflight(self):
+        p = []
+        try:
+            import PIL.ImageGrab  # noqa: F401
+        except ImportError:
+            p.append("missing python module: Pillow (PIL.ImageGrab, screenshots)")
+        try:
+            h, pid = self.w.foreground()
+            if not h:
+                p.append("no foreground window: the runner is not on an unlocked interactive desktop (locked screen / session 0 service)")
+        except Exception as e:
+            p.append("user32 not usable: %r" % (e,))
+        return p
+
+    # ------------------------------------------------------------ low level
+    def _send(self, evs):
+        """evs: [(vk, scan, flags)] -> number SendInput accepted (it may refuse when another thread holds an input hook / UIPI)"""
+        n = len(evs)
+        arr = (self._INP * n)()
+        for i, (vk, scan, fl) in enumerate(evs):
+            arr[i].type = 1
+            arr[i].u.ki.wVk = vk
+            arr[i].u.ki.wScan = scan
+            arr[i].u.ki.dwFlags = fl
+        got = self.w.user32.SendInput(n, arr, self.ct.sizeof(self._INP))
+        if self._cur is not None:
+            self._cur["events"] += n
+            self._cur["accepted"] += got
+        if got != n:
+            self.fails += 1
+        return got
+
+    def _vkev(self, vk, up=False):
+        scan = self.w.user32.MapVirtualKeyW(vk, 0)
+        fl = (2 if up else 0) | (1 if vk in self.EXTENDED else 0)
+        return (vk, scan, fl)
+
+    def _uev(self, unit, up=False):
+        return (0, unit, 4 | (2 if up else 0))
+
+    def char_vk(self, ch):
+        """(vk, shift) of a printable ASCII character on a US layout, or None"""
+        if "a" <= ch <= "z":
+            return 0x41 + ord(ch) - 97, 0
+        if "A" <= ch <= "Z":
+            return 0x41 + ord(ch) - 65, 1
+        if "0" <= ch <= "9":
+            return 0x30 + ord(ch) - 48, 0
+        if ch in self.SHIFTED_DIGITS:
+            return 0x30 + self.SHIFTED_DIGITS.index(ch), 1
+        return self.PUNCT.get(ch)
+
+    def _char_events(self, ch):
+        """key-down+key-up events that type one character (shift wrapped around it when the US layout needs it)"""
+        if ch in ("\n", "\r"):
+            return [self._vkev(0x0D), self._vkev(0x0D, True)]
+        if ch == "\t":
+            return [self._vkev(0x09), self._vkev(0x09, True)]
+        cv = self.char_vk(ch) if (ord(ch) < 128 and self.key_method != "unicode") else None
+        if cv:
+            vk, sh = cv
+            ev = [self._vkev(vk), self._vkev(vk, True)]
+            return ([self._vkev(0xA0)] + ev + [self._vkev(0xA0, True)]) if sh else ev
+        ev = []
+        for u in self._utf16(ch):
+            ev += [self._uev(u), self._uev(u, True)]
+        return ev
+
+    @staticmethod
+    def _utf16(ch):
+        b = ch.encode("utf-16-le")
+        return [int.from_bytes(b[i:i + 2], "little") for i in range(0, len(b), 2)]
+
+    # ------------------------------------------------------------ the injector record (#1482)
+    def _begin(self, kind, enters_want=0):
+        self._cur = dict(n=len(self.calls), kind=kind, wall0=time.time(), wall1=None, enters_want=enters_want, enter_wall=[], enters_posted=0,
+                         chars=0, special=[], err=None, out=True, events=0, accepted=0, t_chars=[])
+        return self._cur
+
+    def _end(self):
+        rec, self._cur = self._cur, None
+        rec["wall1"] = time.time()
+        rec["span_ms"] = (rec["t_chars"][-1] - rec["t_chars"][0]) * 1000 if len(rec["t_chars"]) > 1 else 0
+        if rec["accepted"] != rec["events"] and not rec["err"]:
+            rec["err"] = "SendInput accepted %d of %d events (blocked by UIPI / an input hook?)" % (rec["accepted"], rec["events"])
+        self.calls.append(rec)
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("call=%d kind=%s wall=%.3f..%.3f chars=%d span_ms=%.0f events=%d accepted=%d enters_want=%d enters_posted=%d out=True%s %s\n" % (
+                        rec["n"], rec["kind"], rec["wall0"], rec["wall1"], rec["chars"], rec["span_ms"], rec["events"], rec["accepted"],
+                        rec["enters_want"], rec["enters_posted"], (" ERR=" + rec["err"]) if rec["err"] else "", " ".join(rec["special"])))
+            except OSError:
+                pass
+        return rec
+
+    def inject_enter(self, idx):
+        if idx is None or idx < 0 or idx >= len(self.calls):
+            return None
+        c = self.calls[idx]
+        if c["enters_want"] and not c["enters_posted"]:
+            return False, "injector call #%d did NOT post its ENTER (%s)" % (c["n"], c["err"] or "no Return key-down was accepted by SendInput")
+        w = c["enter_wall"][0] if c["enter_wall"] else None
+        return True, "injector call #%d posted its ENTER at %s" % (c["n"], (time.strftime("%H:%M:%S", time.localtime(w)) + (".%03d" % int((w % 1) * 1000))) if w else "?")
+
+    def _burst(self, rec, evs, kind=None, enter=False):
+        """send one group of events behind the guard; account chars/Enter in the record. Raises RuntimeError when SendInput refused events."""
+        self.guard()
+        got = self._send(evs)
+        if enter and got == len(evs):
+            rec["enters_posted"] += 1
+            rec["enter_wall"].append(time.time())
+        if kind:
+            rec["special"].append("%s@%.3f" % (kind, time.time()))
+        if got != len(evs):
+            rec["err"] = "SendInput accepted %d of %d events (GetLastError %d)" % (got, len(evs), self.ct.get_last_error())
+            raise RuntimeError(rec["err"])
+
+    # ------------------------------------------------------------ typing
+    def type(self, text, delay_ms=15, enter=False):
+        rec = self._begin("type", 1 if enter else 0)
+        try:
+            n = len(text)
+            for i, ch in enumerate(text):
+                self._burst(rec, self._char_events(ch))
+                rec["chars"] += 1
+                rec["t_chars"].append(time.time())
+                if delay_ms and i + 1 < n:
+                    time.sleep(delay_ms / 1000)
+            if enter:
+                self._burst(rec, [self._vkev(0x0D), self._vkev(0x0D, True)], "ENTER", enter=True)
+        except Exception as e:
+            rec["err"] = rec["err"] or "%s: %s" % (type(e).__name__, str(e)[:120])
+            raise
+        finally:
+            self._end()
+
+    def _chord(self, spec):
+        """'ctrl+shift+t' / 'Return' / 'Left' / 'a' -> (down events, up events)"""
+        low = spec.lower()
+        if low in self.UNSUPPORTED_CHORDS:
+            raise ValueError("refusing forbidden chord " + spec)
+        parts = low.split("+") if low != "+" else ["+"]
+        mods, k = parts[:-1], parts[-1]
+        want = set()
+        for m in mods:
+            m = {"control": "ctrl", "option": "alt"}.get(m, m)
+            if m in ("super", "cmd", "meta", "logo", "win"):
+                raise ValueError("refusing the Windows key in " + spec)
+            if m == "altgr":
+                want.add("altgr")
+            elif m in self.MODVK:
+                want.add(m)
+            else:
+                raise ValueError("unknown modifier in " + spec)
+        if k in self.NAMED:
+            vk, shift = self.NAMED[k], 0
+        elif re.fullmatch(r"f([1-9]|1[0-2])", k):
+            vk, shift = 0x70 + int(k[1:]) - 1, 0
+        else:
+            ch = spec if len(spec) == 1 else REV_ENVNAME.get(k, k)
+            cv = self.char_vk(ch) if len(ch) == 1 else None
+            if cv is None:
+                raise ValueError("no US-layout key for %r" % spec)
+            vk, shift = cv
+        if shift:
+            want.add("shift")
+        order = [m for m in ("ctrl", "shift", "alt") if m in want]
+        down = [self._vkev(self.MODVK[m]) for m in order]
+        up = [self._vkev(self.MODVK[m], True) for m in reversed(order)]
+        if "altgr" in want:
+            down.append(self._vkev(0xA5))
+            up.insert(0, self._vkev(0xA5, True))
+        return down + [self._vkev(vk)], [self._vkev(vk, True)] + up, vk
+
+    def key(self, spec, repeat=1, delay_ms=15):
+        self.keys([spec] * repeat, delay_ms=delay_ms)
+
+    def keys(self, specs, delay_ms=15):
+        chords = [self._chord(s) for s in specs]
+        enters = sum(1 for c in chords if c[2] == 0x0D)
+        rec = self._begin("keys", enters)
+        try:
+            for i, (dn, up, vk) in enumerate(chords):
+                self._burst(rec, dn + up, kind=specs[i], enter=(vk == 0x0D))
+                if delay_ms and i + 1 < len(chords):
+                    time.sleep(delay_ms / 1000)
+        except Exception as e:
+            rec["err"] = rec["err"] or "%s: %s" % (type(e).__name__, str(e)[:120])
+            raise
+        finally:
+            self._end()
+
+    def altgr(self, vk):
+        """AltGr + key: Right Alt (extended). On a layout with AltGr the system generates the Left Control that goes with it."""
+        rec = self._begin("altgr")
+        try:
+            self._burst(rec, [self._vkev(0xA5), self._vkev(vk), self._vkev(vk, True), self._vkev(0xA5, True)], "ALTGR+%02X" % vk)
+        finally:
+            self._end()
+
+    def plain_vk(self, vk):
+        """one key by virtual-key code alone: the receiving thread's layout decides which character it is"""
+        rec = self._begin("vk")
+        try:
+            self._burst(rec, [self._vkev(vk), self._vkev(vk, True)], "VK%02X" % vk)
+        finally:
+            self._end()
+
+    def roll(self, text, overlap_ms=10, enter=True):
+        """Rollover: the next key goes down before the previous one is released (shifted / non-ASCII characters are plain taps)"""
+        rec = self._begin("roll", 1 if enter else 0)
+        pending = None          # vk of the key still held down
+        try:
+            for ch in text:
+                cv = self.char_vk(ch) if ord(ch) < 128 and self.key_method != "unicode" else None
+                if cv is None or cv[1]:
+                    if pending is not None:
+                        self._burst(rec, [self._vkev(pending, True)])
+                        pending = None
+                    self._burst(rec, self._char_events(ch))
+                    rec["chars"] += 1
+                    rec["t_chars"].append(time.time())
+                    time.sleep(overlap_ms / 1000)
+                    continue
+                self._burst(rec, [self._vkev(cv[0])])
+                rec["chars"] += 1
+                rec["t_chars"].append(time.time())
+                time.sleep(overlap_ms / 1000)
+                if pending is not None:
+                    self._burst(rec, [self._vkev(pending, True)])
+                time.sleep(overlap_ms / 1000)
+                pending = cv[0]
+            if pending is not None:
+                self._burst(rec, [self._vkev(pending, True)])
+            if enter:
+                self._burst(rec, [self._vkev(0x0D), self._vkev(0x0D, True)], "ENTER", enter=True)
+        except Exception as e:
+            rec["err"] = rec["err"] or "%s: %s" % (type(e).__name__, str(e)[:120])
+            raise
+        finally:
+            self._end()
+
+    def noop(self):
+        """one SendInput with nothing to do (a Shift key-up while Shift is not down): the harness floor, no guard (it must not raise)"""
+        self._send([self._vkev(0xA0, True)])
+
+    # ------------------------------------------------------------ focus guard
+    def _pname_ok(self, pid, names):
+        return self.w.proc_name(pid) in names
+
+    def guard(self):
+        h, pid = self.w.foreground()
+        ov = self.guard_override
+        if ov:
+            if pid in ov.get("pids", ()) or h in ov.get("hwnds", ()):
+                return
+            raise RuntimeError("foreground window is %r (pid %s), not the reference console: refusing to send keys" % (self.w.proc_name(pid), pid))
+        ph = self.pid_fn() if self.pid_fn else None
+        if ph is None:
+            raise RuntimeError("Phosphor PID unknown (app not running?): refusing to send keys")
+        if pid == ph:
+            return
+        self._focus_pid(ph)
+        h2, pid2 = self.w.foreground()
+        if pid2 != ph:
+            raise RuntimeError("foreground window is %r (pid %s), not Phosphor (pid %s): refusing to send keys" % (self.w.proc_name(pid2), pid2, ph))
+
+    def _focus_pid(self, pid):
+        h = self.w.main_window(pid)
+        if h:
+            self.w.focus_window(h)
+            time.sleep(0.4)
+
+    def refocus(self):
+        """bring Phosphor back to the front after the reference window closed (no keys sent)"""
+        ph = self.pid_fn() if self.pid_fn else None
+        if ph:
+            self._focus_pid(ph)
+
+    # ------------------------------------------------------------ windows, screenshots, clipboard
+    def window_rect(self, pid=None):
+        ph = pid or (self.pid_fn() if self.pid_fn else None)
+        h = self.w.main_window(ph) if ph else None
+        if not h:
+            return None
+        for w in self.w.top_windows(ph):
+            if w[0] == h:
+                return tuple(float(v) for v in w[2])
+        return None
+
+    def windows(self):
+        ph = self.pid_fn() if self.pid_fn else None
+        return [{"hwnd": int(w[0] or 0), "pid": w[1], "name": w[3], "rect": w[2]} for w in self.w.top_windows(ph) if w[2][2] > 50] if ph else []
+
+    def shot(self, path):
+        from PIL import ImageGrab
+        try:
+            img = ImageGrab.grab(all_screens=True)
+        except TypeError:
+            img = ImageGrab.grab()
+        img.save(path)
+        return os.path.exists(path) and os.path.getsize(path) > 1000
+
+    def _clip(self):
+        u, k = self.w.user32, self.w.kernel32
+        from ctypes import wintypes as wt
+        u.OpenClipboard.argtypes = [self.ct.c_void_p]
+        u.SetClipboardData.argtypes = [wt.UINT, self.ct.c_void_p]
+        u.SetClipboardData.restype = self.ct.c_void_p
+        u.GetClipboardData.argtypes = [wt.UINT]
+        u.GetClipboardData.restype = self.ct.c_void_p
+        k.GlobalAlloc.argtypes = [wt.UINT, self.ct.c_size_t]
+        k.GlobalAlloc.restype = self.ct.c_void_p
+        k.GlobalLock.argtypes = [self.ct.c_void_p]
+        k.GlobalLock.restype = self.ct.c_void_p
+        k.GlobalUnlock.argtypes = [self.ct.c_void_p]
+        return u, k
+
+    def _open_clip(self, u):
+        for _ in range(40):
+            if u.OpenClipboard(None):
+                return True
+            time.sleep(0.05)
+        raise RuntimeError("clipboard is held by another process")
+
+    def clip_set(self, data):
+        u, k = self._clip()
+        text = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else data
+        raw = (text + "\0").encode("utf-16-le")
+        self._open_clip(u)
+        try:
+            u.EmptyClipboard()
+            h = k.GlobalAlloc(0x0002, len(raw))                  # GMEM_MOVEABLE
+            p = k.GlobalLock(h)
+            self.ct.memmove(p, raw, len(raw))
+            k.GlobalUnlock(h)
+            if not u.SetClipboardData(13, h):                      # CF_UNICODETEXT
+                raise RuntimeError("SetClipboardData failed: %d" % self.ct.get_last_error())
+        finally:
+            u.CloseClipboard()
+
+    def clip_get(self):
+        u, k = self._clip()
+        self._open_clip(u)
+        try:
+            h = u.GetClipboardData(13)
+            if not h:
+                return b""
+            p = k.GlobalLock(h)
+            try:
+                return self.ct.wstring_at(p).encode("utf-8")
+            finally:
+                k.GlobalUnlock(h)
+        finally:
+            u.CloseClipboard()
+
+
 class SimBackend(Backend):
     """A real bash in a pty standing in for the GUI, so the case logic, exact-command checks and the
     JSON report can be exercised without a display. Keys it cannot model (tabs, windows) are no-ops
@@ -682,6 +1104,8 @@ def make(name, **kw):
         return X11Backend()
     if name == "mac":
         return MacBackend()
+    if name == "windows":
+        return WindowsBackend()
     if name == "sim":
         return SimBackend(**kw)
     raise SystemExit("unknown backend " + name)
