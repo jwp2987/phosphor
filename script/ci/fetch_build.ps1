@@ -9,13 +9,16 @@ if ($Record) {
     try {
         $m = (Get-Content appci-out\reused_build.json -Raw | ConvertFrom-Json).reused_build
         $line = "**Tested a REUSED build**: job $($m.job_id) ($($m.job_name)) of pipeline $($m.pipeline_id), commit $($m.commit); this pipeline $($m.this_pipeline), commit $($m.this_commit) (app-identical)."
+        # UTF-8 WITHOUT a BOM: Windows PowerShell 5.1's `Set-Content -Encoding UTF8` writes one, and json.load / text readers choke on it (r18cj: every reader
+        # of the committed results.json needed utf-8-sig). [IO.File]::WriteAllText with UTF8Encoding($false) is the 5.1-safe way.
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
         foreach ($f in Get-ChildItem appci-out\*\run\results.json -ErrorAction SilentlyContinue) {
-            $d = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            $d = [IO.File]::ReadAllText($f.FullName, $utf8) | ConvertFrom-Json
             $d | Add-Member -NotePropertyName reused_build -NotePropertyValue $m -Force
-            $d | ConvertTo-Json -Depth 32 | Set-Content $f.FullName -Encoding UTF8
+            [IO.File]::WriteAllText($f.FullName, ($d | ConvertTo-Json -Depth 32), $utf8)
         }
         foreach ($f in Get-ChildItem appci-out\*\run\summary.md -ErrorAction SilentlyContinue) {
-            $s = Get-Content $f.FullName -Raw; Set-Content $f.FullName -Value ($line + "`n`n" + $s) -Encoding UTF8
+            $s = [IO.File]::ReadAllText($f.FullName, $utf8); [IO.File]::WriteAllText($f.FullName, ($line + "`n`n" + $s), $utf8)
         }
         Write-Output $line
     } catch { Write-Output "record_reuse: $_" }
@@ -49,7 +52,8 @@ if ($id -notmatch '^\d+$') { Die "APPCI_BUILD_JOB_ID='$id' is not a job id" }
 $local = Join-Path $env:USERPROFILE ".cache\phosphor-ci\builds\windows\$id"
 function Write-Record($how) {
     New-Item -ItemType Directory -Force appci-out | Out-Null
-    @{ reused_build = @{ job_id = [int64]$id; job_name = "$env:APPCI_BUILD_JOB_NAME"; pipeline_id = "$env:APPCI_BUILD_PIPELINE_ID"; commit = "$env:APPCI_BUILD_SHA"; this_pipeline = "$env:CI_PIPELINE_ID"; this_commit = "$env:CI_COMMIT_SHA"; fetched = $how } } | ConvertTo-Json | Set-Content appci-out\reused_build.json -Encoding UTF8
+    $rec = @{ reused_build = @{ job_id = [int64]$id; job_name = "$env:APPCI_BUILD_JOB_NAME"; pipeline_id = "$env:APPCI_BUILD_PIPELINE_ID"; commit = "$env:APPCI_BUILD_SHA"; this_pipeline = "$env:CI_PIPELINE_ID"; this_commit = "$env:CI_COMMIT_SHA"; fetched = $how } } | ConvertTo-Json
+    [IO.File]::WriteAllText((Join-Path (Get-Location) "appci-out\reused_build.json"), $rec, (New-Object System.Text.UTF8Encoding($false)))      # no BOM (5.1's Set-Content -Encoding UTF8 adds one)
     Get-ChildItem dist | Format-Table Name, Length
     Write-Output "fetch_build: OK. Testing build job $id from pipeline $env:APPCI_BUILD_PIPELINE_ID (commit $env:APPCI_BUILD_SHA), NOT a build of this pipeline's commit $env:CI_COMMIT_SHA (app-identical by ci_seq.py)."
 }

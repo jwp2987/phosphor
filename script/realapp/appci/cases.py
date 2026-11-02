@@ -98,6 +98,7 @@ class Ctx:
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
         self.enter_control = None     # cached result of run_enter_control (#1482)
+        self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
         try:
             be.inject_log = os.path.join(run, "inject.log")
         except Exception:
@@ -213,7 +214,7 @@ class Ctx:
         its trials. level=True leaves one level of a nested ssh (waits for a REMOTE prompt). Fails fast when the shell count under the app
         dropped below `base`. Returns True after a clean exit."""
         if tok not in self.lines(rfile, remote=True):
-            r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)" % (label, tok))
+            r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: %s" % (label, tok, self.ssh_diag()))
             self.reset()
             return False
         # #1481 follow-up (r18ck): `tok` proves a remote shell was in front at SOME point, not that one still is (a nested ssh that failed
@@ -244,6 +245,99 @@ class Ctx:
             return False
         time.sleep(0.5)
         return True
+
+    def pane_responsive(self, first=8, second=40):
+        """True when the pane's shell runs a marker command. A wedged pane (a command that ignores Ctrl-C, a prompt that never came back) fails
+        every later case for a reason that is not theirs, so run.py checks after a failing case and relaunches the app (r18cj: the PowerShell
+        pane stayed stuck after ctrl_c_d and ssh_* / latency_enter measured nothing)."""
+        for tries, wait in ((0, first), (1, second)):
+            tok = self.tok(8).lower()
+            fname = "alive_%s.txt" % tok
+            try:
+                if tries:
+                    for _ in range(3):
+                        self.be.key("ctrl+c")
+                        time.sleep(0.8)
+                else:
+                    self.be.key("ctrl+c")
+                    time.sleep(0.3)
+                self.be.key("ctrl+u")
+                self.be.type(self.append_cmd(self.pane_shell(), tok, fname), 12, enter=True)
+            except Exception:
+                return False
+            if self.until(lambda: tok in self.lines(fname), wait):
+                return True
+        return False
+
+    def app_log_chars(self, t0):
+        """the characters the APP logged as typed since wall time t0, in order (`input_order typed_characters text="x"`; needs
+        WARP_INPUT_ORDER_LOG_TEXT=1, which the Windows harness sets), from the active log plus its rotated chunks. None when there is no such trace."""
+        import glob
+        src = self.log_path
+        if not src:
+            return None
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out, seen = [], False
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for m in re.finditer(r'input_order typed_characters text="((?:[^"\\]|\\.)*)" t=(\d+(?:\.\d+)?)', txt):
+                seen = True
+                if float(m.group(2)) / 1000.0 >= t0 - 1:
+                    out.append(m.group(1).replace('\\"', '"').replace("\\\\", "\\"))
+        return "".join(out) if seen else None
+
+    def app_enter_to_write_ms(self, t0):
+        """median ms from the app's `enter_begin` hop to the `pty_write` that carries the line (>10 bytes) since wall time t0: the APP's own share
+        of Enter->command-start, read from its input_order log (None without a trace). The rest is the shell/ConPTY side."""
+        import glob
+        src = self.log_path
+        if not src:
+            return None
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        ds, pending = [], None
+        for f in parts:
+            try:
+                lines = open(f, errors="replace").read().splitlines()
+            except OSError:
+                continue
+            for l in lines:
+                m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+                if not m:
+                    continue
+                t = float(m.group(1))
+                if t / 1000.0 < t0:
+                    continue
+                if "hop=enter_begin" in l:
+                    pending = t
+                elif pending is not None and "pty_write bytes=" in l and "handoff" not in l:
+                    nb = re.search(r"pty_write bytes=(\d+)", l)
+                    if nb and int(nb.group(1)) > 10:
+                        ds.append(t - pending)
+                        pending = None
+        return round(statistics.median(ds), 2) if ds else None
+
+    def app_saw_line(self, want, t0):
+        """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
+        False: the app's log has typed characters but not this line (the injector/OS never delivered it, or the log rotated it away); None: no trace."""
+        got = self.app_log_chars(t0)
+        if got is None:
+            return None
+        return want in got
+
+    def ssh_diag(self):
+        """what the ssh test host saw, for a failing ssh case: the tail of sshd.log (connect / auth / session lines) and fakesshd's stderr"""
+        out = []
+        for name in ("sshd.log", "fakesshd.stderr"):
+            p = os.path.join(self.run, "ssh", name)
+            try:
+                tail = [l for l in open(p, errors="replace").read().splitlines() if l.strip()][-6:]
+            except OSError:
+                continue
+            out.append("%s: %s" % (name, " | ".join(tail) if tail else "(empty)"))
+        return "; ".join(out) or "no ssh server log"
 
     def reset(self):
         self.be.key("ctrl+c")
@@ -336,12 +430,16 @@ def c_cadence(ctx, r):
     out = os.path.join(ctx.W, "cad.txt")
     ctx.rm("cad.txt")
     n = 60
+    t_start = time.time()
+    mark = ctx.cmd_mark()
+    prompts0 = ctx.prompts()
     reader = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ts_reader.py")
-    if ctx.win:      # the private interpreter by full path; msvcrt.getwch() in ts_reader.py reads the keys the ConPTY delivers
+    if ctx.win:      # the private interpreter by full path (it is not on the VM's PATH); msvcrt.getwch() in ts_reader.py reads the keys the ConPTY delivers
         py, reader = sys.executable.replace("\\", "/"), reader.replace("\\", "/")
-        ctx.be.type(("& '%s' '%s' cad.txt %d" if ctx.pane == "powershell" else '"%s" "%s" cad.txt %d') % (py, reader, n), 12, enter=True)
+        cmd = ("& '%s' '%s' cad.txt %d" if ctx.pane == "powershell" else '"%s" "%s" cad.txt %d') % (py, reader, n)
     else:
-        ctx.be.type("python3 %s %s %d" % (reader, "cad.txt", n), 12, enter=True)
+        cmd = "python3 %s %s %d" % (reader, "cad.txt", n)
+    ctx.be.type(cmd, 12, enter=True)
     time.sleep(2.0)   # python3 start + READY
     delay = 15
     ctx.be.type("".join(chr(97 + i % 26) for i in range(n)), delay)
@@ -349,8 +447,18 @@ def c_cadence(ctx, r):
     try:
         rows = [l.split() for l in open(out)]
     except FileNotFoundError:
-        r.check(False, "ts_reader produced no output (python3 missing or app did not run it)")
+        # r18cj: a character of the path was lost in the Git Bash pane ("C:/Users/inters/..." for Winters), bash answered "No such file or directory", and this case
+        # blamed "python3 missing". The shell records the typed command once its prompt is back, so judge it here: a lost key is reported as one.
+        ctx.until(lambda: bool(ctx.cmds_since(mark)), 5)
+        recv = ctx.cmds_since(mark)
+        if recv and recv[0] != cmd:
+            r.check(False, "the cadence command arrived corrupted, so ts_reader never ran (NOT a missing python): " + line_evidence(ctx, cmd, recv[0], t_start, None))
+        else:
+            r.check(False, "ts_reader produced no output (the reader did not start or did not receive %d keys; the command as the shell recorded it: %r)" % (n, recv[:1]))
+        ctx.reset()
         return
+    if ctx.prof.local_prompts:      # let the shell finish ts_reader and print its prompt: its command line is logged at that prompt, and would otherwise land after the next case's mark
+        ctx.until(lambda: ctx.prompts() > prompts0, 10)
     ts = [float(b) for _, b in rows]
     gaps = [(b - a) * 1000 for a, b in zip(ts, ts[1:])]
     r.metric("gap_ms", stats(gaps))
@@ -362,12 +470,42 @@ def c_cadence(ctx, r):
 
 
 # ---------------------------------------------------------------- typing
+def classify_line(want, have):
+    """how the shell's received line `have` differs from the typed line `want`: one character lost / one extra / characters moved / other"""
+    if len(have) == len(want) - 1 and any(want[:i] + want[i + 1:] == have for i in range(len(want))):
+        return "one character LOST"
+    if len(have) == len(want) + 1 and any(have[:i] + have[i + 1:] == want for i in range(len(have))):
+        return "one EXTRA character"
+    if len(have) == len(want) and sorted(have) == sorted(want):
+        return "characters REORDERED (a character moved: %s)" % next(("%r came before %r" % (have[i], want[i]) for i in range(len(want)) if have[i] != want[i]), "?")
+    return "differs (%d typed, %d received characters)" % (len(want), len(have))
+
+
+def line_evidence(ctx, want, have, t0, ctrl=None):
+    """one sentence of proof for a corrupted line: what changed, whether the APP's own typed-character log shows the line arriving intact and in
+    order (then it was lost/moved AFTER the app's pty write: app or the ConPTY it hosts, not the injector), and what the reference terminal did
+    with the same injection in this session (a reference that kept every line exactly makes this Phosphor-side)."""
+    parts = ["%s: typed %r, shell received %r" % (classify_line(want, have), want[:90], have[:90])]
+    saw = ctx.app_saw_line(want, t0)
+    if saw is True:
+        parts.append("the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write")
+    elif saw is False:
+        parts.append("the app's log does NOT show the line's characters in order (never delivered to the app, or the log rotated it away)")
+    else:
+        parts.append("no key trace in the app log")
+    if ctrl:
+        parts.append("reference %s with the same injection: %d/%d lines missing, %s received exactly" % (
+            ctrl.get("ref"), ctrl.get("bad", 0), ctrl.get("n", 0), "all" if not ctrl.get("exact_bad") else "NOT all (%d inexact)" % ctrl["exact_bad"]))
+    return "; ".join(parts)
+
+
 def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
     Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
     fname = "r_%s.txt" % tag
     shell = shell or ctx.pane_shell()
     ctx.rm(fname)
+    t_start = time.time()
     mark = ctx.cmd_mark()
     k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
     exp = []
@@ -399,18 +537,19 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     elif not ok:
         merged = len(got) != n
     verdict = None
-    if not ok and merged and attribute:
+    ctrl = None
+    if not ok and (merged or ctx.win) and attribute:      # Windows: a character moved/lost inside a line is attributed the same way as a lost Enter
         ctrl = attribute(gap)
         if ctrl is None:
             verdict = " (no reference terminal: lost Enter not attributable)"
-        elif ctrl["bad"] > 0:
+        elif ctrl["bad"] > 0 or (ctrl.get("exact_bad") or 0) > 0:
             r.note("%s: injector/OS lost Enter (reference too): reference %s merged/lost %d/%d lines with the same burst%s; Phosphor file has %d/%d lines" % (
                 tag, ctrl["ref"], ctrl["bad"], ctrl["n"], ev, len(got), n))
             r.metric("injector_lost_enter_" + tag, dict(reference_bad=ctrl["bad"], n=ctrl["n"], phosphor_lines=len(got)))
             ok = True
             verdict = "skip"
         else:
-            verdict = " -- the reference kept every Enter in the same session (%d/%d lines): an APP-side lost Enter (#1482)" % (ctrl["n"] - ctrl["bad"], ctrl["n"])
+            verdict = " -- the reference kept every line exactly in the same session (%d/%d lines): Phosphor-side (#1482)" % (ctrl["n"] - ctrl["bad"], ctrl["n"])
     if verdict != "skip":
         r.check(ok, "%s: file has %d/%d lines, exact match %s%s%s%s" % (tag, len(got), n, ok,
                 "" if ok else " first diff: exp=%r got=%r" % next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), (None, None)), ev, verdict or ""))
@@ -420,7 +559,12 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
         if have and verdict == "skip":
             pass
         elif have:
-            r.check(have == want, "%s: shell received %d commands, not the typed ones (first mismatch: %r)" % (tag, len(have), next((h for h, w in zip(have, want) if h != w), "count differs %d vs %d" % (len(have), len(want)))))
+            pair = next(((h, w) for h, w in zip(have, want) if h != w), None)
+            ev2 = ""
+            if pair and have != want:
+                ev2 = " -- " + line_evidence(ctx, pair[1], pair[0], t_start, ctrl)
+            r.check(have == want, "%s: shell received %d commands, not the typed ones (first mismatch: %r)%s" % (
+                tag, len(have), pair[0] if pair else "count differs %d vs %d" % (len(have), len(want)), ev2))
         else:
             r.note("%s: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only" % tag)
     return ok
@@ -477,7 +621,8 @@ def c_fuzz(ctx, r):
 @case("paste_instant_enter", order=13)
 def c_paste_enter(ctx, r):
     ctx.rm("pe.txt")
-    exp = []
+    exp, sent = [], []
+    mark = ctx.cmd_mark()
     for i in range(ctx.count(6)):
         tok = ctx.tok(8)
         pad = "w" * ctx.rng.choice([10, 500, 5000])
@@ -486,11 +631,22 @@ def c_paste_enter(ctx, r):
             exp.append(tok + pad)
         else:
             ctx.be.clip_set("echo %s%s | md5sum >> pe.txt" % (tok, pad))
-            exp.append(hashlib.md5((tok + pad + "\n").encode()).hexdigest() + "  -")
+            exp.append(hashlib.md5((tok + pad + "\n").encode()).hexdigest())
+            sent.append("echo %s%s | md5sum >> pe.txt" % (tok, pad))
         ctx.be.paste(enter=True)
         time.sleep(0.8)
     ctx.until(lambda: len(ctx.lines("pe.txt")) >= len(exp), 15)
-    r.check(ctx.lines("pe.txt") == exp, "paste + instant Enter: %d/%d %s lines exact" % (sum(a == b for a, b in zip(exp, ctx.lines("pe.txt"))), len(exp), "exact" if ctx.pane == "powershell" else "md5"))
+    got = ctx.lines("pe.txt")
+    if ctx.pane != "powershell":
+        # compare the DIGEST: Git for Windows' md5sum prints "<hash> *-" (binary marker), GNU coreutils "<hash>  -" (r18cj: 0/6 in both Git Bash panes while the
+        # shell's own rec.log showed all six pasted lines arrived byte-exact, 10/500/5000-character pads)
+        got = [l.split()[0] if l.split() else l for l in got]
+        recv = ctx.cmds_since(mark) if (ctx.win and ctx.prof.commands()) else None
+        if recv is not None:
+            r.check(recv == sent, "pasted lines reached the shell exactly: %d/%d byte-exact (first mismatch: %r)" % (
+                sum(a == b for a, b in zip(sent, recv)), len(sent), next(((b[:60], len(b)) for a, b in zip(sent, recv) if a != b), "count %d vs %d" % (len(recv), len(sent)))))
+    r.check(got == exp, "paste + instant Enter: %d/%d %s lines exact%s" % (sum(a == b for a, b in zip(exp, got)), len(exp), "exact" if ctx.pane == "powershell" else "md5 digest",
+            "" if got == exp else " (first got %r, expected %r)" % (got[:1], exp[:1])))
 
 
 @case("arrows_behind_paste", order=14)
@@ -505,7 +661,7 @@ def c_paste_arrows(ctx, r):
             exp.append(tok + pad + "xzy")
             ctx.be.type("Add-Content pa.txt ", 12)
         else:
-            exp.append(hashlib.md5((tok + pad + "xzy\n").encode()).hexdigest() + "  -")
+            exp.append(hashlib.md5((tok + pad + "xzy\n").encode()).hexdigest())
             ctx.be.type("echo ", 12)
         ctx.be.paste()
         ctx.be.keys(["x", "y", "Left", "z", "End"], delay_ms=8)
@@ -515,7 +671,10 @@ def c_paste_arrows(ctx, r):
             ctx.be.type(" | md5sum >> pa.txt", 8, enter=True)
         time.sleep(1.0)
     ctx.until(lambda: len(ctx.lines("pa.txt")) >= len(exp), 15)
-    r.check(ctx.lines("pa.txt") == exp, "arrow keys behind a paste: %d/%d exact" % (sum(a == b for a, b in zip(exp, ctx.lines("pa.txt"))), len(exp)))
+    got = ctx.lines("pa.txt")
+    if ctx.pane != "powershell":
+        got = [l.split()[0] if l.split() else l for l in got]      # digest only: Git for Windows' md5sum prints "<hash> *-"
+    r.check(got == exp, "arrow keys behind a paste: %d/%d exact" % (sum(a == b for a, b in zip(exp, got)), len(exp)))
 
 
 @case("big_paste", order=15, gui=True)
@@ -582,7 +741,10 @@ def ctrlc_line(ctx, fname, i):
     if ctx.pane == "powershell":
         # Windows PowerShell: the finally block of the interrupted try stamps UTC ms (13 digits; the Windows PowerShell harness of #1487). Ctrl-C stops
         # the whole line, so there is no AFTER marker: the next sample's typed line proves the shell came back
-        return "try { Start-Sleep 30 } finally { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Add-Content %s }" % fname
+        # .NET in the finally block, by absolute path: a cmdlet (Add-Content) run from the finally of a Ctrl-C-stopped pipeline took 3.5 s in Phosphor AND in
+        # the conhost reference and left the pane wedged for good (r18cj), and .NET's cwd is not PowerShell's location, hence the absolute path
+        return ("try { Start-Sleep 30 } finally { [IO.File]::AppendAllText('%s', ([string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + [char]10)) }"
+                % os.path.join(ctx.W, fname).replace("\\", "/"))
     if ctx.be.name == "mac":
         return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
     return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
@@ -591,13 +753,16 @@ def ctrlc_line(ctx, fname, i):
 def ctrlc_samples(ctx, n, fname, budget_s=None):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
-    lat_ms = []
+    lat_ms, typed = [], []
+    mark = ctx.cmd_mark()
+    t_start = time.time()
     pw = ctx.pane == "powershell"
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
         if t_end and time.time() > t_end:
             break
-        ctx.be.type(ctrlc_line(ctx, fname, i), 10, enter=True)
+        typed.append(ctrlc_line(ctx, fname, i))
+        ctx.be.type(typed[-1], 10, enter=True)
         time.sleep(1.5 if pw else 1.2)
         t0 = time.time()
         ctx.be.key("ctrl+c")
@@ -615,6 +780,11 @@ def ctrlc_samples(ctx, n, fname, budget_s=None):
             ctx.be.key("ctrl+c")
             time.sleep(2)
     after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
+    if ctx.prof.commands():
+        # a sample that never fired is either a Ctrl-C that did not arrive or a typed LINE that arrived corrupted (no trap, no stamp): tell them apart
+        have = ctx.cmds_since(mark)
+        pairs = [(w, h) for w, h in zip(typed, have) if w != h]
+        ctx.cc_integrity[fname] = dict(n=len(typed), got=len(have), bad=len(pairs), examples=[line_evidence(ctx, w, h, t_start, None) for w, h in pairs[:2]])
     return lat_ms, len(lat_ms) == n and (pw or len(after) == n)
 
 
@@ -638,7 +808,7 @@ def c_ctrl(ctx, r):
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
-    r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times" % (n + warm))
+    # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
     # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
     rs, ref = [], None
@@ -663,6 +833,16 @@ def c_ctrl(ctx, r):
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
         r.metrics.setdefault("lat", {})["ctrl_c"] = rec
         lat_checks(r, rec, "Ctrl-C")
+    why = ""
+    ig, igr = ctx.cc_integrity.get("cc.txt"), ctx.cc_integrity.get("cc_ref.txt")
+    if ig:
+        why = " -- Phosphor: %d/%d sample lines reached the shell NOT exactly as typed%s" % (ig["bad"], ig["n"], ("; e.g. " + ig["examples"][0]) if ig["examples"] else "")
+        if igr:
+            why += "; reference: %d/%d" % (igr["bad"], igr["n"])
+            if ig["bad"] and not igr["bad"]:
+                why += " (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)"
+        r.metric("ctrl_c_line_integrity", dict(phosphor=ig, reference=igr))
+    r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times%s" % (n + warm, why))
     if ctx.win:
         r.note("Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran")
         ctx.reset()
@@ -1140,6 +1320,7 @@ def run_enter_control(ctx, r, n):
             fname = "el_ref%d.txt" % int(gap * 100)
             ctx.rm(fname)
             k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
+            mark = ctx.cmd_mark()
             exp = []
             for _ in range(n):
                 tok = ctx.tok(10).lower()
@@ -1151,10 +1332,17 @@ def run_enter_control(ctx, r, n):
             time.sleep(0.5)
             got = set(ctx.lines(fname))
             bad = sum(1 for t in exp if t not in got)
+            # the same burst, judged on the EXACT command line the reference shell recorded (its rc writes the same rec.log): a character moved or
+            # lost inside a line does not always remove the line from the file, so the file check alone under-counts what the reference kept
+            exact_bad = None
+            if ctx.prof.commands():
+                want = [ctx.append_cmd(ctx.pane_shell(), t, fname) for t in exp]
+                have = ctx.cmds_since(mark)
+                exact_bad = sum(1 for w, h in zip(want, have) if w != h) + abs(len(want) - len(have))
             posted = None
             if k0 is not None:
                 posted = sum(1 for c in ctx.be.calls[k0:k0 + n] if c["enters_posted"])
-            out[gap] = dict(ref=ref.name, n=n, bad=bad, posted=posted, lines=len(ctx.lines(fname)))
+            out[gap] = dict(ref=ref.name, n=n, bad=bad, posted=posted, lines=len(ctx.lines(fname)), exact_bad=exact_bad)
             ctx.reset()
     finally:
         ref.close()
@@ -1177,10 +1365,11 @@ def c_enter_loss(ctx, r):
         return
     r.metric("enter_control", dict(reference=next(iter(res.values()))["ref"], runs={str(g): v for g, v in res.items()}))
     for g, v in res.items():
-        r.note("reference %s gap %.2fs: %d/%d lines missing (merged/lost Enter), injector posted %s Enters" % (v["ref"], g, v["bad"], v["n"], v["posted"]))
+        r.note("reference %s gap %.2fs: %d/%d lines missing (merged/lost Enter), %s lines not received exactly, injector posted %s Enters" % (
+            v["ref"], g, v["bad"], v["n"], v.get("exact_bad"), v["posted"]))
         if v["posted"] is not None:
             r.check(v["posted"] == v["n"], "injector posted only %d of %d Enters in the control (gap %.2fs): harness/injector fault" % (v["posted"], v["n"], g))
-    if any(v["bad"] for v in res.values()):
+    if any(v["bad"] or v.get("exact_bad") for v in res.values()):
         r.note("the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug")
 
 
@@ -1216,8 +1405,16 @@ def c_lat_enter(ctx, r):
     Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
     which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
     n, warm = ctx.count(30), lat.warmup()
+    t_lat0 = time.time()
     ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
+    share = ctx.app_enter_to_write_ms(t_lat0)
+    if share is not None:
+        # r18cj (Windows Git Bash): Phosphor 95-100 ms vs the conhost reference 69 ms for the SAME bash.exe/rc/`date +%s.%N`/injector. The app's own part is this number
+        # (Enter -> the pty write of the whole line); the rest of the overhead is after the write: the shell reading the line (the reference's keys were echoed as typed)
+        # plus the shell hooks Phosphor's bootstrap adds. Reported so the overhead can be split instead of argued.
+        r.metric("app_enter_to_pty_write_ms", share)
+        r.note("app share of Enter->start: enter_begin -> pty_write median %.2f ms (from the app's input_order log); the remaining overhead is shell/ConPTY side" % share)
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
     ctx.reset()
