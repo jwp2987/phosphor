@@ -6625,10 +6625,12 @@ impl Input {
     /// #1558: an Enter that waited behind a gate (verdict, completion) and then found the shell
     /// unable to take a command yet used to log `submit` and drop: the text stayed in the buffer
     /// and the next typing merged into it (`ssh fakeecho ...`). It is now held as the pending
-    /// command and runs, exactly as typed, when the session can take it. Only for a deferred
-    /// Enter and a not-ready shell: a direct Enter keeps its refusal toast, a running program or
-    /// a shared-session viewer still refuses. Every decline is logged.
-    fn hold_refused_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+    /// command and runs, exactly as typed, when the session can take it. #1564: a DIRECT Enter on
+    /// a not-ready shell is held the same way (a line typed into a just-connected remote, 44 ms
+    /// before its first Precmd, kept its text and merged with the next typing). The "still
+    /// starting" toast `try_execute_command` shows stays as a non-blocking notice. A running
+    /// program or a shared-session participant still refuses. Every decline is logged.
+    fn hold_refused_unready_enter(&mut self, ctx: &mut ViewContext<Self>) {
         let shared = self
             .model
             .lock()
@@ -6636,9 +6638,12 @@ impl Input {
             .is_sharer_or_viewer();
         let not_ready = match self.can_execute_command(ctx) {
             CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand) => false,
-            CanExecuteCommand::No(_) | CanExecuteCommand::Yes => true,
+            CanExecuteCommand::No(_) => true,
+            // Refused for another reason although the session could take it: only the
+            // deferred Enter (#1558) is held then; a direct Enter keeps its refusal.
+            CanExecuteCommand::Yes => self.running_deferred_enter,
         };
-        let hold = self.running_deferred_enter && not_ready && !shared;
+        let hold = not_ready && !shared;
         warpui::input_order::log_hop("enter_declined", || {
             format!(
                 "deferred={} held_as_pending={hold} shared_session={shared}",
@@ -13747,7 +13752,7 @@ impl Input {
                 )
             });
             if !executed {
-                self.hold_refused_deferred_enter(ctx);
+                self.hold_refused_unready_enter(ctx);
                 return;
             }
             self.last_enter_submitted_shell_command = true;
