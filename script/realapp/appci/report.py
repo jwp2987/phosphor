@@ -74,6 +74,13 @@ if lat_rows:
     m += ["", "## Latency (%s): median / p95 ms, warm-up discarded" % meta.get("platform", "?"), "",
           "| mode | case/measure | Phosphor | reference | overhead ms | budget | previous build | baseline | verdict | n |",
           "|---|---|---|---|---|---|---|---|---|---|"] + lat_rows
+kl = [(r.get("mode", ""), (r.get("metrics") or {}).get("key_loss")) for r in rows if (r.get("metrics") or {}).get("key_loss")]
+if kl:
+    m += ["", "## Key-loss control (#1414): lines whose first character never arrived / lines typed", "",
+          "| mode | target | injection | lost-first | other-bad | missing | n |", "|---|---|---|---|---|---|---|"]
+    for md, d in kl:
+        for v in d.get("variants", []):
+            m.append("| %s | %s | %s | %s | %s | %s | %s |" % (md, v["target"], v["inject"], v["lost_first"], v["other_bad"], v["missing"], v["n"]))
 open(os.path.join(run, "summary.md"), "w").write("\n".join(m) + "\n")
 print("\n".join(m))
 sys.exit(1 if cnt["fail"] else 0)
