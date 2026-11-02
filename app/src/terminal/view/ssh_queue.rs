@@ -172,12 +172,15 @@ impl TerminalView {
         };
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, text.len());
-        if !self.paste_queue.request_requeue_held(
-            GateSpec::new(GateKind::SshConnect, key).with_cap(None),
-            EntryKind::Held { class, text },
-        ) {
-            log::error!("ssh hold: a second input was held by one delivery; it was not kept");
-            return SshTypeaheadPush::Ignored;
+        let spec = GateSpec::new(GateKind::SshConnect, key).with_cap(None);
+        let held = EntryKind::Held { class, text };
+        if let Err(held) = self.paste_queue.request_requeue_held(spec, held) {
+            // A second input of another class in one delivery cannot join the first: it is
+            // recorded to go behind the same gate right after the requeue, in typed order (the
+            // busy-queue mailbox), instead of being dropped.
+            self.paste_queue
+                .queue
+                .defer(Deferred::OfferGated { kind: held, spec });
         }
         SshTypeaheadPush::Held
     }

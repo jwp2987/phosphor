@@ -150,35 +150,37 @@ impl PasteQueueState {
 
     /// Asks the host to put `held` back at the front of the queue under `spec` when the delivery
     /// in progress returns. A second input of the same class in one delivery joins the first, in
-    /// typed order. False when the delivery already asked for something that cannot join it.
-    pub(super) fn request_requeue_held(&mut self, spec: GateSpec, held: EntryKind) -> bool {
-        match self.requeue_request.as_mut() {
-            None => {
-                self.requeue_request = Some(RequeueRequest {
-                    spec,
-                    bytes: Vec::new(),
-                    takes_over_agent_control: false,
-                    replacement: Some(held),
-                });
-                true
+    /// typed order. `Err(held)` hands the input back when it cannot join (another class, another
+    /// kind of request): the caller defers it behind the same gate (`Deferred::OfferGated`).
+    pub(super) fn request_requeue_held(
+        &mut self,
+        spec: GateSpec,
+        held: EntryKind,
+    ) -> Result<(), EntryKind> {
+        let Some(request) = self.requeue_request.as_mut() else {
+            self.requeue_request = Some(RequeueRequest {
+                spec,
+                bytes: Vec::new(),
+                takes_over_agent_control: false,
+                replacement: Some(held),
+            });
+            return Ok(());
+        };
+        if request.spec.kind == spec.kind && request.spec.key == spec.key {
+            if let (
+                Some(EntryKind::Held {
+                    class: have,
+                    text: have_text,
+                }),
+                EntryKind::Held { class, text },
+            ) = (request.replacement.as_mut(), &held)
+                && *class == *have
+            {
+                have_text.push_str(text);
+                return Ok(());
             }
-            Some(RequeueRequest {
-                spec: existing,
-                replacement:
-                    Some(EntryKind::Held {
-                        class: have,
-                        text: have_text,
-                    }),
-                ..
-            }) if existing.kind == spec.kind && existing.key == spec.key => match held {
-                EntryKind::Held { class, text } if class == *have => {
-                    have_text.push_str(&text);
-                    true
-                }
-                _ => false,
-            },
-            Some(_) => false,
         }
+        Err(held)
     }
 
     /// The next paste id of this pane (one counter, shared with the editor's pastes).
@@ -290,11 +292,9 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                         "input queue: an editor delivery both held a key and asked for {outcome:?}; the held key wins"
                     );
                 }
-                self.view.paste_queue.requeue_replacement = Some(EntryKind::PtyBytes {
-                    bytes: request.bytes,
-                    takes_over_agent_control: request.takes_over_agent_control,
-                });
-                return DeliverOutcome::Requeue(request.spec);
+                let spec = request.spec;
+                self.view.paste_queue.requeue_replacement = Some(request.into_entry());
+                return DeliverOutcome::Requeue(spec);
             }
             return outcome;
         }

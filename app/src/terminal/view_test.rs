@@ -22013,6 +22013,175 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
     })
 }
 
+// ---- busy queue = deferred operation (#1416-#1419, #1426-#1428) -----------------------------
+
+/// #1416: editor keys that sit in a hand-off gate's segment (the queue is shared with the editor)
+/// reach the editor when the gate is released by taking its entries -- Backspace included.
+#[test]
+fn editor_keys_taken_out_of_a_prompt_hold_are_applied_backspace_included() {
+    use crate::editor::{EditorAction, HeldPasteKey};
+    use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, GateKind, GateSpec};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view, true);
+            let queue = view.paste_queue.queue.clone();
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::LineEditorActive, 9).with_cap(None),
+                );
+                for key in [
+                    HeldPasteKey::Text("a".into()),
+                    HeldPasteKey::Text("b".into()),
+                    HeldPasteKey::Action(EditorAction::Backspace),
+                    HeldPasteKey::Text("c".into()),
+                ] {
+                    queue
+                        .borrow_mut()
+                        .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
+                }
+            }
+            assert_eq!(queue.borrow().queued_len(), 4);
+            view.on_prompt_hold_released(9, ctx);
+            assert!(queue.borrow().is_idle());
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "ac");
+        });
+        assert!(pty_writes.borrow().is_empty(), "editor keys never reach the pty");
+    })
+}
+
+/// #1417: the give-up cap of a prompt hold fires while the queue is busy: it is not consumed for
+/// nothing; the keys are released by the next operation.
+#[test]
+fn a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys() {
+    for hold_a_guard in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view, true);
+                view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+                let queue = view.paste_queue.queue.clone();
+                let token = queue.borrow().gates()[0].token;
+                {
+                    // Busy: a drain holds the queue (guard), or a reader holds a peek.
+                    let _guard = hold_a_guard.then(|| queue.lock());
+                    let _peek = (!hold_a_guard).then(|| queue.peek());
+                    view.on_paste_queue_give_up(token, ctx);
+                }
+                assert!(queue.has_deferred(), "the cap is recorded, not consumed");
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.has_deferred());
+                assert!(queue.borrow().is_idle(), "guard={hold_a_guard}: given up");
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"a".to_vec(), b"b".to_vec()],
+                "guard={hold_a_guard}: released in typed order"
+            );
+        });
+    }
+}
+
+/// #1418 / #1426: a key the hand-off holds, or a PowerShell setup key, that finds the queue busy
+/// outside a delivery is recorded and held behind its gate in order -- never written as typed,
+/// never dropped.
+#[test]
+fn a_held_key_that_finds_the_queue_busy_goes_behind_its_gate_when_it_is_free() {
+    use crate::terminal::input_queue::{GateKind, GateSpec};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _peek = queue.peek();
+                view.hold_prompt_keys_in_queue(5, std::time::Duration::from_secs(60), b"x".to_vec(), true, ctx);
+            }
+            assert!(queue.has_deferred());
+            assert!(queue.borrow().is_idle(), "nothing applied while busy");
+            view.flush_deferred_queue_ops(ctx);
+            assert!(prompt_gate_open(view));
+            assert_eq!(queue.borrow().queued_len(), 1);
+            // PowerShell: a gate is open, a reader holds a peek, a key arrives.
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None),
+                );
+            }
+            {
+                let _peek = queue.peek();
+                view.hold_powershell_keys(b"y".to_vec(), true, ctx);
+            }
+            view.flush_deferred_queue_ops(ctx);
+            assert_eq!(queue.borrow().queued_len(), 2, "the PowerShell key is held");
+        });
+        assert!(pty_writes.borrow().is_empty(), "nothing was written as typed");
+    })
+}
+
+/// #1419: the CLI-agent submit gate begin/end under a busy queue are recorded in order; a key typed
+/// between them waits and is released by the end. The close is not lost to the 20 s leak net.
+#[test]
+fn the_cli_submit_gate_survives_a_busy_queue() {
+    use crate::terminal::input_queue::GateKind;
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _guard = queue.lock();
+                view.begin_cli_submit_gate(ctx);
+            }
+            assert!(view.cli_submit_gate_open_for_test());
+            assert!(queue.has_deferred());
+            // A key typed now applies the mailbox first (the gate opens), then waits behind it.
+            view.write_user_bytes_to_pty(b"k".to_vec(), ctx);
+            assert!(queue.borrow().has_gate_kind(GateKind::CliSubmit));
+            assert_eq!(queue.borrow().queued_len(), 1);
+            {
+                let _guard = queue.lock();
+                view.end_cli_submit_gate(ctx);
+            }
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.borrow().has_gate_kind(GateKind::CliSubmit));
+            assert!(queue.borrow().is_idle(), "the key behind the submit was released");
+        });
+    })
+}
+
+/// #1428: a wake for a stopped drain that finds the queue busy is not lost.
+#[test]
+fn a_pane_drain_wake_that_finds_the_queue_busy_is_kept() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _guard = queue.lock();
+                view.on_pane_queue_needs_drain(ctx);
+            }
+            assert!(queue.has_deferred());
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.has_deferred());
+        });
+    })
+}
+
 // ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
 //
 // The Enter and the keys behind it are entries behind a `PromptSeen` gate (the hand-off keeps no
