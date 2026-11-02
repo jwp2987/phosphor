@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="32" failures="10" skipped="4">
+<testcase classname="terminal" name="mode_proof" time="1.60">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.30">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.70">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="0.60">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="54.10">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="17.30">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="99.30">
+<skipped message="NO-REFERENCE (not a pass): no reference: absolute only (Ctrl-C): no reference terminal available"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="28.00">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.10">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="33.40">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T145_ay0gbe never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="129.90">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured
+no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="14.40">
+<failure message="key-&gt;frame p50 30.7 ms &gt; 20 ms CI bound (owner target: next refresh, own work &lt;= 2 ms; software GL here)">key-&gt;frame p50 30.7 ms &gt; 20 ms CI bound (owner target: next refresh, own work &lt;= 2 ms; software GL here)
+NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)
+key to frame: Phosphor-side keydown to first frame; no same-method reference exists</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="18.50">
+<failure message="fish never executed a probe line after start (wait 3.0s + 4 probes)">fish never executed a probe line after start (wait 3.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="21.40">
+<failure message="nu never executed a probe line after start (wait 4.0s + 4 probes)">nu never executed a probe line after start (wait 4.0s + 4 probes)
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="4.10">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="56.10">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.20">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="17.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="100.60">
+<skipped message="NO-REFERENCE (not a pass): no reference: absolute only (Ctrl-C): no reference terminal available"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="28.10">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.10">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="33.40">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T109_fayr3r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="130.20">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured
+no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="14.70">
+<failure message="key-&gt;frame p50 28.4 ms &gt; 20 ms CI bound (owner target: next refresh, own work &lt;= 2 ms; software GL here)">key-&gt;frame p50 28.4 ms &gt; 20 ms CI bound (owner target: next refresh, own work &lt;= 2 ms; software GL here)
+NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)
+key to frame: Phosphor-side keydown to first frame; no same-method reference exists</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="18.50">
+<failure message="fish never executed a probe line after start (wait 3.0s + 4 probes)">fish never executed a probe line after start (wait 3.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="agent" name="shell_nu" time="21.50">
+<failure message="nu never executed a probe line after start (wait 4.0s + 4 probes)">nu never executed a probe line after start (wait 4.0s + 4 probes)
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.60">
+</testcase>
+</testsuite>

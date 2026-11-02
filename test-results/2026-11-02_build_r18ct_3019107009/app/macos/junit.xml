@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="32" failures="12" skipped="2">
+<testcase classname="terminal" name="mode_proof" time="3.90">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.70">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="40.20">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="77.50">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.40">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="25.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="250.70">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="35.20">
+<failure message="harness exception: ValueError(&quot;could not convert string to float: ''&quot;)">harness exception: ValueError("could not convert string to float: ''")</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.00">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="35.90">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T193_2cvu0h never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="214.10">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="29.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="72.00">
+<failure message="Key to paint: Phosphor overhead 5.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Key to paint: Phosphor overhead 5.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session</failure>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="21.00">
+<failure message="fish never executed a probe line after start (wait 3.0s + 4 probes)">fish never executed a probe line after start (wait 3.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="22.40">
+<failure message="nu never executed a probe line after start (wait 4.0s + 4 probes)">nu never executed a probe line after start (wait 4.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="7.10">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="4.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="66.80">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="25.50">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="250.70">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="34.70">
+<failure message="harness exception: ValueError(&quot;could not convert string to float: ''&quot;)">harness exception: ValueError("could not convert string to float: ''")</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="35.80">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T109_fayr3r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="213.40">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="72.20">
+<failure message="Key to paint: Phosphor overhead 3.99 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Key to paint: Phosphor overhead 3.99 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session</failure>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="21.00">
+<failure message="fish never executed a probe line after start (wait 3.0s + 4 probes)">fish never executed a probe line after start (wait 3.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="agent" name="shell_nu" time="22.50">
+<failure message="nu never executed a probe line after start (wait 4.0s + 4 probes)">nu never executed a probe line after start (wait 4.0s + 4 probes)</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="7.10">
+</testcase>
+</testsuite>

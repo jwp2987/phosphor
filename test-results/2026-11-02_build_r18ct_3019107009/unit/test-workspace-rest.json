@@ -1,0 +1,33 @@
+{
+ "summary_line": "Summary [  26.711s] 3230 tests run: 3228 passed, 2 failed, 19 skipped",
+ "duration_s": 26.711,
+ "run": 3230,
+ "passed": 3228,
+ "failed": 2,
+ "timed_out": 0,
+ "skipped": 19,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp_editor::mermaid_corpus",
+   "test": "invalid_diagram_outcomes_are_snapshotted",
+   "seconds": 0.179
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp_editor::mermaid_corpus",
+   "test": "valid_diagram_summaries_are_stable",
+   "seconds": 0.169
+  }
+ ],
+ "regressions": [],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-workspace-rest",
+ "status": "failed",
+ "duration": 95.171621
+}

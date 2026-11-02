@@ -1,0 +1,708 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "167012a7",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T13:27:26-0600",
+ "summary": {
+  "pass": 18,
+  "fail": 10,
+  "skip": 2,
+  "noref": 2
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.6,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": false
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.3,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 19.89,
+     "p95": 20.04,
+     "max": 20.16
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 42.7,
+   "detail": [
+    "no reference terminal available: loss is reported but no variant can be attributed to Phosphor or the injector",
+    "phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline-unprimed",
+       "n": 12,
+       "lost_first": 12,
+       "other_bad": 0,
+       "missing": 0,
+       "example": [
+        "echo t1_ieqh524yng >> kl_pho_perlineunprimed.txt",
+        "cho t1_ieqh524yng >> kl_pho_perlineunprimed.txt"
+       ]
+      },
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "phosphor",
+       "inject": "oneshot",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": null
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0.6,
+   "detail": [
+    "enter control: no reference terminal (unavailable): a lost Enter in Phosphor cannot be attributed",
+    "no reference terminal available: Enter loss is not controlled"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 54.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 17.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 99.3,
+   "detail": [
+    "no reference: absolute only (Ctrl-C): no reference terminal available",
+    "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 36.12 ms includes the input-tool spawn (harness floor 2.0111147314310074 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 36.12,
+     "p95": 37.87,
+     "max": 38.69
+    },
+    "harness_floor_ms": 2.011,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 36.12,
+       "p95": 37.87,
+       "max": 38.69
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.0111147314310074,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 36.12 ms includes the input-tool spawn (harness floor 2.0111147314310074 ms)"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": null
+    }
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 28.0,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 33.4,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T145_ay0gbe never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 129.9,
+   "detail": [
+    "only 0/30 Enter timings captured",
+    "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 2.011
+   },
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 14.4,
+   "detail": [
+    "key->frame p50 30.7 ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)",
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 30.74,
+     "p95": 45.39,
+     "max": 48.51
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 30.74,
+       "p95": 45.39,
+       "max": 48.51
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.6,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 18.5,
+   "detail": [
+    "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_shell_fish_FAIL.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 21.4,
+   "detail": [
+    "nu never executed a probe line after start (wait 4.0s + 4 probes)",
+    "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 4.1,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 0.78
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 1.5,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.3,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 19.87,
+     "p95": 20.1,
+     "max": 20.33
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 56.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 17.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 100.6,
+   "detail": [
+    "no reference: absolute only (Ctrl-C): no reference terminal available",
+    "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 41.58 ms includes the input-tool spawn (harness floor 1.9890880212187767 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 41.58,
+     "p95": 42.61,
+     "max": 57.66
+    },
+    "harness_floor_ms": 1.989,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 41.58,
+       "p95": 42.61,
+       "max": 57.66
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9890880212187767,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 41.58 ms includes the input-tool spawn (harness floor 1.9890880212187767 ms)"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": null
+    }
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 28.1,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 33.4,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T109_fayr3r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 130.2,
+   "detail": [
+    "only 0/30 Enter timings captured",
+    "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 1.989
+   },
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 14.7,
+   "detail": [
+    "key->frame p50 28.4 ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)",
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 28.37,
+     "p95": 41.64,
+     "max": 46.78
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 28.37,
+       "p95": 41.64,
+       "max": 46.78
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0.6,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 18.5,
+   "detail": [
+    "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_shell_fish_FAIL.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 21.5,
+   "detail": [
+    "nu never executed a probe line after start (wait 4.0s + 4 probes)",
+    "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 3.6,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 0.51
+   },
+   "shots": [
+    "shots/agent_md_viewer.png"
+   ]
+  }
+ ]
+}
