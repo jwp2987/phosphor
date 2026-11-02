@@ -1,0 +1,19 @@
+{
+ "summary_line": "Summary [   4.804s] 772 tests run: 772 passed, 7 skipped",
+ "duration_s": 4.804,
+ "run": 772,
+ "passed": 772,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 7,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [
+  "tests: ok (0 known failure(s), no regressions)"
+ ],
+ "job": "test-warpui-core",
+ "status": "success",
+ "duration": 86.042678
+}
