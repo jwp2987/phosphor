@@ -558,9 +558,10 @@ class MacBackend(Backend):
         _run(["screencapture", "-x", path], timeout=30)
         return os.path.exists(path) and os.path.getsize(path) > 5000
 
-    def window_rect(self):
-        """(x, y, w, h) of Phosphor's main window in points, or None. CGWindowList via the winrect helper: no System Events / Apple Events."""
-        ph = self.pid_fn() if self.pid_fn else None
+    def window_rect(self, pid=None):
+        """(x, y, w, h) of Phosphor's main window (or of process `pid`, e.g. the reference Terminal.app) in points, or None.
+        CGWindowList via the winrect helper: no System Events / Apple Events."""
+        ph = pid or (self.pid_fn() if self.pid_fn else None)
         if not ph:
             return None
         r = subprocess.run([self._tool("winrect"), "rect", str(ph)], capture_output=True, timeout=15)

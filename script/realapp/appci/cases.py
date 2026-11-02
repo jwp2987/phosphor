@@ -500,13 +500,24 @@ def c_tab(ctx, r):
     r.check(not stray, "Tab+Enter ran the UNCOMPLETED line, stray files: %s" % stray)
 
 
-def ctrlc_samples(ctx, n, fname):
+def ctrlc_line(ctx, fname, i):
+    """The line typed for one Ctrl-C sample. IDENTICAL in Phosphor and the reference terminal (same command, same timestamp source).
+    macOS: zsh's $EPOCHREALTIME in the trap (no process start; the old ~/bin/now helper is a python3 start, ~30 ms of harness cost
+    that inflated every absolute number). Linux: `date +%s.%N` (one fork of a tiny binary, the same in both terminals)."""
+    if ctx.be.name == "mac":
+        return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
+    return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
+
+
+def ctrlc_samples(ctx, n, fname, budget_s=None):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
     lat_ms = []
+    t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
-        now = "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD date has no %N; ~/bin/now is written by profile.py
-        ctx.be.type("bash -c 'trap \"" + now + " >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname), 10, enter=True)
+        if t_end and time.time() > t_end:
+            break
+        ctx.be.type(ctrlc_line(ctx, fname, i), 10, enter=True)
         time.sleep(1.2)
         t0 = time.time()
         ctx.be.key("ctrl+c")
@@ -528,11 +539,28 @@ def c_ctrl(ctx, r):
     r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times" % (n + warm))
+    # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
+    # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
+    rs, ref = [], None
     if lat_ms:
-        # owner budget: Ctrl-C <= 20 ms; the measurement includes the input tool's own spawn, which is subtracted (the harness floor).
-        # Absolute budget (no reference terminal), so it is judged on the number: pass/fail, not 'no-reference'.
-        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.mode, lat_ms, None, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "absolute", plat(),
-                           remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], floor=ctx.be.key_floor_ms)
+        ctx.reset()
+        ref = ref_terminal(ctx)
+        if ref:
+            try:
+                time.sleep(2.5)
+                rs = ctrlc_samples(ctx, n + warm, "cc_ref.txt", budget_s=max(120, (n + warm) * 5))[0][warm:]
+                ctx.reset()
+            finally:
+                ref.close()
+            time.sleep(1.0)
+            r.metric("reference_ctrl_c_ms", stats(rs))
+            r.metric("reference", ref.name)
+        else:
+            r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.mode, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+                           remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+                           notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
+                                  "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
         r.metrics.setdefault("lat", {})["ctrl_c"] = rec
         lat_checks(r, rec, "Ctrl-C")
     # Ctrl-D: ends `cat` input, and exits a nested bash back to the outer shell.
@@ -1055,6 +1083,40 @@ def parse_t(line):
     return float(m.group(1)) if m else None
 
 
+KEYDOWN_RE = re.compile(r"input_order keydown key=\S+ ctrl=(true|false) alt=\S+ shift=\S+ cmd=\S+ t=(\d+\.\d+)(?: seq=(\d+))?")
+FRAME_RE = re.compile(r"input_order frame layout=\S+ t=(\d+\.\d+)")
+
+
+def key_frame_pairs(txt):
+    """Pair every plain (no ctrl) `keydown` with the first `frame` line after it (formats: crates/warpui_core/src/input_order.rs,
+    `keydown key=m ctrl=false alt=false shift=false cmd=false t=<ms> seq=N`, `frame layout=<bool> t=<ms>`; t is ms since the epoch).
+    A frame is logged only for the first frame after pty output that followed a pty write (#1092), so a key that never reaches the
+    pty (typed into the input editor) has no frame at all: keys that pile up before one frame all pair with that frame, and keys
+    after the last frame stay unpaired. -> (latencies ms, counts dict)"""
+    cnt = dict(keydown=0, keydown_ctrl=0, frame=0, pty_write=0, pty_read=0)
+    pending, ds = [], []
+    for l in txt.splitlines():
+        m = KEYDOWN_RE.search(l)
+        if m:
+            cnt["keydown"] += 1
+            if m.group(1) == "true":
+                cnt["keydown_ctrl"] += 1
+            else:
+                pending.append(float(m.group(2)))
+            continue
+        m = FRAME_RE.search(l)
+        if m:
+            cnt["frame"] += 1
+            tf = float(m.group(1))
+            ds.extend(tf - t for t in pending if tf >= t)
+            pending = []
+        elif "input_order pty_write" in l:
+            cnt["pty_write"] += 1
+        elif "input_order pty_read" in l:
+            cnt["pty_read"] += 1
+    return ds, cnt
+
+
 @case("latency_key_log", order=42, gui=True)
 def c_lat_key(ctx, r):
     """key -> first frame after the echo, from the app's own input_order log (keydown ... pty_write -> pty_read -> frame);
@@ -1065,34 +1127,32 @@ def c_lat_key(ctx, r):
     SLOW = re.compile(r"slow ([\w .:/-]+?): (\d+) ms")
 
     def run_keys(count):
+        # Typing at a shell prompt goes into Phosphor's input editor and reaches the pty only on Enter, so it has no pty echo and
+        # the app logs no `frame` line for it (#1486). Keys are typed into a running `cat` instead: they go straight to the pty,
+        # the tty echoes them, and the first frame after that echo is logged.
+        ctx.be.type("cat > /dev/null", 10, enter=True)
+        time.sleep(1.0)
         off = ctx.log_size()
         for i in range(count):
             ctx.be.type("m", 10)
             time.sleep(ctx.rng.uniform(0.08, 0.18))
-            if i % 10 == 9:
-                ctx.be.key("ctrl+u")
-                time.sleep(0.2)
         time.sleep(1)
         txt = ctx.log_since(off)
-        ds, kd = [], None
-        for l in txt.splitlines():
-            if "input_order keydown" in l and "ctrl=false" in l:
-                kd = parse_t(l)
-            elif "input_order frame" in l and kd is not None:
-                t = parse_t(l)
-                if t is not None:
-                    ds.append(t - kd)
-                kd = None
+        ctx.reset()                  # Ctrl-C ends the cat
+        ds, cnt = key_frame_pairs(txt)
+        run_keys.counts = cnt
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
     ds, slow = run_keys(n + warm)
     r.metric("key_to_frame_ms", stats(ds))
     if len(ds) < n * 0.5:
-        allt = ctx.log_since(0)
-        r.check(False, "only %d key->frame pairs in the app log (expected ~%d); log %s has %d input_order keydown lines (%d with ctrl=false) and %d input_order frame lines "
-                "(0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
-                % (len(ds), n, ctx.log_path, allt.count("input_order keydown"), allt.count("input_order keydown") - allt.count("ctrl=true"),
-                   allt.count("input_order frame")))
+        cnt = getattr(run_keys, "counts", {})
+        why = ("no keydown line at all: input_order logging off, wrong log path, or the keys never reached the app" if not cnt.get("keydown") else
+               "keydowns but no `frame` line: no key reached the pty (the `cat` did not start, or this mode routes typing elsewhere), and the app only logs "
+               "a frame after pty output that followed a pty write" if not cnt.get("frame") else
+               "frames exist but few follow a keydown: check for a stuck Control modifier (ctrl=true keydowns)")
+        r.check(False, "only %d key->frame pairs from the app log %s (expected ~%d); in the measurement window: %s. Diagnosis: %s"
+                % (len(ds), ctx.log_path, n, ", ".join("%s=%d" % kv for kv in sorted(cnt.items())), why))
         return
     # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
     # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
@@ -1115,21 +1175,13 @@ def c_lat_key(ctx, r):
     ctx.reset()
 
 
-@case("latency_paint", order=43, gui=True)
-def c_lat_paint(ctx, r):
-    """key -> first changed pixel in Phosphor's window, measured with kl3 (ScreenCaptureKit, 240 Hz frame times; macOS only).
-    Alternates 'm' and Delete so every key changes the screen. Reported as metrics with sanity bounds only: the verdict budgets
-    live in the latency tooling (lat.py / baselines)."""
-    if ctx.be.name != "mac" or not hasattr(ctx.be, "kl_start"):
-        r.skip("kl3 (ScreenCaptureKit) is macOS only")
-    rect = ctx.be.window_rect()
-    if not rect or rect[2] < 100:
-        r.skip("no Phosphor window rect from System Events")
-    ctx.be.guard()
-    ctx.be.kl_start(rect)
+def paint_samples(ctx, rect, n):
+    """n x (post 'm' or Delete through kl3, ScreenCaptureKit 240 Hz) -> key->first-changed-pixel ms in the window at `rect`.
+    The same call for Phosphor and the reference terminal. Alternates 'm' and Delete so every key changes the screen."""
     ds = []
+    ctx.be.kl_start(rect)
     try:
-        for i in range(ctx.count(30)):
+        for i in range(n):
             out = ctx.be.kl("K 400 %s" % ("m" if i % 2 == 0 else "DEL"))
             m0 = re.search(r"post0=([\d.]+)", out)
             ch = [float(x.split(":")[0]) for x in (re.search(r"ch=(\S*)", out).group(1) if re.search(r"ch=(\S*)", out) else "").split(",") if x]
@@ -1140,11 +1192,59 @@ def c_lat_paint(ctx, r):
                     ds.append(min(after) - t0)
     finally:
         ctx.be.kl_stop()
+    return ds
+
+
+def pid_of(name):
+    rr = subprocess.run(["pgrep", "-xn", name], capture_output=True)
+    try:
+        return int(rr.stdout.split()[0])
+    except Exception:
+        return None
+
+
+@case("latency_paint", order=43, gui=True)
+def c_lat_paint(ctx, r):
+    """key -> first changed pixel in the terminal window, measured with kl3 (ScreenCaptureKit, 240 Hz frame times; macOS only), for
+    Phosphor AND for the reference terminal (Terminal.app) with the same kl3 command in the same session. The verdict is on OVERHEAD
+    (Phosphor median - reference median) against the owner's 2 ms key->paint budget; both include the same capture/injection cost
+    (kl3 post + 240 Hz quantisation), which cancels. No reference -> 'no reference: absolute only' note."""
+    if ctx.be.name != "mac" or not hasattr(ctx.be, "kl_start"):
+        r.skip("kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare")
+    rect = ctx.be.window_rect()
+    if not rect or rect[2] < 100:
+        r.skip("no Phosphor window rect from System Events")
+    ctx.be.guard()
+    n, warm = ctx.count(30), lat.warmup()
+    ds = paint_samples(ctx, rect, n + warm)[warm:]
     ctx.reset()
     r.metric("key_to_paint_ms", stats(ds))
     r.check(len(ds) >= 20, "only %d key->paint samples from kl3 (capture region or Screen Recording permission wrong)" % len(ds))
+    rs, ref = [], ref_terminal(ctx)
+    if ref:
+        try:
+            time.sleep(2.5)
+            rrect = ctx.be.window_rect(pid=pid_of("Terminal"))
+            if not rrect or rrect[2] < 100:
+                r.note("no reference: absolute only (key->paint): no Terminal.app window rect")
+            else:
+                rs = paint_samples(ctx, rrect, n + warm)[warm:]
+            ctx.reset()
+        finally:
+            ref.close()
+        time.sleep(1.0)
+        r.metric("reference_key_to_paint_ms", stats(rs))
+        r.metric("reference", ref.name)
+    else:
+        r.note("no reference: absolute only (key->paint): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
-        r.check(statistics.median(ds) <= 120, "key->paint median %.1f ms > 120 ms sanity bound" % statistics.median(ds))
+        rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.mode, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
+                           remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
+                           notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"])
+        r.metrics.setdefault("lat", {})["key_to_paint"] = rec
+        lat_checks(r, rec, "Key to paint")
+        if not rs:
+            r.check(statistics.median(ds) <= 120, "key->paint median %.1f ms > 120 ms sanity bound (no reference measured)" % statistics.median(ds))
 
 
 # ---------------------------------------------------------------- agent
