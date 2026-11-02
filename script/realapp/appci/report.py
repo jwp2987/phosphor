@@ -81,6 +81,13 @@ if kl:
     for md, d in kl:
         for v in d.get("variants", []):
             m.append("| %s | %s | %s | %s | %s | %s | %s |" % (md, v["target"], v["inject"], v["lost_first"], v["other_bad"], v["missing"], v["n"]))
+ec = [(r.get("mode", ""), (r.get("metrics") or {}).get("enter_control")) for r in rows if (r.get("metrics") or {}).get("enter_control")]
+if ec:
+    m += ["", "## Enter-loss control (#1482): reference-terminal lines missing after a fast burst with instant Enter", "",
+          "| mode | reference | gap s | missing | n |", "|---|---|---|---|---|"]
+    for md, d in ec:
+        for g, v in d.get("runs", {}).items():
+            m.append("| %s | %s | %s | %s | %s |" % (md, d.get("reference"), g, v["bad"], v["n"]))
 open(os.path.join(run, "summary.md"), "w").write("\n".join(m) + "\n")
 print("\n".join(m))
 sys.exit(1 if cnt["fail"] else 0)

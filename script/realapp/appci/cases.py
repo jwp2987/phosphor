@@ -10,7 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
+SMOKE = ("mode_proof", "key_loss_control", "enter_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -88,6 +88,11 @@ class Ctx:
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
+        self.enter_control = None     # cached result of run_enter_control (#1482)
+        try:
+            be.inject_log = os.path.join(run, "inject.log")
+        except Exception:
+            pass
         self.n = 0
         self.scale = float(os.environ.get("APPCI_SCALE", "1"))   # <1 shortens counts for smoke runs
 
@@ -294,10 +299,13 @@ def c_cadence(ctx, r):
 
 
 # ---------------------------------------------------------------- typing
-def effect_run(ctx, r, tag, n, gap, rollover=False, shell="bash"):
+def effect_run(ctx, r, tag, n, gap, rollover=False, shell="bash", attribute=None):
+    """attribute: optional callable(gap) -> enter-control dict (run_enter_control). When given and the run fails with merged lines (a lost
+    Enter), the failure is an APP bug only if the reference terminal kept every Enter in the same session (#1482)."""
     fname = "r_%s.txt" % tag
     ctx.rm(fname)
     mark = ctx.cmd_mark()
+    k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
     exp = []
     for i in range(n):
         tok = ctx.tok(10).lower()
@@ -313,12 +321,41 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell="bash"):
     time.sleep(0.5)
     got = ctx.lines(fname)
     ok = got == exp
-    r.check(ok, "%s: file has %d/%d lines, exact match %s%s" % (tag, len(got), n, ok,
-            "" if ok else " first diff: exp=%r got=%r" % next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), (None, None))))
+    bad_i = next((i for i, (a, b) in enumerate(zip(exp + [None], got + [None])) if a != b), None)
+    ev = ""
+    if not ok and bad_i is not None and bad_i < n:
+        # what the injector says about the Enter that should have ended the first bad line (its call is k0+bad_i: one injector call per line)
+        v = ctx.be.inject_enter(k0 + bad_i) if k0 is not None else None
+        ev = " [first bad line %d: %s]" % (bad_i, v[1] if v else "injector keeps no record on this backend")
+    merged = False
+    if ctx.prof.commands():
+        want0 = [ctx.append_cmd(shell, t, fname) for t in exp]
+        have0 = ctx.cmds_since(mark)
+        merged = any(sum(1 for w in want0 if w in h) >= 2 for h in have0)
+    elif not ok:
+        merged = len(got) != n
+    verdict = None
+    if not ok and merged and attribute:
+        ctrl = attribute(gap)
+        if ctrl is None:
+            verdict = " (no reference terminal: lost Enter not attributable)"
+        elif ctrl["bad"] > 0:
+            r.note("%s: injector/OS lost Enter (reference too): reference %s merged/lost %d/%d lines with the same burst%s; Phosphor file has %d/%d lines" % (
+                tag, ctrl["ref"], ctrl["bad"], ctrl["n"], ev, len(got), n))
+            r.metric("injector_lost_enter_" + tag, dict(reference_bad=ctrl["bad"], n=ctrl["n"], phosphor_lines=len(got)))
+            ok = True
+            verdict = "skip"
+        else:
+            verdict = " -- the reference kept every Enter in the same session (%d/%d lines): an APP-side lost Enter (#1482)" % (ctrl["n"] - ctrl["bad"], ctrl["n"])
+    if verdict != "skip":
+        r.check(ok, "%s: file has %d/%d lines, exact match %s%s%s%s" % (tag, len(got), n, ok,
+                "" if ok else " first diff: exp=%r got=%r" % next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), (None, None)), ev, verdict or ""))
     if ctx.prof.commands():
         want = [ctx.append_cmd(shell, t, fname) for t in exp]
         have = ctx.cmds_since(mark)
-        if have:
+        if have and verdict == "skip":
+            pass
+        elif have:
             r.check(have == want, "%s: shell received %d commands, not the typed ones (first mismatch: %r)" % (tag, len(have), next((h for h, w in zip(have, want) if h != w), "count differs %d vs %d" % (len(have), len(want)))))
         else:
             r.note("%s: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only" % tag)
@@ -328,7 +365,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell="bash"):
 @case("fast_typing", order=10)
 def c_fast(ctx, r):
     for gap in (0.0, 0.25):
-        effect_run(ctx, r, "ft%d" % int(gap * 100), ctx.count(30), gap)
+        effect_run(ctx, r, "ft%d" % int(gap * 100), ctx.count(30), gap, attribute=lambda g: (run_enter_control(ctx, r, ctx.count(30)) or {}).get(g) or None)
 
 
 @case("rollover", order=11)
@@ -871,6 +908,68 @@ def c_key_loss(ctx, r):
     if d:
         r.check(d["lost_first"] + d["other_bad"] + d["missing"] == 0, "harness default injection (per-line%s) still loses lines in Phosphor: %s"
                 % (", primed" if is_wl and prime_default else "", {k: d[k] for k in ("lost_first", "other_bad", "missing")}))
+
+
+def run_enter_control(ctx, r, n):
+    """#1482: the fast_typing burst (same cadence 10-25 ms/key, instant Enter, same gaps) typed into the REFERENCE terminal's shell in this
+    session. Returns {gap: dict(ref, n, bad, posted)} (bad = lines of the burst missing from the file, i.e. merged or lost; posted =
+    ENTERs the injector reports posting, None when it keeps no record), or None when there is no reference terminal. Cached on ctx."""
+    if ctx.enter_control is not None:
+        return ctx.enter_control or None
+    ref = ref_terminal(ctx)
+    if not ref:
+        ctx.enter_control = {}
+        r.note("enter control: no reference terminal (%s): a lost Enter in Phosphor cannot be attributed" % (getattr(ctx, "ref_reason", None) or "unavailable"))
+        return None
+    out = {}
+    try:
+        time.sleep(2.5)
+        for gap in (0.0, 0.25):
+            fname = "el_ref%d.txt" % int(gap * 100)
+            ctx.rm(fname)
+            k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
+            exp = []
+            for _ in range(n):
+                tok = ctx.tok(10).lower()
+                exp.append(tok)
+                ctx.be.type(ctx.append_cmd("bash", tok, fname), ctx.rng.randint(10, 25), enter=True)
+                if gap:
+                    time.sleep(gap)
+            ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
+            time.sleep(0.5)
+            got = set(ctx.lines(fname))
+            bad = sum(1 for t in exp if t not in got)
+            posted = None
+            if k0 is not None:
+                posted = sum(1 for c in ctx.be.calls[k0:k0 + n] if c["enters_posted"])
+            out[gap] = dict(ref=ref.name, n=n, bad=bad, posted=posted, lines=len(ctx.lines(fname)))
+            ctx.reset()
+    finally:
+        ref.close()
+    time.sleep(1.0)
+    ctx.enter_control = out
+    return out
+
+
+@case("enter_loss_control", modes=("terminal",), order=4, gui=True)
+def c_enter_loss(ctx, r):
+    """#1482: does an instant Enter after a fast-typed line survive in the REFERENCE terminal? Reports the control metric (metrics.enter_control)
+    for fast_typing's verdict: its lost-Enter failure is an app bug only if this control kept every Enter in the same session. A separate
+    case (not an extension of key_loss_control) because it needs the Phosphor-independent 30-line burst at fast_typing's exact cadence, and
+    because key_loss_control's Wayland variants measure first-character loss, a different injector fault. Fails only when the injector itself
+    reports it did not post an Enter (harness bug); reference loss is reported, not failed (it is the injector/OS, not the app)."""
+    n = ctx.count(30)
+    res = run_enter_control(ctx, r, n)
+    if not res:
+        r.note("no reference terminal available: Enter loss is not controlled")
+        return
+    r.metric("enter_control", dict(reference=next(iter(res.values()))["ref"], runs={str(g): v for g, v in res.items()}))
+    for g, v in res.items():
+        r.note("reference %s gap %.2fs: %d/%d lines missing (merged/lost Enter), injector posted %s Enters" % (v["ref"], g, v["bad"], v["n"], v["posted"]))
+        if v["posted"] is not None:
+            r.check(v["posted"] == v["n"], "injector posted only %d of %d Enters in the control (gap %.2fs): harness/injector fault" % (v["posted"], v["n"], g))
+    if any(v["bad"] for v in res.values()):
+        r.note("the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug")
 
 
 def enter_to_start(ctx, n, budget_s=None):

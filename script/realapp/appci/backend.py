@@ -26,8 +26,15 @@ class Backend:
     name = "base"
     key_floor_ms = 0.0   # measured cost of one input-tool invocation (harness overhead), filled by calibrate()
 
+    inject_log = None        # path of <run>/inject.log (set by Ctx); only the Mac backend records injector calls so far (#1482)
+    calls = None             # per-injector-call records, in order (Mac only); None = this backend cannot say what it posted
+
     def preflight(self):
         return []
+
+    def inject_enter(self, idx):
+        """what the injector says about the Enter of the idx-th recorded call: (posted: bool, text) or None when unknown"""
+        return None
 
     def type(self, text, delay_ms=15, enter=False):
         raise NotImplementedError
@@ -312,6 +319,7 @@ class MacBackend(Backend):
 
     def __init__(self):
         self.guard_override = None
+        self.calls = []
         self._kl = None
         self.outf = os.path.join(os.environ.get("TMPDIR", "/tmp"), "appci_ht_%d.txt" % os.getpid())
 
@@ -421,7 +429,73 @@ class MacBackend(Backend):
     def _ht(self, ops, guard=True):
         if guard:
             self.guard()
-        _run([self._tool("htype2"), "0", "0", "0", "0", self.outf] + ops, timeout=120)
+        try:
+            os.remove(self.outf)                 # a stale file from the previous call must never be read as this call's record
+        except OSError:
+            pass
+        t0 = time.time()
+        err = None
+        try:
+            _run([self._tool("htype2"), "0", "0", "0", "0", self.outf] + ops, timeout=120)
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, str(e)[:120])
+            raise
+        finally:
+            self._record_call(ops, t0, time.time(), err)
+
+    def _record_call(self, ops, t0, t1, err):
+        """Keep htype2's K-lines (it overwrites its outfile every call) in self.calls and <run>/inject.log. Typed characters are logged as a COUNT
+        and first/last time only (never their code points: typed text can be a password); ENTER/KEY/BS/TAB/RIGHT lines are logged in full."""
+        rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=sum(1 for o in ops if o.split(":")[0] == "e"),
+                   enter_wall=[], chars=0, special=[], err=err, out=False)
+        try:
+            lines = open(self.outf, errors="replace").read().splitlines()
+        except OSError:
+            lines = []
+        epoch = mach = None
+        first = last = None
+        for l in lines:
+            w = l.split()
+            if w[:1] == ["T0"] and len(w) >= 3:
+                try:
+                    mach = float(w[1].split("=")[1]); epoch = float(w[2].split("=")[1])
+                    rec["out"] = True
+                except (ValueError, IndexError):
+                    pass
+            elif w[:1] == ["K"] and len(w) >= 4:
+                try:
+                    ms = float(w[3])
+                except ValueError:
+                    continue
+                wall = epoch + (ms - mach) / 1000 if epoch is not None and mach is not None else None
+                if w[1].isdigit():
+                    rec["chars"] += 1
+                    first = ms if first is None else first
+                    last = ms
+                else:
+                    rec["special"].append("%s@%s" % (w[1], ("%.3f" % wall) if wall else "?"))
+                    if w[1] == "ENTER":
+                        rec["enter_wall"].append(wall)
+        rec["enters_posted"] = len(rec["enter_wall"])
+        rec["span_ms"] = (last - first) if first is not None else 0
+        self.calls.append(rec)
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("call=%d wall=%.3f..%.3f chars=%d span_ms=%.0f enters_want=%d enters_posted=%d out=%s%s %s\n" % (
+                        rec["n"], t0, t1, rec["chars"], rec["span_ms"], rec["enters_want"], rec["enters_posted"], rec["out"],
+                        (" ERR=" + err) if err else "", " ".join(rec["special"])))
+            except OSError:
+                pass
+
+    def inject_enter(self, idx):
+        if idx is None or idx < 0 or idx >= len(self.calls):
+            return None
+        c = self.calls[idx]
+        if c["enters_want"] and not c["enters_posted"]:
+            return False, "injector call #%d did NOT post its ENTER (%s)" % (c["n"], c["err"] or ("no htype2 output" if not c["out"] else "no ENTER line in its log"))
+        w = c["enter_wall"][0] if c["enter_wall"] else None
+        return True, "injector call #%d posted its ENTER at %s" % (c["n"], time.strftime("%H:%M:%S", time.localtime(w)) + (".%03d" % int((w % 1) * 1000)) if w else "?")
 
     def type(self, text, delay_ms=15, enter=False):
         d = int(delay_ms)

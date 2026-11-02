@@ -484,6 +484,20 @@ default (primed, per-line) injection must lose nothing in Phosphor. The Wayland 
 tap and a 20 ms sleep (`APPCI_WL_PRIME_MS`, 0 = off; it adds that much to input-tool spawn cost, which cancels in the
 Phosphor-vs-reference latency overhead). Keep the control permanently.
 
+Enter-loss control (`enter_loss_control`, terminal mode, SMOKE right after `key_loss_control`, #1482): on the Mac `fast_typing` once
+merged two lines (`...r_ft0.txtecho t28...`): the app log has no `kind=enter` for line 27, which cannot say whether the Enter reached the
+app. Two additions make the harness able to tell. (1) The Mac backend keeps every htype2 call's K-lines (htype2 overwrites its outfile per
+call): `<run>/inject.log` gets one line per call (counter, wall-clock span, typed-character COUNT, ENTER/KEY/BS lines with wall times; typed
+characters are never logged, they may be passwords), and `fast_typing`'s failure message cites for the first bad line whether the injector
+posted its ENTER and when. (2) The control types the exact `fast_typing` burst (30 lines, 10-25 ms/key, instant Enter, gaps 0 and 0.25 s)
+into the reference terminal's shell (Terminal.app / foot / xterm) in the same session and counts lines missing from the file
+(`metrics.enter_control`, summary.md "Enter-loss control"). It is its own case, not a `key_loss_control` variant, because it needs the
+30-line fast_typing cadence and measures Enter, not first-character, loss. Verdict rule: a `fast_typing` run that ends with merged lines
+fails as an APP bug only if the reference kept every Enter at the same gap; if the reference also lost lines it is reported as "injector/OS
+lost Enter (reference too)" (a note plus `metrics.injector_lost_enter_*`, no failure); with no reference terminal it fails as before,
+labelled unattributable. `fast_typing` runs the control lazily when it fails and no cached result exists. The control itself fails only if
+the injector log says it did not post an Enter. Linux backends keep no injector record yet.
+
 **Where every app test gets its build: this machine, never a download.** The plain `app-test-*` jobs `need` their build job with
 `artifacts: false` (ordering only) and their `before_script` is `script/ci/fetch_build.sh --this-pipeline` / `fetch_build.ps1 -ThisPipeline`:
 it reads the `pipeline-<CI_PIPELINE_ID>` pointer that `cache_build.sh` / `.ps1` leaves in the local build cache (below), copies that build to
