@@ -17865,6 +17865,13 @@ impl TerminalView {
                 // focused, with no event-loop turn between the steps. A key typed from now on is
                 // queued behind all of it by the single-threaded loop.
                 self.deliver_ssh_typeahead_if_ready("precmd", ctx);
+                // #1558: an Enter held because the shell had not processed this Precmd yet.
+                if self
+                    .input
+                    .read(ctx, |input, _| input.has_held_unready_enter())
+                {
+                    self.execute_pending_command((), ctx);
+                }
                 // #1014: the subshell's first prompt is drawn and the block list is in its normal
                 // state: only now are the keys held through a stalled setup delivered, so the
                 // command they spell starts an ordinary visible block. (Setup still pending:

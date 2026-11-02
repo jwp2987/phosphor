@@ -1964,6 +1964,9 @@ pub struct Input {
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
     has_pending_command: bool,
+    /// #1558: the pending command is an Enter the shell could not take yet (its first Precmd had
+    /// not arrived), held so it runs when it can instead of being dropped with its text kept.
+    held_unready_enter: bool,
     /// The command [`Self::set_pending_command`] was asked to run (#1435): what runs is this, never
     /// whatever the user's keys made of the buffer it was shown in.
     pending_command_text: Option<String>,
@@ -3872,6 +3875,7 @@ impl Input {
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
+            held_unready_enter: false,
             pending_command_text: None,
             deferred_programmatic_edits: Vec::new(),
             last_word_insertion,
@@ -6618,6 +6622,45 @@ impl Input {
         )
     }
 
+    /// #1558: an Enter that waited behind a gate (verdict, completion) and then found the shell
+    /// unable to take a command yet used to log `submit` and drop: the text stayed in the buffer
+    /// and the next typing merged into it (`ssh fakeecho ...`). It is now held as the pending
+    /// command and runs, exactly as typed, when the session can take it. Only for a deferred
+    /// Enter and a not-ready shell: a direct Enter keeps its refusal toast, a running program or
+    /// a shared-session viewer still refuses. Every decline is logged.
+    fn hold_refused_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let shared = self
+            .model
+            .lock()
+            .shared_session_status()
+            .is_sharer_or_viewer();
+        let not_ready = match self.can_execute_command(ctx) {
+            CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand) => false,
+            CanExecuteCommand::No(_) | CanExecuteCommand::Yes => true,
+        };
+        let hold = self.running_deferred_enter && not_ready && !shared;
+        warpui::input_order::log_hop("enter_declined", || {
+            format!(
+                "deferred={} held_as_pending={hold} shared_session={shared}",
+                self.running_deferred_enter
+            )
+        });
+        if !hold {
+            return;
+        }
+        // The requested text is the buffer as typed: when it is still the buffer the pending
+        // command runs the normal way (aliases expanded); when typing was added behind it, the
+        // requested line runs and the rest is given back (#1435).
+        self.pending_command_text = Some(self.editor.as_ref(ctx).buffer_text(ctx));
+        self.has_pending_command = true;
+        self.held_unready_enter = true;
+    }
+
+    /// #1558: an Enter is held as the pending command because the shell was not ready for it.
+    pub(crate) fn has_held_unready_enter(&self) -> bool {
+        self.held_unready_enter && self.has_pending_command
+    }
+
     pub fn execute_pending_command(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.has_pending_command {
             return;
@@ -6658,6 +6701,12 @@ impl Input {
         };
 
         let executed = self.try_execute_command(&command, ctx);
+        if !executed && self.held_unready_enter {
+            // #1558: still not ready (the session has not processed its first Precmd): the held
+            // Enter stays pending for the next event that retries, never dropped.
+            warpui::input_order::log_hop("enter_held_still_unready", String::new);
+            return;
+        }
         if let (true, Some(requested)) = (executed, keep_typed_after) {
             // What the user typed into the pending command is not lost when the block's buffer is
             // cleared: the text beyond the requested command (all of it if the command text was
@@ -6666,6 +6715,7 @@ impl Input {
             self.editor_submission_from_pending = true;
         }
         self.has_pending_command = false;
+        self.held_unready_enter = false;
         self.pending_command_text = None;
 
         self.editor.update(ctx, |editor, ctx| {
@@ -13697,6 +13747,7 @@ impl Input {
                 )
             });
             if !executed {
+                self.hold_refused_deferred_enter(ctx);
                 return;
             }
             self.last_enter_submitted_shell_command = true;
