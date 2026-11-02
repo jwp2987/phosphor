@@ -40,6 +40,12 @@ CK = load_key(os.path.join(KEYDIR, "clientkey"))
 
 # ------------------------------------------------------------------ ConPTY
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# r18ct: sshd.py starts this process with stdin/stdout = NUL and stderr = fakesshd.stderr, and the ConPTY Git Bash children wrote their prompt and echo into that
+# stderr FILE (it holds "bash: cannot set terminal process group ... ~$ exit") instead of the pseudo console, so the ssh client never saw a byte. Python keeps its own
+# fds, so clearing the process's Win32 standard handles loses nothing here and leaves the children nothing to inherit.
+k32.SetStdHandle.argtypes = [wt.DWORD, ctypes.c_void_p]
+for _h in (-10, -11, -12):          # STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+    k32.SetStdHandle(_h & 0xFFFFFFFF, None)
 
 
 class COORD(ctypes.Structure):
@@ -238,14 +244,19 @@ def handle(ch, srv):
             log("conpty shell pid", cp.pid)
 
             def pump_out():
+                t_open, sent = time.time(), 0
                 while True:
                     d = cp.read()
                     if not d:
                         break
+                    if not sent:
+                        log("conpty first output after %.2f s: %d bytes" % (time.time() - t_open, len(d)))   # r18ct: 0 bytes ever = the shell's output is not on the pseudo console
+                    sent += len(d)
                     try:
                         ch.sendall(d)
                     except Exception:
                         break
+                log("conpty output ended: %d bytes sent to the client in total" % sent)
                 try:
                     ch.shutdown_write()
                 except Exception:

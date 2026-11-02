@@ -795,8 +795,10 @@ def ctrlc_line(ctx, fname, i):
         # the whole line, so there is no AFTER marker: the next sample's typed line proves the shell came back
         # .NET in the finally block, by absolute path: a cmdlet (Add-Content) run from the finally of a Ctrl-C-stopped pipeline took 3.5 s in Phosphor AND in
         # the conhost reference and left the pane wedged for good (r18cj), and .NET's cwd is not PowerShell's location, hence the absolute path
-        return ("try { Start-Sleep 30 } finally { [IO.File]::AppendAllText('%s', ([string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + [char]10)) }"
-                % os.path.join(ctx.W, fname).replace("\\", "/"))
+        # r18ct: each stamp carries its SAMPLE INDEX ("<i>:<ms>"). Pairing stamps to samples by order made a late stamp (one that landed after the 6 s wait) pair with the NEXT
+        # sample's t0, which printed negative latencies (-2273 ms) and hid whether Ctrl-C ever interrupted the sleep.
+        return ("try { Start-Sleep 30 } finally { [IO.File]::AppendAllText('%s', ('%d:' + [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + [char]10)) }"
+                % (os.path.join(ctx.W, fname).replace("\\", "/"), i))
     if ctx.be.name == "mac":
         return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
     return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
@@ -805,7 +807,7 @@ def ctrlc_line(ctx, fname, i):
 def ctrlc_samples(ctx, n, fname, budget_s=None):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
-    lat_ms, typed = [], []
+    lat_ms, typed, misses = [], [], []
     mark = ctx.cmd_mark()
     t_start = time.time()
     pw = ctx.pane == "powershell"
@@ -820,25 +822,49 @@ def ctrlc_samples(ctx, n, fname, budget_s=None):
         t0 = time.time()
         ctx.be.key("ctrl+c")
         if pw:
-            ctx.until(lambda: len(stamps(ctx, fname)) > len(lat_ms), 6)
+            ctx.until(lambda: i in ps_stamps(ctx, fname), 6)
         else:
             ctx.until(lambda: sum(1 for l in ctx.lines(fname) if l.startswith("AFTER")) > i, 5)
         time.sleep(0.2)
+        if pw:
+            ts = ps_stamps(ctx, fname)
+            if i in ts and ts[i] >= t0 - 0.05:
+                lat_ms.append((ts[i] - t0) * 1000)
+            elif i not in ts:
+                # a miss: Ctrl-C did not stop the sleep within 6 s. Press it again, then WAIT for this sample's own stamp (the sleep ends by itself after 30 s) so the
+                # next sample's line is not typed behind a still-running command: r18ct queued 33 x `Start-Sleep 30` that way and the pane stayed busy for ~16 minutes
+                # (pane_wedged_after_ctrl_c_d).
+                ctx.be.key("ctrl+c")
+                time.sleep(0.8)
+                ctx.be.key("ctrl+c")
+                if not ctx.until(lambda: i in ps_stamps(ctx, fname), 36):
+                    time.sleep(1)
+                misses.append(i)
+            else:
+                misses.append(i)        # a stamp that PRECEDES this sample's Ctrl-C: the finally ran without our key (not counted as a delivery)
+            continue
         ts = stamps(ctx, fname)
         if len(ts) > len(lat_ms):
             lat_ms.append((ts[len(lat_ms)] - t0) * 1000)
-        elif pw:        # a miss: end the sleep so the next sample's line is not queued behind it for 30 s
-            ctx.be.key("ctrl+c")
-            time.sleep(0.8)
-            ctx.be.key("ctrl+c")
-            time.sleep(2)
     after = [l for l in ctx.lines(fname) if l.startswith("AFTER")]
     if ctx.prof.commands():
         # a sample that never fired is either a Ctrl-C that did not arrive or a typed LINE that arrived corrupted (no trap, no stamp): tell them apart
         have = ctx.cmds_since(mark)
         pairs = [(w, h) for w, h in zip(typed, have) if w != h]
         ctx.cc_integrity[fname] = dict(n=len(typed), got=len(have), bad=len(pairs), examples=[line_evidence(ctx, w, h, t_start, None) for w, h in pairs[:2]])
+    if pw and misses:
+        ctx.cc_integrity.setdefault("misses", {})[fname] = misses
     return lat_ms, len(lat_ms) == n and (pw or len(after) == n)
+
+
+def ps_stamps(ctx, fname):
+    """PowerShell pane: {sample index: epoch seconds} from the `<i>:<13-digit UTC ms>` lines the finally block writes (see ctrlc_line)"""
+    out = {}
+    for l in ctx.lines(fname):
+        m = re.fullmatch(r"(\d+):(\d{13})", l.strip().replace("\x00", ""))
+        if m:
+            out.setdefault(int(m.group(1)), int(m.group(2)) / 1000.0)
+    return out
 
 
 def stamps(ctx, fname):
@@ -899,6 +925,11 @@ def c_ctrl(ctx, r):
             if ig["bad"] and not igr["bad"]:
                 why += " (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)"
         r.metric("ctrl_c_line_integrity", dict(phosphor=ig, reference=igr))
+    mp = ctx.cc_integrity.get("misses", {})
+    if mp.get("cc.txt"):
+        why += " -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on %d of %d samples (indexes %s)" % (len(mp["cc.txt"]), n + warm, mp["cc.txt"][:12])
+    if mp.get("cc_ref.txt"):
+        why += "; reference: %d misses" % len(mp["cc_ref.txt"])
     r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times%s" % (n + warm, why))
     if ctx.win:
         r.note("Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran")
