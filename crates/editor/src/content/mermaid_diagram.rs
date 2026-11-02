@@ -1,7 +1,10 @@
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     panic::AssertUnwindSafe,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -28,6 +31,37 @@ const MAX_MERMAID_SOURCE_BYTES: usize = 256 * 1024;
 /// remaining text once per output line, so one unbroken 100k-character token costs minutes of CPU
 /// (the hang found by the `hostile_sources_never_panic` corpus test, #1477).
 const MAX_MERMAID_LINE_CHARS: usize = 4_000;
+/// The longest unbroken (whitespace-free) token we hand to the renderer. The renderer's word
+/// splitter costs roughly (token length)^2 / (wrap width) per label, so the cost of one token is
+/// bounded by bounding its length; no real label has a 1000-character word (#1479).
+const MAX_MERMAID_TOKEN_CHARS: usize = 1_000;
+/// How many render threads may be alive at once. A thread cannot be killed, so a render that
+/// outlives its budget keeps its core until it finishes; capping the live threads bounds how many
+/// cores abandoned renders can hold (#1479). Further renders fail to the source fallback.
+const MAX_CONCURRENT_RENDERS: usize = 8;
+/// Live `mermaid-render` threads.
+static LIVE_RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the `MAX_CONCURRENT_RENDERS` slots; released when dropped (when the render thread ends,
+/// even by panic).
+struct RenderSlot(&'static AtomicUsize);
+
+impl RenderSlot {
+    fn acquire(live: &'static AtomicUsize, cap: usize) -> Option<Self> {
+        live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < cap).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| Self(live))
+    }
+}
+
+impl Drop for RenderSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// How long a render may take before the diagram falls back to showing its source. Event-driven
 /// give-up for anything the size limits above did not anticipate; the abandoned render thread
 /// finishes (or not) on its own and its result is dropped.
@@ -71,6 +105,15 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
             line.chars().count()
         );
     }
+    if let Some(token) = source
+        .split_whitespace()
+        .find(|token| token.chars().count() > MAX_MERMAID_TOKEN_CHARS)
+    {
+        anyhow::bail!(
+            "diagram has a word too long to render ({} characters, limit {MAX_MERMAID_TOKEN_CHARS})",
+            token.chars().count()
+        );
+    }
     Ok(())
 }
 
@@ -78,10 +121,14 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
 /// takes the caller down with a panic. Both end as an `Err`, never a hang or a crash.
 async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Bytes> {
     check_render_limits(&source)?;
+    let slot = RenderSlot::acquire(&LIVE_RENDERS, MAX_CONCURRENT_RENDERS).ok_or_else(|| {
+        anyhow::anyhow!("too many diagram renders are already running; showing the source")
+    })?;
     let (tx, rx) = async_channel::bounded(1);
     std::thread::Builder::new()
         .name("mermaid-render".into())
         .spawn(move || {
+            let _slot = slot;
             let rendered = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 mermaid_to_svg::render_mermaid_to_svg(&source, None)
             }));
@@ -200,6 +247,49 @@ mod render_limit_tests {
         .expect_err("a 100k-character line must not render");
         assert!(err.to_string().contains("too long"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// #1479: an unbroken token under the line cap but long enough to make the renderer's
+    /// word splitter slow is refused up front too.
+    #[test]
+    fn a_long_unbroken_token_under_the_line_cap_is_refused_fast() {
+        let started = std::time::Instant::now();
+        let err = render(
+            &format!("graph TD\nA[{}]\n", "A".repeat(3_000)),
+            MERMAID_RENDER_TIMEOUT,
+        )
+        .expect_err("a 3000-character word must not render");
+        assert!(err.to_string().contains("word too long"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// #1479: a long line made of many ordinary words (the other wrap shape) finishes well
+    /// inside the budget instead of timing out.
+    #[test]
+    fn a_long_many_word_line_finishes_fast() {
+        let words = "word ".repeat(700);
+        let started = std::time::Instant::now();
+        let result = render(
+            &format!("graph TD\nA[{words}] --> B[End]\n"),
+            MERMAID_RENDER_TIMEOUT,
+        );
+        if let Err(e) = &result {
+            assert!(!e.to_string().contains("took longer"), "{e}");
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn render_slots_are_capped_and_released_on_drop() {
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+        let a = RenderSlot::acquire(&LIVE, 2).expect("first slot");
+        let _b = RenderSlot::acquire(&LIVE, 2).expect("second slot");
+        assert!(RenderSlot::acquire(&LIVE, 2).is_none(), "cap of 2 reached");
+        drop(a);
+        assert!(
+            RenderSlot::acquire(&LIVE, 2).is_some(),
+            "slot freed by drop"
+        );
     }
 
     #[test]
