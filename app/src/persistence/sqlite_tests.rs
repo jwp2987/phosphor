@@ -2932,7 +2932,7 @@ fn stray_transaction_is_committed_by_the_settle_once_the_lock_clears() {
 /// or "locked"), end it, and leave the connection in autocommit after every call.
 #[test]
 fn write_lock_probe_ends_a_stray_transaction_and_leaves_autocommit() {
-    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+    use diesel::{Connection as _, connection::SimpleConnection as _};
 
     let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
     leave_stray_transaction(&mut a);

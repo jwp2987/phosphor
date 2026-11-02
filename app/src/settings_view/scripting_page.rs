@@ -94,7 +94,7 @@ impl ScriptingSettingsPageView {
         let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             vec![Box::new(LocalControlModeWidget)];
 
-        let mut this = Self {
+        let this = Self {
             page: PageType::new_uncategorized(widgets, Some("Scripting")),
             local_only_icon_tooltip_states: RefCell::new(HashMap::new()),
             local_control_mode_dropdown,
