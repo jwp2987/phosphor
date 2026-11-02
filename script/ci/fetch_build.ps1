@@ -1,5 +1,5 @@
 # script/ci/fetch_build.ps1: Windows twin of fetch_build.sh (app-test-windows-reuse). Same inputs, same fail-loud rules.
-# -ThisPipeline (plain app-test-windows): copy THIS pipeline's build from the local cache via the pipeline-<id> pointer that
+# -ThisPipeline (plain app-test-windows): copy THIS pipeline's build from the local cache via the pipeline-windows-<id> pointer that
 # cache_build.ps1 leaves; no download (`needs` has artifacts: false); a missing copy fails loudly.
 # -Record (after_script) stamps the reused build into appci-out\windows\run\results.json and summary.md.
 param([switch]$Record, [switch]$ThisPipeline)
@@ -50,7 +50,8 @@ function Copy-Checked($src) {
 }
 if ($ThisPipeline) {
     $root = Join-Path $env:USERPROFILE ".cache\phosphor-ci\builds\windows"
-    $ptr = Join-Path $root "pipeline-$env:CI_PIPELINE_ID"
+    $ptr = Join-Path $root "pipeline-windows-$env:CI_PIPELINE_ID"
+    if (-not (Test-Path $ptr)) { $ptr = Join-Path $root "pipeline-$env:CI_PIPELINE_ID" }   # pointer name before #1524
     if (-not (Test-Path $ptr)) { Die "no local build for pipeline $env:CI_PIPELINE_ID ($ptr missing): the build job did not run on this machine or cache_build.ps1 failed. Re-run the build job." }
     $bid = (Get-Content $ptr -Raw).Trim(); $src = Join-Path $root $bid
     if (-not (Test-Path (Join-Path $src "SHA256SUMS"))) { Die "local build $src is missing or pruned; re-run the build job" }

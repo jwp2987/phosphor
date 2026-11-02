@@ -6,6 +6,15 @@ if (-not $id) { Write-Error "CI_JOB_ID is not set"; exit 1 }
 if (-not (Test-Path dist\SHA256SUMS)) { Write-Error "cache_build: dist\SHA256SUMS missing; not caching"; exit 1 }
 $root = Join-Path $env:USERPROFILE ".cache\phosphor-ci\builds\windows"
 New-Item -ItemType Directory -Force $root | Out-Null
+# One writer at a time (#1524): an exclusively opened lock file; a lock older than 10 minutes is a dead job's and is replaced.
+$lockPath = Join-Path $root ".lock"
+if ((Test-Path $lockPath) -and ((Get-Item $lockPath).LastWriteTime -lt (Get-Date).AddMinutes(-10))) { Remove-Item -Force $lockPath -ErrorAction SilentlyContinue }
+$lock = $null
+for ($i = 0; $i -lt 120 -and -not $lock; $i++) {
+  try { $lock = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') } catch { Start-Sleep -Seconds 1 }
+}
+if (-not $lock) { Write-Error "cache_build: could not take $lockPath"; exit 1 }
+try {
 $tmp = Join-Path $root ".tmp-$id"
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 New-Item -ItemType Directory $tmp | Out-Null
@@ -14,8 +23,12 @@ Copy-Item dist\* $tmp -Recurse -Force
 $final = Join-Path $root $id
 if (Test-Path $final) { Remove-Item -Recurse -Force $final }
 Move-Item $tmp $final
-if ($env:CI_PIPELINE_ID) { Set-Content (Join-Path $root "pipeline-$env:CI_PIPELINE_ID") -Value $id -Encoding ASCII }
+if ($env:CI_PIPELINE_ID) {   # write-then-rename: a reader never sees an empty or half-written pointer
+  $ptmp = Join-Path $root ".ptr-$id"; Set-Content $ptmp -Value $id -Encoding ASCII
+  Move-Item -Force $ptmp (Join-Path $root "pipeline-windows-$env:CI_PIPELINE_ID")
+}
 Get-ChildItem $root -Directory | Where-Object { $_.Name -match '^\d+$' } | Sort-Object { [int64]$_.Name } -Descending | Select-Object -Skip 3 | Remove-Item -Recurse -Force
 Get-ChildItem $root -Directory -Filter ".tmp-*" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem $root -File -Filter "pipeline-*" | Where-Object { -not (Test-Path (Join-Path $root (Get-Content $_.FullName -Raw).Trim())) } | Remove-Item -Force -ErrorAction SilentlyContinue
 Write-Output "cache_build: cached dist\ of job $id at $final"
+} finally { $lock.Dispose(); Remove-Item -Force $lockPath -ErrorAction SilentlyContinue }

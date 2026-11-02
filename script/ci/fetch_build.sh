@@ -11,14 +11,15 @@
 # Auth: CI_JOB_TOKEN (JOB-TOKEN header, same project). If GitLab refuses it and APPCI_API_TOKEN is set, that PRIVATE-TOKEN is tried.
 #
 # `fetch_build.sh --this-pipeline` (plain app-test-* jobs): copy THIS pipeline's build, which the build job just made on this
-# machine (cache_build.sh leaves a pipeline-<id> pointer), from the local cache. No download: the job's `needs` has
+# machine (cache_build.sh leaves a pipeline-<platform>-<id> pointer), from the local cache. No download: the job's `needs` has
 # artifacts: false. A missing copy fails loudly (exit 2); it never tests another build.
 set -eu
 die() { echo "ERROR fetch_build: $*" >&2; exit 2; }
 case "$(uname -s)" in Darwin) PLAT=macos;; *) PLAT=linux;; esac
 ROOT="${PHOSPHOR_CI_BUILD_CACHE:-$HOME/.cache/phosphor-ci/builds}/$PLAT"
 if [ "${1:-}" = --this-pipeline ]; then
-  ptr="$ROOT/pipeline-$CI_PIPELINE_ID"
+  ptr="$ROOT/pipeline-$PLAT-$CI_PIPELINE_ID"
+  [ -f "$ptr" ] || ptr="$ROOT/pipeline-$CI_PIPELINE_ID"   # pointer name before #1524
   [ -f "$ptr" ] || die "no local build for pipeline $CI_PIPELINE_ID ($ptr missing): the build job did not run on this machine or cache_build.sh failed. Re-run the build job."
   id=$(cat "$ptr"); src="$ROOT/$id"
   [ -f "$src/SHA256SUMS" ] || die "local build $src is missing or pruned; re-run the build job"
