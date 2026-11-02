@@ -66,6 +66,7 @@ def main():
         # per-mode fresh profile + app: settings differ (default_session_mode)
         ssh_info = None
         app = None
+        instance = 1       # app instance number within this mode: each instance's log is kept as phosphor.<n>.log (#1457)
         try:
             prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b')
             ssh_info = None if sim else sshd.start(prof, run)
@@ -136,6 +137,8 @@ def main():
                     emit(dict(name=c["name"], mode=mode, status=status, seconds=round(time.time() - t0, 1),
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
+                    keep_instance_log(run, mode, prof, a.backend, ollama_url, instance)   # the relaunch overwrites phosphor.log (#1457)
+                    instance += 1
                     app.start()          # relaunch so the remaining cases still run
                     ctx.until(lambda: prof.prompts() > 0, a.startup_timeout, step=0.5)
                     continue
@@ -175,6 +178,19 @@ def main():
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
     return finish(run, a, 1 if exit_fail else 0)
+
+
+def keep_instance_log(run, mode, prof, backend_name, ollama_url, n):
+    """Copy the dying instance's phosphor.log to logs/<mode>/phosphor.<n>.log BEFORE a relaunch overwrites it, so the failing cases'
+    key traces survive (#1457). The final instance's log is still written as phosphor.log by the cleanup below."""
+    import ci_env
+    src = prof.home + ("/Library/Logs/phosphor.log" if backend_name == "mac" else "/.local/state/phosphor/phosphor.log")
+    if not os.path.exists(src):
+        return
+    logs = os.path.join(run, "logs", mode)
+    os.makedirs(logs, exist_ok=True)
+    t = ci_env.redact(open(src, errors="replace").read(), ollama_url)
+    open(os.path.join(logs, "phosphor.%d.log" % n), "w").write(t)
 
 
 def finish(run, a, code):

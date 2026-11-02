@@ -444,29 +444,39 @@ def c_ctrl(ctx, r):
                            remeasure=lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:], floor=ctx.be.key_floor_ms)
         r.metrics.setdefault("lat", {})["ctrl_c"] = rec
         lat_checks(r, rec, "Ctrl-C")
-    # Ctrl-D: ends `cat` input, and exits a nested bash back to the outer shell
+    # Ctrl-D: ends `cat` input, and exits a nested bash back to the outer shell.
+    # SAFETY (#1458): a Ctrl-D that reaches the pane's OWN top-level shell exits it and closes the last window, which quits the app.
+    # So a Ctrl-D is sent only after the case has PROVEN the thing it is meant to end is running (cat: its output file exists, i.e. the
+    # shell executed the line; bash: SHLVL inside it is one more than outside). If a setup line was lost, fail without sending the Ctrl-D.
     ctx.be.type("cat > cd.txt", 12, enter=True)
-    time.sleep(1)
-    ctx.be.type("hello", 12, enter=True)
-    time.sleep(0.5)
-    ctx.be.key("ctrl+d")
-    time.sleep(1.5)
-    ctx.be.type("echo done1 >> cd.txt", 12, enter=True)
-    time.sleep(1)
-    r.check(ctx.lines("cd.txt") == ["hello", "done1"], "Ctrl-D in cat: file %r" % ctx.lines("cd.txt"))
+    cat_up = ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "cd.txt")), 5)
+    r.check(bool(cat_up), "`cat > cd.txt` never started (its Enter was lost?): Ctrl-D NOT sent (it would hit the top-level shell)")
+    if cat_up:
+        ctx.be.type("hello", 12, enter=True)
+        time.sleep(0.5)
+        ctx.be.key("ctrl+d")
+        time.sleep(1.5)
+        ctx.be.type("echo done1 >> cd.txt", 12, enter=True)
+        time.sleep(1)
+        r.check(ctx.lines("cd.txt") == ["hello", "done1"], "Ctrl-D in cat: file %r" % ctx.lines("cd.txt"))
     ctx.be.type("echo L$SHLVL >> cd2.txt", 12, enter=True)
-    time.sleep(0.8)
+    ctx.until(lambda: len(ctx.lines("cd2.txt")) >= 1, 5)
     ctx.be.type("bash", 12, enter=True)
     time.sleep(2)
     ctx.be.type("echo L$SHLVL >> cd2.txt", 12, enter=True)
-    time.sleep(0.8)
-    ctx.be.key("ctrl+d")
-    time.sleep(1.5)
-    ctx.be.type("echo L$SHLVL >> cd2.txt", 12, enter=True)
-    time.sleep(1)
+    ctx.until(lambda: len(ctx.lines("cd2.txt")) >= 2, 5)
     l = ctx.lines("cd2.txt")
-    ok = len(l) == 3 and l[0] == l[2] and l[1] == "L%d" % (int(l[0][1:]) + 1)
-    r.check(ok, "Ctrl-D leaves the nested shell: SHLVL lines %r" % l)
+    nested = len(l) >= 2 and l[0].startswith("L") and l[1].startswith("L") and l[0][1:].isdigit() and l[1][1:].isdigit() \
+        and int(l[1][1:]) == int(l[0][1:]) + 1
+    r.check(nested, "nested bash not entered (SHLVL lines %r): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)" % l)
+    if nested:
+        ctx.be.key("ctrl+d")
+        time.sleep(1.5)
+        ctx.be.type("echo L$SHLVL >> cd2.txt", 12, enter=True)
+        ctx.until(lambda: len(ctx.lines("cd2.txt")) >= 3, 5)
+        l = ctx.lines("cd2.txt")
+        ok = len(l) == 3 and l[0] == l[2]
+        r.check(ok, "Ctrl-D leaves the nested shell: SHLVL lines %r" % l)
     ctx.reset()
 
 
