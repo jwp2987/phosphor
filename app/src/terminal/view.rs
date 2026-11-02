@@ -12928,6 +12928,19 @@ impl TerminalView {
         self.open_secret_tool_tip.is_some()
     }
 
+    /// #1558: run an Enter held as the pending command because the shell could not take it yet,
+    /// on each event that can make it ready (the session's registration, its first Precmd). Still
+    /// not ready: it stays held for the next one (`enter_held_still_unready`).
+    fn retry_held_unready_enter(&mut self, on: &'static str, ctx: &mut ViewContext<Self>) {
+        if self
+            .input
+            .read(ctx, |input, _| input.has_held_unready_enter())
+        {
+            warpui::input_order::log_hop("enter_held_retry", || format!("on={on}"));
+            self.execute_pending_command((), ctx);
+        }
+    }
+
     fn handle_sessions_event(&mut self, event: SessionsEvent, ctx: &mut ViewContext<Self>) {
         match event {
             SessionsEvent::SessionInitialized { .. } => {
@@ -12937,6 +12950,8 @@ impl TerminalView {
                 self.handle_session_bootstrapped(*event, ctx);
                 // #1348: the registration a held Enter was waiting for (#1332).
                 self.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                // #1558: the same registration is what a held deferred Enter waits for.
+                self.retry_held_unready_enter("session_bootstrapped", ctx);
             }
             // The "default fully-silent" legacy-SSH-fallback case (TODO.md
             // "Remote-session setup degrades silently", item 1): fired at
@@ -17866,12 +17881,7 @@ impl TerminalView {
                 // queued behind all of it by the single-threaded loop.
                 self.deliver_ssh_typeahead_if_ready("precmd", ctx);
                 // #1558: an Enter held because the shell had not processed this Precmd yet.
-                if self
-                    .input
-                    .read(ctx, |input, _| input.has_held_unready_enter())
-                {
-                    self.execute_pending_command((), ctx);
-                }
+                self.retry_held_unready_enter("precmd", ctx);
                 // #1014: the subshell's first prompt is drawn and the block list is in its normal
                 // state: only now are the keys held through a stalled setup delivered, so the
                 // command they spell starts an ordinary visible block. (Setup still pending:
