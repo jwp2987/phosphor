@@ -18247,8 +18247,10 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
             });
         });
         terminal.update(&mut app, |view, ctx| {
-            // A registered session: without one the submit has nowhere to go.
+            // A registered session whose first Precmd was processed: without it the submit has
+            // nowhere to go (the shell refuses a command until its history is appendable, #1332).
             register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
             view.input.update(ctx, |input, _| {
                 input.arm_ssh_handover_enter_guard("echo old".into())
             });

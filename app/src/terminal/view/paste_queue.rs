@@ -430,7 +430,14 @@ impl Host for PtyQueueHost<'_, '_> {
     /// whose connect gate is armed by the event that submit emits, after this call returns: the
     /// held input behind it is judged on a later update, with that gate in place (#1421).
     fn yield_after(&mut self, entry: &InputEntry) -> bool {
-        matches!(&entry.kind, EntryKind::Held { class, .. } if *class == crate::terminal::input_queue::HELD_KEY)
+        // Only an Enter can submit a command; a Backspace or Ctrl-U cannot arm a gate, so the
+        // drain goes on through them in the same turn (keys behind them must not wait a turn).
+        matches!(
+            &entry.kind,
+            EntryKind::Held { class, text }
+                if *class == crate::terminal::input_queue::HELD_KEY
+                    && matches!(text.as_str(), "\r" | "\n" | "\r\n")
+        )
     }
 
     fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
