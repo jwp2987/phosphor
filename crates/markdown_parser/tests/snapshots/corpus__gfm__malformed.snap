@@ -50,14 +50,10 @@ FormattedText {
                 ],
             },
         ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: ">>> >> >",
-                    styles: PlainText,
-                },
-            ],
-        ),
+        BlockQuote {
+            depth: 6,
+            line: LineBreak,
+        },
         Line(
             [
                 FormattedTextFragment {

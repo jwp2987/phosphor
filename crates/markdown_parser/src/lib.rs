@@ -11,6 +11,7 @@ use itertools::Itertools;
 pub use markdown_parser::{
     MarkdownResumePoint, MarkdownTail, parse_image_prefix, parse_image_run_line,
     parse_inline_markdown, parse_markdown, parse_markdown_tail, parse_markdown_with_gfm_tables,
+    parse_markdown_with_gfm_tables_without_blockquotes, parse_markdown_without_blockquotes,
 };
 use serde_yaml::Mapping;
 use weight::CustomWeight;
@@ -163,6 +164,52 @@ pub enum FormattedTextLine {
     Embedded(Mapping),
     Image(FormattedImage),
     Table(FormattedTable),
+    /// One line of a blockquote (`> text`), nested `depth` levels deep (`> > text` is depth 2).
+    /// A quote is a run of consecutive `BlockQuote` lines; `line` is the quoted block and is never
+    /// itself a `BlockQuote` (nesting is carried by `depth`). A blank line inside a quote is a
+    /// `BlockQuote` around [`FormattedTextLine::LineBreak`].
+    BlockQuote {
+        depth: usize,
+        line: Box<FormattedTextLine>,
+    },
+}
+
+impl FormattedTextLine {
+    /// Splits a (possibly quoted) line into its quote depth and the line that is quoted. A line
+    /// that is not a quote has depth 0.
+    pub fn unquote(&self) -> (usize, &FormattedTextLine) {
+        match self {
+            Self::BlockQuote { depth, line } => {
+                let (inner_depth, inner) = line.unquote();
+                (depth + inner_depth, inner)
+            }
+            other => (0, other),
+        }
+    }
+
+    /// The literal-text form of a quote line: the `> ` markers are kept as text, exactly as the
+    /// source wrote them. Consumers that can only store text (the rich-text editor) use this so
+    /// that opening and saving a file leaves its quote lines byte-identical. A quoted block that
+    /// has no single-line text form (list item, code block, ...) falls back to the block alone.
+    /// Lines that are not quotes are returned unchanged.
+    pub fn into_literal_quote(self) -> Self {
+        let Self::BlockQuote { .. } = self else {
+            return self;
+        };
+        let (depth, inner) = self.unquote();
+        let marker = "> ".repeat(depth);
+        match inner {
+            Self::Line(fragments) => {
+                let mut literal = vec![FormattedTextFragment::plain_text(marker)];
+                literal.extend(fragments.iter().cloned());
+                Self::Line(literal)
+            }
+            Self::LineBreak => Self::Line(vec![FormattedTextFragment::plain_text(
+                marker.trim_end().to_string(),
+            )]),
+            other => other.clone(),
+        }
+    }
 }
 
 impl FormattedTextLine {
@@ -194,6 +241,7 @@ impl FormattedTextLine {
             Self::LineBreak | Self::HorizontalRule | Self::Embedded(_) => "\n".to_string(),
             Self::Image(image) => format!("{}\n", image.alt_text),
             Self::Table(table) => table.to_internal_format(),
+            Self::BlockQuote { line, .. } => line.raw_text(),
         };
         // Each `FormattedTextLine` unit represents a complete line. If it doesn't already end in
         // a newline, add one.
@@ -230,6 +278,9 @@ impl FormattedTextLine {
                     fragment.styles.weight = weight;
                 }
             }
+            Self::BlockQuote { line, .. } => {
+                line.set_weight(weight);
+            }
             Self::Table(_)
             | Self::CodeBlock(_)
             | Self::LineBreak
@@ -247,6 +298,7 @@ impl FormattedTextLine {
             FormattedTextLine::OrderedList(texts) => Some(&texts.indented_text.text),
             FormattedTextLine::UnorderedList(texts) => Some(&texts.text),
             FormattedTextLine::TaskList(list) => Some(&list.text),
+            FormattedTextLine::BlockQuote { line, .. } => line.inline_fragments(),
             FormattedTextLine::CodeBlock(_)
             | FormattedTextLine::LineBreak
             | FormattedTextLine::HorizontalRule
@@ -289,6 +341,7 @@ impl LineCount for FormattedTextLine {
             Self::Embedded(_) => 1,
             Self::Image(_) => 1,
             Self::Table(table) => 1 + table.rows.len(), // Header + data rows (separator not counted as a line)
+            Self::BlockQuote { line, .. } => line.num_lines(),
         }
     }
 }

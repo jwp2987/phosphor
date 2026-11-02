@@ -937,7 +937,7 @@ pub trait RichTextEditorModel: CoreEditorModel {
 
     fn update_to_new_markdown(&mut self, markdown: &str, ctx: &mut ModelContext<Self::T>) {
         use crate::content::buffer::StyledBlockBoundaryBehavior;
-        use markdown_parser::{compute_formatted_text_delta, parse_markdown};
+        use markdown_parser::{compute_formatted_text_delta, parse_markdown_without_blockquotes};
 
         // Try to obtain the current formatted-text view from the buffer and
         // compute both the `FormattedText` delta and the common prefix length in
@@ -949,7 +949,7 @@ pub trait RichTextEditorModel: CoreEditorModel {
             let old_formatted =
                 buffer.range_to_formatted_text(full_range, StyledBlockBoundaryBehavior::Inclusive);
 
-            let new_formatted = match parse_markdown(markdown) {
+            let new_formatted = match parse_markdown_without_blockquotes(markdown) {
                 Ok(parsed) => parsed,
                 Err(_) => return None,
             };

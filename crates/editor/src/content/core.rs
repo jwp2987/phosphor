@@ -32,6 +32,10 @@ use warpui::elements::ListIndentLevel;
 const IMAGE_TOO_LARGE_PLACEHOLDER: &str = "Image too large to display";
 fn replace_oversized_data_uri_images(mut text: FormattedText) -> FormattedText {
     for line in text.lines.iter_mut() {
+        // The editor stores quote markers as literal text (see `into_literal_quote`).
+        if matches!(line, FormattedTextLine::BlockQuote { .. }) {
+            *line = std::mem::replace(line, FormattedTextLine::LineBreak).into_literal_quote();
+        }
         if let FormattedTextLine::Image(image) = line
             && asset_cache::data_uri_exceeds_limit(&image.source)
         {
@@ -906,6 +910,9 @@ impl Buffer {
                         );
                     }
                 }
+                // Replaced by its literal-text form before this loop (see
+                // `replace_oversized_data_uri_images`).
+                FormattedTextLine::BlockQuote { .. } => {}
             }
             edit_cursor = CursorType::NewLineStart;
             inherit_styling = false;
