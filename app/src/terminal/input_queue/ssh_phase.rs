@@ -39,6 +39,9 @@ pub enum SshRelease {
     Failed,
     /// A command that is not ssh started: the window is stale. An event.
     OtherCommand,
+    /// A shell prompt (not a credential prompt) of an unmanaged remote is up and the held keys
+    /// are delivered to it (#1561). An event.
+    ShellPrompt,
     /// GIVE-UP: the window passed its ceiling with none of the events above.
     GiveUpCeiling,
     /// GIVE-UP: the announced remote session finished its bootstrap and no first prompt came.
@@ -65,6 +68,7 @@ impl SshRelease {
             SshRelease::FirstPrompt => "first_prompt",
             SshRelease::Failed => "failed",
             SshRelease::OtherCommand => "other_command",
+            SshRelease::ShellPrompt => "shell_prompt",
             SshRelease::GiveUpCeiling => "give_up_ceiling",
             SshRelease::GiveUpFirstPromptGrace => "give_up_first_prompt_grace",
             SshRelease::GiveUpPostBlockGrace => "give_up_post_block_grace",
