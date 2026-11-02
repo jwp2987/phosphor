@@ -1,0 +1,4 @@
+flowchart LR
+    A[日本語 ラベル] --> B[Ünïcödé]
+    B --> C[مرحبا]
+    C --> D["Emoji 🎉 node"]

@@ -1,0 +1,9 @@
+mindmap
+  root((Testing))
+    Unit
+      Parser
+      Layout
+    Integration
+    Real app
+      Linux
+      Mac

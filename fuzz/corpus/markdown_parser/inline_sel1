@@ -1,0 +1,12 @@
+Plain with `inline code` and ``double `tick` code`` here.
+
+**bold** *italic* _italic_ __bold__ ***both*** ~~strike~~ <u>underline</u>
+
+Mixed **bold with *nested italic* inside** text.
+
+Unclosed **bold and `code and *italic
+
+Escapes: \* \_ \` \# \[ \] 1\. not a list.
+
+Hard break with two spaces  
+next line.

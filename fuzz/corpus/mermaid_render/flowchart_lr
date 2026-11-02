@@ -1,0 +1,10 @@
+flowchart LR
+    Client[Client App] --> Gateway[API Gateway]
+    Gateway --> Auth[Auth Service]
+    Gateway --> Orders[Order Service]
+    Orders --> DB[(Database)]
+    subgraph Backend
+        Auth
+        Orders
+        DB
+    end

@@ -697,7 +697,7 @@ fuzz-smoke:
     # The fuzz crate has its own lockfile; start from the app's so versions match.
     - cp Cargo.lock fuzz/Cargo.lock
     - |
-      for target in ansi_parser hook_parsers input_queue; do
+      for target in ansi_parser hook_parsers input_queue markdown_parser mermaid_render; do
         ./script/agent-cargo ci-fuzz fuzz run --fuzz-dir fuzz "$target" -- -max_total_time="$FUZZ_SECONDS" -timeout=20
       done
   artifacts:

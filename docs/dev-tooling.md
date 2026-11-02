@@ -81,6 +81,8 @@ cargo test -p warp --test real_shell_markers
 |---|---|
 | `ansi_parser` | arbitrary pty output into a `TerminalModel` through `ansi::Processor`, in 1..64-byte reads |
 | `hook_parsers` | payloads inside valid DCS `$d`/`$f`, OSC 9278 `f`/`d`, OSC 7771 and OSC 9277 frames |
+| `markdown_parser` | the markdown reader (full parse, raw text, inline, streamed tail == full parse), GFM tables on/off; seeds = `crates/markdown_parser/tests/fixtures` |
+| `mermaid_render` | `mermaid_to_svg::render_mermaid_to_svg` on arbitrary text: Ok is an SVG and deterministic, never a panic; seeds = `crates/editor/tests/fixtures/mermaid` |
 | `input_queue` | `Vec<Op>` (`arbitrary`) through `warp::dev_support::run_ops`: the proptest model's reference model and invariants |
 
 ```

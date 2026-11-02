@@ -1,0 +1,18 @@
+A [link](https://example.com) and [titled](https://example.com "Title") and [empty]().
+
+Autolink <https://example.com/auto> and bare https://example.com/bare text.
+
+Email <someone@example.com>.
+
+![alt text](https://example.com/img.png)
+
+![alt](./relative/path.png "title")
+
+[![badge](https://example.com/b.svg)](https://example.com)
+
+[ref link][ref]
+
+[ref]: https://example.com/ref
+
+[broken](https://example.com
+[unclosed link text

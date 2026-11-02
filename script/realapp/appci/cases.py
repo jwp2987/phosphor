@@ -10,7 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint")
+SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -1027,3 +1027,155 @@ def c_tabs(ctx, r):
     r.check(ctx.lines("tw.txt") == exp, "typing/paste in window 2 under %d streaming tabs: %d/%d exact lines" % (ntabs, len(ctx.lines("tw.txt")), len(exp)))
     ctx.shot("two_windows")
     r.check(ctx.app.alive(), "app not alive at the end of the tabs/windows case")
+
+
+# ---------------------------------------------------------------- markdown / mermaid viewer (#1460)
+MD_SMALL = """# PhosphorMdProbe
+
+Intro paragraph with `inline code` and a [link](https://example.com).
+
+| Fruit | Count |
+|-------|-------|
+| ZEBRAAPPLE | 42 |
+| QUINCEBERRY | 17 |
+
+```mermaid
+graph TD
+    A[AlphaNodeStart] --> B[BetaNodeMiddle]
+    B --> C[GammaNodeEnd]
+```
+
+Closing paragraph.
+"""
+MD_SMALL_TEXT = ("phosphormdprobe", "zebraapple", "quinceberry")           # heading + table cells (lower-cased, spaces stripped)
+MD_SMALL_DIAGRAM = ("alphanodestart", "betanodemiddle", "gammanodeend")    # mermaid node labels, drawn from the SVG
+
+
+def _squash(txt):
+    return "".join((txt or "").lower().split())
+
+
+def open_file_in_app(ctx, path):
+    """Hand a local file to the RUNNING app the way the OS would (file:// URL -> uri::open_file -> markdown viewer pane
+    when code.editor.prefer_markdown_viewer, default true). Linux: a second invocation of the same binary inside the app's own
+    D-Bus session forwards the URL to the running instance (app_services/linux). macOS: `open -a <bundle> <file>`
+    (LaunchServices open-URL event to the running instance). Returns a failure string or None."""
+    if ctx.be.name == "mac":
+        r = subprocess.run(["open", "-a", ctx.app.bundle, path], capture_output=True, timeout=30)
+        return None if r.returncode == 0 else "open -a failed: %s" % r.stderr.decode(errors="replace")[:200]
+    pid = ctx.app.pid()
+    try:
+        raw = open("/proc/%d/environ" % pid, "rb").read().split(b"\0")
+    except Exception as e:
+        return "cannot read the app environment (%r)" % (e,)
+    env = dict(x.decode(errors="replace").split("=", 1) for x in raw if b"=" in x)
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        return "app has no DBUS_SESSION_BUS_ADDRESS: cannot forward a second invocation"
+    p = subprocess.Popen([ctx.app.bin, "file://" + path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    with open(os.path.join(ctx.run, "pids"), "a") as f:
+        f.write("md-open %d\n" % p.pid)
+    try:
+        p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, 9)          # exactly the helper we started, never by name
+        return "the forwarding invocation did not exit within 30 s"
+    return None
+
+
+def wait_for_text(ctx, tag, needles, timeout):
+    """Poll OCR until every needle (space-less, lower-case) is on screen. Returns (seconds, found_text) ; seconds None on timeout."""
+    t0 = time.time()
+    txt = ""
+    while time.time() - t0 < timeout:
+        got = ctx.ocr(tag)
+        if got is None:
+            return None, None
+        txt = _squash(got)
+        if all(n in txt for n in needles):
+            return time.time() - t0, txt
+        time.sleep(0.7)
+    return None, txt
+
+
+@case("md_viewer", order=80, gui=True)
+def c_md_viewer(ctx, r):
+    """Opens a small .md (table + mermaid flowchart) in the app's markdown viewer pane; screenshot proof, OCR of the table text
+    and the diagram's node labels. Agent-mode AI answers are covered by md_viewer_ai_answer. Windows: not covered (harness is
+    app_test.ps1; no OCR engine there)."""
+    path = os.path.join(ctx.W, "probe.md")
+    open(path, "w").write(MD_SMALL)
+    off = ctx.log_size()
+    err = open_file_in_app(ctx, path)
+    r.check(err is None, "could not hand the file to the running app: %s" % err)
+    if err:
+        return
+    time.sleep(2)
+    secs, txt = wait_for_text(ctx, "md_small", MD_SMALL_TEXT, 20)
+    if txt is None:
+        ctx.shot("md_small_noocr")
+        r.note("no OCR engine (tesseract / Apple Vision): screenshot shots/%s_md_small_noocr.png only, table text and diagram labels NOT machine-verified" % ctx.mode)
+    else:
+        r.metric("md_small_text_visible_s", round(secs, 2) if secs is not None else None)
+        r.check(secs is not None, "markdown viewer: heading/table text %s not visible within 20 s (OCR saw %r)" % (list(MD_SMALL_TEXT), txt[:300]))
+        _, txt2 = wait_for_text(ctx, "md_small_diagram", MD_SMALL_DIAGRAM, 15)
+        missing = [n for n in MD_SMALL_DIAGRAM if n not in (txt2 or "")]
+        r.check(not missing, "mermaid flowchart node labels not visible (blank / failed diagram block?): missing %s; OCR saw %r" % (missing, (txt2 or "")[:300]))
+    new = ctx.log_since(off)
+    r.check("panicked at" not in new, "app log shows a panic while opening the markdown file")
+    r.check(ctx.app.alive(), "app died while opening the markdown file")
+
+
+@case("md_viewer_big", modes=("terminal",), order=81, gui=True)
+def c_md_viewer_big(ctx, r):
+    """2 MB markdown file (full tier only; SMOKE keeps the small file): time until its first heading is on screen and the app's RSS growth."""
+    if os.environ.get("APPCI_TIER") == "smoke":
+        raise Skip("smoke tier: only the small file")
+    rr = random.Random(11)
+    out, size = ["# BIGDOCSTART", ""], 0
+    i = 0
+    while size < 2_000_000:
+        i += 1
+        para = " ".join("".join(rr.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rr.randint(2, 9))) for _ in range(rr.randint(20, 60)))
+        out += ["## Section %d" % i, "", para, "", "- item %d a" % i, "- item %d b" % i, "", "| k | v |", "|---|---|", "| row%d | %d |" % (i, i), ""]
+        size += len(para) + 120
+    path = os.path.join(ctx.W, "big.md")
+    open(path, "w").write("\n".join(out))
+    r.metric("md_bytes", os.path.getsize(path))
+    rss0 = ctx.app.cpu_ticks()[1]
+    t0 = time.time()
+    err = open_file_in_app(ctx, path)
+    r.check(err is None, "could not hand the file to the running app: %s" % err)
+    if err:
+        return
+    secs, txt = wait_for_text(ctx, "md_big", ("bigdocstart",), 90)
+    if txt is None:
+        raise Skip("no OCR engine: cannot time the render (screenshot only)")
+    rss1 = ctx.app.cpu_ticks()[1]
+    r.metric("md_big_render_s", round(time.time() - t0, 2) if secs is not None else None)
+    r.metric("md_big_rss_delta_mb", round((rss1 - rss0) / 1024.0, 1))
+    # Budgets are first guesses (no measurement yet): tighten after the first CI numbers (docs/testing.md).
+    r.check(secs is not None, "2 MB markdown file: first heading not visible within 90 s")
+    r.check((rss1 - rss0) / 1024.0 < 3000, "2 MB markdown file grew the app by %.0f MB RSS (budget 3000 MB)" % ((rss1 - rss0) / 1024.0))
+    r.check(ctx.app.alive(), "app died rendering the 2 MB markdown file")
+
+
+@case("md_viewer_ai_answer", modes=("agent",), order=82, gui=True)
+def c_md_ai_answer(ctx, r):
+    """Agent mode: ask the CI model for a markdown table + mermaid flowchart and look at the rendered answer. Needs the CI Ollama
+    model (ctx.ollama); there is no fake-model path in the app. Model output is nondeterministic, so the OCR result is a NOTE and a
+    metric, never a failure; a failure is only an app crash / panic."""
+    if not ctx.ollama:
+        raise Skip("no local/CI model configured (APPCI_OLLAMA_URL): no deterministic AI-answer path exists, so agent-mode markdown rendering is only covered by the unit corpus")
+    off = ctx.log_size()
+    ctx.be.type("Reply with only this markdown and nothing else: a table with header Fruit and Count and one row ZEBRAAPPLE and 42, then a fenced mermaid block containing graph TD with A[AlphaNodeStart] --> B[BetaNodeMiddle]", 12, enter=True)
+    secs, txt = wait_for_text(ctx, "md_ai", ("zebraapple",), 120)
+    if txt is None:
+        raise Skip("no OCR engine: screenshot only")
+    r.metric("ai_table_visible", secs is not None)
+    _, txt2 = wait_for_text(ctx, "md_ai_diagram", ("alphanodestart",), 10)
+    r.metric("ai_diagram_labels_visible", bool(txt2 and "alphanodestart" in txt2))
+    if secs is None:
+        r.note("model answer did not show ZEBRAAPPLE within 120 s (model nondeterminism or no answer); see shots/agent_md_ai.png")
+    r.check("panicked at" not in ctx.log_since(off), "app log shows a panic while rendering the AI markdown answer")
+    r.check(ctx.app.alive(), "app died rendering the AI markdown answer")
+    ctx.be.key("ctrl+c")

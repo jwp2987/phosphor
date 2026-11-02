@@ -1,0 +1,23 @@
+| header only, no delimiter row |
+| a | b |
+
+```
+fence with text after ``` on same line
+
+- [ ] [x] [ ]
+>>> >> >
+#no space heading
+ # leading-space heading
+*
+-
+1.
+[](
+![](
+****
+____
+| | |
+|-|-|
+<
+<>
+&amp; &#x1F600; &bogus;
+\
