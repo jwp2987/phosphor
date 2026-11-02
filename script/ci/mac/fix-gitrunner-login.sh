@@ -5,10 +5,8 @@
 # macOS app tests can type into Phosphor and take screenshots.
 #
 # WHY: setup-mac-runner.sh (2026-10-26) created `gitrunner` as a background-only
-# account. Its password step never wrote a password record: the account has no
-# AuthenticationAuthority, so it cannot log in and System Settings > Users &
-# Groups does not list it. A working account (e.g. yours) has
-#   AuthenticationAuthority: ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2,...>
+# account: hidden, no login shell, and a password nobody knew. It could not log
+# in and System Settings > Users & Groups did not list it.
 # The runner also runs as a system LaunchDaemon, which has no desktop: macOS only
 # lets a process inside a logged-in GUI session inject keys and record the screen.
 #
@@ -94,7 +92,7 @@ if dseditgroup -o checkmember -m "$RUNNER_USER" admin >/dev/null 2>&1; then
 fi
 note "admin user:   $ADMIN_USER"
 note "runner user:  $RUNNER_USER  (uid $(id -u "$RUNNER_USER"), home $RUNNER_HOME)"
-note "password rec: $(has_attr AuthenticationAuthority && echo present || echo MISSING)"
+note "password set: $(dscl . -read "/Users/${RUNNER_USER}" accountPolicyData 2>/dev/null | grep -q passwordLastSetTime && echo yes || echo never)"
 note "IsHidden:     $(has_attr IsHidden && attr IsHidden || echo '(not set)')"
 note "shell:        $(attr UserShell)"
 note "FileVault:    $(fdesetup status 2>/dev/null | head -1)"
@@ -123,37 +121,41 @@ if $APPLY; then
   ok "not hidden; shell /bin/zsh"
 fi
 
-# ------------------------------------------------------- 2. the password record
-step "2. Password record (the missing piece)"
-if has_attr AuthenticationAuthority; then
-  note "AuthenticationAuthority already present; leaving it"
-else
-  note "adding the same AuthenticationAuthority a normal account has"
-  run sudo dscl . -create "/Users/${RUNNER_USER}" AuthenticationAuthority "$AUTH_AUTHORITY"
-fi
-note "now set a password for $RUNNER_USER. Pick a new one and keep it in your password manager."
-note "You will be asked for it twice by this script (set, then a test login)."
+# ------------------------------------------------------- 2. the password
+# Do NOT judge this by reading AuthenticationAuthority: macOS shows that attribute only to the
+# account itself and root, so from your account it reads "No such key" even when it is fine
+# (root's reads the same way). The only real test is a login: dscl . -authonly.
+step "2. Password"
+note "Set a password for $RUNNER_USER (a new one, or the one you set earlier) and keep it in your"
+note "password manager. You type it twice; the script then test-logs in with it."
 if $APPLY; then
-  has_attr AuthenticationAuthority || die "AuthenticationAuthority was not written"
   pw1=""; pw2=""
   printf '   New password for %s (hidden): ' "$RUNNER_USER"; read -rs pw1; echo
   printf '   Again (hidden): ' ; read -rs pw2; echo
   [ -n "$pw1" ] || die "empty password"
   [ "$pw1" = "$pw2" ] || die "the two passwords differ"
+  unset pw2
   # dscl reads the password from argv; the value is visible in `ps` for a moment.
   # This Mac has one human user (you).
-  sudo dscl . -passwd "/Users/${RUNNER_USER}" "$pw1" || die "dscl -passwd failed"
-  unset pw2
+  sudo dscl . -passwd "/Users/${RUNNER_USER}" "$pw1" || die "sudo dscl . -passwd failed (message above)"
   if dscl . -authonly "$RUNNER_USER" "$pw1" >/dev/null 2>&1; then
-    ok "test login with the new password works"
+    ok "test login with the password works"
   else
-    unset pw1
-    die "the password was set but a test login fails (dscl -authonly)"
+    note "test login failed; adding the standard password record and setting it again"
+    sudo dscl . -create "/Users/${RUNNER_USER}" AuthenticationAuthority "$AUTH_AUTHORITY" \
+      || die "could not add the password record (message above)"
+    sudo dscl . -passwd "/Users/${RUNNER_USER}" "$pw1" || die "sudo dscl . -passwd failed (message above)"
+    if dscl . -authonly "$RUNNER_USER" "$pw1" >/dev/null 2>&1; then
+      ok "test login with the password works"
+    else
+      unset pw1
+      die "the password is set but a test login still fails (dscl . -authonly)"
+    fi
   fi
   unset pw1
 else
-  note "(dry run) would prompt for the password, set it with: sudo dscl . -passwd /Users/$RUNNER_USER <hidden>"
-  note "(dry run) would then check it with: dscl . -authonly $RUNNER_USER <hidden>"
+  note "(dry run) would prompt for the password, set it with: sudo dscl . -passwd /Users/$RUNNER_USER <hidden>,"
+  note "          and check it with a test login: dscl . -authonly $RUNNER_USER <hidden>"
 fi
 
 # ---------------------------------------------------- 3. Users & Groups listing
