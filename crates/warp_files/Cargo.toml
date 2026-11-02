@@ -11,6 +11,7 @@ anyhow = "1.0"
 async-channel.workspace = true
 async-fs.workspace = true
 futures.workspace = true
+thiserror.workspace = true
 warpui.workspace = true
 remote_server.workspace = true
 warp_core.workspace = true

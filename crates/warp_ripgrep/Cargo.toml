@@ -13,6 +13,7 @@ license.workspace = true
 anyhow.workspace = true
 grep = "0.4.1"
 ignore = "0.4.20"
+instant.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,6 +26,7 @@ command.workspace = true
 futures.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

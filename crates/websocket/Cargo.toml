@@ -15,6 +15,7 @@ itertools.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 http.workspace = true
+cfg-if.workspace = true
 log.workspace = true
 thiserror.workspace = true
 pin-project.workspace = true
@@ -25,6 +26,8 @@ futures-test-sink = "0.1.1"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+async-io.workspace = true
+async-net = "2.0.0"
 async-tungstenite = {version = "0.28.2", features = ["tokio-rustls-manual-roots"]}
 http-body-util = "0.1"
 hyper = { workspace = true, features = ["client", "http1"] }

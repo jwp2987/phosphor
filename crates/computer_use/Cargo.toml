@@ -15,6 +15,7 @@ test-util = []
 
 [dependencies]
 async-trait.workspace = true
+cfg-if.workspace = true
 clap.workspace = true
 log.workspace = true
 pathfinder_geometry.workspace = true
