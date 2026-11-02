@@ -879,10 +879,6 @@ impl LocalCodeEditorView {
                         let _ = server.manual_start(ctx);
                     });
                 }
-                CodeFooterViewEvent::RestartAllServers { .. }
-                | CodeFooterViewEvent::StopAllServers { .. }
-                | CodeFooterViewEvent::StartAllServers { .. }
-                | CodeFooterViewEvent::ManageServers => {}
             });
 
             // Subscribe to PersistedWorkspace events for LSP installation completion

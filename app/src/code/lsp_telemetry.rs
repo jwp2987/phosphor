@@ -49,10 +49,6 @@ pub enum LspControlActionType {
     Stop,
     #[serde(rename = "start")]
     Start,
-    #[serde(rename = "restart_all")]
-    RestartAll,
-    #[serde(rename = "stop_all")]
-    StopAll,
 }
 
 /// The LSP telemetry event catalog, carried over verbatim from the pin.
