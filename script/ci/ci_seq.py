@@ -87,6 +87,30 @@ def _exists(p):
     return os.path.exists(p)
 
 
+# Per-path overrides for the input path (#1504). The generic mapping below turns app/src/a/b.rs into test(/a::b/), which selects ZERO
+# tests for files whose tests live elsewhere (input_queue/destination.rs and gates.rs are tested from input_queue::tests and
+# input_queue::table::tests; view.rs's hand-over tests are in input_queue::, pane_key::, model::typeahead_handoff). Any path matching a
+# rule here selects the whole INPUT_PATH set plus the rule's extra module alternatives, as `terminal::(...)` test-name regexes.
+INPUT_PATH = ["input_queue", "pane_key", "view", "model::key_facts", "model::typeahead_handoff"]
+INPUT_PATH_RULES = [
+    (re.compile(r"^app/src/terminal/input_queue/"), []),
+    (re.compile(r"^app/src/terminal/view(\.rs|/|_)"), ["writeable_pty", "local_tty"]),
+    (re.compile(r"^app/src/terminal/model/typeahead"), []),
+    (re.compile(r"^app/src/terminal/local_tty/"), ["local_tty", "writeable_pty"]),
+    (re.compile(r"^app/src/terminal/writeable_pty/"), ["writeable_pty", "local_tty"]),
+    (re.compile(r"^app/src/terminal/pane_key"), []),
+    (re.compile(r"^app/src/terminal/(model/)?bootstrap"), ["bootstrap", "model::bootstrap"]),
+]
+
+
+def input_path_test(f):
+    """-> the `terminal::(a|b|...)` regex for a changed path under the input path, or None."""
+    for rx, extra in INPUT_PATH_RULES:
+        if rx.search(f):
+            return "terminal::(%s)" % "|".join(INPUT_PATH + [x for x in extra if x not in INPUT_PATH])
+    return None
+
+
 def derive(files):
     """-> (test-linux filterset or '', set of suites to run among {'linux','core','rest'}, reasons).
     Only test-linux (the ~50 min suite) is filtered; warpui-core (~2 min) and workspace-rest (~4 min) run whole, but only when touched."""
@@ -115,6 +139,9 @@ def derive(files):
                 continue                                   # benches are not tests
             if not f.endswith(".rs"):
                 whole_warp = True; why.append("%s -> whole warp package (non-Rust app file)" % f); continue
+            ip = input_path_test(f)
+            if ip:
+                app_tests.add(ip); why.append("%s -> test(/%s/) (input-path override)" % (f, ip)); continue
             segs = [re.sub(r"\.rs$", "", x) for x in segs]
             if "tests" in segs[:-1]:
                 segs = segs[:segs.index("tests")]          # input_queue/tests/ops.rs -> input_queue
@@ -141,6 +168,59 @@ def derive(files):
     # dependents of changed non-app crates: run their own tests inside the warp suite too only by package name
     parts += ["package(%s)" % p for p in sorted(linux_pk) if not whole_warp]
     return " | ".join(parts), suites, why
+
+
+def self_test():
+    """Table-driven checks of derive(): `python3 script/ci/ci_seq.py --self-test`. Exit 0 = all pass."""
+    t = "app/src/terminal/"
+    base = "terminal::(input_queue|pane_key|view|model::key_facts|model::typeahead_handoff"
+    cases = [
+        # (changed files, substrings the filter must contain, suites that must be selected)
+        ([t + "input_queue/destination.rs"], [base + ")"], {"linux"}),
+        ([t + "input_queue/gates.rs"], [base + ")"], {"linux"}),
+        ([t + "input_queue/tests/ops.rs"], [base + ")"], {"linux"}),
+        ([t + "view.rs"], [base + "|writeable_pty|local_tty)"], {"linux"}),
+        ([t + "view/dest_table.rs"], [base + "|writeable_pty|local_tty)"], {"linux"}),
+        ([t + "view_test.rs"], [base + "|writeable_pty|local_tty)"], {"linux"}),
+        ([t + "model/typeahead_handoff.rs"], [base + ")"], {"linux"}),
+        ([t + "local_tty/event_loop.rs"], ["local_tty", "input_queue"], {"linux"}),
+        ([t + "pane_key.rs"], [base + ")"], {"linux"}),
+        ([t + "bootstrap.rs"], ["bootstrap", "input_queue"], {"linux"}),
+        ([t + "model/bootstrap.rs"], ["model::bootstrap"], {"linux"}),
+        ([t + "blockgrid_thing/foo.rs"], ["test(/"], {"linux"}),
+        (["docs/testing.md"], [], set()),
+        (["Cargo.lock"], [], {"linux", "core", "rest"}),
+    ]
+    bad = 0
+    for files, must, suites in cases:
+        filt, got, _ = derive(files)
+        ok = all(m in filt for m in must) and suites <= set(got) and (bool(filt) or "Cargo.lock" in files[0] or not must)
+        if not ok:
+            bad += 1
+        print("%s %s -> %r %s" % ("ok  " if ok else "FAIL", files, filt, sorted(got)))
+    # the old behaviour this replaces: nothing may select a module path that has no tests
+    f, _, _ = derive([t + "input_queue/destination.rs"])
+    if "input_queue::destination" in f:
+        bad += 1; print("FAIL destination.rs still maps to the empty input_queue::destination")
+    print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
+    return 1 if bad else 0
+
+
+def derive_env(before, head, suite):
+    """For the main-push CI jobs: print shell assignments `RUN_SUITE=0|1` and `TEST_FILTER=...` for the diff before..head.
+    Any failure to compute the diff selects the full suite (RUN_SUITE=1, no filter): never silently run less."""
+    r = subprocess.run(["git", "diff", "--name-only", "%s..%s" % (before, head)], capture_output=True, text=True)
+    if r.returncode or not before.strip("0"):
+        sys.stderr.write("derive-env: cannot diff %s..%s (%s); running the full suite\n" % (before[:10], head[:10], r.stderr.strip()))
+        print("RUN_SUITE=1\nTEST_FILTER=")
+        return 0
+    filt, suites, why = derive([l for l in r.stdout.splitlines() if l])
+    for w in why[:15]:
+        sys.stderr.write("derive-env: %s\n" % w)
+    run = suite in suites
+    import shlex
+    print("RUN_SUITE=%d\nTEST_FILTER=%s" % (1 if run else 0, shlex.quote(filt) if suite == "linux" else ""))
+    return 0
 
 
 def platforms_from(files):
@@ -236,7 +316,7 @@ def api(path, method="GET", variables=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Drive a GitLab pipeline through a test tier; see the header of script/ci/ci_seq.py and docs/testing.md")
-    ap.add_argument("ref")
+    ap.add_argument("ref", nargs="?", default="")
     ap.add_argument("skip_pos", nargs="*", help="legacy: job names to skip")
     ap.add_argument("--tier", choices=["fix", "candidate", "release"], default="fix")
     ap.add_argument("--platforms", default="")
@@ -247,10 +327,30 @@ def main():
                     help="harness-only rounds: test this earlier build job of PLATFORM even though the app changed since (recorded as reused)")
     ap.add_argument("--no-reuse", action="store_true", help="fix tier: always build, never reuse an earlier app-identical build")
     ap.add_argument("--collect", action="store_true", help="at the end run script/ci/collect_results.py for this pipeline (writes test-results/; you commit it)")
+    ap.add_argument("--self-test", action="store_true", help="run the table-driven checks of the TEST_FILTER derivation and exit")
+    ap.add_argument("--files", default="", help="with --dry-run: a comma-separated FAKE changed-file list instead of the git diff (prints the filter)")
+    ap.add_argument("--derive-env", nargs=3, metavar=("BEFORE", "HEAD", "SUITE"), help="CI use: print RUN_SUITE/TEST_FILTER shell assignments for BEFORE..HEAD (SUITE = linux|core|rest)")
+    ap.add_argument("--pending-timeout", type=float, default=20, metavar="MIN",
+                    help="a job still 'pending' (no runner picked it up) after this many minutes is reported RUNNER-OFFLINE and the run continues (default 20)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
+    if a.derive_env:
+        return derive_env(*a.derive_env)
+    if a.files and a.dry_run:                      # fake file list: no git, no pipeline
+        files = [f for f in a.files.split(",") if f]
+        filt, suites, why = derive(files)
+        for w in why:
+            print("  ", w)
+        print("TEST_FILTER for test-linux:", filt or "(none: nothing in test-linux's scope changed)")
+        print("suites:", sorted(suites) or "none", " platforms:", platforms_from(files))
+        return 0
+    if not a.ref:
+        ap.error("ref is required")
     ref, tier = a.ref, a.tier
     SKIP = set(a.skip_pos) | set(a.skip)
+    PENDING_LIMIT[0] = a.pending_timeout * 60
 
     sh("git", "fetch", "-q", "origin", check=True)
     base = resolve_base(ref, a.base)
@@ -312,12 +412,23 @@ def main():
         return {j["name"]: j for j in (api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, pid)) or [])}
 
     def wait(name):
+        pending_since = None
         while True:
             s = jobs().get(name, {}).get("status", "missing")
             if s in ("success", "failed", "canceled", "missing", "skipped"):
                 j = jobs().get(name, {})
                 timeline[name] = (s, j.get("duration"))
                 return s
+            # #1517: 'pending' = queued for a runner. A Mac/Windows runner that is offline leaves it pending forever; report
+            # it and let the other jobs go on. (waiting_for_resource, a resource_group queue behind another job, is not pending.)
+            if s == "pending":
+                pending_since = pending_since or time.time()
+                if time.time() - pending_since > PENDING_LIMIT[0]:
+                    print("%s: RUNNER-OFFLINE (pending with no runner for %.0f min); continuing without it" % (name, (time.time() - pending_since) / 60), flush=True)
+                    timeline[name] = (RUNNER_OFFLINE, None)
+                    return RUNNER_OFFLINE
+            else:
+                pending_since = None
             time.sleep(60)
 
     def play(name, variables=None):
@@ -392,9 +503,24 @@ def main():
     if tier == "release":
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
+    network_jobs(jobs, wait, timeline)
     summary(timeline, t_start)
     collect_hint(pid, a.collect)
-    return 0 if all(verdict(k, v[0]) != "FAIL" for k, v in timeline.items()) else 1
+    return 0 if all(verdict(k, v[0]) not in ("FAIL", "OFFLINE") for k, v in timeline.items()) else 1
+
+
+def network_jobs(jobs, wait, timeline):
+    """#1518: licenses/advisories run automatically in every pipeline and need the network. Report them in the timeline; a failure that is a
+    fetch outage (and shows no finding) is NETWORK-FAIL, reported separately and not as a code failure; a genuine finding stays FAIL."""
+    for n in NETWORK_JOBS:
+        j = jobs().get(n)
+        if not j or j["status"] in ("manual", "skipped"):
+            continue
+        s = wait(n)
+        if s == "failed":
+            j = jobs().get(n, {})
+            timeline[n] = (classify_network_job(j["id"]) if j.get("id") else s, j.get("duration"))
+        print(n, timeline.get(n, (s,))[0], flush=True)
 
 
 def collect_hint(pid, auto):
@@ -410,6 +536,25 @@ def collect_hint(pid, auto):
 
 
 TIER_SKIP = "skipped by tier"
+RUNNER_OFFLINE = "RUNNER-OFFLINE"
+NETWORK_FAIL = "NETWORK-FAIL"
+PENDING_LIMIT = [20 * 60]          # seconds; set from --pending-timeout
+NETWORK_JOBS = ("licenses", "advisories")   # need the network (advisory DB / licence sources / cargo-binstall); automatic, not allow_failure
+# What a cargo-deny/binstall FETCH outage looks like. A real finding prints `error[vulnerability]` / `error[unmaintained]` / `error[unsound]`
+# / `error[rejected]` / `error[banned]` etc.: if any of those is in the trace the job is a genuine FAIL whatever else the trace says.
+NETWORK_RX = re.compile(r"failed to (fetch|clone)|could not resolve host|couldn.t resolve|error sending request|connection (reset|refused|timed out)|"
+                        r"timed out|temporary failure in name resolution|unable to (access|update)|network is unreachable|SSL|502|503|504|"
+                        r"failed to download|binstall.*(fail|error)|RPC failed|early EOF", re.I)
+FINDING_RX = re.compile(r"error\[[a-z-]+\]|^error: .*(vulnerabilit|advisor|licen[cs]e|banned|unmaintained|unsound)", re.I | re.M)
+
+
+def classify_network_job(job_id):
+    """-> NETWORK_FAIL when a failed licenses/advisories job failed to FETCH (and shows no finding), else 'failed'."""
+    r = subprocess.run(["glab", "api", "projects/%s/jobs/%d/trace" % (PROJECT, job_id)], capture_output=True, text=True)
+    trace = r.stdout or ""
+    if FINDING_RX.search(trace):
+        return "failed"
+    return NETWORK_FAIL if NETWORK_RX.search(trace) else "failed"
 
 
 def verdict(name, status):
@@ -420,6 +565,10 @@ def verdict(name, status):
         return "SKIPPED"
     if status == "success":
         return "PASS"
+    if status == RUNNER_OFFLINE:
+        return "OFFLINE"
+    if status == NETWORK_FAIL:
+        return "NETWORK"
     if name.startswith(("bench", "mutants", "fuzz")):
         return "INFO"
     return "FAIL"
@@ -429,8 +578,14 @@ def summary(timeline, t0):
     print("\n%-28s %-18s %-8s %s" % ("job", "status", "verdict", "minutes"))
     for k, (s, d) in timeline.items():
         print("%-28s %-18s %-8s %s" % (k, s, verdict(k, s), "%.1f" % (d / 60) if d else "-"))
-    bad = [k for k, (s, _) in timeline.items() if verdict(k, s) == "FAIL"]
+    bad = [k for k, (s, _) in timeline.items() if verdict(k, s) in ("FAIL", "OFFLINE")]
+    net = [k for k, (s, _) in timeline.items() if verdict(k, s) == "NETWORK"]
+    off = [k for k, (s, _) in timeline.items() if verdict(k, s) == "OFFLINE"]
     print("overall: %s" % ("FAIL (%s)" % ", ".join(bad) if bad else "PASS"))
+    if off:
+        print("RUNNER-OFFLINE (not a code failure; the runner never picked the job up): %s" % ", ".join(off))
+    if net:
+        print("NETWORK-DEPENDENT jobs that could not fetch (NOT a code failure and NOT a pass: re-run them, nothing was checked): %s" % ", ".join(net))
     print("wall clock: %.1f min" % ((time.time() - t0) / 60), flush=True)
 
 
