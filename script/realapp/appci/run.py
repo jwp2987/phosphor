@@ -232,11 +232,22 @@ def main():
             for src, dst in ((log_src(prof, a.backend, app), "phosphor.log"), (run + "/app.stdout", "app.stdout"),
                              (run + "/ssh/sshd.log", "sshd.log")):
                 if os.path.exists(src):
-                    t = ci_env.redact(open(src, errors="replace").read(), ollama_url)   # the endpoint never reaches an artifact
+                    t = ci_env.redact(app_log_text(src) if dst == "phosphor.log" else open(src, errors="replace").read(), ollama_url)   # the endpoint never reaches an artifact
                     open(os.path.join(logs, dst), "w").write(t)
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
     return finish(run, a, 1 if exit_fail else 0)
+
+
+def app_log_text(src):
+    """The whole session's app log: the app rotates it at 10 MB into <log>.in_session.N (#1187, N=0 newest), so the rotated chunks come
+    first, oldest first, then the active file. Copying only the active file lost the first part of long modes (#1482 analysis)."""
+    import glob
+    def idx(f):
+        tail = f.rsplit(".", 1)[1]
+        return int(tail) if tail.isdigit() else -1
+    parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=idx, reverse=True) + [src]
+    return "".join(open(f, errors="replace").read() for f in parts if os.path.exists(f))
 
 
 def log_src(prof, backend_name, app=None):
@@ -303,7 +314,7 @@ def keep_instance_log(run, mode, prof, backend_name, ollama_url, n, app=None):
         return
     logs = os.path.join(run, "logs", mode)
     os.makedirs(logs, exist_ok=True)
-    t = ci_env.redact(open(src, errors="replace").read(), ollama_url)
+    t = ci_env.redact(app_log_text(src), ollama_url)
     open(os.path.join(logs, "phosphor.%d.log" % n), "w").write(t)
 
 
