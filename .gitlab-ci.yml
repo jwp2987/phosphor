@@ -881,6 +881,7 @@ app-test-linux-wayland:
     - exit $rc
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 # Private Xvfb (software GL), xdotool: the original X11 path.
 app-test-linux-x11:
@@ -897,6 +898,7 @@ app-test-linux-x11:
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
 # chain; the script probes that first and fails with exit 3 and the list of grants for the owner.
@@ -916,6 +918,7 @@ app-test-macos:
     - script/realapp/mac/ci/app_test.sh dist "$CI_PROJECT_DIR/appci-out/macos"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
   artifacts:
     name: appci-macos
     when: always
@@ -952,6 +955,7 @@ app-test-windows:
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   after_script:
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
   artifacts:
     name: appci-windows
     when: always
@@ -983,6 +987,7 @@ app-test-linux-wayland-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 app-test-linux-x11-reuse:
   extends: app-test-linux-x11
@@ -992,6 +997,7 @@ app-test-linux-x11-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 app-test-macos-reuse:
   extends: app-test-macos
@@ -1002,6 +1008,7 @@ app-test-macos-reuse:
   after_script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
 
 app-test-windows-reuse:
   extends: app-test-windows
@@ -1013,6 +1020,7 @@ app-test-windows-reuse:
   after_script:
     - .\script\ci\fetch_build.ps1 -Record
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).
