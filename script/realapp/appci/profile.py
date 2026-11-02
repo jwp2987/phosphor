@@ -87,6 +87,9 @@ class Profile:
         self.home = os.path.join(run, shell_home_name)
         self.ctl = os.path.join(run, "ctl")
         self.rctl = os.path.join(run, "rctl")          # the ssh "remote" side logs here
+        self.refctl = os.path.join(run, "refctl")      # the Linux reference terminal logs here, never into ctl (#1500)
+        self.ref_rc = os.path.join(self.home, ".refrc")
+        self.ref_active = False                        # True while the reference terminal is the target: commands()/read() then read refctl
         self.rhome = os.path.join(run, "rhome")
         self.shots = os.path.join(run, "shots")
 
@@ -101,8 +104,8 @@ class Profile:
         return _fwd(p) if self.win else p
 
     def build(self, mode, ollama_url=None, ollama_model="gpt-oss:20b", ssh_port=None, ssh_ident=None):
-        for d in (self.home, self.ctl, self.rctl, self.rhome, self.shots):
-            shutil.rmtree(d, ignore_errors=True) if d in (self.home, self.ctl, self.rctl, self.rhome) else None
+        for d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome, self.shots):
+            shutil.rmtree(d, ignore_errors=True) if d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome) else None
             os.makedirs(d, exist_ok=True)
         h = self.home
         os.makedirs(h + "/w", exist_ok=True)
@@ -110,6 +113,7 @@ class Profile:
         for f in ("rec.log", "prompt.log"):
             open(os.path.join(self.ctl, f), "w").close()
             open(os.path.join(self.rctl, f), "w").close()
+            open(os.path.join(self.refctl, f), "w").close()
         if self.win:
             # no python3 on the VM's PATH: sh shims (Git Bash pane only: PowerShell would offer to "open" an extensionless file) exec the private
             # interpreter that runs this harness
@@ -124,6 +128,7 @@ class Profile:
             os.chmod(h + "/bin/now", 0o755)
         _wr(h + "/.bashrc", BASHRC % {"ctl": self._c(self.ctl)})
         _wr(h + "/.bash_profile", BASH_PROFILE)
+        _wr(self.ref_rc, BASHRC % {"ctl": self._c(self.refctl)})
         _wr(h + "/.zshrc", ZSHRC % {"ctl": self._c(self.ctl)})
         os.makedirs(h + "/.config/fish", exist_ok=True)
         _wr(h + "/.config/fish/config.fish", FISH % {"ctl": self._c(self.ctl)})
@@ -333,7 +338,7 @@ class Profile:
         _wr(cfg + "/settings.toml", "\n".join(lines))
 
     def read(self, which, remote=False):
-        p = os.path.join(self.rctl if remote else self.ctl, which)
+        p = os.path.join(self.rctl if remote else (self.refctl if self.ref_active else self.ctl), which)
         try:
             return open(p, errors="replace").read().splitlines()
         except FileNotFoundError:

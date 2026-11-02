@@ -309,7 +309,7 @@ By hand on the VM: `$py = "$env:LOCALAPPDATA\phosphor-ci\python312\python.exe"; 
 | screenshots | `grim` / `import` / `ffmpeg` | `screencapture` | `PIL.ImageGrab` |
 | clipboard | `wl-copy` / `xsel` | `pbcopy` | user32 `CF_UNICODETEXT` |
 | injector record (#1482) | none | `htype2` per-call K lines | per call: events asked / accepted by `SendInput`, wall time of each posted Return; `<run>/inject.log` |
-| reference terminal | foot / xterm | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
+| reference terminal | foot / xterm (own rc `.refrc` and own `refctl/` log dir, never the app pane's `ctl/rec.log`; keys are refused unless the reference window has the focus: sway `get_tree` focused pid/app_id on Wayland, X input focus on the PID's windows on X11, checked before every timed burst) | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
 | key -> paint (`latency_paint`) | skip (no read-back) | `kl3` ScreenCaptureKit | skip (no read-back) |
 | app launch | `dbus-run-session` | `open -n` bundle, private HOME | the side-by-side test build started by the harness; data under the known folders `%LOCALAPPDATA%\phosphor`, `%APPDATA%\phosphor` (wiped per pass; backed up and restored by `app_test.ps1`) |
 | local ssh server | system `sshd` / `fakesshd.py` | system `sshd` | `fakesshd_win.py` (paramiko) on 127.0.0.1; remote shell = Git Bash in a real ConPTY; no OpenSSH Server service |

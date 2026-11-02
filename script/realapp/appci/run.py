@@ -37,6 +37,39 @@ def self_test():
     r = cases.Result("lat", "terminal")
     cases.lat_checks(r, {"budget_verdict": "no-reference", "budget_kind": "overhead", "verdict": "no-reference"}, "Enter")
     assert not r.fails and r.noref and "NO-REFERENCE" in r.notes[0], (r.fails, r.noref)     # not a pass, not a failure (#1499)
+    # #1500: the reference-terminal focus guard refuses unless the REFERENCE window has focus
+    import backend as _b
+    want = dict(pids={4242}, names={"foot"})
+    assert _b.focus_matches(want, dict(pid=4242, app_id="foot"))
+    assert _b.focus_matches(want, dict(pid=None, app_id="Foot"))
+    assert not _b.focus_matches(want, dict(pid=7, app_id="phosphor")) and not _b.focus_matches(want, None)
+    be = _b.WaylandBackend()
+    be.guard_ref()                       # no override: no-op, never queries sway
+    be.guard_override = want
+    be._focused = lambda: dict(pid=7, app_id="phosphor")
+    _sleep, _b.time.sleep = _b.time.sleep, lambda s: None
+    try:
+        be.guard()
+        raise AssertionError("guard let keys through to the wrong window")
+    except RuntimeError as e:
+        assert "does not have focus" in str(e)
+    finally:
+        _b.time.sleep = _sleep
+    be._focused = lambda: dict(pid=4242, app_id="foot")
+    be.guard_ref()
+    # the reference has its own ctl dir: its log is never the app pane's
+    import profile as _p, tempfile
+    d = tempfile.mkdtemp()
+    pr = _p.Profile(d)
+    for dd in (pr.ctl, pr.refctl):
+        os.makedirs(dd, exist_ok=True)
+    open(os.path.join(pr.ctl, "rec.log"), "w").write("C\t1.0\tapp cmd\n")
+    open(os.path.join(pr.refctl, "rec.log"), "w").write("C\t2.0\tref cmd\n")
+    assert pr.refctl != pr.ctl and [c for _, c in pr.commands()] == ["app cmd"]
+    pr.ref_active = True
+    assert [c for _, c in pr.commands()] == ["ref cmd"], "while the reference is the target its OWN log is read"
+    pr.ref_active = False
+    shutil.rmtree(d)
     print("self-test ok")
     return 0
 
