@@ -2205,6 +2205,10 @@ pub struct Input {
     /// newer (#934). `None` when the block that completes was not submitted from the editor
     /// (a typeahead line the shell ran itself): then nothing in the editor belongs to it.
     editor_submission: Option<String>,
+    /// `editor_submission` was set by a pending command that ran as requested while the user had
+    /// typed into its text (#1451): the typed text is handed back whether or not the typeahead
+    /// hand-off is enabled, because it is not typeahead but text the command would have eaten.
+    editor_submission_from_pending: bool,
     /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
     /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
     last_enter_submitted_ai_query: bool,
@@ -3979,6 +3983,7 @@ impl Input {
             ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
+            editor_submission_from_pending: false,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
@@ -6696,6 +6701,7 @@ impl Input {
             // cleared: the text beyond the requested command (all of it if the command text was
             // edited) is what `take_text_newer_than_completed_submission` gives back (#1435).
             self.editor_submission = Some(requested);
+            self.editor_submission_from_pending = true;
         }
         self.has_pending_command = false;
         self.pending_command_text = None;
@@ -7036,6 +7042,7 @@ impl Input {
             }
 
             if matches!(source, CommandExecutionSource::User) {
+                self.editor_submission_from_pending = false;
                 self.editor_submission = Some(self.editor.as_ref(ctx).buffer_text(ctx));
             }
             self.start_block_and_write_command_to_pty(command, source, ctx);
@@ -13126,6 +13133,11 @@ impl Input {
         self.has_pending_command
     }
 
+    /// The command [`Self::set_pending_command`] was asked to run, until it starts (#1450).
+    pub(crate) fn pending_command_text(&self) -> Option<&str> {
+        self.pending_command_text.as_deref()
+    }
+
     /// The command [`Self::set_pending_command`] was last asked to run, for tests.
     #[cfg(test)]
     pub(crate) fn pending_command_text_for_test(&self) -> Option<&str> {
@@ -16132,7 +16144,10 @@ impl Input {
         &mut self,
         ctx: &mut ViewContext<Self>,
     ) -> Option<String> {
-        if !FeatureFlag::TypeaheadHandoff.is_enabled()
+        // Text typed into a pending command is kept with it whether or not the typeahead hand-off
+        // is enabled (#1451); other newer text is the hand-off's.
+        let from_pending = std::mem::take(&mut self.editor_submission_from_pending);
+        if !(FeatureFlag::TypeaheadHandoff.is_enabled() || from_pending)
             || self
                 .model
                 .lock()

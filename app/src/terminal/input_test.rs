@@ -10365,6 +10365,49 @@ fn completion_of_a_shell_run_typeahead_line_leaves_the_editor_alone() {
     });
 }
 
+/// #1451: text typed into a pending command is handed back after the command ran as requested,
+/// with the typeahead hand-off disabled too (it is not typeahead).
+#[test]
+fn text_typed_into_a_pending_command_survives_with_the_handoff_disabled() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            // What `execute_pending_command` leaves behind when the user typed into the command.
+            input.editor_submission = Some("echo requested".to_owned());
+            input.editor_submission_from_pending = true;
+            input.replace_buffer_content("echo requested && rm x", ctx);
+            complete_user_block(input, "echo requested", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), " && rm x");
+        });
+    });
+}
+
+/// #1451 control: without a pending command the disabled hand-off still clears the whole buffer.
+#[test]
+fn block_completion_with_the_handoff_disabled_still_clears_the_editor() {
+    App::test((), |mut app| async move {
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(false);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.editor_submission = Some("ls".to_owned());
+            input.replace_buffer_content("lsho 49", ctx);
+            complete_user_block(input, "ls", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty());
+        });
+    });
+}
+
 /// A plain submit with nothing typed since still clears the editor, as before.
 #[test]
 fn block_completion_clears_exactly_the_submitted_text() {

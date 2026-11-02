@@ -18267,6 +18267,53 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
     })
 }
 
+/// #1396: the exact sequence from the r18bi round. The ssh ended with `echo HELDLINE` handed
+/// back (guard armed); the user clears the line (Ctrl-U) and, later, types a new unrelated
+/// command. That Enter must run the new line, not be swallowed by the stale marker.
+#[test]
+fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.arm_ssh_handover_enter_guard("echo HELDLINE".into());
+                input.replace_buffer_content("", ctx);
+                input.replace_buffer_content("echo NEXT >> hb.txt", ctx);
+            });
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert_ne!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo NEXT >> hb.txt",
+                "the new line was submitted, not swallowed"
+            );
+        });
+    })
+}
+
+/// #1447: outside the key path (an event / timer callback) the prompt look never waits for the
+/// pty reader either: with the model locked (a parse in progress) it answers from the last look.
+#[test]
+fn prompt_look_outside_key_path_does_not_block_on_a_busy_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            assert!(!view.in_key_path());
+            view.unterminated_text_at_last_look.set(true);
+            view.setup_echo_mid_line_at_last_look.set(true);
+            let busy = view.model.lock();
+            assert!(view.active_output_ends_in_unterminated_text());
+            assert!(!view.active_output_awaits_an_answer());
+            drop(busy);
+        });
+    })
+}
+
 /// Sends `action` to the input editor the way a key typed into it does.
 fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
     view.input.update(ctx, |input, ctx| {
@@ -22875,12 +22922,39 @@ fn aws_login_is_a_command_that_waits_for_the_running_program() {
                 view.input.as_ref(ctx).has_pending_command(),
                 "the login command is held as the pending command while a program runs"
             );
+            // #1450: requested, not started: a 'command not found' from the running program
+            // must not be taken for the login's.
+            assert!(!view.is_pending_aws_login);
+            assert!(view.aws_login_requested.is_some());
         });
         assert!(
             seen.borrow().is_empty(),
             "nothing is written raw to the pty: {:?}",
             seen.borrow()
         );
+    })
+}
+
+/// #1449: the hidden local-child harness pane runs its command as a command: while the pane's
+/// shell cannot take one yet it is the pending command, and nothing is written raw to the pty.
+#[test]
+fn local_child_harness_command_waits_as_a_pending_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.start_local_child_harness_process("claude --harness", ctx);
+            assert!(view.input.as_ref(ctx).has_pending_command());
+            assert_eq!(
+                view.input.as_ref(ctx).pending_command_text_for_test(),
+                Some("claude --harness")
+            );
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
     })
 }
 
