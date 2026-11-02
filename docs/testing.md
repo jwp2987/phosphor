@@ -290,7 +290,7 @@ All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-too
 | shuttle / loom | `warpui_core::sync_shim`; `model_tests::*` in `clipboard_model_tests.rs`, `key_facts_model_tests.rs`, `typeahead_handoff_model_tests.rs` | thread interleavings of the clipboard write queue, KeyFacts, PaneHandoff, the reader cap; the two-cell publication gen (`model_the_reader_retry_never_combines_gens`, `model_the_gen_is_monotonic_across_loads`, `model_a_stamp_taken_after_seeing_the_prompt_is_not_before_it`: a consistent read never mixes publications, a stamp is never from the future, a stamp taken after the prompt was seen is never classed before it) | `test-shuttle-loom` job (release tier) |
 | criterion | `app/benches/key_path_bench.rs`, `ansi_bench.rs` (`--features dev-support`) | per-key cost (idle, behind a gate), routing, hand-off, 1 MB ANSI parse | `bench` job (release tier) |
 | cargo-fuzz | `fuzz/` (own workspace; targets `ansi_parser`, `hook_parsers`, `input_queue`) | crashes on hostile terminal output, hook frames, queue op sequences | `fuzz-smoke` job (release tier) |
-| cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, input_queue gates/destination) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
+| cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, the #1424 destination table: input_queue gates/table/facts/mod/pane/shadow and view/dest_table.rs) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
 
 ### 2.8 Real-app tests in CI (`app-test-*`, stage `apptest`)
 
@@ -626,8 +626,10 @@ automatically. Platforms: a diff of only Windows (or macOS, Linux) paths builds 
 that did not run (that stale-entry rule needs a full run, which candidate does).
 
 **Scoped mutation testing (release tier).** `.cargo/mutants.toml` + the `mutants` job: `pane_key.rs`, `model/key_facts.rs`,
-`input_queue/gates.rs`, `input_queue/destination.rs` (about 900 lines, an estimated 80-110 mutants) with the tests limited to those modules
-(`MUTANTS_TEST_FILTER`), each mutant costing one incremental `warp` rebuild: estimated 3-6 h, UNMEASURED (the first run records the
+`input_queue/{gates,table,facts,mod,pane,shadow}.rs` and `view/dest_table.rs` (the #1424 destination table and its plumbing, about 4,000 lines;
+the legacy `input_queue/destination.rs` is deliberately out of scope, it is the function the table replaces) with the tests limited to those
+modules and the table-mode view tests (`MUTANTS_TEST_FILTER`), each mutant costing one incremental `warp` rebuild: several hundred mutants,
+so shard it (`MUTANTS_SHARD=k/n`); time UNMEASURED (the first run records the
 real number in `mutants.out/outcomes.json`). `mutants-warpui-core` mutates the clipboard (`clipboard.rs`, `clipboard_utils.rs`) against
 warpui_core's tests only: estimated 25-40 mutants, under an hour. Widen by playing `mutants` with `MUTANTS_FILES` (space separated) and
 `MUTANTS_TEST_FILTER` set, and split a wide run with `MUTANTS_SHARD=k/n` over several jobs; `cargo mutants --list --file ...` counts

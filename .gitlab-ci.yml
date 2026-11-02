@@ -730,10 +730,11 @@ fuzz-smoke:
       - fuzz/artifacts/
 
 # cargo-mutants, SCOPED (release tier). Default scope = the pure, self-contained input-path logic:
-# app/src/terminal/{pane_key.rs, model/key_facts.rs, input_queue/gates.rs, input_queue/destination.rs}
-# (~900 lines, estimated 80-110 mutants) with the test run restricted to their modules via
+# app/src/terminal/{pane_key.rs, model/key_facts.rs, view/dest_table.rs, input_queue/{gates,table,facts,mod,pane,shadow}.rs}
+# (the #1424 destination table and its plumbing; ~4,000 lines, so several hundred mutants: UNMEASURED, shard it with
+# MUTANTS_SHARD=k/n; the legacy input_queue/destination.rs is NOT in scope, it is the 134-line function being replaced) with the test run restricted to their modules via
 # MUTANTS_TEST_FILTER, so each mutant costs one incremental `warp` rebuild plus a few seconds of tests
-# (estimate 3-5 min each, so 3-6 h; UNMEASURED - the first run records it). Widen by setting
+# (estimate 3-5 min each; UNMEASURED - the first run records it, and the scope is now too wide for one 5 h job). Widen by setting
 # MUTANTS_FILES / MUTANTS_TEST_FILTER as play-time variables, or split a wide run with
 # MUTANTS_SHARD=k/n; see docs/testing.md "Test tiers". Misses are reported, not failed on;
 # `mutants.out/` is kept as the artifact.
@@ -744,8 +745,8 @@ mutants:
   allow_failure: true
   variables:
     MUTANTS_PACKAGE: "warp"
-    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs app/src/terminal/input_queue/gates.rs app/src/terminal/input_queue/destination.rs"
-    MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/)"
+    MUTANTS_FILES: "app/src/terminal/pane_key.rs app/src/terminal/model/key_facts.rs app/src/terminal/input_queue/gates.rs app/src/terminal/input_queue/table.rs app/src/terminal/input_queue/facts.rs app/src/terminal/input_queue/mod.rs app/src/terminal/input_queue/pane.rs app/src/terminal/input_queue/shadow.rs app/src/terminal/view/dest_table.rs"
+    MUTANTS_TEST_FILTER: "test(/terminal::(pane_key|model::key_facts|input_queue)::/) | test(/terminal::view::tests::.*(table_mode|shadow_mode|legacy_mode|route_facts|shadow_reports)/)"
     MUTANTS_SHARD: ""
   script:
     - command -v cargo-mutants >/dev/null || ./script/install_cargo_binstall
