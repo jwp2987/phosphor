@@ -238,6 +238,11 @@ pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
 pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
 
+/// Whether the ConPTY prompt hold is on by default: it is, unless the kill switch says `0`.
+pub fn conpty_prompt_hold_env_enabled() -> bool {
+    std::env::var(CONPTY_PROMPT_HOLD_ENV).map_or(true, |value| value.trim() != "0")
+}
+
 /// Environment variable for the ENTER WINDOW of the ConPTY prompt hold (#1490, #1349): `1` turns it
 /// on, `0` off; unset, it follows `PHOSPHOR_QUEUE_DESTINATION=table`, which is the
 /// default mode (`legacy` and `shadow` leave the window off).
