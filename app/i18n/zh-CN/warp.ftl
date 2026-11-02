@@ -316,7 +316,6 @@ ai-inline-code-diff-review-changes = 查看更改
 ai-execution-profile-name-placeholder = 例如 "YOLO code"
 ai-execution-profile-delete-profile = 删除配置
 ai-notifications-mark-all-as-read = 全部标为已读
-ai-assistant-copy-transcript-tooltip = 复制转录内容到剪贴板
 code-comment = 评论
 code-copy-file-path = 复制文件路径
 code-select-all = 全选
@@ -1771,7 +1770,6 @@ keybinding-desc-workspace-install-cli = 安装 Phosphor Agent CLI 命令
 keybinding-desc-workspace-uninstall-cli = 卸载 Phosphor Agent CLI 命令
 
 # AI 助手 / agent
-keybinding-desc-workspace-toggle-ai-assistant = 切换 Phosphor AI
 
 # 环境变量 / Prompt
 keybinding-desc-workspace-create-personal-env-vars = 新建个人环境变量
@@ -2034,9 +2032,6 @@ keybinding-desc-welcome-terminal-session = 终端会话
 keybinding-desc-welcome-add-repository = 添加仓库
 
 # AI 助手面板 binding desc
-keybinding-desc-ai-assistant-close = 关闭 Phosphor AI
-keybinding-desc-ai-assistant-focus-terminal-input = 从 Phosphor AI 切回终端输入
-keybinding-desc-ai-assistant-restart = 重启 Phosphor AI
 
 # 代码审阅 binding desc
 keybinding-desc-code-review-save-all = 保存代码审阅中所有未保存的文件

@@ -18,7 +18,7 @@ use crate::ai::paths::host_native_absolute_path;
 use crate::ai::predict::generate_am_query_suggestions::{
     GenerateAMQuerySuggestionsResponse, Suggestion,
 };
-use crate::ai_assistant::execution_context::WarpAiExecutionContext;
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::network::NetworkStatus;
 use crate::server::telemetry::PromptSuggestionFallbackReason;
 use crate::settings::AISettings;

@@ -436,7 +436,7 @@ use warpui::{
 
 use warpui::{CursorInfo, EntityId, EventContext, ModelAsRef, SingletonEntity, Tracked, windowing};
 
-use crate::ai_assistant::{ASK_AI_ASSISTANT_TEXT, AskAIType};
+use crate::ai::ask_ai::{ASK_AI_ASSISTANT_TEXT, AskAIType};
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::banner::{
     Banner, BannerAction, BannerEvent, BannerState, BannerTextButton, BannerTextContent,
@@ -1918,7 +1918,6 @@ pub enum Event {
     },
     Pane(PaneEvent),
     OpenSettings(SettingsSection),
-    AskAIAssistant(AskAIType),
     /// Event propagates terminal inputs up to the workspace,
     /// to be processed on the way back down through the view hierarchy.
     SyncInput(SyncEvent),
@@ -26227,8 +26226,7 @@ impl TerminalView {
         ctx.emit(Event::OpenPromptEditor);
     }
 
-    /// Handle AI entrypoints, routing to AI in blocklist when possible and falling back to the AI
-    /// Assistant panel.
+    /// Handle AI entrypoints, routing to AI in blocklist.
     fn ask_ai(&mut self, ask_source: &AskAISource, ctx: &mut ViewContext<Self>) {
         let semantic_selection = SemanticSelection::as_ref(ctx);
         let selection_string = self.model.lock().selection_to_string(
@@ -26317,8 +26315,6 @@ impl TerminalView {
 
         if FeatureFlag::AgentMode.is_enabled() {
             self.ask_blocklist_ai(&ask_data, ctx);
-        } else {
-            ctx.emit(Event::AskAIAssistant(ask_data.clone()));
         }
 
         self.close_context_menu(ctx, false);

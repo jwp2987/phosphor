@@ -42,7 +42,6 @@ app/src/ai/agent/api_tests.rs crate::cloud_object::update_manager::UpdateManager
 app/src/ai/agent/api_tests.rs crate::server::ids::SyncId
 app/src/ai/agent/task.rs crate::server::datetime_ext::DateTimeExt
 app/src/ai/agent/telemetry.rs crate::server::telemetry::AgentModeCitation
-app/src/ai/agent_sdk/common.rs crate::cloud_object::Owner
 app/src/ai/agent_sdk/common.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/mcp.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
@@ -214,14 +213,6 @@ app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::Space
 app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::update_manager::InitiatedBy
 app/src/ai/mcp/templatable_manager/wasm.rs crate::server::ids::ServerId
 app/src/ai/predict/next_command_model.rs crate::cloud_object::model::persistence::ObjectStoreModel
-app/src/ai_assistant/mod.rs crate::server::telemetry::OpenedWarpAISource
-app/src/ai_assistant/panel.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/panel.rs crate::server::telemetry::WarpAIActionType
-app/src/ai_assistant/requests.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/requests.rs crate::server::telemetry::WarpAIRequestResult
-app/src/ai_assistant/transcript.rs crate::server::telemetry::SaveAsWorkflowModalSource
-app/src/ai_assistant/transcript.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/transcript.rs crate::server::telemetry::WarpAIActionType
 app/src/app_menus.rs crate::server::telemetry::LaunchConfigUiLocation
 app/src/app_state.rs crate::server::ids::SyncId
 app/src/autoupdate/mod.rs crate::server::datetime_ext::DateTimeExt
@@ -564,9 +555,7 @@ app/src/notebooks/notebook.rs crate::server::ids::ServerId
 app/src/notebooks/notebook.rs crate::server::ids::SyncId
 app/src/notebooks/notebook.rs crate::server::telemetry::NotebookActionEvent
 app/src/notebooks/notebook.rs crate::server::telemetry::NotebookTelemetryMetadata
-app/src/notebooks/notebook.rs crate::server::telemetry::ObjectTelemetryMetadata
 app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryEvent
-app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryObjectType
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::breadcrumbs::ContainingObject
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::Editor
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::EditorState
@@ -1026,7 +1015,6 @@ app/src/workspace/view.rs crate::server::telemetry::KnowledgePaneEntrypoint
 app/src/workspace/view.rs crate::server::telemetry::LaunchConfigUiLocation
 app/src/workspace/view.rs crate::server::telemetry::MCPServerCollectionPaneEntrypoint
 app/src/workspace/view.rs crate::server::telemetry::NotificationsTurnedOnSource
-app/src/workspace/view.rs crate::server::telemetry::OpenedWarpAISource
 app/src/workspace/view.rs crate::server::telemetry::PaletteSource
 app/src/workspace/view.rs crate::server::telemetry::TabRenameEvent
 app/src/workspace/view.rs crate::server::telemetry::WarpDriveSource

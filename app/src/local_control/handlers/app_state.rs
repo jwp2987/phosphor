@@ -140,13 +140,6 @@ pub(crate) fn handle(
             target,
             ctx,
         ),
-        ActionKind::SurfaceAiAssistantToggle => workspace_action(
-            instance_id,
-            action,
-            WorkspaceAction::ToggleAIAssistant,
-            target,
-            ctx,
-        ),
         ActionKind::SurfaceCodeReviewOpen => surface_code_review_open(instance_id, target, ctx),
         ActionKind::SurfaceCodeReviewToggle | ActionKind::SurfaceRightPanelToggle => {
             workspace_action(

@@ -212,7 +212,6 @@ use warpui::{
 pub const CHANGELOG_VERSIONS: &str = "ChangelogVersions";
 pub const RESTORE_SESSION: &str = "RestoreSession";
 pub const INPUT_MODE: &str = "InputMode";
-pub const DISMISSED_AI_ASSISTANT_WELCOME_KEY: &str = "DismissedWarpAIWarmWelcome";
 
 pub const QUAKE_WINDOW_AUTOHIDE_SUPPORTED: bool = cfg!(any(target_os = "macos", windows));
 

@@ -11,7 +11,7 @@ use parking_lot::FairMutex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::ai_assistant::execution_context::WarpAiExecutionContext;
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::terminal::model::block::BlockState;
 use crate::terminal::TerminalModel;
 

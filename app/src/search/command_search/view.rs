@@ -24,7 +24,7 @@ use warpui::{
 };
 
 use crate::{
-    ai_assistant::execution_context::WarpAiExecutionContext,
+    ai::execution_context::WarpAiExecutionContext,
     appearance::Appearance,
     auth::{AuthState, AuthStateProvider},
     completer::SessionContext,

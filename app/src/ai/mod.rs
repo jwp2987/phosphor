@@ -1,13 +1,15 @@
 //! This module should houses all horizontal/cross-cutting AI functionality throughout
 //! Zap (including Agent Mode).
 //!
-//! The side panel Zap AI implementation lives in `super::ai_assistant`.
+//! The old side-panel "AI Assistant" was removed (see DECLINED.md); Agent Mode is the AI path.
 pub(crate) mod agent;
 pub(crate) mod agent_conversations_model;
 pub(crate) mod agent_events;
 pub(crate) mod agent_providers;
 pub(crate) mod agent_tips;
 pub(crate) mod ai_document_view;
+pub(crate) mod ask_ai;
+pub(crate) mod execution_context;
 pub mod ambient_agents;
 pub(crate) mod api_error;
 pub(crate) mod artifact_download;

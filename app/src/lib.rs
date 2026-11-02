@@ -116,7 +116,6 @@ mod workspaces;
 // in the warp::integration_testing::assertions module (or a sub-module).  These
 // functions will allow us to keep types internal to this crate and expose a
 // simpler API for integration tests to consume.
-pub mod ai_assistant;
 pub mod appearance;
 pub mod channel;
 pub mod editor;
@@ -1933,7 +1932,6 @@ fn initialize_app(
     ai::blocklist::init(ctx);
     ai::blocklist::block::status_bar::init(ctx);
     drive::index::init(ctx);
-    ai_assistant::panel::init(ctx);
     // Zap Wave 7-2: `settings_view::update_environment_form::init` was physically removed
     // along with the cloud ambient agent's main subsystem.
     env_vars::env_var_collection_block::init(ctx);

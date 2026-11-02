@@ -14,8 +14,8 @@
 //! * Files that use `RequestLimitInfo` / `RequestUsageInfo` / `BonusGrant` /
 //!   `BonusGrantScope` / `RequestLimitRefreshDuration` /
 //!   `AIRequestUsageModelEvent` spilling over
-//!   (`workspaces/gql_convert.rs`, `ai_assistant/requests.rs`,
-//!   `ai_assistant/mod.rs`, `settings/ai.rs`, `settings/ai_tests.rs`,
+//!   (`workspaces/gql_convert.rs`,
+//!   `settings/ai.rs`, `settings/ai_tests.rs`,
 //!   `workspace/bonus_grant_notification_model.rs`, `settings_view/ai_page.rs`,
 //!   `terminal/view/ambient_agent/first_time_setup.rs`,
 //!   `agent_view/agent_message_bar.rs`) are outside this task's write scope → the
@@ -62,7 +62,7 @@ pub enum RequestLimitRefreshDuration {
 
 /// History: a "monthly request quota" snapshot pushed by the server.
 /// Zap: kept only as a type shell (files outside this task's write scope, like
-/// `AISettings::update_quota_info` / `ai_assistant/requests.rs`, still construct
+/// `AISettings::update_quota_info`, still construct
 /// this struct). `AIRequestUsageModel` no longer holds / caches / updates it.
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct RequestLimitInfo {
@@ -127,7 +127,7 @@ pub struct CodebaseContextUsageLimit {
 }
 
 /// History: the aggregate struct returned by the server's `getRequestLimitInfo`.
-/// Zap: kept only as a type shell (`ai_assistant/requests.rs` still constructs
+/// Zap: kept only as a type shell (other code still constructs
 /// this type). `AIRequestUsageModel` no longer consumes it.
 pub struct RequestUsageInfo {
     pub request_limit_info: RequestLimitInfo,

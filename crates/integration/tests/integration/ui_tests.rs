@@ -186,11 +186,6 @@ integration_tests! {
     #[ignore]
     test_create_session_with_split_pane_while_bootstrapping,
 
-    // For some reason, disabling the `AgentMode` flag does not actually disable Agent Mode in the test
-    // run. Ignore for now.
-    #[ignore]
-    test_ask_warp_ai_keybinding_for_selected_block,
-
     test_tab_behavior_setting,
 
     test_private_public_settings_routing_with_flag_enabled,

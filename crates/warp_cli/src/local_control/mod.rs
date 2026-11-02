@@ -413,10 +413,6 @@ pub enum SurfaceCommand {
     #[command(subcommand)]
     ResourceCenter(SurfaceToggleCommand),
 
-    /// Toggle the AI assistant.
-    #[command(subcommand)]
-    AiAssistant(SurfaceToggleCommand),
-
     /// Open or toggle code review.
     #[command(subcommand)]
     CodeReview(SurfaceOpenToggleCommand),

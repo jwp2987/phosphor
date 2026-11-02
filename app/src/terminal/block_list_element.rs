@@ -4,7 +4,7 @@ use crate::ai::blocklist::block::cli::{
     CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
 };
 use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
-use crate::ai_assistant::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
+use crate::ai::ask_ai::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
 use crate::appearance::Appearance;
 use crate::drive::settings::WarpDriveSettings;
 use crate::features::FeatureFlag;

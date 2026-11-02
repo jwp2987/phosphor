@@ -30,7 +30,6 @@ pub(super) struct WorkspaceMouseStates {
     pub(super) banner_button: MouseStateHandle,
     pub(super) banner_secondary_button: MouseStateHandle,
     pub(super) more_info_banner_button: MouseStateHandle,
-    pub(super) ai_tab_bar_button: MouseStateHandle,
     pub(super) agent_management_view_button: MouseStateHandle,
     pub(super) left_panel_icon: MouseStateHandle,
     pub(super) settings_icon: MouseStateHandle,
@@ -103,7 +102,6 @@ pub struct WorkspaceState {
     pub is_resource_center_open: bool,
     pub is_command_search_open: bool,
     pub is_warp_drive_open: bool,
-    pub is_ai_assistant_panel_open: bool,
     pub is_agent_management_popup_open: bool,
     pub is_auth_override_modal_open: bool,
     pub is_require_login_modal_open: bool,
@@ -138,7 +136,6 @@ impl WorkspaceState {
     pub fn is_any_non_terminal_view_open(&self, app: &AppContext) -> bool {
         self.is_any_modal_open(app)
             || self.is_theme_chooser_open
-            || self.is_ai_assistant_panel_open
             || self.is_workflow_modal_open
             || self.is_warp_drive_open
     }
@@ -205,7 +202,7 @@ impl WorkspaceState {
     }
 
     pub fn is_right_panel_open(&self) -> bool {
-        self.is_resource_center_open || self.is_ai_assistant_panel_open
+        self.is_resource_center_open
     }
 
     pub fn is_left_panel_open(&self) -> bool {

@@ -341,7 +341,6 @@ ai-inline-code-diff-review-changes = Review changes
 ai-execution-profile-name-placeholder = e.g. "YOLO code"
 ai-execution-profile-delete-profile = Delete profile
 ai-notifications-mark-all-as-read = Mark all as read
-ai-assistant-copy-transcript-tooltip = Copy transcript to clipboard
 code-comment = Comment
 code-copy-file-path = Copy file path
 code-select-all = Select all
@@ -2034,7 +2033,6 @@ keybinding-desc-workspace-install-warpctrl = Install the warpctrl CLI globally f
 keybinding-desc-workspace-uninstall-warpctrl = Undo global warpctrl CLI installation (warpctrl will still work within Phosphor)
 
 # AI assistant / agents
-keybinding-desc-workspace-toggle-ai-assistant = Toggle Phosphor AI
 
 # Env vars / prompts
 keybinding-desc-workspace-create-personal-env-vars = Create new personal environment variables
@@ -2300,9 +2298,6 @@ keybinding-desc-welcome-terminal-session = Terminal session
 keybinding-desc-welcome-add-repository = Add repository
 
 # AI assistant panel binding desc
-keybinding-desc-ai-assistant-close = Close Phosphor AI
-keybinding-desc-ai-assistant-focus-terminal-input = Focus Terminal Input From Phosphor AI
-keybinding-desc-ai-assistant-restart = Restart Phosphor AI
 
 # Code review binding desc
 keybinding-desc-code-review-save-all = Save all unsaved files in code review
