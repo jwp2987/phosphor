@@ -3,8 +3,10 @@ use std::{
     iter,
 };
 
+#[cfg(test)]
+use crate::terminal::shared_session::protocol::Viewer;
 use crate::terminal::shared_session::protocol::{
-    InputReplicaId, ParticipantInfo, ParticipantList, Role, RoleRequestId, Selection, Viewer,
+    InputReplicaId, ParticipantInfo, ParticipantList, Role, RoleRequestId, Selection,
 };
 use futures::future::BoxFuture;
 use futures_util::future::join_all;

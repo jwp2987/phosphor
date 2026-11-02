@@ -7,12 +7,13 @@ use crate::editor::{InteractionState, ReplicaId};
 pub mod protocol;
 pub use protocol::ParticipantId;
 
-use protocol::{Role, Scrollback, ScrollbackBlock, SessionSourceType};
+use protocol::{Role, SessionSourceType};
+#[cfg(test)]
+use protocol::{Scrollback, ScrollbackBlock};
 
-use super::{
-    model::{block::SerializedBlock, terminal_model::BlockIndex},
-    GridType, TerminalModel,
-};
+#[cfg(test)]
+use super::model::block::SerializedBlock;
+use super::{model::terminal_model::BlockIndex, GridType, TerminalModel};
 
 pub mod ai_agent;
 pub mod participant_avatar_view;
