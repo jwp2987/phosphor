@@ -424,6 +424,22 @@ class Ctx:
         except Exception:
             return ""
 
+    def mode_now(self, tag):
+        """'agent' | 'terminal' | None (no OCR engine, or the screen says neither), read from a screenshot. Agent view: its header
+        'New Phosphor Agent conversation', the 'ESC for terminal' bar, or the 'Ask anything' placeholder. Terminal session: the
+        'new /agent conversation' hint or 'New terminal session' (r18cx: the agent pass had silently become a terminal session)."""
+        txt = self.ocr(tag)
+        if txt is None:
+            return None
+        low = " ".join(txt.lower().split())
+        agent = "new phosphor agent conversation" in low or "for terminal" in low or "ask anything" in low
+        term = ("/agent" in low and "conversation" in low) or "new terminal session" in low
+        if agent and not term:
+            return "agent"
+        if term and not agent:
+            return "terminal"
+        return None
+
     def ocr(self, tag):
         mac_ocr = os.path.join(getattr(self.be, "TOOLS", "") or "", "ocr") if self.be.name == "mac" else ""
         if not shutil.which("tesseract") and not (mac_ocr and os.access(mac_ocr, os.X_OK)):
@@ -451,8 +467,11 @@ def c_mode_proof(ctx, r):
         if d:
             raise ctx.be.needs_owner(d)
     txt = ctx.ocr("proof_prekey")      # taken before ANY key is sent
-    ctx.be.key("Escape")
-    time.sleep(0.8)
+    if ctx.mode != "agent":
+        # r18cx (macOS): this Escape is the agent view's own "esc: go back to terminal", so in the agent pass it left agent mode and every
+        # "agent" case after it ran in a terminal session (owner photo). Only the terminal pass sends it.
+        ctx.be.key("Escape")
+        time.sleep(0.8)
     ctx.shot("proof")
     if txt is None:
         r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.label)

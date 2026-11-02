@@ -304,6 +304,25 @@ def main():
                             be.guard()
                             proved = False
                         continue
+                if ctx.mode == "agent" and c["name"] != "mode_proof":
+                    # every agent-pass case must END in agent mode, or the cases after it measure a terminal session under the agent label
+                    # (r18cx macOS: mode_proof's Escape left agent view; nothing noticed). Unreadable screen: no verdict, no row.
+                    seen = ctx.mode_now("mode_after_" + c["name"])
+                    if seen == "terminal":
+                        emit(dict(name="left_agent_mode_after_" + c["name"], mode=label, status="fail", seconds=0,
+                                  shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
+                                  detail=["after %s the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later "
+                                          "agent cases measure agent mode. Candidate APP finding if the case typed no Escape." % c["name"]]))
+                        exit_fail = True
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        app.start()
+                        await_shell(ctx, app, prof, win, a.startup_timeout)
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
                 alive = ctx.pane_responsive() if (win and (status == "fail" or c["name"] in ("ctrl_c_d", "cadence"))) else 0
                 if alive == 1:
                     # typing took effect only after the retry's Ctrl-C x3: not wedged, but the NEXT case would have typed into a pane that eats Enter (r18co Git Bash
