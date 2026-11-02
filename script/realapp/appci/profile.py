@@ -10,13 +10,18 @@ export HISTSIZE=200000 HISTFILESIZE=200000 HISTCONTROL=
 export PA_CTL="%(ctl)s"
 export PATH="$HOME/bin:$PATH"
 __pa_n=0
+__pa_first=1
 __pa_rec() {
   local h c n
   h=$(HISTTIMEFORMAT= history 1)
   if [[ $h =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]]; then
     n=${BASH_REMATCH[1]}; c=${BASH_REMATCH[2]}; c=${c//$'\n'/\\n}
-    if [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\t%%s\t%%s\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
+    # the FIRST prompt of a shell only adopts the loaded history's last number: that line was not received by this shell
+    # (a restored/relaunched shell would otherwise log it as a command and look like a session-restore re-run)
+    if [ -n "$__pa_first" ]; then __pa_n=$n
+    elif [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\t%%s\t%%s\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
   fi
+  __pa_first=
   printf 'P\t%%s\n' "$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
 PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
