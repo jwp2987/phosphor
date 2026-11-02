@@ -14683,7 +14683,9 @@ impl Input {
     /// `baseline` is the editor text the hand-back left; the guard only applies while the line
     /// still starts with it.
     pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
-        self.ssh_handover_enter_guard = Some(baseline);
+        // #1456: nothing handed back means nothing to protect; an empty baseline would match every
+        // later line (`starts_with("")`) and swallow the first Enter of whatever is typed next.
+        self.ssh_handover_enter_guard = (!baseline.is_empty()).then_some(baseline);
     }
 
     #[cfg(test)]

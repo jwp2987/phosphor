@@ -18214,6 +18214,23 @@ fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
 
 /// #1395 (FS2): after a held-back Enter the user replaces the handed-back line; the next Enter
 /// belongs to the new line and is not swallowed (which merged the next typing into it).
+/// #1456: an ssh hand-back with no text arms no Enter guard, so the next line's Enter runs.
+#[test]
+fn ssh_handover_enter_guard_is_not_armed_by_an_empty_hand_back() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, _| input.arm_ssh_handover_enter_guard(String::new()));
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            view.input
+                .update(ctx, |input, _| input.arm_ssh_handover_enter_guard("echo held".into()));
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+        });
+    })
+}
+
 #[test]
 fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
     App::test((), |mut app| async move {
