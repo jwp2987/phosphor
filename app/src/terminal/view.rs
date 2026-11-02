@@ -10577,7 +10577,7 @@ impl TerminalView {
         if !is_abort_key(bytes) && self.agent_owns_command_pty() {
             safe_warn!(
                 safe: ("agent owns the command pty. ignoring control seq on terminal."),
-                full: ("agent owns the command pty. ignoring control seq on terminal: {:?}", bytes)
+                full: ("agent owns the command pty. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             );
             return;
         }
@@ -10591,7 +10591,7 @@ impl TerminalView {
         } else {
             safe_warn!(
                 safe: ("command not long-running. ignoring control seq on terminal."),
-                full: ("command not long-running. ignoring control seq on terminal: {:?}", bytes)
+                full: ("command not long-running. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             )
         }
     }

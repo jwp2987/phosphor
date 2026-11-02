@@ -53,6 +53,18 @@ pub fn describe_text(text: &str) -> String {
     }
 }
 
+/// Describes raw input bytes for a log line (control sequences can carry typed text: Alt+letter is
+/// ESC + letter, kitty/CSI-u sequences carry the character, a stray paste byte stream is text): the
+/// bytes themselves only when the tester opted in with `WARP_INPUT_ORDER_LOG_TEXT=1`, else only
+/// their count (#1444).
+pub fn describe_bytes(bytes: &[u8]) -> String {
+    if text_opted_in() {
+        format!("{bytes:?}")
+    } else {
+        format!("<{} bytes>", bytes.len())
+    }
+}
+
 /// Describes a key name: multi-character names (`enter`) as they are, single characters like text.
 pub fn describe_key(key: &str) -> String {
     if key.chars().count() > 1 {
@@ -247,6 +259,15 @@ mod tests {
         assert!(key_down_line("enter", false, false, false, false, 2).contains("key=enter"));
         assert!(typed_characters_line("hunter2", 3).contains("<7 chars>"));
         assert!(typed_characters_line("a", 9).ends_with(" seq=9"));
+    }
+
+    /// #1444: control-sequence bytes can carry typed text (Alt+letter is ESC + letter), so a log
+    /// line describes them by count unless the tester opted in.
+    #[test]
+    fn raw_bytes_are_described_by_count_not_content() {
+        let described = describe_bytes(b"\x1bp");
+        assert!(!described.contains("112"), "{described}");
+        assert_eq!(described, "<2 bytes>");
     }
 
     #[test]
