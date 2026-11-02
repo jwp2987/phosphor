@@ -97,7 +97,9 @@ guards:
     - ./script/check_queue_access
     # #1521: both were precheck-only. check_workspace_clean is deliberately not here (it expects a hand-managed checkout, see docs/testing.md 2.3).
     - ./script/check_dangling_modules
-    - ./script/check_pwsh_parse
+    # The box has no pwsh (not approved for it): the parse gate runs where pwsh exists (script/precheck); here it is
+    # reported as SKIPPED, never as a pass (check_pwsh_parse itself fails when CI is set and pwsh is missing).
+    - 'if command -v pwsh >/dev/null; then ./script/check_pwsh_parse; else echo "SKIPPED check_pwsh_parse: no pwsh on this runner (it runs in script/precheck)"; fi'
     - ./script/check_test_results
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
