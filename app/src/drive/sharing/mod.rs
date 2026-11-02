@@ -10,7 +10,7 @@ use warpui::{
 
 use crate::{
     auth::UserUid,
-    cloud_object::{model::persistence::ObjectStoreModel, Owner},
+    cloud_object::model::persistence::ObjectStoreModel,
     server::ids::ServerId,
     ui_components::{
         avatar::{Avatar, AvatarContent},

@@ -15477,7 +15477,6 @@ impl TerminalView {
                     Some(shell_detail.into()),
                     Some(reason),
                 ),
-                _ => (None, None, None),
             };
 
             if let Some(termination_reason) = termination_reason {

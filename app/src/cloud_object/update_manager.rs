@@ -7,9 +7,8 @@ use crate::{
     auth::TEST_USER_UID,
     cloud_object::{
         model::{
-            actions::{ObjectAction, ObjectActionType, ObjectActions},
-            generic_string_model::{
-                GenericStringModel, GenericStringObjectId, },
+            actions::{ObjectActionType, ObjectActions},
+            generic_string_model::GenericStringObjectId,
             persistence::{ObjectStoreEvent, ObjectStoreModel, UpdateSource},
             view::{Editor, EditorState, ObjectStoreViewModel},
         },

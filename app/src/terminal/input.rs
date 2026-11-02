@@ -13400,8 +13400,6 @@ impl Input {
             self.input_enter_as_shell_command(ctx);
             return;
         }
-        let command = self.editor.as_ref(ctx).buffer_text(ctx);
-
         ctx.emit(Event::Enter);
 
         if self
