@@ -11909,7 +11909,11 @@ impl TerminalView {
             in_text_field: !editor_focused && (in_own_text_view || key_ctx.leaf_takes_typed_text),
             editor_focused,
             terminal_focused: key_ctx.is_focused_exactly(self.view_id),
-            ssh_hold_active: self.paste_queue.queue.ssh_hold_active(),
+            // #1565: an armed connect gate is the event that starts the hold. Keyed on the hold
+            // alone, a key typed with the agent-view editor focused went to the editor before
+            // anything had armed the hold, so the first key of the connect was never held.
+            ssh_hold_active: self.paste_queue.queue.ssh_hold_active()
+                || self.ssh_connect_gate.is_some(),
         }
     }
 
@@ -17122,6 +17126,10 @@ impl TerminalView {
                                 // (and its give-up deadline) in `table` mode, not the next key.
                                 if Self::ssh_events_own_the_gate() {
                                     self.ssh_arm_gate_at_event(ctx);
+                                } else {
+                                    // #1565: `legacy` arms it here too, by the event, not on the
+                                    // first terminal-routed key (the agent-view editor has none).
+                                    self.refresh_ssh_connect_gate();
                                 }
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved
