@@ -897,6 +897,10 @@ const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
 
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
+/// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
+/// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
+/// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
+const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
@@ -3150,6 +3154,12 @@ pub struct TerminalView {
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
+    /// The pending session a `Precmd` was handled for before its `Bootstrapped` (#1566): the
+    /// bootstrap script's own prompt. The give-up timer must not declare such a session failed.
+    bootstrap_precmd_seen_session: Option<SessionId>,
+    /// The pending session the bootstrap give-up timer already deferred once (#1566), so the
+    /// second expiry is final.
+    bootstrap_grace_used_session: Option<SessionId>,
     /// First time input was swallowed for a pending ssh session, to bound the swallow window
     /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
     ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
@@ -4994,6 +5004,8 @@ impl TerminalView {
             young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
             ssh_bootstrap_failed_session: None,
+            bootstrap_precmd_seen_session: None,
+            bootstrap_grace_used_session: None,
             ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
@@ -11426,6 +11438,11 @@ impl TerminalView {
             .update(ctx, |input, _| input.arm_ssh_handover_enter_guard(baseline));
         // Never concatenated with anything: only into an EMPTY editor that is showing.
         if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
+            log::warn!(
+                "ssh typeahead: {} handed-back char(s) cannot go into the editor (busy or not \
+                 empty); discarded with a toast (#1566)",
+                text.chars().count()
+            );
             self.show_ssh_typing_toast(
                 "Text typed while the SSH session connected was discarded, not run",
                 ctx,
@@ -18024,6 +18041,11 @@ impl TerminalView {
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                // #1566: a prompt on a session that has not bootstrapped yet is the session
+                // progressing; the bootstrap give-up timer must not fire on it.
+                if let Some(pending) = self.model_facts().pending_session_id {
+                    self.bootstrap_precmd_seen_session = Some(pending);
+                }
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
                     // The block this prompt finished has been handled (the editor is
                     // reinitialized); only now may the editor take keys without them being
@@ -22260,6 +22282,28 @@ impl TerminalView {
                 is_msys2,
             )
         };
+
+        // #1566: the timer is a give-up net, not a verdict. A pending session whose bootstrap
+        // prompt (`Precmd`) was already seen is progressing and `Bootstrapped` is due: the
+        // failure path (which hands held keys back or `stty sane`s the tty under the
+        // bootstrap) must not run on it. Waits once more, logged; the second expiry is final.
+        let progressing_session = {
+            let model = self.model.lock();
+            model.pending_session_id().filter(|sid| {
+                self.bootstrap_precmd_seen_session == Some(*sid)
+                    && self.bootstrap_grace_used_session != Some(*sid)
+            })
+        };
+        if let Some(sid) = progressing_session {
+            self.bootstrap_grace_used_session = Some(sid);
+            log::warn!(
+                "bootstrap give-up timer: the pending session already showed its bootstrap \
+                 prompt; waiting {:?} more for Bootstrapped instead of failing it (#1566)",
+                BOOTSTRAP_PROGRESS_GRACE
+            );
+            self.start_bootstrap_timer(BOOTSTRAP_PROGRESS_GRACE, ctx);
+            return;
+        }
 
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
 

@@ -17975,6 +17975,100 @@ fn ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane() {
     })
 }
 
+/// #1566 (r18cz Linux, 1 in 9 connects): the 7 s bootstrap give-up timer expired 20 ms after the
+/// remote's bootstrap `Precmd` and 40 ms before `Bootstrapped`. The #1494 failure path then handed
+/// the held line back / `stty sane`d the tty under the bootstrap, and the line was lost or landed
+/// in the wrong place. A session that already showed its bootstrap prompt is progressing: the
+/// timer waits (once, logged), `Bootstrapped` and the first remote prompt deliver the line to the
+/// pty exactly once, and the editor stays empty. Legacy and Table.
+#[test]
+fn ssh_bootstrap_timer_racing_the_bootstrap_precmd_does_not_fail_the_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let remote_session = SessionId::from(167303092612202);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                // The bootstrap script's own prompt, while the session is still pending.
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: still held after the bootstrap precmd"
+                );
+                // The give-up timer expires in the window before `Bootstrapped`.
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: the timer must not fail a progressing session"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: no stty sane, no keys: {:?}",
+                    pty_writes.borrow()
+                );
+                // `Bootstrapped`, then the remote's first prompt.
+                view.model.lock().bootstrapped(BootstrappedValue {
+                    shell: "bash".to_owned(),
+                    ..Default::default()
+                });
+                view.handle_terminal_event(
+                    &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                        session_id: remote_session,
+                        is_subshell: false,
+                    }),
+                    ctx,
+                );
+                view.model.lock().simulate_long_running_block("sleep 5", "");
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the line went to the pty, not the editor"
+                );
+            });
+            let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert_eq!(
+                text.matches("echo hi").count(),
+                1,
+                "{mode:?}: once: {text:?}"
+            );
+            assert!(!text.contains("stty sane"), "{mode:?}: {text:?}");
+        })
+    }
+}
+
+/// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
+/// second expiry runs the #1494 path (held text delivered after `stty sane`, once).
+#[test]
+fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
+        assert_eq!(text.matches("echo hi").count(), 1, "{text:?}");
+    })
+}
+
 /// #1494: if the shell is gone when the bootstrap timer fires, the held text goes nowhere: it is
 /// discarded (logged) and nothing is written or run locally.
 #[test]
