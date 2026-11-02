@@ -65,7 +65,11 @@ die()  { printf '   FAIL: %s\n' "$*" >&2; printf '\nStopped. Nothing after this 
 # run CMD...: print it; execute only with --apply.
 run() {
   printf '   + '; printf '%q ' "$@"; printf '\n'
-  if $APPLY; then "$@"; fi
+  if $APPLY; then
+    local rc=0
+    "$@" || rc=$?
+    [ "$rc" -eq 0 ] || die "the command above failed (exit $rc); its own error message is just above"
+  fi
 }
 # Single-value attribute: "UserShell: /bin/zsh" or "dsAttrTypeNative:IsHidden: 1" -> last field.
 attr() { dscl . -read "/Users/${RUNNER_USER}" "$1" 2>/dev/null | awk 'NR==1{print $NF}'; }
