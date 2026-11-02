@@ -23534,7 +23534,7 @@ fn the_shadow_hooks_cost_nothing_unless_wanted() {
                     "{mode:?}: no comparison"
                 );
             }
-            // The default mode is shadow, but nobody listens (`input_order` debug is off).
+            // The default mode (table since 2026-11-02) never runs the comparison either.
             assert!(view.shadow_begin(Class::Typed, ctx).is_none());
         });
     });
