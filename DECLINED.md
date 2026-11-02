@@ -2610,3 +2610,24 @@ The signal quit paths already had a 5 s watchdog; the dialog/menu/key/last-windo
 so a step that never finishes (persistence writer drain, ControlMaster stop, terminal server
 teardown) left the app alive. Every step still runs to completion in order; the timer only guards
 a step that never ends and is logged when it fires.
+
+## Terminal dead-code removal — IMPROVED 2026-11-02 (#1467)
+
+Owner direction: concepts, not code, come from upstream, so "kept verbatim for a clean re-pin
+diff" is no longer a reason to carry dead terminal code. Removed from `app/src/terminal/` (all
+verified by word-grep over `app/ crates/ lib/ script/`, no live path, setting or keybinding touched):
+
+- **`remote_tty`** — the cargo feature, `terminal/remote_tty/` and every `cfg(feature = "remote_tty")`
+  arm (the only user was `script/wasm/bundle`'s `local` channel; wasm is not built anywhere).
+- **Ambient-agent UI that nothing can reach** — `view/ambient_agent/{view_impl,loading_screen,progress,
+  footer,harness_selector,host_selector}.rs`, `block/`, the spawn/cancel paths of
+  `AmbientAgentViewModel`, `TerminalAction::CancelAmbientAgentTask`, the input's spawn-ambient-agent
+  submit branch. `AmbientAgentViewModel` itself, its `Status`/events, the tips and `ModelSelector`
+  stay because `ai/` still holds the model handle; remove them together with those handles.
+- **Shared-session leftovers** — 50+ zero-caller functions, the never-constructed
+  `SharedSessionActionSource`/`SessionEndedReason` variants, and the viewer constructors (now
+  `cfg(test)`). The shared-session UI shell (`PresenceManager`, `ParticipantAvatarView`,
+  `SharedSessionAdapter`, the `SharedSessionStatus` guards) is still wired into rendering and is
+  NOT removed yet.
+- **`PasteSequencer<Vec<u8>>::on_key` / `KeyDisposition`** — the pty paste lives on the input queue;
+  the generic `PasteSequencer<K>` stays for the editors.
