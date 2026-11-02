@@ -33,6 +33,12 @@ pub(crate) trait AgentEventStreamClient: 'static + Send + Sync {
         run_ids: &[String],
         since_sequence: i64,
     ) -> Result<http_client::EventSourceStream>;
+
+    /// Whether this client can ever open a stream. Bridges check this before spawning a
+    /// listener so a client that always errors does not leave a task retrying for ~30 minutes.
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) struct DisabledAgentEventStreamClient;
@@ -48,6 +54,10 @@ impl AgentEventStreamClient for DisabledAgentEventStreamClient {
         Err(anyhow!(
             "Agent event stream disabled in Phosphor - RTC endpoint is removed"
         ))
+    }
+
+    fn is_available(&self) -> bool {
+        false
     }
 }
 

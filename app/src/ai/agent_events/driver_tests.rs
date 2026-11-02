@@ -708,3 +708,24 @@ async fn driver_uses_fast_backoff_on_transient_http_error() {
         .unwrap();
     assert_eq!(retry_backoff, Duration::from_secs(0));
 }
+
+struct AvailableStubClient;
+
+#[async_trait]
+impl AgentEventStreamClient for AvailableStubClient {
+    async fn stream_agent_events(
+        &self,
+        _run_ids: &[String],
+        _since_sequence: i64,
+    ) -> anyhow::Result<http_client::EventSourceStream> {
+        Err(anyhow!("stub"))
+    }
+}
+
+/// #1475: the disabled client reports itself unavailable so bridges don't start a listener on it;
+/// the default for any real client stays available.
+#[test]
+fn only_the_disabled_client_is_unavailable() {
+    assert!(!DisabledAgentEventStreamClient.is_available());
+    assert!(AvailableStubClient.is_available());
+}
