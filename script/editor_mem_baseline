@@ -21,6 +21,13 @@
 #   type_ms    wall ms for 40 characters typed at 10 ms/key mid-file minus the 400 ms
 #              nominal key time (proxy for typing latency; per-key = /40)
 #   rss_close  RSS 5 s after closing the tab
+# P5 (#1340) regression expectations, 7 MB file, delta over rss_base: plain text <= ~100 MB, Rust <= ~150 MB (r18bi,
+# before P0-P5: +1086 MB Rust, nothing released on close). After the 60 s undo-close grace rss_close must be back within
+# ~60 MB of rss_base. A/B switches: PHOSPHOR_EDITOR_P5=0 (no parked line chunks, the P4 representation),
+# PHOSPHOR_EDITOR_EAGER_LAYOUT=1 (no lazy layout at all). The CI form of this measurement is the appci case
+# `editor_memory_7mb` (script/realapp/appci/cases.py), which reports the same numbers in results.json; use that on
+# Linux/macOS builds and this script for dhat/by-hand comparisons. Item-count check: the render tree of a parked
+# document has ~lines/200 items (log `RenderState::describe` or count `block_items()`), not one per line.
 # NOTE: the per-editor memory breakdown log (RUST_LOG target) is NOT implemented yet; use the
 # dhat build mentioned in #1340 for allocation breakdowns.
 set -euo pipefail

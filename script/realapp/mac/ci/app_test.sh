@@ -71,6 +71,8 @@ p=backend.make('mac').preflight(); print('\n'.join(p))")
 export APPCI_PREV_ARTIFACT="appci-out/macos/run/results.json"
 export APPCI_MAC_BUNDLE="$OUT/Phosphor.app" APPCI_MAC_PROCESS="$(basename "$BIN")"
 export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
+# editor_memory_7mb: the palette is cmd+p on macOS; cmd+w (close pane) is refused by the frontmost-app guard, so release-on-close is measured on Linux/Windows only
+export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE=""
 python3 "$APPCI/run.py" --run "$OUT/run" --bin "$BIN" --backend mac --modes "${APPCI_MODES:-terminal,agent}" \
   --cases "${APPCI_CASES:-}" --skip "${APPCI_SKIP:-}" --platform macos --startup-timeout 120 &
 PYPID=$!
