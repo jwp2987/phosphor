@@ -16,7 +16,7 @@
 #
 # Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
 # Per-job variables (TEST_FILTER, APPCI_TIER) go through the play API's job_variables_attributes.
-import argparse, json, re, subprocess, sys, time
+import argparse, json, re, subprocess, sys, threading, time
 
 PROJECT = "88085499"
 LINUX, MAC, WIN = "linux", "macos", "windows"
@@ -329,6 +329,24 @@ def main():
                 reuse_started.append(n + "-reuse")
     for n in builds:
         play(n)
+    # Each platform's app tests start as soon as ITS build succeeds, not after the box test suites (those take ~1 h and
+    # would hold the Mac and Windows tests back for no reason; app tests on other machines do not compete with the box).
+    p_of = {BUILD[p]: p for p in plats}
+    started, lock = [], threading.Lock()
+
+    def after_build(b):
+        if wait(b) != "success":
+            return
+        for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
+            if tier == "fix" and n == "app-test-linux-x11":
+                continue
+            if play(n, appvars):
+                print("%s: %s succeeded, started %s" % (time.strftime("%H:%M"), b, n), flush=True)
+                with lock:
+                    started.append(n)
+    watchers = [threading.Thread(target=after_build, args=(b,), daemon=True) for b in builds]
+    for t in watchers:
+        t.start()
     if tier == "fix":
         box = [(n, v) for n, k, v in (("test-linux", "linux", fvars), ("test-warpui-core", "core", None), ("test-workspace-rest", "rest", None)) if k in suites]
     else:
@@ -339,16 +357,10 @@ def main():
     if tier == "release":
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP: play(n)
+    for t in watchers:
+        t.join()
     for n in builds:
-        print(n, wait(n), flush=True)
-    started = []
-    p_of = {BUILD[p]: p for p in plats}
-    for b in builds:
-        if jobs().get(b, {}).get("status") != "success":
-            continue
-        for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
-            if play(n, appvars):
-                started.append(n)
+        print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
     if tier == "release":
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
