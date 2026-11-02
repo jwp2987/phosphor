@@ -374,6 +374,18 @@ comparison beyond Enter latency, mouse selection/copy cases, Install-vs-"continu
 `APPCI_SCALE` (e.g. 0.3) shortens counts for a smoke run; `run.py --backend sim` runs the case logic against a bash in a pty (no GUI) to
 test the harness itself.
 
+Key-loss control (`key_loss_control`, terminal mode, #1414): in the first Wayland CI run (build/r18bn) the first character of
+every wtype-typed line was missing (`echo` arrived as `cho`) in both modes. The app log showed no keydown for that key at all
+(consecutive `seq`, nothing between), i.e. it never reached Phosphor's winit layer, which points at the injector/compositor: every
+`wtype` call is a new virtual keyboard with its own keymap. Per the "no bad result without a control" rule the case types the same
+sequences into Phosphor AND a reference terminal (foot, else xterm via XWayland, a different input path) in the same sway
+session: per-line calls with the harness priming off, per-line calls with it on (the default), and ONE call for all lines.
+`results.json` `metrics.key_loss.variants` and `summary.md` ("Key-loss control") carry lost-first / other-bad / missing counts
+per target and injection. A Phosphor variant fails only when it loses more than the reference with the SAME injection; the
+default (primed, per-line) injection must lose nothing in Phosphor. The Wayland backend leads every `wtype` call with a Shift_L
+tap and a 20 ms sleep (`APPCI_WL_PRIME_MS`, 0 = off; it adds that much to input-tool spawn cost, which cancels in the
+Phosphor-vs-reference latency overhead). Keep the control permanently.
+
 **Reusing a build (`app-test-*-reuse`).** When a fix round touches nothing that goes into the app, rebuilding (Mac ~20 min, Windows ~38,
 Linux ~30) tests the same bytes. The `-reuse` jobs extend the plain ones with `needs: []`; their `before_script`
 (`script/ci/fetch_build.sh` / `.ps1`) uses the build **already on the same machine**. Each platform's app test runs on the machine that built it

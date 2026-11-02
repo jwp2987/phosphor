@@ -10,7 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint")
+SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -663,6 +663,93 @@ def ref_terminal(ctx):
     else:
         return None
     return RefTerm(name, proc=subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+
+
+@case("key_loss_control", modes=("terminal",), order=3, gui=True)
+def c_key_loss(ctx, r):
+    """#1414: does the FIRST character of a wtype-injected line reach the client? The same injection sequences go into Phosphor AND a
+    reference terminal in the same session: per-line calls (the harness default), per-line with the harness priming off, and ONE
+    call for all lines. A Phosphor variant fails only when it loses first characters (or lines) the reference keeps with the
+    SAME injection. The loss rates land in results.json (metrics.key_loss) and summary.md. Only the Wayland backend injects with a
+    per-call keymap; other backends run it as a plain typing check."""
+    n = ctx.count(12)
+    is_wl = ctx.be.name == "wayland"
+    prime_default = getattr(ctx.be, "prime_ms", 0)
+
+    def variant(target, inject):
+        if inject == "perline-unprimed":
+            ctx.be.prime_ms = 0
+        elif is_wl:
+            ctx.be.prime_ms = prime_default
+        fname = "kl_%s_%s.txt" % (target[:3], inject.replace("-", ""))
+        ctx.rm(fname)
+        mark = ctx.cmd_mark()
+        want = []
+        for _ in range(n):
+            want.append("echo %s >> %s" % (ctx.tok(10).lower(), fname))
+        try:
+            if inject.startswith("oneshot"):
+                ctx.be.type_lines(want, 12, 350)
+            else:
+                for l in want:
+                    ctx.be.type(l, 12, enter=True)
+                    time.sleep(0.35)
+        finally:
+            if is_wl:
+                ctx.be.prime_ms = prime_default
+        ctx.until(lambda: len(ctx.cmds_since(mark)) >= n, 15 + n * 0.5)
+        time.sleep(0.5)
+        have = ctx.cmds_since(mark)
+        lost = bad = 0
+        for w, h in zip(want, have):
+            if h == w:
+                continue
+            if h.endswith(w[1:]) and not h.endswith(w):
+                lost += 1
+            else:
+                bad += 1
+        missing = max(0, n - len(have))
+        v = dict(target=target, inject=inject, n=n, lost_first=lost, other_bad=bad, missing=missing)
+        if lost:
+            v["example"] = next((w, h) for w, h in zip(want, have) if h != w and h.endswith(w[1:]))
+        return v
+
+    injections = ["perline-unprimed", "perline", "oneshot"] if is_wl else ["perline"]
+    out = []
+    for inj in injections:
+        out.append(variant("phosphor", inj))
+        ctx.reset()
+    ref = ref_terminal(ctx)
+    if ref:
+        try:
+            time.sleep(2.5)
+            for inj in injections:
+                out.append(variant("reference", inj))
+                ctx.reset()
+        finally:
+            ref.close()
+        time.sleep(1.0)
+    else:
+        r.note("no reference terminal available: loss is reported but no variant can be attributed to Phosphor or the injector")
+    r.metric("key_loss", dict(variants=out, reference=ref.name if ref else None))
+    byk = {(v["target"], v["inject"]): v for v in out}
+    for v in out:
+        r.note("%s / %s: first char lost on %d/%d lines, other bad %d, missing %d" % (v["target"], v["inject"], v["lost_first"], v["n"], v["other_bad"], v["missing"]))
+    for inj in injections:
+        p, q = byk.get(("phosphor", inj)), byk.get(("reference", inj))
+        bad_p = p["lost_first"] + p["other_bad"] + p["missing"]
+        if q is None:
+            continue
+        bad_q = q["lost_first"] + q["other_bad"] + q["missing"]
+        r.check(bad_p <= bad_q, "Phosphor lost keys the reference keeps with the SAME injection (%s): Phosphor %d/%d bad lines (first char lost %d), %s %d/%d -- a Phosphor-side drop (#1414)"
+                % (inj, bad_p, n, p["lost_first"], ref.name, bad_q, n))
+        if bad_q > bad_p:
+            r.note("%s: the reference lost more than Phosphor (%d vs %d): injector-side loss" % (inj, bad_q, bad_p))
+    # the harness's own default (primed, per-line) must deliver every line, whatever the reference does: otherwise every other case is unreliable
+    d = byk.get(("phosphor", "perline"))
+    if d:
+        r.check(d["lost_first"] + d["other_bad"] + d["missing"] == 0, "harness default injection (per-line%s) still loses lines in Phosphor: %s"
+                % (", primed" if is_wl and prime_default else "", {k: d[k] for k in ("lost_first", "other_bad", "missing")}))
 
 
 def enter_to_start(ctx, n, budget_s=None):

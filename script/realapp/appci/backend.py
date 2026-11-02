@@ -51,6 +51,12 @@ class Backend:
         for s in specs:
             self.key(s, delay_ms=delay_ms)
 
+    def type_lines(self, lines, delay_ms=15, gap_ms=300):
+        """Type every line and its Enter. Default: one type() per line; the Wayland backend sends them in ONE tool call."""
+        for l in lines:
+            self.type(l, delay_ms, enter=True)
+            time.sleep(gap_ms / 1000)
+
     def shot(self, path):
         raise NotImplementedError
 
@@ -88,6 +94,10 @@ class WaylandBackend(Backend):
 
     def __init__(self):
         self.batch = os.environ.get("APPCI_WL_KEY_MODE", "batch")  # batch | perkey (spawn wtype per character)
+        # #1414: every wtype call uploads its own keymap (new virtual keyboard) and under headless sway the FIRST key after it never
+        # reached the client. The call is therefore led by a harmless Shift_L tap + a short sleep; the key_loss_control case measures
+        # primed vs unprimed vs one-shot vs a reference terminal. APPCI_WL_PRIME_MS=0 turns the priming off.
+        self.prime_ms = int(os.environ.get("APPCI_WL_PRIME_MS", "20"))
 
     def preflight(self):
         p = []
@@ -99,8 +109,18 @@ class WaylandBackend(Backend):
                 p.append("env not set: " + v)
         return p
 
-    def _wtype(self, args):
+    def _wtype(self, args, prime=True):
+        if prime and self.prime_ms > 0:
+            args = ["-k", "Shift_L", "-s", str(self.prime_ms)] + args
         return _run(["wtype"] + args)
+
+    def type_lines(self, lines, delay_ms=15, gap_ms=300):
+        a = []
+        for l in lines:
+            if l.startswith("-"):
+                raise ValueError("wtype text must not start with '-'")
+            a += ["-d", str(int(delay_ms)), l, "-k", "Return", "-s", str(int(gap_ms))]
+        self._wtype(a)
 
     def type(self, text, delay_ms=15, enter=False):
         if text.startswith("-"):
@@ -160,7 +180,7 @@ class WaylandBackend(Backend):
         self._wtype(a)
 
     def noop(self):
-        self._wtype(["-M", "shift", "-m", "shift"])
+        self._wtype(["-M", "shift", "-m", "shift"], prime=False)
 
     def clip_set(self, data):
         if isinstance(data, str):
