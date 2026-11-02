@@ -65,6 +65,104 @@ pub fn describe_bytes(bytes: &[u8]) -> String {
     }
 }
 
+/// Describes raw input bytes as an escaped string (`echo\x1bi`) when the tester opted in with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, else only their count (#1490). The exact bytes of a pty write,
+/// readable next to the shell's own record of the line.
+pub fn describe_bytes_escaped(bytes: &[u8]) -> String {
+    if text_opted_in() {
+        format!("\"{}\"", bytes.escape_ascii())
+    } else {
+        format!("<{} bytes>", bytes.len())
+    }
+}
+
+/// A shell-ready signal the typeahead hand-off acts on (#1490), stamped so every pty write can say
+/// how long after each one it happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellSignal {
+    /// The prompt's precmd hook was parsed.
+    Precmd,
+    /// A command started (preexec).
+    Preexec,
+    /// The line editor's ready signal (bracketed-paste enable) after a prompt.
+    LineEditorReady,
+    /// The input-report request (`ESC i`) was decided.
+    RequestDecided,
+    /// The shell's input report arrived.
+    ReportReceived,
+}
+
+impl ShellSignal {
+    const COUNT: usize = 5;
+
+    fn index(self) -> usize {
+        match self {
+            ShellSignal::Precmd => 0,
+            ShellSignal::Preexec => 1,
+            ShellSignal::LineEditorReady => 2,
+            ShellSignal::RequestDecided => 3,
+            ShellSignal::ReportReceived => 4,
+        }
+    }
+
+    fn label(index: usize) -> &'static str {
+        match index {
+            0 => "precmd",
+            1 => "preexec",
+            2 => "ready",
+            3 => "request",
+            _ => "report",
+        }
+    }
+}
+
+/// Epoch milliseconds of the last stamp per [`ShellSignal`]; 0 means never.
+static SHELL_SIGNAL_MS: [AtomicU64; ShellSignal::COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Stamps `signal` as having just happened. One atomic store when input-order logging is on,
+/// nothing when it is off.
+pub fn note_shell_signal(signal: ShellSignal) {
+    if enabled() {
+        SHELL_SIGNAL_MS[signal.index()].store(epoch_ms(), Ordering::Relaxed);
+    }
+}
+
+/// `since_precmd_ms=12 since_preexec_ms=none ...`: how long ago each shell-ready signal was last
+/// stamped, for the line of a pty write (#1490).
+pub fn shell_signal_ages() -> String {
+    let now = epoch_ms();
+    let mut out = String::new();
+    for (index, stamp) in SHELL_SIGNAL_MS.iter().enumerate() {
+        let at = stamp.load(Ordering::Relaxed);
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if at == 0 {
+            out.push_str(&format!("since_{}_ms=none", ShellSignal::label(index)));
+        } else {
+            out.push_str(&format!(
+                "since_{}_ms={}",
+                ShellSignal::label(index),
+                now.saturating_sub(at)
+            ));
+        }
+    }
+    out
+}
+
 /// Describes a key name: multi-character names (`enter`) as they are, single characters like text.
 pub fn describe_key(key: &str) -> String {
     if key.chars().count() > 1 {
@@ -257,6 +355,19 @@ pub fn log_submit(buffer: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pty_write_bytes_and_signal_ages_do_not_leak_text_or_panic() {
+        // Not opted in (the variable is not set by the test run): bytes are redacted to a count.
+        if std::env::var("WARP_INPUT_ORDER_LOG_TEXT").is_err() {
+            let shown = describe_bytes_escaped(b"hunter2\x1bi");
+            assert_eq!(shown, "<9 bytes>");
+        }
+        let ages = shell_signal_ages();
+        for label in ["precmd", "preexec", "ready", "request", "report"] {
+            assert!(ages.contains(&format!("since_{label}_ms=")), "{ages}");
+        }
+    }
 
     #[test]
     fn target_is_the_documented_name() {

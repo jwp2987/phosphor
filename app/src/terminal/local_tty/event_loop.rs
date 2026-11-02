@@ -1394,6 +1394,26 @@ where
                                 format!("wrote={n} of={}", current.remaining_bytes().len())
                             });
                         }
+                        // #1490: the exact bytes the ConPTY pipe accepted, in write order, with
+                        // how long after each shell-ready signal they went out. Windows only: a
+                        // bootstrap chunk is logged by size, everything else by its bytes (shown
+                        // only for synthetic test text, `WARP_INPUT_ORDER_LOG_TEXT=1`).
+                        if cfg!(windows) {
+                            warpui::input_order::log_hop("pty_write_bytes", || {
+                                let accepted = current.remaining_bytes().get(..n).unwrap_or(&[]);
+                                let shown = if current.class == JobClass::SetupChunked {
+                                    format!("<setup {} bytes>", accepted.len())
+                                } else {
+                                    warpui::input_order::describe_bytes_escaped(accepted)
+                                };
+                                format!(
+                                    "class={:?} wrote={n} of_job={} bytes={shown} {}",
+                                    current.class,
+                                    current.source.len(),
+                                    warpui::input_order::shell_signal_ages()
+                                )
+                            });
+                        }
                         current.advance(n);
                         if current.finished() {
                             if current.is_reply() {

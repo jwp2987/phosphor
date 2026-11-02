@@ -815,6 +815,7 @@ impl TypeaheadHandoff {
     /// (see `on_line_editor_active`). A signal with no wait pending (a program enabling bracketed
     /// paste itself, or a second signal for the same prompt) releases nothing.
     pub fn release_queued_prompt_hold_on_signal(&mut self) -> Option<u64> {
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::LineEditorReady);
         if self.awaiting_line_editor_since.take().is_none() {
             return None;
         }
@@ -928,6 +929,7 @@ impl TypeaheadHandoff {
     /// prompt's Precmd). Returns whether it is news: a second marker for the same prompt
     /// (`seq`), or one older than the last Precmd's, changes nothing.
     pub fn on_line_editor_reading(&mut self, session: Option<u64>, seq: Option<u64>) -> bool {
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::LineEditorReady);
         self.line_editor_markers_live = true;
         let stale = match (seq, self.prompt_seq) {
             (Some(seq), Some(prompt)) => prompt.session == session && seq < prompt.seq,
@@ -1153,6 +1155,7 @@ impl TypeaheadHandoff {
     /// A request (legacy or the hand-off's own) is written: its report, once every report ahead
     /// of it is in, covers the untracked bytes written before it.
     fn on_request_written(&mut self) {
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::RequestDecided);
         if self.rtt_pending.len() >= RTT_WINDOW {
             self.rtt_pending.pop_front();
         }
@@ -1166,6 +1169,7 @@ impl TypeaheadHandoff {
     /// A report arrived: once it is the one that answers a request written after the untracked
     /// bytes, they are back in the editor.
     fn on_report_received(&mut self) {
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::ReportReceived);
         if let Some(written_at) = self.rtt_pending.pop_front() {
             self.record_rtt(written_at.elapsed());
         }
@@ -1515,6 +1519,7 @@ impl TypeaheadHandoff {
             self.awaiting_line_editor_since = Some(now);
         }
         warpui::input_order::log_hop("precmd_seen", String::new);
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
         let consumed_by_program = mem::take(&mut self.interactive_command_finished);
         let seq_mode = self.prompt_seq_mode();
@@ -1540,6 +1545,7 @@ impl TypeaheadHandoff {
     /// started this command itself (a typeahead line), rather than the app writing it. Returns
     /// whether the pty took over input.
     pub fn on_preexec(&mut self, shell_started: bool) -> bool {
+        warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Preexec);
         self.shell_activity = ShellActivity::Running;
         self.activity_generation = self.activity_generation.wrapping_add(1);
         // The shell took a line: its line editor is not about to start.
@@ -1716,6 +1722,7 @@ impl TypeaheadHandoff {
         // A signal or EOF byte is never held: it drops a held Enter and goes out at once.
         if bytes.iter().any(is_signal_byte) {
             self.drop_young_hold();
+            self.log_route_decision("signal_unheld", bytes);
             return self.route_user_bytes_unheld(bytes, reaches_shell_line);
         }
         self.drop_stale_hold();
@@ -1731,6 +1738,7 @@ impl TypeaheadHandoff {
                 "typeahead hand-off: a key reached the hand-off while a queued young hold was live; holding it"
             );
             self.young_hold_started = true;
+            self.log_route_decision("held_young_hold_live", bytes);
             return UserBytesRoute::Held;
         }
         if self.prompt_hold_queued {
@@ -1740,6 +1748,7 @@ impl TypeaheadHandoff {
                 "typeahead hand-off: a key reached the hand-off while a queued prompt hold was live; holding it"
             );
             self.prompt_hold_started = true;
+            self.log_route_decision("held_prompt_hold_live", bytes);
             return UserBytesRoute::Held;
         }
         if self.should_hold_for_prompt(reaches_shell_line, Instant::now()) {
@@ -1750,6 +1759,7 @@ impl TypeaheadHandoff {
             self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
             self.prompt_hold_started = true;
             self.last_line_bytes_at = Some(Instant::now());
+            self.log_route_decision("held_prompt_hold_started", bytes);
             return UserBytesRoute::Held;
         }
         if let Some(event_driven) =
@@ -1762,9 +1772,31 @@ impl TypeaheadHandoff {
             // of its queue behind a `PromptSeen` gate and every key typed after it queues behind
             // that.
             self.young_hold_queued = true;
+            self.log_route_decision("held_young_enter_started", bytes);
             return UserBytesRoute::Held;
         }
+        self.log_route_decision("unheld", bytes);
         self.route_user_bytes_unheld(bytes, reaches_shell_line)
+    }
+
+    /// Logs why a user write was held or let through (#1490): the reason, the hand-off state and
+    /// whether the shell's line-editor signal is still awaited for the current prompt. The bytes
+    /// are shown only for synthetic test text (`WARP_INPUT_ORDER_LOG_TEXT=1`).
+    fn log_route_decision(&self, reason: &str, bytes: &[u8]) {
+        warpui::input_order::log_hop("hand_route", || {
+            let state = match &self.state {
+                HandoffState::PtyOwned { .. } => "pty_owned",
+                HandoffState::HoldAfterEnter { .. } => "hold_after_enter",
+                HandoffState::AwaitingReport => "awaiting_report",
+                HandoffState::EditorOwned => "editor_owned",
+            };
+            format!(
+                "reason={reason} state={state} awaiting_ready={} in_flight={} bytes={}",
+                self.awaiting_line_editor_since.is_some(),
+                self.writes_in_flight,
+                warpui::input_order::describe_bytes_escaped(bytes)
+            )
+        });
     }
 
     /// What [`Self::on_user_bytes`] would answer for `bytes` right now, WITHOUT doing any of what it
