@@ -347,11 +347,6 @@ impl AmbientAgentTask {
     pub fn creator_display_name(&self) -> Option<String> {
         self.creator.as_ref().and_then(|c| c.display_name.clone())
     }
-
-    /// Returns true if the underlying session for the ambient agent is no longer running.
-    pub fn is_no_longer_running(&self) -> bool {
-        !self.is_sandbox_running && !self.state.is_working()
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]

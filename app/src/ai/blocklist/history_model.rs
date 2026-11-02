@@ -685,6 +685,7 @@ impl BlocklistAIHistoryModel {
     /// writes the updated conversation state to SQLite. Used by the
     /// orchestration event poller after draining an event batch to keep the
     /// cursor durable across restarts.
+    #[cfg(test)]
     pub fn update_event_sequence(
         &mut self,
         conversation_id: AIConversationId,
@@ -2346,11 +2347,6 @@ impl BlocklistAIHistoryModel {
             .any(|conversation_ids| conversation_ids.contains(&conversation_id))
     }
 
-    pub fn mark_terminal_view_as_ambient_agent_session_view(&mut self, terminal_view_id: EntityId) {
-        self.ambient_agent_terminal_view_ids
-            .insert(terminal_view_id);
-    }
-
     /// The terminal view that currently owns `conversation_id` as one of its live conversations.
     pub fn live_owner_terminal_view(&self, conversation_id: AIConversationId) -> Option<EntityId> {
         self.live_conversation_ids_for_terminal_view
@@ -2555,16 +2551,6 @@ impl BlocklistAIHistoryModel {
             return;
         };
         conversation.set_is_exchange_hidden(exchange_id, is_hidden, terminal_view_id, ctx);
-    }
-
-    pub fn set_viewing_shared_session_for_conversation(
-        &mut self,
-        conversation_id: AIConversationId,
-        is_viewing_shared_session: bool,
-    ) {
-        if let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) {
-            conversation.set_is_viewing_shared_session(is_viewing_shared_session);
-        }
     }
 
     pub fn set_has_code_review_opened_to_true(&mut self, conversation_id: AIConversationId) {

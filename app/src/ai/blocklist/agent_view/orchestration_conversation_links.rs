@@ -14,13 +14,11 @@ use warpui::{AppContext, Element, EntityId, EventContext, SingletonEntity};
 
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
-use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
-use crate::ai::conversation_entry::{AgentConversationEntryId, AgentConversationNavigationSubject};
 use crate::terminal::view::TerminalAction;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
-use crate::workspace::{RestoreConversationLayout, WorkspaceAction, WorkspaceRegistry};
+use crate::workspace::{WorkspaceAction, WorkspaceRegistry};
 
 pub(crate) fn conversation_id_for_agent_id(
     agent_id: &str,
@@ -114,62 +112,6 @@ pub(crate) fn parent_conversation_id(
             .parent_agent_id()
             .and_then(|id| conversation_id_for_agent_id(id, app))
     })
-}
-
-pub(crate) fn conversation_navigation_action(
-    conversation_id: AIConversationId,
-    app: &AppContext,
-) -> Option<WorkspaceAction> {
-    AgentConversationsModel::resolve_open_action(
-        AgentConversationNavigationSubject::Entry(AgentConversationEntryId::Conversation(
-            conversation_id,
-        )),
-        Some(RestoreConversationLayout::SplitPane),
-        app,
-    )
-}
-
-pub(crate) fn parent_conversation_navigation_card(
-    active_conversation: &AIConversation,
-    mouse_state: MouseStateHandle,
-    app: &AppContext,
-) -> Option<Box<dyn Element>> {
-    let parent_conversation_id = parent_conversation_id(active_conversation, app)?;
-    let parent_title = BlocklistAIHistoryModel::as_ref(app)
-        .conversation(&parent_conversation_id)
-        .and_then(|conversation| conversation.title())
-        .unwrap_or_else(|| "Parent conversation".to_string());
-    let action = conversation_navigation_action(parent_conversation_id, app)?;
-    Some(conversation_navigation_card(
-        parent_title,
-        Some("Back to parent conversation".to_string()),
-        move |ctx, _, _| {
-            ctx.dispatch_typed_action(action.clone());
-        },
-        mouse_state,
-        false,
-        app,
-    ))
-}
-
-pub(crate) fn conversation_navigation_card(
-    title: String,
-    subtitle: Option<String>,
-    on_click: impl FnMut(&mut EventContext, &AppContext, Vector2F) + 'static,
-    mouse_state: MouseStateHandle,
-    expands_to_max_width: bool,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    conversation_navigation_card_with_icon(
-        None,
-        title,
-        subtitle,
-        on_click,
-        mouse_state,
-        expands_to_max_width,
-        None,
-        app,
-    )
 }
 
 /// Renders a clickable card with an optional leading icon, title/subtitle,

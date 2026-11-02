@@ -21,7 +21,7 @@
 
 use anyhow::Context as _;
 use futures::StreamExt;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest};
 use warpui::{AppContext, EntityId, SingletonEntity as _};
 
 use super::chat_stream;
@@ -243,59 +243,6 @@ fn wire_capture_in(cfg: &OneshotConfig, text: &str, opts: &OneshotOptions) {
         wire_log::Payload::Json(text.to_owned()),
         None,
     );
-}
-
-/// Send one BYOP streaming chat completion, aggregate all text chunks, and return them.
-///
-/// For OpenAI Responses-compatible proxies that only accept `stream=true`. The caller
-/// still gets the full string, so it can keep reusing the one-shot title-cleaning /
-/// JSON-parsing logic.
-pub async fn byop_oneshot_streaming_completion(
-    cfg: &OneshotConfig,
-    system: &str,
-    user: &str,
-    opts: &OneshotOptions,
-) -> anyhow::Result<String> {
-    let api_key = cfg.effective_api_key().await?;
-    let client = chat_stream::build_client(cfg.api_type, &cfg.base_url, api_key);
-    let (chat_req, chat_opts) = build_wire_oneshot_request(cfg, system, user, opts);
-    wire_capture_out(cfg, system, &chat_req, opts);
-    let mut resp = client
-        .exec_chat_stream(&cfg.model_id, chat_req, Some(&chat_opts))
-        .await
-        .with_context(|| {
-            format!(
-                "byop oneshot exec_chat_stream failed (model={})",
-                cfg.model_id
-            )
-        })?
-        .stream;
-
-    let mut text = String::new();
-    while let Some(event) = resp.next().await {
-        match event.with_context(|| {
-            format!(
-                "byop oneshot exec_chat_stream event failed (model={})",
-                cfg.model_id
-            )
-        })? {
-            ChatStreamEvent::Chunk(chunk) => {
-                text.push_str(&chunk.content);
-            }
-            // `Heartbeat` is new in genai 0.7 — Anthropic emits it to keep a
-            // long stream alive. It carries no content, so a oneshot capture
-            // ignores it exactly like the other non-chunk events.
-            ChatStreamEvent::Start
-            | ChatStreamEvent::Heartbeat
-            | ChatStreamEvent::ReasoningChunk(_)
-            | ChatStreamEvent::ThoughtSignatureChunk(_)
-            | ChatStreamEvent::ToolCallChunk(_)
-            | ChatStreamEvent::End(_) => {}
-        }
-    }
-
-    wire_capture_in(cfg, &text, opts);
-    Ok(text)
 }
 
 /// Builds the config for a resolved BYOP model, applying `policy` if the provider's key is

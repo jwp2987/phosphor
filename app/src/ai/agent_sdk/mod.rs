@@ -60,7 +60,6 @@ mod profiles;
 mod provider;
 #[cfg(test)]
 mod test_support;
-mod text_layout;
 
 /// Prints a non-blocking warning to stderr when the CLI is invoked with a team-scoped API key.
 fn maybe_warn_team_api_key(ctx: &AppContext) {

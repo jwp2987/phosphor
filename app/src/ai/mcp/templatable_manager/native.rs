@@ -65,7 +65,7 @@ use warpui_extras::secure_storage::AppContextExt as _;
 use warpui::{windowing::WindowManager, ModelContext, SingletonEntity};
 
 use super::{
-    oauth::{self, AuthContext, FileBasedPersistedCredentialsMap, PersistedCredentialsMap},
+    oauth::{self, AuthContext},
     MCPServerState, SpawnedServerInfo, TemplatableMCPServerInfo, TemplatableMCPServerManager,
     TemplatableMCPServerManagerEvent,
 };

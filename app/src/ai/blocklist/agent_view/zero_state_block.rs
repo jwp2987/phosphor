@@ -42,7 +42,7 @@ use crate::{
         model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher},
         prompt,
         view::{
-            ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent},
+            ambient_agent::AmbientAgentViewModel,
             TerminalAction,
         },
         TerminalModel,
@@ -154,22 +154,8 @@ impl AgentViewZeroStateBlock {
         });
 
         let model_events_clone = model_events_dispatcher.clone();
-        ctx.subscribe_to_model(ambient_agent_view_model, move |me, model, event, ctx| {
-            if false {
-                match event {
-                    AmbientAgentViewModelEvent::DispatchedAgent
-                    | AmbientAgentViewModelEvent::Cancelled
-                        if !me.should_hide =>
-                    {
-                        me.should_hide = true;
-                        ctx.unsubscribe_to_model(&model);
-                        ctx.unsubscribe_to_model(&model_events_clone);
-                        ctx.unsubscribe_to_model(&BlocklistAIHistoryModel::handle(ctx));
-                        ctx.notify();
-                    }
-                    _ => (),
-                }
-            } else if model.as_ref(ctx).should_show_status_footer() {
+        ctx.subscribe_to_model(ambient_agent_view_model, move |me, model, _event, ctx| {
+            if model.as_ref(ctx).should_show_status_footer() {
                 me.should_hide = true;
                 ctx.unsubscribe_to_model(&model);
                 ctx.unsubscribe_to_model(&model_events_clone);

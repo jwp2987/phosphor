@@ -22,11 +22,3 @@ pub fn estimate(input: &str) -> usize {
     // positive integers.
     (n + CHARS_PER_TOKEN / 2) / CHARS_PER_TOKEN
 }
-
-/// Estimate after JSON serialization — matches opencode `compaction.ts:241`:
-/// `Token.estimate(JSON.stringify(msgs))`
-pub fn estimate_json<T: serde::Serialize>(value: &T) -> usize {
-    serde_json::to_string(value)
-        .map(|s| estimate(&s))
-        .unwrap_or(0)
-}

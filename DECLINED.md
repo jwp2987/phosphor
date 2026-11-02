@@ -2643,3 +2643,24 @@ Owner direction 2026-11-02: the project pulls concepts, not code, from upstream 
 - **`warp_tui/src/bin/{dev,local,preview,stable}.rs`** (never compiled), the `input_classifier` `onnx_ort` backend, unused workspace deps `aes-gcm`/`argon2`/`keyring`/`parquet`, and ~50 zero-caller `pub` items across the small crates.
 
 Kept on purpose: `DOGFOOD_FLAGS`/`PREVIEW_FLAGS`/`LOCAL_FLAGS` (the schema/default-settings generators and `changelog_model` read them), `crates/warp_web_event_bus` (still imported by `app/src/platform/wasm.rs`).
+
+## Dead code removed from `app/src/ai` and `crates/ai` — 2026-11-02 (#1467)
+
+Since 2026-11-01 the project pulls concepts, not code, from upstream, so
+"kept verbatim for a clean re-pin diff" is no longer a reason to keep dead code.
+Removed with no caller anywhere in the workspace: `agent/api/convert_to.rs`
+(client -> Warp multi-agent protobuf request; BYOP builds requests in
+`agent_providers/prompt_renderer.rs`), the `conversation_yaml.rs` materializer
+(only `base_dir()` remains), `redact_inputs` and its helpers (superseded by
+`agent_providers/outbound_redaction.rs`, #1469), `get_relevant_files_file_contents.rs`,
+`inline_action/tool_card.rs`, `agent_sdk/text_layout.rs`, the jq-filter output
+helpers in `agent_sdk/output.rs`, the controller's shared-session response paths,
+the orchestration pill-bar breadcrumb row and static pill, and the unreachable
+MAA stream-extraction / legacy prompt-suggestion request builders. An
+`IMPROVED`-style reading applies: these are not parity gaps to re-open.
+
+Still present on purpose until a cross-area pass: the ambient-agent / cloud-run
+cluster (`ambient_agents/{task,spawn,github_auth_notifier}.rs`, the
+`ConversationOrTask::Task` arms, `DisableReason::{AdminDisabled, OutOfRequests,
+ProviderOutage, RequiresUpgrade}`) because `terminal/`, `workspace/` and
+`pane_group/` still name those types.

@@ -13,8 +13,7 @@
 //!   subscription callbacks become permanently-silent no-ops.
 //! * Files that use `RequestLimitInfo` / `RequestUsageInfo` / `BonusGrant` /
 //!   `BonusGrantScope` / `RequestLimitRefreshDuration` /
-//!   `BuyCreditsBannerDisplayState` / `AIRequestUsageModelEvent` /
-//!   `AMBIENT_AGENT_TRIAL_CREDIT_THRESHOLD` spilling over
+//!   `AIRequestUsageModelEvent` spilling over
 //!   (`workspaces/gql_convert.rs`, `ai_assistant/requests.rs`,
 //!   `ai_assistant/mod.rs`, `settings/ai.rs`, `settings/ai_tests.rs`,
 //!   `workspace/bonus_grant_notification_model.rs`, `settings_view/ai_page.rs`,
@@ -35,25 +34,10 @@ pub enum BonusGrantType {
     Any,
 }
 
-/// Threshold of ambient-only credits at which we surface upgrade/CTA UI。
-///
-/// Zap: never reached in the localized scenario (since
-/// `ambient_only_credits_remaining` is always `None`), but the constant definition
-/// is kept for external-import compatibility.
-pub const AMBIENT_AGENT_TRIAL_CREDIT_THRESHOLD: i32 = 20;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BonusGrantScope {
     User,
     Workspace(WorkspaceUid),
-}
-
-#[derive(Clone, Debug, PartialEq, Default)]
-pub enum BuyCreditsBannerDisplayState {
-    #[default]
-    Hidden,
-    OutOfCredits,
-    MonthlyLimitReached,
 }
 
 #[derive(Clone, Debug)]
@@ -186,11 +170,6 @@ impl AIRequestUsageModel {
     /// Zap: no cloud backend, no-op.
     pub fn refresh_request_usage_async(&mut self, _ctx: &mut ModelContext<Self>) {}
 
-    /// Zap (localization): always returns true; running BYOP locally isn't bound by any cloud quota.
-    pub fn has_requests_remaining(&self) -> bool {
-        true
-    }
-
     /// Zap (localization): always returns true.
     /// AI availability only depends on whether the user has configured an API key
     /// (controlled independently by `ApiKeyManager`), and shouldn't be decided by
@@ -258,32 +237,6 @@ impl AIRequestUsageModel {
     pub fn bonus_grants(&self) -> &[BonusGrant] {
         &[]
     }
-
-    /// Zap (localization): local users have no concept of ambient-only credits.
-    pub fn ambient_only_credits_remaining(&self) -> Option<i32> {
-        None
-    }
-
-    /// Zap (localization): local users have no concept of workspace bonus credits.
-    pub fn total_workspace_bonus_credits_remaining(&self, _uid: WorkspaceUid) -> i32 {
-        0
-    }
-
-    /// Zap (localization): local users have no concept of workspace bonus credits.
-    pub fn total_current_workspace_bonus_credits_remaining(&self, _ctx: &AppContext) -> i32 {
-        0
-    }
-
-    /// Zap (localization): the "buy extra credits" business doesn't apply.
-    pub fn compute_buy_addon_credits_banner_display_state(
-        &self,
-        _ctx: &AppContext,
-    ) -> BuyCreditsBannerDisplayState {
-        BuyCreditsBannerDisplayState::Hidden
-    }
-
-    /// Zap (localization): no-op.
-    pub fn dismiss_buy_credits_banner(&mut self, _ctx: &mut ModelContext<Self>) {}
 
     /// Zap (localization): no-op.
     pub fn enable_buy_credits_banner(&mut self, _ctx: &mut ModelContext<Self>) {}

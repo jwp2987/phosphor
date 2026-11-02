@@ -21,8 +21,7 @@ pub mod token;
 pub use commit::summarizable_history_tokens;
 pub use config::CompactionConfig;
 pub use overflow::{
-    OverflowVerdict, is_overflow, overflow_verdict, turn_has_tool_calls, turn_has_visible_output,
-    usable,
+    OverflowVerdict, overflow_verdict, turn_has_tool_calls, turn_has_visible_output, usable,
 };
 
 /// What to do when a finished, tool-free turn is over the context threshold.
@@ -123,7 +122,7 @@ pub fn plan_after_stream_finished(
     already_auto_compacted_this_turn: bool,
 ) -> FinishedStreamPlan {
     match stream {
-        FinishedStream::Summary { auto, committed } => FinishedStreamPlan {
+        FinishedStream::Summary { auto, committed: _ } => FinishedStreamPlan {
             decision: AutoCompactionDecision::None,
             // `committed` only decides what the continue request is built from.
             resume_with_continue_message: auto,

@@ -346,14 +346,6 @@ impl ProjectionItem {
         }
     }
 
-    pub fn system_boundary(task_id: impl Into<String>, message_id: impl Into<String>) -> Self {
-        Self {
-            task_id: task_id.into(),
-            message_id: message_id.into(),
-            kind: ProjectionItemKind::SystemBoundary,
-        }
-    }
-
     pub fn other_boundary(task_id: impl Into<String>, message_id: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
