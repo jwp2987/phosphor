@@ -15,7 +15,7 @@ import toml_text as T  # noqa: E402
 # ------------------------------------------------------------------ helpers
 def need_ssh(ctx, r):
     if not ctx.ssh:
-        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)")
+        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)")
 
 
 def rm_remote(ctx, *names):

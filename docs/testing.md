@@ -311,7 +311,7 @@ either).
 Session handling (Linux): own short `XDG_RUNTIME_DIR` (falls back to `/tmp/pa-*` when the job dir is too long for the 108-byte socket
 limit), private `HOME` per mode with an owner-like scratch config and **no credentials**, app under its own `dbus-run-session`, a local ssh
 server on 127.0.0.1 (system `sshd` as the CI user with a `ForceCommand` into a scratch remote home; else `fakesshd.py` when paramiko
-exists; else the ssh cases SKIP). Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
+exists; else the ssh cases SKIP). OpenSSH reads `~/.ssh/config` from the passwd home, not `$HOME` (#1481), so `profile.py` writes `ssh`/`scp`/`sftp` wrappers into `<home>/bin` (first on PATH in the rc files) that exec the real binary (absolute path resolved at setup) with `-F $HOME/.ssh/config`; after the profile is built `run.py` probes `ssh fake true` in that environment and, if it fails or hangs, every ssh case SKIPs with ssh's stderr as the reason. The ssh cases type `exit` only after the token reached the REMOTE file (`Ctx.leave_remote`); otherwise they record the miss, reset the pane and stop their trials, so a missed connect can never exit the local shell. Every process is recorded in `pids` and torn down by exact PID / process group, never by name.
 Scratch config: `general.default_session_mode` = `terminal` or `agent`; agent mode adds autodetect + natural-language detection; a
 provider is configured only when the endpoint is known (then `approval_card_pause` runs; otherwise it skips).
 

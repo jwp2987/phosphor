@@ -10,8 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
-SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint")
+SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint", "md_viewer")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):
@@ -83,10 +82,11 @@ def lat_checks(r, rec, label):
 
 
 class Ctx:
-    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None):
+    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
         self.rng = random.Random(seed)
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
+        self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
         self.n = 0
         self.scale = float(os.environ.get("APPCI_SCALE", "1"))   # <1 shortens counts for smoke runs
@@ -128,6 +128,27 @@ class Ctx:
 
     def prompts(self):
         return self.prof.prompts()
+
+    def shell_gone(self, off):
+        """True when the app log (from offset `off`) shows the LOCAL shell process ended: typing more would reach the agent, not a shell"""
+        return bool(re.search(r"shell process (exited|terminated)", self.log_since(off), re.I))
+
+    def leave_remote(self, r, label, rfile, tok, log_off, timeout=10):
+        """Type `exit` ONLY if the remote shell is provably in front (tok reached the REMOTE file rfile). Otherwise `exit` would end the
+        LOCAL shell and every later key would go to the agent (#1481): record the miss, reset the pane, and return False so the caller stops
+        its trial loop. Returns True after a clean exit back to the local prompt."""
+        if tok not in self.lines(rfile, remote=True):
+            r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping the trials (sshd.log, phosphor.log)" % (label, tok))
+            self.reset()
+            return False
+        before = self.prompts()
+        self.be.type("exit", 12, enter=True)
+        self.until(lambda: self.prompts() > before, timeout)
+        if self.shell_gone(log_off):
+            r.check(False, "%s: the LOCAL shell exited (app log) after `exit`; stopping the trials" % label)
+            return False
+        time.sleep(0.5)
+        return True
 
     def reset(self):
         self.be.key("ctrl+c")
@@ -550,7 +571,7 @@ def c_alt(ctx, r):
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
     if not ctx.ssh:
-        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
     trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
     ctx.rm("rl.txt")
     for f in ("rl.txt",):
@@ -558,7 +579,7 @@ def c_ssh(ctx, r):
             os.remove(os.path.join(ctx.prof.rhome, f))
         except FileNotFoundError:
             pass
-    exp, miss = [], 0
+    exp, miss, off, stop = [], 0, ctx.log_size(), False
     for gap in (0.0, 0.1, 0.2, 0.3):
         for i in range(trials):
             tok = ctx.tok(6)
@@ -568,10 +589,11 @@ def c_ssh(ctx, r):
             ctx.be.type("echo %s >> ~/rl.txt" % tok, 15, enter=True)
             if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
                 miss += 1
-            before = ctx.prompts()
-            ctx.be.type("exit", 12, enter=True)
-            ctx.until(lambda: ctx.prompts() > before, 10)
-            time.sleep(0.5)
+            if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, off):
+                stop = True
+                break
+        if stop:
+            break
     got = ctx.lines("rl.txt", remote=True)
     r.metric("trials", len(exp))
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
@@ -588,24 +610,22 @@ def c_ssh_enter_immediate(ctx, r):
     second line is typed while the first Enter still waits at its gate; released into the new
     connect it must be held for the remote shell (it used to be dropped with a log line)."""
     if not ctx.ssh:
-        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
     trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
     try:
         os.remove(os.path.join(ctx.prof.rhome, "rh.txt"))
     except FileNotFoundError:
         pass
     ctx.rm("rh.txt")
-    exp = []
+    exp, off = [], ctx.log_size()
     for _ in range(trials):
         tok = ctx.tok(6)
         exp.append(tok)
         ctx.be.type("ssh fake", 12, enter=True)
         ctx.be.type("echo %s >> ~/rh.txt" % tok, 12, enter=True)
         ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
-        before = ctx.prompts()
-        ctx.be.type("exit", 12, enter=True)
-        ctx.until(lambda: ctx.prompts() > before, 10)
-        time.sleep(0.5)
+        if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, off):
+            break
     got = ctx.lines("rh.txt", remote=True)
     r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
     r.check(not ctx.lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.lines("rh.txt"))
@@ -618,7 +638,7 @@ def c_ssh_nested(ctx, r):
     connect. At the hand-over the nested ssh is submitted; the echo behind it is held for the
     SECOND connect, so it runs exactly once, remotely, and never locally."""
     if not ctx.ssh:
-        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+        r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
     try:
         os.remove(os.path.join(ctx.prof.rhome, "rn.txt"))
     except FileNotFoundError:

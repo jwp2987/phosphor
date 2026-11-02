@@ -65,6 +65,7 @@ def main():
     for mode in a.modes.split(","):
         # per-mode fresh profile + app: settings differ (default_session_mode)
         ssh_info = None
+        ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
         app = None
         instance = 1       # app instance number within this mode: each instance's log is kept as phosphor.<n>.log (#1457)
         try:
@@ -72,6 +73,11 @@ def main():
             ssh_info = None if sim else sshd.start(prof, run)
             if ssh_info:
                 prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"])
+                ssh_why = prof.ssh_probe()
+                if ssh_why:
+                    print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)
+                    sshd.stop(ssh_info)
+                    ssh_info = None
             print("owner settings: %s" % profile.Profile.owner_note, flush=True)
             log_path = os.environ.get("APPCI_APP_LOG") or (prof.home + "/.local/state/phosphor/phosphor.log" if a.backend != "mac" else prof.home + "/Library/Logs/phosphor.log")
             if sim:
@@ -86,7 +92,7 @@ def main():
                 app.start()
                 if a.backend == "mac":
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
-            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path)
+            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why)
             if not sim:
                 up = ctx.until(lambda: prof.prompts() > 0, a.startup_timeout, step=0.5)
                 if not up:

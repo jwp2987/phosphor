@@ -2,7 +2,7 @@
 # and the test tree. Never reads the owner's real config: CI has none. The owner-like settings are the ones in
 # docs/testing.md 3.1 (agent mode default, autodetect + natural-language detection on, vertical tabs are not
 # set because they do not affect input), plus a provider ONLY when the endpoint is configured (ci_env.py: env or ~/.config/phosphor-ci/ci.env).
-import os, random, shutil
+import os, random, shutil, subprocess
 
 BASHRC = r'''# appci scratch rc: logs every prompt and the exact command line the shell received.
 export PS1='\w\$ '
@@ -123,7 +123,38 @@ class Profile:
                     "\nHost fakepw\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                     "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
                     % (ssh_port, os.environ.get("USER", "runner"), pw, h))
+            self.write_ssh_wrappers()
         return h
+
+    TOOLS = ("ssh", "scp", "sftp")
+
+    def write_ssh_wrappers(self):
+        """OpenSSH reads ~/.ssh/config from the PASSWD home, not $HOME (#1481): on a runner whose passwd home differs from the scratch HOME,
+        `ssh fake` does not resolve. <home>/bin is first on PATH in the shell rc files, so ssh/scp/sftp wrappers there add `-F $HOME/.ssh/config`
+        and exec the REAL binary (absolute path resolved now, from a PATH without the wrapper dir, so the wrapper can never exec itself)."""
+        bindir = os.path.join(self.home, "bin")
+        clean = os.pathsep.join(d for d in os.environ.get("PATH", os.defpath).split(os.pathsep) if os.path.abspath(d or ".") != os.path.abspath(bindir))
+        for t in self.TOOLS:
+            real = shutil.which(t, path=clean)
+            if not real:
+                continue
+            w = os.path.join(bindir, t)
+            open(w, "w").write('#!/bin/sh\n# appci: OpenSSH ignores $HOME for ~/.ssh/config (#1481)\nexec "%s" -F "$HOME/.ssh/config" "$@"\n' % real.replace('"', '\\"'))
+            os.chmod(w, 0o755)
+
+    def ssh_probe(self, timeout=15):
+        """setup-time check, in the environment the app's shell gets (HOME = scratch home, <home>/bin first on PATH): `ssh fake true`
+        (BatchMode is in the config) must succeed. Returns None when it does, else a skip reason carrying ssh's stderr."""
+        env = dict(os.environ, HOME=self.home, PATH=os.path.join(self.home, "bin") + os.pathsep + os.environ.get("PATH", os.defpath))
+        try:
+            p = subprocess.run(["ssh", "fake", "true"], env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            return "ssh test host unusable: `ssh fake true` did not finish within %d s" % timeout
+        except OSError as e:
+            return "ssh test host unusable: cannot run ssh (%s)" % e
+        if p.returncode != 0:
+            return "ssh test host unusable: `ssh fake true` exited %d: %s" % (p.returncode, (p.stderr or "").strip()[:300])
+        return None
 
     OWNER_SEED = os.path.join(os.path.expanduser("~"), ".config", "phosphor-ci", "owner-settings.toml")
     owner_note = None       # "sha256 <12>" or "not found (bare profile)": reported in results.json meta / summary.md
