@@ -53,6 +53,45 @@ pub enum Op {
         kind: u8,
         key: u8,
     },
+    /// Asks the destination table (#1424) what it would do with an input of `class` and `origin`
+    /// RIGHT NOW, on facts that carry the model's open gates and queued entries. Decides nothing
+    /// and changes nothing; checks that the table agrees with the queue about what holds.
+    Decide {
+        class: u8,
+        origin: u8,
+    },
+}
+
+/// The input class a [`Op::Decide`] asks about.
+fn decide_class(n: u8) -> table::Class {
+    use table::Class;
+    match n % 12 {
+        0 => Class::Typed,
+        1 => Class::Enter,
+        2 => Class::Control,
+        3 => Class::Seq,
+        4 => Class::Paste,
+        5 => Class::Raw,
+        6 => Class::EditKey,
+        7 => Class::AgentWrite,
+        8 => Class::Signal(SignalKind::Interrupt),
+        9 => Class::Signal(SignalKind::Eof),
+        10 => Class::Signal(SignalKind::Suspend),
+        _ => Class::Signal(SignalKind::Quit),
+    }
+}
+
+/// The origin a [`Op::Decide`] asks about.
+fn decide_origin(n: u8) -> Origin {
+    match n % 8 {
+        0 | 1 => Origin::Keyboard,
+        2 => Origin::Editor,
+        3 => Origin::Held,
+        4 => Origin::Synced,
+        5 => Origin::CliSubmit,
+        6 => Origin::Viewer,
+        _ => Origin::Agent,
+    }
 }
 
 fn editor_key_kind(n: u8) -> EntryKind {
@@ -245,6 +284,71 @@ pub fn run_ops(ops: &[Op]) {
             Op::SshWait => {
                 w.ssh_signal_waits = !w.ssh_signal_waits;
                 h.ssh_signal_waits = w.ssh_signal_waits;
+            }
+            Op::Decide { class, origin } => {
+                let class = decide_class(*class);
+                let origin = decide_origin(*origin);
+                let kinds: Vec<GateKind> = m.gates.iter().map(|g| g.kind).collect();
+                let facts = RouteFacts {
+                    model_consistent: true,
+                    handoff_known: true,
+                    long_running: true,
+                    active_block_started: true,
+                    session_pending_or_bootstrapped: true,
+                    is_bootstrapped: true,
+                    gates: GateMask::of(&kinds),
+                    queued: !m.pending.is_empty(),
+                    queued_only_pty: m
+                        .pending
+                        .iter()
+                        .all(|p| matches!(p.kind, EntryKind::PtyBytes { .. })),
+                    ..RouteFacts::default()
+                };
+                let intent = table::Intent::new(class, origin);
+                // Total: any class, origin and queue state has a plan (no panic).
+                let plan = table::decide(&intent, &facts, None);
+                let signal = matches!(class, table::Class::Signal(_));
+                if signal {
+                    assert!(
+                        !matches!(
+                            plan.outcome,
+                            table::Outcome::Hold(_) | table::Outcome::Queue
+                        ),
+                        "a signal never waits behind a gate: {plan:?} with gates {kinds:?}"
+                    );
+                }
+                let plain = matches!(
+                    class,
+                    table::Class::Typed
+                        | table::Class::Enter
+                        | table::Class::Control
+                        | table::Class::Seq
+                        | table::Class::Paste
+                ) && origin == Origin::Keyboard;
+                if plain {
+                    let only_ssh = facts.gates.all_within(&[GateKind::SshConnect]);
+                    if !facts.gates.is_empty() && !only_ssh {
+                        // The queue holds every key behind an open gate: the table must agree.
+                        assert!(
+                            matches!(
+                                plan.outcome,
+                                table::Outcome::Hold(_)
+                                    | table::Outcome::Drop(_)
+                                    | table::Outcome::Hint
+                            ),
+                            "the queue holds {class:?} behind {kinds:?} but the table says {plan:?}"
+                        );
+                    }
+                    if facts.gates.is_empty() && !facts.queued {
+                        assert!(
+                            !matches!(
+                                plan.outcome,
+                                table::Outcome::Hold(_) | table::Outcome::Queue
+                            ),
+                            "nothing is held or queued, yet the table holds {class:?}: {plan:?}"
+                        );
+                    }
+                }
             }
             Op::RequeueNext { kind, key } => {
                 let kind = GateKind::ALL[usize::from(*kind) % GateKind::ALL.len()];

@@ -267,3 +267,61 @@ fn the_test_override_nests_and_restores() {
     drop(outer);
     assert_eq!(mode_forced_for_test(), None);
 }
+
+/// The editor's own hold decision (#1423) against the H8 matrix: agreement logs nothing, a
+/// difference is a row-H8 line carrying the class and the gate mask, never content.
+#[test]
+fn the_editor_matrix_comparison_reports_only_a_difference() {
+    use crate::terminal::input_queue::GateKind;
+    let _ = take_recorded();
+    let gates = GateMask::of(&[GateKind::SubshellSetup]);
+    assert_eq!(
+        check_editor_matrix(Class::EditKey, gates, true, true),
+        None,
+        "agreement"
+    );
+    assert_eq!(
+        check_editor_matrix(Class::EditKey, gates, false, false),
+        None,
+        "agreement"
+    );
+    assert!(take_recorded().is_empty());
+    let disagreement = check_editor_matrix(Class::Enter, gates, true, false).expect("they differ");
+    assert_eq!(disagreement.row, Row::H8);
+    assert_eq!(disagreement.legacy, DestClass::Editor);
+    assert_eq!(disagreement.table, DestClass::Held);
+    let line = disagreement.detail();
+    assert!(
+        line.starts_with("row=H8 legacy=editor table=held flags=editor_key class=Enter gates=0x"),
+        "{line}"
+    );
+    assert_eq!(take_recorded(), vec![line]);
+}
+
+/// B14: text the legacy terminal path put straight into the editor while a gate held every other
+/// key is a known, tagged difference (the table holds it, strict FIFO); the same difference with
+/// the pty as legacy's destination is not.
+#[test]
+fn editor_text_past_a_gate_is_the_tagged_difference_b14() {
+    use crate::terminal::input_queue::GateKind;
+    let _ = take_recorded();
+    let intent = kb(Class::Typed);
+    let facts = RouteFacts {
+        gates: GateMask::of(&[GateKind::PasteReading]),
+        ..at_prompt()
+    };
+    let plan = decide(&intent, &facts, None);
+    assert_eq!(
+        (plan.row, class_of(&plan.outcome)),
+        (Row::H8, DestClass::Held)
+    );
+    let tagged = check(&intent, &plan, &facts, DestClass::Editor).expect("they differ");
+    assert_eq!(tagged.expected, Some("B14"));
+    assert!(
+        tagged.detail().ends_with(" expected=B14"),
+        "{}",
+        tagged.detail()
+    );
+    let untagged = check(&intent, &plan, &facts, DestClass::Pty).expect("they differ");
+    assert_eq!(untagged.expected, None);
+}

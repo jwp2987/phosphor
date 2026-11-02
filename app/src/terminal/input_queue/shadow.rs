@@ -15,14 +15,15 @@
 //! them: `OD1` (^Z / ^\\ are signals now), `OD5` (a signal in the ssh setup window is held, not
 //! dropped), `OD7` (a key stamped before the ssh prompt is dropped), `B3` (the table logs a drop
 //! legacy did silently), `B7` (the published agent flag was one publication old), `B13` (a control
-//! key reaches the pty while the agent owns it, through the hand-off).
+//! key reaches the pty while the agent owns it, through the hand-off), `B14` (legacy put text for
+//! the editor past the gates that hold every other key; the table holds it, strict FIFO).
 //!
 //! The comparison is pure; the only state is two thread-locals (the leaf the legacy chain noted,
 //! and, in tests, the recorded lines).
 
 use std::cell::Cell;
 
-use super::facts::RouteFacts;
+use super::facts::{GateMask, RouteFacts};
 use super::table::{Class, DropWhy, Intent, Outcome, Plan, Row, pty_typed};
 use super::{DestinationMode, SignalKind, destination_mode};
 
@@ -168,12 +169,18 @@ pub fn compare(
     if table == legacy {
         return None;
     }
+    // B14: the legacy terminal path put text bound for the editor straight into it, past the
+    // gates that hold every other key (a paste being read, an Enter waiting for its verdict ...).
+    // The table holds it behind them (strict FIFO, row H8).
+    let editor_past_the_gates = legacy == DestClass::Editor
+        && table == DestClass::Held
+        && matches!(plan.row, Row::H8 | Row::H8Queue);
     Some(Disagreement {
         row: plan.row,
         legacy,
         table,
         flags: flags(f),
-        expected: expected_tag(intent, plan, f),
+        expected: expected_tag(intent, plan, f).or(editor_past_the_gates.then_some("B14")),
     })
 }
 
@@ -185,6 +192,45 @@ pub fn check(
     legacy: DestClass,
 ) -> Option<Disagreement> {
     let disagreement = compare(intent, plan, f, legacy)?;
+    report(&disagreement);
+    Some(disagreement)
+}
+
+/// The editor's own hold decision for a key (`hold_key_for_paste_on_queue`, #1423: does the key act
+/// at once behind the open gates) against the H8 matrix of the table. `None` when they agree.
+pub fn editor_matrix_disagreement(
+    class: Class,
+    gates: GateMask,
+    legacy_passes: bool,
+    table_passes: bool,
+) -> Option<Disagreement> {
+    if legacy_passes == table_passes {
+        return None;
+    }
+    let of = |passes: bool| {
+        if passes {
+            DestClass::Editor
+        } else {
+            DestClass::Held
+        }
+    };
+    Some(Disagreement {
+        row: Row::H8,
+        legacy: of(legacy_passes),
+        table: of(table_passes),
+        flags: format!("editor_key class={class:?} gates={:#x}", gates.0),
+        expected: None,
+    })
+}
+
+/// [`editor_matrix_disagreement`], reported. Returns it (for tests).
+pub fn check_editor_matrix(
+    class: Class,
+    gates: GateMask,
+    legacy_passes: bool,
+    table_passes: bool,
+) -> Option<Disagreement> {
+    let disagreement = editor_matrix_disagreement(class, gates, legacy_passes, table_passes)?;
     report(&disagreement);
     Some(disagreement)
 }

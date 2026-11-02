@@ -4,8 +4,9 @@
 //! later steps, the chain of predicates that is spread over `route_typed`, `keydown_on_terminal`,
 //! `control_sequence_on_terminal`, `hold_input_during_ssh_connect`, `write_user_bytes_to_pty_inner`,
 //! `after_paste_stage`, `deliver_replayed_entry`, `deliver_ssh_held` and the editor's hold paths.
-//! **Nothing calls it yet** (steps 1 and 2: facts plumbing and the pure table); legacy stays in
-//! charge and `PHOSPHOR_QUEUE_DESTINATION` defaults to `legacy`.
+//! In `PHOSPHOR_QUEUE_DESTINATION=table` it decides delivery (step 4), the arrival of terminal keys
+//! (step 5) and the origin writers and paste routing (step 6); in `shadow` (the default) legacy
+//! decides and the table is compared with it; `legacy` leaves it uncalled.
 //!
 //! Pure means: no clock, no lock, no I/O, no allocation, no view state. Everything it needs is in
 //! the [`Intent`] (what the input is, where it came from, the [`Stamp`] it got at the sink) and the
@@ -20,7 +21,7 @@
 //!
 //! | row | when | outcome |
 //! |---|---|---|
-//! | `OSynced` | origin Synced, not (bootstrapped and long running) | `Drop(NotLongRunning)` |
+//! | `OSynced` | origin Synced, not (a pending or bootstrapped session and a running command) | `Drop(NotLongRunning)` |
 //! | `D13` | agent write, setup gate or ssh remote setup | `Drop(AgentRefusedSetup)`, else `Pty(Agent)` |
 //! | `OCliSubmit` | origin CliSubmit: exempt from every hold | `Pty(CliSubmit)` or `Drop(AgentControl)` |
 //! | `H1` | Typed/Paste, stamped focus is the ssh choice card | `Hint` |
@@ -509,7 +510,10 @@ pub fn pty_enter_replay(f: &RouteFacts) -> bool {
 ///   of a gate the view has already detached (H3b).
 /// * **editor keys behind only a subshell / PowerShell setup gate** (`editor_keys_pass_gates`,
 ///   #1423): the setup holds PTY bytes, not editor keys, so they apply at once. Only while
-///   everything queued is pty-bound (`queued_only_pty`).
+///   everything queued is pty-bound (`queued_only_pty`), and only for the keys that EDIT (text,
+///   the editing and cursor keys: [`Class::Typed`], [`Class::EditKey`], [`Class::Seq`]). A key
+///   that submits (Enter, [`Class::Enter`]) or completes (Tab, [`Class::Control`]) reaches the
+///   pty or the shell and stays held, as the editor's `key_submits_or_completes` always kept it.
 ///
 /// Signals never reach this function: they apply [`signal_plan`] per gate instead.
 pub fn gate_holds(f: &RouteFacts, class: Class, origin: Origin) -> bool {
@@ -524,6 +528,7 @@ pub fn gate_holds(f: &RouteFacts, class: Class, origin: Origin) -> bool {
         return false;
     }
     let editor_exempt = origin == Origin::Editor
+        && matches!(class, Class::Typed | Class::EditKey | Class::Seq)
         && f.gates
             .all_within(&[GateKind::SubshellSetup, GateKind::PowershellSetup])
         && f.queued_only_pty;
@@ -581,7 +586,9 @@ fn pty_plan(intent: &Intent, outcome: Outcome, row: Row, effects: Effects) -> Pl
 fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
     let class = i.class;
     // ---- origin rows that come before anything ----
-    if i.origin == Origin::Synced && !(f.is_bootstrapped && f.long_running) {
+    // Legacy: `has_pending_or_bootstrapped_session() && is_long_running()` (the bootstrap script was
+    // echoed), which is `session_pending_or_bootstrapped`, not `is_bootstrapped`.
+    if i.origin == Origin::Synced && !(f.session_pending_or_bootstrapped && f.long_running) {
         return drop_plan(DropWhy::NotLongRunning, Row::OSynced, Effects::NONE);
     }
     if class == Class::AgentWrite {

@@ -452,6 +452,25 @@ pub(super) fn key_submits_or_completes(action: &EditorAction) -> bool {
     )
 }
 
+/// The class the destination table's H8 matrix knows an editor key by (#1424): a key that submits
+/// the line is an `Enter`, one that asks the shell to complete it a `Control` key, anything else
+/// an editing key. The same split as [`key_submits_or_completes`].
+pub(super) fn editor_key_class(
+    action: &EditorAction,
+) -> crate::terminal::input_queue::table::Class {
+    use crate::terminal::input_queue::table::Class;
+    match action {
+        EditorAction::Enter
+        | EditorAction::CmdEnter
+        | EditorAction::CtrlEnter
+        | EditorAction::ShiftEnter
+        | EditorAction::AltEnter
+        | EditorAction::Newline => Class::Enter,
+        EditorAction::Tab | EditorAction::ShiftTab => Class::Control,
+        _ => Class::EditKey,
+    }
+}
+
 /// The held form of `action`, if it is a key that must wait behind a pending paste. Everything
 /// else (Escape, Ctrl-C, scrolling, mouse selection, copy) acts at once.
 pub(super) fn held_form(action: &EditorAction) -> Option<HeldPasteKey> {

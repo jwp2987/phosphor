@@ -42,6 +42,8 @@ use warpui::{SingletonEntity as _, ViewContext};
 
 use super::{AfterEnterInput, Event, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
+use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
+use crate::terminal::input_queue::table::Class;
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
     FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
@@ -222,6 +224,28 @@ fn abort_signal(bytes: &[u8]) -> Option<SignalKind> {
         [0x03] => Some(SignalKind::Interrupt),
         [0x04] => Some(SignalKind::Eof),
         _ => None,
+    }
+}
+
+/// The signal `bytes` stand for, all four of them (OD-1: ^C ^D ^Z ^\).
+pub(super) fn signal_of(bytes: &[u8]) -> Option<SignalKind> {
+    match bytes {
+        [0x03] => Some(SignalKind::Interrupt),
+        [0x04] => Some(SignalKind::Eof),
+        [0x1a] => Some(SignalKind::Suspend),
+        [0x1c] => Some(SignalKind::Quit),
+        _ => None,
+    }
+}
+
+/// The signal the pane QUEUE jumps the queue for (#1424 OD-1): all four in `table` mode, where
+/// ^Z and ^\ are signals like ^C (the tty flushes its pending input on INTR, QUIT and SUSP);
+/// ^C and ^D only otherwise (`abort_signal`, the legacy classification).
+pub(super) fn queue_signal_of(bytes: &[u8]) -> Option<SignalKind> {
+    if destination_mode() == DestinationMode::Table {
+        signal_of(bytes)
+    } else {
+        abort_signal(bytes)
     }
 }
 
@@ -623,7 +647,7 @@ impl TerminalView {
         }
         // A young Enter's hold the hand-off's state has outgrown ends before this key is queued
         // behind it (#1353 phase 5b). One borrow-flag read when no such gate is open.
-        if abort_signal(bytes).is_none() {
+        if queue_signal_of(bytes).is_none() {
             self.settle_stale_young_hold_before_key(ctx);
             if self
                 .paste_queue
@@ -634,7 +658,7 @@ impl TerminalView {
                 return None;
             }
         }
-        let kind = match abort_signal(bytes).filter(|_| !abort_as_entry) {
+        let kind = match queue_signal_of(bytes).filter(|_| !abort_as_entry) {
             Some(signal) => {
                 // Ctrl-C / Ctrl-D skips an announced subshell setup (the held keys follow it).
                 if self
@@ -665,6 +689,11 @@ impl TerminalView {
                 }
             }
         };
+        // The shadow comparison (#1424): a key the pane queue holds is `Held`, not `Pty` (a signal
+        // jumps the queue, it is not held).
+        if !matches!(kind, EntryKind::Signal(_)) {
+            note_shadow_leaf(DestClass::Held);
+        }
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
             // Became busy since the checks above: the key waits its turn, in order.
@@ -781,11 +810,15 @@ impl TerminalView {
     /// straight to the stages after the paste stage (the keys the user typed behind it wait for
     /// the gate; the submit must not wait behind itself).
     pub(super) fn write_cli_submit_bytes(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
-        if self.paste_queue.cli_submit_gate.is_some() {
-            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx);
+        // #1424: the CLI-submit origin is exempt from every hold (row O-cli-submit); the table
+        // logs its plan in `table` mode and shadow compares it with what the write did.
+        let row = self.begin_origin_row(Class::Raw, Origin::CliSubmit, ctx);
+        let written = if self.paste_queue.cli_submit_gate.is_some() {
+            self.write_user_bytes_to_pty_after_paste_stage(Cow::Owned(bytes), true, ctx)
         } else {
-            self.write_user_bytes_to_pty(bytes, ctx);
-        }
+            self.write_user_bytes_to_pty(bytes, ctx)
+        };
+        self.end_origin_row(row, written);
     }
 
     /// Whether a paced CLI-agent submit holds the queue, for tests.
@@ -1787,7 +1820,7 @@ impl TerminalView {
         if !setup_gate && !bootstrap_gate && in_flight.is_none() && age.is_none() {
             return SubshellPrep::Normal;
         }
-        let abort = super::is_abort_key(bytes);
+        let abort = queue_signal_of(bytes).is_some();
         if abort && in_flight.is_some() {
             // The rest of a chunked line-clear write is dropped (#1354, now a writer job #1384).
             ctx.emit(super::Event::CancelPacedSetupWrites);
@@ -1796,6 +1829,7 @@ impl TerminalView {
                 // An abort that also skips the setup goes FIRST once the last line is out, ahead
                 // of what was typed (the old buffer's release order); kept until then.
                 self.paste_queue.pending_aborts.push((bytes.to_vec(), true));
+                note_shadow_leaf(DestClass::Held);
                 return SubshellPrep::Stashed;
             }
         }
@@ -1904,7 +1938,7 @@ impl TerminalView {
     fn send_pending_subshell_aborts(&mut self, ctx: &mut ViewContext<Self>) {
         let aborts = std::mem::take(&mut self.paste_queue.pending_aborts);
         for (bytes, _takes_over) in aborts {
-            let Some(signal) = abort_signal(&bytes) else {
+            let Some(signal) = queue_signal_of(&bytes) else {
                 continue;
             };
             if self.subshell_setup_gate_open() {

@@ -404,8 +404,12 @@ fn h8_every_gate_holds_every_class_except_the_two_exemptions() {
                 let expected = match gate {
                     // The ssh hold holds its own keys (H3); what reaches the matrix passes.
                     GateKind::SshConnect => false,
-                    // #1423: editor keys behind only a setup gate apply at once.
-                    GateKind::SubshellSetup | GateKind::PowershellSetup => origin != Origin::Editor,
+                    // #1423: editor keys that EDIT behind only a setup gate apply at once; a key
+                    // that submits or completes stays held.
+                    GateKind::SubshellSetup | GateKind::PowershellSetup => {
+                        !(origin == Origin::Editor
+                            && matches!(class, Class::Typed | Class::EditKey | Class::Seq))
+                    }
                     _ => true,
                 };
                 assert_eq!(
@@ -980,10 +984,11 @@ fn synced_bytes_need_a_bootstrapped_running_command() {
             Row::OSynced,
         ),
         case(
-            "bytes, not bootstrapped",
+            "bytes, bootstrap script not echoed",
             synced(Class::Raw),
             RouteFacts {
-                is_bootstrapped: false,
+                // The bootstrap script was not echoed yet (no pending or bootstrapped session).
+                session_pending_or_bootstrapped: false,
                 ..running()
             },
             drop_of(DropWhy::NotLongRunning),
@@ -1898,4 +1903,264 @@ proptest! {
             );
         }
     }
+}
+
+// ---- enumerated totality (#1424, Fable review item 3) -------------------------------------------
+
+/// Facts from an index of the enumeration: 10 flags, 4 ssh states, 5 gate states.
+fn enum_facts(bits: u32, ssh: u8, gate: u8) -> RouteFacts {
+    let b = |n: u32| bits & (1 << n) != 0;
+    let mut facts = RouteFacts {
+        model_consistent: true,
+        handoff_known: true,
+        long_running: b(0),
+        active_block_started: b(1),
+        session_pending_or_bootstrapped: b(2),
+        handoff_routes: b(3),
+        agent_owns_pty: b(4),
+        agent_in_control: b(5),
+        input_box_visible: b(6),
+        editor_takeover_open: b(7),
+        ps: if b(8) {
+            PsPhase::Setup { holds_keys: true }
+        } else {
+            PsPhase::Off
+        },
+        queued: b(9),
+        agent_write_gate_closed: b(8),
+        ..RouteFacts::default()
+    };
+    match ssh {
+        1 => facts.ssh = SshPhase::Holding,
+        2 => facts.ssh = SshPhase::PromptUp { prompt_gen: 5 },
+        3 => facts.ssh_dialog_up = true,
+        _ => {}
+    }
+    match gate {
+        1 => facts.gates = GateMask::of(&[GateKind::PasteReading]),
+        2 => {
+            facts.gates = GateMask::of(&[GateKind::SubshellSetup]);
+            facts.subshell = SubshellPhase::SetupHeld;
+            facts.forwards_subshell_abort = true;
+        }
+        3 => {
+            facts.gates = GateMask::of(&[GateKind::SubshellBootstrapWrite]);
+            facts.subshell = SubshellPhase::BootstrapWriting;
+            facts.forwards_subshell_abort = true;
+        }
+        4 => facts.gates = GateMask::of(&[GateKind::EnterVerdict]),
+        _ => {}
+    }
+    facts
+}
+
+/// Every combination of the decisive facts (about 20,000), against every class and origin:
+/// `decide` is total (it never panics, whatever the combination), every row a plan can carry is
+/// reached by some combination, and every outcome comes with a row. The four rows that are only
+/// ever EFFECTS or a bypass of the hold rows are named: they are never the row of a plan.
+#[test]
+fn enumerated_facts_make_decide_total_and_reach_every_row_and_outcome() {
+    use std::collections::{HashMap, HashSet};
+    use std::mem::{Discriminant, discriminant};
+
+    let mut rows: HashSet<&'static str> = HashSet::new();
+    let mut outcomes: HashMap<Discriminant<Outcome>, HashSet<&'static str>> = HashMap::new();
+    let mut decisions = 0u64;
+    let mut note = |plan: Plan| {
+        decisions += 1;
+        rows.insert(plan.row.name());
+        outcomes
+            .entry(discriminant(&plan.outcome))
+            .or_default()
+            .insert(plan.row.name());
+    };
+
+    let content = [
+        Class::Typed,
+        Class::Enter,
+        Class::Control,
+        Class::Seq,
+        Class::Paste,
+        Class::Raw,
+    ];
+    let signals = [
+        Class::Signal(SignalKind::Interrupt),
+        Class::Signal(SignalKind::Eof),
+        Class::Signal(SignalKind::Suspend),
+        Class::Signal(SignalKind::Quit),
+    ];
+    let origins = [Origin::Keyboard, Origin::Editor, Origin::Held];
+    let stamp = at(1, FocusSnap::Other);
+
+    for bits in 0u32..1024 {
+        for ssh in 0u8..4 {
+            for gate in 0u8..5 {
+                let facts = enum_facts(bits, ssh, gate);
+                for origin in origins {
+                    for class in content {
+                        note(decide(
+                            &Intent::new(class, origin).stamped(stamp),
+                            &facts,
+                            None,
+                        ));
+                    }
+                    // An editor key may wait for the display map or not.
+                    for needs_map in [false, true] {
+                        let mut intent = Intent::new(Class::EditKey, origin).stamped(stamp);
+                        intent.needs_display_map = needs_map;
+                        note(decide(&intent, &facts, None));
+                    }
+                }
+                // Signals: the ssh setup window's three bits only matter for a keydown.
+                for class in signals {
+                    for window in 0u8..8 {
+                        let facts = RouteFacts {
+                            ssh_interrupt_must_wait: window & 1 != 0,
+                            ssh_pre_init_abort: window & 2 != 0,
+                            ssh_sigint_applies: window & 4 != 0,
+                            ssh_hold_exists: ssh == 1,
+                            ..facts
+                        };
+                        note(decide(
+                            &Intent::new(class, Origin::Keyboard).stamped(stamp),
+                            &facts,
+                            None,
+                        ));
+                    }
+                    note(decide(
+                        &Intent::new(class, Origin::Held).stamped(stamp),
+                        &facts,
+                        None,
+                    ));
+                }
+                // The agent's writes, and the origins with rows of their own.
+                note(decide(
+                    &Intent::new(Class::AgentWrite, Origin::Agent).stamped(stamp),
+                    &facts,
+                    None,
+                ));
+                for origin in [Origin::Synced, Origin::CliSubmit, Origin::Viewer] {
+                    for class in [Class::Typed, Class::Raw, Class::Control, Class::Paste] {
+                        note(decide(
+                            &Intent::new(class, origin).stamped(stamp),
+                            &facts,
+                            None,
+                        ));
+                    }
+                }
+                // The cards: what had focus at the sink.
+                for focus in [
+                    FocusSnap::SshChoiceCard,
+                    FocusSnap::ApprovalCard,
+                    FocusSnap::AiBlockAwaitingConfirm,
+                    FocusSnap::SettledAiTarget,
+                ] {
+                    let facts = RouteFacts {
+                        approval_card: focus == FocusSnap::ApprovalCard,
+                        ai_awaiting_confirmation: focus == FocusSnap::AiBlockAwaitingConfirm,
+                        settled_ai_target: focus == FocusSnap::SettledAiTarget,
+                        focus,
+                        ..facts
+                    };
+                    for class in [Class::Typed, Class::Paste] {
+                        note(decide(
+                            &Intent::new(class, Origin::Keyboard).stamped(at(1, focus)),
+                            &facts,
+                            None,
+                        ));
+                    }
+                }
+                // A line pinned to the editor.
+                for class in [Class::Typed, Class::Paste, Class::Control, Class::Seq] {
+                    note(decide(
+                        &Intent::new(class, Origin::Keyboard).stamped(stamp),
+                        &facts,
+                        Some(Destination::Editor),
+                    ));
+                }
+            }
+        }
+    }
+
+    // The rows that are effects or bypasses, never the row of a plan.
+    let effects_only = ["H3b", "H7b", "P1b", "D4"];
+    for row in [
+        Row::OSynced,
+        Row::OCliSubmit,
+        Row::H1,
+        Row::H2,
+        Row::H3,
+        Row::H3b,
+        Row::H4,
+        Row::H5,
+        Row::H6,
+        Row::H7,
+        Row::H7b,
+        Row::H8,
+        Row::H8Queue,
+        Row::H10,
+        Row::P1a,
+        Row::P1b,
+        Row::P1c,
+        Row::P1d,
+        Row::P1e,
+        Row::P1f,
+        Row::P2,
+        Row::D1,
+        Row::D1Replay,
+        Row::D2,
+        Row::D2b,
+        Row::D3,
+        Row::D4,
+        Row::D5,
+        Row::D6,
+        Row::D7,
+        Row::D9,
+        Row::D10,
+        Row::D11,
+        Row::D12,
+        Row::D13,
+        Row::Pin,
+    ] {
+        let name = row.name();
+        assert_eq!(
+            rows.contains(name),
+            !effects_only.contains(&name),
+            "row {name}: reached={} over {decisions} decisions",
+            rows.contains(name)
+        );
+    }
+    // Every outcome comes with a row, and each of the 18 kinds is produced by some combination.
+    let kinds = [
+        discriminant(&Outcome::Pty(PtyWrite::Typed)),
+        discriminant(&Outcome::PasteToPty { bracketed: false }),
+        discriminant(&Outcome::SignalToPty(SignalKind::Interrupt)),
+        discriminant(&Outcome::SigintForeground),
+        discriminant(&Outcome::AbortBytes),
+        discriminant(&Outcome::EditorInsert),
+        discriminant(&Outcome::EditorAction),
+        discriminant(&Outcome::EditorSubmit),
+        discriminant(&Outcome::AgentInput),
+        discriminant(&Outcome::Hold(GateKind::SshConnect)),
+        discriminant(&Outcome::HoldSignal),
+        discriminant(&Outcome::Queue),
+        discriminant(&Outcome::SignalAtGates),
+        discriminant(&Outcome::Stash),
+        discriminant(&Outcome::PowershellAbort),
+        discriminant(&Outcome::Hint),
+        discriminant(&Outcome::Swallow(SwallowReason::SshDialogOpen)),
+        discriminant(&Outcome::Drop(DropWhy::AgentControl)),
+    ];
+    for kind in kinds {
+        let rows_of_kind = outcomes.get(&kind);
+        assert!(
+            rows_of_kind.is_some_and(|rows| !rows.is_empty()),
+            "an outcome kind was never produced, or came with no row: {kind:?}"
+        );
+    }
+    assert_eq!(
+        outcomes.len(),
+        kinds.len(),
+        "an outcome kind this test does not know"
+    );
 }

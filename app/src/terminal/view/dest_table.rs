@@ -24,23 +24,27 @@
 //! Never logged: the text of an input (it can be a password). Rows, classes and counts only.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 
 use instant::Instant;
 use warpui::ViewContext;
 
-use super::paste_queue::signal_bytes;
+use super::paste_queue::{PtyQueueHost, signal_bytes};
 use super::ssh_typeahead::HeldInput;
 use super::{
-    KeyPathScope, SshKeyEvent, TerminalView, paste_bytes_for_pty, ssh_bootstrap_swallow_active,
+    AfterEnterInput, Event, KeyPathScope, SshKeyEvent, TerminalView, paste_bytes_for_pty,
+    ssh_bootstrap_swallow_active,
 };
 use crate::editor::EditorAction;
 use crate::features::FeatureFlag;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
-use crate::terminal::input_queue::shadow;
-use crate::terminal::input_queue::table::{self, Class, Effects, Intent, OnRefused, Outcome, Plan};
+use crate::terminal::input_queue::shadow::{self, DestClass};
+use crate::terminal::input_queue::table::{
+    self, Class, DropWhy, Effects, Intent, OnRefused, Outcome, Plan, Row,
+};
 use crate::terminal::input_queue::{
-    GateKind, HELD_KEY, HELD_PASTE, HELD_SIGNAL, HELD_TYPED, Origin, QueueFacts, RouteFacts,
-    SignalKind, Stamp,
+    Deferred, DestinationMode, EntryKind, GateKind, HELD_KEY, HELD_PASTE, HELD_SEQ, HELD_SIGNAL,
+    HELD_TYPED, Origin, QueueFacts, RouteFacts, SignalKind, Stamp, destination_mode,
 };
 
 /// What the table decided at the top of a legacy entry point, kept until its leaf is known.
@@ -57,7 +61,7 @@ impl TerminalView {
         if self.paste_queue.delivering {
             self.paste_queue.delivering_origin
         } else {
-            Origin::Keyboard
+            arrival_origin()
         }
     }
 
@@ -131,6 +135,26 @@ pub(super) fn note_legacy_chain_delivery() {
 #[cfg(test)]
 pub(super) fn legacy_chain_deliveries() -> u64 {
     LEGACY_CHAIN_DELIVERIES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many live inputs the table decided on this thread (tests only): an arrival the legacy
+    /// chain decided does not add to it.
+    static TABLE_ARRIVALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Records that the table decided a live input (no-op outside tests).
+#[inline(always)]
+fn note_table_arrival() {
+    #[cfg(test)]
+    TABLE_ARRIVALS.with(|count| count.set(count.get() + 1));
+}
+
+/// The live inputs the table decided on this thread so far (tests).
+#[cfg(test)]
+pub(super) fn table_arrivals() -> u64 {
+    TABLE_ARRIVALS.with(std::cell::Cell::get)
 }
 
 /// One input the queue delivers through the table: the shape it had when it was held.
@@ -237,6 +261,32 @@ impl TerminalView {
         let _ = self.ssh_connect_gate_drops_keys();
     }
 
+    /// The facts of this moment, after the prompt rule of the ssh hold: a host-key / password
+    /// prompt appeared while keys were held, so what was typed before it may be a password and is
+    /// discarded (the event-time rule, #1113); the keys after it go to the prompt. The facts are
+    /// built again when the hold was discarded. A signal never discards (it is judged by its own
+    /// rows).
+    fn facts_after_prompt_discard(
+        &mut self,
+        queue: QueueFacts,
+        signal: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> RouteFacts {
+        let facts = self.build_route_facts(queue, ctx);
+        let gate_drops = facts.ssh_dialog_up
+            || facts.ssh_setup_in_flight
+            || facts.ssh_bootstrapping
+            || facts.ssh_connecting_silently;
+        if self.ssh_typeahead_holding
+            && !gate_drops
+            && !signal
+            && self.discard_ssh_typeahead_on_prompt(ctx)
+        {
+            return self.build_route_facts(queue, ctx);
+        }
+        facts
+    }
+
     /// Decides ONE delivered input with the table and executes the plan. `origin` is how the
     /// entry is judged (`Replay` for text / an Enter typed behind an Enter that waited, `Held` for
     /// an ssh-held input), `stamp` what it got at its sink. Must be called from a delivery (the
@@ -258,21 +308,11 @@ impl TerminalView {
             self.refresh_ssh_state_for_table(ctx);
         }
         // The entry was delivered by the queue, so no gate covers it: the facts carry none.
-        let mut facts = self.build_route_facts(QueueFacts::default(), ctx);
-        // A host-key / password prompt appeared while keys were held: what was typed before it
-        // existed may be a password, so it is discarded (the event-time rule, #1113); the keys
-        // after it go to the prompt.
-        let gate_drops = facts.ssh_dialog_up
-            || facts.ssh_setup_in_flight
-            || facts.ssh_bootstrapping
-            || facts.ssh_connecting_silently;
-        if self.ssh_typeahead_holding
-            && !gate_drops
-            && !matches!(input, Replayed::Signal(_))
-            && self.discard_ssh_typeahead_on_prompt(ctx)
-        {
-            facts = self.build_route_facts(QueueFacts::default(), ctx);
-        }
+        let facts = self.facts_after_prompt_discard(
+            QueueFacts::default(),
+            matches!(input, Replayed::Signal(_)),
+            ctx,
+        );
         let intent = Intent::new(input.class(), origin)
             .stamped(stamp)
             .delivering();
@@ -589,12 +629,488 @@ impl TerminalView {
             plan.row.name()
         );
         note_legacy_chain_delivery();
+        // The legacy BODIES, not the entry points: those are the table's own arrival in `table`
+        // mode, and a plan with no leaf must not decide the same plan again.
         match input {
-            Replayed::Typed(text) => self.typed_characters_on_terminal(text, ctx),
-            Replayed::Key(key) => self.replay_held_key(key, ctx),
-            Replayed::Seq(seq) => self.control_sequence_on_terminal(seq.as_bytes(), ctx),
+            Replayed::Typed(text) => self.typed_characters_on_terminal_legacy(text, ctx),
+            Replayed::Key(key) => self.replay_held_key_legacy(key, ctx),
+            Replayed::Seq(seq) => self.control_sequence_on_terminal_legacy(seq.as_bytes(), ctx),
             Replayed::Paste(text) => self.deliver_paste_text(text, ctx),
             Replayed::Signal(_) => {}
         }
+    }
+}
+
+// ---- step 5: arrival of terminal keys, in `table` mode ------------------------------------------
+//
+// In `PHOSPHOR_QUEUE_DESTINATION=table` the three legacy entry points a live key arrives at
+// (`typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal`) hand the
+// input to [`TerminalView::arrive_via_table`] instead of running their chain of predicates. It
+// takes the stamp first (what the key saw when it reached the sink), runs the refreshers the legacy
+// probes ran (the lazy arming of the connect gate, the subshell gates that open on the first key,
+// the stale young Enter hold), builds the facts WITH the queue's own (open gates, queued entries,
+// the mailbox), decides once and executes the plan with the same leaf writers legacy ended in. The
+// idle path (nothing held, nothing queued) is the plan `Pty` executed at once; a key a gate holds
+// is offered to the queue as destination-neutral content (`Text`, `Enter`, or a `Held` key), which
+// the queue's delivery decides again, with the facts of THAT moment, when the gate opens
+// (`deliver_via_table`). The deliberate changes of the owner's decisions are in the table: ^Z and
+// ^\ jump the queue like ^C (OD-1), a signal typed in the ssh setup window is held and delivered to
+// the remote shell (OD-5), a live Enter while the agent owns the pty is dropped (OD-2).
+//
+// Not routed through neutral entries: the keys that wait behind the typeahead hand-off's gates
+// (`LineEditorActive`, `PromptSeen`, `HandoffReport`) and the PowerShell setup. Those gates give
+// their keys back as BYTES (`bytes_of_taken_entries`, the hand-off's own take-and-write), so the
+// key is written through the legacy writer, which queues it as bytes. Step 8 retires that.
+
+thread_local! {
+    /// The origin an input arriving at a legacy entry point is judged with: a keyboard key unless
+    /// the writer of another origin says so (synced input, the paced CLI-agent submit, a shared
+    /// session viewer) around its call. Thread-local like the shadow's leaf: the entry points are
+    /// plain methods with no room for another argument.
+    static ARRIVAL_ORIGIN: Cell<Origin> = const { Cell::new(Origin::Keyboard) };
+}
+
+/// Restores the previous arrival origin when dropped.
+#[must_use = "the origin is restored when the guard drops"]
+pub(super) struct ArrivalOriginGuard(Origin);
+
+impl Drop for ArrivalOriginGuard {
+    fn drop(&mut self) {
+        ARRIVAL_ORIGIN.with(|slot| slot.set(self.0));
+    }
+}
+
+/// Judges the inputs that arrive until the guard drops with `origin`.
+pub(super) fn set_arrival_origin(origin: Origin) -> ArrivalOriginGuard {
+    ArrivalOriginGuard(ARRIVAL_ORIGIN.with(|slot| slot.replace(origin)))
+}
+
+fn arrival_origin() -> Origin {
+    ARRIVAL_ORIGIN.with(Cell::get)
+}
+
+/// A live input arriving at one of the three legacy entry points.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Arrival<'a> {
+    /// `typed_characters_on_terminal`: printable characters (a signal byte typed as text is a
+    /// signal).
+    Typed(&'a str),
+    /// `keydown_on_terminal`: Enter, a control key or a signal.
+    Key(&'a str),
+    /// `control_sequence_on_terminal`: arrows, Home, End, Tab, ... (and ^C / ^D).
+    Seq(&'a str),
+}
+
+impl<'a> Arrival<'a> {
+    fn text(self) -> &'a str {
+        match self {
+            Arrival::Typed(text) | Arrival::Key(text) | Arrival::Seq(text) => text,
+        }
+    }
+
+    fn class(self) -> Class {
+        if let Some(signal) = signal_of_held_text(self.text()) {
+            return Class::Signal(signal);
+        }
+        match self {
+            Arrival::Typed(_) => Class::Typed,
+            Arrival::Key("\r") | Arrival::Key("\n") => Class::Enter,
+            Arrival::Key(_) => Class::Control,
+            Arrival::Seq(_) => Class::Seq,
+        }
+    }
+
+    /// The same input in the form the delivery's executors take.
+    fn as_replayed(self) -> Replayed<'a> {
+        match self {
+            Arrival::Typed(text) => Replayed::Typed(text),
+            Arrival::Key(key) => Replayed::Key(key),
+            Arrival::Seq(seq) => Replayed::Seq(seq),
+        }
+    }
+}
+
+/// Logs (counts and the row only, never content) an input the table dropped.
+fn log_table_drop(plan: &Plan, why: DropWhy) {
+    log::info!(
+        "input queue: an input was dropped: row={} why={why:?}",
+        plan.row.name()
+    );
+    warpui::input_order::log_key_hop("kh_table_drop", || {
+        format!("row={} why={why:?}", plan.row.name())
+    });
+}
+
+impl TerminalView {
+    /// Whether a live input arriving at a legacy entry point is decided by the table now: the mode
+    /// is `table` and the queue is not delivering (a delivery is decided by `deliver_via_table`).
+    pub(super) fn arrives_via_table(&self) -> bool {
+        destination_mode() == DestinationMode::Table && !self.paste_queue.delivering
+    }
+
+    /// Decides a live input with the table and executes the plan. See the section comment.
+    pub(super) fn arrive_via_table(&mut self, arrival: Arrival<'_>, ctx: &mut ViewContext<Self>) {
+        note_table_arrival();
+        // First: what the key saw when it reached the sink (H4 judges a key by it).
+        let stamp = self.paste_queue.queue.stamp_now();
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        let class = arrival.class();
+        let text = arrival.text();
+        let origin = arrival_origin();
+        let is_signal = matches!(class, Class::Signal(_));
+        if !matches!(arrival, Arrival::Seq(_)) {
+            self.reprobe_interactive_latch_on_key();
+        }
+        // Operations that found the queue busy come before this key (typed order).
+        self.flush_deferred_queue_ops(ctx);
+        if is_signal {
+            // The signal rows read the connect gate; the hand-over of the held keys is not what a
+            // ^C triggers (it discards them).
+            let _ = self.refresh_ssh_connect_gate();
+            let _ = self.ssh_connect_gate_drops_keys();
+        } else {
+            self.refresh_ssh_state_for_table(ctx);
+            // A young Enter's hold the hand-off's state has outgrown ends before this key is
+            // judged, and the subshell gates the first key opens are open when the facts are read.
+            self.settle_stale_young_hold_before_key(ctx);
+            let _ = self.prepare_subshell_gates(text.as_bytes(), ctx);
+        }
+        let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
+        let facts = self.facts_after_prompt_discard(queue_facts, is_signal, ctx);
+        let intent = Intent::new(class, origin).stamped(stamp);
+        let plan = table::decide(&intent, &facts, None);
+        warpui::input_order::log_key_hop("kh_table_decide", || {
+            format!(
+                "class={class:?} origin={origin:?} row={} outcome={:?} effects={:?} arrival=1",
+                plan.row.name(),
+                plan.outcome,
+                plan.effects
+            )
+        });
+        self.execute_arrival(arrival, &plan, stamp, origin, ctx);
+    }
+
+    fn execute_arrival(
+        &mut self,
+        arrival: Arrival<'_>,
+        plan: &Plan,
+        stamp: Stamp,
+        origin: Origin,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Class::Signal(signal) = arrival.class() {
+            self.execute_arrival_signal(arrival.text(), signal, plan, ctx);
+            return;
+        }
+        match plan.outcome {
+            // A key nothing takes (D10): the selection and the focus, as the keydown path always
+            // did.
+            Outcome::Drop(why) if plan.effects.contains(Effects::REFOCUS_GLOBAL) => {
+                log_table_drop(plan, why);
+                self.refocus_after_dropped_key(ctx);
+                return;
+            }
+            // Behind a gate of the queue (H5, H6, H7, H8) or behind queued entries (H8-queue).
+            Outcome::Hold(gate) if gate != GateKind::SshConnect => {
+                self.hold_arrival(arrival, gate, stamp, origin, ctx);
+                return;
+            }
+            Outcome::Queue => {
+                self.offer_arrival_to_queue(arrival, stamp, origin, ctx);
+                return;
+            }
+            _ => {}
+        }
+        let input = arrival.as_replayed();
+        if self.execute_shared_outcome(&input, plan, ctx) {
+            return;
+        }
+        match arrival {
+            Arrival::Typed(text) => self.execute_typed(text, plan, ctx),
+            Arrival::Key(key) => self.execute_key_arrival(key, plan, ctx),
+            Arrival::Seq(seq) => self.execute_seq(seq, plan, ctx),
+        }
+    }
+
+    /// The tail `keydown_on_terminal` ran for a key nothing took: clear the selection, scroll,
+    /// and put focus where it belongs.
+    fn refocus_after_dropped_key(&mut self, ctx: &mut ViewContext<Self>) {
+        self.clear_selected_blocks(ctx);
+        self.clear_selected_text(ctx);
+        self.update_scroll_position_locking(ScrollPositionUpdate::AfterKeydownOnTerminal, ctx);
+        self.redetermine_global_focus(ctx);
+    }
+
+    /// The ssh warpification UX collapses for every key that gets past the ssh holds.
+    fn note_arrival_for_warpification(
+        &mut self,
+        arrival: Arrival<'_>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let event = match arrival {
+            Arrival::Typed(text) | Arrival::Key(text) => SshKeyEvent::from_chars(text),
+            Arrival::Seq(seq) => SshKeyEvent::from_bytes(seq.as_bytes()),
+        };
+        self.on_ssh_warpification_key_event(Some(event), ctx);
+    }
+
+    /// A key the table holds behind `gate` (H5-H8).
+    fn hold_arrival(
+        &mut self,
+        arrival: Arrival<'_>,
+        gate: GateKind,
+        stamp: Stamp,
+        origin: Origin,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match gate {
+            // The Enter that waits for its verdict (or for the route it submitted to): what is
+            // typed behind it is the input's own queue entry, released in order once it has run.
+            GateKind::EnterVerdict | GateKind::TabCompletion => {
+                let after = match arrival {
+                    Arrival::Typed(text) => Some(AfterEnterInput::Text(text.to_owned())),
+                    Arrival::Key("\r") | Arrival::Key("\n") => Some(AfterEnterInput::Enter),
+                    _ => None,
+                };
+                if let Some(after) = after {
+                    let queued = self
+                        .input
+                        .update(ctx, |input, ctx| input.queue_behind_enter(after, ctx));
+                    if queued {
+                        return;
+                    }
+                }
+                self.offer_arrival_to_queue(arrival, stamp, origin, ctx);
+            }
+            // The hand-off's gates and the PowerShell setup give their keys back as bytes: the key
+            // is written through the legacy writer, which queues it as bytes behind them.
+            GateKind::LineEditorActive
+            | GateKind::PromptSeen
+            | GateKind::HandoffReport
+            | GateKind::PowershellSetup => self.hold_arrival_as_bytes(arrival, ctx),
+            _ => self.offer_arrival_to_queue(arrival, stamp, origin, ctx),
+        }
+    }
+
+    /// The key goes through the legacy writer (`write_user_bytes_to_pty`), which holds it behind
+    /// the gate the table named.
+    fn hold_arrival_as_bytes(&mut self, arrival: Arrival<'_>, ctx: &mut ViewContext<Self>) {
+        self.note_arrival_for_warpification(arrival, ctx);
+        self.highlighted_link.invalidate();
+        if !matches!(arrival, Arrival::Seq(_)) {
+            self.report_possible_typeahead(arrival.text());
+        }
+        self.write_user_bytes_to_pty(arrival.text().as_bytes().to_vec(), ctx);
+    }
+
+    /// Offers the key to the pane queue as destination-neutral content, with the stamp and the
+    /// origin it arrived with: where it goes is decided when the queue delivers it.
+    fn offer_arrival_to_queue(
+        &mut self,
+        arrival: Arrival<'_>,
+        stamp: Stamp,
+        origin: Origin,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.note_arrival_for_warpification(arrival, ctx);
+        let kind = match arrival {
+            Arrival::Typed(text) => EntryKind::Text(text.to_owned()),
+            Arrival::Key("\r") | Arrival::Key("\n") => EntryKind::Enter,
+            Arrival::Key(key) => EntryKind::Held {
+                class: HELD_KEY,
+                text: key.to_owned(),
+            },
+            Arrival::Seq(seq) => EntryKind::Held {
+                class: HELD_SEQ,
+                text: seq.to_owned(),
+            },
+        };
+        let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            // Busy: the key waits its turn, in order, with the stamp it has now.
+            queue.defer(Deferred::Offer {
+                kind,
+                origin,
+                stamp,
+            });
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.offer_stamped(&mut host, kind, origin, stamp);
+    }
+
+    /// A control key (Enter included) the table sends on: to the pty, or to the editor that took
+    /// input over from it (D10).
+    fn execute_key_arrival(&mut self, key: &str, plan: &Plan, ctx: &mut ViewContext<Self>) {
+        match plan.outcome {
+            Outcome::Pty(_) => {
+                self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(key)), ctx);
+                self.highlighted_link.invalidate();
+                self.report_possible_typeahead(key);
+                self.write_user_bytes_to_pty_after_paste_stage(
+                    Cow::Owned(key.as_bytes().to_vec()),
+                    true,
+                    ctx,
+                );
+            }
+            Outcome::EditorAction | Outcome::EditorSubmit => {
+                if !self.apply_key_to_editor_after_handoff(key.as_bytes(), ctx) {
+                    self.refocus_after_dropped_key(ctx);
+                }
+            }
+            other => {
+                log::warn!(
+                    "input queue: table-mode arrival has no leaf for {other:?} (row {}); using the legacy chain",
+                    plan.row.name()
+                );
+                note_legacy_chain_delivery();
+                self.keydown_on_terminal_legacy(key, ctx);
+            }
+        }
+    }
+
+    /// A signal (^C ^D ^Z ^\) typed or pressed: held in the ssh setup window and delivered to the
+    /// remote shell (P1a, OD-5), or sent on through the legacy writer, which applies the queue's
+    /// per-gate rule (`signal_plan`) and jumps the keys held in front of it.
+    fn execute_arrival_signal(
+        &mut self,
+        text: &str,
+        signal: SignalKind,
+        plan: &Plan,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if plan.outcome == Outcome::HoldSignal {
+            // In typed order with the keys held there; delivered at the hand-over, never to the
+            // local shell.
+            self.note_ssh_interrupt_held(ctx);
+            self.set_ssh_typeahead_holding(true);
+            let pushed = self.ssh_hold_push_signal(signal, ctx);
+            self.note_ssh_typeahead_outcome(&pushed, ctx);
+            self.schedule_ssh_typeahead_give_up(ctx);
+            return;
+        }
+        // The interrupt passes, so what was typed before it is stale, as the tty's own input
+        // flush would make it (P1b).
+        if plan.effects.contains(Effects::RESET_SSH_HOLD) {
+            self.reset_ssh_typeahead();
+        }
+        // An Enter that waits for its verdict is void.
+        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            self.input
+                .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
+        }
+        match plan.outcome {
+            Outcome::PowershellAbort => self.ctrl_c_during_powershell_setup(ctx),
+            Outcome::SigintForeground => {
+                self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(text)), ctx);
+                self.highlighted_link.invalidate();
+                // #1178/#1253: the SIGINT path marks the ssh command interrupted too (left in the
+                // model's inbox, which applies it before it parses the next bytes).
+                self.leave_user_wrote_in_model_inbox(false, true);
+                ctx.emit(Event::SigintForegroundToPty);
+            }
+            Outcome::AbortBytes => {
+                self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(text)), ctx);
+                self.highlighted_link.invalidate();
+                // #1001: a Ctrl-C between the SSH hook and InitShell aborts the connect (`~.`).
+                let bytes = self
+                    .ssh_pre_init_abort_bytes()
+                    .unwrap_or_else(|| signal_bytes(signal).to_vec());
+                self.write_user_bytes_to_pty(bytes, ctx);
+            }
+            // The writer applies the rest: the stash during the subshell bootstrap lines (P1d),
+            // the queue's rule for each open gate (P2), the oracle and the stage (D6).
+            Outcome::SignalToPty(_) | Outcome::SignalAtGates | Outcome::Stash => {
+                self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(text)), ctx);
+                self.highlighted_link.invalidate();
+                self.report_possible_typeahead(text);
+                self.write_user_bytes_to_pty(signal_bytes(signal).to_vec(), ctx);
+            }
+            Outcome::Drop(why) => {
+                log_table_drop(plan, why);
+                if plan.effects.contains(Effects::REFOCUS_GLOBAL) {
+                    self.refocus_after_dropped_key(ctx);
+                }
+            }
+            other => {
+                // Not delivered: a signal is never run anywhere the table did not name.
+                log::error!(
+                    "input queue: a signal got {other:?} (row {}) and was not delivered",
+                    plan.row.name()
+                );
+            }
+        }
+    }
+}
+
+// ---- step 5/6: the rows of the writers of another origin ----------------------------------------
+
+/// What a writer of another origin (synced input, the paced CLI-agent submit, a shared-session
+/// viewer) learned from the table before it wrote.
+pub(super) struct OriginRow {
+    shadow: Option<ShadowPending>,
+    refused: bool,
+}
+
+impl OriginRow {
+    /// The table drops the input at its origin row (`O-synced`): the writer writes nothing.
+    pub(super) fn refused(&self) -> bool {
+        self.refused
+    }
+}
+
+impl TerminalView {
+    /// Starts a writer of `origin`. In `table` mode the table decides the input (`class`, `origin`)
+    /// and a drop at the origin row refuses the write (the other rows are what the writers' stages
+    /// apply themselves; the plan is logged); in `shadow` mode the table is compared with what the
+    /// writer did, once it ends ([`Self::end_origin_row`]).
+    pub(super) fn begin_origin_row(
+        &mut self,
+        class: Class,
+        origin: Origin,
+        ctx: &mut ViewContext<Self>,
+    ) -> OriginRow {
+        let _origin = set_arrival_origin(origin);
+        match destination_mode() {
+            DestinationMode::Table => {
+                let stamp = self.paste_queue.queue.stamp_now();
+                let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
+                let facts = self.build_route_facts(queue_facts, ctx);
+                let intent = Intent::new(class, origin).stamped(stamp);
+                let plan = table::decide(&intent, &facts, None);
+                warpui::input_order::log_key_hop("kh_table_decide", || {
+                    format!(
+                        "class={class:?} origin={origin:?} row={} outcome={:?} effects={:?} writer=1",
+                        plan.row.name(),
+                        plan.outcome,
+                        plan.effects
+                    )
+                });
+                if let Outcome::Drop(why) = plan.outcome {
+                    log_table_drop(&plan, why);
+                }
+                OriginRow {
+                    shadow: None,
+                    refused: plan.row == Row::OSynced,
+                }
+            }
+            _ => OriginRow {
+                shadow: self.shadow_begin(class, ctx),
+                refused: false,
+            },
+        }
+    }
+
+    /// Ends a writer of another origin: `written` is whether the bytes reached the pty (or the
+    /// queue that holds them for it). The shadow comparison reports a difference.
+    pub(super) fn end_origin_row(&self, row: OriginRow, written: bool) {
+        if row.shadow.is_some() {
+            shadow::note_leaf(if written {
+                DestClass::Pty
+            } else {
+                DestClass::Dropped
+            });
+        }
+        self.shadow_end(row.shadow);
     }
 }

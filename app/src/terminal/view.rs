@@ -10490,6 +10490,13 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // #1424: in `table` mode the table decides a live sequence (step 5).
+        if self.arrives_via_table()
+            && let Ok(sequence) = std::str::from_utf8(bytes)
+        {
+            self.arrive_via_table(dest_table::Arrival::Seq(sequence), ctx);
+            return;
+        }
         // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
         let class = match bytes {
             [0x03] => Class::Signal(input_queue::SignalKind::Interrupt),
@@ -10527,9 +10534,10 @@ impl TerminalView {
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
         {
-            note_shadow_leaf(DestClass::Pty);
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
             self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
+            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
+            note_shadow_leaf(DestClass::Pty);
         } else if self.apply_key_to_editor_after_handoff(bytes, ctx) {
             note_shadow_leaf(DestClass::Editor);
         } else {
@@ -10744,6 +10752,11 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: in `table` mode the table decides a live key (step 5).
+        if self.arrives_via_table() {
+            self.arrive_via_table(dest_table::Arrival::Key(characters), ctx);
+            return;
+        }
         // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
         let class = match characters {
             "\u{3}" => Class::Signal(input_queue::SignalKind::Interrupt),
@@ -10823,7 +10836,6 @@ impl TerminalView {
                 && self.ssh_bootstrap_interrupt_route()
                     == Some(SshBootstrapInterruptRoute::Forward))
         {
-            note_shadow_leaf(DestClass::Pty);
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
             // #1001: a Ctrl-C between the SSH hook and InitShell aborts the connect (`~.`).
@@ -10841,6 +10853,8 @@ impl TerminalView {
                 self.report_possible_typeahead(characters);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             }
+            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
+            note_shadow_leaf(DestClass::Pty);
         } else if self.apply_key_to_editor_after_handoff(characters.as_bytes(), ctx) {
             note_shadow_leaf(DestClass::Editor);
         } else {
@@ -11897,6 +11911,11 @@ impl TerminalView {
     /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
     /// are `pane_key::route_typed`; this function acts on its answer.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: in `table` mode the table decides live text (step 5).
+        if self.arrives_via_table() {
+            self.arrive_via_table(dest_table::Arrival::Typed(characters), ctx);
+            return;
+        }
         // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
         let shadow = self.shadow_begin(Class::Typed, ctx);
         self.typed_characters_on_terminal_legacy(characters, ctx);
@@ -12246,7 +12265,10 @@ impl TerminalView {
     #[cfg(test)]
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
         let is_ctrl_c = bytes == [0x03];
+        // #1424: the viewer origin (the full destination rows apply; shadow compares them).
+        let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
         let forwarded = self.write_user_bytes_to_pty(bytes, ctx);
+        self.end_origin_row(row, forwarded);
         if forwarded && is_ctrl_c && FeatureFlag::CtrlCCancelsThirdPartyHarness.is_enabled() {
             let terminal_view_id = self.view_id;
             CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
@@ -12466,8 +12488,9 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         self.note_input_for_deferred_subshell_setup(&bytes);
-        if is_abort_key(&bytes) {
-            // Ctrl-C / Ctrl-D: the rest of a chunked line-clear write is dropped (#1354).
+        if is_queue_signal_key(&bytes) {
+            // Ctrl-C / Ctrl-D (and in `table` mode Ctrl-Z / Ctrl-\): the rest of a chunked
+            // line-clear write is dropped (#1354).
             ctx.emit(Event::CancelPacedSetupWrites);
         }
         // While the paced subshell bootstrap is being written its gate holds the keystrokes (never
@@ -12476,7 +12499,7 @@ impl TerminalView {
         // delays it): text written now would sit in the tty ahead of the late bootstrap and run
         // inside it or vanish. Hold it here and deliver it, in order, once setup is over. Ctrl-C /
         // Ctrl-D pass at once and then release what is held.
-        if is_abort_key(&bytes) {
+        if is_queue_signal_key(&bytes) {
             // Ctrl-C / Ctrl-D skips the setup: the waiting notice no longer applies.
             self.dismiss_subshell_setup_waiting_toast(ctx);
         }
@@ -12538,8 +12561,9 @@ impl TerminalView {
         // exemption below sent keys into the middle of the setup (in front of the
         // ` . <bootstrap file>` line, which then failed and wedged setup on "Starting shell...")
         // and, as that shape flipped from key to key, out of order. Every key is held instead.
-        if !is_abort_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
+        if !is_queue_signal_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
             input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
+            note_shadow_leaf(DestClass::Held);
             self.hold_powershell_keys(bytes.into_owned(), takes_over_agent_control, ctx);
             return true;
         }
@@ -12732,10 +12756,16 @@ impl TerminalView {
             self.synced_in_flight = 0;
         }
         self.synced_in_flight += len;
+        // #1424: the synced origin (row O-synced); the text below is judged as synced input.
+        let _synced = dest_table::set_arrival_origin(input_queue::Origin::Synced);
         match String::from_utf8(characters) {
             Ok(text) => self.typed_characters_on_terminal(&text, ctx),
             Err(err) => {
-                if !self.write_passive_input_to_pty(err.into_bytes(), ctx) {
+                let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+                let written =
+                    !row.refused() && self.write_passive_input_to_pty(err.into_bytes(), ctx);
+                self.end_origin_row(row, written);
+                if !written {
                     self.synced_in_flight = self.synced_in_flight.saturating_sub(len);
                 }
             }
@@ -36693,6 +36723,13 @@ fn ssh_pre_init_abort_bytes(ssh_hook_seen: bool, remote_session_pending: bool) -
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.
 fn is_abort_key(bytes: &[u8]) -> bool {
     matches!(bytes, [0x03] | [0x04])
+}
+
+/// The keys the pane QUEUE jumps for (#1424, OD-1): Ctrl-C and Ctrl-D, and in `table` mode Ctrl-Z
+/// and Ctrl-\ too (`paste_queue::queue_signal_of`). The writer's stages use this where they used
+/// `is_abort_key`; the PowerShell abort machine (`AfterAbort`) stays Ctrl-C / Ctrl-D only.
+fn is_queue_signal_key(bytes: &[u8]) -> bool {
+    paste_queue::queue_signal_of(bytes).is_some()
 }
 
 /// Pure routing rule for a pane whose subshell bootstrap is announced but unfinished (#960):

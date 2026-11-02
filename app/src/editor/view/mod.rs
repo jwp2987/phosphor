@@ -3283,7 +3283,32 @@ impl EditorView {
         // governs the editor's buffer, so an editing key acts at once and the text shows as it
         // is typed. Keys that submit or complete stay held (they reach the pty or the shell),
         // and so does every key once an editor-bound entry is queued (order).
-        if !paste_hold::key_submits_or_completes(action) && queue.peek().editor_keys_pass_gates() {
+        // The destination table's H8 matrix (#1424) states this once, with a class column: in
+        // `table` mode it decides, in `shadow` mode it is compared with the legacy answer.
+        let key_class = paste_hold::editor_key_class(action);
+        let legacy_passes =
+            !paste_hold::key_submits_or_completes(action) && queue.peek().editor_keys_pass_gates();
+        let passes_gates = {
+            use crate::terminal::input_queue::{DestinationMode, destination_mode, shadow};
+            match destination_mode() {
+                DestinationMode::Legacy => legacy_passes,
+                DestinationMode::Table => queue.peek().editor_key_passes_gates_by_table(key_class),
+                DestinationMode::Shadow => {
+                    if shadow::wanted() {
+                        let held = queue.peek();
+                        let table_passes = held.editor_key_passes_gates_by_table(key_class);
+                        let _ = shadow::check_editor_matrix(
+                            key_class,
+                            held.queue_facts().gates,
+                            legacy_passes,
+                            table_passes,
+                        );
+                    }
+                    legacy_passes
+                }
+            }
+        };
+        if passes_gates {
             return false;
         }
         let kind = EntryKind::EditorKey(EditorKeyPayload::new(key));

@@ -39,6 +39,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         1 => Just(Op::EnterOpens),
         1 => Just(Op::SshWait),
         3 => (any::<u8>(), any::<u8>()).prop_map(|(kind, key)| Op::RequeueNext { kind, key }),
+        3 => (any::<u8>(), any::<u8>()).prop_map(|(class, origin)| Op::Decide { class, origin }),
     ]
 }
 
