@@ -383,6 +383,11 @@ with instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell;
 `editor_memory_7mb` (terminal pass only, #1340 P5: generates a 7 MB plain-text and a 7 MB Rust file, opens each in the code editor through the command palette with the absolute path, records the app's RSS before / after open and after closing the pane and waiting out the 60 s undo-close grace; fails when open costs more than `APPCI_EDITOR_MEM_TXT_MAX_MB` = 100 / `APPCI_EDITOR_MEM_RS_MAX_MB` = 150 MB over the pre-open baseline or more than `APPCI_EDITOR_MEM_CLOSE_MAX_MB` = 60 MB is still held after close; metrics `txt_rss_*_mb`, `rs_rss_*_mb` in `results.json`; `APPCI_KEY_PALETTE` / `APPCI_KEY_CLOSE` override the keys, `APPCI_EDITOR_MEM_STRICT=1` fails instead of skipping when the file never opens, `APPCI_EDITOR_MEM_KINDS=txt` limits it; needs `ps` RSS, so it skips on Windows, and on macOS the close phase is skipped because the frontmost-app guard refuses Cmd-W),
 `tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
+Windows `ctrl_c` and `latency_enter` (#1487): both read a one-line timestamp file through `Wf`, which returns a bare string for one line, so `$g[0]` was
+its first character and every sample was dropped (`0/30`, `0/5`); the callers now wrap `@(Wf ...)`. Windows `ctrl_c` is 8 samples judged on
+overhead over the same injection into `powershell.exe` in conhost (budget `APPCI_CTRLC_MAX_MS`, 20 ms; no control = `no reference: absolute only`). If Phosphor
+drops Ctrl-C the case tries the other injectors (diagnostic only) and fails as `APP: ...` when the conhost control delivers 8/8 with the same
+injection, or as "harness injection suspect" when the control fails too.
 
 **UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**
 Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case verifies the shell's own `rec.log` and an effect file.

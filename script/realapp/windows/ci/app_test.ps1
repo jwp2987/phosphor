@@ -181,14 +181,45 @@ function C-PasteEnter($mode) {
   $got = Wf $f 6 20
   if (($got -join "|") -eq ($exp -join "|")) { @("pass", @(), @{}) } else { @("fail", @("paste + instant Enter: $($got.Count)/6 exact lines"), @{}) }
 }
-function C-CtrlC($mode) {
-  $f = "$Work\cc.txt"; Remove-Item $f -ErrorAction SilentlyContinue; $lat = @()
-  for ($i = 0; $i -lt 5; $i++) {
-    TypeText "try { Start-Sleep 30 } finally { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Add-Content cc.txt }" -Enter
+# One Ctrl-C sample series in whatever window is foreground (Phosphor, or the conhost control): type a try/finally Start-Sleep line,
+# Ctrl-C it 1.5 s later, and time the finally block's own UTC-ms stamp. One file per sample (a miss can never shift the next sample's
+# line). Wf's result is wrapped in @(): a one-line file comes back from the function as a bare STRING, and $g[0] of a string is its first
+# CHARACTER (the #1487 cause of latency_enter's 0/30; the same trap applied here).
+function CtrlC-Samples($tag, $count, $stopAfterMisses = 3) {
+  $lat = @(); $miss = 0
+  for ($i = 0; $i -lt $count -and $miss -lt $stopAfterMisses; $i++) {
+    $f = "$Work\cc_${tag}_$i.txt"; Remove-Item $f -ErrorAction SilentlyContinue
+    TypeText "try { Start-Sleep 30 } finally { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Add-Content cc_${tag}_$i.txt }" 10 25 -Enter
     Start-Sleep -Milliseconds 1500; $t0 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); Keys "^c"
-    $g = Wf $f ($i + 1) 6; if ($g.Count -gt $i) { $lat += ([int64]$g[$i] - $t0) }; Start-Sleep -Milliseconds 500 }
-  $med = if ($lat.Count) { ($lat | Sort-Object)[[int]($lat.Count / 2)] } else { $null }
-  if ($lat.Count -eq 5) { @("pass", @(), @{ ctrl_c_ms_median = $med; note = "includes SendKeys cost" }) } else { @("fail", @("Ctrl-C delivered $($lat.Count)/5 times"), @{}) }
+    $g = @(Wf $f 1 6)
+    if ($g.Count -and "$($g[0])".Trim() -match '^\d{13}$') { $lat += ([int64]"$($g[0])".Trim() - $t0); $miss = 0 }
+    else { $miss++; Keys "^c"; Start-Sleep -Milliseconds 800; Keys "^c"; Start-Sleep -Seconds 2 }   # a miss: end the sleep so the next line is not queued behind it
+    Start-Sleep -Milliseconds 500 }
+  ,@($lat)
+}
+function C-CtrlC($mode) {
+  $n = 8; $budget = if ($env:APPCI_CTRLC_MAX_MS) { [double]$env:APPCI_CTRLC_MAX_MS } else { 20 }
+  $lat = @(CtrlC-Samples "p" $n); $method = $script:KeyMethod; $alt = @{}
+  if ($lat.Count -lt $n) {   # diagnostic only: would another injection method have delivered it? (never changes the verdict)
+    $keep = $script:KeyMethod
+    foreach ($m in "sendinput-vk", "sendinput-unicode", "sendkeys") { if ($m -ne $keep) { $script:KeyMethod = $m; $alt[$m] = @(CtrlC-Samples "p_$($m.Replace('-','_'))" 2 2).Count } }
+    $script:KeyMethod = $keep
+  }
+  # control: the SAME injection (same method, cadence, timestamp command) into powershell.exe in conhost
+  $ref = @(); $refName = $null
+  if (Start-Ref) { try { $refName = "conhost (powershell.exe)"; $ref = @(CtrlC-Samples "r" $n) } finally { Stop-Ref } }
+  $p50 = { param($x) if (@($x).Count) { @($x | Sort-Object)[[int](@($x).Count / 2)] } else { $null } }
+  $pm = & $p50 $lat; $rm = & $p50 $ref
+  $m = @{ ctrl_c_ms_median = $pm; ctrl_c_ms_reference_median = $rm; delivered = $lat.Count; reference_delivered = $ref.Count; samples = $n; key_method = $method; reference_name = $refName; budget_ms = $budget; other_methods_delivered_of_2 = $alt; note = "includes the injector cost, identical in the reference" }
+  if ($lat.Count -lt $n) {
+    $altTxt = if ($alt.Count) { " (other injectors vs Phosphor: " + (($alt.GetEnumerator() | ForEach-Object { "$($_.Key) $($_.Value)/2" }) -join ", ") + ")" } else { "" }
+    if ($ref.Count -ge $n) { return @("fail", @("APP: Ctrl-C delivered $($lat.Count)/$n times to Phosphor via $method but $($ref.Count)/$n to the $refName control with the same injection$altTxt"), $m) }
+    return @("fail", @("Ctrl-C delivered $($lat.Count)/$n to Phosphor and $($ref.Count)/$n to the control: the harness injection is suspect, not proven an app bug$altTxt"), $m)
+  }
+  if ($ref.Count -lt $n) { $m.verdict = "no-reference"; return @("pass", @("Ctrl-C delivered ${n}/${n}; control delivered $($ref.Count)/${n}: no reference: absolute only ($pm ms median)"), $m) }
+  $m.overhead_ms = [math]::Round($pm - $rm, 1)
+  if ($m.overhead_ms -gt $budget) { $m.verdict = "fail"; return @("fail", @("Ctrl-C overhead $($m.overhead_ms) ms over $refName (median $pm vs $rm ms) exceeds the $budget ms budget"), $m) }
+  $m.verdict = "pass"; @("pass", @(), $m)
 }
 # ---- latency policy (same rules as script/realapp/appci/lat.py; docs/testing.md "Latency budgets") ----
 $Warm = if ($env:APPCI_WARMUP) { [int]$env:APPCI_WARMUP } else { 3 }
@@ -281,7 +312,7 @@ function Enter-Samples($count) {
     $f = "$Work\lat_$i.txt"; Remove-Item $f -ErrorAction SilentlyContinue
     TypeText "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_$i.txt -Encoding ascii" 10 25; Start-Sleep -Milliseconds 300
     $t0 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); Keys "{ENTER}"
-    $g = Wf $f 1 4; if ($g.Count -and "$($g[0])" -match '^\d{13}$') { $d = [int64]$g[0] - $t0; if ($d -ge 0 -and $d -lt 10000) { $ds += $d } }; Start-Sleep -Milliseconds 200 }
+    $g = @(Wf $f 1 4); if ($g.Count -and "$($g[0])".Trim() -match '^\d{13}$') { $d = [int64]"$($g[0])".Trim() - $t0; if ($d -ge 0 -and $d -lt 10000) { $ds += $d } }; Start-Sleep -Milliseconds 200 }
   @($ds | Select-Object -Skip $Warm)
 }
 function C-EnterLatency($mode) {
