@@ -1133,6 +1133,7 @@ fn formatted_text_line_to_block_style(line: &FormattedTextLine) -> Option<Buffer
         FormattedTextLine::Embedded(_) => None,
         // Images are block items, not block styles
         FormattedTextLine::Image(_) => None,
+        FormattedTextLine::BlockQuote { line, .. } => formatted_text_line_to_block_style(line),
     }
 }
 

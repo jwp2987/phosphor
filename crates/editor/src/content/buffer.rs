@@ -4,7 +4,8 @@ use line_ending::LineEnding;
 use markdown_parser::{
     CodeBlockText, FormattedIndentTextInline, FormattedTable, FormattedTaskList, FormattedText,
     FormattedTextFragment, FormattedTextHeader, FormattedTextLine, FormattedTextStyles,
-    OrderedFormattedIndentTextInline, parse_markdown, parse_markdown_with_gfm_tables,
+    OrderedFormattedIndentTextInline, parse_markdown_with_gfm_tables_without_blockquotes,
+    parse_markdown_without_blockquotes,
 };
 use num_traits::SaturatingSub;
 use pathfinder_color::ColorU;
@@ -847,9 +848,11 @@ impl Buffer {
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let parse_fn = if warp_core::features::FeatureFlag::MarkdownTables.is_enabled() {
-            parse_markdown_with_gfm_tables
+            parse_markdown_with_gfm_tables_without_blockquotes
         } else {
-            parse_markdown
+            // Quotes stay literal text here: the editor stores text and writes it back, so a `> `
+            // line must survive open and save byte for byte.
+            parse_markdown_without_blockquotes
         };
         let parsed_formatted_text = match parse_fn(markdown) {
             Ok(parsed) => parsed,

@@ -697,6 +697,8 @@ fixture/seed, fix the code.
 **Not covered yet**: pixel-level rendering of the diagram block (`crates/editor/src/render/element/mermaid.rs`), the notebook
 `mermaid_render_offsets`, `render_mermaid_diagram_section` and the `ai_document` view beyond the real-app OCR check above.
 
+**Blockquotes and tilde fences (#1554, #1555).** `> text` parses to `FormattedTextLine::BlockQuote { depth, line }` (one per quoted line; lists, code and nested quotes inside a quote are supported; a lazy continuation line is normalized to a quoted line). `~~~` fences are recognised like backtick fences (same character and at least as long to close). Two consequences to know when reading results: (1) any line starting with `>` in agent output or a README now renders as a quote with the marker removed, including shell-prompt-looking `> cmd` lines; (2) the rich-text editor parses with `parse_markdown_without_blockquotes`, so a quote stays literal `> ` text there and open then save is byte-identical (the editor does not render quote bars; read-only views in `FormattedTextElement` and the TUI do). The agent-answer splitter in `app/src/ai/agent/util.rs` still only knows backtick fences.
+
 ### 2.11 ConPTY held keys across the prompt (#1569)
 
 The enter window (#1490, on with the table mode) holds every key typed while a command runs, from its Enter to the next prompt's

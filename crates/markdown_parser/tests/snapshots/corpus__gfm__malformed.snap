@@ -50,7 +50,10 @@ FormattedText {
                 ],
             },
         ),
-        LineBreak,
+        BlockQuote {
+            depth: 6,
+            line: LineBreak,
+        },
         Line(
             [
                 FormattedTextFragment {

@@ -3016,8 +3016,15 @@ fn parse_lines(source: &str) -> Vec<FormattedTextLine> {
         .collect()
 }
 
+fn quote_of(depth: usize, line: FormattedTextLine) -> FormattedTextLine {
+    FormattedTextLine::BlockQuote {
+        depth,
+        line: Box::new(line),
+    }
+}
+
 fn quoted(text: &str) -> FormattedTextLine {
-    FormattedTextLine::Line(vec![FormattedTextFragment::italic(text)])
+    quote_of(1, plain_line(text))
 }
 
 fn plain_line(text: &str) -> FormattedTextLine {
@@ -3034,6 +3041,7 @@ fn code_block(lang: &str, code: &str) -> FormattedTextLine {
 #[test]
 fn test_blockquote_single_and_multi_line() {
     assert_eq!(parse_lines("> single quote"), vec![quoted("single quote")]);
+    assert_eq!(parse_lines("> a"), vec![quoted("a")]);
     assert_eq!(parse_lines(">no space"), vec![quoted("no space")]);
     assert_eq!(
         parse_lines("> a\n> b\n\n> c\n"),
@@ -3048,6 +3056,8 @@ fn test_blockquote_single_and_multi_line() {
 
 #[test]
 fn test_blockquote_lazy_continuation() {
+    // Lazy continuation is normalized: the continuation line is part of the quote and is written
+    // back with a marker.
     assert_eq!(
         parse_lines("> a\nlazy\n\nafter"),
         vec![
@@ -3064,13 +3074,16 @@ fn test_blockquote_not_lazy_after_fence_or_blank() {
     assert_eq!(
         parse_lines("> ```\n> code\n> ```\nplain"),
         vec![
-            code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "code\n"),
+            quote_of(1, code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "code\n")),
             plain_line("plain")
         ]
     );
     assert_eq!(
         parse_lines(">\nplain"),
-        vec![FormattedTextLine::LineBreak, plain_line("plain")]
+        vec![
+            quote_of(1, FormattedTextLine::LineBreak),
+            plain_line("plain")
+        ]
     );
 }
 
@@ -3078,7 +3091,11 @@ fn test_blockquote_not_lazy_after_fence_or_blank() {
 fn test_blockquote_nested() {
     assert_eq!(
         parse_lines("> outer\n> > inner\n> > > innermost"),
-        vec![quoted("outer"), quoted("inner"), quoted("innermost")]
+        vec![
+            quoted("outer"),
+            quote_of(2, plain_line("inner")),
+            quote_of(3, plain_line("innermost")),
+        ]
     );
 }
 
@@ -3087,16 +3104,22 @@ fn test_blockquote_with_list_and_code() {
     assert_eq!(
         parse_lines("> - a\n> - b\n>\n> ```rust\n> let x = 1;\n> ```"),
         vec![
-            FormattedTextLine::UnorderedList(FormattedIndentTextInline {
-                indent_level: 0,
-                text: vec![FormattedTextFragment::italic("a")],
-            }),
-            FormattedTextLine::UnorderedList(FormattedIndentTextInline {
-                indent_level: 0,
-                text: vec![FormattedTextFragment::italic("b")],
-            }),
-            FormattedTextLine::LineBreak,
-            code_block("rust", "let x = 1;\n"),
+            quote_of(
+                1,
+                FormattedTextLine::UnorderedList(FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: vec![FormattedTextFragment::plain_text("a")],
+                })
+            ),
+            quote_of(
+                1,
+                FormattedTextLine::UnorderedList(FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: vec![FormattedTextFragment::plain_text("b")],
+                })
+            ),
+            quote_of(1, FormattedTextLine::LineBreak),
+            quote_of(1, code_block("rust", "let x = 1;\n")),
         ]
     );
 }
@@ -3158,5 +3181,59 @@ fn test_unterminated_tilde_fence_stays_text() {
     assert_eq!(
         parse_lines("~~~\nnever closed"),
         vec![plain_line("~~~"), plain_line("never closed")]
+    );
+}
+
+/// The rich-text editor stores quote markers as text and writes them back on save, so a file's
+/// quote lines must come out of it unchanged. It gets them from the parse without blockquotes (the
+/// text it opened), and a quote that does reach it is lowered to the same text.
+#[test]
+fn test_blockquote_lines_round_trip_as_literal_text() {
+    for source in [
+        "> single\n",
+        "> a\n> b\n>\n> > c\n> d\n",
+        "para\n\n> quoted\n> > deeper\n\nafter\n",
+        "> - item\n> ```\n> code\n> ```\n",
+    ] {
+        let literal = parse_markdown_without_blockquotes(source).expect("parses");
+        assert!(
+            !literal
+                .lines
+                .iter()
+                .any(|line| matches!(line, FormattedTextLine::BlockQuote { .. })),
+            "{source:?}"
+        );
+        // Quote lines are ordinary text lines starting with their own `>` markers.
+        for (literal_line, source_line) in literal
+            .lines
+            .iter()
+            .filter(|line| !matches!(line, FormattedTextLine::LineBreak))
+            .zip(source.lines().filter(|line| !line.is_empty()))
+        {
+            if let FormattedTextLine::Line(_) = literal_line {
+                assert_eq!(literal_line.raw_text(), format!("{source_line}\n"));
+            }
+        }
+    }
+
+    // A quote that reaches the editor lowers to the text the source had.
+    let source = "> a\n> b\n>\n> > c\n>\n> d";
+    let lowered: Vec<_> = parse_lines(source)
+        .into_iter()
+        .map(FormattedTextLine::into_literal_quote)
+        .map(|line| line.raw_text())
+        .collect();
+    assert_eq!(lowered.concat(), format!("{source}\n"));
+}
+
+#[test]
+fn test_blockquote_unquote_reports_depth() {
+    let parsed = parse_lines("> > two");
+    assert_eq!(
+        parsed[0].unquote(),
+        (
+            2,
+            &FormattedTextLine::Line(vec![FormattedTextFragment::plain_text("two")])
+        )
     );
 }

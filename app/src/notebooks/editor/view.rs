@@ -2407,7 +2407,9 @@ impl RichTextEditorView {
 
         // If we failed to get the html string, try parsing plain text into markdown first.
         // If that failed as well, fall back to pasting plain text string.
-        match parsed_html.or(parse_markdown(content.plain_text.as_str()).ok()) {
+        let parsed_markdown =
+            markdown_parser::parse_markdown_without_blockquotes(content.plain_text.as_str()).ok();
+        match parsed_html.or(parsed_markdown) {
             Some(text) => self.insert_formatted_from_paste(text, content.plain_text.as_str(), ctx),
             None => self.user_typed(content.plain_text.as_str(), ctx),
         }

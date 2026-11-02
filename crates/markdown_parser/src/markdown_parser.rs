@@ -120,28 +120,51 @@ impl ListIndentationContext {
 }
 
 pub fn parse_markdown(markdown: &str) -> Result<FormattedText> {
-    parse_markdown_impl(markdown, false)
+    parse_markdown_impl(markdown, false, true)
 }
 
 pub fn parse_markdown_with_gfm_tables(markdown: &str) -> Result<FormattedText> {
-    parse_markdown_impl(markdown, true)
+    parse_markdown_impl(markdown, true, true)
 }
 
-fn parse_markdown_impl(markdown: &str, parse_gfm_tables: bool) -> Result<FormattedText> {
-    parse_markdown_internal::<'_, nom::error::Error<_>>(markdown, parse_gfm_tables)
-        .map(|(_, mut res)| {
-            if let Some(FormattedTextLine::LineBreak) = res.last() {
-                res.pop();
-            }
-            FormattedText { lines: res.into() }
-        })
-        .map_err(|err| {
-            if cfg!(debug_assertions) {
-                anyhow::anyhow!("Failed to parse Markdown: {err}")
-            } else {
-                anyhow::anyhow!("Failed to parse Markdown")
-            }
-        })
+/// Like [`parse_markdown`], but `>` lines are left as literal text instead of becoming
+/// [`FormattedTextLine::BlockQuote`]. For consumers that store the text and write it back (the
+/// rich-text editor), where a quote must survive an open and save byte for byte.
+pub fn parse_markdown_without_blockquotes(markdown: &str) -> Result<FormattedText> {
+    parse_markdown_impl(markdown, false, false)
+}
+
+/// [`parse_markdown_without_blockquotes`] with GFM tables.
+pub fn parse_markdown_with_gfm_tables_without_blockquotes(markdown: &str) -> Result<FormattedText> {
+    parse_markdown_impl(markdown, true, false)
+}
+
+fn parse_markdown_impl(
+    markdown: &str,
+    parse_gfm_tables: bool,
+    blockquotes: bool,
+) -> Result<FormattedText> {
+    parse_blocks::<nom::error::Error<_>>(
+        markdown,
+        &MarkdownResumePoint::default(),
+        parse_gfm_tables,
+        None,
+        blockquotes,
+    )
+    .map(|(remaining, (lines, _))| (remaining, lines))
+    .map(|(_, mut res)| {
+        if let Some(FormattedTextLine::LineBreak) = res.last() {
+            res.pop();
+        }
+        FormattedText { lines: res.into() }
+    })
+    .map_err(|err| {
+        if cfg!(debug_assertions) {
+            anyhow::anyhow!("Failed to parse Markdown: {err}")
+        } else {
+            anyhow::anyhow!("Failed to parse Markdown")
+        }
+    })
 }
 
 pub fn parse_markdown_to_raw_text(markdown: &str) -> Result<String> {
@@ -158,6 +181,7 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         &MarkdownResumePoint::default(),
         parse_gfm_tables,
         None,
+        true,
     )
     .map(|(remaining, (lines, _))| (remaining, lines))
 }
@@ -228,7 +252,7 @@ pub fn parse_markdown_tail(
             "Markdown resume point is past the end of the document"
         ));
     }
-    parse_blocks::<nom::error::Error<_>>(markdown, from, parse_gfm_tables, Some(final_len))
+    parse_blocks::<nom::error::Error<_>>(markdown, from, parse_gfm_tables, Some(final_len), true)
         .map(|(_, (lines, resume))| MarkdownTail { lines, resume })
         .map_err(|err| {
             if cfg!(debug_assertions) {
@@ -247,6 +271,7 @@ fn parse_blocks<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     from: &MarkdownResumePoint,
     parse_gfm_tables: bool,
     final_len: Option<usize>,
+    blockquotes: bool,
 ) -> IResult<&'a str, (Vec<FormattedTextLine>, MarkdownResumePoint), E> {
     let mut resumed_context = ListIndentationContext::new();
     resumed_context
@@ -319,7 +344,9 @@ fn parse_blocks<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         // `<!--`, which no other block construct claims.
         if let Ok((remaining_after_comment, _)) = parse_html_comment_block::<E>(remaining) {
             remaining = remaining_after_comment;
-        } else if let Some((consumed, quoted_lines)) = parse_blockquote(remaining, parse_gfm_tables)
+        } else if let Some((consumed, quoted_lines)) = blockquotes
+            .then(|| parse_blockquote(remaining, parse_gfm_tables))
+            .flatten()
         {
             remaining = &remaining[consumed..];
             indentation_context.borrow_mut().clear();
@@ -486,7 +513,8 @@ fn starts_non_paragraph_block(line: &str) -> bool {
 /// Parses a CommonMark blockquote at the start of `input`: consecutive lines that begin with `>`,
 /// plus lazy continuation lines (a line without `>` that continues the quote's open paragraph).
 /// The content is parsed as blocks of its own — so nested quotes, lists and fenced code work —
-/// and every text line in it is italic, which is how a quote is told apart from its surroundings.
+/// and each resulting line is wrapped in a [`FormattedTextLine::BlockQuote`] (nested quotes add to
+/// its depth).
 ///
 /// Returns the number of bytes consumed and the lines the quote produced.
 fn parse_blockquote(
@@ -542,6 +570,7 @@ fn parse_blockquote(
         &MarkdownResumePoint::default(),
         parse_gfm_tables,
         None,
+        true,
     );
     BLOCKQUOTE_DEPTH.with(|d| d.set(d.get() - 1));
 
@@ -552,22 +581,20 @@ fn parse_blockquote(
     if lines.is_empty() {
         lines.push(FormattedTextLine::LineBreak);
     }
-    lines.iter_mut().for_each(italicize_line);
+    let lines = lines
+        .into_iter()
+        .map(|line| match line {
+            FormattedTextLine::BlockQuote { depth, line } => FormattedTextLine::BlockQuote {
+                depth: depth + 1,
+                line,
+            },
+            line => FormattedTextLine::BlockQuote {
+                depth: 1,
+                line: Box::new(line),
+            },
+        })
+        .collect();
     Some((consumed, lines))
-}
-
-/// Marks the text of `line` italic; blocks without running text are left alone.
-fn italicize_line(line: &mut FormattedTextLine) {
-    let fragments = match line {
-        FormattedTextLine::Line(text) => text,
-        FormattedTextLine::UnorderedList(item) => &mut item.text,
-        FormattedTextLine::OrderedList(item) => &mut item.indented_text.text,
-        FormattedTextLine::TaskList(item) => &mut item.text,
-        _ => return,
-    };
-    for fragment in fragments {
-        fragment.styles.italic = true;
-    }
 }
 
 /// Strips at most `max` leading spaces.

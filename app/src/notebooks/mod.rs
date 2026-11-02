@@ -173,7 +173,7 @@ pub fn export_notebook(data: &str, ctx: &AppContext) -> anyhow::Result<String> {
 
     // Parse the Markdown directly rather than using [`Buffer::from_markdown`] so that we can
     // report errors to the exporter.
-    let parsed = markdown_parser::parse_markdown(data)?;
+    let parsed = markdown_parser::parse_markdown_without_blockquotes(data)?;
     Ok(Buffer::export_to_markdown(
         parsed,
         Some(editor::notebook_embedded_item_conversion),

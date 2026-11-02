@@ -1607,6 +1607,9 @@ fn apply_secret_replacements(
     }
 }
 
+/// Drawn once per quote level in front of a quoted line.
+const QUOTE_BAR: &str = "\u{2502} ";
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum LineType {
     OrderedList,
@@ -1626,6 +1629,7 @@ impl From<&FormattedTextLine> for LineType {
             | FormattedTextLine::TaskList(_)
             | FormattedTextLine::Table(_) => LineType::FormattedLine,
             FormattedTextLine::CodeBlock(_) => LineType::CodeBlock,
+            FormattedTextLine::BlockQuote { line, .. } => LineType::from(line.as_ref()),
             FormattedTextLine::LineBreak
             | FormattedTextLine::HorizontalRule
             | FormattedTextLine::Embedded(_)
@@ -1658,6 +1662,8 @@ impl Element for FormattedTextElement {
         // We don't use the frame_index from lines.next() because this creates inconsistencies in the frame index when we have lists
         let mut frame_index = 0;
         while let Some((line_index, line)) = lines.next() {
+            // A quoted line is laid out like the line it quotes, behind a bar per quote level.
+            let (quote_depth, line) = line.unquote();
             let mut res = Vec::new();
             let (font_size, texts, indent, line_type) = match line {
                 FormattedTextLine::Heading(header) => (
@@ -1736,6 +1742,9 @@ impl Element for FormattedTextElement {
                 }
                 _ => String::new(),
             };
+            if quote_depth > 0 && !matches!(line, FormattedTextLine::CodeBlock(_)) {
+                text.insert_str(0, &QUOTE_BAR.repeat(quote_depth));
+            }
             // Offset to account for the bullet or number.
             let glyph_offset = text.chars().count();
             let byte_offset = text.len();
