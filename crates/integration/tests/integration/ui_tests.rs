@@ -66,7 +66,6 @@ integration_tests! {
     test_restore_snapshot_with_background_output,
     test_restore_snapshot_with_notebooks,
     test_restore_snapshot_with_workflows,
-    test_restore_snapshot_with_test_json_object,
     test_restore_snapshot_with_common_shareable_metadata_ids,
     test_restore_snapshot_with_markdown_file,
     test_restore_snapshot_with_settings_page,

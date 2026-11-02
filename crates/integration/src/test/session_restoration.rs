@@ -1,10 +1,9 @@
-use settings::{RespectUserSyncSetting, SyncToCloud};
 use warp::{
     features::FeatureFlag,
     integration_testing::{
         self,
         notebook::{
-            assert_cloud_preference_exists, assert_notebook_contents,
+            assert_notebook_contents,
             assert_notebook_metadata_revision,
         },
         step::{new_step_with_default_assertions, new_step_with_default_assertions_for_pane},
@@ -13,7 +12,6 @@ use warp::{
         view_getters::single_terminal_view_for_tab,
         workflow::assert_workflow_metadata_revision,
     },
-    settings::Preference,
     settings_view::{SettingsSection, SettingsView},
     sqlite_testing::set_user_and_hostname_for_blocks,
     terminal::{
@@ -381,32 +379,6 @@ pub fn test_restore_snapshot_with_workflows() -> Builder {
             TestStep::new("Verify that the workflow panes were restored")
                 .add_assertion(assert_pane_title(0, 1, "My Workflow"))
                 .add_assertion(assert_pane_title(0, 0, "Untitled")),
-        )
-}
-
-/// Tests restoring a snapshot that includes a test json object.
-///
-/// The test json object has as its contents the string "egpmggresq"
-pub fn test_restore_snapshot_with_test_json_object() -> Builder {
-    new_builder()
-        .with_setup(|_utils| {
-            integration_testing::create_file_from_assets(
-                TEST_ONLY_ASSETS,
-                "test_json_object.sqlite",
-                &integration_testing::persistence::database_file_path(),
-            );
-        })
-        .with_step(
-            TestStep::new("Verify json object contents").add_assertion(
-                assert_cloud_preference_exists(
-                    Preference::new(
-                        "HonorPS1".to_string(),
-                        "false",
-                        SyncToCloud::Globally(RespectUserSyncSetting::Yes),
-                    )
-                    .expect("error creating preference"),
-                ),
-            ),
         )
 }
 

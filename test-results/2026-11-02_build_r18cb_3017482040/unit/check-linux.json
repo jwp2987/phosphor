@@ -1,0 +1,23 @@
+{
+ "warning_count": 58,
+ "warnings_by_crate": {
+  "arboard (lib)": 2,
+  "settings (lib)": 1,
+  "warp_editor (lib)": 2,
+  "ai (lib)": 2,
+  "warp (lib)": 27,
+  "warp (lib test)": 24
+ },
+ "warning_lines_by_kind": {
+  "unused import": 44,
+  "unused imports": 11,
+  "use of deprecated type alias": 4,
+  "function": 4,
+  "unused variable": 4,
+  "method": 2,
+  "unreachable pattern": 2
+ },
+ "errors": 1,
+ "status": "failed",
+ "duration": 350.874234
+}

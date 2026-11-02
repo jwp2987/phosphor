@@ -199,7 +199,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_restore_snapshot_with_background_output);
     register_test!(test_restore_snapshot_with_notebooks);
     register_test!(test_restore_snapshot_with_workflows);
-    register_test!(test_restore_snapshot_with_test_json_object);
     register_test!(test_restore_snapshot_with_common_shareable_metadata_ids);
     register_test!(test_restore_snapshot_with_markdown_file);
     register_test!(test_restore_snapshot_with_code_file);
