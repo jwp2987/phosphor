@@ -3479,3 +3479,6 @@ workflow-enum-variant-placeholder = バリアント
 workflow-enum-variants = バリアント
 quit-warning-dont-save = 保存しない
 quit-warning-show-running-processes = 実行中のプロセスを表示
+
+# Secret redaction (#1471: matches the English meaning from #1469)
+settings-privacy-secret-redaction-description = この設定を有効にすると、Phosphor はブロック、ライブラリオブジェクトの内容、エージェントのプロンプトをスキャンして機密情報の可能性があるものを検出し、その保存や送信を防ぎます。設定したモデルプロバイダーに送信されるものはすべて、事前にマスキングされます。対象はプロンプト、会話履歴、コマンド出力、ファイルとプロジェクトのコンテキスト、ツールの結果、単発リクエスト、埋め込みです。画像とツールスキーマはスキャンされません。このリストは正規表現でカスタマイズできます。
