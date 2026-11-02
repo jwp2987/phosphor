@@ -22254,3 +22254,98 @@ fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
         );
     }
 }
+
+/// #1440: with the pty reader inside the model's lock (parsing), the helpers a key calls decide
+/// from the published facts or leave their work for after the parse, and none of them waits. The
+/// lock is held by another thread for up to three seconds; every call must be through long before.
+#[test]
+fn key_path_helpers_do_not_wait_for_the_parser() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                // Application cursor keys set, and published, before the parse begins.
+                let mut model = view.model.lock();
+                ansi::Handler::set_mode(&mut *model, ansi::Mode::CursorKeys);
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+
+            let started = Instant::now();
+            let sequence;
+            let box_visible;
+            {
+                let _key_path = KeyPathScope::enter(&view.key_path_depth);
+                // Scroll updates a key wants are kept, in order, identical neighbours coalesced.
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterTypedCharacters,
+                    ctx,
+                );
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterTypedCharacters,
+                    ctx,
+                );
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterKeydownOnTerminal,
+                    ctx,
+                );
+                assert_eq!(view.deferred_scroll_updates.len(), 2);
+                let _ = view.active_output_ends_in_unterminated_text();
+                let _ = view.active_output_awaits_an_answer();
+                view.schedule_ssh_typeahead_give_up(ctx);
+                sequence = view.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
+                let facts = view.read_key_snapshot().input_box;
+                box_visible = view.is_input_box_visible_with(&facts, ctx);
+            }
+            let waited = started.elapsed();
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the key path waited {waited:?} for the parser"
+            );
+            assert_eq!(
+                sequence,
+                b"\x1bOA".to_vec(),
+                "application cursor mode came from the published snapshot"
+            );
+            assert!(box_visible, "an idle prompt shows the input box");
+
+            // The parse is over: the wakeup applies what the keys left, and nothing is left.
+            view.flush_deferred_scroll_updates(ctx);
+            assert!(view.deferred_scroll_updates.is_empty());
+        });
+    })
+}
+
+/// #1440: the input box answer from the snapshot is the answer from the model, for the states the
+/// key path asks about.
+#[test]
+fn input_box_visibility_from_the_snapshot_matches_the_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let model_handle = view.model.clone();
+            let mut model = model_handle.lock();
+            let from_model = view.is_input_box_visible(&model, ctx);
+            model.publish_key_facts();
+            let facts = KeyModelSnapshot::from_model(&model).input_box;
+            assert_eq!(view.is_input_box_visible_with(&facts, ctx), from_model);
+            model.start_command_execution();
+            model.publish_key_facts();
+            let from_model = view.is_input_box_visible(&model, ctx);
+            let facts = KeyModelSnapshot::from_model(&model).input_box;
+            assert_eq!(view.is_input_box_visible_with(&facts, ctx), from_model);
+        });
+    })
+}

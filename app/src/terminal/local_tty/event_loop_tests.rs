@@ -2095,3 +2095,34 @@ fn keys_piled_up_behind_an_in_flight_write_go_out_as_one_write_on_completion() {
     }
     assert_eq!(*writes.lock().unwrap(), vec![10, 2, 5]);
 }
+
+/// #1442: a child that never reads its tty no longer lets the FIFO grow without bound. The newest
+/// user input is dropped past the cap, the surface is told once, and a ^C always gets in.
+#[test]
+fn a_full_write_list_drops_the_newest_user_input_but_never_a_signal() {
+    let mut state = State::default();
+    for _ in 0..MAX_QUEUED_WRITES {
+        state.queue_input(Cow::Borrowed(b"k"));
+    }
+    assert_eq!(state.write_list.len(), MAX_QUEUED_WRITES);
+    assert!(!state.take_input_overflow_report(), "nothing dropped yet");
+
+    for _ in 0..10 {
+        state.queue_input(Cow::Borrowed(b"x"));
+    }
+    state.queue_paste_input(Cow::Borrowed(b"pasted"));
+    assert_eq!(state.write_list.len(), MAX_QUEUED_WRITES, "bounded");
+    assert_eq!(state.input_overflow_dropped, 11);
+    assert!(state.take_input_overflow_report(), "told");
+    assert!(!state.take_input_overflow_report(), "told once per episode");
+
+    state.queue_input(Cow::Borrowed(b"\x03"));
+    assert_eq!(state.write_list.len(), MAX_QUEUED_WRITES + 1, "^C got in");
+    assert_eq!(state.input_overflow_dropped, 11);
+}
+
+/// 180 s of the fastest key repeat (~60 Hz) is far below the cap.
+#[test]
+fn the_write_list_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
+    assert!(MAX_QUEUED_WRITES >= 180 * 60 * 5);
+}

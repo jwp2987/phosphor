@@ -365,6 +365,7 @@ impl ModelEventDispatcher {
             Event::PreInteractiveSSHSession => ModelEvent::PreInteractiveSSHSession,
             Event::SSH(ssh) => ModelEvent::SSH(ssh),
             Event::SSHControlMasterError => ModelEvent::SSHControlMasterError,
+            Event::InputBufferOverflow => ModelEvent::InputBufferOverflow,
             Event::TerminalModeSwapped(terminal_mode) => {
                 ModelEvent::TerminalModeSwapped(terminal_mode)
             }
@@ -527,6 +528,8 @@ pub enum ModelEvent {
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442).
+    InputBufferOverflow,
     TerminalModeSwapped(TerminalMode),
     ExecutedInBandCommand(ExecutedExecutorCommandEvent),
     TmuxControlModeReady {

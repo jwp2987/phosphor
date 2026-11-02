@@ -245,6 +245,16 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `WARP_INPUT_ORDER_LOG_TEXT=1` | log typed text in `warp::input_order` (section 4); synthetic text only |
 | `WARP_SSH_KEEPALIVE=0`, `WARP_SSH_OBSCURE_KEYSTROKE_TIMING=0`, `WARP_USE_SSH_WRAPPER`, `WARP_HONOR_PS1` | ssh wrapper / prompt behaviour read by the bootstraps |
 
+**Input-path hygiene tests (#1440-#1444).** Named so a failure points at the guarantee:
+
+| guarantee | test |
+|---|---|
+| no blocking model lock on the per-key path: scroll position, input-box probe, ssh prompt check, give-up scheduling and cursor-key sequences read the key snapshot / `try_lock` and defer, in order, what needs the model (`view.rs` `deferred_scroll_updates`, flushed on the output wakeup) | `key_path_helpers_do_not_wait_for_the_parser`, `input_box_visibility_from_the_snapshot_matches_the_model` (`view_test.rs`; the model lock is held by another thread for up to 3 s) |
+| a pane closed with queued/held input or a paste in flight logs counts (never content) | `a_pane_closed_with_held_input_has_a_drop_summary` (`view/shared_queue_tests.rs`) |
+| every input buffer has a cap, a logged overflow and a toast: pane `InputQueue` (`MAX_QUEUED_ENTRIES` 64 Ki entries, newest dropped, ^C never), `ModelInbox` (`MAX_INBOX_COMMANDS` 256 Ki, data dropped, `UserWrote` flags merged), pty `write_list` (`MAX_QUEUED_WRITES` 64 Ki, signals never dropped), tmux control-mode pending buffer (`MAX_TMUX_PENDING_BYTES` 64 KiB, whole writes). Each cap is far above 180 s of 60 Hz key repeat (asserted) | `a_full_queue_*`, `the_overflow_episode_resets_*` (`input_queue/tests.rs`), `a_full_inbox_*` (`model/key_facts_tests.rs`), `a_full_write_list_*` (`local_tty/event_loop_tests.rs`), `tmux_pending_input_is_bounded_*` (`writeable_pty/pty_controller_lifecycle_tests.rs`) |
+| tracked modifiers are cleared on window focus loss and regain (winit backends; macOS derives modifiers from each native event and tracks none) | `focus_modifiers_tests.rs` (`crates/warpui/src/windowing/winit/event_loop/`) |
+| control-sequence bytes are not logged unless `WARP_INPUT_ORDER_LOG_TEXT=1` | `raw_bytes_are_described_by_count_not_content` (`crates/warpui_core/src/input_order.rs`) |
+
 ### 2.7 Dev test tooling (merged in round 18)
 
 All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-tooling.md`**. Summary:

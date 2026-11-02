@@ -28,6 +28,7 @@ use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, Ordering};
 use super::block::interactive_latch::InteractiveLatch;
 use super::block::interactive_prompt_candidate;
 use super::early_output::TypeaheadMode;
+use super::grid::grid_handler::TermMode;
 use super::session::SessionId;
 use super::terminal_model::TerminalModel;
 
@@ -161,6 +162,51 @@ pub struct KeyModelSnapshot {
     pub agent_owns_pty: bool,
     /// The active block's interactive latch (cheap to clone), for the per-key probe.
     pub interactive_latch: Option<InteractiveLatch>,
+    /// The program set application cursor keys mode (DECCKM): arrows are `ESC O A`, not `ESC [ A`
+    /// (#1440: `terminal_up`/`down`, Home/End no longer lock the model for it).
+    pub app_cursor: bool,
+    /// What `TerminalView::is_input_box_visible` reads from the model (#1440).
+    pub input_box: InputBoxFacts,
+}
+
+/// The cheap model facts behind "is the input box visible", so the key path can answer it from
+/// the published snapshot when the pty reader holds the model (#1440), and the render path can
+/// read the same fields from the model it already holds. No grid scans here: this is built on
+/// every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputBoxFacts {
+    pub read_only: bool,
+    pub alt_screen_active: bool,
+    pub shared_session_view_pending: bool,
+    pub pending_session_id: Option<SessionId>,
+    pub block_agent_in_control: bool,
+    pub block_agent_tagged_in: bool,
+    pub block_agent_monitoring: bool,
+    pub block_agent_blocked: bool,
+    pub block_active_and_long_running: bool,
+    pub bootstrapped: bool,
+    pub writing_or_executing_in_band_command: bool,
+}
+
+impl InputBoxFacts {
+    pub fn from_model(model: &TerminalModel) -> Self {
+        let active_block = model.block_list().active_block();
+        Self {
+            read_only: model.is_read_only(),
+            alt_screen_active: model.is_alt_screen_active(),
+            shared_session_view_pending: model.shared_session_status().is_view_pending(),
+            pending_session_id: model.pending_session_id(),
+            block_agent_in_control: active_block.is_agent_in_control(),
+            block_agent_tagged_in: active_block.is_agent_tagged_in(),
+            block_agent_monitoring: active_block.is_agent_monitoring(),
+            block_agent_blocked: active_block.is_agent_blocked(),
+            block_active_and_long_running: active_block.is_active_and_long_running(),
+            bootstrapped: model.block_list().is_bootstrapped(),
+            writing_or_executing_in_band_command: model
+                .block_list()
+                .is_writing_or_executing_in_band_command(),
+        }
+    }
 }
 
 /// The hash [`KeyModelSnapshot::active_block_hash`] holds for a block id.
@@ -190,6 +236,8 @@ impl KeyModelSnapshot {
             active_block_start: active_block.start_ts().copied(),
             agent_owns_pty,
             interactive_latch: Some(active_block.interactive_latch().clone()),
+            app_cursor: model.is_term_mode_set(TermMode::APP_CURSOR),
+            input_box: InputBoxFacts::from_model(model),
         }
     }
 
@@ -231,20 +279,89 @@ pub enum ModelCommand {
     SharedSessionWrite(Vec<u8>),
 }
 
+/// The most commands the inbox keeps (#1442). A key leaves at most ~3 (typed-ahead record, user
+/// input, shared-session write), the model drains the inbox before every parse slice and the main
+/// thread drains it whenever the model is free, so it only grows while the pty reader sits inside
+/// the model's lock. 180 s of the fastest key repeat (~60 Hz) is ~33,000 commands; the bound is
+/// eight times that. Past it data commands are dropped (counted, logged, reported to the user by
+/// the view through [`ModelInbox::take_overflow_report`]); `UserWrote` flags are merged instead,
+/// never dropped, so a ^C or the first input is never lost.
+pub const MAX_INBOX_COMMANDS: usize = 256 * 1024;
+
 /// The inbox of [`ModelCommand`]s: written by the main thread without the model's lock, drained by
 /// whoever next holds the model (the pty reader before it parses, or the main thread when it has
 /// the model anyway).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ModelInbox {
     commands: Arc<Mutex<Vec<ModelCommand>>>,
     pending: Arc<AtomicBool>,
+    /// Commands refused for the cap since the view last asked ([`Self::take_overflow_report`]).
+    dropped: Arc<AtomicU32>,
+    max_commands: usize,
+}
+
+impl Default for ModelInbox {
+    fn default() -> Self {
+        Self::with_capacity(MAX_INBOX_COMMANDS)
+    }
 }
 
 impl ModelInbox {
-    /// Leaves `command` for the model. Never blocks on the model.
-    pub fn post(&self, command: ModelCommand) {
-        self.commands.lock().push(command);
+    /// An inbox that keeps at most `max_commands` (tests use a small one).
+    pub fn with_capacity(max_commands: usize) -> Self {
+        Self {
+            commands: Arc::new(Mutex::new(Vec::new())),
+            pending: Arc::new(AtomicBool::new(false)),
+            dropped: Arc::new(AtomicU32::new(0)),
+            max_commands,
+        }
+    }
+
+    /// Leaves `command` for the model. Never blocks on the model. Returns false when the inbox
+    /// was full and the command was dropped (#1442).
+    pub fn post(&self, command: ModelCommand) -> bool {
+        let mut commands = self.commands.lock();
+        if commands.len() >= self.max_commands {
+            // The flags are tiny and must not be lost: fold them into the newest `UserWrote`.
+            if let ModelCommand::UserWrote {
+                first_input,
+                ctrl_c,
+            } = &command
+            {
+                if let Some(ModelCommand::UserWrote {
+                    first_input: kept_first,
+                    ctrl_c: kept_ctrl_c,
+                }) = commands
+                    .iter_mut()
+                    .rev()
+                    .find(|kept| matches!(kept, ModelCommand::UserWrote { .. }))
+                {
+                    *kept_first |= *first_input;
+                    *kept_ctrl_c |= *ctrl_c;
+                    return true;
+                }
+                commands.push(command);
+                self.pending.store(true, Ordering::Release);
+                return true;
+            }
+            let total = self.dropped.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if total == 1 {
+                log::warn!(
+                    "model inbox full ({} commands waiting for the pty reader): dropping typed-ahead bookkeeping",
+                    commands.len()
+                );
+            }
+            return false;
+        }
+        commands.push(command);
         self.pending.store(true, Ordering::Release);
+        true
+    }
+
+    /// How many commands were dropped for the cap since the last call (0: none), for the view to
+    /// tell the user once per episode.
+    pub fn take_overflow_report(&self) -> u32 {
+        self.dropped.swap(0, Ordering::Relaxed)
     }
 
     /// Whether anything waits (one atomic load: the parse path calls this before every slice).

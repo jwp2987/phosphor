@@ -102,6 +102,9 @@ pub enum Event {
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442): the user is
+    /// told.
+    InputBufferOverflow,
     TerminalModeSwapped(TerminalMode),
     ExecutedInBandCommand(ExecutedExecutorCommandEvent),
     TmuxControlModeReady {
@@ -617,6 +620,7 @@ impl Debug for Event {
             Event::PreInteractiveSSHSession => write!(f, "Pre-Interactive SSH Session"),
             Event::SSH(remote_shell) => write!(f, "SSH(remote shell: {remote_shell}"),
             Event::SSHControlMasterError => write!(f, "SSH ControlMaster error"),
+            Event::InputBufferOverflow => write!(f, "Input buffer overflow"),
             Event::TerminalModeSwapped(_) => write!(f, "Terminal mode swapped"),
             Event::TmuxControlModeReady { primary_pane } => {
                 write!(f, "TmuxControlModeReady(primary_pane: {primary_pane})")
