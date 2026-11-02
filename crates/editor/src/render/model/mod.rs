@@ -89,6 +89,7 @@ pub use self::char_cell_display::{DisplayLattice, DisplayRow, DisplayRowKind};
 pub(crate) mod hydration;
 mod location;
 mod offset_map;
+pub(crate) mod parked;
 mod positioned;
 pub mod saved_positions;
 pub mod table_offset_map;
