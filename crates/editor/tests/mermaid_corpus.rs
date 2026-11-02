@@ -274,10 +274,8 @@ fn invalid_diagram_outcomes_are_snapshotted() {
     insta::assert_snapshot!("invalid_outcomes", out);
 }
 
-/// Hostile sources: arbitrary bytes-as-text, huge labels, deep nesting. No panic and no hang (the
-/// app's render is bounded by size limits and a time budget, #1477) is the claim.
-#[test]
-fn hostile_sources_never_panic() {
+/// Hostile sources: arbitrary bytes-as-text, huge labels, deep nesting.
+fn hostile_sources() -> Vec<String> {
     let mut sources = vec![
         "graph TD\n".to_string() + &"A".repeat(100_000),
         format!("graph TD\nA[{}] --> B\n", "x".repeat(50_000)),
@@ -316,9 +314,57 @@ fn hostile_sources_never_panic() {
             "\u{0}-->:: ::: {{ }} [ ( \n".repeat(50)
         ));
     }
-    for src in sources {
-        let _ = app_render(&src);
+    sources
+}
+
+/// Set in the child process: render only this source and exit.
+const HOSTILE_INDEX_ENV: &str = "MERMAID_HOSTILE_INDEX";
+
+/// The claim is: no panic, no abort, no hang (the app's render is bounded by size limits and a
+/// time budget, #1477) for any hostile source. A stack overflow is an abort that kills the whole
+/// test process, so each source runs in its own child process (this same test binary, re-run with
+/// `MERMAID_HOSTILE_INDEX=N`). A crash of one input then names that input instead of hiding the
+/// rest (#1493).
+#[test]
+fn hostile_sources_never_panic() {
+    let sources = hostile_sources();
+    if let Ok(index) = std::env::var(HOSTILE_INDEX_ENV) {
+        let index: usize = index.parse().expect("MERMAID_HOSTILE_INDEX is a number");
+        let _ = app_render(&sources[index]);
+        return;
     }
+    let exe = std::env::current_exe().expect("test binary path");
+    let mut failures = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let output = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "hostile_sources_never_panic",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(HOSTILE_INDEX_ENV, index.to_string())
+            .output()
+            .expect("spawn child test process");
+        if !output.status.success() {
+            let head: String = source.chars().take(80).collect();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
+            failures.push(format!(
+                "#{index} {:?} (status {:?}) source {head:?}: {}",
+                output.status,
+                output.status.code(),
+                tail.join(" | ")
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} hostile sources crashed or panicked:\n{}",
+        failures.len(),
+        sources.len(),
+        failures.join("\n")
+    );
 }
 
 fn big_flowchart(nodes: usize) -> String {
