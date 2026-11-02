@@ -27,15 +27,15 @@ use super::{
     AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, MAX_PREFILTER_BYTES, QUESTION_HEADS,
     REQUEST_OPENER_HEADS, SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
     buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
-    ends_in_sentence_punctuation, has_no_prose_evidence, has_prose_veto_word,
-    is_agent_follow_up_input, is_data_shaped_word, is_env_assignment_token, is_explicit_path_token,
-    is_function_word, is_known_shell_command_word, is_misplaced_re_command_word,
-    is_non_english_shell_name, is_one_off_natural_language_word, is_one_off_shell_command_keyword,
-    is_prose_article, is_prose_word, is_unambiguous_shell_command,
-    lacks_command_evidence_in_agent_conversation, lone_word_belongs_to_agent,
-    reads_as_prose_with_unknown_head, reads_as_request_to_agent, split_shell_words,
-    starts_with_slash_command_not_path, strip_sentence_punctuation, strip_trailing_comment,
-    takes_free_text, word_basename,
+    ends_in_sentence_punctuation, has_clear_shell_structure_for_unknown_head,
+    has_no_prose_evidence, has_prose_veto_word, is_agent_follow_up_input, is_data_shaped_word,
+    is_env_assignment_token, is_explicit_path_token, is_function_word, is_known_shell_command_word,
+    is_misplaced_re_command_word, is_non_english_shell_name, is_one_off_natural_language_word,
+    is_one_off_shell_command_keyword, is_prose_article, is_prose_word,
+    is_unambiguous_shell_command, lacks_command_evidence_in_agent_conversation,
+    lone_word_belongs_to_agent, reads_as_prose_with_unknown_head, reads_as_request_to_agent,
+    split_shell_words, starts_with_slash_command_not_path, strip_sentence_punctuation,
+    strip_trailing_comment, takes_free_text, word_basename,
 };
 
 /// The syntax family of the shell the line is typed into. bash and zsh are one family here.
@@ -142,6 +142,10 @@ pub enum Rule {
     SentenceShape,
     /// A one-off natural-language word opening the line (`yes please`, `nice work`) (#833).
     OneOffWord,
+    /// A head the session does not know, but clear shell structure around it (a `$VAR`, a redirect
+    /// to a file, a pipe into a command, or two flags / `--`) and nothing that reads as English:
+    /// the shell runs it and says `command not found` visibly (#1560, owner decision).
+    ShellStructureUnknownHead,
     /// The exact line ran in this shell before (#1203).
     RanBefore,
     /// In a conversation, no positive evidence that the line is a command (#1183).
@@ -182,6 +186,7 @@ impl std::fmt::Display for Rule {
             Rule::RequestShape => "request-shape (#834/#965)",
             Rule::SentenceShape => "sentence-shape (#1234)",
             Rule::OneOffWord => "one-off-word (#833)",
+            Rule::ShellStructureUnknownHead => "shell-structure-unknown-head (#1560)",
             Rule::RanBefore => "ran-before (#1203)",
             Rule::NoEvidenceInConversation => "no-evidence-in-conversation (#1183)",
             Rule::UnknownHeadInConversation => "unknown-head-in-conversation (#935)",
@@ -354,6 +359,18 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
     }
     if agentward && !lone && opens_with_one_off_natural_language_word(&head_lower, args, text) {
         return Decision::agent(Rule::OneOffWord);
+    }
+
+    // #1560 (owner): clear shell structure beats an unknown head. The shell then prints `command
+    // not found` where the user sees it, rather than an agent run starting for shell syntax. A
+    // known head never reaches this (it has its own rules); the signals and vetoes live in
+    // `has_clear_shell_structure_for_unknown_head`.
+    if agentward
+        && !multi_line
+        && !(installed || head_is_curated || head_is_keyword || head_is_path)
+        && has_clear_shell_structure_for_unknown_head(text)
+    {
+        return Decision::shell(Rule::ShellStructureUnknownHead);
     }
 
     if ctx.ran_before_exactly && !no_evidence {

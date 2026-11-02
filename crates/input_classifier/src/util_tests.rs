@@ -1379,3 +1379,70 @@ fn test_lone_word_belongs_to_agent() {
         );
     }
 }
+
+// #1560: clear shell structure around a head the session does not know.
+#[test]
+fn clear_shell_structure_for_unknown_head_table() {
+    // (line, expected)
+    let table: &[(&str, bool)] = &[
+        // Strong signals, no English.
+        ("print -r -- $EPOCHREALTIME > lat_0", true),
+        ("foo --bar | grep x", true),
+        ("notacmd $HOME/x", true),
+        ("xyz > out.txt", true),
+        ("xyz >out.txt", true),
+        ("xyz 2>/dev/null", true),
+        ("xyz 2>&1", true),
+        ("xyz &> all.log", true),
+        ("xyz < in.txt", true),
+        ("xyz ${DIR}", true),
+        ("xyz $(date)", true),
+        ("xyz \"$DIR\"", true),
+        ("xyz | wc -l", true),
+        ("xyz | ./filter", true),
+        ("xyz | foo --bar", true),
+        ("FOO=1 xyz > run_1", true),
+        // Two weak signals.
+        ("xyz -r --force", true),
+        ("xyz -- -x", true),
+        ("xyz -a -b", true),
+        // One weak signal is a request as often as a command.
+        ("use --verbose", false),
+        ("xyz -r", false),
+        ("xyz --", false),
+        // Prose that contains the characters.
+        ("what is 5 > 3", false),
+        ("what's 5 > 3", false),
+        ("compare A | B", false),
+        ("tabs | spaces", false),
+        ("cats | dogs", false),
+        ("x > y", false),
+        ("xyz > 3", false),
+        ("xyz > B", false),
+        ("xyz > bar", false),
+        ("xyz >= 3", false),
+        ("a -> b", false),
+        ("click <b>bold</b>", false),
+        ("can you show me how to use --verbose?", false),
+        ("explain $PATH to me", false),
+        ("tell me what $HOME means", false),
+        ("list $HOME contents", false),
+        ("xyz $HOME, then retry", false),
+        ("it costs $5 > $3", false),
+        ("解释 $PATH", false),
+        ("please $HOME > out.txt", false),
+        // No structure at all, or not a line with a head and arguments.
+        ("xyz", false),
+        ("xyz abc_def", false),
+        ("", false),
+        ("$HOME", false),
+        ("'xyz' > out.txt", false),
+    ];
+    let mut failures = Vec::new();
+    for (line, expected) in table {
+        if has_clear_shell_structure_for_unknown_head(line) != *expected {
+            failures.push(format!("{line:?}: expected {expected}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

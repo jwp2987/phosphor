@@ -212,9 +212,12 @@ def c_agent_approval(ctx, r):
 
 
 # ---------------------------------------------------------------- autodetect routing table
-SHELL_LINES = ["ls -la", "git status", "grep foo foo.txt", "echo hello world", "pwd", "cat foo.txt", "wc -l foo.txt", "uname -a", "ls the", "date"]
+SHELL_LINES = ["ls -la", "git status", "grep foo foo.txt", "echo hello world", "pwd", "cat foo.txt", "wc -l foo.txt", "uname -a", "ls the", "date",
+               # #1560 (owner): clear shell structure beats an unknown head; the shell says "command not found" itself
+               "print -r -- $EPOCHREALTIME > lat_0", "notacmd_x $HOME/x", "xyz_nocmd > out_nc.txt", "foo_nocmd --bar | grep x"]
 PROSE_LINES = ["what does this error mean", "how do I undo my last git commit", "explain why the build is failing", "why is my disk full",
-               "can you summarize the changes in this repo", "please walk me through the failing test"]
+               "can you summarize the changes in this repo", "please walk me through the failing test",
+               "what is 5 > 3", "can you show me how to use --verbose?", "explain $PATH to me"]
 # installed head + English arguments: the documented rule (owner decision #964, #1183) decides by SURFACE, read from the routing log:
 # plain terminal (no conversation open) = Shell, inside an agent conversation with no command evidence = Agent
 AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong"]
