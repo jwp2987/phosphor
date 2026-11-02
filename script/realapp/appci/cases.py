@@ -1180,3 +1180,4 @@ def c_md_ai_answer(ctx, r):
     r.check(ctx.app.alive(), "app died rendering the AI markdown answer")
     ctx.be.key("ctrl+c")
 import cases_caseagent  # noqa: E402,F401  (#1463: agent_stream_cancel, agent_approval, routing_table)
+import cases_ui  # noqa: E402,F401  (#1462: completions/history, mouse/panes/resize, startup + live settings cases)
