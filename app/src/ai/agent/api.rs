@@ -159,7 +159,7 @@ pub struct RequestParams {
     /// `/plan` turn that made one `read_files` call had full shell access on its next
     /// round-trip.
     pub plan_mode: bool,
-    should_redact_secrets: bool,
+    pub should_redact_secrets: bool,
 
     /// User-provided API keys for AI providers (BYO API Key).
     pub api_keys: Option<warp_multi_agent_api::request::settings::ApiKeys>,

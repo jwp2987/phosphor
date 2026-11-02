@@ -928,7 +928,7 @@ settings-privacy-page-title = Privacy
 
 # Secret redaction
 settings-privacy-secret-redaction-title = Secret redaction
-settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Library objects, and agent prompts for potential sensitive information and prevent saving or sending this data to any servers. You can customize this list via regexes.
+settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Library objects, and agent prompts for potential sensitive information and prevent saving or sending this data. Everything sent to your configured model providers is redacted first: prompts, conversation history, command output, file and project context, tool results, one-shot requests, and embeddings. Images and tool schemas are not scanned. You can customize this list via regexes.
 settings-privacy-secret-redaction-enabled-by-org = Enabled by your organization.
 settings-privacy-secret-display-mode-label = Secret visual redaction mode
 settings-privacy-secret-display-mode-description = Choose how secrets are visually presented in the block list while keeping them searchable. This setting only affects what you see in the block list.

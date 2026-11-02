@@ -654,7 +654,11 @@ pub async fn run_websearch(
 ) -> Result<SearchOutput> {
     let query = args.query.clone();
     let exa_args = args.into_exa_args();
-    let body = exa::build_request_body(exa::SEARCH_TOOL_NAME, &exa_args);
+    let mut body = exa::build_request_body(exa::SEARCH_TOOL_NAME, &exa_args);
+    // #1469: the model-written query can carry user content.
+    if crate::ai::agent_providers::outbound_redaction::is_enabled() {
+        crate::ai::agent_providers::outbound_redaction::redact_json_strings(&mut body);
+    }
 
     let url = endpoint_override
         .map(|s| s.to_owned())

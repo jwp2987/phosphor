@@ -230,6 +230,10 @@ if [[ -x ./script/check_pty_doors ]]; then
     ./script/check_pty_doors >/dev/null 2>&1 && ok "pty doors" \
         || fail "pty doors -- run ./script/check_pty_doors for detail"
 fi
+if [[ -x ./script/check_outbound_redaction ]]; then
+    ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
+        || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"
+fi
 if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"

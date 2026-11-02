@@ -283,7 +283,16 @@ channel were ever wired up. Today it is unreachable UI over a dead channel.
 
 Separate from telemetry, and it *does* do something: **Settings → Privacy →
 Secret redaction** scans blocks, Library object contents and agent prompts for
-credentials and prevents them being saved or sent. You can add your own patterns
+credentials and prevents them being saved or sent.
+
+When it is on, everything sent to a model provider is redacted first with the
+same detector (built-in patterns plus your custom regexes; each match becomes
+`*` of the same length): the system prompt, every message including history,
+attached and command output, file and project context, tool-call arguments,
+tool results (command output, file reads, MCP), compaction summaries, one-shot
+requests (titles, next command, explain, commit messages), embeddings and rerank
+inputs, and web-search queries. Not redacted: tool schemas, images/PDFs, and the
+URL of a web fetch. Redaction is off by default. You can add your own patterns
 under **Custom secret redaction** (`privacy.custom_secret_regex_list`); they take
 effect on the next command, and support the inline `(?i)` case-insensitivity
 flag.

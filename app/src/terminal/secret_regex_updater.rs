@@ -1,6 +1,16 @@
 use crate::settings::{CustomSecretRegex, PrivacySettings, PrivacySettingsChangedEvent};
 use crate::terminal::model::set_user_and_enterprise_secret_regexes;
-use warpui::{Entity, ModelContext, SingletonEntity};
+use crate::terminal::safe_mode_settings::{SafeModeSettings, get_secret_obfuscation_mode};
+use crate::workspaces::user_workspaces::UserWorkspaces;
+use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
+
+/// Pushes the effective secret-redaction setting into the BYOP outbound-redaction switch
+/// (#1469), which has no `AppContext` at the wire sites.
+fn sync_outbound_redaction(app: &AppContext) {
+    crate::ai::agent_providers::outbound_redaction::set_enabled(
+        get_secret_obfuscation_mode(app).should_redact_secret(),
+    );
+}
 
 /// Dummy singleton model that is used to update the current set of custom regexes within the
 /// terminal model. We do this via a singleton model since we only want to do this once any time
@@ -12,9 +22,19 @@ impl CustomSecretRegexUpdater {
         let updater = CustomSecretRegexUpdater;
         // Initialize with current custom regexes (will be empty until safe mode is enabled)
         updater.update_custom_secret_regex_list(ctx);
+        sync_outbound_redaction(ctx);
+        // Any change to the safe-mode setting, the privacy settings (enterprise force-enable) or
+        // the workspace (enterprise redaction policy) re-evaluates the switch.
+        let safe_mode_settings = SafeModeSettings::handle(ctx);
+        ctx.subscribe_to_model(&safe_mode_settings, |_, _, ctx| {
+            sync_outbound_redaction(ctx)
+        });
+        let user_workspaces = UserWorkspaces::handle(ctx);
+        ctx.subscribe_to_model(&user_workspaces, |_, _, ctx| sync_outbound_redaction(ctx));
 
         let privacy_settings = PrivacySettings::handle(ctx);
         ctx.subscribe_to_model(&privacy_settings, |me, evt, ctx| {
+            sync_outbound_redaction(ctx);
             if let PrivacySettingsChangedEvent::CustomSecretRegexList { .. } = evt {
                 me.update_custom_secret_regex_list(ctx);
             }
