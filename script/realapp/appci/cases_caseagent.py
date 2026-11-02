@@ -1,0 +1,275 @@
+# appci/cases_caseagent.py (#1463): agent mode end to end with the CI Ollama provider, and the autodetect routing table.
+# Registered with the same @case decorator as cases.py (imported at the end of cases.py). Evidence, in order of strength:
+#   * the shell's own rec.log (what the shell RECEIVED, from the scratch rc), never "something ran";
+#   * the app's debug log: 'phosphor::routing' enter-stage decision lines (route, rule, surface, head word, byte count) and the byop
+#     request markers ('[byop] opening stream', 'stream opened OK', '[byop-diag] queue_actions' = an action card is pending);
+#   * screenshots (+ OCR when an engine exists; without one the OCR sub-checks are notes, not passes).
+# Typing is at the owner's stress rate (10-25 ms/key, Enter in the same call). Shell commands are never typed into a busy agent
+# conversation (that steers the agent): every agent-bound text here is prose, and shell-bound lines are typed only when idle.
+import hashlib, os, re, shutil, time
+
+import cases
+from cases import case
+
+ROUTE_RE = re.compile(r'enter: (\w+) by (.*?) \((\w+), head "(.*?)", (\d+) bytes\)')
+
+
+def need_provider(ctx, r):
+    if not ctx.ollama:
+        r.skip("no provider: configure APPCI_OLLAMA_URL (env or the machine-local ~/.config/phosphor-ci/ci.env) to run agent cases that need a model")
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s: the request markers cannot be read" % ctx.log_path)
+
+
+def type_fast(ctx, text, enter=True):
+    ctx.be.type(text, ctx.rng.randint(10, 25), enter=enter)
+
+
+def count_in_log(ctx, off, needle):
+    return ctx.log_since(off).count(needle)
+
+
+def shot_hash(ctx, tag):
+    d = os.path.join(ctx.prof.shots, "_tmp")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, "%s.png" % tag)
+    try:
+        ctx.be.shot(p)
+        return hashlib.md5(open(p, "rb").read()).hexdigest()
+    except Exception:
+        return None
+
+
+def settled(ctx, tag, quiet=5, step=1.5, timeout=90):
+    """True once the screen stops changing: at most 2 distinct frames (cursor blink) among the last `quiet` shots"""
+    hs, t0 = [], time.time()
+    while time.time() - t0 < timeout:
+        h = shot_hash(ctx, tag)
+        if h:
+            hs.append(h)
+        if len(hs) >= quiet and len(set(hs[-quiet:])) <= 2:
+            return True
+        time.sleep(step)
+    return False
+
+
+def cleanup_tmp(ctx):
+    shutil.rmtree(os.path.join(ctx.prof.shots, "_tmp"), ignore_errors=True)
+
+
+def wait_marker(ctx, off, needle, n=1, timeout=60):
+    return ctx.until(lambda: count_in_log(ctx, off, needle) >= n, timeout, step=0.25)
+
+
+def ocr_has(ctx, tag, needle):
+    t = ctx.ocr(tag)
+    if t is None:
+        return None
+    return needle.lower() in " ".join(t.lower().split())
+
+
+def setting_bool(ctx, key):
+    """a boolean from the profile's settings.toml (only the boolean is read out; the file is never printed). None if absent."""
+    for sub in (".config/phosphor/settings.toml", ".phosphor/settings.toml"):
+        try:
+            t = open(os.path.join(ctx.prof.home, sub), errors="replace").read()
+        except OSError:
+            continue
+        m = re.search(r"^\s*%s\s*=\s*(true|false)\b" % re.escape(key), t, re.M)
+        if m:
+            return m.group(1) == "true"
+    return None
+
+
+# ---------------------------------------------------------------- agent: stream, type-while-streaming, cancel
+@case("agent_stream_cancel", modes=("agent",), order=46, gui=True)
+def c_agent_stream_cancel(ctx, r):
+    """A real prompt streams a reply; keys typed while it streams land in the input (no steering = no new request, nothing
+    reaches the shell); Ctrl-C (terminal:cancel_command) stops the stream (the screen stops changing). First-token latency is a metric."""
+    need_provider(ctx, r)
+    try:
+        off = ctx.log_size()
+        mark = ctx.cmd_mark()
+        t0 = time.time()
+        type_fast(ctx, "Write a long, detailed essay of at least 800 words about the history of the bicycle, with a heading per century.")
+        if not wait_marker(ctx, off, "[byop] opening stream", timeout=60):
+            ctx.shot("no_request")
+            r.check(False, "no model request ('[byop] opening stream') within 60 s of the prompt's Enter; prompt not routed to the agent or provider unreachable")
+            return
+        r.metric("request_start_s", round(time.time() - t0, 2))
+        if wait_marker(ctx, off, "stream opened OK", timeout=90):
+            r.metric("stream_opened_s", round(time.time() - t0, 2))      # HTTP accepted; the first token follows (model speed varies: metric, not verdict)
+        elif "stream chunk error" in ctx.log_since(off):
+            r.skip("provider error (see the app log '[byop] stream chunk error'): the CI Ollama did not answer; not an app verdict")
+        hs, t1 = [], time.time()
+        while time.time() - t1 < 90 and len(set(hs)) < 3:
+            h = shot_hash(ctx, "streaming")
+            if h:
+                hs.append(h)
+            time.sleep(1.0)
+        if len(set(hs)) < 3:
+            r.skip("the reply never visibly streamed within 90 s (%d distinct frames); model/provider too slow to test cancel" % len(set(hs)))
+        r.metric("first_visible_change_s", round(time.time() - t0, 2))
+        # keys typed while the reply streams must land in the input
+        tok = ctx.tok(6).lower()
+        typed = "keepme" + tok
+        before_req = count_in_log(ctx, off, "[byop] opening stream")
+        type_fast(ctx, typed, enter=False)
+        time.sleep(1.0)
+        ctx.shot("typed_while_streaming")
+        seen = ocr_has(ctx, "typed_ocr", typed)
+        if seen is None:
+            r.note("no OCR engine: typed-while-streaming landing is screenshot-only (shots/agent_typed_while_streaming.png)")
+        else:
+            r.check(seen, "text typed at 10-25 ms/key while the reply streamed is not visible in the input (%r)" % typed)
+        r.check(count_in_log(ctx, off, "[byop] opening stream") == before_req, "typing during the reply started a new model request (steering)")
+        r.check(not [c for c in ctx.cmds_since(mark) if typed in c], "text typed during the reply reached the shell")
+        # cancel
+        ctx.be.key("ctrl+c")
+        time.sleep(2.5)
+        ctx.shot("after_cancel")
+        hs2 = []
+        for _ in range(5):
+            h = shot_hash(ctx, "post_cancel")
+            if h:
+                hs2.append(h)
+            time.sleep(1.2)
+        r.metric("distinct_frames_after_cancel", len(set(hs2)))
+        r.check(len(set(hs2)) <= 2, "the screen kept changing %d s after Ctrl-C (%d distinct frames in 5): the stream did not stop" % (6, len(set(hs2))))
+        r.check(not [c for c in ctx.cmds_since(mark) if "bicycle" in c or typed in c], "agent text or the typed text reached the shell")
+    finally:
+        cleanup_tmp(ctx)
+
+
+# ---------------------------------------------------------------- agent: approval card, approve once / reject once, follow-up
+def ask_command(ctx, r, off, token, fname, label):
+    ctx.rm(fname)
+    type_fast(ctx, "Please run exactly this shell command and nothing else: echo %s >> %s" % (token, fname))
+    if not wait_marker(ctx, off, "queue_actions", timeout=120):
+        ctx.shot("%s_no_card" % label)
+        r.skip("%s: no approval card within 120 s (the model did not propose the command, or auto-approve ran it)" % label)
+    time.sleep(1.5)
+    ctx.shot("%s_card" % label)
+
+
+@case("agent_approval", modes=("agent",), order=47, gui=True)
+def c_agent_approval(ctx, r):
+    """Approve once: the command appears in the shell's rec.log exactly once and writes its effect file exactly once; the first
+    Enter on the empty input only focuses the card (#1195/#1350); nothing ran before the approval. Then a follow-up question in the
+    SAME conversation opens a new model request. Reject once: the rejected command never reaches the shell."""
+    need_provider(ctx, r)
+    try:
+        off = ctx.log_size()
+        mark = ctx.cmd_mark()
+        tok_a, tok_r = "APPROVEME" + ctx.tok(6).upper(), "REJECTME" + ctx.tok(6).upper()
+        ask_command(ctx, r, off, tok_a, "ap_ok.txt", "approve")
+        r.check(not ctx.lines("ap_ok.txt") and not [c for c in ctx.cmds_since(mark) if tok_a in c], "the command ran before it was approved")
+        # focus the card with Enter on the empty input, then approve with a second Enter
+        ctx.be.key("Return")
+        time.sleep(1.0)
+        ctx.shot("approve_focused")
+        r.check(not [c for c in ctx.cmds_since(mark) if tok_a in c], "the first Enter on the empty input approved the card (it must only focus it, #1195/#1350)")
+        ctx.be.key("Return")
+        ran = ctx.until(lambda: ctx.lines("ap_ok.txt"), 30)
+        time.sleep(3)           # a duplicate would land here
+        got = ctx.lines("ap_ok.txt")
+        shell_cmds = [c for c in ctx.cmds_since(mark) if tok_a in c]
+        ctx.shot("approve_done")
+        r.check(bool(ran) and got == [tok_a], "approved command effect file: expected [%r], got %r" % (tok_a, got))
+        r.check(len(shell_cmds) == 1, "approved command appears %d times in the shell's rec.log (expected exactly once): %r" % (len(shell_cmds), shell_cmds[:3]))
+        # follow-up in the same conversation (wait for the agent to finish reporting first: never type into a busy conversation)
+        wait_marker(ctx, off, "[byop] opening stream", n=2, timeout=60)
+        if not settled(ctx, "idle1", timeout=120):
+            r.note("the conversation did not go idle within 120 s after the approved command; follow-up skipped")
+        else:
+            tok_f = ctx.tok(6).upper()
+            reqs = count_in_log(ctx, off, "[byop] opening stream")
+            t0 = time.time()
+            type_fast(ctx, "Reply with just the word DONE%s and nothing else." % tok_f)
+            ok = wait_marker(ctx, off, "[byop] opening stream", n=reqs + 1, timeout=60)
+            r.check(ok, "the follow-up question in the same conversation did not open a model request within 60 s")
+            if ok:
+                r.metric("followup_request_s", round(time.time() - t0, 2))
+                settled(ctx, "idle2", timeout=120)
+                seen = ocr_has(ctx, "followup", "DONE" + tok_f)
+                r.note("follow-up reply %s on screen (OCR; model wording varies, not a verdict)" % ("visible" if seen else "not visible" if seen is False else "unchecked (no OCR)"))
+            r.check(not [c for c in ctx.cmds_since(mark) if "Reply with" in c or "DONE" + tok_f in c], "follow-up text reached the shell")
+            settled(ctx, "idle3", timeout=60)
+        # reject once
+        off2 = ctx.log_size()
+        mark2 = ctx.cmd_mark()
+        ask_command(ctx, r, off2, tok_r, "ap_rej.txt", "reject")
+        ctx.be.key("Return")            # focus the card
+        time.sleep(1.0)
+        ctx.be.key("ctrl+c")            # Reject (card focused), else cancels the conversation: either way it must not run
+        time.sleep(4)
+        ctx.shot("reject_done")
+        r.check(not ctx.lines("ap_rej.txt"), "the rejected command's effect file exists: %r" % ctx.lines("ap_rej.txt"))
+        r.check(not [c for c in ctx.cmds_since(mark2) if tok_r in c], "the rejected command reached the shell's rec.log")
+    finally:
+        cleanup_tmp(ctx)
+        ctx.be.key("ctrl+c")
+
+
+# ---------------------------------------------------------------- autodetect routing table
+SHELL_LINES = ["ls -la", "git status", "grep foo foo.txt", "echo hello world", "pwd", "cat foo.txt", "wc -l foo.txt", "uname -a", "ls the", "date"]
+PROSE_LINES = ["what does this error mean", "how do I undo my last git commit", "explain why the build is failing", "why is my disk full",
+               "can you summarize the changes in this repo", "please walk me through the failing test"]
+# installed head + English arguments: the documented rule (owner decision #964, #1183) decides by SURFACE, read from the routing log:
+# plain terminal (no conversation open) = Shell, inside an agent conversation with no command evidence = Agent
+AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong"]
+
+
+def routing_table_rows(ctx, off):
+    return [dict(route=m.group(1), rule=m.group(2), surface=m.group(3), head=m.group(4), n=int(m.group(5))) for m in ROUTE_RE.finditer(ctx.log_since(off))]
+
+
+@case("routing_table", order=48, gui=True)
+def c_routing_table(ctx, r):
+    """Typed lines (10-25 ms/key, instant Enter) and where they went: shell (rec.log has the exact line) or agent (the enter-stage
+    routing decision says Agent and the shell received nothing). Installed commands -> shell; clear natural language -> agent when
+    autodetect applies (agent mode always; terminal mode per nld_in_terminal_enabled); installed-head English by the documented rule
+    keyed on the surface the log reports. A shell command reaching the agent, or prose reaching the shell, fails."""
+    open(os.path.join(ctx.W, "foo.txt"), "w").write("foo\nbar\n")
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.note("no app log: destination inferred from the shell's rec.log alone (agent = the shell received nothing)")
+    nld = setting_bool(ctx, "nld_in_terminal_enabled")
+    auto = setting_bool(ctx, "ai_auto_detection_enabled")
+    r.metric("settings_nld_in_terminal", nld)
+    r.metric("settings_ai_auto_detection", auto)
+    prose_to_agent = True if ctx.mode == "agent" else (nld is not False)       # absent key = the shipped default (on, manual 5.x)
+    table = [(l, "shell", "shell") for l in SHELL_LINES] + [(l, "prose", "agent" if prose_to_agent else "shell") for l in PROSE_LINES] + [(l, "ambiguous", None) for l in AMBIGUOUS_LINES]
+    results = []
+    for line, kind, want in table:
+        ctx.reset()
+        off, mark = ctx.log_size(), ctx.cmd_mark()
+        type_fast(ctx, line)
+        got_cmd = ctx.until(lambda: [c for c in ctx.cmds_since(mark) if c == line], 3.0 if want != "agent" else 1.2)
+        if not got_cmd:
+            time.sleep(0.6)
+        rows = routing_table_rows(ctx, off)
+        enter = rows[-1] if rows else None
+        reached_shell = any(c == line for c in ctx.cmds_since(mark))
+        reached_agent = bool(enter and enter["route"] == "Agent") and not reached_shell
+        if enter and enter["route"] == "Shell" and not reached_shell:
+            ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)
+            reached_shell = any(c == line for c in ctx.cmds_since(mark))
+        dest = "shell" if reached_shell else ("agent" if (reached_agent or (not enter and not reached_shell)) else "none")
+        if enter and enter["route"] == "Agent" and reached_shell:
+            dest = "BOTH"
+        surface = enter["surface"] if enter else None
+        if kind == "ambiguous":
+            want = ("agent" if surface == "AgentConversation" else "shell") if surface else None
+        ok = want is None or dest == want
+        results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None))
+        if want is None:
+            r.note("ambiguous %r: went to %s (no routing log line, so no rule to check)" % (line, dest))
+        elif not ok:
+            r.check(False, "%r (%s) expected %s, went to %s (surface %s, rule %s); shell received %r" % (line, kind, want, dest, surface, enter["rule"] if enter else "n/a", [c for c in ctx.cmds_since(mark)][:2]))
+        if dest == "agent":
+            ctx.be.key("ctrl+c")            # do not leave a model request running
+            time.sleep(0.4)
+    ctx.shot("routing_table_end")
+    r.metric("routing_rows", results)
+    r.metric("misroutes", len([x for x in results if x["want"] and x["want"] != x["got"]]))
+    ctx.reset()
