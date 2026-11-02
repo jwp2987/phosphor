@@ -145,6 +145,15 @@ def routing_classification():
 
 
 @check
+def reference_forgiveness_is_capped():
+    f = cases.forgiven_by_reference
+    assert not f(30, 30, None) and not f(30, 30, dict(bad=0, exact_bad=0)), "a clean reference forgives nothing"
+    assert f(30, 29, dict(bad=2)) and f(30, 30, dict(bad=1))
+    assert not f(30, 27, dict(bad=5)), "Phosphor losing 3 lines is never forgiven (cap 1, #1514)"
+    assert not f(30, 28, dict(bad=1)), "Phosphor losing more than the reference is not forgiven"
+
+
+@check
 def tier_plan_shape():
     assert winmap.tier_plan("windows", None, "terminal", "gitbash", cases.SMOKE)[0] is None
     names, o = winmap.tier_plan("windows", "smoke", "agent", "powershell", cases.SMOKE)
