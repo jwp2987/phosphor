@@ -243,7 +243,10 @@ fn apply_client_edit_on_dropped_buffer_does_not_advance_client_version() {
                 .unwrap()
                 .client_version
         });
-        assert!(after == before, "client_version advanced for a rejected edit");
+        assert!(
+            after == before,
+            "client_version advanced for a rejected edit"
+        );
     })
 }
 
