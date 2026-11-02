@@ -9,6 +9,7 @@
 # collected again once more of it has finished). Every README and INDEX.md is a pure function of the manifests, so they are
 # regenerated for all runs each time. Needs glab authenticated ('glab api user'). Privacy: results_scrub.py; size: <= 5 MB per run
 # script/check_test_results fails at 10 MB. Screenshots are never copied (public repo).
+import time
 import argparse, glob, io, json, os, re, shutil, subprocess, sys, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +33,11 @@ FIN = ("success", "failed")
 
 
 def api(path, raw=False):
-    r = subprocess.run(["glab", "api", path], capture_output=True)
+    for attempt in range(8):         # r18cz: one dropped connection lost a whole round's collection; retry ~3 minutes
+        r = subprocess.run(["glab", "api", path], capture_output=True)
+        if not r.returncode or b"404" in r.stderr:
+            break
+        time.sleep(5 * (attempt + 1))
     if r.returncode:
         raise RuntimeError("glab api %s failed: %s" % (path, r.stderr.decode(errors="replace").strip()[:300]))
     return r.stdout if raw else json.loads(r.stdout or "null")

@@ -304,7 +304,9 @@ def api(path, method="GET", variables=None):
     # retry with backoff, and only give up (None) after ~5 minutes
     for attempt in range(10):
         r = subprocess.run(a, input=body, capture_output=True, text=True)
-        transient = r.returncode != 0 and any(x in (r.stderr or "") for x in ("429", "502", "503", "504", "timeout", "Timeout"))
+        # r18cz: a lost connection ("error connecting to gitlab.com", laptop asleep / Wi-Fi drop) is transient too
+        transient = r.returncode != 0 and any(x in (r.stderr or "") for x in ("429", "502", "503", "504", "timeout", "Timeout", "error connecting",
+                                                                              "connection", "Connection", "dial tcp", "EOF", "no such host"))
         if not transient:
             break
         time.sleep(min(60, 5 * (attempt + 1)))
@@ -409,7 +411,14 @@ def main():
     timeline = {}
 
     def jobs():
-        return {j["name"]: j for j in (api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, pid)) or [])}
+        # r18cz: a network outage made every running job read "missing" and the run ended while the pipeline ran on. An unanswered
+        # API call is UNKNOWN, never "no such job": keep asking until GitLab answers.
+        while True:
+            js = api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, pid))
+            if isinstance(js, list):
+                return {j["name"]: j for j in js}
+            print("%s: GitLab API unreachable; retrying" % time.strftime("%H:%M"), flush=True)
+            time.sleep(60)
 
     def wait(name):
         pending_since = None
