@@ -95,6 +95,9 @@ guards:
     - ./script/check_pty_doors
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
+    # #1521: both were precheck-only. check_workspace_clean is deliberately not here (it expects a hand-managed checkout, see docs/testing.md 2.3).
+    - ./script/check_dangling_modules
+    - ./script/check_pwsh_parse
     - ./script/check_test_results
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
@@ -159,8 +162,8 @@ check-linux:
     - ./script/agent-cargo ci-check-linux check -p warp_tui
 
 # ---------------------------------------------------------------------------
-# macOS (runner tag `Mac`, darwin arm64). The runner is the maintainer's own
-# laptop, so these jobs are MANUAL: nothing compiles there until someone starts it.
+# macOS (runner tag `Mac`, darwin arm64). The runner is a dedicated M1 Pro Mac, not the owner's laptop.
+# These jobs are MANUAL: nothing compiles there until someone starts it.
 # ---------------------------------------------------------------------------
 
 # Read-only environment report: what the runner user can see and what is
@@ -227,7 +230,7 @@ build-macos-arm64:
   timeout: 3h
   variables:
     CHANNEL: oss
-    # The maintainer's laptop: cap parallelism so the build does not push it into
+    # 16 GB Mac: cap parallelism so the build does not push it into
     # heavy swap (8 jobs measured: load 20, ~0.1 GB free, 3.5 GB swap).
     CARGO_BUILD_JOBS: "4"
     PHOSPHOR_DMG_SKIP_JENKINS: "1"
@@ -245,6 +248,7 @@ build-macos-arm64:
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
       (cd dist && shasum -a 256 * | tee SHA256SUMS)
+    - script/ci/verify_artifacts.sh macos dist   # #1515: sums + codesign/spctl (reported; UNSIGNED)
     # Keep this build on THIS machine for app-test-macos-reuse (no download); see script/ci/cache_build.sh.
     - script/ci/cache_build.sh macos
   artifacts:
@@ -292,6 +296,7 @@ build-linux-x86_64:
         b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
       done
       (cd dist && sha256sum * | tee SHA256SUMS)
+    - script/ci/verify_artifacts.sh linux dist   # #1515: sums + .deb info/contents/dpkg -x in a scratch root
     # Keep this build on THIS machine for app-test-linux-*-reuse (no download); see script/ci/cache_build.sh.
     - script/ci/cache_build.sh linux
   artifacts:
@@ -380,6 +385,8 @@ build-windows-x86_64:
       New-Item -ItemType Directory -Force dist | Out-Null
       Copy-Item $installer dist\
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
+    - .\script\ci\verify_artifacts.ps1 -Dist dist   # #1515: sums + Authenticode (reported; UNSIGNED)
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     # Keep this build on THIS machine for app-test-windows-reuse (no download); see script/ci/cache_build.ps1.
     - .\script\ci\cache_build.ps1
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -915,6 +922,7 @@ app-test-linux-wayland:
     - exit $rc
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 # Private Xvfb (software GL), xdotool: the original X11 path.
 app-test-linux-x11:
@@ -931,6 +939,7 @@ app-test-linux-x11:
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
 # chain; the script probes that first and fails with exit 3 and the list of grants for the owner.
@@ -950,6 +959,7 @@ app-test-macos:
     - script/realapp/mac/ci/app_test.sh dist "$CI_PROJECT_DIR/appci-out/macos"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
   artifacts:
     name: appci-macos
     when: always
@@ -965,7 +975,7 @@ app-test-macos:
     reports:
       junit: appci-out/macos/run/junit.xml
 
-# Windows VM: the runner is on the console desktop, so the script drives the app directly (SendKeys + screenshots),
+# Windows VM: the runner is on the console desktop, so the script drives the app directly (SendInput via the Python harness + screenshots),
 # side-by-side install, backup/restore of app data, uninstall key, PATH, shortcuts and phosphor:// handler (md5-verified).
 app-test-windows:
   extends: .windows_job
@@ -986,6 +996,7 @@ app-test-windows:
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   after_script:
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
   artifacts:
     name: appci-windows
     when: always
@@ -1017,6 +1028,7 @@ app-test-linux-wayland-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 app-test-linux-x11-reuse:
   extends: app-test-linux-x11
@@ -1026,6 +1038,7 @@ app-test-linux-x11-reuse:
   after_script:
     - python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
+    - python3 script/ci/results_scrub.py --tree appci-out   # #1516: job artifacts are scrubbed too, not just the committed copy
 
 app-test-macos-reuse:
   extends: app-test-macos
@@ -1036,6 +1049,7 @@ app-test-macos-reuse:
   after_script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
+    - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/results_scrub.py --tree appci-out   # #1516
 
 app-test-windows-reuse:
   extends: app-test-windows
@@ -1047,6 +1061,7 @@ app-test-windows-reuse:
   after_script:
     - .\script\ci\fetch_build.ps1 -Record
     - .\script\realapp\windows\ci\after_job.ps1 -Out appci-out\windows
+    - '$py = Join-Path $env:LOCALAPPDATA "phosphor-ci\python312\python.exe"; if (Test-Path $py) { & $py script\ci\results_scrub.py --tree appci-out } else { Write-Host "results_scrub: VM python missing; artifacts NOT scrubbed" }'   # #1516
 
 # ===========================================================================
 # Release pipeline (ported from .github/workflows/phosphor_release.yml).
@@ -1272,7 +1287,8 @@ release-macos-arm64:
   variables:
     CARGO_BUILD_JOBS: "4"
     GIT_DEPTH: "0"
-    # The runner has no GUI session, so create-dmg's Finder AppleScript fails (-10810).
+    # create-dmg's Finder AppleScript fails (-10810) here (the release job is not run from an Aqua login session), so skip it;
+    # app-test-macos, unlike this job, DOES need an Aqua session.
     PHOSPHOR_DMG_SKIP_JENKINS: "1"
   script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
@@ -1290,8 +1306,9 @@ release-macos-arm64:
       DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
-      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && shasum -a 256 * > ../manifest-macos.txt)
+      script/ci/verify_artifacts.sh macos dist manifest-macos.txt   # #1515: verify BEFORE publishing
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
   artifacts:
     # dist/ is here so a dry run (which does not upload) still yields the installer, as a
     # member-only job artifact.
@@ -1327,8 +1344,9 @@ release-linux-x86_64:
       for f in "$PKG"/*; do
         b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
       done
-      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && sha256sum * > ../manifest-linux.txt)
+      script/ci/verify_artifacts.sh linux dist manifest-linux.txt   # #1515: verify BEFORE publishing
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
   artifacts:
     paths: [manifest-linux.txt, dist/]
     expire_in: 3 days
@@ -1365,10 +1383,12 @@ release-windows-x86_64:
       if (-not $installer -or -not (Test-Path $installer)) { Write-Error "no installer at '$installer'"; exit 1 }
       New-Item -ItemType Directory -Force dist | Out-Null
       Copy-Item $installer "dist\Phosphor-windows-x86_64-Setup.exe"
-      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
-      if ($LASTEXITCODE) { exit $LASTEXITCODE }
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii manifest-windows.txt
       Get-Content manifest-windows.txt
+      .\script\ci\verify_artifacts.ps1 -Dist dist -Sums manifest-windows.txt   # #1515: verify BEFORE publishing
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
   artifacts:
     paths: [manifest-windows.txt, dist/]
     expire_in: 3 days
