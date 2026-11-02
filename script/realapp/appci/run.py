@@ -111,6 +111,9 @@ def self_test():
             assert (not o["ref"]) == (mode == "agent") and (len(o["ft_gaps"]) == 1) == (mode == "agent")
     assert winmap.tier_plan("windows", None, "agent", "gitbash", smoke)[0] is None and winmap.tier_plan("windows", "full", "agent", "gitbash", smoke)[1]["ref"]
     print("fix-tier cases that run per pass (smoke):", {"%s/%s" % k: v for k, v in n.items()})
+    import selftest      # #1522: the offline parser / registry checks
+    if selftest.main():
+        return 1
     print("self-test ok")
     return 0
 

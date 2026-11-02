@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+# appci/selftest.py (#1522): offline harness self-test. Pure Python: no app, display, backend, network or ssh.
+# usage: python3 script/realapp/appci/selftest.py      (also `run.py --self-test`, which runs this after its own checks)
+# Covers the parsers and registries the verdicts hang on: Ctx.lines / stamps / parse_t / key_frame_pairs, the app-log readers (log_view_mode,
+# mode_now's log-first rule, log_since), Profile.commands, routing classification, case-name validation, tier_plan, and the registry
+# consistency checks (SMOKE, winmap, FIX_TIER name only registered cases: a renamed case used to drop out of smoke silently).
+import json, os, subprocess, sys, tempfile, shutil, types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "..", "ci"))
+import cases, winmap, profile  # noqa: E402
+import cases_caseagent as ca  # noqa: E402
+
+CHECKS = []
+
+
+def check(f):
+    CHECKS.append(f)
+    return f
+
+
+def _ctx(tmp, log_path=None):
+    c = types.SimpleNamespace(W=tmp, prof=types.SimpleNamespace(rhome=tmp), log_path=log_path, ocr_calls=0)
+    c.lines = lambda name, remote=False: cases.Ctx.lines(c, name, remote)
+    c.log_view_mode = lambda: cases.Ctx.log_view_mode(c)
+    c.log_size = lambda: cases.Ctx.log_size(c)
+    c.log_since = lambda off: cases.Ctx.log_since(c, off)
+    return c
+
+
+@check
+def registry_consistency():
+    reg = {c["name"] for c in cases.CASES}
+    assert len(reg) == len(cases.CASES), "duplicate case names: %s" % sorted(n for n in reg if [c["name"] for c in cases.CASES].count(n) > 1)
+    assert not [n for n in cases.SMOKE if n not in reg], "SMOKE names no registered case: %s" % [n for n in cases.SMOKE if n not in reg]
+    wm = set(winmap.BOTH) | set(winmap.GITBASH_ONLY) | set(winmap.PS_ONLY) | set(winmap.NOT_WINDOWS)
+    assert not [n for n in wm if n not in reg], "winmap names no registered case: %s" % sorted(n for n in wm if n not in reg)
+    assert not winmap.unclassified(sorted(reg)), "cases with no Windows classification: %s" % winmap.unclassified(sorted(reg))
+    for plat, modes in winmap.FIX_TIER.items():
+        for mode, o in modes.items():
+            assert all(n in cases.SMOKE for n in (o["cases"] or ())), "FIX_TIER %s/%s names a case outside SMOKE" % (plat, mode)
+    for n, spots in winmap.FIX_ONLY_IN.items():
+        assert n in reg
+
+
+@check
+def case_name_validation():
+    import run
+    reg = {"a", "b"}
+    assert run.unknown_case_names("a,b", reg) == [] and run.unknown_case_names("", reg) == [] and run.unknown_case_names("a,c,,d", reg) == ["c", "d"]
+
+
+@check
+def file_readers():
+    d = tempfile.mkdtemp()
+    try:
+        c = _ctx(d)
+        assert c.lines("nope.txt") == []
+        open(os.path.join(d, "f.txt"), "w").write("one\ntwo\n\nthree")
+        assert c.lines("f.txt") == ["one", "two", "", "three"]
+        open(os.path.join(d, "s.txt"), "w").write("1699999999.123456789\n 1699999999123 \n12\nabc\n1700000000123\x00\n")
+        st = cases.stamps(c, "s.txt")
+        assert st == [1699999999.123456789, 1699999999.123, 1700000000.123], st
+        open(os.path.join(d, "p.txt"), "w").write("0:1699999999123\n1:1699999999456\nx\n1:1700000000000\n")
+        assert cases.ps_stamps(c, "p.txt") == {0: 1699999999.123, 1: 1699999999.456}
+    finally:
+        shutil.rmtree(d)
+
+
+@check
+def stamp_and_log_line_parsers():
+    assert cases.parse_t("input_order pty_write n=3 t=1700000000123.5") == 1700000000123.5 and cases.parse_t("no stamp") is None
+    txt = "\n".join([
+        "input_order keydown key=a ctrl=false alt=false shift=false cmd=false t=100.0 seq=1",
+        "input_order keydown key=c ctrl=true alt=false shift=false cmd=false t=101.0 seq=2",
+        "input_order keydown key=b ctrl=false alt=false shift=false cmd=false t=102.0 seq=3",
+        "input_order pty_write n=2",
+        "input_order frame layout=true t=110.0",
+        "input_order frame layout=false t=120.0",
+        "input_order keydown key=z ctrl=false alt=false shift=false cmd=false t=130.0 seq=4"])
+    ds, cnt = cases.key_frame_pairs(txt)
+    assert ds == [10.0, 8.0], ds
+    assert cnt["keydown"] == 4 and cnt["keydown_ctrl"] == 1 and cnt["frame"] == 2 and cnt["pty_write"] == 1, cnt
+
+
+@check
+def app_log_readers():
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "phosphor.log")
+        c = _ctx(d, log)
+        assert c.log_view_mode() is None and c.log_size() == 0 and c.log_since(0) == ""
+        open(log + ".in_session.1", "w").write("x input_order hop=view_mode mode=terminal pane=1\n")
+        open(log + ".in_session.0", "w").write("x input_order hop=view_mode mode=agent pane=1\n")      # N=0 is the newest rotated chunk
+        open(log, "w").write("plain line\n")
+        assert c.log_view_mode() == "agent", "rotated chunks are read oldest first, N=0 newest"
+        open(log, "a").write("y input_order hop=view_mode mode=terminal pane=1\n")
+        assert c.log_view_mode() == "terminal", "the active file is the newest"
+        off = c.log_size()
+        open(log, "a").write("tail\n")
+        assert c.log_since(off) == "tail\n"
+        # mode_now prefers the log; it must not need OCR when the log answers
+        c.ocr = lambda tag: (_ for _ in ()).throw(AssertionError("OCR used although the log has a view_mode line"))
+        assert cases.Ctx.mode_now(c, "t") == "terminal"
+        c.log_path = None
+        c.ocr = lambda tag: "New Phosphor Agent conversation"
+        assert cases.Ctx.mode_now(c, "t") == "agent"
+        c.ocr = lambda tag: "run commands, or ask the agent"
+        assert cases.Ctx.mode_now(c, "t") == "terminal"
+        c.ocr = lambda tag: None
+        assert cases.Ctx.mode_now(c, "t") is None
+    finally:
+        shutil.rmtree(d)
+
+
+@check
+def profile_rec_log():
+    d = tempfile.mkdtemp()
+    try:
+        pr = profile.Profile(d)
+        for dd in (pr.ctl, pr.refctl):
+            os.makedirs(dd)
+        open(os.path.join(pr.ctl, "rec.log"), "w").write("C\t1.5\tls -l\nP\t2.0\nC\t3.5\techo a\tb\nbad line\nC\tx\tno ts\n")
+        got = pr.commands()
+        assert [c for _, c in got][:2] == ["ls -l", "echo a\tb"], got
+        open(os.path.join(pr.refctl, "rec.log"), "w").write("C\t9.0\tref\n")
+        pr.ref_active = True
+        assert [c for _, c in pr.commands()] == ["ref"]
+    finally:
+        shutil.rmtree(d)
+
+
+@check
+def routing_classification():
+    ag = [dict(route="Agent")]
+    sh = [dict(route="Shell")]
+    assert ca.enter_begin_types("input_order hop=enter_begin deferred=false buffer=<9 chars> input_type=AI t=1\ninput_order hop=enter_begin deferred=false buffer=\"a b\" input_type=Shell t=2") == ["AI", "Shell"]
+    assert ca.classify_dest(True, sh, ["Shell"]) == "shell" and ca.classify_dest(True, ag, ["AI"]) == "BOTH"
+    assert ca.classify_dest(False, ag, []) == "agent" and ca.classify_dest(False, [], ["AI"]) == "agent"
+    assert ca.classify_dest(False, [], ["Shell"]) == "lost" and ca.classify_dest(False, sh, ["Shell"]) == "lost", "a swallowed line is not 'went to agent' (#1511)"
+    assert ca.classify_dest(False, [], []) == "unproven"
+    m = ca.ROUTE_RE.search('enter: Agent by prose rule (AgentConversation, head "please", 12 bytes)')
+    assert m and m.group(1) == "Agent" and m.group(3) == "AgentConversation" and m.group(5) == "12"
+
+
+@check
+def tier_plan_shape():
+    assert winmap.tier_plan("windows", None, "terminal", "gitbash", cases.SMOKE)[0] is None
+    names, o = winmap.tier_plan("windows", "smoke", "agent", "powershell", cases.SMOKE)
+    assert names and set(names) <= set(cases.SMOKE) and "key_loss_control" not in names and not o["ref"]
+    names, o = winmap.tier_plan("windows", "smoke", "terminal", "gitbash", cases.SMOKE)
+    assert "key_loss_control" in names and o["ref"]
+
+
+@check
+def report_exit_codes():
+    rep = os.path.join(HERE, "report.py")
+
+    def run_report(rows):
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, "results.jsonl"), "w") as f:
+                for r in rows:
+                    f.write(json.dumps(dict(r, mode="terminal", detail=[], seconds=0)) + "\n")
+            rc = subprocess.run([sys.executable, rep, d, "platform=t"], capture_output=True).returncode
+            assert os.path.exists(os.path.join(d, "results.json")) and os.path.exists(os.path.join(d, "junit.xml"))
+            return rc
+        finally:
+            shutil.rmtree(d)
+    assert run_report([dict(name="a", status="pass")]) == 0
+    assert run_report([dict(name="a", status="pass"), dict(name="b", status="skip")]) == 0
+    assert run_report([dict(name="a", status="fail")]) == 1
+    assert run_report([]) == 1, "an empty run must not be green (#1508)"
+    assert run_report([dict(name="a", status="skip")]) == 1, "an all-skip run must not be green (#1508)"
+    assert run_report([dict(name="a", status="noref")]) == 0
+
+
+@check
+def ci_seq_verdicts():
+    import ci_seq
+    assert ci_seq.judged_nothing({}) and ci_seq.judged_nothing({"summary": {"skip": 4}}) and not ci_seq.judged_nothing({"summary": {"pass": 1}})
+    assert ci_seq.verdict("app-test-macos", "success") == "PASS" and ci_seq.verdict("app-test-macos", "failed") == "FAIL"
+    assert ci_seq.verdict("app-test-macos", "success but its run judged NOTHING") == "FAIL"
+
+
+@check
+def injector_failures_are_errors():
+    import backend
+    assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])
+    try:
+        backend._run([sys.executable, "-c", "pass"])
+    except Exception:
+        raise AssertionError("a non-injector command must not be treated as one")
+    try:
+        old = backend.is_injector
+        backend.is_injector = lambda argv: True
+        backend._run([sys.executable, "-c", "import sys; sys.exit(3)"])
+        raise AssertionError("a failing injector returned normally")
+    except RuntimeError as e:
+        assert "exit 3" in str(e)
+    finally:
+        backend.is_injector = old
+
+
+def main():
+    failed = 0
+    for f in CHECKS:
+        try:
+            f()
+            print("ok   %s" % f.__name__)
+        except Exception as e:
+            failed += 1
+            print("FAIL %s: %s: %s" % (f.__name__, type(e).__name__, e))
+    print("selftest: %d checks, %d failed" % (len(CHECKS), failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
