@@ -1,0 +1,507 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "fdece35d",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-01T21:23:40-0600",
+ "summary": {
+  "pass": 8,
+  "fail": 13,
+  "skip": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 3.8,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.83,
+     "p95": 21.87,
+     "max": 29.94
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 59.2,
+   "detail": [
+    "Phosphor lost keys the reference keeps with the SAME injection (perline): Phosphor 5/12 bad lines (first char lost 0), Terminal.app (.command via open) 0/12 -- a Phosphor-side drop (#1414)",
+    "harness default injection (per-line) still loses lines in Phosphor: {'lost_first': 0, 'other_bad': 4, 'missing': 1}",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 4, missing 1",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 4,
+       "missing": 1
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "Terminal.app (.command via open)"
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control_FAIL.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 131.2,
+   "detail": [
+    "ft0: file has 29/30 lines, exact match False first diff: exp='t52_50hnynsgbh' got='t52_50hnynsgbh t53_8sie6xt16w'",
+    "ft0: shell received 29 commands, not the typed ones (first mismatch: 'echo t52_50hnynsgbh >> r_ft0.txtecho t53_8sie6xt16w >> r_ft0.txt')",
+    "ft25: file has 29/30 lines, exact match False first diff: exp='t76_f646xguci8' got='t76_f646xguci8 t77_2iz2b7rfqu'",
+    "ft25: shell received 29 commands, not the typed ones (first mismatch: 'echo t76_f646xguci8 >> r_ft25.txtecho t77_2iz2b7rfqu >> r_ft25.txt')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 22.4,
+   "detail": [
+    "paste + instant Enter: 2/6 md5 lines exact"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 22.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 203.8,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-C: 209.78 ms over the harness floor exceeds the 20 ms budget",
+    "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')",
+    "APP DIED: pid 95444 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists",
+    "Ctrl-C: n=29 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 29,
+     "p50": 231.57,
+     "p95": 241.19,
+     "max": 243.97
+    },
+    "harness_floor_ms": 21.792,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 29,
+       "p50": 231.57,
+       "p95": 241.19,
+       "max": 243.97
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "absolute",
+      "floor_ms": 21.792166866362095,
+      "notes": [
+       "n=29 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 209.78,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 385.2,
+   "detail": [
+    "remote shell received 0/12 typed-ahead commands exactly (missing 12)"
+   ],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 206.3,
+   "detail": [
+    "only 0/30 Enter timings captured"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 21.792,
+    "reference_enter_to_start_ms": {
+     "n": 28,
+     "p50": 188.09,
+     "p95": 197.17,
+     "max": 200.67
+    },
+    "reference": "Terminal.app (.command via open)"
+   },
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 24.0,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1684 input_order keydown lines (1684 with ctrl=false) and 16 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 30.4,
+   "detail": [
+    "only 0 key->paint samples from kl3 (capture region or Screen Recording permission wrong)"
+   ],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_paint_FAIL.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 3.9,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.49,
+     "p95": 21.21,
+     "max": 22.83
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 63.0,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 22.3,
+   "detail": [
+    "paste + instant Enter: 2/6 md5 lines exact"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 22.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 268.4,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-C: 223.25 ms over the harness floor exceeds the 20 ms budget",
+    "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')",
+    "APP DIED: pid 3379 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists",
+    "Ctrl-C: n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 25,
+     "p50": 233.83,
+     "p95": 243.82,
+     "max": 246.43
+    },
+    "harness_floor_ms": 10.578,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 25,
+       "p50": 233.83,
+       "p95": 243.82,
+       "max": 246.43
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "absolute",
+      "floor_ms": 10.577583918347955,
+      "notes": [
+       "n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 223.25,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 33.1,
+   "detail": [
+    "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')",
+    "APP DIED: pid 6912 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists"
+   ],
+   "metrics": {},
+   "shots": [
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 112.6,
+   "detail": [
+    "Enter to command start: Phosphor overhead 8.48 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "Enter to command start: n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 25,
+     "p50": 197.62,
+     "p95": 209.36,
+     "max": 226.79
+    },
+    "harness_floor_ms": 10.578,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 189.14,
+     "p95": 199.38,
+     "max": 211.46
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 25,
+       "p50": 197.62,
+       "p95": 209.36,
+       "max": 226.79
+      },
+      "reference": {
+       "n": 30,
+       "p50": 189.14,
+       "p95": 199.38,
+       "max": 211.46
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 10.577583918347955,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+       "n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 8.48,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 23.7,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 1207 input_order keydown lines (1207 with ctrl=false) and 63 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 30.3,
+   "detail": [],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 34.47,
+     "p95": 43.47,
+     "max": 108.41
+    }
+   },
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  }
+ ],
+ "reused_build": {
+  "job_id": 17651299171,
+  "job_name": "build-macos-arm64",
+  "pipeline_id": "3015898559",
+  "commit": "85b18aaddbdb4f7a9ea84b6ee9f166533a806a6f",
+  "this_pipeline": "3015931911",
+  "this_commit": "fdece35d33d9ad5a487c6d74b4d928aaf5cce3db",
+  "fetched": "local cache (/Users/<user>/.cache/phosphor-ci/builds/macos/17651299171)"
+ }
+}

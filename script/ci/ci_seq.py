@@ -14,9 +14,10 @@
 #   candidate (~3 h)   check-linux; all three test suites unfiltered; all three builds; the FULL app matrix everywhere.
 #   release   (~8 h)   candidate + test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core.
 #
+# After the run it prints the collect+commit command, or with --collect runs script/ci/collect_results.py itself (test-results/ archive).
 # Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
 # Per-job variables (TEST_FILTER, APPCI_TIER) go through the play API's job_variables_attributes.
-import argparse, json, re, subprocess, sys, threading, time
+import argparse, json, os, re, subprocess, sys, threading, time
 
 PROJECT = "88085499"
 LINUX, MAC, WIN = "linux", "macos", "windows"
@@ -236,6 +237,7 @@ def main():
     ap.add_argument("--base", default="")
     ap.add_argument("--skip", nargs="*", default=[])
     ap.add_argument("--no-reuse", action="store_true", help="fix tier: always build, never reuse an earlier app-identical build")
+    ap.add_argument("--collect", action="store_true", help="at the end run script/ci/collect_results.py for this pipeline (writes test-results/; you commit it)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
     a = ap.parse_args()
     ref, tier = a.ref, a.tier
@@ -311,7 +313,7 @@ def main():
     print("pipeline", pid, "tier", tier, flush=True)
     s = wait("check-linux"); print("check-linux", s, flush=True)
     if s != "success":
-        summary(timeline, t_start); return 1
+        summary(timeline, t_start); collect_hint(pid, a.collect); return 1
 
     # builds first (they are the long pole: macos ~21 min, windows ~38 min), tests alongside on the box
     builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP and p not in reuse]
@@ -364,7 +366,20 @@ def main():
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
     summary(timeline, t_start)
+    collect_hint(pid, a.collect)
     return 0 if all(v[0] == "success" for k, v in timeline.items() if not k.startswith(("app-test", "bench", "mutants", "fuzz"))) else 1
+
+
+def collect_hint(pid, auto):
+    """Every tier run ends by archiving its results (owner rule: every test result is kept in the repo). CI never pushes: the coordinator commits."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    cmd = "python3 script/ci/collect_results.py %d && git add test-results && git commit -m 'test-results: pipeline %d'" % (pid, pid)
+    if auto:
+        print("\ncollecting results for pipeline %d ..." % pid, flush=True)
+        subprocess.run([sys.executable, os.path.join(here, "collect_results.py"), str(pid)])
+        print("now commit them:  git add test-results && git commit -m 'test-results: pipeline %d'" % pid, flush=True)
+    else:
+        print("\nto archive these results (the coordinator commits; CI never pushes):\n  " + cmd, flush=True)
 
 
 def summary(timeline, t0):

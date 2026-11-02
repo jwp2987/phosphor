@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# script/check_test_results: guard for the test-results/ archive (script/ci/collect_results.py; docs/testing.md "Test results history").
+# Fails when (1) one run directory exceeds 10 MB, (2) a text file contains something that looks like a secret or an endpoint
+# (script/ci/results_scrub.py: non-loopback IPv4 addresses, tokens, private keys, credentials in URLs, and - on a machine that has
+# them - the values of APPCI_OLLAMA_URL / PHOSPHOR_*_SSH / PHOSPHOR_BOX_HOST), (3) a run directory lacks manifest.json.
+# Warns above 5 MB. Wired into script/precheck and the CI guards job.
+import glob, os, sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+root = os.path.dirname(here)
+sys.path.insert(0, os.path.join(here, "ci"))
+import results_scrub
+
+FAIL_BYTES, WARN_BYTES = 10 * 1024 * 1024, 5 * 1024 * 1024
+BIN = (".png", ".jpg", ".jpeg", ".gif")
+bad = 0
+for d in sorted(glob.glob(os.path.join(root, "test-results", "*", ""))):
+    name = os.path.basename(os.path.dirname(d))
+    files = [os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs]
+    size = sum(os.path.getsize(f) for f in files)
+    if size > FAIL_BYTES:
+        print("FAIL %s is %.1f MB (limit 10 MB): drop screenshots / large files" % (name, size / 1e6)); bad += 1
+    elif size > WARN_BYTES:
+        print("warn %s is %.1f MB (soft limit 5 MB)" % (name, size / 1e6))
+    if not os.path.exists(os.path.join(d, "manifest.json")):
+        print("FAIL %s has no manifest.json" % name); bad += 1
+    for f in files:
+        if f.lower().endswith(BIN):
+            continue
+        for kind, snip in results_scrub.find_leaks(open(f, errors="replace").read()):
+            print("FAIL %s: %s (%s)" % (os.path.relpath(f, root), kind, snip)); bad += 1
+            break
+if bad:
+    print("check_test_results: %d problem(s); re-run collect_results.py (it scrubs) or remove the offending files" % bad)
+    sys.exit(1)
+print("check_test_results: ok")

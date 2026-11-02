@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="20" failures="16" skipped="2">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="cadence" time="20.70">
+<failure message="ts_reader produced no output (python3 missing or app did not run it)">ts_reader produced no output (python3 missing or app did not run it)</failure>
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="124.90">
+<failure message="ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None">ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None
+ft0: shell received 30 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng &gt;&gt; r_ft0.txt')
+ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None
+ft25: shell received 30 commands, not the typed ones (first mismatch: 'cho t31_wql8ntmpxf &gt;&gt; r_ft25.txt')</failure>
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="21.20">
+<failure message="paste + instant Enter: 0/6 md5 lines exact">paste + instant Enter: 0/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="26.50">
+<failure message="Tab+Enter: completed file has 0/12 expected lines">Tab+Enter: completed file has 0/12 expected lines</failure>
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="261.00">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-D in cat: file []
+Ctrl-D leaves the nested shell: SHLVL lines []</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="379.50">
+<failure message="remote shell received 0/12 typed-ahead commands exactly (missing 12)">remote shell received 0/12 typed-ahead commands exactly (missing 12)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="128.40">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured
+no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="12.70">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/">only 0 key-&gt;frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="agent" name="cadence" time="20.70">
+<failure message="ts_reader produced no output (python3 missing or app did not run it)">ts_reader produced no output (python3 missing or app did not run it)</failure>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="125.30">
+<failure message="ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None">ft0: file has 0/30 lines, exact match False first diff: exp='t1_ieqh524yng' got=None
+ft0: shell received 12 commands, not the typed ones (first mismatch: 'bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghcho t1_ieqh524yng &gt;&gt; r_ft0.txt')
+ft25: file has 0/30 lines, exact match False first diff: exp='t31_wql8ntmpxf' got=None
+ft25: shell received 14 commands, not the typed ones (first mismatch: 'cho t32_f2fvoytcul &gt;&gt; r_ft25.txt')</failure>
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="21.10">
+<failure message="paste + instant Enter: 0/6 md5 lines exact">paste + instant Enter: 0/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="26.50">
+<failure message="Tab+Enter: completed file has 0/12 expected lines">Tab+Enter: completed file has 0/12 expected lines</failure>
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="260.40">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-D in cat: file []
+Ctrl-D leaves the nested shell: SHLVL lines []</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="379.50">
+<failure message="remote shell received 0/12 typed-ahead commands exactly (missing 12)">remote shell received 0/12 typed-ahead commands exactly (missing 12)</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="128.40">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured
+no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="12.70">
+<failure message="only 0 key-&gt;frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/">only 0 key-&gt;frame pairs in the app log (expected ~60); input_order logging not on or the log path is wrong (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log)</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only"/>
+</testcase>
+</testsuite>

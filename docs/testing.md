@@ -896,3 +896,45 @@ comparison.
   bootstrap equivalence scripts, which skip when the shell is absent.
 - Authenticated ssh from the Windows VM, and agent-mode tests against a cloud provider, are not covered.
 - The "being added" tools in 2.7 are unverified until merged.
+
+## 8. Test results history
+
+Owner rule (2026-11-02): every test result is kept in the repo for regression review. `test-results/` is that archive; it is
+append-only history, **retained forever** (it is small by design, see the size rules).
+
+**Collect.** After a tier run, `python3 script/ci/collect_results.py <pipeline_id | build/ref> [--out test-results]` pulls every
+finished job of that pipeline through `glab api`: the nextest jobs (Summary line, every FAIL/TIMEOUT/SIGSEGV with test names, the
+known-failure notes, duration), `check-linux` (compile ok/fail, warnings by crate and kind), the guard jobs, bench/fuzz/mutants/shuttle
+numbers when they ran, and the `app-test-*` / `*-reuse` artifacts (`results.json`, `summary.md`, `junit.xml`, `reused_build.json`,
+latency tables, soak CSVs). `script/ci/ci_seq.py` ends every run by printing the exact collect-and-commit command; `--collect` runs
+it for you. CI never pushes: the coordinator commits (`git add test-results && git commit`). Re-running for the same pipeline
+replaces only that run's directory, so collect again once a still-running pipeline finishes.
+
+**Layout.**
+
+    test-results/INDEX.md                          one row per run + "vs previous run" sections (generated)
+    test-results/<date>_<ref>_<pipeline>/
+        manifest.json                              pipeline, commit, ref, tier, per-job status/duration/runner, reuse info, all app cases
+        README.md                                  human summary + diff against earlier runs (generated from the manifests)
+        unit/<job>.json                            nextest summary + failures; check-linux.json; guards; bench/fuzz/mutants numbers
+        app/<platform>/                            results.json, summary.md, junit.xml, reused_build.json, latency/soak files,
+                                                   shots/ (FAILING cases only, JPEG <= 1280 px wide; skipped with a note if PIL is missing)
+
+Where a platform job dies before writing `results.json` (Windows when `report.py` never runs) the case table is rebuilt from the job trace
+and the manifest says `from_trace`.
+
+**Read INDEX.md.** Columns: date, ref, commit, tier (inferred from which jobs ran), compile (`check-linux`, warning count), unit
+pass/fail/skip (summed over the nextest suites that ran), app pass/fail/skip per platform, headline latency medians with overhead against
+the owner budget (`t:` terminal mode, `a:` agent mode), soak verdict. The "vs previous run" sections list NEW failures, FIXED failures
+and latency regressions (> 5 % and > 0.5 ms on the Phosphor median, the `appci/lat.py` rule). Each unit job and each app platform is
+compared with the most recent EARLIER run that has that same job/platform, not just the previous row, so a Mac-only reuse run does not
+"fix" the Linux failures. A fix-tier run that executed fewer tests than its baseline never reports FIXED for the tests it did not run.
+
+**Size and privacy rules.** App logs are never copied wholesale (only the failure excerpts inside `results.json`); screenshots only for
+failing cases, max 12 per platform. A run directory over 5 MB drops its screenshots; `script/check_test_results` (in `script/precheck`
+and the CI `guards` job) fails above 10 MB per run and on anything that looks like an endpoint or secret. The collector scrubs
+(`script/ci/results_scrub.py`) the values of `APPCI_OLLAMA_URL`, `PHOSPHOR_BOX_HOST/SSH`, `PHOSPHOR_MAC_SSH`, `PHOSPHOR_WIN_SSH`, `WINUSER`
+(from the environment, `~/.config/phosphor-ci/ci.env` and `~/.config/phosphor-realapp.sh`), every non-loopback IPv4 address, home
+directory user names, and token/key patterns, so collect on a machine that has that config. Archive files are text except the JPEGs
+(`.gitattributes` marks `test-results/**/*.png` and `*.jpg` binary).
+

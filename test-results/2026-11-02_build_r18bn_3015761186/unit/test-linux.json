@@ -1,0 +1,71 @@
+{
+ "summary_line": "Summary [ 213.199s] 10388 tests run: 10381 passed (1 slow), 7 failed, 29 skipped",
+ "duration_s": 213.199,
+ "run": 10388,
+ "passed": 10381,
+ "failed": 7,
+ "timed_out": 0,
+ "skipped": 29,
+ "slow": 1,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "code::editor::view::vim_handler::tests::test_vim_system_register_paste_holds_the_rest_of_the_same_input",
+   "seconds": 0.067
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "code::editor::view::vim_handler::tests::test_vim_system_register_visual_paste_waits_for_the_read",
+   "seconds": 10.932
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::terminal_model::tests::line_editor_markers_update_the_handoffs_account_in_stream_order",
+   "seconds": 0.023
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::model::typeahead_handoff::tests::a_signal_with_no_wait_pending_releases_nothing",
+   "seconds": 0.018
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::a_user_key_does_not_wait_for_the_parser",
+   "seconds": 3.126
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line",
+   "seconds": 0.481
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::test_after_enter_replay_drains_in_typed_order",
+   "seconds": 0.226
+  }
+ ],
+ "regressions": [
+  "code::editor::view::vim_handler::tests::test_vim_system_register_paste_holds_the_rest_of_the_same_input",
+  "code::editor::view::vim_handler::tests::test_vim_system_register_visual_paste_waits_for_the_read",
+  "terminal::model::terminal_model::tests::line_editor_markers_update_the_handoffs_account_in_stream_order",
+  "terminal::model::typeahead_handoff::tests::a_signal_with_no_wait_pending_releases_nothing",
+  "terminal::view::tests::a_user_key_does_not_wait_for_the_parser",
+  "terminal::view::tests::ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line",
+  "terminal::view::tests::test_after_enter_replay_drains_in_typed_order"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 697.728841
+}
