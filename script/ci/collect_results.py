@@ -8,7 +8,7 @@
 # rebuilds <out>/INDEX.md. Idempotent: re-running for a pipeline replaces that run's directory only (a still-running pipeline can be
 # collected again once more of it has finished). Every README and INDEX.md is a pure function of the manifests, so they are
 # regenerated for all runs each time. Needs glab authenticated ('glab api user'). Privacy: results_scrub.py; size: <= 5 MB per run
-# (screenshots dropped first), script/check_test_results fails at 10 MB.
+# script/check_test_results fails at 10 MB. Screenshots are never copied (public repo).
 import argparse, glob, io, json, os, re, shutil, subprocess, sys, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +21,7 @@ except Exception:
     appci_lat = None
 
 PROJECT = "88085499"
-WARN_BYTES, MAX_SHOTS_PER_PLATFORM, SHOT_WIDTH = 5 * 1024 * 1024, 12, 1280
+WARN_BYTES = 5 * 1024 * 1024
 UNIT_JOBS = ("test-linux", "test-warpui-core", "test-workspace-rest", "integration-linux", "test-shuttle-loom")
 NUMBERS_JOBS = ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core")
 GUARD_JOBS = ("guards", "advisories", "licenses")
@@ -135,18 +135,6 @@ def parse_guards(lines, status):
 
 
 # ---- app-test artifacts -------------------------------------------------------------------------------------------------------
-def shrink(data, dst):
-    """downscale a screenshot to <= SHOT_WIDTH px wide JPEG; False when PIL is unavailable"""
-    try:
-        from PIL import Image
-    except ImportError:
-        return False
-    im = Image.open(io.BytesIO(data)).convert("RGB")
-    if im.width > SHOT_WIDTH:
-        im = im.resize((SHOT_WIDTH, round(im.height * SHOT_WIDTH / im.width)))
-    im.save(dst, "JPEG", quality=55, optimize=True)
-    return True
-
 
 def lat_summary(metrics):
     out = {}
@@ -228,26 +216,9 @@ def collect_app(job, dest_root, notes):
                 pass
             open(tp, "w").write(text)
             info["files"].append(os.path.relpath(tp, dest_root))
-        # screenshots: failing cases only, downscaled
-        shots, skipped = 0, 0
-        for c, s in fail_shots:
-            n = base + "run/" + s
-            if n not in names:
-                continue
-            if shots >= MAX_SHOTS_PER_PLATFORM:
-                skipped += 1
-                continue
-            sp = os.path.join(pd, "shots", os.path.splitext(os.path.basename(s))[0] + ".jpg")
-            os.makedirs(os.path.dirname(sp), exist_ok=True)
-            if shrink(z.read(n), sp):
-                shots += 1
-                info["files"].append(os.path.relpath(sp, dest_root))
-            else:
-                skipped += 1
-                notes.append("%s: screenshots skipped (PIL not installed)" % plat) if skipped == 1 else None
-        if skipped:
-            info["screenshots_skipped"] = skipped
-        info["screenshots_kept"] = shots
+        # Screenshots are NEVER stored in the repo (owner 2026-11-02: no screenshots in a public repo).
+        # Failing cases keep a pointer to the CI job artifact that holds them (7-day expiry).
+        info["screenshots_in_ci_artifacts"] = [s for _, s in fail_shots]
         out[plat] = info
     return out
 
@@ -516,13 +487,10 @@ def main():
         except Exception as e:                                # one broken job must not lose the rest of the run
             man["jobs"][n]["note"] = "collect error: %s" % str(e)[:120]
             man["notes"].append("%s: %s" % (n, str(e)[:200]))
-    # shrink to the size cap: screenshots first
     size = dir_size(d)
     if size > WARN_BYTES:
-        man["notes"].append("run dir was %.1f MB (> 5 MB): screenshots dropped" % (size / 1e6))
-        print("WARNING: %s is %.1f MB, dropping screenshots" % (d, size / 1e6), file=sys.stderr)
-        for s in glob.glob(os.path.join(d, "app", "*", "shots")):
-            shutil.rmtree(s)
+        man["notes"].append("run dir is %.1f MB (> 5 MB soft limit)" % (size / 1e6))
+        print("WARNING: %s is %.1f MB" % (d, size / 1e6), file=sys.stderr)
     man = json.loads(results_scrub.scrub(json.dumps(man)))
     json.dump(man, open(os.path.join(d, "manifest.json"), "w"), indent=1)
     rebuild(a.out)

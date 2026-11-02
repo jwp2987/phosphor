@@ -975,8 +975,9 @@ and latency regressions (> 5 % and > 0.5 ms on the Phosphor median, the `appci/l
 compared with the most recent EARLIER run that has that same job/platform, not just the previous row, so a Mac-only reuse run does not
 "fix" the Linux failures. A fix-tier run that executed fewer tests than its baseline never reports FIXED for the tests it did not run.
 
-**Size and privacy rules.** App logs are never copied wholesale (only the failure excerpts inside `results.json`); screenshots only for
-failing cases, max 12 per platform. A run directory over 5 MB drops its screenshots; `script/check_test_results` (in `script/precheck`
+**Size and privacy rules.** App logs are never copied wholesale (only the failure excerpts inside `results.json`); **no screenshots or other images, ever**
+(the repo is public; owner 2026-11-02): failing cases list their screenshot names, which live in the CI job artifacts (7 days).
+A run directory over 5 MB is flagged; `script/check_test_results` (in `script/precheck`
 and the CI `guards` job) fails above 10 MB per run and on anything that looks like an endpoint or secret. The collector scrubs
 (`script/ci/results_scrub.py`) the values of `APPCI_OLLAMA_URL`, `PHOSPHOR_BOX_HOST/SSH`, `PHOSPHOR_MAC_SSH`, `PHOSPHOR_WIN_SSH`, `WINUSER`
 (from the environment, `~/.config/phosphor-ci/ci.env` and `~/.config/phosphor-realapp.sh`), every non-loopback IPv4 address, home

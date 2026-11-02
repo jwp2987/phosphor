@@ -19,13 +19,15 @@ for d in sorted(glob.glob(os.path.join(root, "test-results", "*", ""))):
     files = [os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs]
     size = sum(os.path.getsize(f) for f in files)
     if size > FAIL_BYTES:
-        print("FAIL %s is %.1f MB (limit 10 MB): drop screenshots / large files" % (name, size / 1e6)); bad += 1
+        print("FAIL %s is %.1f MB (limit 10 MB): drop large files" % (name, size / 1e6)); bad += 1
     elif size > WARN_BYTES:
         print("warn %s is %.1f MB (soft limit 5 MB)" % (name, size / 1e6))
     if not os.path.exists(os.path.join(d, "manifest.json")):
         print("FAIL %s has no manifest.json" % name); bad += 1
     for f in files:
-        if f.lower().endswith(BIN):
+        if f.lower().endswith(BIN + (".webp", ".bmp", ".tif", ".tiff", ".mp4", ".mov")):
+            # owner 2026-11-02: no screenshots/images in the (public) repo; they stay in CI artifacts
+            print("FAIL %s: image/video files are not allowed in test-results/" % os.path.relpath(f, root)); bad += 1
             continue
         for kind, snip in results_scrub.find_leaks(open(f, errors="replace").read()):
             print("FAIL %s: %s (%s)" % (os.path.relpath(f, root), kind, snip)); bad += 1

@@ -61,5 +61,3 @@ crates/persistence/migrations/2026-05-04-120000_add_ssh_manager_tables/** merge=
 crates/persistence/migrations/2026-05-04-130000_add_ssh_nodes_is_collapsed/** merge=openwarp-ours
 
 # test-results/ archive (script/ci/collect_results.py): failing-case screenshots are binary.
-test-results/**/*.png binary
-test-results/**/*.jpg binary
