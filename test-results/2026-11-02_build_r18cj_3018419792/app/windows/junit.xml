@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="68" failures="25" skipped="19">
+<testcase classname="terminal" name="mode_proof" time="1.10">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.00">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="0.00">
+<skipped message="not run in the PowerShell pane: compares the typed line with the shell's own rec.log; a PowerShell pane has no rc hook (the app starts it with -NoProfile): runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="98.40">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="52.40">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="18.30">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="520.30">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: Phosphor overhead 47.23 ms over conhost (powershell.exe) exceeds the 20 ms budget
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3575.29 ms includes the input-tool spawn (harness floor 0.34119997872039676 ms)
+Ctrl-C: n=8 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T140_mfejdb never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T140_mfejdb never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="21.90">
+<failure message="ssh_enter_then_immediate_command: T141_zy0ii8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_enter_then_immediate_command: T141_zy0ii8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="32.90">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T142_8epyis never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="219.60">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="0.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="20.60">
+<failure message="ts_reader produced no output (python3 missing or app did not run it)">ts_reader produced no output (python3 missing or app did not run it)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="117.70">
+<failure message="ft0: file has 28/30 lines, exact match False first diff: exp='t92_t2ti62i9kq' got='t94_r3rx4vy3h4' [first bad line 6: injector call #648 posted its ENTER at 07:44:32.212]">ft0: file has 28/30 lines, exact match False first diff: exp='t92_t2ti62i9kq' got='t94_r3rx4vy3h4' [first bad line 6: injector call #648 posted its ENTER at 07:44:32.212]
+ft0: shell received 30 commands, not the typed ones (first mismatch: '_echo t92_t2ti62i9kq &gt;&gt; r_ft0.txt')
+ft25: file has 29/30 lines, exact match False first diff: exp='t140_ddukigh1pn' got='t141_hny7iqahmy' [first bad line 24: injector call #696 posted its ENTER at 07:45:45.482]
+ft25: shell received 30 commands, not the typed ones (first mismatch: 'oech t140_ddukigh1pn &gt;&gt; r_ft25.txt')</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="10.60">
+<failure message="paste + instant Enter: 0/6 md5 lines exact">paste + instant Enter: 0/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="14.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="176.00">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 84.01 ms includes the input-tool spawn (harness floor 0.16850000247359276 ms)
+Ctrl-C: n=29 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T164_3mdx3v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T164_3mdx3v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="21.80">
+<failure message="ssh_enter_then_immediate_command: T165_woaa5c never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_enter_then_immediate_command: T165_woaa5c never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="32.90">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T166_kq9cao never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="74.00">
+<failure message="Enter to command start: Phosphor overhead 30.78 ms over conhost (bash) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 30.78 ms over conhost (bash) exceeds the 2 ms budget
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=28 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="12.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.50">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.50">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="51.50">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="520.60">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3615.68 ms includes the input-tool spawn (harness floor 0.1705000177025795 ms)
+Ctrl-C: n=8 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="21.80">
+<failure message="ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="32.90">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T82_c2iz2b never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="218.90">
+<failure message="only 0/30 Enter timings captured">only 0/30 Enter timings captured</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="agent" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="cadence" time="6.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="116.20">
+<failure message="ft0: file has 18/30 lines, exact match False first diff: exp='t2_5by1a2rogu' got='t14_q7krs3u54h' [first bad line 0: injector call #1612 posted its ENTER at 08:08:13.342]">ft0: file has 18/30 lines, exact match False first diff: exp='t2_5by1a2rogu' got='t14_q7krs3u54h' [first bad line 0: injector call #1612 posted its ENTER at 08:08:13.342]
+ft0: shell received 31 commands, not the typed ones (first mismatch: '"C:/Users/<user>/AppData/Local/phosphor-ci/python312/python.exe" "C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/script/realapp/appci/ts_reader.py" cad.txt 60')
+ft25: file has 29/30 lines, exact match False first diff: exp='t54_7ay1zve5ps' got='t55_0jzrleawq0' [first bad line 22: injector call #1664 posted its ENTER at 08:09:26.250]
+ft25: shell received 30 commands, not the typed ones (first mismatch: '7echo t54_ay1zve5ps &gt;&gt; r_ft25.txt')</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="7.40">
+<failure message="paste + instant Enter: 0/6 md5 lines exact">paste + instant Enter: 0/6 md5 lines exact</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="14.60">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="175.30">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 80.17 ms includes the input-tool spawn (harness floor 0.12290000449866056 ms)
+Ctrl-C: n=26 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="21.80">
+<failure message="ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="32.90">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T82_c2iz2b never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_enter" time="70.90">
+<failure message="Enter to command start: Phosphor overhead 25.88 ms over conhost (bash) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 25.88 ms over conhost (bash) exceeds the 2 ms budget
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=29 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="latency_key_log" time="11.70">
+</testcase>
+<testcase classname="agent@gitbash" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent@gitbash" name="shell_fish" time="0.50">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="agent@gitbash" name="shell_nu" time="0.50">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="agent@gitbash" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+</testsuite>

@@ -1,0 +1,1581 @@
+﻿{
+    "meta":  {
+                 "platform":  "windows",
+                 "backend":  "windows",
+                 "app_display":  "wayland",
+                 "seed":  "1",
+                 "commit":  "48cabece",
+                 "owner_settings":  "sha256 a0613b641a27"
+             },
+    "generated":  "2026-11-02T08:16:08-0800",
+    "summary":  {
+                    "pass":  24,
+                    "fail":  25,
+                    "skip":  19
+                },
+    "cases":  [
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  1.1,
+                      "detail":  [
+                                     "no OCR engine: screenshot only (shots/terminal_proof_prekey.png), mode not machine-verified"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_mode_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via SendInput vk"
+                                 ],
+                      "metrics":  {
+                                      "method":  "vk"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "cadence",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  6.0,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+                                      "gap_ms":  {
+                                                     "n":  59,
+                                                     "p50":  15.98,
+                                                     "p95":  16.91,
+                                                     "max":  19.77
+                                                 }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_cadence.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_loss_control",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: compares the typed line with the shell\u0027s own rec.log; a PowerShell pane has no rc hook (the app starts it with -NoProfile): runs in the Git Bash pane"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "enter_loss_control",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  98.4,
+                      "detail":  [
+                                     "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters",
+                                     "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), injector posted 30 Enters",
+                                     "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as \u0027injector/OS lost Enter (reference too)\u0027, not an app bug"
+                                 ],
+                      "metrics":  {
+                                      "enter_control":  {
+                                                            "reference":  "conhost (powershell.exe)",
+                                                            "runs":  {
+                                                                         "0.0":  {
+                                                                                     "ref":  "conhost (powershell.exe)",
+                                                                                     "n":  30,
+                                                                                     "bad":  0,
+                                                                                     "posted":  30,
+                                                                                     "lines":  30
+                                                                                 },
+                                                                         "0.25":  {
+                                                                                      "ref":  "conhost (powershell.exe)",
+                                                                                      "n":  30,
+                                                                                      "bad":  1,
+                                                                                      "posted":  30,
+                                                                                      "lines":  29
+                                                                                  }
+                                                                     }
+                                                        }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_enter_loss_control.png"
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  52.4,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_fast_typing.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  5.3,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_paste_instant_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "tab_enter",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  18.3,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_tab_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c_d",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  520.3,
+                      "detail":  [
+                                     "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+                                     "Ctrl-C: Phosphor overhead 47.23 ms over conhost (powershell.exe) exceeds the 20 ms budget",
+                                     "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3575.29 ms includes the input-tool spawn (harness floor 0.34119997872039676 ms)",
+                                     "Ctrl-C: n=8 \u003c 30 samples (smoke/scaled run): numbers are indicative only",
+                                     "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+                                 ],
+                      "metrics":  {
+                                      "ctrl_c_ms":  {
+                                                        "n":  8,
+                                                        "p50":  3575.29,
+                                                        "p95":  3627.4,
+                                                        "max":  3627.4
+                                                    },
+                                      "harness_floor_ms":  0.341,
+                                      "reference_ctrl_c_ms":  {
+                                                                  "n":  2,
+                                                                  "p50":  3528.06,
+                                                                  "p95":  3547.95,
+                                                                  "max":  3547.95
+                                                              },
+                                      "reference":  "conhost (powershell.exe)",
+                                      "lat":  {
+                                                  "ctrl_c":  {
+                                                                 "phosphor":  {
+                                                                                  "n":  8,
+                                                                                  "p50":  3575.29,
+                                                                                  "p95":  3627.4,
+                                                                                  "max":  3627.4
+                                                                              },
+                                                                 "reference":  {
+                                                                                   "n":  2,
+                                                                                   "p50":  3528.06,
+                                                                                   "p95":  3547.95,
+                                                                                   "max":  3547.95
+                                                                               },
+                                                                 "reference_name":  "conhost (powershell.exe)",
+                                                                 "budget_ms":  20.0,
+                                                                 "budget_kind":  "overhead",
+                                                                 "floor_ms":  0.34119997872039676,
+                                                                 "notes":  [
+                                                                               "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3575.29 ms includes the input-tool spawn (harness floor 0.34119997872039676 ms)",
+                                                                               "n=8 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                           ],
+                                                                 "overhead_ms":  47.23,
+                                                                 "budget_verdict":  "fail",
+                                                                 "prev":  null,
+                                                                 "baseline":  {
+                                                                                  "status":  "pending"
+                                                                              },
+                                                                 "prev_verdict":  "none",
+                                                                 "baseline_verdict":  "pending",
+                                                                 "verdict":  "fail"
+                                                             }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_ctrl_c_d_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_connect_typing",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  21.9,
+                      "detail":  [
+                                     "ssh_connect_typing (gap 0.0 s): T140_mfejdb never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+                                 ],
+                      "metrics":  {
+                                      "trials":  1
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_ssh_connect_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_enter_then_immediate_command",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  21.9,
+                      "detail":  [
+                                     "ssh_enter_then_immediate_command: T141_zy0ii8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 immediately-typed commands exactly: []"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_ssh_enter_then_immediate_command_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_nested_typeahead",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  32.9,
+                      "detail":  [
+                                     "the line typed behind a nested ssh ran exactly once remotely: []",
+                                     "ssh_nested_typeahead (inner): T142_8epyis never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_ssh_nested_typeahead_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  219.6,
+                      "detail":  [
+                                     "only 0/30 Enter timings captured"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms":  {
+                                                                "n":  0,
+                                                                "p50":  null,
+                                                                "p95":  null,
+                                                                "max":  null
+                                                            },
+                                      "harness_floor_ms":  0.341,
+                                      "reference_enter_to_start_ms":  {
+                                                                          "n":  30,
+                                                                          "p50":  35.3,
+                                                                          "p95":  43.55,
+                                                                          "max":  44.04
+                                                                      },
+                                      "reference":  "conhost (powershell.exe)"
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_latency_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_key_log",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: types into a running `cat \u003e /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "latency_paint",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "kl3 (ScreenCaptureKit) is macOS only; no key-\u003epaint read-back exists on this platform, so there is nothing to compare"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_latency_paint.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_fish",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "shell_nu",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "md_viewer",
+                      "mode":  "terminal",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_md_viewer.png"
+                                ]
+                  },
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  0.9,
+                      "detail":  [
+                                     "no OCR engine: screenshot only (shots/terminal@gitbash_proof_prekey.png), mode not machine-verified"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_mode_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via SendInput vk"
+                                 ],
+                      "metrics":  {
+                                      "method":  "vk"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "cadence",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  20.6,
+                      "detail":  [
+                                     "ts_reader produced no output (python3 missing or app did not run it)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_cadence_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_loss_control",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  33.5,
+                      "detail":  [
+                                     "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+                                     "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+                                 ],
+                      "metrics":  {
+                                      "key_loss":  {
+                                                       "variants":  [
+                                                                        {
+                                                                            "target":  "phosphor",
+                                                                            "inject":  "perline",
+                                                                            "n":  12,
+                                                                            "lost_first":  0,
+                                                                            "other_bad":  0,
+                                                                            "missing":  0
+                                                                        },
+                                                                        {
+                                                                            "target":  "reference",
+                                                                            "inject":  "perline",
+                                                                            "n":  12,
+                                                                            "lost_first":  0,
+                                                                            "other_bad":  0,
+                                                                            "missing":  0
+                                                                        }
+                                                                    ],
+                                                       "reference":  "conhost (bash)"
+                                                   }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_key_loss_control.png"
+                                ]
+                  },
+                  {
+                      "name":  "enter_loss_control",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  56.8,
+                      "detail":  [
+                                     "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters",
+                                     "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters"
+                                 ],
+                      "metrics":  {
+                                      "enter_control":  {
+                                                            "reference":  "conhost (bash)",
+                                                            "runs":  {
+                                                                         "0.0":  {
+                                                                                     "ref":  "conhost (bash)",
+                                                                                     "n":  30,
+                                                                                     "bad":  0,
+                                                                                     "posted":  30,
+                                                                                     "lines":  30
+                                                                                 },
+                                                                         "0.25":  {
+                                                                                      "ref":  "conhost (bash)",
+                                                                                      "n":  30,
+                                                                                      "bad":  0,
+                                                                                      "posted":  30,
+                                                                                      "lines":  30
+                                                                                  }
+                                                                     }
+                                                        }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_enter_loss_control.png"
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  117.7,
+                      "detail":  [
+                                     "ft0: file has 28/30 lines, exact match False first diff: exp=\u0027t92_t2ti62i9kq\u0027 got=\u0027t94_r3rx4vy3h4\u0027 [first bad line 6: injector call #648 posted its ENTER at 07:44:32.212]",
+                                     "ft0: shell received 30 commands, not the typed ones (first mismatch: \u0027_echo t92_t2ti62i9kq \u003e\u003e r_ft0.txt\u0027)",
+                                     "ft25: file has 29/30 lines, exact match False first diff: exp=\u0027t140_ddukigh1pn\u0027 got=\u0027t141_hny7iqahmy\u0027 [first bad line 24: injector call #696 posted its ENTER at 07:45:45.482]",
+                                     "ft25: shell received 30 commands, not the typed ones (first mismatch: \u0027oech t140_ddukigh1pn \u003e\u003e r_ft25.txt\u0027)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_fast_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  10.6,
+                      "detail":  [
+                                     "paste + instant Enter: 0/6 md5 lines exact"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_paste_instant_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "tab_enter",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  14.9,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_tab_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c_d",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  176.0,
+                      "detail":  [
+                                     "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+                                     "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 84.01 ms includes the input-tool spawn (harness floor 0.16850000247359276 ms)",
+                                     "Ctrl-C: n=29 \u003c 30 samples (smoke/scaled run): numbers are indicative only",
+                                     "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+                                 ],
+                      "metrics":  {
+                                      "ctrl_c_ms":  {
+                                                        "n":  29,
+                                                        "p50":  84.01,
+                                                        "p95":  110.49,
+                                                        "max":  115.55
+                                                    },
+                                      "harness_floor_ms":  0.169,
+                                      "reference_ctrl_c_ms":  {
+                                                                  "n":  30,
+                                                                  "p50":  71.81,
+                                                                  "p95":  96.9,
+                                                                  "max":  97.03
+                                                              },
+                                      "reference":  "conhost (bash)",
+                                      "lat":  {
+                                                  "ctrl_c":  {
+                                                                 "phosphor":  {
+                                                                                  "n":  29,
+                                                                                  "p50":  84.01,
+                                                                                  "p95":  110.49,
+                                                                                  "max":  115.55
+                                                                              },
+                                                                 "reference":  {
+                                                                                   "n":  30,
+                                                                                   "p50":  71.81,
+                                                                                   "p95":  96.9,
+                                                                                   "max":  97.03
+                                                                               },
+                                                                 "reference_name":  "conhost (bash)",
+                                                                 "budget_ms":  20.0,
+                                                                 "budget_kind":  "overhead",
+                                                                 "floor_ms":  0.16850000247359276,
+                                                                 "notes":  [
+                                                                               "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 84.01 ms includes the input-tool spawn (harness floor 0.16850000247359276 ms)",
+                                                                               "n=29 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                           ],
+                                                                 "overhead_ms":  12.2,
+                                                                 "budget_verdict":  "pass",
+                                                                 "prev":  null,
+                                                                 "baseline":  {
+                                                                                  "status":  "pending"
+                                                                              },
+                                                                 "prev_verdict":  "none",
+                                                                 "baseline_verdict":  "pending",
+                                                                 "verdict":  "pass"
+                                                             }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_ctrl_c_d_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_connect_typing",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  21.9,
+                      "detail":  [
+                                     "ssh_connect_typing (gap 0.0 s): T164_3mdx3v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+                                 ],
+                      "metrics":  {
+                                      "trials":  1
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_ssh_connect_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_enter_then_immediate_command",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  21.8,
+                      "detail":  [
+                                     "ssh_enter_then_immediate_command: T165_woaa5c never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 immediately-typed commands exactly: []"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_ssh_enter_then_immediate_command_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_nested_typeahead",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  32.9,
+                      "detail":  [
+                                     "the line typed behind a nested ssh ran exactly once remotely: []",
+                                     "ssh_nested_typeahead (inner): T166_kq9cao never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_ssh_nested_typeahead_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "terminal@gitbash",
+                      "status":  "fail",
+                      "seconds":  74.0,
+                      "detail":  [
+                                     "Enter to command start: Phosphor overhead 30.78 ms over conhost (bash) exceeds the 2 ms budget",
+                                     "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+                                     "Enter to command start: n=28 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms":  {
+                                                                "n":  28,
+                                                                "p50":  99.67,
+                                                                "p95":  180.88,
+                                                                "max":  188.66
+                                                            },
+                                      "harness_floor_ms":  0.169,
+                                      "reference_enter_to_start_ms":  {
+                                                                          "n":  30,
+                                                                          "p50":  68.89,
+                                                                          "p95":  80.65,
+                                                                          "max":  85.74
+                                                                      },
+                                      "reference":  "conhost (bash)",
+                                      "lat":  {
+                                                  "enter_to_start":  {
+                                                                         "phosphor":  {
+                                                                                          "n":  28,
+                                                                                          "p50":  99.67,
+                                                                                          "p95":  180.88,
+                                                                                          "max":  188.66
+                                                                                      },
+                                                                         "reference":  {
+                                                                                           "n":  30,
+                                                                                           "p50":  68.89,
+                                                                                           "p95":  80.65,
+                                                                                           "max":  85.74
+                                                                                       },
+                                                                         "reference_name":  "conhost (bash)",
+                                                                         "budget_ms":  2.0,
+                                                                         "budget_kind":  "overhead",
+                                                                         "floor_ms":  0.16850000247359276,
+                                                                         "notes":  [
+                                                                                       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+                                                                                       "n=28 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                                   ],
+                                                                         "overhead_ms":  30.78,
+                                                                         "budget_verdict":  "fail",
+                                                                         "prev":  null,
+                                                                         "baseline":  {
+                                                                                          "status":  "pending"
+                                                                                      },
+                                                                         "prev_verdict":  "none",
+                                                                         "baseline_verdict":  "pending",
+                                                                         "verdict":  "fail"
+                                                                     }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_latency_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_key_log",
+                      "mode":  "terminal@gitbash",
+                      "status":  "pass",
+                      "seconds":  12.0,
+                      "detail":  [
+                                     "key to frame: no reference terminal measured in this session, overhead verdict \u0027no-reference\u0027 (absolute numbers recorded)",
+                                     "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+                                 ],
+                      "metrics":  {
+                                      "key_to_frame_ms":  {
+                                                              "n":  60,
+                                                              "p50":  3.91,
+                                                              "p95":  10.25,
+                                                              "max":  15.65
+                                                          },
+                                      "lat":  {
+                                                  "key_to_frame":  {
+                                                                       "phosphor":  {
+                                                                                        "n":  60,
+                                                                                        "p50":  3.91,
+                                                                                        "p95":  10.25,
+                                                                                        "max":  15.65
+                                                                                    },
+                                                                       "reference":  null,
+                                                                       "reference_name":  null,
+                                                                       "budget_ms":  2.0,
+                                                                       "budget_kind":  "overhead",
+                                                                       "floor_ms":  null,
+                                                                       "notes":  [
+                                                                                     "Phosphor-side keydown to first frame; no same-method reference exists"
+                                                                                 ],
+                                                                       "overhead_ms":  null,
+                                                                       "budget_verdict":  "no-reference",
+                                                                       "prev":  null,
+                                                                       "baseline":  {
+                                                                                        "status":  "pending"
+                                                                                    },
+                                                                       "prev_verdict":  "none",
+                                                                       "baseline_verdict":  "pending",
+                                                                       "verdict":  "no-reference"
+                                                                   },
+                                                  "ui_work":  {
+                                                                  "phosphor":  {
+                                                                                   "n":  0,
+                                                                                   "p50":  null,
+                                                                                   "p95":  null,
+                                                                                   "max":  0.0
+                                                                               },
+                                                                  "reference":  null,
+                                                                  "budget_ms":  4,
+                                                                  "budget_kind":  "slow-log",
+                                                                  "overhead_ms":  null,
+                                                                  "prev":  null,
+                                                                  "baseline":  {
+                                                                                   "status":  "n/a"
+                                                                               },
+                                                                  "budget_verdict":  "pass",
+                                                                  "verdict":  "pass",
+                                                                  "notes":  [
+                                                                                "slow-op logger floor is 8 ms: verdict pass = no UI work item \u003e= 8 ms during typing; warn = \u003e= 16 ms"
+                                                                            ]
+                                                              }
+                                              },
+                                      "ui_slow_ops":  {
+                                                          "count":  0,
+                                                          "worst_ms":  0,
+                                                          "ops":  [
+
+                                                                  ]
+                                                      }
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_latency_key_log.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_paint",
+                      "mode":  "terminal@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "kl3 (ScreenCaptureKit) is macOS only; no key-\u003epaint read-back exists on this platform, so there is nothing to compare"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_latency_paint.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_fish",
+                      "mode":  "terminal@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_shell_fish.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_nu",
+                      "mode":  "terminal@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_shell_nu.png"
+                                ]
+                  },
+                  {
+                      "name":  "md_viewer",
+                      "mode":  "terminal@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal@gitbash_md_viewer.png"
+                                ]
+                  },
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  1.0,
+                      "detail":  [
+                                     "no OCR engine: screenshot only (shots/agent_proof_prekey.png), mode not machine-verified"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_mode_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via SendInput vk"
+                                 ],
+                      "metrics":  {
+                                      "method":  "vk"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "cadence",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  6.0,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+                                      "gap_ms":  {
+                                                     "n":  59,
+                                                     "p50":  15.97,
+                                                     "p95":  18.71,
+                                                     "max":  21.36
+                                                 }
+                                  },
+                      "shots":  [
+                                    "shots\\agent_cadence.png"
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  51.5,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_fast_typing.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  5.3,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_paste_instant_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "tab_enter",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  18.1,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_tab_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c_d",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  520.6,
+                      "detail":  [
+                                     "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+                                     "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3615.68 ms includes the input-tool spawn (harness floor 0.1705000177025795 ms)",
+                                     "Ctrl-C: n=8 \u003c 30 samples (smoke/scaled run): numbers are indicative only",
+                                     "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+                                 ],
+                      "metrics":  {
+                                      "ctrl_c_ms":  {
+                                                        "n":  8,
+                                                        "p50":  3615.68,
+                                                        "p95":  3638.45,
+                                                        "max":  3638.45
+                                                    },
+                                      "harness_floor_ms":  0.171,
+                                      "reference_ctrl_c_ms":  {
+                                                                  "n":  2,
+                                                                  "p50":  3600.01,
+                                                                  "p95":  3660.15,
+                                                                  "max":  3660.15
+                                                              },
+                                      "reference":  "conhost (powershell.exe)",
+                                      "lat":  {
+                                                  "ctrl_c":  {
+                                                                 "phosphor":  {
+                                                                                  "n":  8,
+                                                                                  "p50":  3615.68,
+                                                                                  "p95":  3638.45,
+                                                                                  "max":  3638.45
+                                                                              },
+                                                                 "reference":  {
+                                                                                   "n":  2,
+                                                                                   "p50":  3600.01,
+                                                                                   "p95":  3660.15,
+                                                                                   "max":  3660.15
+                                                                               },
+                                                                 "reference_name":  "conhost (powershell.exe)",
+                                                                 "budget_ms":  20.0,
+                                                                 "budget_kind":  "overhead",
+                                                                 "floor_ms":  0.1705000177025795,
+                                                                 "notes":  [
+                                                                               "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 3615.68 ms includes the input-tool spawn (harness floor 0.1705000177025795 ms)",
+                                                                               "n=8 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                           ],
+                                                                 "overhead_ms":  15.67,
+                                                                 "budget_verdict":  "pass",
+                                                                 "prev":  null,
+                                                                 "baseline":  {
+                                                                                  "status":  "pending"
+                                                                              },
+                                                                 "prev_verdict":  "none",
+                                                                 "baseline_verdict":  "pending",
+                                                                 "verdict":  "pass"
+                                                             }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\agent_ctrl_c_d_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_connect_typing",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  21.9,
+                      "detail":  [
+                                     "ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+                                 ],
+                      "metrics":  {
+                                      "trials":  1
+                                  },
+                      "shots":  [
+                                    "shots\\agent_ssh_connect_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_enter_then_immediate_command",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  21.8,
+                      "detail":  [
+                                     "ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 immediately-typed commands exactly: []"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_ssh_enter_then_immediate_command_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_nested_typeahead",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  32.9,
+                      "detail":  [
+                                     "the line typed behind a nested ssh ran exactly once remotely: []",
+                                     "ssh_nested_typeahead (inner): T82_c2iz2b never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_ssh_nested_typeahead_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  218.9,
+                      "detail":  [
+                                     "only 0/30 Enter timings captured"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms":  {
+                                                                "n":  0,
+                                                                "p50":  null,
+                                                                "p95":  null,
+                                                                "max":  null
+                                                            },
+                                      "harness_floor_ms":  0.171,
+                                      "reference_enter_to_start_ms":  {
+                                                                          "n":  30,
+                                                                          "p50":  6.51,
+                                                                          "p95":  10.68,
+                                                                          "max":  13.48
+                                                                      },
+                                      "reference":  "conhost (powershell.exe)"
+                                  },
+                      "shots":  [
+                                    "shots\\agent_latency_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_key_log",
+                      "mode":  "agent",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: types into a running `cat \u003e /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "latency_paint",
+                      "mode":  "agent",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "kl3 (ScreenCaptureKit) is macOS only; no key-\u003epaint read-back exists on this platform, so there is nothing to compare"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_latency_paint.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_fish",
+                      "mode":  "agent",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "shell_nu",
+                      "mode":  "agent",
+                      "status":  "skip",
+                      "seconds":  0,
+                      "detail":  [
+                                     "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "md_viewer",
+                      "mode":  "agent",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_md_viewer.png"
+                                ]
+                  },
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "agent@gitbash",
+                      "status":  "pass",
+                      "seconds":  1.0,
+                      "detail":  [
+                                     "no OCR engine: screenshot only (shots/agent@gitbash_proof_prekey.png), mode not machine-verified"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_mode_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "agent@gitbash",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via SendInput vk"
+                                 ],
+                      "metrics":  {
+                                      "method":  "vk"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "cadence",
+                      "mode":  "agent@gitbash",
+                      "status":  "pass",
+                      "seconds":  6.0,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+                                      "gap_ms":  {
+                                                     "n":  59,
+                                                     "p50":  16.03,
+                                                     "p95":  21.29,
+                                                     "max":  24.97
+                                                 }
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_cadence.png"
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  116.2,
+                      "detail":  [
+                                     "ft0: file has 18/30 lines, exact match False first diff: exp=\u0027t2_5by1a2rogu\u0027 got=\u0027t14_q7krs3u54h\u0027 [first bad line 0: injector call #1612 posted its ENTER at 08:08:13.342]",
+                                     "ft0: shell received 31 commands, not the typed ones (first mismatch: \u0027\"C:/Users/<user>/AppData/Local/phosphor-ci/python312/python.exe\" \"C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/script/realapp/appci/ts_reader.py\" cad.txt 60\u0027)",
+                                     "ft25: file has 29/30 lines, exact match False first diff: exp=\u0027t54_7ay1zve5ps\u0027 got=\u0027t55_0jzrleawq0\u0027 [first bad line 22: injector call #1664 posted its ENTER at 08:09:26.250]",
+                                     "ft25: shell received 30 commands, not the typed ones (first mismatch: \u00277echo t54_ay1zve5ps \u003e\u003e r_ft25.txt\u0027)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_fast_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  7.4,
+                      "detail":  [
+                                     "paste + instant Enter: 0/6 md5 lines exact"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_paste_instant_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "tab_enter",
+                      "mode":  "agent@gitbash",
+                      "status":  "pass",
+                      "seconds":  14.6,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_tab_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c_d",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  175.3,
+                      "detail":  [
+                                     "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+                                     "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 80.17 ms includes the input-tool spawn (harness floor 0.12290000449866056 ms)",
+                                     "Ctrl-C: n=26 \u003c 30 samples (smoke/scaled run): numbers are indicative only",
+                                     "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+                                 ],
+                      "metrics":  {
+                                      "ctrl_c_ms":  {
+                                                        "n":  26,
+                                                        "p50":  80.17,
+                                                        "p95":  105.52,
+                                                        "max":  116.83
+                                                    },
+                                      "harness_floor_ms":  0.123,
+                                      "reference_ctrl_c_ms":  {
+                                                                  "n":  30,
+                                                                  "p50":  79.16,
+                                                                  "p95":  105.52,
+                                                                  "max":  106.38
+                                                              },
+                                      "reference":  "conhost (bash)",
+                                      "lat":  {
+                                                  "ctrl_c":  {
+                                                                 "phosphor":  {
+                                                                                  "n":  26,
+                                                                                  "p50":  80.17,
+                                                                                  "p95":  105.52,
+                                                                                  "max":  116.83
+                                                                              },
+                                                                 "reference":  {
+                                                                                   "n":  30,
+                                                                                   "p50":  79.16,
+                                                                                   "p95":  105.52,
+                                                                                   "max":  106.38
+                                                                               },
+                                                                 "reference_name":  "conhost (bash)",
+                                                                 "budget_ms":  20.0,
+                                                                 "budget_kind":  "overhead",
+                                                                 "floor_ms":  0.12290000449866056,
+                                                                 "notes":  [
+                                                                               "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 80.17 ms includes the input-tool spawn (harness floor 0.12290000449866056 ms)",
+                                                                               "n=26 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                           ],
+                                                                 "overhead_ms":  1.01,
+                                                                 "budget_verdict":  "pass",
+                                                                 "prev":  null,
+                                                                 "baseline":  {
+                                                                                  "status":  "pending"
+                                                                              },
+                                                                 "prev_verdict":  "none",
+                                                                 "baseline_verdict":  "pending",
+                                                                 "verdict":  "pass"
+                                                             }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_ctrl_c_d_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_connect_typing",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  21.9,
+                      "detail":  [
+                                     "ssh_connect_typing (gap 0.0 s): T80_cdf646 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+                                 ],
+                      "metrics":  {
+                                      "trials":  1
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_ssh_connect_typing_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_enter_then_immediate_command",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  21.8,
+                      "detail":  [
+                                     "ssh_enter_then_immediate_command: T81_xguci8 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+                                     "remote shell received 0/1 immediately-typed commands exactly: []"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_ssh_enter_then_immediate_command_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "ssh_nested_typeahead",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  32.9,
+                      "detail":  [
+                                     "the line typed behind a nested ssh ran exactly once remotely: []",
+                                     "ssh_nested_typeahead (inner): T82_c2iz2b never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_ssh_nested_typeahead_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "agent@gitbash",
+                      "status":  "fail",
+                      "seconds":  70.9,
+                      "detail":  [
+                                     "Enter to command start: Phosphor overhead 25.88 ms over conhost (bash) exceeds the 2 ms budget",
+                                     "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+                                     "Enter to command start: n=29 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms":  {
+                                                                "n":  29,
+                                                                "p50":  95.0,
+                                                                "p95":  185.84,
+                                                                "max":  248.92
+                                                            },
+                                      "harness_floor_ms":  0.123,
+                                      "reference_enter_to_start_ms":  {
+                                                                          "n":  30,
+                                                                          "p50":  69.12,
+                                                                          "p95":  81.49,
+                                                                          "max":  83.17
+                                                                      },
+                                      "reference":  "conhost (bash)",
+                                      "lat":  {
+                                                  "enter_to_start":  {
+                                                                         "phosphor":  {
+                                                                                          "n":  29,
+                                                                                          "p50":  95.0,
+                                                                                          "p95":  185.84,
+                                                                                          "max":  248.92
+                                                                                      },
+                                                                         "reference":  {
+                                                                                           "n":  30,
+                                                                                           "p50":  69.12,
+                                                                                           "p95":  81.49,
+                                                                                           "max":  83.17
+                                                                                       },
+                                                                         "reference_name":  "conhost (bash)",
+                                                                         "budget_ms":  2.0,
+                                                                         "budget_kind":  "overhead",
+                                                                         "floor_ms":  0.12290000449866056,
+                                                                         "notes":  [
+                                                                                       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+                                                                                       "n=29 \u003c 30 samples (smoke/scaled run): numbers are indicative only"
+                                                                                   ],
+                                                                         "overhead_ms":  25.88,
+                                                                         "budget_verdict":  "fail",
+                                                                         "prev":  null,
+                                                                         "baseline":  {
+                                                                                          "status":  "pending"
+                                                                                      },
+                                                                         "prev_verdict":  "none",
+                                                                         "baseline_verdict":  "pending",
+                                                                         "verdict":  "fail"
+                                                                     }
+                                              }
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_latency_enter_FAIL.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_key_log",
+                      "mode":  "agent@gitbash",
+                      "status":  "pass",
+                      "seconds":  11.7,
+                      "detail":  [
+                                     "key to frame: no reference terminal measured in this session, overhead verdict \u0027no-reference\u0027 (absolute numbers recorded)",
+                                     "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+                                 ],
+                      "metrics":  {
+                                      "key_to_frame_ms":  {
+                                                              "n":  60,
+                                                              "p50":  3.5,
+                                                              "p95":  9.46,
+                                                              "max":  11.88
+                                                          },
+                                      "lat":  {
+                                                  "key_to_frame":  {
+                                                                       "phosphor":  {
+                                                                                        "n":  60,
+                                                                                        "p50":  3.5,
+                                                                                        "p95":  9.46,
+                                                                                        "max":  11.88
+                                                                                    },
+                                                                       "reference":  null,
+                                                                       "reference_name":  null,
+                                                                       "budget_ms":  2.0,
+                                                                       "budget_kind":  "overhead",
+                                                                       "floor_ms":  null,
+                                                                       "notes":  [
+                                                                                     "Phosphor-side keydown to first frame; no same-method reference exists"
+                                                                                 ],
+                                                                       "overhead_ms":  null,
+                                                                       "budget_verdict":  "no-reference",
+                                                                       "prev":  null,
+                                                                       "baseline":  {
+                                                                                        "status":  "pending"
+                                                                                    },
+                                                                       "prev_verdict":  "none",
+                                                                       "baseline_verdict":  "pending",
+                                                                       "verdict":  "no-reference"
+                                                                   },
+                                                  "ui_work":  {
+                                                                  "phosphor":  {
+                                                                                   "n":  0,
+                                                                                   "p50":  null,
+                                                                                   "p95":  null,
+                                                                                   "max":  0.0
+                                                                               },
+                                                                  "reference":  null,
+                                                                  "budget_ms":  4,
+                                                                  "budget_kind":  "slow-log",
+                                                                  "overhead_ms":  null,
+                                                                  "prev":  null,
+                                                                  "baseline":  {
+                                                                                   "status":  "n/a"
+                                                                               },
+                                                                  "budget_verdict":  "pass",
+                                                                  "verdict":  "pass",
+                                                                  "notes":  [
+                                                                                "slow-op logger floor is 8 ms: verdict pass = no UI work item \u003e= 8 ms during typing; warn = \u003e= 16 ms"
+                                                                            ]
+                                                              }
+                                              },
+                                      "ui_slow_ops":  {
+                                                          "count":  0,
+                                                          "worst_ms":  0,
+                                                          "ops":  [
+
+                                                                  ]
+                                                      }
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_latency_key_log.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_paint",
+                      "mode":  "agent@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "kl3 (ScreenCaptureKit) is macOS only; no key-\u003epaint read-back exists on this platform, so there is nothing to compare"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_latency_paint.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_fish",
+                      "mode":  "agent@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_shell_fish.png"
+                                ]
+                  },
+                  {
+                      "name":  "shell_nu",
+                      "mode":  "agent@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_shell_nu.png"
+                                ]
+                  },
+                  {
+                      "name":  "md_viewer",
+                      "mode":  "agent@gitbash",
+                      "status":  "skip",
+                      "seconds":  0.5,
+                      "detail":  [
+                                     "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent@gitbash_md_viewer.png"
+                                ]
+                  }
+              ],
+    "reused_build":  {
+                         "commit":  "18fddcd8088da7ef506568624cc7936eff3a47e2",
+                         "fetched":  "local cache (C:\\Users\\Winters\\.cache\\phosphor-ci\\builds\\windows\\17664724432)",
+                         "this_pipeline":  "3018419792",
+                         "job_name":  "build-windows-x86_64",
+                         "this_commit":  "48cabecefdf0408489d717aedd9ec1d5f70ecf54",
+                         "job_id":  17664724432,
+                         "pipeline_id":  "3017838858"
+                     }
+}
