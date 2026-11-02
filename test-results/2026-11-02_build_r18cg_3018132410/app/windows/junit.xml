@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="13" failures="4" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="0">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="63.8">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.1">
+</testcase>
+<testcase classname="terminal" name="ctrl_c" time="76.2">
+<failure message="Ctrl-C delivered 0/5 times"/>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="456.5">
+<failure message="only 0/30 Enter timings (verdict: no-data)"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="63.6">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.1">
+</testcase>
+<testcase classname="agent" name="ctrl_c" time="76.3">
+<failure message="Ctrl-C delivered 0/5 times"/>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="457.6">
+<failure message="only 0/30 Enter timings (verdict: no-data)"/>
+</testcase>
+<testcase classname="-" name="restore" time="0">
+</testcase>
+</testsuite>
+

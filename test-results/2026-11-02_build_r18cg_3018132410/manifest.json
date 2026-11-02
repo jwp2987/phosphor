@@ -1,0 +1,459 @@
+{
+ "pipeline": 3018132410,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3018132410",
+ "ref": "build/r18cg",
+ "commit": "53c0a38cae9ea415b31b85bd80ec96d2859e07d7",
+ "created_at": "2026-11-02T14:23:55.954Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "failed",
+   "duration": 1470.511551,
+   "id": 17667072968,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072967,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072966,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072965,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17667072964,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17667072963,
+   "runner": null
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17667072962,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17667072961,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072960,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072959,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072958,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072957,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072956,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072955,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072954,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072953,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072952,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072951,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072950,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072949,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072948,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072947,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072946,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072945,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072944,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072943,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072942,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072941,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072940,
+   "runner": null,
+   "note": "not run"
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 13.145552,
+   "id": 17667072939,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 9.573009,
+   "id": 17667072938,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072937,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072936,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072935,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17667072934,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 384.672673,
+   "id": 17667072933,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 103.909342,
+   "id": 17667072932,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {
+  "windows": {
+   "job": "app-test-windows-reuse",
+   "job_id": 17667072968,
+   "status": "failed",
+   "reuse": true,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "screenshot only (no OCR on the VM): shots\\terminal_proof.png"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via sendkeys"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 63.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c",
+     "status": "fail",
+     "seconds": 76.2,
+     "detail": [
+      "Ctrl-C delivered 0/5 times"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 456.5,
+     "detail": [
+      "only 0/30 Enter timings (verdict: no-data)"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 2,
+       "budget_kind": "overhead",
+       "verdict": "no-data"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "screenshot only (no OCR on the VM): shots\\agent_proof.png"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via sendkeys"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 63.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c",
+     "status": "fail",
+     "seconds": 76.3,
+     "detail": [
+      "Ctrl-C delivered 0/5 times"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 457.6,
+     "detail": [
+      "only 0/30 Enter timings (verdict: no-data)"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 2,
+       "budget_kind": "overhead",
+       "verdict": "no-data"
+      }
+     }
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/results.json",
+    "windows/summary.md",
+    "windows/reused_build.json"
+   ],
+   "meta": {
+    "backend": "sendkeys",
+    "platform": "windows",
+    "commit": "53c0a38c"
+   },
+   "summary": {
+    "skip": 0,
+    "pass": 9,
+    "fail": 4
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal_ctrl_c.png",
+    "shots\\terminal_latency_enter.png",
+    "shots\\agent_ctrl_c.png",
+    "shots\\agent_latency_enter.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 46,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 21,
+   "warp (lib test)": 18
+  },
+  "warning_lines_by_kind": {
+   "unused import": 78,
+   "unused imports": 15,
+   "use of deprecated type alias": 8,
+   "function": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 384.672673
+ }
+}
