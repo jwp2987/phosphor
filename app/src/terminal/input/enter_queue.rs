@@ -135,7 +135,7 @@ impl Input {
 
     /// Puts `text` in the buffer and submits it, behind a waiting Enter or a paste being read
     /// (#1434).
-    pub(super) fn accept_history_text_and_submit(
+    pub(crate) fn accept_history_text_and_submit(
         &mut self,
         text: &str,
         ctx: &mut ViewContext<Self>,

@@ -97,7 +97,7 @@ pub(super) struct PasteQueueState {
     /// Set for the whole of an entry's delivery. A key the hand-off holds while it is set cannot
     /// be offered to the queue (the drain owns it): it is recorded in `requeue_request` and the
     /// host puts it back under its gate when the delivery returns, whatever the entry was.
-    delivering: bool,
+    pub(super) delivering: bool,
     /// The hand-off held the entry being delivered; the host answers `Requeue` with this.
     requeue_request: Option<RequeueRequest>,
     /// What goes back to the front of the queue after a `Requeue` when the entry delivered is not
@@ -1482,7 +1482,7 @@ impl TerminalView {
                 "pty",
             );
         }
-        let result = match bytes {
+        let result: Result<Vec<u8>, ()> = match bytes {
             Ok(bytes) => {
                 self.paste_queue.payloads.insert(id, bytes);
                 // `Some(empty)` is the "ready" marker; the bytes wait in `payloads` so delivery

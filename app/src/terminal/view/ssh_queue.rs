@@ -45,7 +45,7 @@ use crate::terminal::input_queue::{
 /// from the queue (entries of both origins).
 pub(super) struct SshQueueState {
     /// The key (the connection counter) of the open `SshConnect` gate.
-    gate: Option<u64>,
+    pub(super) gate: Option<u64>,
     next_conn: u64,
     /// The 64 KiB bound was passed: the run was dropped and the rest of this connect is ignored.
     overflowed: bool,
