@@ -1,0 +1,434 @@
+# appci/cases_caseremote.py: remote work over ssh to the harness's local sshd (sshd.py), and per-shell variants (issue #1464).
+# Registered with the same @case decorator as cases.py (one import line at the end of cases.py). All full tier (each is > 60 s).
+# Every check compares the EXACT expected lines with what the shell received (effect files + the rc's rec.log), expected vs got in the message.
+#
+# Stand-in for ksu/sudo/su (no non-interactive sudo on CI): a nested `bash`, a nested `sh`, and `env -i ... bash --noprofile --norc -i`
+# (a new interactive shell with a cleaned environment, the closest unprivileged equivalent of `ksu`/`su -`); the nesting is PROVEN by pid
+# (the inner shell's $PPID is the outer shell's $$, and after `exit` $$ is the outer pid again) before any verdict is made.
+import os, re, shutil, socket, subprocess, sys, threading, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cases import case, stats  # noqa: E402
+import toml_text as T  # noqa: E402
+
+
+# ------------------------------------------------------------------ helpers
+def need_ssh(ctx, r):
+    if not ctx.ssh:
+        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, i.e. apt package openssh-server; or python3-paramiko for fakesshd.py)")
+
+
+def rm_remote(ctx, *names):
+    for n in names:
+        try:
+            os.remove(os.path.join(ctx.prof.rhome, n))
+        except FileNotFoundError:
+            pass
+
+
+def rprompts(ctx):
+    return ctx.prof.prompts(remote=True)
+
+
+def connect(ctx, host="fake", timeout=90):
+    """`ssh <host>` + Enter, wait for a REMOTE shell prompt (the remote rc logs to its own prompt.log). Returns seconds, or None."""
+    before = rprompts(ctx)
+    t0 = time.time()
+    ctx.be.type("ssh " + host, 12, enter=True)
+    return (time.time() - t0) if ctx.until(lambda: rprompts(ctx) > before, timeout, step=0.1) else None
+
+
+def leave(ctx, timeout=15):
+    """`exit` in the remote shell, wait for the LOCAL shell's next prompt"""
+    before = ctx.prompts()
+    ctx.be.type("exit", 12, enter=True)
+    return bool(ctx.until(lambda: ctx.prompts() > before, timeout, step=0.1))
+
+
+def typed_lines(ctx, cmds, delay=(10, 25)):
+    for c in cmds:
+        ctx.be.type(c, ctx.rng.randint(*delay), enter=True)
+
+
+def exact(r, label, exp, got):
+    ok = got == exp
+    r.check(ok, "%s: expected %r, got %r" % (label, exp, got) if len(repr(exp)) < 400 else
+            "%s: %d expected lines, %d got, exact=%s, first diff %r" % (label, len(exp), len(got), ok,
+                                                                        next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
+    return ok
+
+
+# ------------------------------------------------------------------ with / without Phosphor's ssh extension
+def set_ext_mode(ctx, mode):
+    """rewrite warpify.ssh.ssh_extension_install_mode in the profile's settings.toml and relaunch the app (the setting is read at start).
+    Returns False when the app cannot be relaunched here (sim backend)."""
+    if ctx.app is None or not hasattr(ctx.app, "stop"):
+        return False
+    cfg = ctx.prof.home + "/.config/phosphor/settings.toml"
+    t = open(cfg).read()
+    open(cfg, "w").write(T.set_key(t, "warpify.ssh", "ssh_extension_install_mode", '"%s"' % mode))
+    try:        # keep the dying instance's log next to the others (#1457 style), best effort
+        dst = os.path.join(ctx.run, "logs", ctx.mode)
+        os.makedirs(dst, exist_ok=True)
+        if os.path.exists(ctx.log_path):
+            shutil.copy(ctx.log_path, os.path.join(dst, "phosphor.before_ext_%s.log" % mode))
+    except Exception:
+        pass
+    n = ctx.prompts()
+    ctx.app.stop()
+    time.sleep(1.0)
+    ctx.app.start()
+    up = ctx.until(lambda: ctx.prompts() > n, 90, step=0.5)
+    time.sleep(4)                     # first-run overlay settles
+    try:
+        ctx.be.key("Escape")          # Escape in a fresh agent view leaves agent mode (cases.py mode_proof), so only a terminal-mode dismissal is safe
+    except Exception:
+        pass
+    return bool(up)
+
+
+def remote_session(ctx, r, variant):
+    need_ssh(ctx, r)
+    tag = "rs_" + variant
+    rm_remote(ctx, tag + "_ft.txt", tag + "_sub.txt", tag + "_vim.txt", tag + "_less.txt", tag + "_cc.txt", tag + "_back.txt", tag + "_m.txt")
+    ctx.rm(tag + "_back.txt", tag + "_ft.txt")
+    log_off = ctx.log_size()
+    # ---- 1. connect
+    secs = connect(ctx, "fake", 120 if variant == "ext" else 60)
+    r.check(secs is not None, "[%s] no remote shell prompt after `ssh fake` (see sshd.log, phosphor.log)" % variant)
+    ctx.shot("%s_connected" % tag)
+    if secs is None:
+        ctx.reset()
+        return
+    r.metric("connect_s", round(secs, 2))
+    time.sleep(1.0)
+    # ---- 2. typing + Enter exactness inside the remote shell (10-25 ms/key, instant Enter)
+    rmark, lmark = len(ctx.prof.commands(remote=True)), ctx.cmd_mark()
+    n = ctx.count(12)
+    exp, cmds = [], []
+    for _ in range(n):
+        tok = ctx.tok(10).lower()
+        exp.append(tok)
+        cmds.append("echo %s >> ~/%s_ft.txt" % (tok, tag))
+    typed_lines(ctx, cmds)
+    ctx.until(lambda: len(ctx.lines(tag + "_ft.txt", remote=True)) >= n, 20 + n)
+    time.sleep(0.5)
+    exact(r, "[%s] remote typing, %d lines" % (variant, n), exp, ctx.lines(tag + "_ft.txt", remote=True))
+    rem = [c for _, c in ctx.prof.commands(remote=True)[rmark:]]
+    if rem:
+        exact(r, "[%s] commands the REMOTE shell received" % variant, cmds, rem)
+    r.check(not ctx.lines(tag + "_ft.txt"), "[%s] a remote-typed line ran LOCALLY: %r" % (variant, ctx.lines(tag + "_ft.txt")))
+    r.check(ctx.cmds_since(lmark) == [], "[%s] the LOCAL shell received commands while the remote shell was in front: %r" % (variant, ctx.cmds_since(lmark)))
+    # ---- 3. nested subshells (sudo/su/ksu stand-ins), proven by pid
+    subs = (("bash", "bash", 1.5), ("bash-no-wait", "bash", 0.0), ("sh", "sh", 1.5),
+            ("clean-env bash (ksu/su stand-in)", "env -i HOME=$HOME PATH=$PATH TERM=$TERM bash --noprofile --norc -i", 2.0))
+    for i, (label, cmd, gap) in enumerate(subs):
+        f = "%s_sub.txt" % tag
+        rm_remote(ctx, f)
+        tok = ctx.tok(8).lower()
+        ctx.be.type("echo $$ >> ~/" + f, 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(f, remote=True)) >= 1, 6)
+        ctx.be.type(cmd, 12, enter=True)
+        time.sleep(gap)
+        typed_lines(ctx, ["echo $PPID >> ~/" + f, "echo %s >> ~/%s" % (tok, f), "exit"])
+        ctx.until(lambda: len(ctx.lines(f, remote=True)) >= 3, 10)
+        time.sleep(1.5)
+        ctx.be.type("echo $$ >> ~/" + f, 12, enter=True)
+        ctx.until(lambda: len(ctx.lines(f, remote=True)) >= 4, 8)
+        l = ctx.lines(f, remote=True)
+        ok = len(l) == 4 and l[0] == l[1] == l[3] and l[2] == tok and l[0].isdigit()
+        r.check(ok, "[%s] remote subshell %s (setup gap %.1fs): want [outer pid, same pid as inner $PPID, %s, outer pid again], got %r" % (variant, label, gap, tok, l))
+        ctx.shot("%s_sub%d" % (tag, i))
+        if not ok:
+            break
+    # ---- 4. vim over ssh
+    f = tag + "_vim.txt"
+    tok = ctx.tok(6).lower()
+    if shutil.which("vim"):
+        ctx.be.type("vim -u NONE -N ~/" + f, 12, enter=True)
+        time.sleep(2.0)
+        ctx.be.type("ihello remote " + tok, 15)
+        ctx.be.key("Escape")
+        time.sleep(0.3)
+        ctx.shot("%s_vim" % tag)
+        ctx.be.type(":wq", 15, enter=True)
+        ctx.until(lambda: ctx.lines(f, remote=True), 8)
+        time.sleep(0.8)
+        exact(r, "[%s] vim over ssh wrote the typed text" % variant, ["hello remote " + tok], ctx.lines(f, remote=True))
+    else:
+        r.note("vim not installed on the box (apt: vim): vim step skipped")
+    # ---- 5. less over ssh
+    if shutil.which("less"):
+        ctx.be.type("seq 1 400 | less", 12, enter=True)
+        time.sleep(1.5)
+        ctx.be.type(" ", 20)
+        ctx.be.type("G", 20)
+        ctx.shot("%s_less" % tag)
+        ctx.be.type("q", 20)
+        time.sleep(0.8)
+    else:
+        r.note("less not installed on the box (apt: less): less step skipped")
+    tok = ctx.tok(8).lower()
+    ctx.be.type("echo %s >> ~/%s_less.txt" % (tok, tag), 12, enter=True)
+    ctx.until(lambda: ctx.lines(tag + "_less.txt", remote=True), 8)
+    exact(r, "[%s] remote shell usable after vim/less (keys of less/vim did not leak into the shell)" % variant, [tok], ctx.lines(tag + "_less.txt", remote=True))
+    # ---- 6. Ctrl-C of a remote long command
+    f = tag + "_cc.txt"
+    rm_remote(ctx, f)
+    ctx.be.type("bash -c 'trap \"echo INT >> ~/%s; exit\" INT; sleep 60'; echo AFTER >> ~/%s" % (f, f), 10, enter=True)
+    time.sleep(1.5)
+    t0 = time.time()
+    ctx.be.key("ctrl+c")
+    ctx.until(lambda: len(ctx.lines(f, remote=True)) >= 2, 8, step=0.05)
+    r.metric("remote_ctrl_c_wall_s", round(time.time() - t0, 2))
+    exact(r, "[%s] Ctrl-C reached the REMOTE command and the remote shell continued" % variant, ["INT", "AFTER"], ctx.lines(f, remote=True))
+    # ---- 7. back to local: the next local command runs locally, never remotely
+    ok = leave(ctx)
+    r.check(ok, "[%s] no local prompt after `exit` from the remote shell" % variant)
+    tok = ctx.tok(8).lower()
+    lmark = ctx.cmd_mark()
+    ctx.be.type("echo %s >> %s_back.txt" % (tok, tag), 12, enter=True)
+    ctx.until(lambda: ctx.lines(tag + "_back.txt"), 8)
+    exact(r, "[%s] local command after exit ran locally" % variant, [tok], ctx.lines(tag + "_back.txt"))
+    r.check(not ctx.lines(tag + "_back.txt", remote=True), "[%s] local command after exit ran on the REMOTE: %r" % (variant, ctx.lines(tag + "_back.txt", remote=True)))
+    if ctx.prof.commands():
+        r.check(("echo %s >> %s_back.txt" % (tok, tag)) in ctx.cmds_since(lmark), "[%s] local rec.log lacks the exact command typed after exit" % variant)
+    # ---- 8. and vice versa: connect again, a remote command runs remotely only
+    if connect(ctx, "fake", 90) is None:
+        r.check(False, "[%s] second connect never reached a remote prompt" % variant)
+    else:
+        tok = ctx.tok(8).lower()
+        ctx.be.type("echo %s >> ~/%s_m.txt" % (tok, tag), 12, enter=True)
+        ctx.until(lambda: ctx.lines(tag + "_m.txt", remote=True), 8)
+        exact(r, "[%s] second session: remote command ran remotely" % variant, [tok], ctx.lines(tag + "_m.txt", remote=True))
+        r.check(not ctx.lines(tag + "_m.txt"), "[%s] second session: remote command ran LOCALLY" % variant)
+        leave(ctx)
+    ext_hits = [l for l in ctx.log_since(log_off).splitlines() if re.search(r"remote.?server|ssh.?extension|warpif", l, re.I)]
+    r.metric("app_log_ssh_ext_lines", len(ext_hits))
+    for l in ext_hits[:6]:
+        r.note("[%s] app log: %s" % (variant, l[:200]))
+    ctx.reset()
+
+
+@case("remote_session_legacy", order=60)
+def c_remote_legacy(ctx, r):
+    """ssh WITHOUT Phosphor's remote extension (ssh_extension_install_mode = never_install, the harness default; the legacy warpify path):
+    connect, exact typing, nested subshells, vim, less, remote Ctrl-C, exit and local-vs-remote routing both ways."""
+    remote_session(ctx, r, "legacy")
+
+
+@case("remote_session_ext", order=61)
+def c_remote_ext(ctx, r):
+    """ssh WITH the remote extension path (ssh_extension_install_mode = always_install; the app is relaunched with it and relaunched back after).
+    The CI sshd host has no route to the extension download, so the app may fall back to the legacy path after trying: what is asserted is
+    that the typed input is exact either way and that the attempt costs a bounded connect time (metric connect_s)."""
+    need_ssh(ctx, r)
+    if not set_ext_mode(ctx, "always_install"):
+        r.skip("the app cannot be relaunched with always_install on this backend (sim/no app handle)")
+    try:
+        remote_session(ctx, r, "ext")
+    finally:
+        if not set_ext_mode(ctx, "never_install"):
+            r.check(False, "the app did not come back with never_install after the extension case: later cases would run on the wrong path")
+
+
+# ------------------------------------------------------------------ failing / hanging host, password prompt
+@case("ssh_hanging_host_not_local", order=62, gui=True)
+def c_ssh_hang(ctx, r):
+    """`ssh` to (a) a port that refuses and (b) a TCP listener that accepts and never speaks (a hanging host): the line typed right behind the
+    ssh Enter must never run in the LOCAL shell (the Enter-was-held-back notice), and the local shell must stay usable afterwards."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    hang_port = srv.getsockname()[1]
+    held = []
+    stop = threading.Event()
+
+    def acceptor():
+        srv.settimeout(0.5)
+        while not stop.is_set():
+            try:
+                held.append(srv.accept()[0])
+            except OSError:
+                pass
+    th = threading.Thread(target=acceptor, daemon=True)
+    th.start()
+    s2 = socket.socket()
+    s2.bind(("127.0.0.1", 0))
+    dead_port = s2.getsockname()[1]
+    s2.close()                       # nothing listens: connection refused
+    try:
+        for label, port, wait in (("refused", dead_port, 6), ("hanging", hang_port, 14)):
+            f = "sh_%s.txt" % label
+            ctx.rm(f)
+            tok = ctx.tok(6)
+            lmark = ctx.cmd_mark()
+            ctx.be.type("ssh -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=no -p %d 127.0.0.1" % port, 12, enter=True)
+            time.sleep(0.15)
+            ctx.be.type("echo MUSTNOT_%s >> %s" % (tok, f), 15, enter=True)
+            time.sleep(wait / 2)
+            ctx.shot("hang_%s_mid" % label)
+            time.sleep(wait / 2)
+            r.check(not ctx.lines(f), "[%s host] the line typed behind ssh ran LOCALLY: %r" % (label, ctx.lines(f)))
+            r.check(not any("MUSTNOT_" + tok in c for c in ctx.cmds_since(lmark)),
+                    "[%s host] the LOCAL shell received the line typed behind ssh: %r" % (label, ctx.cmds_since(lmark)))
+            ctx.reset()
+            tok2 = ctx.tok(6).lower()
+            ctx.be.type("echo %s >> %s" % (tok2, f), 12, enter=True)
+            ctx.until(lambda: ctx.lines(f), 8)
+            exact(r, "[%s host] the local shell is usable afterwards (and has none of the held line)" % label, [tok2], ctx.lines(f))
+    finally:
+        stop.set()
+        th.join(2)
+        for c in held:
+            c.close()
+        srv.close()
+    ctx.reset()
+
+
+def ps_has(host):
+    """is an ssh client for <host> running (Phosphor's ssh wrapper may add options, so match the args, not the typed text)"""
+    out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+    return any(re.match(r"(\S*/)?ssh\s.*\b%s\b" % re.escape(host), l) for l in out.splitlines())
+
+
+@case("ssh_password_prompt", order=63)
+def c_ssh_password(ctx, r):
+    """The owner's rule for a password-style prompt: keys typed BEFORE the prompt are discarded (never sent to the prompt, never run in a shell),
+    keys typed AFTER it reach the prompt. The prompt is ssh's own `Enter passphrase for key` on the tty (host `fakepw`: a passphrase-protected
+    key the local sshd accepts, NumberOfPasswordPrompts 1, so one wrong try ends the ssh). Evidence: the correct passphrase typed after the prompt
+    logs in (junk typed before did not consume the single attempt), the junk and the passphrase are in no shell's rec.log, a wrong passphrase
+    returns to the LOCAL shell where the next command runs locally."""
+    need_ssh(ctx, r)
+    if not ctx.ssh.get("pwident"):
+        r.skip("the passphrase-key prompt needs the system OpenSSH sshd (apt: openssh-server); fakesshd.py cannot prompt")
+    pw = ctx.ssh["passphrase"]
+    f = "pw.txt"
+    rm_remote(ctx, f)
+    ctx.rm(f)
+    lm, rm_ = ctx.cmd_mark(), len(ctx.prof.commands(remote=True))
+    junk = "JUNKpre" + ctx.tok(5)
+    before = rprompts(ctx)
+    ctx.be.type("ssh fakepw", 12, enter=True)
+    time.sleep(0.1)
+    ctx.be.type(junk, 15, enter=True)                  # impatient typing before the prompt exists
+    ctx.until(lambda: ps_has("fakepw"), 5, step=0.05)
+    time.sleep(2.0)                                    # the passphrase prompt is up
+    ctx.shot("pw_prompt")
+    txt = ctx.ocr("pw_prompt_ocr")
+    if txt is not None:
+        r.check("passphrase" in txt.lower(), "OCR does not show the `Enter passphrase` prompt before the post-prompt keys are typed: ssh may have failed before prompting")
+    ctx.be.type(pw, 15, enter=True)                    # after the prompt: must reach it
+    ok = ctx.until(lambda: rprompts(ctx) > before, 30, step=0.1)
+    r.check(bool(ok), "keys typed AFTER the prompt did not reach it: no remote shell after typing the passphrase (junk typed before may have consumed the single attempt)")
+    ctx.shot("pw_after")
+    if ok:
+        tok = ctx.tok(8).lower()
+        time.sleep(1.0)
+        ctx.be.type("echo %s >> ~/%s" % (tok, f), 12, enter=True)
+        ctx.until(lambda: ctx.lines(f, remote=True), 8)
+        exact(r, "remote command after the password login", [tok], ctx.lines(f, remote=True))
+        leave(ctx)
+    allcmds = [c for _, c in ctx.prof.commands()[lm:]] + [c for _, c in ctx.prof.commands(remote=True)[rm_:]]
+    r.check(not any(junk in c for c in allcmds), "the key burst typed BEFORE the prompt reached a shell instead of being discarded: %r" % [c for c in allcmds if junk in c])
+    r.check(not any(pw in c for c in allcmds), "the passphrase ended up in a shell's command history (it was typed into a shell, not the prompt)")
+    if txt is not None:
+        after = ctx.ocr("pw_after_ocr") or ""
+        r.check(pw not in after, "the passphrase is visible on screen (echoed)")
+    # wrong passphrase: ssh ends, the LOCAL shell is back and the next line runs locally
+    ctx.reset()
+    lm = ctx.cmd_mark()
+    ctx.be.type("ssh fakepw", 12, enter=True)
+    ctx.until(lambda: ps_has("fakepw"), 5, step=0.05)
+    time.sleep(2.0)
+    ctx.be.type("wrong-" + ctx.tok(4), 15, enter=True)
+    ctx.until(lambda: not ps_has("fakepw"), 15, step=0.2)
+    time.sleep(1.5)
+    tok = ctx.tok(8).lower()
+    ctx.be.type("echo %s >> %s" % (tok, f), 12, enter=True)
+    ctx.until(lambda: ctx.lines(f), 8)
+    exact(r, "after a wrong passphrase the next command ran in the LOCAL shell", [tok], ctx.lines(f))
+    r.check(not any("wrong-" in c for _, c in ctx.prof.commands()[lm:]), "the wrong passphrase was run as a shell command")
+    ctx.reset()
+
+
+# ------------------------------------------------------------------ per-shell variants (shell started from the harness's bash tab)
+# shell: (binary, apt/other package for the skip message, start-up wait s, append(tok, file), sleep command, exit)
+SHELLS = {
+    "zsh": ("zsh", "zsh (apt install zsh)", 2.5, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
+    "fish": ("fish", "fish (apt install fish)", 3.0, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
+    "nu": ("nu", "nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`)", 4.0,
+           lambda t, f: '"%s" | save --append %s' % (t, f), "sleep 30sec", "exit"),
+    "pwsh": ("pwsh", "PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell)", 7.0,
+             lambda t, f: "Add-Content %s %s" % (f, t), "Start-Sleep 30", "exit"),
+}
+
+
+def make_shell_case(key):
+    binary, pkg, wait, app, slp, ex = SHELLS[key]
+
+    @case("shell_" + key, order=70)
+    def run(ctx, r):
+        """the core typing / subshell path with <shell> as a subshell of the pane's bash: it starts (readiness proven by a probe line, not a
+        fixed sleep), 12 lines typed at 10-25 ms with instant Enter arrive exactly, a pasted line + instant Enter arrives, Ctrl-C ends a long
+        command and the shell takes the next line, and `exit` returns to the pane's bash where the next command runs."""
+        if not shutil.which(binary):
+            r.skip("package %s not installed" % pkg)
+        p, f, g, h = "sh_%s_probe.txt" % key, "sh_%s_ft.txt" % key, "sh_%s_pe.txt" % key, "sh_%s_cc.txt" % key
+        ctx.rm(p, f, g, h, "sh_%s_back.txt" % key)
+        cmd = "pwsh -NoLogo -NoProfile" if key == "pwsh" else ("nu --no-config-file" if key == "nu" else binary)
+        ctx.be.type(cmd, 12, enter=True)
+        time.sleep(wait)
+        ready = False
+        for _ in range(4):
+            ctx.be.type(app("probe", p), 12, enter=True)
+            if ctx.until(lambda: ctx.lines(p), 3):
+                ready = True
+                break
+        ctx.shot("shell_%s_started" % key)
+        r.check(ready, "%s never executed a probe line after start (wait %.1fs + 4 probes)" % (key, wait))
+        if not ready:
+            ctx.reset()
+            return
+        n = ctx.count(12)
+        exp = []
+        for _ in range(n):
+            tok = ctx.tok(10).lower()
+            exp.append(tok)
+            ctx.be.type(app(tok, f), ctx.rng.randint(10, 25), enter=True)
+        ctx.until(lambda: len(ctx.lines(f)) >= n, 20 + n)
+        time.sleep(0.5)
+        exact(r, "%s: %d typed lines" % (key, n), exp, ctx.lines(f))
+        # paste + instant Enter
+        pexp = []
+        for _ in range(ctx.count(4)):
+            tok = ctx.tok(10).lower()
+            pexp.append(tok)
+            ctx.be.clip_set(app(tok, g))
+            ctx.be.paste(enter=True)
+            time.sleep(0.9)
+        ctx.until(lambda: len(ctx.lines(g)) >= len(pexp), 12)
+        exact(r, "%s: pasted lines + instant Enter" % key, pexp, ctx.lines(g))
+        # Ctrl-C
+        ctx.be.type(slp, 12, enter=True)
+        time.sleep(1.5)
+        ctx.be.key("ctrl+c")
+        time.sleep(0.8)
+        tok = ctx.tok(8).lower()
+        ctx.be.type(app(tok, h), 12, enter=True)
+        got = ctx.until(lambda: ctx.lines(h), 6)
+        exact(r, "%s: Ctrl-C ended the long command and the shell ran the next line (within ~7 s, not after the 30 s sleep)" % key, [tok], got or [])
+        # exit back to the pane's bash
+        ctx.be.type(ex, 12, enter=True)
+        time.sleep(2.0)
+        tok = ctx.tok(8).lower()
+        b = "sh_%s_back.txt" % key
+        ctx.be.type("echo %s >> %s" % (tok, b), 12, enter=True)
+        ctx.until(lambda: ctx.lines(b), 8)
+        exact(r, "%s: after exit the pane's bash ran the next command" % key, [tok], ctx.lines(b))
+        ctx.reset()
+    return run
+
+
+for _k in SHELLS:
+    make_shell_case(_k)

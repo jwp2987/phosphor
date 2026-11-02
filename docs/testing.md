@@ -343,7 +343,28 @@ delivery latency, Ctrl-D in `cat` and in a nested bash), `read_x`, `subshells` (
 installed), `alt_screen` (less, vim), `ssh_connect_typing` (0/100/200/300 ms after Enter, `APPCI_SSH_TRIALS` per gap, exact remote
 command, nothing local), `ssh_enter_then_immediate_command` (#1415: `ssh fake` Enter and the next command with no pause), `ssh_nested_typeahead` (#1421: a nested ssh and the line behind it, typed during the first connect; runs once, remotely), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs a reference terminal in the same session),
 `latency_key_log` (key to first frame from the app's own `input_order` log), `approval_card_pause` (agent, needs a provider),
-`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
+`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste).
+Remote and per-shell cases (`cases_caseremote.py`, issue #1464; all FULL tier, none in SMOKE; order 60-70):
+`remote_session_legacy` (ssh with `never_install`, the legacy warpify path: 12 lines typed at 10-25 ms inside the remote shell arrive exactly and
+ONLY there (remote `rec.log` exact, local file and local `rec.log` empty); nested remote subshells `bash`, `bash` typed with no wait, `sh` and
+`env -i ... bash --noprofile --norc -i` as the stand-in for sudo/su/ksu (none works non-interactively on CI), the nesting proven by pid (inner `$PPID` ==
+outer `$$`, outer pid again after `exit`); vim over ssh (`ihello ...`, Esc, `:wq`, file content exact); `less` (space, G, q, no key leaks into the
+shell); Ctrl-C of a remote `sleep 60` (a `trap` writes `INT`, then `AFTER`); `exit` and the next LOCAL command runs locally and never remotely; a second
+connect and a remote command runs remotely and never locally), `remote_session_ext` (the same steps with `always_install`: the app is relaunched with the
+setting and relaunched back with `never_install` afterwards; the CI host has no route to the extension download, so the app may fall back, and the
+case asserts exact input and records `connect_s` and the app-log lines naming the remote server / extension), `ssh_hanging_host_not_local` (a refused
+port and a TCP listener that never speaks, `ConnectTimeout=4`: the line typed behind the ssh Enter never runs locally nor reaches the local `rec.log`;
+the local shell is usable afterwards), `ssh_password_prompt` (the owner's rule: host `fakepw` is a passphrase-protected key the local sshd accepts,
+so ssh stops at `Enter passphrase for key` on the tty, `NumberOfPasswordPrompts 1`. A junk burst typed BEFORE the prompt must be discarded and not
+reach any shell; the passphrase typed AFTER it must reach the prompt and log in; neither appears in any `rec.log`; a wrong passphrase returns to the
+local shell where the next command runs locally. Needs the system OpenSSH sshd; fakesshd.py cannot prompt, so it skips there),
+`shell_zsh`, `shell_fish`, `shell_nu`, `shell_pwsh` (each shell as a subshell of the pane's bash: a probe line proves readiness, 12 typed lines, pasted
+lines + instant Enter, Ctrl-C of a 30 s sleep then the next line, `exit` and the pane's bash runs the next command). A missing shell SKIPS with the
+package: `apt install zsh`, `apt install fish`, PowerShell 7 from the Microsoft apt repo (`packages-microsoft-prod.deb`, then `apt install powershell`),
+nushell is not in the Ubuntu repos (release tarball from github.com/nushell/nushell or `cargo install nu --locked`). The pane's own primary shell is
+still bash (the harness rc files log its `rec.log`); a zsh/fish/nu/pwsh PRIMARY shell would need per-shell logging rc files in `profile.py`.
+Windows adds `gitbash_subshell` (Git for Windows `bash.exe` started from the pane's PowerShell: 20 fast-typed lines, 4 pasted lines of 10-5000 bytes
+with instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell; skips when Git for Windows is absent). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
 
 #### Latency budgets and regression checks (`latency_enter`, `latency_key_log`, `ctrl_c_d`; Windows `latency_enter`)

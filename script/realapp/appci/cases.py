@@ -1027,3 +1027,4 @@ def c_tabs(ctx, r):
     r.check(ctx.lines("tw.txt") == exp, "typing/paste in window 2 under %d streaming tabs: %d/%d exact lines" % (ntabs, len(ctx.lines("tw.txt")), len(exp)))
     ctx.shot("two_windows")
     r.check(ctx.app.alive(), "app not alive at the end of the tabs/windows case")
+import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh + per-shell variants)

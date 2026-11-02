@@ -4,6 +4,7 @@
 # when python3-paramiko is importable. Neither available -> start() returns None and the ssh cases SKIP.
 import os, shutil, socket, subprocess, sys, time
 
+PW_PASSPHRASE = "ppCI-7431-test"       # protects ONLY the throw-away key below; it exists to give the ssh cases a real tty prompt (cases_caseremote.py)
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -21,7 +22,12 @@ def start(prof, run):
         for k in ("hostkey", "clientkey"):
             if not os.path.exists(os.path.join(d, k)):
                 subprocess.run([kg, "-q", "-t", "ed25519", "-N", "", "-f", os.path.join(d, k)], check=True)
-        shutil.copy(os.path.join(d, "clientkey.pub"), os.path.join(d, "authorized_keys"))
+        # second client key, protected by a passphrase: `ssh fakepw` stops at "Enter passphrase for key" on the tty, the only password-style prompt an unprivileged sshd can give
+        if not os.path.exists(os.path.join(d, "pwkey")):
+            subprocess.run([kg, "-q", "-t", "ed25519", "-N", PW_PASSPHRASE, "-f", os.path.join(d, "pwkey")], check=True)
+        with open(os.path.join(d, "authorized_keys"), "w") as ak:
+            ak.write(open(os.path.join(d, "clientkey.pub")).read())
+            ak.write(open(os.path.join(d, "pwkey.pub")).read())
         os.chmod(os.path.join(d, "authorized_keys"), 0o600)
         force = os.path.join(d, "force.sh")
         open(force, "w").write('#!/bin/bash\nexport HOME="%s"\ncd "$HOME"\nif [ -n "$SSH_ORIGINAL_COMMAND" ]; then exec bash -c "$SSH_ORIGINAL_COMMAND"; else exec bash -l -i; fi\n' % prof.rhome)
@@ -44,7 +50,8 @@ def start(prof, run):
         else:
             p.kill()
         if p.poll() is None:
-            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "openssh", "popen": p}
+            return {"port": port, "ident": os.path.join(d, "clientkey"), "kind": "openssh", "popen": p,
+                    "pwident": os.path.join(d, "pwkey"), "passphrase": PW_PASSPHRASE}
     try:
         import paramiko  # noqa: F401
     except ImportError:

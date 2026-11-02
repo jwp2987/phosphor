@@ -310,9 +310,39 @@ function C-Tabs($mode) {
   if ($script:AppProc.HasExited) { return @("fail", @("app died with 12 streaming tabs"), @{}) }
   if (($got -join "|") -eq ($exp -join "|")) { @("pass", @(), @{}) } else { @("fail", @("typing under 12 streaming tabs: $($got.Count)/10 exact"), @{}) }
 }
+# Git Bash as a subshell of the pane's PowerShell (issue #1464): fast typing, paste + instant Enter, Ctrl-C. Skips when Git for Windows is absent.
+function C-GitBash($mode) {
+  $gb = @("$env:ProgramFiles\Git\bin\bash.exe", "${env:ProgramFiles(x86)}\Git\bin\bash.exe", "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if (-not $gb) { return @("skip", @("Git for Windows not installed (bash.exe not under Program Files\Git\bin)"), @{}) }
+  $fails = @(); $pf = "$Work\gb_probe.txt"
+  foreach ($n in "gb_probe", "gb_ft", "gb_pe", "gb_cc", "gb_back") { Remove-Item "$Work\$n.txt" -ErrorAction SilentlyContinue }
+  TypeText "& '$gb' --noprofile --norc -i" -Enter; Start-Sleep 4
+  $ready = $false
+  for ($k = 0; $k -lt 4 -and -not $ready; $k++) { TypeText "echo probe >> gb_probe.txt" -Enter; $ready = (Wf $pf 1 4).Count -ge 1 }
+  $sh0 = Shot "${mode}_gitbash_started"
+  if (-not $ready) { return @("fail", @("Git Bash never executed a probe line (cwd $Work)"), @{}) }
+  $exp = @(); for ($i = 0; $i -lt 20; $i++) { $tok = Tok; $exp += $tok; TypeText "echo $tok >> gb_ft.txt" -Enter }
+  $got = @(Wf "$Work\gb_ft.txt" 20 30) | ForEach-Object { $_.TrimEnd("`r") }
+  if (($got -join "|") -ne ($exp -join "|")) { $fails += "Git Bash fast typing: $($got.Count)/20 lines, exact match false (expected first=$($exp[0]) got first=$($got[0]))" }
+  $exp = @(); for ($i = 0; $i -lt 4; $i++) { $tok = Tok; $pad = "w" * (10, 500, 5000, 50)[$i]; $exp += ($tok + $pad)
+    Set-Clipboard -Value "echo $tok$pad >> gb_pe.txt"; Keys "^+v"; Keys "{ENTER}"; Start-Sleep -Milliseconds 900 }
+  $got = @(Wf "$Work\gb_pe.txt" 4 20) | ForEach-Object { $_.TrimEnd("`r") }
+  if (($got -join "|") -ne ($exp -join "|")) { $fails += "Git Bash paste + instant Enter: $($got.Count)/4 exact lines" }
+  $c = 0
+  for ($i = 0; $i -lt 3; $i++) {
+    TypeText "bash -c 'trap `"echo INT$i >> gb_cc.txt; exit`" INT; sleep 30'; echo AFTER$i >> gb_cc.txt" -Enter
+    Start-Sleep -Milliseconds 1800; Keys "^c"; $g = @(Wf "$Work\gb_cc.txt" (2 * ($i + 1)) 8); if ($g.Count -ge 2 * ($i + 1)) { $c++ } }
+  if ($c -ne 3) { $fails += "Git Bash Ctrl-C: the trap and the next line ran $c/3 times: $((Get-Content "$Work\gb_cc.txt" -ErrorAction SilentlyContinue) -join ',')" }
+  TypeText "exit" -Enter; Start-Sleep 2; $tok = Tok
+  TypeText "Add-Content gb_back.txt $tok" -Enter
+  $got = @(Wf "$Work\gb_back.txt" 1 8)
+  if (($got -join "|") -ne $tok) { $fails += "after exiting Git Bash the pane's PowerShell did not run the next command: $($got -join ',')" }
+  if ($fails.Count) { @("fail", $fails, @{}) } else { @("pass", @(), @{}) }
+}
 $Cases = @(
   @{ n = "fast_typing"; f = ${function:C-Fast} }, @{ n = "paste_instant_enter"; f = ${function:C-PasteEnter} }, @{ n = "ctrl_c"; f = ${function:C-CtrlC} },
-  @{ n = "latency_enter"; f = ${function:C-EnterLatency} }, @{ n = "idle_cpu"; f = ${function:C-Idle} }, @{ n = "tabs_streaming"; f = ${function:C-Tabs} })
+  @{ n = "latency_enter"; f = ${function:C-EnterLatency} }, @{ n = "idle_cpu"; f = ${function:C-Idle} }, @{ n = "tabs_streaming"; f = ${function:C-Tabs} },
+  @{ n = "gitbash_subshell"; f = ${function:C-GitBash} })
 # APPCI_TIER=smoke: the input-path subset (fix tier); empty/full: every case.
 if ($env:APPCI_TIER -eq "smoke") { $Cases = @($Cases | Where-Object { @("fast_typing", "paste_instant_enter", "ctrl_c", "latency_enter") -contains $_.n }) }
 
