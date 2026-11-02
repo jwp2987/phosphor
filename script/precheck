@@ -518,9 +518,6 @@ fi
 # They were not skipped out of carelessness -- the obvious command genuinely
 # does not work here, and each obstacle stops you before reaching a test:
 #
-#   * `nextest run --workspace` fails outright on command-signatures-v2, whose
-#     build script shells out to yarn to generate code. It has 0 tests, so it
-#     is excluded rather than fixed.
 #   * A cold --workspace build exceeds any reasonable CI/agent time budget, and
 #     it re-resolves features so it invalidates the cached single-package
 #     builds -- making the NEXT run slower too.
@@ -536,7 +533,7 @@ fi
 # not existed. Unrun is not the same as broken; it just means nobody would know.
 #
 # NOTE (still open): this runs DEFAULT features. Code behind `local_fs`
-# (repo_metadata, persistence, ai), `plugin_host` (warp_cli) and `test-util` is
+# (repo_metadata, persistence, ai), and `test-util` is
 # still not exercised. Calling the workspace green on the strength of this step
 # would repeat the exact warpui_core mistake.
 step "rest of the workspace (40 packages)"

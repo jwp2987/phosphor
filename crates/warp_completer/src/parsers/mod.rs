@@ -1,9 +1,7 @@
-#[cfg_attr(feature = "v2", path = "v2.rs")]
-#[cfg_attr(not(feature = "v2"), path = "legacy.rs")]
+#[path = "legacy.rs"]
 mod imp;
 use imp::*;
 
-#[cfg(not(feature = "v2"))]
 pub use imp::SignatureAtTokenIndex;
 
 mod errors;

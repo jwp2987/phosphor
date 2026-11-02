@@ -57,13 +57,12 @@ Hard rules:
   UI core: `crates/warpui_core` (`--features tui` is mandatory, otherwise ~259 `elements/tui` tests do not
   exist and the run is a false green). The remaining ~40 library crates under `crates/` have their own
   unit tests; the list is the `test-workspace-rest` job in `.gitlab-ci.yml`.
-  `command-signatures-v2` is excluded (build script needs yarn, 0 tests).
 - **warp_tui tests need the warp package in the same invocation** (feature unification of `test-util`):
 
       script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui [filter]
 
   `-p warp_tui` alone fails to compile (`debug_text_content is not a member of trait Element`).
-- Full workspace: `nextest run --no-fail-fast --workspace --exclude command-signatures-v2`; in practice use
+- Full workspace: `nextest run --no-fail-fast --workspace`; in practice use
   `script/check_test_failures` (below) so the known-failure contract is applied.
 - **Known failures** (`script/known_test_failures.txt`): currently EMPTY (header only). Contract of
   `script/check_test_failures`: a failing test not on the list is a regression (exit 1); a listed test that
@@ -441,7 +440,7 @@ Windows runners are separate machines), so a fix push is bounded by `check-linux
 path set AND the `build-X` job block (plus `.shim_github_env` / `.windows_job`) in `.gitlab-ci.yml` is textually identical. App-affecting
 is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs/`, `*.md`, `.gitlab*`, `specs/`, `fuzz/`, `script/ci/`,
 `script/realapp/`, `script/check_*`, `script/test_*`, `precheck`/`presubmit`/`state`, agent/editor files. So `app/`, `crates/`, `lib/`,
-`Cargo.*`, toolchain, `.cargo/`, `assets/`, `resources/`, `themes/`, `command-signatures-v2/`, `script/{bundle,linux,macos,windows,install_*,
+`Cargo.*`, toolchain, `.cargo/`, `assets/`, `resources/`, `themes/`, `script/{bundle,linux,macos,windows,install_*,
 prepare_*}` and any new unlisted path rebuild (fail safe). Each platform prints its decision (`macos: reusing build job N from pipeline P
 (commit C), app unchanged` or `macos: building, app changed in: <paths>`); `--no-reuse` forces builds. `candidate` and `release` NEVER reuse.
 Reused platforms start their app test right after `check-linux` (no build to wait for); the smoke tier does not play `app-test-linux-x11-reuse` (it

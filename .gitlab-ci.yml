@@ -615,8 +615,6 @@ insta-snapshots:
 # The rest of the workspace: one invocation listing every package, exactly as
 # script/precheck does. Do not split it: check_test_failures treats a known failure
 # that did not run as "fixed", and splitting thrashes the shared target dir.
-# `--workspace` fails on command-signatures-v2 (its build script shells out to yarn,
-# 0 tests), so it is excluded by name.
 test-workspace-rest:
   extends: [.box_job, .heavy_rules]
   timeout: 3h
