@@ -3072,7 +3072,9 @@ fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
             "local",
             &["--login".to_owned(), "--execute".to_owned(), init],
             // A user config that records space-led lines: the init script must still hide ours.
-            "$env.config.history.ignore_space_prefixed = false\n",
+            // nushell ships no default aliases (0.116), so the config defines one to prove
+            // `Bootstrapped.aliases` reports the shell's real alias table.
+            "$env.config.history.ignore_space_prefixed = false\nalias phosphor_test_alias = echo aliased\n",
             &[("WARP_HONOR_PS1", "1")],
             &steps,
         ) else {
@@ -3110,6 +3112,14 @@ fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
                 "Bootstrapped.{key} is empty: {bootstrapped}"
             );
         }
+        assert!(
+            bootstrapped["aliases"]
+                .as_str()
+                .unwrap()
+                .contains("phosphor_test_alias -> echo aliased"),
+            "alias table: {}",
+            bootstrapped["aliases"]
+        );
         let builtins: Vec<&str> = bootstrapped["builtins"].as_str().unwrap().lines().collect();
         for builtin in ["ls", "where", "each", "open", "get", "select", "http"] {
             assert!(
