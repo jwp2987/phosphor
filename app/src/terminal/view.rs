@@ -21776,9 +21776,9 @@ impl TerminalView {
     /// Executes a command that was submitted by the user and not yet sent to the shell.
     pub fn execute_pending_command(&mut self, _: (), ctx: &mut ViewContext<Self>) {
         let had_pending = self.input.read(ctx, |input, _| input.has_pending_command());
-        let pending_text = self
-            .input
-            .read(ctx, |input, _| input.pending_command_text().map(str::to_owned));
+        let pending_text = self.input.read(ctx, |input, _| {
+            input.pending_command_text().map(str::to_owned)
+        });
         self.input.update(ctx, |input, ctx| {
             input.execute_pending_command(ctx);
         });
