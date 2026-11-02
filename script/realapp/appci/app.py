@@ -167,14 +167,23 @@ class MacApp:
             return self._pid
         inst = self._instances()
         if inst:
-            self._pid = self.last_pid = min(p for p, _ in inst)
-            if len(inst) > 1:
-                self.warn = "%d processes inside %s: %s" % (len(inst), self.bundle, [p for p, _ in inst])
+            main = [p for p, c in inst if not self._is_helper(c)] or [p for p, _ in inst]
+            self._pid = self.last_pid = min(main)
+            if len(main) > 1:
+                self.warn = "%d app instances inside %s: %s" % (len(main), self.bundle, main)
             return self._pid
         return None
 
     def instance_count(self):
-        return len(self._instances())
+        """App INSTANCES, not processes: Phosphor runs a `terminal-server` helper from the same executable, which is part of
+        the one instance (first Mac CI reuse run counted it and refused to start). A second instance is a second process
+        WITHOUT a helper role argument."""
+        return len([p for p, c in self._instances() if not self._is_helper(c)])
+
+    @staticmethod
+    def _is_helper(command):
+        parts = command.split()
+        return len(parts) > 1 and parts[1] in ("terminal-server",)
 
     def alive(self):
         return self.pid() is not None
