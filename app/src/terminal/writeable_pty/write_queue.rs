@@ -43,9 +43,6 @@ pub enum JobClass {
     Agent,
     /// A bootstrap script written in paced chunks. One unit: nothing but a reply lands inside it.
     SetupChunked,
-    /// A window size change. Applied immediately and coalesced (#1376), never queued as bytes.
-    #[allow(dead_code)]
-    Winsize,
 }
 
 impl JobClass {

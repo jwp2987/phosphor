@@ -311,9 +311,7 @@ use crate::terminal::session_settings::{
     NotificationsMode, NotificationsSettings, SessionSettings,
 };
 use crate::terminal::settings::{TerminalSettings, TerminalSettingsChangedEvent};
-use crate::terminal::shared_session::{
-    SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionStatus,
-};
+use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
@@ -659,8 +657,6 @@ lazy_static! {
     /// See [`TerminalView::resize_alt_screen_redundantly`] for more details.
     static ref ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING: HashSet<&'static str> = HashSet::from(["k9s", "lazygit"]);
 }
-
-pub const AI_CONTROL_PANEL_MARGIN: f32 = 10.;
 
 pub const OVERFLOW_BUTTON_OFFSET_X: f32 = -3.;
 pub const MAX_WAKEUPS_PER_SECOND: u64 = 60;
@@ -3014,7 +3010,6 @@ pub struct TerminalView {
 
     last_hover_fragment_boundary: Option<WithinModel<FragmentBoundary>>,
 
-    bootstrap_start: Option<Instant>,
     is_login_shell_bootstrapped: bool,
     /// Set when a pending command is submitted to the shell. Cleared on the
     /// next `AfterBlockCompleted`, at which point `Event::PendingCommandCompleted`
@@ -3306,10 +3301,6 @@ pub struct TerminalView {
     // and [`SharedSessionKind::Viewer`] to store some common struct for common fields.
     shared_session: Option<SharedSessionAdapter>,
 
-    /// Stashed source from `attempt_to_share_session` so `on_session_share_started`
-    /// can decide whether to auto-copy the link vs open the sharing dialog.
-    pending_share_source: Option<SharedSessionActionSource>,
-
     /// When true, automatically stop the shared session when the CLI agent session ends.
     /// Set when sharing is started from the remote control entrypoint.
     auto_stop_sharing_on_cli_end: bool,
@@ -3378,11 +3369,6 @@ pub struct TerminalView {
     /// Hover state for the window-footer-bar tooltip above. A single handle is enough:
     /// only one footer bar is ever rendered per `TerminalView`.
     window_footer_bar_tooltip_mouse_state: MouseStateHandle,
-
-    /// The keystroke bound to canceling a command.
-    /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
-    /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
-    cancel_command_keystroke: Option<Keystroke>,
 
     /// Whether the terminal view is currently a drop target for a file. If it is, we render an overlay.
     is_file_drop_target: bool,
@@ -4811,9 +4797,6 @@ impl TerminalView {
             },
         );
         ctx.subscribe_to_model(&KeybindingChangedNotifier::handle(ctx), |me, _, _, ctx| {
-            me.cancel_command_keystroke =
-                keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx);
-
             me.refresh_pane_header(ctx);
             ctx.notify();
         });
@@ -4968,7 +4951,6 @@ impl TerminalView {
             find_link_tx,
             highlighted_link: HighlightedLinkOption::default(),
             last_hover_fragment_boundary: None,
-            bootstrap_start: None,
             is_login_shell_bootstrapped: false,
             awaiting_pending_command_completion: false,
             enter_agent_view_after_pending_commands: false,
@@ -5075,7 +5057,6 @@ impl TerminalView {
             ai_render_context,
             streaming_render_context_signature: None,
             shared_session: None,
-            pending_share_source: None,
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
@@ -5094,7 +5075,6 @@ impl TerminalView {
             window_footer_bar_color: None,
             window_footer_bar_tooltip: None,
             window_footer_bar_tooltip_mouse_state: Default::default(),
-            cancel_command_keystroke: keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx),
             is_file_drop_target: false,
             is_ssh_file_uploader: false,
             ssh_file_upload,
@@ -36476,10 +36456,8 @@ impl Drop for TerminalView {
                     "Session abandoned before bootstrap for shell {pending_shell:?} on ssh {has_pending_ssh_session}"
                 );
 
-                let duration_since_start =
-                    self.bootstrap_start.unwrap_or_else(Instant::now).elapsed();
                 log::debug!(
-                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}, duration_since_start={duration_since_start:?}",
+                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}",
                     self.was_ever_visible,
                 );
             }

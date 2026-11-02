@@ -55,7 +55,7 @@ use super::lifecycle::{
 };
 use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
-use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
+use super::session::{InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
 use super::reply_ledger::SharedReplyLedger;
@@ -379,22 +379,6 @@ enum IsReceivingKittyActionData {
 enum IsReceivingHook {
     Yes { pending_hook: Box<PendingHook> },
     No,
-}
-
-/// Information needed to render a warpify "success" block upon successful subshell bootstrap.
-#[derive(Debug, Clone)]
-pub struct SubshellSuccessBlockInfo {
-    /// The ID of the newly bootstrapped subshell session.
-    /// This ID is needed in order to associate the success block with the subshell session (and
-    /// include it in the subshell "context" UI, with the flag and block border).
-    pub subshell_session_id: SessionId,
-
-    /// The command which spawned the subshell.
-    pub spawning_command: String,
-
-    pub shell_type: ShellType,
-
-    pub session_type: BootstrapSessionType,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]

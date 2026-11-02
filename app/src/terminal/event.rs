@@ -215,11 +215,6 @@ pub enum SshLoginStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct InitShellEvent {
-    pub pending_session_info: SessionInfo,
-}
-
-#[derive(Clone, Debug)]
 pub struct BootstrappedEvent {
     /// The command which spawned the shell.
     pub spawning_command: String,
