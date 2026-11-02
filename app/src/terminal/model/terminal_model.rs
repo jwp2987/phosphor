@@ -96,6 +96,7 @@ use std::ops::{Range, RangeInclusive};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
@@ -481,6 +482,12 @@ pub struct TerminalModel {
     key_facts: KeyFactsCell,
     /// What the rest of the user-key path reads (#1404); see [`KeyModelSnapshot`].
     key_model: KeyModelCell,
+    /// The publication counter (#1424): bumped by every `publish_key_facts`, stored in BOTH
+    /// published cells so a reader can tell whether they describe the same moment. Never moves
+    /// backwards and is never stored by the main thread (a refresh stores the gen it read).
+    facts_gen: AtomicU64,
+    /// What the snapshot remembers about the active block's output between publications.
+    sticky_output: warpui_core::sync_shim::Mutex<super::key_facts::StickyOutput>,
     /// What the main thread left for this model to apply (the key path writes here instead of
     /// taking the lock); drained before every parse.
     inbox: ModelInbox,
@@ -1243,6 +1250,8 @@ impl TerminalModel {
             },
             key_facts: KeyFactsCell::default(),
             key_model: KeyModelCell::default(),
+            facts_gen: AtomicU64::new(0),
+            sticky_output: Default::default(),
             inbox: ModelInbox::default(),
             reply_ledger: SharedReplyLedger::default(),
             setup_echo_filter: SetupEchoFilter::default(),
@@ -1852,9 +1861,30 @@ impl TerminalModel {
 
     /// Stores the key-path facts for readers that cannot take this model's lock. Called after
     /// every parse, after the inbox is applied, and by the main thread where it changes them.
+    ///
+    /// Every publication has a new gen (#1424), stored in both cells: the snapshot first, then
+    /// the facts, so a reader that finds the same gen in both read one publication whole (see
+    /// `key_facts::load_consistent`).
     pub fn publish_key_facts(&self) {
-        self.key_facts.store(KeyFacts::from_model(self));
-        self.key_model.store(KeyModelSnapshot::from_model(self));
+        let facts_gen = self.facts_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let snapshot = KeyModelSnapshot::from_model(self);
+        debug_assert_eq!(snapshot.facts_gen, facts_gen);
+        self.key_model.store(snapshot);
+        self.key_facts
+            .store_with_gen(KeyFacts::from_model(self), facts_gen);
+    }
+
+    /// The gen of the latest publication (0 before the first). A main-thread refresh that read
+    /// the exact state stores it unchanged.
+    pub fn facts_gen(&self) -> u64 {
+        self.facts_gen.load(Ordering::Acquire)
+    }
+
+    /// The sticky output facts the snapshot is built with.
+    pub(crate) fn sticky_output(
+        &self,
+    ) -> &warpui_core::sync_shim::Mutex<super::key_facts::StickyOutput> {
+        &self.sticky_output
     }
 
     /// Applies, in order, what the main thread left in the inbox (the key path's bookkeeping),
@@ -2928,6 +2958,12 @@ impl TerminalModel {
     }
 
     pub fn needs_bracketed_paste(&mut self) -> bool {
+        delegate!(self.needs_bracketed_paste())
+    }
+
+    /// [`Self::needs_bracketed_paste`] through a shared reference (every callee takes `&self`),
+    /// for the published key snapshot (#1424).
+    pub fn needs_bracketed_paste_shared(&self) -> bool {
         delegate!(self.needs_bracketed_paste())
     }
 

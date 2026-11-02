@@ -30,7 +30,9 @@ use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use super::{EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin};
+use super::{
+    EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin, PaneRouteState, QueueFacts, Stamp,
+};
 
 /// Paste ids owned by the input editor have this bit set; the pty's do not. One counter hands out
 /// both (the low bits), the tag only says who delivers the paste.
@@ -51,8 +53,13 @@ pub enum PasteOwner {
 /// never a key written as typed, never a one-shot cap consumed for nothing.
 #[derive(Debug)]
 pub enum Deferred {
-    /// `InputQueue::offer_with_origin`.
-    Offer { kind: EntryKind, origin: Origin },
+    /// `InputQueue::offer_with_origin`. `stamp` is what the key had at the sink (#1424), taken
+    /// before the `try_lock` that failed: applying the offer later does not re-stamp it.
+    Offer {
+        kind: EntryKind,
+        origin: Origin,
+        stamp: Stamp,
+    },
     /// A key held behind `spec`: joins the gate if it is open already, else opens it with the
     /// entry (`offer_gated`).
     OfferGated { kind: EntryKind, spec: GateSpec },
@@ -137,6 +144,9 @@ struct Inner {
     /// The view is holding the keys typed during an ssh connect (set by the view, read by the
     /// pane's key sink).
     ssh_hold_active: Cell<bool>,
+    /// What the destination table decides on that lives at the pane level (#1424): the stamp's
+    /// parts and the phases the view derives. Written by the view, read by anyone.
+    route_state: PaneRouteState,
     /// Operations that found the queue busy, in the order they were recorded.
     deferred: RefCell<VecDeque<Deferred>>,
     /// Wakes the terminal view to apply [`Self::deferred`] (a bounded channel of one).
@@ -165,6 +175,7 @@ impl PaneQueue {
                 draining: Cell::new(false),
                 next_paste_id: Cell::new(0),
                 ssh_hold_active: Cell::new(false),
+                route_state: PaneRouteState::default(),
                 deferred: RefCell::new(VecDeque::new()),
                 defer_waker: RefCell::new(None),
                 flushing_deferred: Cell::new(false),
@@ -185,6 +196,24 @@ impl PaneQueue {
     /// The view is holding the keys typed during an ssh connect.
     pub fn ssh_hold_active(&self) -> bool {
         self.inner.ssh_hold_active.get()
+    }
+
+    /// The pane-level route state (stamp parts and derived phases).
+    pub fn route_state(&self) -> &PaneRouteState {
+        &self.inner.route_state
+    }
+
+    /// A stamp from the pane's route state: what the sink noted for the key being handled.
+    /// Plain `Cell` reads; callable while the queue is busy, which is the point (an offer that
+    /// must be deferred is stamped BEFORE it is deferred).
+    pub fn stamp_now(&self) -> Stamp {
+        self.inner.route_state.stamp()
+    }
+
+    /// [`InputQueue::queue_facts`], or `None` while an operation holds the queue (a caller inside
+    /// a drain gets the facts from the queue itself).
+    pub fn try_queue_facts(&self) -> Option<QueueFacts> {
+        self.try_peek().map(|queue| queue.queue_facts())
     }
 
     /// An operation holds the queue right now (so a delivery that asks is part of it).
@@ -263,11 +292,17 @@ impl PaneQueue {
         if self.inner.draining.get() {
             return None;
         }
-        let guard = self.inner.queue.try_borrow_mut().ok()?;
+        let mut guard = self.inner.queue.try_borrow_mut().ok()?;
         self.inner.draining.set(true);
+        // Arrivals through this guard that bring no stamp of their own get the pane's current
+        // one; the focus epoch is the queue's own.
+        let mut stamp = self.inner.route_state.stamp();
+        stamp.epoch = guard.focus_epoch();
+        guard.set_stamp(stamp);
         Some(QueueGuard {
             guard,
             draining: &self.inner.draining,
+            route_state: &self.inner.route_state,
         })
     }
 
@@ -313,6 +348,7 @@ impl PaneQueue {
 pub struct QueueGuard<'a> {
     guard: RefMut<'a, InputQueue>,
     draining: &'a Cell<bool>,
+    route_state: &'a PaneRouteState,
 }
 
 impl Deref for QueueGuard<'_> {
@@ -331,6 +367,9 @@ impl DerefMut for QueueGuard<'_> {
 
 impl Drop for QueueGuard<'_> {
     fn drop(&mut self) {
+        // The epoch only changes under a guard; mirror it so a stamp taken while the queue is busy
+        // (the editor's deferred offers) carries the current one.
+        self.route_state.note_epoch(self.guard.focus_epoch());
         self.draining.set(false);
     }
 }

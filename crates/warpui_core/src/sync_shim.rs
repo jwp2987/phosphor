@@ -197,6 +197,11 @@ mod model {
             self.0.read().unwrap()
         }
 
+        /// As parking_lot's `try_read_recursive`: `None` while a writer holds it.
+        pub fn try_read_recursive(&self) -> Option<RwLockReadGuard<'_, T>> {
+            self.0.try_read().ok()
+        }
+
         pub fn write(&self) -> RwLockWriteGuard<'_, T> {
             self.0.write().unwrap()
         }

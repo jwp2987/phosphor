@@ -22,6 +22,8 @@ struct Delivery {
 struct MockHost {
     facts: DestFacts,
     delivered: Vec<Delivery>,
+    /// The stamp each delivered entry carried (#1424).
+    delivered_stamps: Vec<(EntryId, Stamp)>,
     discarded: Vec<(EntryId, DiscardReason)>,
     armed: Vec<(GateToken, GateKind, Duration)>,
     warns: Vec<String>,
@@ -91,6 +93,7 @@ impl Host for MockHost {
             tag: entry.kind.tag(),
             dest,
         });
+        self.delivered_stamps.push((entry.id, entry.stamp));
         for item in self.scripted.remove(&entry.id).unwrap_or_default() {
             match item {
                 ScriptedFollow::Offer(kind) => follow.offer(kind),
@@ -1616,9 +1619,9 @@ fn the_default_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
     assert!(MAX_QUEUED_ENTRIES >= 180 * 60 * 5);
 }
 
+pub mod ops;
 #[cfg(test)]
 mod prop_model;
-pub mod ops;
 
 #[test]
 fn retag_gate_with_a_multi_byte_enter_led_write_keeps_the_tail_and_drops_one_enter() {
@@ -1684,4 +1687,112 @@ fn editor_keys_pass_only_setup_gates_with_no_editor_entry_queued() {
     let mut q = InputQueue::new();
     q.open_gate(&mut h, GateSpec::new(GateKind::CliSubmit, 1).with_cap(None));
     assert!(!q.editor_keys_pass_gates());
+}
+
+// ---- stamps (#1424) ---------------------------------------------------------------------------
+
+fn stamp(facts_gen: u64) -> Stamp {
+    Stamp {
+        facts_gen,
+        focus: FocusSnap::Terminal,
+        epoch: 0,
+    }
+}
+
+#[test]
+fn an_entry_keeps_the_stamp_it_was_offered_with_through_a_gate() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.open_gate(&mut h, GateSpec::new(GateKind::SshConnect, 1));
+    q.offer_stamped(&mut h, text("a"), Origin::Keyboard, stamp(5));
+    q.offer_stamped(&mut h, text("b"), Origin::Keyboard, stamp(9));
+    assert!(h.delivered_stamps.is_empty());
+    q.on_gate_event(&mut h, GateKind::SshConnect, 1);
+    assert_eq!(
+        h.delivered_stamps
+            .iter()
+            .map(|(_, stamp)| stamp.facts_gen)
+            .collect::<Vec<_>>(),
+        vec![5, 9],
+        "the stamp is the key's, not the queue's at drain time"
+    );
+}
+
+#[test]
+fn offers_without_a_stamp_use_the_queues_current_one() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    q.offer(&mut h, text("unstamped"));
+    q.set_stamp(stamp(7));
+    q.offer(&mut h, text("stamped"));
+    assert_eq!(h.delivered_stamps[0].1, Stamp::UNSTAMPED);
+    assert_eq!(h.delivered_stamps[1].1, stamp(7));
+}
+
+#[test]
+fn a_follow_up_takes_the_stamp_of_the_entry_it_follows() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    h.scripted
+        .insert(EntryId(1), vec![ScriptedFollow::Offer(text("follow"))]);
+    q.offer_stamped(&mut h, text("a"), Origin::Keyboard, stamp(3));
+    q.set_stamp(stamp(99));
+    q.drain(&mut h);
+    assert_eq!(h.delivered_ids(), vec![1, 2]);
+    assert_eq!(
+        h.delivered_stamps[1].1.facts_gen, 3,
+        "judged by the stamp of the key that caused it (H4)"
+    );
+}
+
+#[test]
+fn a_guard_stamps_arrivals_from_the_panes_route_state_and_the_mailbox_keeps_its_stamp() {
+    let pane = PaneQueue::new();
+    pane.route_state().note_facts_gen(4);
+    pane.route_state().note_focus(FocusSnap::Editor);
+    let mut h = MockHost::new();
+    {
+        let mut guard = pane.lock();
+        guard.open_gate(&mut h, GateSpec::new(GateKind::SshConnect, 1));
+        guard.offer(&mut h, text("a"));
+        // While the guard is held another producer defers its key: stamped NOW.
+        pane.route_state().note_facts_gen(6);
+        pane.defer(Deferred::Offer {
+            kind: text("b"),
+            origin: Origin::Editor,
+            stamp: pane.stamp_now(),
+        });
+    }
+    // The pane moves on before the mailbox is applied.
+    pane.route_state().note_facts_gen(11);
+    let mut guard = pane.lock();
+    let Some(Deferred::Offer {
+        kind,
+        origin,
+        stamp,
+    }) = pane.pop_deferred()
+    else {
+        panic!("the deferred offer is in the mailbox");
+    };
+    guard.offer_stamped(&mut h, kind, origin, stamp);
+    guard.on_gate_event(&mut h, GateKind::SshConnect, 1);
+    assert_eq!(
+        h.delivered_stamps
+            .iter()
+            .map(|(_, s)| (s.facts_gen, s.focus))
+            .collect::<Vec<_>>(),
+        vec![(4, FocusSnap::Editor), (6, FocusSnap::Editor)]
+    );
+}
+
+#[test]
+fn the_panes_epoch_follows_the_queues_focus_epoch() {
+    let pane = PaneQueue::new();
+    assert_eq!(pane.stamp_now().epoch, 0);
+    {
+        let mut guard = pane.lock();
+        let mut h = MockHost::new();
+        guard.on_focus_changed(&mut h);
+    }
+    assert_eq!(pane.stamp_now().epoch, 1, "mirrored when the guard drops");
 }

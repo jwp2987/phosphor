@@ -301,6 +301,7 @@ impl Input {
             queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind,
                 origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
             });
             return true;
         };
@@ -326,6 +327,7 @@ impl Input {
             queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind: EntryKind::Enter,
                 origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
             });
             return;
         };
@@ -460,6 +462,7 @@ impl Input {
             queue.defer(crate::terminal::input_queue::Deferred::Offer {
                 kind,
                 origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
             });
             return;
         };

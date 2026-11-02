@@ -150,6 +150,7 @@ impl TerminalView {
             queue.defer(Deferred::Offer {
                 kind,
                 origin: Origin::Keyboard,
+                stamp: queue.stamp_now(),
             });
             return SshTypeaheadPush::Held;
         };

@@ -329,3 +329,161 @@ fn a_full_inbox_never_loses_a_ctrl_c_or_the_first_input() {
 fn the_default_inbox_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
     assert!(MAX_INBOX_COMMANDS >= 180 * 60 * 3 * 4);
 }
+
+// ---- the publication gen (#1424) ----------------------------------------------------------
+
+#[test]
+fn the_gen_is_stored_with_the_bits_and_a_plain_store_keeps_it() {
+    let cell = KeyFactsCell::default();
+    assert_eq!(cell.load_with_gen(), (KeyFacts::default(), 0));
+    let facts = KeyFacts {
+        alt_screen: true,
+        ..KeyFacts::default()
+    };
+    cell.store_with_gen(facts, 41);
+    assert_eq!(cell.load_with_gen(), (facts, 41));
+    // A main-thread refresh stores what it read from the model without claiming a publication.
+    let refreshed = KeyFacts {
+        agent_in_control: true,
+        ..facts
+    };
+    cell.store(refreshed);
+    assert_eq!(cell.load_with_gen(), (refreshed, 41));
+    // The first-input bit is a flag, not a publication either.
+    cell.note_received_user_input();
+    let (loaded, generation) = cell.load_with_gen();
+    assert!(loaded.received_user_input);
+    assert_eq!(generation, 41);
+}
+
+#[test]
+fn every_combination_of_facts_survives_every_gen() {
+    let cell = KeyFactsCell::default();
+    for (generation, facts) in every_facts().enumerate() {
+        cell.store_with_gen(facts, generation as u64 + 1);
+        assert_eq!(cell.load_with_gen(), (facts, generation as u32 + 1));
+    }
+}
+
+fn snapshot_at(generation: u64) -> KeyModelSnapshot {
+    KeyModelSnapshot {
+        facts_gen: generation,
+        active_block_hash: generation,
+        ..KeyModelSnapshot::default()
+    }
+}
+
+#[test]
+fn a_reader_takes_the_pair_only_when_both_cells_carry_one_gen() {
+    let facts = KeyFactsCell::default();
+    let model = KeyModelCell::default();
+    // Never published: gen 0 in both.
+    let read = load_consistent(&facts, &model);
+    assert!(read.consistent);
+    assert_eq!(read.facts_gen, 0);
+
+    model.store(snapshot_at(5));
+    facts.store_with_gen(KeyFacts::default(), 5);
+    let read = load_consistent(&facts, &model);
+    assert!(read.consistent);
+    assert_eq!(read.facts_gen, 5);
+    assert_eq!(read.snapshot.active_block_hash, 5);
+    assert_eq!(load_gen_consistent(&facts, &model), (5, true));
+}
+
+#[test]
+fn a_pair_caught_between_the_two_stores_is_reported_torn_with_the_older_gen() {
+    let facts = KeyFactsCell::default();
+    let model = KeyModelCell::default();
+    // The publisher stores the snapshot first; the facts still carry the previous gen.
+    facts.store_with_gen(KeyFacts::default(), 7);
+    model.store(snapshot_at(8));
+    let read = load_consistent(&facts, &model);
+    assert!(
+        !read.consistent,
+        "no retry can fix a publisher that stopped midway"
+    );
+    assert_eq!(read.facts_gen, 7, "a stamp from it is early, never late");
+    assert_eq!(load_gen_consistent(&facts, &model), (7, false));
+    // The facts store completes: the next read agrees.
+    facts.store_with_gen(KeyFacts::default(), 8);
+    assert_eq!(load_gen_consistent(&facts, &model), (8, true));
+}
+
+#[test]
+fn every_publication_bumps_the_gen_in_both_cells() {
+    let model = TerminalModel::mock(None, None);
+    let facts_cell = model.key_facts_cell();
+    let model_cell = model.key_model_cell();
+    let before = model.facts_gen();
+    model.publish_key_facts();
+    model.publish_key_facts();
+    assert_eq!(model.facts_gen(), before + 2);
+    let read = load_consistent(&facts_cell, &model_cell);
+    assert!(read.consistent);
+    assert_eq!(read.facts_gen, before + 2);
+    assert_eq!(read.snapshot.facts_gen, before + 2);
+    // A snapshot built for a refresh carries the gen of the last publication, unchanged.
+    let refreshed = KeyModelSnapshot::from_model(&model);
+    assert_eq!(refreshed.facts_gen, before + 2);
+    assert_eq!(model.facts_gen(), before + 2, "reading never publishes");
+}
+
+#[test]
+fn the_snapshot_carries_the_paste_route_bits_the_view_used_to_lock_for() {
+    let mut model = TerminalModel::mock(None, None);
+    let snapshot = KeyModelSnapshot::from_model(&model);
+    assert_eq!(
+        snapshot.is_bootstrapped,
+        model.block_list().is_bootstrapped()
+    );
+    assert_eq!(
+        snapshot.needs_bracketed_paste,
+        model.needs_bracketed_paste()
+    );
+}
+
+// ---- the sticky output bits ---------------------------------------------------------------
+
+#[test]
+fn visible_text_is_sticky_for_the_block_and_scanned_only_until_seen() {
+    let mut sticky = StickyOutput::default();
+    let mut scans = 0;
+    // Nothing visible yet: scanned, not seen, and no unterminated scan (it needs visible text).
+    let seen = sticky.observe(
+        1,
+        10,
+        || {
+            scans += 1;
+            false
+        },
+        || panic!("an unterminated scan without visible text"),
+    );
+    assert_eq!(seen, (false, None));
+    // Text appears.
+    let seen = sticky.observe(1, 11, || true, || false);
+    assert_eq!(seen, (true, None));
+    // Seen: the visible scan never runs again, even if the output would now scan empty.
+    let seen = sticky.observe(1, 12, || panic!("rescanned a sticky bit"), || false);
+    assert_eq!(seen, (true, None));
+    assert_eq!(scans, 1);
+    // A new block starts over.
+    let seen = sticky.observe(2, 13, || false, || panic!("no text in the new block"));
+    assert_eq!(seen, (false, None));
+}
+
+#[test]
+fn unterminated_since_is_the_gen_it_became_true_and_clears_when_it_stops() {
+    let mut sticky = StickyOutput::default();
+    // Visible text, cursor mid-line from gen 20.
+    assert_eq!(sticky.observe(1, 19, || true, || false), (true, None));
+    assert_eq!(sticky.observe(1, 20, || true, || true), (true, Some(20)));
+    // Still unterminated at later gens: the gen it BECAME true stays.
+    assert_eq!(sticky.observe(1, 21, || true, || true), (true, Some(20)));
+    assert_eq!(sticky.observe(1, 25, || true, || true), (true, Some(20)));
+    // The line ends: cleared; the next unterminated line is a new prompt with a new gen.
+    assert_eq!(sticky.observe(1, 26, || true, || false), (true, None));
+    assert_eq!(sticky.observe(1, 30, || true, || true), (true, Some(30)));
+    // A new block forgets it.
+    assert_eq!(sticky.observe(2, 31, || true, || false), (true, None));
+}

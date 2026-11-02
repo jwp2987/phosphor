@@ -38,6 +38,37 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
+//! DESTINATION TABLE (#1424, steps 1 and 2 of the approved design; NOT LIVE). Where an input goes
+//! is still decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
+//! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
+//! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
+//! (`table.rs`: every hold row H1-H10, destination row D1-D13, signal row P1-P2 and origin row, the
+//! four per-class pty predicates exactly as legacy computes them, the gate x class matrix of H8
+//! including #1423's editor exemption, and `signal_plan` per gate and signal). What exists
+//! and what does not:
+//!  - LIVE (changes no behaviour): the facts and the stamp. [`RouteFacts`] is built by
+//!    `TerminalView::build_route_facts` (`view/route_facts.rs`) without a blocking lock and without
+//!    `in_key_path()`, from a consistent read of the two published model cells (a `facts_gen` in
+//!    both, a reader retry until they agree), the pane's [`PaneRouteState`] and live reads. Every
+//!    entry carries a [`Stamp`] taken at the sink (`on_pane_key_event`) -- the model gen it saw, the
+//!    focus chain, the focus epoch -- through the deferred mailbox (`Deferred::Offer { .. stamp }`)
+//!    and follow-ups, so a key judged later still has the classification it had when typed (the ssh
+//!    password rule, H4). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
+//!    from the legacy fields; no refresher moved off the key path.
+//!  - PURE, NOT CALLED: `table.rs` (`decide`, the predicates, `gate_holds`, `destination_for_fixed`
+//!    which fixes B12, the inverted hidden-input branch of `destination_for`), the `Origin` rows
+//!    (Synced, Viewer, CliSubmit, ReleasedFrom), `TypeaheadHandoff::peek_user_bytes_route`, the
+//!    `HELD_SIGNAL` held class (declared, no producer or executor).
+//!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
+//!    `PHOSPHOR_PANE_KEY`). Default `legacy`. Nothing reads `shadow` or `table` yet.
+//!  - DELIBERATE CHANGES encoded in the table but not yet effective (the owner's decisions OD-1,
+//!    OD-5, OD-7): ^Z and ^\ jump the queue like ^C with a per-gate plan; a signal typed during the
+//!    ssh setup window is HELD and delivered to the REMOTE side, never to the local shell; a key
+//!    stamped before the ssh prompt was published is dropped even if it is processed later.
+//!  - NEXT (design steps 3-8): the shadow comparison (`kh_dest_disagree`), delivery through the
+//!    table (the #1415 fix), arrival of terminal keys, editor arrival and paste, the edge-driven
+//!    `SshPhase`, then `table` as the default and the deletion of `delivering`/`requeue_request`.
+//!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
 //! never be dropped, written "as typed", left half done, or consume a one-shot cap for nothing.
@@ -62,8 +93,13 @@
 //! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
 mod destination;
+// #1424 steps 1-2 (facts + the pure table) are not called yet: step 3 (shadow) wires them in, then remove these allows.
+#[allow(dead_code)]
+pub mod facts;
 mod gates;
 mod pane;
+#[allow(dead_code)]
+pub mod table;
 pub mod trace;
 
 #[cfg(test)]
@@ -83,7 +119,11 @@ pub use destination::{
     DestFacts, Destination, DropReason, destination_for, intrinsic_destination, is_pty_entry,
     pin_still_valid,
 };
-pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
+pub use facts::{
+    DestinationMode, FocusSnap, GateMask, PaneRouteState, PsPhase, QueueFacts, RouteFacts,
+    SshPhase, Stamp, SubshellPhase, destination_mode,
+};
+pub use gates::{Gate, GateKind, GateSignalPlan, GateSpec, GateToken, SignalPlan, signal_plan};
 pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
@@ -267,6 +307,12 @@ pub const HELD_TYPED: u8 = 0;
 pub const HELD_KEY: u8 = 1;
 pub const HELD_PASTE: u8 = 2;
 pub const HELD_SEQ: u8 = 3;
+/// A signal (^C ^D ^Z ^\) typed during the ssh setup window (#1424, OD-5): held in typed order with
+/// the keys, carried as the byte, and delivered to the REMOTE side at the hand-over by the
+/// table's `Origin::Held` + signal row. Never delivered locally: when the connect ends without a
+/// remote shell the held signal is discarded (logged, count only). Declared here; no producer or
+/// executor uses it yet (steps 1 and 2 change no behaviour).
+pub const HELD_SIGNAL: u8 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
@@ -276,6 +322,21 @@ pub enum Origin {
     Editor,
     /// Re-offered by a delivery follow-up.
     Replay(EntryId),
+    /// Synthesized (mouse report, wheel to arrow).
+    Synthesized,
+    /// Held during an ssh connect and handed over to the remote shell (#1292).
+    Held,
+    /// Bytes relayed from a synced pane (`write_to_pty_for_syncing_long_running_commands`).
+    Synced,
+    /// Bytes a shared-session viewer wrote (`write_viewer_bytes_to_pty`).
+    Viewer,
+    /// The paced CLI-agent submit's own pieces (`write_cli_submit_bytes`): exempt from the holds.
+    CliSubmit,
+    /// The agent wrote it (`write_agent_bytes_to_pty`).
+    Agent,
+    /// Released by a hand-off gate (`LineEditorActive`, `PromptSeen`, ...): it has been through
+    /// the hand-off oracle once and must not re-enter it.
+    ReleasedFrom(GateKind),
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +348,10 @@ pub struct InputEntry {
     /// Diagnostics only, never a decision input.
     pub arrived_at: Instant,
     pub origin: Origin,
+    /// What was true when the key reached the pane's sink (#1424): the model gen it saw, the
+    /// focus chain, the focus epoch. Created at the sink and carried through the deferred
+    /// mailbox; a decision made later still judges the key by it (H4).
+    pub stamp: Stamp,
 }
 
 /// What delivering one entry caused.
@@ -461,6 +526,8 @@ pub struct InputQueue {
     next_id: u64,
     next_token: u64,
     focus_epoch: u64,
+    /// The stamp new arrivals get when the caller did not bring one (see [`Self::set_stamp`]).
+    current_stamp: Stamp,
     entries: VecDeque<InputEntry>,
     gates: Vec<Gate>,
     /// Destination of the line being typed.
@@ -491,6 +558,7 @@ impl InputQueue {
             next_id: 1,
             next_token: 1,
             focus_epoch: 0,
+            current_stamp: Stamp::UNSTAMPED,
             entries: VecDeque::new(),
             gates: Vec::new(),
             line_pin: None,
@@ -530,6 +598,13 @@ impl InputQueue {
 
     pub fn focus_epoch(&self) -> u64 {
         self.focus_epoch
+    }
+
+    /// The stamp [`Self::offer`] and the other arrivals without an explicit stamp give their
+    /// entries. [`PaneQueue::try_lock`] sets it from the pane's route state, so every arrival
+    /// through a guard is stamped with what the sink noted.
+    pub fn set_stamp(&mut self, stamp: Stamp) {
+        self.current_stamp = stamp;
     }
 
     /// Nothing queued and no gate open: the fast path applies.
@@ -621,6 +696,19 @@ impl InputQueue {
                 .entries
                 .iter()
                 .all(|entry| matches!(entry.kind, EntryKind::PtyBytes { .. }))
+    }
+
+    /// What the destination table needs to know about the queue itself (#1424): the open gate
+    /// kinds, whether anything is queued, and whether everything queued is pty-bound bytes.
+    pub fn queue_facts(&self) -> QueueFacts {
+        QueueFacts {
+            gates: GateMask::of(&self.gates.iter().map(|gate| gate.kind).collect::<Vec<_>>()),
+            queued: !self.entries.is_empty(),
+            queued_only_pty: self
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.kind, EntryKind::PtyBytes { .. })),
+        }
     }
 
     /// A paste read for the input editor is pending.
@@ -735,7 +823,20 @@ impl InputQueue {
         kind: EntryKind,
         origin: Origin,
     ) -> EntryId {
-        let entry = self.make_entry(kind, origin);
+        let stamp = self.current_stamp;
+        self.offer_stamped(host, kind, origin, stamp)
+    }
+
+    /// [`Self::offer_with_origin`] with the stamp the key got at the sink (a key that went
+    /// through the deferred mailbox keeps the stamp it had when typed).
+    pub fn offer_stamped<H: Host>(
+        &mut self,
+        host: &mut H,
+        kind: EntryKind,
+        origin: Origin,
+        stamp: Stamp,
+    ) -> EntryId {
+        let entry = self.make_entry(kind, origin, stamp);
         let id = entry.id;
         if matches!(entry.kind, EntryKind::Signal(_)) {
             self.handle_signal(host, entry);
@@ -768,7 +869,8 @@ impl InputQueue {
         kind: EntryKind,
         spec: GateSpec,
     ) -> (EntryId, GateToken) {
-        let entry = self.make_entry(kind, Origin::Keyboard);
+        let stamp = self.current_stamp;
+        let entry = self.make_entry(kind, Origin::Keyboard, stamp);
         let id = entry.id;
         self.entries.push_back(entry);
         let token = self.push_gate(host, spec, id);
@@ -828,7 +930,7 @@ impl InputQueue {
         true
     }
 
-    fn make_entry(&mut self, kind: EntryKind, origin: Origin) -> InputEntry {
+    fn make_entry(&mut self, kind: EntryKind, origin: Origin, stamp: Stamp) -> InputEntry {
         let id = EntryId(self.next_id);
         self.next_id += 1;
         InputEntry {
@@ -837,6 +939,7 @@ impl InputQueue {
             focus_epoch: self.focus_epoch,
             arrived_at: Instant::now(),
             origin,
+            stamp,
         }
     }
 
@@ -1130,14 +1233,21 @@ impl InputQueue {
                 self.push_gate(host, spec, entry.id);
             }
         }
-        self.apply_follow_ups(host, entry.id, follow);
+        self.apply_follow_ups(host, entry.id, entry.stamp, follow);
     }
 
-    fn apply_follow_ups<H: Host>(&mut self, host: &mut H, from: EntryId, follow: FollowUps) {
+    fn apply_follow_ups<H: Host>(
+        &mut self,
+        host: &mut H,
+        from: EntryId,
+        stamp: Stamp,
+        follow: FollowUps,
+    ) {
         for item in follow.items {
             match item {
                 Follow::Offer(kind) => {
-                    let entry = self.make_entry(kind, Origin::Replay(from));
+                    // A follow-up takes the stamp of the entry it follows (H4).
+                    let entry = self.make_entry(kind, Origin::Replay(from), stamp);
                     self.entries.push_back(entry);
                 }
                 Follow::OpenGate(spec) => {

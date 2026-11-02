@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local};
 use warpui_core::sync_shim::Mutex;
-use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, Ordering};
+use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::block::interactive_latch::InteractiveLatch;
 use super::block::interactive_prompt_candidate;
@@ -115,22 +115,62 @@ impl KeyFacts {
 }
 
 /// The latest [`KeyFacts`], shared between the model (which stores) and the views (which load).
+///
+/// One `AtomicU64`: the low 32 bits are the fact bits, the high 32 bits the publication
+/// generation (`facts_gen`, #1424) the facts belong to. They are read and written together, so a
+/// reader never sees the bits of one publication under the gen of another. The same gen is stored
+/// in the [`KeyModelSnapshot`] ([`KeyModelSnapshot::facts_gen`]); [`load_consistent`] retries
+/// until the two cells agree. The cell only holds the low 32 bits of the model's `u64` gen, which
+/// is enough to tell two publications apart (a reader compares for equality, never for order).
 #[derive(Clone, Debug, Default)]
-pub struct KeyFactsCell(Arc<AtomicU32>);
+pub struct KeyFactsCell(Arc<AtomicU64>);
+
+const GEN_SHIFT: u32 = 32;
+const BITS_MASK: u64 = 0xFFFF_FFFF;
 
 impl KeyFactsCell {
+    /// Stores `facts` under the gen the cell already holds (a main-thread refresh that read the
+    /// exact state: it must not claim a publication that did not happen, so no max-store and no
+    /// bump).
     pub fn store(&self, facts: KeyFacts) {
-        self.0.store(facts.to_bits(), Ordering::Release);
+        let bits = u64::from(facts.to_bits());
+        let mut current = self.0.load(Ordering::Acquire);
+        loop {
+            let next = (current & !BITS_MASK) | bits;
+            match self
+                .0
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Stores `facts` as the publication `facts_gen` (the model's publish).
+    pub fn store_with_gen(&self, facts: KeyFacts, facts_gen: u64) {
+        let word = ((facts_gen & BITS_MASK) << GEN_SHIFT) | u64::from(facts.to_bits());
+        self.0.store(word, Ordering::Release);
     }
 
     pub fn load(&self) -> KeyFacts {
-        KeyFacts::from_bits(self.0.load(Ordering::Acquire))
+        self.load_with_gen().0
+    }
+
+    /// The facts and the low 32 bits of the gen they were published under, read together.
+    pub fn load_with_gen(&self) -> (KeyFacts, u32) {
+        let word = self.0.load(Ordering::Acquire);
+        (
+            KeyFacts::from_bits((word & BITS_MASK) as u32),
+            (word >> GEN_SHIFT) as u32,
+        )
     }
 
     /// The key path marked the active block as having received input: later keys of this block
-    /// do not post the mark again, before the model has applied the first.
+    /// do not post the mark again, before the model has applied the first. Does not touch the gen.
     pub fn note_received_user_input(&self) {
-        self.0.fetch_or(RECEIVED_USER_INPUT, Ordering::AcqRel);
+        self.0
+            .fetch_or(u64::from(RECEIVED_USER_INPUT), Ordering::AcqRel);
     }
 }
 
@@ -167,6 +207,83 @@ pub struct KeyModelSnapshot {
     pub app_cursor: bool,
     /// What `TerminalView::is_input_box_visible` reads from the model (#1440).
     pub input_box: InputBoxFacts,
+    /// The publication this snapshot belongs to (#1424): the model's `facts_gen` when it was
+    /// built. The same value is stored in the [`KeyFactsCell`], and a reader that wants the two
+    /// cells to describe one moment retries until they agree ([`load_consistent`]). A snapshot
+    /// built by hand (a test) has gen 0.
+    pub facts_gen: u64,
+    /// `model.block_list().is_bootstrapped()`: the paste route's "the shell can take a paste" bit
+    /// without the model's lock (`paste_routing`).
+    pub is_bootstrapped: bool,
+    /// `model.needs_bracketed_paste()`.
+    pub needs_bracketed_paste: bool,
+    /// The active block's output has had visible text at some point (sticky for the block: it
+    /// never goes back to false while the block is active). Replaces the blocking
+    /// `contents_to_string` lock of `ssh_connect_gate_drops_keys` (#1424).
+    pub visible_text_seen: bool,
+    /// The gen at which the active block's output last BECAME unterminated text (visible text
+    /// with the cursor parked after it on its row: the shape of a prompt), `None` while it is not.
+    /// The ssh password-prompt rule (H4) compares a key's stamp with this: a key stamped before
+    /// it was typed blind. Exact for the last `OUTPUT_TAIL_ROWS` rows, like the view's own
+    /// `active_output_ends_in_unterminated_text`.
+    pub unterminated_since_gen: Option<u64>,
+}
+
+/// The rows of output the unterminated-text test looks at (the view's `OUTPUT_TAIL_ROWS`).
+pub const OUTPUT_TAIL_ROWS: usize = 16;
+
+/// Whether `output` holds text a user could read (not just whitespace and control bytes).
+pub fn output_has_visible_text(output: &str) -> bool {
+    output
+        .chars()
+        .any(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// What the model remembers about the active block's output between publications, so the
+/// snapshot's sticky bits cost nothing once they are set (see [`KeyModelSnapshot::visible_text_seen`]).
+/// A leaf lock inside the model's: held for a few field writes plus the scans below, taken only
+/// by whoever holds the model.
+#[derive(Debug, Default)]
+pub struct StickyOutput {
+    block_hash: u64,
+    visible_seen: bool,
+    unterminated: bool,
+    unterminated_since: u64,
+}
+
+impl StickyOutput {
+    /// Folds in what the model shows now. `scan_visible` runs only while no visible text was
+    /// seen in this block, `scan_unterminated` only once there was.
+    fn observe(
+        &mut self,
+        block_hash: u64,
+        facts_gen: u64,
+        scan_visible: impl FnOnce() -> bool,
+        scan_unterminated: impl FnOnce() -> bool,
+    ) -> (bool, Option<u64>) {
+        if self.block_hash != block_hash {
+            *self = Self {
+                block_hash,
+                ..Self::default()
+            };
+        }
+        if !self.visible_seen {
+            self.visible_seen = scan_visible();
+        }
+        let unterminated_now = self.visible_seen && scan_unterminated();
+        if unterminated_now {
+            if !self.unterminated {
+                self.unterminated = true;
+                self.unterminated_since = facts_gen;
+            }
+        } else {
+            self.unterminated = false;
+        }
+        (
+            self.visible_seen,
+            self.unterminated.then_some(self.unterminated_since),
+        )
+    }
 }
 
 /// The cheap model facts behind "is the input box visible", so the key path can answer it from
@@ -223,6 +340,20 @@ impl KeyModelSnapshot {
         let agent_owns_pty = !model.is_alt_screen_active()
             && active_block.is_agent_driving_command()
             && interactive_prompt_candidate(active_block.output_grid().grid_handler()).is_none();
+        let active_block_hash = block_id_hash(model.active_block_id());
+        let facts_gen = model.facts_gen();
+        let (visible_text_seen, unterminated_since_gen) = model.sticky_output().lock().observe(
+            active_block_hash,
+            facts_gen,
+            || output_has_visible_text(&active_block.output_grid().contents_to_string(false, None)),
+            || {
+                let grid = active_block.output_grid();
+                grid.grid_handler().cursor_point().col > 0
+                    && output_has_visible_text(
+                        &grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)),
+                    )
+            },
+        );
         Self {
             read_only: model.is_read_only(),
             shared_session_executor: model.shared_session_status().is_executor(),
@@ -232,12 +363,17 @@ impl KeyModelSnapshot {
             active_block_bootstrapped: model.is_active_block_bootstrapped(),
             active_block_started: active_block.started(),
             active_and_long_running: active_block.is_active_and_long_running(),
-            active_block_hash: block_id_hash(model.active_block_id()),
+            active_block_hash,
             active_block_start: active_block.start_ts().copied(),
             agent_owns_pty,
             interactive_latch: Some(active_block.interactive_latch().clone()),
             app_cursor: model.is_term_mode_set(TermMode::APP_CURSOR),
             input_box: InputBoxFacts::from_model(model),
+            facts_gen,
+            is_bootstrapped: model.block_list().is_bootstrapped(),
+            needs_bracketed_paste: model.needs_bracketed_paste_shared(),
+            visible_text_seen,
+            unterminated_since_gen,
         }
     }
 
@@ -260,6 +396,99 @@ impl KeyModelCell {
     pub fn load(&self) -> KeyModelSnapshot {
         self.0.lock().clone()
     }
+
+    /// The gen of the stored snapshot, without cloning it.
+    pub fn facts_gen(&self) -> u64 {
+        self.0.lock().facts_gen
+    }
+}
+
+/// How many times [`load_consistent`] re-reads before it gives up and reports the pair as torn.
+pub const CONSISTENT_READ_ATTEMPTS: usize = 8;
+
+/// One read of both published cells that describes ONE publication (#1424).
+#[derive(Clone, Debug)]
+pub struct ConsistentRead {
+    pub facts: KeyFacts,
+    pub snapshot: KeyModelSnapshot,
+    /// The gen both cells agreed on (the snapshot's), or, when `consistent` is false, one before
+    /// the snapshot's (the publisher stores the snapshot first, so the facts are the older half):
+    /// a stamp taken from it can only be early (classed "before"), never late.
+    pub facts_gen: u64,
+    /// The two cells carried the same gen. False only if the publisher kept racing the reader for
+    /// [`CONSISTENT_READ_ATTEMPTS`] reads; the caller treats the facts as one publication behind.
+    pub consistent: bool,
+    /// The facts were read from the exact model (it was free), not from the published cells.
+    pub exact: bool,
+}
+
+/// Reads `facts` and `model` until their gens agree (seqlock style). The publisher stores the
+/// snapshot first and the facts second, both under the same gen, so a reader that sees the same
+/// gen in both has seen one publication whole; a mismatch means it caught the publisher between
+/// the two stores (or a newer publication began) and it reads again. Never takes the model's
+/// lock, never takes a maximum: the gen it reports is one that was published together.
+pub fn load_consistent(facts: &KeyFactsCell, model: &KeyModelCell) -> ConsistentRead {
+    load_consistent_with(facts, model, CONSISTENT_READ_ATTEMPTS)
+}
+
+/// [`load_consistent`] with the number of attempts given (the model-checker tests use few).
+pub fn load_consistent_with(
+    facts: &KeyFactsCell,
+    model: &KeyModelCell,
+    attempts: usize,
+) -> ConsistentRead {
+    let mut last = None;
+    for _ in 0..attempts.max(1) {
+        let (fact_bits, fact_gen) = facts.load_with_gen();
+        let snapshot = model.load();
+        let (_, fact_gen_after) = facts.load_with_gen();
+        let snapshot_gen = snapshot.facts_gen;
+        if fact_gen == fact_gen_after && (snapshot_gen & BITS_MASK) as u32 == fact_gen {
+            return ConsistentRead {
+                facts: fact_bits,
+                facts_gen: snapshot_gen,
+                snapshot,
+                consistent: true,
+                exact: false,
+            };
+        }
+        last = Some((fact_bits, snapshot));
+    }
+    let (facts, snapshot) = last.expect("at least one attempt");
+    ConsistentRead {
+        facts,
+        // The publisher stores the snapshot first, so a torn pair is the new snapshot with the
+        // previous facts: report the previous gen.
+        facts_gen: snapshot.facts_gen.saturating_sub(1),
+        snapshot,
+        consistent: false,
+        exact: false,
+    }
+}
+
+/// The gen the two cells agree on, for a key stamp (#1424): [`load_consistent`] without cloning
+/// the snapshot. `(gen, true)` when both cells carried it; after [`CONSISTENT_READ_ATTEMPTS`]
+/// torn reads `(snapshot gen - 1, false)`, the older half, so a stamp is early rather than late.
+pub fn load_gen_consistent(facts: &KeyFactsCell, model: &KeyModelCell) -> (u64, bool) {
+    load_gen_consistent_with(facts, model, CONSISTENT_READ_ATTEMPTS)
+}
+
+/// [`load_gen_consistent`] with the number of attempts given.
+pub fn load_gen_consistent_with(
+    facts: &KeyFactsCell,
+    model: &KeyModelCell,
+    attempts: usize,
+) -> (u64, bool) {
+    let mut snapshot_gen = 0;
+    for _ in 0..attempts.max(1) {
+        let (_, fact_gen) = facts.load_with_gen();
+        snapshot_gen = model.facts_gen();
+        let (_, fact_gen_after) = facts.load_with_gen();
+        if fact_gen == fact_gen_after && (snapshot_gen & BITS_MASK) as u32 == fact_gen {
+            return (snapshot_gen, true);
+        }
+    }
+    (snapshot_gen.saturating_sub(1), false)
 }
 
 /// What the key path leaves for the model to apply under its own lock.
